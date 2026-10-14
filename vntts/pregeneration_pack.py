@@ -4,18 +4,15 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import os
 import shutil
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from tempfile import TemporaryDirectory
 from time import perf_counter, process_time
 from typing import Protocol, cast
 
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePackError, write_game_pack
 from vntts_artifacts.generated_audio import (
     GeneratedAudioDocument,
@@ -26,14 +23,12 @@ from vntts_artifacts.generated_audio import (
 from vntts_artifacts.live_sequence import (
     LiveSequencePlan,
     LiveSequencePlanError,
-    load_live_sequence_plan,
     write_live_sequence_plan,
 )
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
     StoryIndexRecord,
-    load_story_index_document,
     write_story_index_document,
 )
 from vntts_artifacts.voice_generation_queue import (
@@ -43,7 +38,6 @@ from vntts_artifacts.voice_generation_queue import (
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     normalize_character_name,
     write_voice_manifest,
 )
@@ -68,10 +62,16 @@ from vntts.chapter_voice_preload import (
     _source_audio_covers_full_line,
     _validated_source_audio_line_ids,
 )
-from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.document_identity import (
+    canonical_document_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
-from vntts.path_safety import safe_relative_path
+from vntts.json_types import decode_json
+from vntts.live_sequence import load_live_sequence_snapshot
+from vntts.path_safety import copy_regular_file, read_regular_bytes, safe_relative_path
 from vntts.pregeneration_contract import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
@@ -79,6 +79,7 @@ from vntts.pregeneration_contract import (
 )
 from vntts.pregeneration_generation import (
     _generation_output,
+    validate_offline_generation_result,
 )
 from vntts.pregeneration_queue import (
     PregenerationInput,
@@ -96,6 +97,7 @@ from vntts.source_audio_semantics import (
     project_source_audio_semantics,
 )
 from vntts.support import record_background_operation
+from vntts.voices import load_voice_manifest
 
 JsonObject = dict[str, object]
 JsonRecords = list[JsonObject]
@@ -183,7 +185,6 @@ def inspect_story_audio(
     )
     pack = _story_audio_pack(
         content,
-        selection_id,
         selection.line_ids,
         job_store,
         manifest=manifest,
@@ -213,7 +214,6 @@ def inspect_story_audio(
 
 def _story_audio_pack(
     content: GameContent,
-    selection_id: str,
     selection_line_ids: Iterable[str],
     job_store: PregenerationJobStore,
     *,
@@ -226,10 +226,11 @@ def _story_audio_pack(
     elif manifest is not None:
         manifest_path = Path(manifest).expanduser().resolve()
     else:
+        selected = set(selection_line_ids)
         manifests = [
             path
             for job in job_store.jobs_for_content(content)
-            if set(selection_line_ids).issubset(job.selected_line_ids)
+            if selected.issubset(job.selected_line_ids)
             for path in job_store.published_packs(job)
         ]
         manifest_path = max(
@@ -240,7 +241,9 @@ def _story_audio_pack(
     if manifest_path is None:
         return _StoryAudioPack(None, explicit, None, {}, frozenset(), None)
     imported = imported_pack or import_game_pack(manifest_path)
-    story = load_story_index_document(imported.story_index)
+    story = load_verified_story_index_document(
+        imported.story_index, imported.pack.story_index.sha256
+    )
     library = (
         GeneratedAudioLibrary(
             load_generated_audio_document(imported.generated_audio_manifest),
@@ -314,7 +317,12 @@ class OfflinePackPublisher:
         """Read-only forecast using the same validated base and resume state as publication."""
         _raise_if_cancelled(cancel_event)
         phase_started, cpu_started = perf_counter(), process_time()
-        story = load_story_index_document(generation_input.story_index)
+        try:
+            story = load_verified_story_index_document(
+                generation_input.story_index, generation_input.story_index_sha256
+            )
+        except (OSError, StoryIndexError, ValueError) as error:
+            raise OfflinePackError("Prepared story index changed") from error
         base, _source = _load_incremental_base(self.base_pack, job, story)
         _record_acceptance_phase("base-load", phase_started, cpu_started)
         phase_started, cpu_started = perf_counter(), process_time()
@@ -411,7 +419,9 @@ class OfflinePackPublisher:
         phase_started, cpu_started = perf_counter(), process_time()
         try:
             _verify_prepared_inputs(generation_input)
-            story = load_story_index_document(generation_input.story_index)
+            story = load_verified_story_index_document(
+                generation_input.story_index, generation_input.story_index_sha256
+            )
             state_document, state_sha256, state_payload = load_json_object_snapshot(
                 generation_result.state,
                 "generation state",
@@ -454,14 +464,12 @@ class OfflinePackPublisher:
             )
             return result
         phase_started, cpu_started = perf_counter(), process_time()
-        state, _queue, voice_document, voices, current_omissions = (
-            _load_terminal_generation(
-                job,
-                generation_input,
-                generation_result,
-                state_sha256,
-                state_document=state_document,
-            )
+        state, voice_document, voices, current_omissions = _load_terminal_generation(
+            job,
+            generation_input,
+            generation_result,
+            state_sha256,
+            state_document=state_document,
         )
         _verify_prepared_inputs(generation_input)
         _record_publication_phase("terminal-load", phase_started, cpu_started)
@@ -551,29 +559,14 @@ class OfflinePackPublisher:
                     cancel_event=cancel_event,
                 )
                 _raise_if_cancelled(cancel_event)
-                write_generated_audio_manifest(
+                _write_route_manifest(
                     generated_copy,
-                    {
-                        "game": published_story.game,
-                        "language": published_story.language,
-                        "generated_at": datetime.now(timezone.utc).isoformat(),
-                        "vntts.self-service.incremental": {
-                            "schema_version": 1,
-                            "base_pack_identity": base_identity,
-                            "current_queue_sha256": generation_input.queue_sha256,
-                        },
-                        "vntts.authoring.live_fallback": {
-                            "schema_version": 1,
-                            "mode": "explicit",
-                            "entries": live_fallbacks,
-                        },
-                        "vntts.authoring.audio_event_omission": {
-                            "schema_version": 1,
-                            "mode": "explicit",
-                            "entries": omissions,
-                        },
-                    },
+                    published_story,
+                    generation_input.queue_sha256,
+                    base_identity,
                     generated_records,
+                    live_fallbacks,
+                    omissions,
                 )
                 _record_publication_phase(
                     "audio-routes",
@@ -840,7 +833,6 @@ def _load_terminal_generation(
     state_document: GenerationState,
 ) -> tuple[
     GenerationState,
-    VoiceGenerationQueue,
     JsonObject,
     tuple[VoiceManifestEntry, ...],
     JsonRecords,
@@ -876,7 +868,7 @@ def _load_terminal_generation(
             queue,
             omission_queue_ids=omission_queue_ids,
         )
-        return state, queue, voice_document, voices, omissions
+        return state, voice_document, voices, omissions
     except (
         BulkGenerationError,
         GamePackError,
@@ -891,19 +883,15 @@ def _load_terminal_generation(
 
 
 def _validate_inputs(
-    job: object, generation_input: object, generation_result: object
+    job: PregenerationJob,
+    generation_input: PregenerationInput,
+    generation_result: OfflineGenerationResult,
 ) -> None:
     if not isinstance(job, PregenerationJob):
         raise OfflinePackError("Offline preparation job is invalid")
-    if not isinstance(generation_input, PregenerationInput):
-        raise OfflinePackError("Offline generation input is invalid")
-    if not isinstance(generation_result, OfflineGenerationResult):
-        raise OfflinePackError("Offline generation result is invalid")
-    expected_output = generation_input.directory.parent / (
-        f"generation-output-{generation_input.identity[:16]}"
+    validate_offline_generation_result(
+        generation_input, generation_result, "pack", error_type=OfflinePackError
     )
-    if generation_result.output.resolve() != expected_output.resolve():
-        raise OfflinePackError("Offline pack output identity changed")
 
 
 def _require_terminal_generation(
@@ -966,14 +954,14 @@ def _identity(
         payload["base_pack_identity"] = base_pack_identity
     if live_sequence_sha256 is not None:
         payload["live_sequence_sha256"] = live_sequence_sha256
-    return str(canonical_document_sha256(payload))
+    return canonical_document_sha256(payload)
 
 
 def _optional_sequence_snapshot(path: Path | None) -> tuple[str | None, bytes | None]:
     if path is None or not path.is_file():
         return None, None
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
     except OSError:
         return None, None
     return hashlib.sha256(payload).hexdigest(), payload
@@ -1035,14 +1023,13 @@ def _safe_sequence_document(
     path: Path, story_index: Path, *, payload: bytes | None = None
 ) -> tuple[JsonObject, LiveSequencePlan]:
     if payload is None:
-        payload = path.read_bytes()
-    document = json.loads(payload)
+        payload = read_regular_bytes(path)
+    document = decode_json(payload)
     if not isinstance(document, dict) or not isinstance(document.get("chapters"), list):
         raise LiveSequencePlanError("Live sequence plan document is malformed")
-    with TemporaryDirectory(prefix="vntts-sequence-") as directory:
-        snapshot = Path(directory) / "live-sequence.json"
-        snapshot.write_bytes(payload)
-        plan = load_live_sequence_plan(snapshot, story_index)
+    plan = load_live_sequence_snapshot(
+        path, story_index, payload, read_regular_bytes(story_index)
+    )
     if plan.game_id != "reverse1999":
         raise LiveSequencePlanError("Live sequence is not for Reverse: 1999")
     for event in plan.events.values():
@@ -1078,7 +1065,9 @@ def _load_incremental_base(
             )
         except ValueError as error:
             raise OfflinePackError("Selected source story changed") from error
-        base_story = load_story_index_document(imported.story_index)
+        base_story = load_verified_story_index_document(
+            imported.story_index, imported.pack.story_index.sha256
+        )
     except (GamePackError, OSError, StoryIndexError, ValueError) as error:
         raise OfflinePackError(
             f"Unable to inspect the active offline pack: {error}"
@@ -1106,8 +1095,12 @@ def _write_cumulative_story(
     generation_input: PregenerationInput,
     story_copy: Path,
 ) -> tuple[StoryIndexDocument, Path | None, SourceAudioSemanticEvidence | None]:
-    base_story = load_story_index_document(base.story_index)
-    current_story = load_story_index_document(generation_input.story_index)
+    base_story = load_verified_story_index_document(
+        base.story_index, base.pack.story_index.sha256
+    )
+    current_story = load_verified_story_index_document(
+        generation_input.story_index, generation_input.story_index_sha256
+    )
     selected_ids = {
         *(record.line_id for record in base_story.records),
         *(record.line_id for record in current_story.records),
@@ -1216,6 +1209,41 @@ def _portable_voice_entries(
             candidate["references"].append(portable)
         result.append(candidate)
     return result
+
+
+def _write_route_manifest(
+    manifest: Path,
+    story: StoryIndexDocument,
+    queue_sha256: str,
+    base_identity: str | None,
+    generated: JsonRecords,
+    fallback: JsonRecords,
+    omissions: JsonRecords,
+) -> None:
+    write_generated_audio_manifest(
+        manifest,
+        {
+            "game": story.game,
+            "language": story.language,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "vntts.self-service.incremental": {
+                "schema_version": 1,
+                "base_pack_identity": base_identity,
+                "current_queue_sha256": queue_sha256,
+            },
+            "vntts.authoring.live_fallback": {
+                "schema_version": 1,
+                "mode": "explicit",
+                "entries": fallback,
+            },
+            "vntts.authoring.audio_event_omission": {
+                "schema_version": 1,
+                "mode": "explicit",
+                "entries": omissions,
+            },
+        },
+        generated,
+    )
 
 
 def _write_cumulative_routes(
@@ -1395,7 +1423,7 @@ def _live_fallback_records(state: GenerationState) -> JsonRecords:
                 "decision_sha256": canonical_document_sha256(decision),
             }
         )
-    return sorted(records, key=lambda value: (value["line_id"], value["text_sha256"]))
+    return records
 
 
 def _copy_voice_references(
@@ -1465,8 +1493,8 @@ def _verify_prepared_inputs(generation_input: PregenerationInput) -> None:
 def _copy_prepared_file(
     source: Path, destination: Path, expected_sha256: str, label: str
 ) -> None:
-    _copy_file(source, destination)
-    _verify_prepared_file(destination, expected_sha256, f"staged {label}")
+    if _copy_file(source, destination) != expected_sha256:
+        raise OfflinePackError(f"Prepared staged {label} changed")
 
 
 def _verify_prepared_file(path: Path, expected_sha256: str, label: str) -> None:
@@ -1478,16 +1506,21 @@ def _verify_prepared_file(path: Path, expected_sha256: str, label: str) -> None:
         raise OfflinePackError(f"Prepared {label} changed")
 
 
-def _copy_file(source: str | Path, destination: Path) -> None:
+def _copy_file(source: str | Path, destination: Path) -> str:
     source = Path(source)
     if not source.is_file() or source.is_symlink():
         raise OfflinePackError(f"Offline pack source is unsafe: {source}")
     source = source.resolve()
     before = sha256_file(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination)
+    if destination.is_file():
+        if sha256_file(destination) != before:
+            raise OfflinePackError(f"Offline pack destination conflicts: {destination}")
+    else:
+        copy_regular_file(source, destination)
     if sha256_file(source) != before or sha256_file(destination) != before:
         raise OfflinePackError(f"Offline pack source changed: {source}")
+    return before
 
 
 def _link_verified_file(
@@ -1527,20 +1560,26 @@ def _load_existing(
     extension = imported.pack.extensions.get("vntts.self-service")
     if not isinstance(extension, dict) or extension.get("identity") != identity:
         raise OfflinePackError("Existing offline pack identity changed")
-    story_lines = len(load_story_index_document(imported.story_index).records)
-    if extension.get("story_line_count", story_lines) != story_lines:
+    story_lines = len(
+        load_verified_story_index_document(
+            imported.story_index, imported.pack.story_index.sha256
+        ).records
+    )
+    declared_story_lines = extension.get("story_line_count", story_lines)
+    if type(declared_story_lines) is not int or declared_story_lines != story_lines:
         raise OfflinePackError("Existing offline pack coverage changed")
     generated = load_generated_audio_document(imported.generated_audio_manifest)
     library = GeneratedAudioLibrary(generated)
-    approved = extension.get("approved_count")
-    live_fallbacks = extension.get("live_fallback_count")
-    omissions = extension.get("omission_count", 0)
-    if (
-        approved != len(generated.records)
-        or live_fallbacks != len(library.live_fallbacks)
-        or omissions != len(library.audio_event_omissions)
+    approved = len(generated.records)
+    live_fallbacks = len(library.live_fallbacks)
+    omissions = len(library.audio_event_omissions)
+    for declared, actual in (
+        (extension.get("approved_count"), approved),
+        (extension.get("live_fallback_count"), live_fallbacks),
+        (extension.get("omission_count", 0), omissions),
     ):
-        raise OfflinePackError("Existing offline pack route counts changed")
+        if type(declared) is not int or declared != actual:
+            raise OfflinePackError("Existing offline pack route counts changed")
     return OfflinePackResult(
         identity=identity,
         directory=destination,

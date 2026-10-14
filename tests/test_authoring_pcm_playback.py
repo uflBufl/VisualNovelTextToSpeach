@@ -1,80 +1,20 @@
+import os
 import unittest
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, PropertyMock, patch
 
 import numpy as np
 import soundfile as sf
 
+from tests.audio_output_fixtures import FakeAudioModule, FakeOutputStream
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring.pcm_playback import (
     PcmClip,
     PcmPlaybackError,
     PersistentPcmPlayer,
 )
-
-
-class FakeStatus:
-    def __init__(self, *, output_underflow=False):
-        self.output_underflow = output_underflow
-
-
-class FakeOutputStream:
-    def __init__(self, module, **options):
-        self.module = module
-        self.options = options
-        self.callback = options["callback"]
-        self.samplerate = options["samplerate"]
-        self.channels = options["channels"]
-        self.time = 0.0
-        self.started = False
-        self.aborted = False
-        self.closed = False
-
-    def start(self):
-        self.started = True
-
-    def abort(self):
-        self.aborted = True
-
-    def close(self):
-        self.closed = True
-
-    def pump(self, frames, *, underflow=False):
-        output = np.empty((frames, self.channels), dtype=np.float32)
-        timing = SimpleNamespace(
-            outputBufferDacTime=self.time + self.module.latency,
-            currentTime=self.time,
-        )
-        self.callback(
-            output,
-            frames,
-            timing,
-            FakeStatus(output_underflow=underflow),
-        )
-        self.time += frames / self.samplerate
-        return output
-
-
-class FakeAudioModule:
-    latency = 0.1
-
-    def __init__(self, *, sample_rate=48_000, channels=2):
-        self.device = {
-            "default_samplerate": sample_rate,
-            "max_output_channels": channels,
-        }
-        self.stream = None
-
-    def query_devices(self, *, kind):
-        if kind != "output":
-            raise AssertionError(kind)
-        return self.device
-
-    def OutputStream(self, **options):
-        self.stream = FakeOutputStream(self, **options)
-        return self.stream
 
 
 class PersistentPcmPlayerTest(unittest.TestCase):
@@ -108,6 +48,25 @@ class PersistentPcmPlayerTest(unittest.TestCase):
             prepared_mono.samples[:, 0], prepared_mono.samples[:, 1]
         )
         self.assertEqual(prepared_stereo.samples.shape, (4_800, 2))
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_load_refuses_fifo_swap_and_recovers(self):
+        _audio, player = self.create_player()
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "mono.wav"
+            sf.write(path, np.linspace(-0.5, 0.5, 2_400), 24_000, subtype="PCM_16")
+            gate: RegularFileGate = {"path": path, "armed": True}
+            with (
+                swap_at_acquisition(self, gate),
+                self.assertRaisesRegex(PcmPlaybackError, "Unable to decode mono.wav"),
+            ):
+                player.load(path)
+            self.assertFalse(gate["armed"], "regular file must be swapped at open")
+            clip = player.load(path)
+        self.assertEqual(clip.sample_rate, 48_000)
+        self.assertEqual(clip.samples.shape, (4_800, 2))
 
     def test_load_bytes_uses_the_same_preparation(self):
         _audio, player = self.create_player()
@@ -170,6 +129,65 @@ class PersistentPcmPlayerTest(unittest.TestCase):
         audio.stream.pump(2, underflow=True)
         self.assertTrue(player.snapshot().underflowed)
 
+    def test_attempt_failures_survive_pause_seek_and_resume_until_new_play(self):
+        for failure in ("underflow", "clock", "callback"):
+            with self.subTest(failure=failure):
+                audio, player = self.create_player()
+                clip = PcmClip(np.ones((480, 2), np.float32), player.sample_rate)
+                token = player.play(clip)
+                if failure == "underflow":
+                    audio.stream.pump(48, underflow=True)
+                elif failure == "clock":
+                    with patch.object(
+                        FakeOutputStream,
+                        "time",
+                        create=True,
+                        new_callable=PropertyMock,
+                        side_effect=RuntimeError("device clock failed"),
+                    ):
+                        player.snapshot()
+                else:
+                    audio.stream.callback(
+                        np.empty((48, 2), np.float32),
+                        48,
+                        Mock(outputBufferDacTime="invalid DAC time"),
+                        None,
+                    )
+                failed = player.snapshot()
+                self.assertTrue(failed.underflowed or failed.error)
+
+                player.pause()
+                self.assertEqual(player.snapshot().token, token)
+                seek_token = player.seek(48)
+                resume_token = player.resume()
+                self.assertLess(token, seek_token)
+                self.assertLess(seek_token, resume_token)
+                self.assertFalse(player.snapshot().started)
+                audio.stream.pump(432)
+                audio.stream.time += audio.latency + 0.001
+                completed = player.snapshot()
+                self.assertEqual(completed.token, resume_token)
+                self.assertTrue(completed.finished)
+                self.assertEqual(completed.position_frames, clip.frames)
+                self.assertEqual(completed.underflowed, failed.underflowed)
+                self.assertEqual(completed.error, failed.error)
+
+                player.play(clip)
+                self.assertFalse(player.snapshot().underflowed)
+                self.assertIsNone(player.snapshot().error)
+                audio.stream.pump(480)
+                audio.stream.time += audio.latency + 0.001
+                self.assertTrue(player.snapshot().finished)
+
+                player.play(clip)
+                audio.stream.pump(48, underflow=True)
+                player.stop()
+                stopped = player.snapshot()
+                self.assertFalse(stopped.underflowed)
+                self.assertIsNone(stopped.error)
+                self.assertEqual(stopped.position_frames, 0)
+                self.assertFalse(stopped.started or stopped.playing or stopped.finished)
+
     def test_close_aborts_and_closes_stream(self):
         audio = FakeAudioModule()
         player = PersistentPcmPlayer(audio)
@@ -179,8 +197,55 @@ class PersistentPcmPlayerTest(unittest.TestCase):
         self.assertTrue(audio.stream.aborted)
         self.assertTrue(audio.stream.closed)
 
+    def test_close_attempts_each_release_once_and_preserves_first_failure(self):
+        for failed_phase in ("stop", "abort", "close"):
+            with self.subTest(failed_phase=failed_phase):
+                audio = FakeAudioModule()
+                player = PersistentPcmPlayer(audio)
+                primary = RuntimeError(f"{failed_phase} failed")
+                failures = {failed_phase: primary}
+                if failed_phase == "stop":
+                    failures["abort"] = KeyboardInterrupt("abort cleanup failed")
+                if failed_phase != "close":
+                    failures["close"] = SystemExit("close cleanup failed")
+                released = []
+
+                def release(phase):
+                    released.append(phase)
+                    if phase in failures:
+                        raise failures[phase]
+
+                with (
+                    patch.object(player, "stop", side_effect=lambda: release("stop")),
+                    patch.object(
+                        audio.stream, "abort", side_effect=lambda: release("abort")
+                    ),
+                    patch.object(
+                        audio.stream, "close", side_effect=lambda: release("close")
+                    ),
+                ):
+                    with self.assertRaises(RuntimeError) as caught:
+                        player.close()
+                    player.close()
+                self.assertIs(caught.exception, primary)
+                self.assertEqual(released, ["stop", "abort", "close"])
+                expected_notes = []
+                if failed_phase == "stop":
+                    expected_notes.append(
+                        "Output stream abort failed: abort cleanup failed"
+                    )
+                if failed_phase != "close":
+                    expected_notes.append(
+                        "Output stream cleanup failed: close cleanup failed"
+                    )
+                self.assertEqual(getattr(primary, "__notes__", []), expected_notes)
+
     def test_startup_failure_survives_a_stream_cleanup_failure(self):
-        for cleanup_error in (None, RuntimeError("device refused cleanup")):
+        for cleanup_error in (
+            None,
+            RuntimeError("device refused cleanup"),
+            SystemExit("device refused cleanup"),
+        ):
             with self.subTest(cleanup_error=cleanup_error):
                 audio = FakeAudioModule()
                 startup_error = RuntimeError("device refused startup")

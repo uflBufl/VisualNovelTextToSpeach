@@ -13,17 +13,22 @@ from typing import TypeAlias, TypedDict
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    canonical_document_sha256,
+    write_json_document_no_replace,
+)
 from vntts.authoring.cohort_review import (
     CohortReviewError,
     _load_document,
-    _write_document_no_replace,
 )
 from vntts.authoring.source_reference_quality import (
     SourceReferenceQualityError,
-    load_source_reference_quality_review,
+    _read_json,
+    validate_source_reference_quality_review_document,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.json_types import has_schema_version
+from vntts.path_safety import read_regular_bytes
 
 PORTRAIT_ALIAS_PLAN_SCHEMA = "vntts.authoring-portrait-alias-plan"
 PORTRAIT_ALIAS_PLAN_VERSION = 1
@@ -39,7 +44,7 @@ JsonObject: TypeAlias = dict[str, object]
 class _PortraitVariant(TypedDict):
     variant_id: str
     character: str
-    portrait: object
+    portrait: str | None
     source_bank: str
     portrait_image_sha256: str
     dhash: str
@@ -124,12 +129,14 @@ def build_portrait_alias_plan(
     """Suggest same-character expression aliases without granting authority."""
     _validate_dhash_distance(max_dhash_distance)
     path = Path(quality_review_path).expanduser().resolve()
-    payload = _read(path, "source-reference quality review")
-    source_sha256 = hashlib.sha256(payload).hexdigest()
     try:
-        review = load_source_reference_quality_review(path)
+        payload, review_document = _read_json(path, "source-reference quality review")
+        review = validate_source_reference_quality_review_document(
+            review_document, path.parent
+        )
     except SourceReferenceQualityError as error:
         raise PortraitAliasError(str(error)) from error
+    source_sha256 = hashlib.sha256(payload).hexdigest()
     variants = _eligible_portrait_variants(path, review)
     suggestions = _portrait_alias_suggestions(variants, max_dhash_distance)
     body: _PortraitAliasPlanBody = {
@@ -143,14 +150,7 @@ def build_portrait_alias_plan(
         "suggestions": suggestions,
     }
     document: _PortraitAliasPlanDocument = {
-        "schema": body["schema"],
-        "schema_version": body["schema_version"],
-        "source_quality_review": body["source_quality_review"],
-        "source_quality_review_sha256": body["source_quality_review_sha256"],
-        "max_dhash_distance": body["max_dhash_distance"],
-        "eligible_variant_count": body["eligible_variant_count"],
-        "suggestion_count": body["suggestion_count"],
-        "suggestions": body["suggestions"],
+        **body,
         "plan_id": canonical_document_sha256(body),
     }
     if (
@@ -206,7 +206,7 @@ def _accepted_portrait_variant(
     return {
         "variant_id": variant_id,
         "character": _required_text(card.get("character"), "quality character"),
-        "portrait": card["portrait"],
+        "portrait": _optional_portrait(card.get("portrait")),
         "source_bank": _required_text(card.get("source_bank"), "quality source bank"),
         "portrait_image_sha256": image_sha256,
         "dhash": _dhash(image_payload, variant_id),
@@ -216,22 +216,19 @@ def _accepted_portrait_variant(
 def _portrait_alias_suggestions(
     variants: list[_PortraitVariant], max_dhash_distance: int
 ) -> list[_PortraitAliasSuggestion]:
+    families: dict[tuple[str, str], list[_PortraitVariant]] = {}
+    for variant in variants:
+        family = (variant["character"].casefold(), variant["source_bank"].casefold())
+        families.setdefault(family, []).append(variant)
     suggestions: list[_PortraitAliasSuggestion] = []
-    for first, second in combinations(variants, 2):
-        if not _eligible_alias_pair(first, second):
-            continue
-        distance = _hamming(first["dhash"], second["dhash"])
-        if distance <= max_dhash_distance:
-            suggestions.append(_portrait_alias_suggestion(first, second, distance))
+    for family_variants in families.values():
+        for first, second in combinations(family_variants, 2):
+            if first["portrait"] == second["portrait"]:
+                continue
+            distance = _hamming(first["dhash"], second["dhash"])
+            if distance <= max_dhash_distance:
+                suggestions.append(_portrait_alias_suggestion(first, second, distance))
     return sorted(suggestions, key=lambda value: value["suggestion_id"])
-
-
-def _eligible_alias_pair(first: _PortraitVariant, second: _PortraitVariant) -> bool:
-    return (
-        first["character"].casefold() == second["character"].casefold()
-        and first["source_bank"].casefold() == second["source_bank"].casefold()
-        and first["portrait"] != second["portrait"]
-    )
 
 
 def _portrait_alias_suggestion(
@@ -253,12 +250,9 @@ def _portrait_alias_suggestion(
 def write_portrait_alias_plan(plan: PortraitAliasPlan, output: str | Path) -> Path:
     if not isinstance(plan, PortraitAliasPlan):
         raise PortraitAliasError("Portrait alias plan is invalid")
-    try:
-        return Path(
-            _write_document_no_replace(output, plan.document, "portrait alias plan")
-        )
-    except CohortReviewError as error:
-        raise PortraitAliasError(str(error)) from error
+    return write_json_document_no_replace(
+        output, plan.document, "portrait alias plan", error_type=PortraitAliasError
+    )
 
 
 def load_portrait_alias_plan(path: str | Path) -> PortraitAliasPlan:
@@ -305,12 +299,7 @@ def build_portrait_alias_decision(
         "identities": groups,
     }
     document: _PortraitAliasDecisionDocument = {
-        "schema": body["schema"],
-        "schema_version": body["schema_version"],
-        "plan_id": body["plan_id"],
-        "accepted_suggestion_ids": body["accepted_suggestion_ids"],
-        "identity_count": body["identity_count"],
-        "identities": body["identities"],
+        **body,
         "decision_id": canonical_document_sha256(body),
     }
     return PortraitAliasDecision(document["decision_id"], document)
@@ -321,14 +310,12 @@ def write_portrait_alias_decision(
 ) -> Path:
     if not isinstance(decision, PortraitAliasDecision):
         raise PortraitAliasError("Portrait alias decision is invalid")
-    try:
-        return Path(
-            _write_document_no_replace(
-                output, decision.document, "portrait alias decision"
-            )
-        )
-    except CohortReviewError as error:
-        raise PortraitAliasError(str(error)) from error
+    return write_json_document_no_replace(
+        output,
+        decision.document,
+        "portrait alias decision",
+        error_type=PortraitAliasError,
+    )
 
 
 def load_portrait_alias_decision(
@@ -343,8 +330,8 @@ def load_portrait_alias_decision(
     if (
         not isinstance(document, dict)
         or document.get("schema") != PORTRAIT_ALIAS_DECISION_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != PORTRAIT_ALIAS_DECISION_VERSION
+        or not has_schema_version(document, PORTRAIT_ALIAS_DECISION_VERSION)
+        or type(document.get("identity_count")) is not int
         or document.get("plan_id") != plan.plan_id
     ):
         raise PortraitAliasError("Unsupported portrait alias decision")
@@ -459,7 +446,7 @@ def _validate_plan_shape(document: JsonObject) -> _PortraitAliasPlanDocument:
                 {
                     "variant_id": variant["variant_id"],
                     "character": variant["character"],
-                    "portrait": variant["portrait"],
+                    "portrait": _optional_portrait(variant["portrait"]),
                     "source_bank": variant["source_bank"],
                     "portrait_image_sha256": variant["portrait_image_sha256"],
                     "dhash": variant["dhash"],
@@ -520,7 +507,7 @@ def _contained_file(root: str | Path, relative: object) -> Path:
 
 def _read(path: str | Path, label: str) -> bytes:
     try:
-        return Path(path).read_bytes()
+        return read_regular_bytes(Path(path))
     except OSError as error:
         raise PortraitAliasError(f"Unable to read {label} {path}: {error}") from error
 
@@ -539,6 +526,10 @@ def _distinct_texts(values: object, label: str) -> tuple[str, ...]:
         seen.add(value)
         result.append(value)
     return tuple(sorted(result))
+
+
+def _optional_portrait(value: object) -> str | None:
+    return None if value is None else _required_text(value, "portrait identity")
 
 
 def _required_text(value: object, label: str) -> str:

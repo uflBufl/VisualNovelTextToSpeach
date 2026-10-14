@@ -1,16 +1,15 @@
 import json
+import os
 import unittest
-from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-from tests.test_authoring_cohort_review import create_pending_cohort_workspace
+import vntts.authoring.legacy_reason_review as review_module
+from tests.authoring_fixtures import _legacy_bad_fixture
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.cohort_review import (
-    build_cohort_review_decision,
-    build_cohort_review_plan,
-    write_cohort_review_plan,
-)
 from vntts.authoring.legacy_reason_review import (
     LegacyReasonReviewError,
     build_legacy_reason_review,
@@ -22,33 +21,6 @@ from vntts.authoring.robustness_corpus import (
     load_speech_robustness_corpus,
     publish_speech_robustness_corpus,
 )
-
-
-def _legacy_bad_fixture(root):
-    workspace, _state, queue_id = create_pending_cohort_workspace(root)
-    reviews = workspace / "cohort-reviews"
-    reviews.mkdir()
-    plan = build_cohort_review_plan(workspace)
-    write_cohort_review_plan(plan, reviews / f"plan-{plan.plan_id}.json")
-    decision = build_cohort_review_decision(
-        plan,
-        plan.document["cohorts"][0]["cohort_id"],
-        "rejected",
-        reviewed_queue_ids=[queue_id],
-        sample_assessments={queue_id: "bad"},
-    )
-    document = deepcopy(decision.document)
-    document["schema_version"] = 1
-    document.pop("item_review_statuses")
-    document["sample_assessments"][0].pop("defect_reasons")
-    document["decision_id"] = canonical_document_sha256(
-        {key: value for key, value in document.items() if key != "decision_id"}
-    )
-    decision_path = reviews / f"decision-{document['decision_id']}.json"
-    decision_path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
-    corpus = root / "corpus-v3"
-    publish_speech_robustness_corpus([reviews], [], corpus)
-    return workspace, queue_id, decision_path, corpus
 
 
 class LegacyReasonReviewTest(unittest.TestCase):
@@ -99,6 +71,100 @@ class LegacyReasonReviewTest(unittest.TestCase):
         self.assertEqual(sample["human_label"], "acceptable")
         self.assertEqual(sample["human_defect_reasons"], [])
         self.assertEqual(len(sample["decision_ids"]), 2)
+
+    def test_supplement_rejects_foreign_or_mismatched_plan_before_publication(self):
+        for foreign in (False, True):
+            with self.subTest(foreign=foreign), TemporaryDirectory() as directory:
+                root = Path(directory)
+                _workspace, _queue_id, decision_path, corpus = _legacy_bad_fixture(root)
+                review = build_legacy_reason_review(corpus, root)
+                decision = json.loads(decision_path.read_text(encoding="utf-8"))
+                plan_path = decision_path.parent / f"plan-{decision['plan_id']}.json"
+                plan = json.loads(plan_path.read_text(encoding="utf-8"))
+                if foreign:
+                    plan["workspace_id"] = "foreign-workspace"
+                else:
+                    plan["policy"]["clean_samples_per_bucket"] = 2
+                plan["plan_id"] = canonical_document_sha256(
+                    {key: value for key, value in plan.items() if key != "plan_id"}
+                )
+                plan_path.write_text(json.dumps(plan), encoding="utf-8")
+                before = {
+                    path.name: path.read_bytes()
+                    for path in decision_path.parent.iterdir()
+                }
+                with self.assertRaisesRegex(
+                    LegacyReasonReviewError, "different workspace|different plan"
+                ):
+                    publish_reason_review_decisions(
+                        review, {review.items[0].item_id: ("pause_or_pacing",)}
+                    )
+                self.assertEqual(
+                    {
+                        path.name: path.read_bytes()
+                        for path in decision_path.parent.iterdir()
+                    },
+                    before,
+                )
+
+    def test_progress_refuses_every_captured_corpus_input_and_alias(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            _workspace, _queue_id, _decision, corpus = _legacy_bad_fixture(root)
+            review = build_legacy_reason_review(corpus, root)
+            document = json.loads((corpus / "corpus.json").read_text(encoding="utf-8"))
+            expected = {
+                corpus / "corpus.json",
+                *(corpus / row["path"] for row in document["artifacts"]),
+            }
+            self.assertEqual(set(review.input_paths), expected)
+            original = {path: path.read_bytes() for path in expected}
+            review = replace(review, items=())
+            for source in review.input_paths:
+                for alias in ("direct", "hardlink", "symlink"):
+                    with self.subTest(input=source.name, alias=alias):
+                        output = source if alias == "direct" else root / "progress.json"
+                        if alias == "hardlink":
+                            os.link(source, output)
+                        elif alias == "symlink":
+                            symlink_or_skip(output, source)
+                        with (
+                            patch.object(review_module, "atomic_write_json") as write,
+                            self.assertRaisesRegex(
+                                LegacyReasonReviewError, "Output must differ"
+                            ),
+                        ):
+                            write_reason_review_progress(review, output, {})
+                        write.assert_not_called()
+                        self.assertEqual(
+                            {path: path.read_bytes() for path in expected}, original
+                        )
+                        self.assertEqual(output.read_bytes(), original[source])
+                        if alias != "direct":
+                            output.unlink()
+
+    def test_progress_replaces_saved_selections_without_reloading_sources(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _workspace, _queue_id, decision, corpus = _legacy_bad_fixture(root)
+            review = build_legacy_reason_review(corpus, root)
+            original = {path: path.read_bytes() for path in review.input_paths}
+            decision.unlink()
+            progress = root / "progress.json"
+            with patch.object(
+                review_module,
+                "load_speech_robustness_corpus",
+                side_effect=AssertionError("unexpected reload"),
+            ):
+                first = {review.items[0].item_id: ("repetition",)}
+                write_reason_review_progress(review, progress, first)
+                self.assertEqual(load_reason_review_progress(review, progress), first)
+                second = {review.items[0].item_id: ("pause_or_pacing",)}
+                write_reason_review_progress(review, progress, second)
+                self.assertEqual(load_reason_review_progress(review, progress), second)
+            self.assertEqual(
+                {path: path.read_bytes() for path in review.input_paths}, original
+            )
 
     def test_progress_is_bound_to_exact_audio(self):
         with TemporaryDirectory() as directory:

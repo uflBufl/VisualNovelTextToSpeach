@@ -10,9 +10,12 @@ import shutil
 from collections.abc import Iterable, Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from stat import S_ISDIR
 from threading import Lock, RLock
 
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
+from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_binary
 
 _JOB_ID = re.compile(r"[0-9a-f]{24}")
 _PACK_ID = re.compile(r"pack-[0-9a-f]{24}")
@@ -86,17 +89,23 @@ def prune_obsolete_voice_candidate_caches(
             candidates = _candidate_directories(root)
             if not candidates:
                 return ()
+            signatures = {directory: _signature(directory) for directory in candidates}
+            if any(signature is None for signature in signatures.values()):
+                return ()
             if not all(_safe_candidate_tree(directory) for directory in candidates):
                 return ()
             referenced = _candidate_references(root, jobs, candidates, protected_paths)
-            if referenced is None:
+            if referenced is None or any(
+                _signature(directory) != signatures[directory]
+                for directory in candidates
+            ):
                 return ()
 
             removed: list[Path] = []
             for directory in candidates:
                 if directory.name in referenced or len(removed) == _MAX_DELETIONS:
                     continue
-                if not _remove_candidate(directory):
+                if not _remove_candidate(directory, signatures[directory]):
                     return tuple(removed)
                 removed.append(directory)
             return tuple(removed)
@@ -120,8 +129,7 @@ def _candidate_references(
     return referenced | active | references
 
 
-def _remove_candidate(directory: Path) -> bool:
-    signature = _signature(directory)
+def _remove_candidate(directory: Path, signature: tuple[int, int, int] | None) -> bool:
     if signature is None or _signature(directory) != signature:
         return False
     try:
@@ -224,14 +232,24 @@ def _protected_candidates(root: Path, paths: Iterable[str | Path]) -> set[str]:
     return protected
 
 
+def _bounded_directory_entries(directory: Path, limit: int) -> tuple[Path, ...] | None:
+    found: list[Path] = []
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if len(found) == limit:
+                return None
+            found.append(Path(entry.path))
+    return tuple(found)
+
+
 def _references_in_jobs(root: Path, jobs: Path) -> set[str] | None:
     if not jobs.exists():
         return set()
     if not jobs.is_dir():
         return None
     references: set[str] = set()
-    directories = tuple(jobs.iterdir())
-    if len(directories) > _MAX_JOBS:
+    directories = _bounded_directory_entries(jobs, _MAX_JOBS)
+    if directories is None:
         return None
     for directory in directories:
         if _unsafe(directory):
@@ -248,7 +266,7 @@ def _references_in_jobs(root: Path, jobs: Path) -> set[str] | None:
 def _references_in_job(root: Path, directory: Path) -> set[str] | None:
     references: set[str] = set()
     for path in (directory / "voice-plan.json", *_pack_manifests(directory)):
-        if path is None:
+        if path is None or _unsafe(path):
             return None
         if not path.exists():
             continue
@@ -261,13 +279,16 @@ def _references_in_job(root: Path, directory: Path) -> set[str] | None:
 
 def _pack_manifests(job_directory: Path) -> Iterator[Path | None]:
     packs = job_directory / "game-packs"
-    if not packs.exists():
-        return
-    if _unsafe(packs) or not packs.is_dir():
+    if _unsafe(packs):
         yield None
         return
-    directories = tuple(packs.iterdir())
-    if len(directories) > _MAX_PACKS_PER_JOB:
+    if not packs.exists():
+        return
+    if not packs.is_dir():
+        yield None
+        return
+    directories = _bounded_directory_entries(packs, _MAX_PACKS_PER_JOB)
+    if directories is None:
         yield None
         return
     for directory in directories:
@@ -285,16 +306,12 @@ def _references_in_document(root: Path, path: Path) -> set[str] | None:
     if _unsafe(path) or not path.is_file():
         return None
     try:
-        with path.open("rb") as source:
+        with open_regular_binary(path) as source:
             raw = source.read(_MAX_REFERENCE_DOCUMENT_BYTES + 1)
         if len(raw) > _MAX_REFERENCE_DOCUMENT_BYTES:
             return None
         payload = raw.decode("utf-8")
-        document = (
-            [json.loads(line) for line in payload.splitlines() if line.strip()]
-            if path.suffix == ".jsonl"
-            else json.loads(payload)
-        )
+        document = decode_json(payload)
     except OSError, UnicodeError, json.JSONDecodeError:
         return None
     references: set[str] = set()
@@ -323,27 +340,43 @@ def _candidate_for_path(
 ) -> str | None:
     if not path.is_absolute() and base is not None:
         path = base / path
+    resolved = path.resolve(strict=False)
     try:
-        relative = path.resolve(strict=False).relative_to(root)
+        relative = resolved.relative_to(root)
     except ValueError:
         return None
     return relative.parts[0] if relative.parts else None
 
 
 def _safe_candidate_tree(directory: Path) -> bool:
+    pending = [directory]
     entries = 0
-    for base, directories, files in os.walk(directory, followlinks=False):
-        for name in (*directories, *files):
-            entries += 1
-            if entries > _MAX_CANDIDATE_TREE_ENTRIES or _unsafe(Path(base) / name):
+    while pending:
+        current = pending.pop()
+        if _unsafe(current):
+            return False
+        paths = _bounded_directory_entries(
+            current, _MAX_CANDIDATE_TREE_ENTRIES - entries
+        )
+        if paths is None:
+            return False
+        entries += len(paths)
+        for path in paths:
+            if _unsafe(path):
                 return False
+            if S_ISDIR(path.stat(follow_symlinks=False).st_mode):
+                pending.append(path)
     return True
 
 
 def _signature(path: Path) -> tuple[int, int, int] | None:
     try:
-        status = path.stat()
+        if _unsafe(path):
+            return None
+        status = path.stat(follow_symlinks=False)
     except OSError:
+        return None
+    if not S_ISDIR(status.st_mode):
         return None
     return status.st_dev, status.st_ino, status.st_mtime_ns
 

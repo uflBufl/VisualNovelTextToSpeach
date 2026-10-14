@@ -7,19 +7,20 @@ import traceback
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from types import ModuleType
 from typing import TypeAlias
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
 
+from vntts.cleanup import cleanup_on_exit, temporary_directory
 from vntts.cli import CLIReportResult
+from vntts.document_identity import sha256_file
 from vntts.game_audio_decoder import (
     DecoderSetupError,
     find_game_decoder,
     probe_game_decoder,
 )
+from vntts.json_types import is_json_object
 from vntts.onboarding import probe_tesseract
 from vntts.release_runtime import runtime_probe_script, validate_runtime_provenance
 from vntts.runtime_paths import (
@@ -73,7 +74,7 @@ _PUBLIC_POCKET_ARTIFACTS = {
 
 def _json_object(payload: str, description: str) -> ReportDocument:
     value: object = json.loads(payload)
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise RuntimeError(f"{description} must be a JSON object")
     return {key: item for key, item in value.items() if isinstance(key, str)}
 
@@ -185,7 +186,7 @@ def probe_bundled_pocket_render(
     backend_factory: Callable[..., IsolatedSpeechBackend] = IsolatedSpeechBackend,
     temporary_directory_factory: Callable[
         ..., AbstractContextManager[str]
-    ] = TemporaryDirectory,
+    ] = temporary_directory,
 ) -> ReportDocument:
     bundle_root = get_bundle_root() if bundle_root is None else Path(bundle_root)
     if bundle_root is None:
@@ -206,7 +207,9 @@ def probe_bundled_pocket_render(
                 persistent_audio_cache_directory=root / "audio",
                 allow_gated_model_access=False,
             )
-            try:
+            with cleanup_on_exit(
+                backend.shutdown, description="Package render backend cleanup"
+            ):
                 result = backend.render(
                     SynthesisRequest(
                         voice="Narrator",
@@ -216,8 +219,6 @@ def probe_bundled_pocket_render(
                     )
                 ).collect()
                 health = dict(backend.health or {})
-            finally:
-                backend.shutdown()
         samples = int(result.pcm.size)
         if (
             samples <= 0

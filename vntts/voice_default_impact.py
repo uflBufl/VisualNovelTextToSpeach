@@ -2,13 +2,13 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypeAlias
 
 from vntts_artifacts.generated_audio import load_generated_audio_document
-from vntts_artifacts.story_index import StoryIndexRecord, load_story_index_document
+from vntts_artifacts.story_index import StoryIndexRecord
 
 from vntts.chapter_voice_preload import _validated_source_audio_line_ids
+from vntts.cleanup import temporary_directory
 from vntts.game_pack import import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.pregeneration_setup import (
@@ -31,6 +31,11 @@ from vntts.voices import is_narrator, normalize_character_name
 
 class Cancellation(Protocol):
     def is_set(self) -> bool: ...
+
+
+_PackContents: TypeAlias = tuple[
+    dict[str, StoryIndexRecord], GeneratedAudioLibrary | None, frozenset[str]
+]
 
 
 @dataclass(frozen=True)
@@ -84,22 +89,17 @@ def _saved_packs(
 
 def _load_pack(
     path: Path,
-    cache: dict[
-        Path,
-        tuple[
-            dict[str, StoryIndexRecord],
-            GeneratedAudioLibrary | None,
-            frozenset[str],
-        ],
-    ],
+    cache: dict[Path, _PackContents],
     cancellation: Cancellation | None,
-) -> tuple[dict[str, StoryIndexRecord], GeneratedAudioLibrary | None, frozenset[str]]:
+) -> _PackContents:
     _raise_if_cancelled(cancellation)
     path = path.expanduser().resolve()
     if path not in cache:
         imported = import_game_pack(path)
         _raise_if_cancelled(cancellation)
-        document = load_story_index_document(imported.story_index)
+        document = load_verified_story_index_document(
+            imported.story_index, imported.pack.story_index.sha256
+        )
         library = (
             GeneratedAudioLibrary(
                 load_generated_audio_document(imported.generated_audio_manifest),
@@ -124,14 +124,7 @@ def _compatible_packs(
     cancellation: Cancellation | None,
 ) -> tuple[_CompatiblePack, ...]:
     saved = _saved_packs(content, job_store, cancellation)
-    cache: dict[
-        Path,
-        tuple[
-            dict[str, StoryIndexRecord],
-            GeneratedAudioLibrary | None,
-            frozenset[str],
-        ],
-    ] = {}
+    cache: dict[Path, _PackContents] = {}
     selected: list[_CompatiblePack] = []
     for selection in content.selections:
         _raise_if_cancelled(cancellation)
@@ -282,7 +275,7 @@ def inspect_voice_default_impact(
     selected = _compatible_packs(content, job_store, settings, records, cancellation)
     if not selected:
         return ()
-    with TemporaryDirectory(prefix="vntts-voice-impact-") as temporary:
+    with temporary_directory(prefix="vntts-voice-impact-") as temporary:
         root = Path(temporary)
         preview_jobs = PregenerationJobStore(root / "jobs")
         job = preview_jobs.create_or_resume(

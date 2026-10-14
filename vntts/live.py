@@ -1,14 +1,17 @@
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
-from threading import Condition, Event, RLock, Timer
+from threading import TIMEOUT_MAX, Condition, Event, RLock, Timer
 from time import monotonic
 from typing import Literal, ParamSpec, Protocol, TypeAlias, TypeVar
 
+from vntts.cleanup import cleanup_on_exit
 from vntts.live_tracking import IncrementalDialogTracker, SpeechChunk
 from vntts.live_tracking import TrackerProbe as TrackerProbe
 from vntts.live_tracking import TrackerResolver as TrackerResolver
+from vntts.numeric_values import optional_finite_number
 
 Frame: TypeAlias = object
 FrameFingerprint: TypeAlias = object
@@ -93,6 +96,64 @@ DialogObservationDecision: TypeAlias = DialogRoute | bool | None
 StableFrameRoute: TypeAlias = DialogRoute | None | Literal[False]
 
 
+def _finite_seconds(value: object, name: str) -> float:
+    seconds = optional_finite_number(int(value) if isinstance(value, bool) else value)
+    if seconds is None:
+        raise ValueError(f"{name} must be finite")
+    return seconds
+
+
+def _positive_seconds(value: object, name: str) -> float:
+    seconds = _finite_seconds(value, name)
+    if seconds <= 0:
+        raise ValueError(f"{name} must be positive")
+    return seconds
+
+
+def _nonnegative_seconds(value: object, name: str) -> float:
+    seconds = _finite_seconds(value, name)
+    if seconds < 0:
+        raise ValueError(f"{name} must not be negative")
+    return seconds
+
+
+def _thread_seconds(seconds: float, name: str) -> float:
+    if seconds > TIMEOUT_MAX:
+        raise ValueError(f"{name} exceeds the thread timeout range")
+    return seconds
+
+
+def _positive_wait_seconds(value: object, name: str) -> float:
+    return _thread_seconds(_positive_seconds(value, name), name)
+
+
+def _wait_timeout_seconds(value: float) -> float:
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("timeout_seconds must be finite") from error
+    return _thread_seconds(
+        max(0.0, _finite_seconds(timeout, "timeout_seconds")), "timeout_seconds"
+    )
+
+
+def _positive_count(value: object, name: str) -> int:
+    if isinstance(value, int):
+        count = int(value)
+    elif isinstance(value, float) and value.is_integer():
+        count = int(value)
+    else:
+        raise ValueError(f"{name} must be an integer")
+    if count < 1:
+        raise ValueError(f"{name} must be positive")
+    return count
+
+
+def _recheck_interval_milliseconds(seconds: float) -> int | None:
+    milliseconds = optional_finite_number(seconds * 1000)
+    return round(milliseconds) if milliseconds is not None else None
+
+
 class AdaptiveSpeechBackpressure:
     """Temporarily serialize speech after an output underrun."""
 
@@ -103,12 +164,8 @@ class AdaptiveSpeechBackpressure:
         cooldown_seconds: float = 10.0,
         clock: Callable[[], float] = monotonic,
     ) -> None:
-        if normal_jobs < 1:
-            raise ValueError("normal_jobs must be positive")
-        if cooldown_seconds <= 0:
-            raise ValueError("cooldown_seconds must be positive")
-        self.normal_jobs = int(normal_jobs)
-        self.cooldown_seconds = float(cooldown_seconds)
+        self.normal_jobs = _positive_count(normal_jobs, "normal_jobs")
+        self.cooldown_seconds = _positive_seconds(cooldown_seconds, "cooldown_seconds")
         self.clock = clock
         self.current_jobs = self.normal_jobs
         self.last_underflow_at: float | None = None
@@ -144,15 +201,26 @@ class AdaptiveCapturePolicy:
         unfocused_interval: float | None = None,
         unchanged_frames: int = 3,
     ) -> None:
-        if base_interval <= 0:
-            raise ValueError("base_interval must be positive")
-        if unchanged_frames < 1:
-            raise ValueError("unchanged_frames must be positive")
-        self.base_interval = base_interval
-        self.fast_interval = fast_interval or max(0.05, base_interval / 2)
-        self.idle_interval = idle_interval or min(1.5, base_interval * 3)
-        self.unfocused_interval = unfocused_interval or min(0.5, base_interval * 2.5)
-        self.unchanged_frames = unchanged_frames
+        self.base_interval = _positive_wait_seconds(base_interval, "base_interval")
+        self.fast_interval = _positive_wait_seconds(
+            max(0.05, self.base_interval / 2)
+            if fast_interval is None
+            else fast_interval,
+            "fast_interval",
+        )
+        self.idle_interval = _positive_wait_seconds(
+            min(1.5, self.base_interval * 3)
+            if idle_interval is None
+            else idle_interval,
+            "idle_interval",
+        )
+        self.unfocused_interval = _positive_wait_seconds(
+            min(0.5, self.base_interval * 2.5)
+            if unfocused_interval is None
+            else unfocused_interval,
+            "unfocused_interval",
+        )
+        self.unchanged_frames = _positive_count(unchanged_frames, "unchanged_frames")
         self.last_observation: tuple[str, str] | None = None
         self.unchanged_count = 0
         self.was_focused = True
@@ -239,6 +307,7 @@ class LiveDialogReader:
         max_speech_jobs: int = 2,
         interrupt_on_dialog_replacement: bool = False,
         first_pcm_on_prepare: bool = True,
+        shutdown_requested: Event | None = None,
     ) -> None:
         self.capture_executor = capture_executor
         self.speech_executor = speech_executor
@@ -255,13 +324,13 @@ class LiveDialogReader:
         self.frame_completion = frame_completion or (lambda _frame: False)
         self.frame_recheck_required = frame_recheck_required or (lambda: False)
         self.ocr_purpose = ocr_purpose or (lambda: "legacy")
-        if frame_recheck_interval_seconds <= 0:
-            raise ValueError("frame_recheck_interval_seconds must be positive")
-        self.frame_recheck_interval_seconds = float(frame_recheck_interval_seconds)
+        self.frame_recheck_interval_seconds = _positive_seconds(
+            frame_recheck_interval_seconds, "frame_recheck_interval_seconds"
+        )
         self.render_completion = render_completion or (lambda: False)
-        if render_quiet_minimum_seconds <= 0:
-            raise ValueError("render_quiet_minimum_seconds must be positive")
-        self.render_quiet_minimum_seconds = float(render_quiet_minimum_seconds)
+        self.render_quiet_minimum_seconds = _positive_seconds(
+            render_quiet_minimum_seconds, "render_quiet_minimum_seconds"
+        )
         self.stable_frame_route = stable_frame_route
         self.stable_frame_owner = stable_frame_owner or (lambda: None)
         self.frame_routed = frame_routed or (
@@ -271,9 +340,9 @@ class LiveDialogReader:
             lambda _frame, _fingerprint, _observation_kind: None
         )
         self.line_id_resolver = line_id_resolver or (lambda _character, _text: None)
-        if stable_frame_minimum_seconds < 0:
-            raise ValueError("stable_frame_minimum_seconds must not be negative")
-        self.stable_frame_minimum_seconds = float(stable_frame_minimum_seconds)
+        self.stable_frame_minimum_seconds = _nonnegative_seconds(
+            stable_frame_minimum_seconds, "stable_frame_minimum_seconds"
+        )
         self.stable_frame_clock = stable_frame_clock
         self.prepare_chunk = prepare_chunk
         self.play_prepared = play_prepared
@@ -292,22 +361,28 @@ class LiveDialogReader:
         self.auto_advance = auto_advance
         self.require_visible_auto_advance = bool(require_visible_auto_advance)
         self.auto_advance_delay_seconds = auto_advance_delay_seconds
-        if auto_advance_confirmation_timeout_seconds <= 0:
-            raise ValueError(
-                "auto_advance_confirmation_timeout_seconds must be positive"
-            )
-        self.auto_advance_confirmation_timeout_seconds = float(
-            auto_advance_confirmation_timeout_seconds
+        self.auto_advance_confirmation_timeout_seconds = _positive_wait_seconds(
+            auto_advance_confirmation_timeout_seconds,
+            "auto_advance_confirmation_timeout_seconds",
+        )
+        auto_advance_terminal_timeout_seconds = _finite_seconds(
+            auto_advance_terminal_timeout_seconds,
+            "auto_advance_terminal_timeout_seconds",
         )
         if (
             auto_advance_terminal_timeout_seconds
-            <= auto_advance_confirmation_timeout_seconds
+            <= self.auto_advance_confirmation_timeout_seconds
         ):
             raise ValueError(
                 "auto_advance_terminal_timeout_seconds must be greater than "
                 "auto_advance_confirmation_timeout_seconds"
             )
-        self.auto_advance_terminal_timeout_seconds = float(
+        _thread_seconds(
+            auto_advance_terminal_timeout_seconds
+            - self.auto_advance_confirmation_timeout_seconds,
+            "auto_advance_terminal_timeout_seconds",
+        )
+        self.auto_advance_terminal_timeout_seconds = (
             auto_advance_terminal_timeout_seconds
         )
         self.auto_advance_state_changed = auto_advance_state_changed or (
@@ -316,16 +391,10 @@ class LiveDialogReader:
         self.pipeline_event_handler = pipeline_event_handler or (
             lambda _stage, _generation, _occurred_at, **_details: None
         )
-        if max_speech_jobs < 1:
-            raise ValueError("max_speech_jobs must be positive")
         self.max_speech_jobs = max_speech_jobs
         self.interrupt_on_dialog_replacement = bool(interrupt_on_dialog_replacement)
         self.first_pcm_on_prepare = bool(first_pcm_on_prepare)
-        self.state_lock = RLock()
-        self.pause_condition = Condition(self.state_lock)
-        self.stop_event = Event()
-        self.capture_future: Future[object] | None = None
-        self.ocr_future: Future[object] | None = None
+        self._initialize_worker_state(shutdown_requested)
         self.active_generation = 0
         self._explicit_generation_offset = 0
         self.suppressed_generation: int | None = None
@@ -372,8 +441,48 @@ class LiveDialogReader:
         self.candidate_frame_started_at: float | None = None
         self.frame_version = 0
         self.processed_frame_version = 0
-        self.next_capture_interval = interval_seconds
+        self.next_capture_interval = self.interval_seconds
         self.pipeline_metrics = LivePipelineMetrics()
+
+    @property
+    def interval_seconds(self) -> float:
+        return self._interval_seconds
+
+    @interval_seconds.setter
+    def interval_seconds(self, value: float) -> None:
+        self._interval_seconds = _positive_wait_seconds(value, "interval_seconds")
+
+    @property
+    def auto_advance_delay_seconds(self) -> float:
+        return self._auto_advance_delay_seconds
+
+    @auto_advance_delay_seconds.setter
+    def auto_advance_delay_seconds(self, value: float) -> None:
+        self._auto_advance_delay_seconds = _thread_seconds(
+            _nonnegative_seconds(value, "auto_advance_delay_seconds"),
+            "auto_advance_delay_seconds",
+        )
+
+    @property
+    def max_speech_jobs(self) -> int:
+        return self._max_speech_jobs
+
+    @max_speech_jobs.setter
+    def max_speech_jobs(self, value: int) -> None:
+        self._max_speech_jobs = _positive_count(value, "max_speech_jobs")
+
+    def _initialize_worker_state(self, shutdown_requested: Event | None) -> None:
+        self.state_lock = RLock()
+        self.pause_condition = Condition(self.state_lock)
+        self.stop_event = Event()
+        self.shutdown_requested = shutdown_requested or Event()
+        self.shutdown_started = False
+        self.capture_future: Future[object] | None = None
+        self.ocr_future: Future[object] | None = None
+
+    @property
+    def is_shutting_down(self) -> bool:
+        return self.shutdown_started or self.shutdown_requested.is_set()
 
     @property
     def is_running(self) -> bool:
@@ -400,9 +509,11 @@ class LiveDialogReader:
 
     def start(self) -> bool:
         with self.state_lock:
+            if self.is_shutting_down:
+                return False
             if self.capture_future is not None and not self.capture_future.done():
                 return False
-            restarting = self.capture_future is not None
+            restarting = self.capture_future is not None or self.ocr_future is not None
         self.clear_queue()
         if restarting:
             try:
@@ -411,6 +522,8 @@ class LiveDialogReader:
                 self.report_error(error)
                 return False
         with self.state_lock:
+            if self.is_shutting_down:
+                return False
             self.emergency_stopped = False
             self.stop_event = Event()
             self.active_generation = 0
@@ -445,6 +558,12 @@ class LiveDialogReader:
             self.processed_frame_version = 0
             self.next_capture_interval = self.interval_seconds
             self.pipeline_metrics = LivePipelineMetrics()
+            self._submit_capture_workers()
+        return True
+
+    def _submit_capture_workers(self) -> None:
+        """Signal the paired workers on partial submission; retain them for wait."""
+        try:
             self.ocr_future = self.ocr_executor.submit(
                 self._run_ocr,
                 self.stop_event,
@@ -453,20 +572,26 @@ class LiveDialogReader:
                 self._run_capture,
                 self.stop_event,
             )
-        return True
+        except BaseException:
+            self.stop_event.set()
+            self.pause_condition.notify_all()
+            raise
 
     def stop(self) -> bool:
         with self.state_lock:
-            if self.capture_future is None or self.capture_future.done():
+            if not any(
+                future is not None and not future.done()
+                for future in (self.capture_future, self.ocr_future)
+            ):
                 return False
             self.stop_event.set()
             self.paused = False
-            self._cancel_auto_advance_locked()
             self.pending_auto_advance_generation = None
             self.auto_advance_attempts = 0
             self.auto_advance_focus_wait_generation = None
             self.auto_advance_visual_wait_generation = None
             self.pause_condition.notify_all()
+            self._cancel_auto_advance_locked()
         return True
 
     def set_auto_advance(self, callback: Callable[[], object] | None) -> bool:
@@ -563,6 +688,8 @@ class LiveDialogReader:
 
     def enqueue(self, character: str, text: str, *, line_id: str | None = None) -> bool:
         with self.state_lock:
+            if self.is_shutting_down:
+                return False
             generation = self.active_generation + 1
             # Explicit lines advance the shared queue without advancing the OCR tracker.
             self._explicit_generation_offset += 1
@@ -613,30 +740,37 @@ class LiveDialogReader:
         return True
 
     def clear_queue(self) -> bool:
-        with self.pause_condition:
-            self.suppressed_generation = self.active_generation
-            futures = tuple(self.speech_futures)
-            had_paused_chunks = bool(self.paused_chunks)
-            had_deferred_chunk = self.deferred_chunk is not None
-            self.paused_chunks = []
-            self.deferred_chunk = None
-            has_current_speech = self.current_chunk is not None
-            self.pause_condition.notify_all()
-            self._cancel_auto_advance_locked()
-            self.pending_auto_advance_generation = None
-            self.auto_advance_attempts = 0
-            self.auto_advance_blocked_generation = None
-            self.auto_advance_block_reason = None
-            self.auto_advance_focus_wait_generation = None
-            self.auto_advance_visual_wait_generation = None
-        for future in futures:
-            future.cancel()
-        # A preparation future may already be running before it becomes
-        # ``current_chunk``. Future.cancel() cannot stop that work, so notify
-        # the backend as well; otherwise application shutdown can wait forever
-        # for the speech executor after the user presses Quit.
-        if has_current_speech or futures:
-            self._interrupt_speech()
+        with ExitStack() as cleanup:
+            with self.pause_condition:
+                self.suppressed_generation = self.active_generation
+                futures = tuple(self.speech_futures)
+                had_paused_chunks = bool(self.paused_chunks)
+                had_deferred_chunk = self.deferred_chunk is not None
+                self.paused_chunks = []
+                self.deferred_chunk = None
+                has_current_speech = self.current_chunk is not None
+                self.pending_auto_advance_generation = None
+                self.auto_advance_attempts = 0
+                self.auto_advance_blocked_generation = None
+                self.auto_advance_block_reason = None
+                self.auto_advance_focus_wait_generation = None
+                self.auto_advance_visual_wait_generation = None
+                self.pause_condition.notify_all()
+                # Cancellation cannot stop running synthesis. Interrupt it after
+                # attempting every queued future, outside the reader lock.
+                if has_current_speech or futures:
+                    cleanup.enter_context(
+                        cleanup_on_exit(
+                            self._interrupt_speech, description="Speech interruption"
+                        )
+                    )
+                for future in reversed(futures):
+                    cleanup.enter_context(
+                        cleanup_on_exit(
+                            future.cancel, description="Queued speech cancellation"
+                        )
+                    )
+                self._cancel_auto_advance_locked()
         return (
             has_current_speech
             or bool(futures)
@@ -644,25 +778,29 @@ class LiveDialogReader:
             or had_deferred_chunk
         )
 
+    def shutdown(self) -> None:
+        """Seal this reader permanently before attempting fallible cancellation."""
+        with cleanup_on_exit(self.emergency_stop, description="Reader emergency stop"):
+            with self.pause_condition:
+                self.shutdown_started = True
+                self.stop_event.set()
+
     def emergency_stop(self) -> bool:
-        with self.pause_condition:
-            was_running = (
-                self.capture_future is not None and not self.capture_future.done()
-            )
-            self.emergency_stopped = True
-            self.stop_event.set()
-            self._cancel_auto_advance_locked()
-            self.pending_auto_advance_generation = None
-            self.auto_advance_attempts = 0
-            self.auto_advance_focus_wait_generation = None
-            self.auto_advance_visual_wait_generation = None
-            self.pause_condition.notify_all()
-        cleared = self.clear_queue()
-        self.release_waiters()
+        with cleanup_on_exit(self.release_waiters, description="Reader waiter release"):
+            with self.pause_condition:
+                was_running = (
+                    self.capture_future is not None and not self.capture_future.done()
+                )
+                self.emergency_stopped = True
+                self.stop_event.set()
+                self.pause_condition.notify_all()
+            cleared = self.clear_queue()
         return was_running or cleared
 
     def resume_after_emergency(self) -> bool:
         with self.state_lock:
+            if self.is_shutting_down:
+                return False
             was_stopped = self.emergency_stopped
             self.emergency_stopped = False
         return was_stopped
@@ -679,6 +817,8 @@ class LiveDialogReader:
             )
             while (
                 self.paused
+                and not self.emergency_stopped
+                and not self.is_shutting_down
                 and (
                     chunk.generation == self.active_generation or finish_active_playback
                 )
@@ -686,7 +826,11 @@ class LiveDialogReader:
             ):
                 self.pause_condition.wait()
             return (
-                (chunk.generation == self.active_generation or finish_active_playback)
+                not self.emergency_stopped
+                and not self.is_shutting_down
+                and (
+                    chunk.generation == self.active_generation or finish_active_playback
+                )
                 and (
                     self.sealed_generation != chunk.generation
                     or finish_active_playback
@@ -727,7 +871,7 @@ class LiveDialogReader:
         deadline = (
             None
             if timeout_seconds is None
-            else monotonic() + max(0.0, float(timeout_seconds))
+            else monotonic() + _wait_timeout_seconds(timeout_seconds)
         )
 
         def wait_for(
@@ -739,7 +883,7 @@ class LiveDialogReader:
             remaining = deadline - monotonic()
             if remaining <= 0:
                 raise FutureTimeoutError("Live reader did not quiesce before timeout")
-            future.result(timeout=remaining)
+            future.result(timeout=min(remaining, TIMEOUT_MAX))
 
         with self.state_lock:
             capture_future = self.capture_future
@@ -901,8 +1045,8 @@ class LiveDialogReader:
                             visible=True,
                             focused=True,
                             owner=self.stable_frame_owner(),
-                            recheck_interval_ms=round(
-                                self.frame_recheck_interval_seconds * 1000
+                            recheck_interval_ms=_recheck_interval_milliseconds(
+                                self.frame_recheck_interval_seconds
                             ),
                         )
                 else:
@@ -1303,7 +1447,11 @@ class LiveDialogReader:
     def _schedule(self, chunks: Iterable[SpeechChunk]) -> None:
         for chunk in chunks:
             with self.pause_condition:
-                if self.emergency_stopped or chunk.generation < self.active_generation:
+                if (
+                    self.emergency_stopped
+                    or self.is_shutting_down
+                    or chunk.generation < self.active_generation
+                ):
                     continue
                 if (
                     self.sealed_generation == chunk.generation

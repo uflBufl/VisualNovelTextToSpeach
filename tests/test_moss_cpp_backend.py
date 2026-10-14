@@ -2,16 +2,19 @@
 
 import base64
 import hashlib
+import http.client
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 import unittest
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from threading import Event, Lock, Thread
+from tempfile import SpooledTemporaryFile, TemporaryDirectory
+from threading import TIMEOUT_MAX, Event, Lock, Thread
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -19,6 +22,7 @@ import psutil
 import soundfile as sf
 
 from scripts import moss_native_pause_probe as native_probe
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.moss_cpp_backend import (
     MossCppVoiceRouterBackend,
     _aux_cpu_workers,
@@ -26,9 +30,12 @@ from vntts.moss_cpp_backend import (
     _launch_owned_process,
     _native_stage_timings,
     _normalize_reference_audio,
+    _read_native_log_tail,
+    _startup_failure_category,
     moss_cpp_paths,
 )
 from vntts.onboarding import OnboardingDiagnostics
+from vntts.path_safety import open_regular_binary
 from vntts.pregeneration_voices import resolve_pregeneration_settings
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.settings import AppSettings
@@ -169,6 +176,63 @@ LoopbackServer(('127.0.0.1', port), Handler).serve_forever()
 
 
 class WindowsOwnedServerTest(unittest.TestCase):
+    def test_resource_cleanup_failure_preserves_stop_error_and_releases_directory(self):
+        for process_error in (False, True):
+            with self.subTest(process_error=process_error):
+                server = Mock()
+                server.poll.return_value = None
+                if process_error:
+                    server.wait.side_effect = RuntimeError("process stop failed")
+                job = Mock()
+                log = Mock()
+                log.close.side_effect = OSError("log close failed")
+                directory = Mock()
+                directory.cleanup.side_effect = OSError("directory cleanup failed")
+                backend = object.__new__(MossCppVoiceRouterBackend)
+                backend.server_lock = Lock()
+                backend.server = server
+                backend.server_job = job
+                backend.server_log = log
+                backend.server_directory = directory
+                backend.server_info = {}
+                backend._runtime_status = None
+                backend._registered_references = {}
+
+                expected = RuntimeError if process_error else OSError
+                expected_message = (
+                    "process stop failed" if process_error else "log close failed"
+                )
+                with self.assertRaisesRegex(expected, expected_message) as raised:
+                    backend._stop_server()
+
+                server.terminate.assert_called_once_with()
+                server.wait.assert_called_once_with(timeout=2)
+                job.close.assert_called_once_with()
+                log.close.assert_called_once_with()
+                directory.cleanup.assert_called_once_with()
+                notes = raised.exception.__notes__
+                if process_error:
+                    self.assertTrue(any("log cleanup failed" in note for note in notes))
+                self.assertTrue(
+                    any("directory cleanup failed" in note for note in notes)
+                )
+
+    def test_generation_cleanup_attempts_thread_join_after_server_stop_failure(self):
+        backend = object.__new__(MossCppVoiceRouterBackend)
+        primary = OSError("server stop failed")
+        worker = Mock()
+        worker.join.side_effect = RuntimeError("join failed")
+        with patch.object(backend, "_stop_server", side_effect=primary) as stop:
+            with self.assertRaises(OSError) as raised:
+                backend._stop_generation("generation-failed", worker)
+        self.assertIs(raised.exception, primary)
+        self.assertEqual(
+            primary.__notes__,
+            ["Native speech request thread cleanup failed: join failed"],
+        )
+        stop.assert_called_once_with("generation-failed")
+        worker.join.assert_called_once_with(timeout=2)
+
     def test_forced_server_shutdown_stays_bounded_when_wait_never_finishes(self):
         server = Mock()
         server.poll.return_value = None
@@ -194,28 +258,76 @@ class WindowsOwnedServerTest(unittest.TestCase):
         self.assertIsNone(backend.server)
 
     def test_failed_job_attachment_keeps_process_cleanup_bounded(self):
-        process = Mock()
-        process.wait.side_effect = subprocess.TimeoutExpired("server", 2)
-        with (
-            patch("vntts.moss_cpp_backend.sys.platform", "win32"),
-            patch("vntts.moss_cpp_backend.subprocess.Popen", return_value=process),
-            patch(
-                "vntts.moss_cpp_backend._WindowsKillOnCloseJob",
-                side_effect=RuntimeError("job attachment failed"),
-            ),
-            self.assertRaisesRegex(RuntimeError, "job attachment failed"),
-        ):
-            _launch_owned_process(
-                ["server"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                cwd=None,
-                creationflags=0,
-            )
+        command = ["server", "--model", "local.gguf"]
+        creationflags = 0x08000000
+        for acquisition_type in (RuntimeError, KeyboardInterrupt):
+            for kill_type, wait_type in (
+                (None, subprocess.TimeoutExpired),
+                (OSError, OSError),
+                (RuntimeError, subprocess.TimeoutExpired),
+                (KeyboardInterrupt, KeyboardInterrupt),
+            ):
+                with self.subTest(
+                    acquisition=acquisition_type, kill=kill_type, wait=wait_type
+                ):
+                    primary = acquisition_type("job attachment failed")
+                    primary.add_note("original acquisition note")
+                    kill_error = kill_type("kill failed") if kill_type else None
+                    wait_error = (
+                        subprocess.TimeoutExpired("server", 2)
+                        if wait_type is subprocess.TimeoutExpired
+                        else wait_type("wait failed")
+                    )
+                    expected_notes = ["original acquisition note"]
+                    for operation, error in (
+                        ("kill", kill_error),
+                        ("wait", wait_error),
+                    ):
+                        if error is not None:
+                            error.add_note(f"nested {operation} note")
+                            expected_notes.extend(
+                                (
+                                    f"Native speech process {operation} failed: {error}",
+                                    f"nested {operation} note",
+                                )
+                            )
+                    process = Mock()
+                    process.kill.side_effect = kill_error
+                    process.wait.side_effect = wait_error
+                    with (
+                        patch("vntts.moss_cpp_backend.sys.platform", "win32"),
+                        patch(
+                            "vntts.moss_cpp_backend.subprocess.Popen",
+                            return_value=process,
+                        ) as popen,
+                        patch(
+                            "vntts.moss_cpp_backend._WindowsKillOnCloseJob",
+                            side_effect=primary,
+                        ) as acquire_job,
+                        self.assertRaises(acquisition_type) as raised,
+                    ):
+                        _launch_owned_process(
+                            command,
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            cwd=None,
+                            creationflags=creationflags,
+                        )
 
-        process.kill.assert_called_once_with()
-        process.wait.assert_called_once_with(timeout=2)
+                    self.assertIs(raised.exception, primary)
+                    self.assertEqual(primary.__notes__, expected_notes)
+                    popen.assert_called_once_with(
+                        command,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        cwd=None,
+                        creationflags=creationflags | 0x00000004,
+                    )
+                    acquire_job.assert_called_once_with(process)
+                    process.kill.assert_called_once_with()
+                    process.wait.assert_called_once_with(timeout=2)
 
     @unittest.skipUnless(sys.platform == "win32", "Windows Job Object semantics")
     def test_host_crash_kills_owned_process(self):
@@ -238,6 +350,176 @@ class WindowsOwnedServerTest(unittest.TestCase):
             while psutil.pid_exists(child_pid) and time.monotonic() < deadline:
                 time.sleep(0.05)
             self.assertFalse(psutil.pid_exists(child_pid))
+
+
+class MossCppStartupAdmissionTest(unittest.TestCase):
+    def test_overflowing_numeric_options_never_acquire_native_runtime(self):
+        for name in (
+            "startup_timeout",
+            "request_timeout",
+            "volume",
+            "cached_stream_chunk_seconds",
+            "streaming_interval",
+            "playback_consumer_join_timeout",
+        ):
+            for value in (10**400, -(10**400)):
+                with self.subTest(option=name, negative=value < 0):
+                    with (
+                        patch("vntts.moss_cpp_installation.ensure_moss_cpp") as ensure,
+                        patch("vntts.moss_cpp_backend.moss_cpp_paths") as paths,
+                        patch("vntts.runtime_preparation.run_runtime_command") as probe,
+                        patch.object(
+                            MossCppVoiceRouterBackend, "_start_server"
+                        ) as start,
+                        self.assertRaisesRegex(
+                            TTSConfigurationError, name + " must be finite"
+                        ) as caught,
+                    ):
+                        MossCppVoiceRouterBackend(
+                            CharacterVoiceRegistry(), **{name: value}
+                        )
+                    self.assertIsInstance(caught.exception.__cause__, OverflowError)
+                    ensure.assert_not_called()
+                    paths.assert_not_called()
+                    probe.assert_not_called()
+                    start.assert_not_called()
+
+    def test_nonfinite_streaming_options_never_acquire_native_runtime(self):
+        for name in (
+            "cached_stream_chunk_seconds",
+            "streaming_interval",
+            "playback_consumer_join_timeout",
+        ):
+            for value in (float("nan"), float("inf"), -float("inf")):
+                with self.subTest(option=name, value=value):
+                    with (
+                        patch(
+                            "vntts.moss_cpp_installation.ensure_moss_cpp",
+                            side_effect=AssertionError("installer reached"),
+                        ) as ensure,
+                        patch("vntts.moss_cpp_backend.moss_cpp_paths") as paths,
+                        patch("vntts.runtime_preparation.run_runtime_command") as probe,
+                        patch.object(
+                            MossCppVoiceRouterBackend, "_start_server"
+                        ) as start,
+                        self.assertRaisesRegex(
+                            TTSConfigurationError, name + " must be finite"
+                        ),
+                    ):
+                        MossCppVoiceRouterBackend(
+                            CharacterVoiceRegistry(), **{name: value}
+                        )
+                    ensure.assert_not_called()
+                    paths.assert_not_called()
+                    probe.assert_not_called()
+                    start.assert_not_called()
+
+    def test_unrepresentable_streaming_options_never_acquire_native_runtime(self):
+        cases = (
+            ("cached_stream_chunk_seconds", sys.float_info.max, "sample count"),
+            ("cached_stream_chunk_seconds", -sys.float_info.max, "sample count"),
+            ("playback_consumer_join_timeout", sys.float_info.max, "thread timeout"),
+            ("playback_consumer_join_timeout", TIMEOUT_MAX + 1, "thread timeout"),
+        )
+        for name, value, limit in cases:
+            with self.subTest(option=name, value=value):
+                with (
+                    patch(
+                        "vntts.moss_cpp_installation.ensure_moss_cpp",
+                        side_effect=AssertionError("installer reached"),
+                    ) as ensure,
+                    patch("vntts.moss_cpp_backend.moss_cpp_paths") as paths,
+                    patch("vntts.runtime_preparation.run_runtime_command") as probe,
+                    patch.object(MossCppVoiceRouterBackend, "_start_server") as start,
+                    self.assertRaisesRegex(
+                        TTSConfigurationError, name + " exceeds the " + limit + " range"
+                    ) as caught,
+                ):
+                    MossCppVoiceRouterBackend(CharacterVoiceRegistry(), **{name: value})
+                if name == "cached_stream_chunk_seconds":
+                    self.assertIsInstance(caught.exception.__cause__, OverflowError)
+                ensure.assert_not_called()
+                paths.assert_not_called()
+                probe.assert_not_called()
+                start.assert_not_called()
+
+    def test_invalid_options_never_install_or_start_native_runtime(self):
+        cases = (
+            [
+                (
+                    {"volume": value},
+                    TTSConfigurationError,
+                    "MOSS C++ volume must be numeric",
+                )
+                for value in (True, "0.5", None)
+            ]
+            + [
+                (
+                    {"volume": value},
+                    TTSConfigurationError,
+                    "Volume must be between 0 and 1",
+                )
+                for value in (-0.1, 1.1, float("nan"), float("inf"))
+            ]
+            + [
+                ({"clock": 42}, TTSConfigurationError, "clock must be callable"),
+                (
+                    {"audio_cache_size": True},
+                    TTSConfigurationError,
+                    "audio_cache_size must be an integer",
+                ),
+                (
+                    {"prompt_code_loader": 42},
+                    TTSConfigurationError,
+                    "prompt_code_loader must be callable",
+                ),
+                (
+                    {"generation_profile": "chaotic"},
+                    TTSConfigurationError,
+                    "Unknown MOSS-TTS voice profile",
+                ),
+                (
+                    {"startup_timeout": 0},
+                    TTSConfigurationError,
+                    "timeouts must be positive and finite",
+                ),
+                (
+                    {"request_timeout": float("nan")},
+                    TTSConfigurationError,
+                    "timeouts must be positive and finite",
+                ),
+                ({"unknown": 42}, TypeError, "Unexpected MOSS C++ option"),
+            ]
+        )
+        for options, error_type, message in cases:
+            with self.subTest(options=options):
+                with (
+                    patch("vntts.moss_cpp_installation.ensure_moss_cpp") as ensure,
+                    patch("vntts.moss_cpp_backend.moss_cpp_paths") as paths,
+                    patch("vntts.runtime_preparation.run_runtime_command") as probe,
+                    patch.object(MossCppVoiceRouterBackend, "_start_server") as start,
+                    self.assertRaisesRegex(error_type, re.escape(message)),
+                ):
+                    MossCppVoiceRouterBackend(CharacterVoiceRegistry(), **options)
+                ensure.assert_not_called()
+                paths.assert_not_called()
+                probe.assert_not_called()
+                start.assert_not_called()
+
+    def test_invalid_environment_never_installs_native_runtime(self):
+        for setting in (
+            "VNTTS_MOSS_GPU_LAYERS",
+            "VNTTS_MOSS_AUX_CPU",
+            "VNTTS_MOSS_CONTEXT",
+        ):
+            with self.subTest(setting=setting):
+                with (
+                    patch.dict(os.environ, {setting: "invalid"}),
+                    patch("vntts.moss_cpp_installation.ensure_moss_cpp") as ensure,
+                    self.assertRaisesRegex(TTSConfigurationError, setting),
+                ):
+                    MossCppVoiceRouterBackend(CharacterVoiceRegistry())
+                ensure.assert_not_called()
 
 
 class MossCppBackendTest(unittest.TestCase):
@@ -306,6 +588,159 @@ class MossCppBackendTest(unittest.TestCase):
         self.addCleanup(backend.shutdown)
         return backend
 
+    def test_http_preserves_transport_failure_when_connection_close_is_fatal(self):
+        backend = self.backend()
+        transport_error = OSError("transport failed")
+        close_error = KeyboardInterrupt("connection close failed")
+
+        with (
+            patch.object(
+                http.client.HTTPConnection, "request", side_effect=transport_error
+            ),
+            patch.object(
+                http.client.HTTPConnection, "close", side_effect=close_error
+            ) as close,
+            self.assertRaises(OSError) as raised,
+        ):
+            backend._http("GET", "/health")
+
+        self.assertIs(raised.exception, transport_error)
+        self.assertIn("connection close failed", " ".join(transport_error.__notes__))
+        close.assert_called_once_with()
+
+    def test_reference_validation_keeps_primary_when_real_decoder_close_fails(self):
+        invalid_reference = self.root / "three-channel.wav"
+        sf.write(invalid_reference, np.zeros((4_800, 3)), 48_000, subtype="PCM_16")
+        primary = TTSConfigurationError("MOSS C++ reference must be mono/stereo")
+        reference = sf.SoundFile(invalid_reference)
+        original_close = reference.close
+
+        def close_then_fail():
+            original_close()
+            raise OSError("decoder close failed")
+
+        with (
+            patch("vntts.moss_cpp_backend.sf.SoundFile", return_value=reference),
+            patch.object(reference, "close", side_effect=close_then_fail) as close,
+            patch("vntts.moss_cpp_backend.TTSConfigurationError", return_value=primary),
+            self.assertRaises(TTSConfigurationError) as caught,
+        ):
+            _normalize_reference_audio(invalid_reference)
+        self.assertIs(caught.exception, primary)
+        self.assertTrue(reference.closed)
+        close.assert_called_once_with()
+        self.assertEqual(
+            primary.__notes__,
+            ["Native speech reference decoder cleanup failed: decoder close failed"],
+        )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_reference_normalizer_refuses_swapped_fifo_and_keeps_borrowed_stream(self):
+        gate: RegularFileGate = {"path": self.reference, "armed": True}
+        with (
+            swap_at_acquisition(self, gate),
+            patch("vntts.moss_cpp_backend.sf.SoundFile") as decode,
+            self.assertRaisesRegex(OSError, "regular file"),
+        ):
+            _normalize_reference_audio(self.reference)
+        decode.assert_not_called()
+        with self.reference.open("rb") as source:
+            expected = _normalize_reference_audio(self.reference)
+            self.assertEqual(_normalize_reference_audio(source), expected)
+            self.assertFalse(source.closed)
+
+    def test_reference_normalizer_preserves_raw_acquisition_error(self):
+        error = PermissionError(13, "reference access denied", str(self.reference))
+        with (
+            patch("vntts.path_safety.os.open", side_effect=error),
+            patch("vntts.moss_cpp_backend.sf.SoundFile") as decode,
+            self.assertRaises(PermissionError) as caught,
+        ):
+            _normalize_reference_audio(self.reference)
+        self.assertIs(caught.exception, error)
+        decode.assert_not_called()
+
+    def test_reference_snapshot_failure_releases_snapshot_and_source(self):
+        backend = self.backend()
+        reference_path = self.reference
+        primary = TTSConfigurationError("MOSS C++ reference must be mono/stereo")
+        closed = []
+        sources = []
+        snapshots = []
+        source_open_count = 0
+        source_close_error = OSError("reference source close failed")
+        snapshot_close_error = OSError("reference snapshot close failed")
+        real_spooled = SpooledTemporaryFile
+
+        @contextmanager
+        def open_source(path):
+            nonlocal source_open_count
+            with open_regular_binary(path) as source:
+                if path == reference_path:
+                    source_open_count += 1
+                    sources.append(source)
+                    if source_open_count == 2:
+                        original_close = source.close
+
+                        def close_source():
+                            original_close()
+                            closed.append("source")
+                            raise source_close_error
+
+                        source.close = close_source
+                yield source
+
+        def open_snapshot(*args, **kwargs):
+            snapshot = real_spooled(*args, **kwargs)
+            snapshots.append(snapshot)
+            original_close = snapshot.close
+
+            def close_snapshot():
+                if not snapshot.closed:
+                    original_close()
+                    closed.append("snapshot")
+                    raise snapshot_close_error
+
+            snapshot.close = close_snapshot
+            return snapshot
+
+        with (
+            patch("vntts.moss_cpp_backend.open_regular_binary", new=open_source),
+            patch(
+                "vntts.moss_cpp_backend.SpooledTemporaryFile", side_effect=open_snapshot
+            ),
+            patch(
+                "vntts.moss_cpp_backend._normalize_reference_audio", side_effect=primary
+            ),
+            self.assertRaisesRegex(
+                TTSConfigurationError, "reference must be mono/stereo"
+            ) as raised,
+        ):
+            backend._prepare_reference(
+                reference_path,
+                Path(backend.server_directory.name),
+                registered=True,
+            )
+
+        self.assertIs(raised.exception, primary)
+        self.assertEqual(closed, ["snapshot", "source"])
+        self.assertTrue(all(source.closed for source in sources))
+        self.assertTrue(all(snapshot.closed for snapshot in snapshots))
+        notes = raised.exception.__notes__
+        self.assertEqual(source_open_count, 2)
+        self.assertLess(
+            notes.index(
+                "Native speech reference snapshot cleanup failed: "
+                "reference snapshot close failed"
+            ),
+            notes.index(
+                "Native speech reference source cleanup failed: "
+                "reference source close failed"
+            ),
+        )
+
     @staticmethod
     def _windows_sharing_violation():
         error = PermissionError(13, "server.log")
@@ -365,14 +800,200 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertIsNotNone(self.children[0].poll())
 
     def test_interrupted_startup_stops_owned_server(self):
-        with patch(
-            "vntts.moss_cpp_backend.MossTTSVoiceRouterBackend.__init__",
-            side_effect=KeyboardInterrupt,
+        original_stop = MossCppVoiceRouterBackend._stop_server
+
+        def stop_then_fail(instance, reason="shutdown"):
+            original_stop(instance, reason)
+            if reason == "initialization-failed":
+                raise OSError("initialization cleanup failed")
+
+        with (
+            patch(
+                "vntts.moss_cpp_backend.MossTTSVoiceRouterBackend.__init__",
+                side_effect=KeyboardInterrupt,
+            ),
+            patch.object(
+                MossCppVoiceRouterBackend,
+                "_stop_server",
+                autospec=True,
+                side_effect=stop_then_fail,
+            ),
         ):
-            with self.assertRaises(KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt) as raised:
                 self.backend()
         self.assertEqual(len(self.children), 1)
         self.assertIsNotNone(self.children[0].poll())
+        self.assertTrue(
+            any(
+                "Native speech server initialization cleanup failed" in note
+                for note in raised.exception.__notes__
+            )
+        )
+
+    def test_interrupted_restart_startup_cleanup_keeps_keyboard_interrupt(self):
+        backend = self.backend()
+        backend._stop_server()
+        original_stop = MossCppVoiceRouterBackend._stop_server
+
+        def stop_restart_then_fail(instance, reason="shutdown"):
+            original_stop(instance, reason)
+            if reason == "startup-failed":
+                raise OSError("startup cleanup failed")
+
+        with (
+            patch.object(backend, "_http", side_effect=KeyboardInterrupt),
+            patch.object(
+                MossCppVoiceRouterBackend,
+                "_stop_server",
+                autospec=True,
+                side_effect=stop_restart_then_fail,
+            ),
+        ):
+            with self.assertRaises(KeyboardInterrupt) as raised:
+                backend.load()
+
+        self.assertEqual(len(self.children), 2)
+        self.assertIsNotNone(self.children[-1].poll())
+        self.assertTrue(
+            any(
+                "Native speech server startup cleanup failed" in note
+                for note in raised.exception.__notes__
+            )
+        )
+
+    def test_generation_cleanup_keeps_real_http_failure(self):
+        backend = self.backend()
+        primary = TTSSynthesisError("MOSS C++ generation failed (HTTP 500)")
+        log, directory = backend.server_log, backend.server_directory
+        original_close, original_cleanup = log.close, directory.cleanup
+
+        def close_then_fail():
+            original_close()
+            raise OSError("log close failed")
+
+        def remove_then_fail():
+            original_cleanup()
+            raise OSError("directory cleanup failed")
+
+        with (
+            patch(
+                "vntts.moss_cpp_backend.TTSSynthesisError", return_value=primary
+            ) as error,
+            patch.object(log, "close", side_effect=close_then_fail),
+            patch.object(directory, "cleanup", side_effect=remove_then_fail),
+            self.assertRaises(TTSSynthesisError) as raised,
+        ):
+            backend.render(SynthesisRequest("Narrator", "Fail.")).collect()
+        error.assert_called_once_with("MOSS C++ generation failed (HTTP 500)")
+        self.assertIs(raised.exception, primary)
+        self.assertEqual(
+            primary.__notes__,
+            [
+                "Native speech generation cleanup failed: log close failed",
+                "Native speech server directory cleanup failed: directory cleanup failed",
+            ],
+        )
+        self.assertIsNotNone(self.children[0].poll())
+        self.assertFalse(Path(directory.name).exists())
+        self.assertEqual(
+            backend.render(SynthesisRequest("Narrator", "Again.")).collect().completion,
+            SynthesisCompletion.COMPLETE,
+        )
+        self.assertEqual(len(self.children), 2)
+
+    def test_generation_cleanup_keeps_fatal_interruption(self):
+        backend = self.backend()
+        primary = KeyboardInterrupt("generation interrupted")
+        original_stop = backend._stop_server
+
+        def stop_then_fail(reason="shutdown"):
+            original_stop(reason)
+            raise OSError("server cleanup failed")
+
+        with (
+            patch.object(backend, "_start_server", side_effect=primary),
+            patch.object(backend, "_stop_server", side_effect=stop_then_fail),
+            self.assertRaises(KeyboardInterrupt) as raised,
+        ):
+            backend.render(SynthesisRequest("Narrator", "Interrupted.")).collect()
+        self.assertIs(raised.exception, primary)
+        self.assertTrue(
+            any("server cleanup failed" in note for note in primary.__notes__)
+        )
+        self.assertIsNotNone(self.children[0].poll())
+
+    def test_shutdown_cleanup_keeps_stop_failure(self):
+        for primary in (
+            KeyboardInterrupt("stop interrupted"),
+            RuntimeError("stop failed"),
+        ):
+            with self.subTest(error=type(primary).__name__):
+                backend = self.backend()
+                original_stop = backend._stop_server
+
+                def stop_then_fail(reason="shutdown"):
+                    original_stop(reason)
+                    raise OSError("server cleanup failed")
+
+                with (
+                    patch.object(backend, "stop", side_effect=primary),
+                    patch.object(backend, "_stop_server", side_effect=stop_then_fail),
+                    self.assertRaises(type(primary)) as raised,
+                ):
+                    backend.shutdown()
+                self.assertIs(raised.exception, primary)
+                self.assertEqual(
+                    primary.__notes__,
+                    ["Native speech server cleanup failed: server cleanup failed"],
+                )
+                self.assertIsNotNone(self.children[-1].poll())
+
+    def test_cancelled_generation_retains_standalone_cleanup_failure(self):
+        backend = self.backend()
+        request = SynthesisRequest("Narrator", "Cancel.", cancellation=Event())
+        prepared = backend._prepare_request(request)
+        cleanup_error = OSError("server cleanup failed")
+        original_stop = backend._stop_server
+
+        def cancel_during_start(_cancelled):
+            request.cancellation.set()
+            raise TTSSynthesisError("cancelled startup")
+
+        def stop_then_fail(reason="shutdown"):
+            original_stop(reason)
+            raise cleanup_error
+
+        with (
+            patch.object(backend, "_start_server", side_effect=cancel_during_start),
+            patch.object(backend, "_stop_server", side_effect=stop_then_fail),
+            self.assertRaises(OSError) as raised,
+        ):
+            next(backend._generate(prepared, request))
+        self.assertIs(raised.exception, cleanup_error)
+        self.assertIsNotNone(self.children[0].poll())
+        events = [entry["native"] for entry in self.native_log.report()["events"]]
+        self.assertEqual(events[-2]["outcome"], "cancelled")
+        self.assertEqual(events[-1]["reason"], "generation-cancelled")
+
+    def test_closing_cancelled_generator_preserves_generator_exit(self):
+        backend = self.backend()
+        request = SynthesisRequest("Narrator", "Close.", cancellation=Event())
+        generation = backend._generate(backend._prepare_request(request), request)
+        next(generation)
+        request.cancellation.set()
+        original_stop = backend._stop_server
+
+        def stop_then_fail(reason="shutdown"):
+            original_stop(reason)
+            raise OSError("server cleanup failed")
+
+        with patch.object(backend, "_stop_server", side_effect=stop_then_fail):
+            generation.close()
+        self.assertIsNotNone(self.children[0].poll())
+        events = [entry["native"] for entry in self.native_log.report()["events"]]
+        self.assertEqual(events[-2]["outcome"], "cancelled")
+        self.assertIsNone(events[-2]["reason"])
+        self.assertEqual(events[-1]["reason"], "generation-cancelled")
 
     def test_locked_log_does_not_mask_original_synthesis_error(self):
         backend = self.backend()
@@ -432,7 +1053,7 @@ class MossCppBackendTest(unittest.TestCase):
 
     def test_pause_probe_uses_real_adapter_and_preserves_native_responses(self):
         from scripts import moss_native_pause_probe as probe
-        from tests.test_pregeneration_audition import clean_wav_bytes
+        from tests.pregeneration_fixtures import clean_wav_bytes
 
         self.reference.write_bytes(clean_wav_bytes())
         output = self.root / "pause-probe"
@@ -786,7 +1407,7 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertNotIn("private", str(self.native_log.report()))
 
     def test_preview_retry_export_correlates_native_attempts_and_quality(self):
-        from tests.test_pregeneration_audition import ambiguous_fixture
+        from tests.pregeneration_fixtures import ambiguous_fixture
         from vntts.pregeneration_audition import (
             VoiceAuditionIncomplete,
             VoiceAuditionPreviewService,
@@ -951,6 +1572,104 @@ class MossCppBackendTest(unittest.TestCase):
             "generation-failed",
         )
         self.assertIsNone(backend.server_directory)
+
+    def test_native_log_tail_keeps_bounds_offsets_and_writer_position(self):
+        path = self.root / "native.log"
+        payload = b"x" * (65 * 1024) + b"\nlast line\xff"
+        path.write_bytes(payload)
+        with path.open("r+b") as writer:
+            writer.seek(7)
+            output, complete = _read_native_log_tail(path)
+            self.assertEqual(output, payload[-64 * 1024 :].decode("utf-8", "replace"))
+            self.assertFalse(complete)
+            self.assertEqual(writer.tell(), 7)
+            offset = len(payload) - len(b"last line\xff")
+            self.assertEqual(
+                _read_native_log_tail(path, offset), ("last line\ufffd", True)
+            )
+            self.assertEqual(_read_native_log_tail(path, len(payload)), ("", True))
+            self.assertEqual(writer.tell(), 7)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_native_log_readers_refuse_swapped_fifo_and_recover(self):
+        path = self.root / "native.log"
+        payload = (
+            b'VNTTS_STARTUP_FAILURE_JSON={"category":"local_gpu"}\n'
+            b"[generate] generated 2 steps in 1.50s\n"
+        )
+        path.write_bytes(payload)
+        readers = (
+            lambda: _startup_failure_category(path),
+            lambda: _native_stage_timings(path, 0, {}, 600)["gen_s"],
+        )
+        for read, expected in zip(readers, ("local_gpu", 1.5), strict=True):
+            with self.subTest(reader=read):
+                gate: RegularFileGate = {"path": path, "armed": True}
+                with swap_at_acquisition(self, gate):
+                    self.assertIsNone(read())
+                self.assertEqual(read(), expected)
+        gate: RegularFileGate = {"path": path, "armed": True}
+        with (
+            swap_at_acquisition(self, gate),
+            self.assertRaisesRegex(OSError, "regular file"),
+        ):
+            _read_native_log_tail(path)
+        self.assertIn("generated 2 steps", _read_native_log_tail(path)[0])
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_runtime_placement_keeps_raw_log_refusal_and_recovers(self):
+        backend = self.backend()
+        path = Path(backend.server_log.name)
+        gate: RegularFileGate = {"path": path, "armed": True}
+        with (
+            swap_at_acquisition(self, gate),
+            self.assertRaisesRegex(OSError, "regular file"),
+        ):
+            backend._confirmed_runtime_status()
+        self.assertIn("MOSS C++", backend._confirmed_runtime_status())
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_registered_reference_refuses_swapped_fifo_before_cache_or_decoder(self):
+        backend = self.backend()
+        directory = Path(backend.server_directory.name)
+        for phase in ("identity", "snapshot"):
+            with self.subTest(phase=phase):
+                gate: RegularFileGate = {
+                    "path": self.reference,
+                    "armed": phase == "identity",
+                }
+
+                def cache_miss(*_args):
+                    gate["armed"] = True
+                    return None
+
+                with (
+                    swap_at_acquisition(self, gate),
+                    patch.object(
+                        backend, "_registered_reference", side_effect=cache_miss
+                    ) as cache,
+                    patch(
+                        "vntts.moss_cpp_backend._normalize_reference_audio"
+                    ) as normalize,
+                    patch("vntts.moss_cpp_backend.SpooledTemporaryFile") as snapshot,
+                    self.assertRaisesRegex(OSError, "regular file"),
+                ):
+                    backend._prepare_reference(
+                        self.reference, directory, registered=True
+                    )
+                self.assertEqual(cache.call_count, phase == "snapshot")
+                normalize.assert_not_called()
+                snapshot.assert_not_called()
+        prepared = backend._prepare_reference(
+            self.reference, directory, registered=True
+        )
+        self.assertTrue(prepared[2].startswith(b"RIFF"))
 
     def test_native_timing_parser_bounds_log_and_rejects_invalid_measurements(self):
         log = self.root / "native.log"

@@ -78,10 +78,13 @@ class PlayerSessionOwnerTest(unittest.TestCase):
                 with self.subTest(restart=restart, error=type(error)):
                     controller = Mock()
                     controller.start.side_effect = error
-                    controller.shutdown.side_effect = (
-                        [None, RuntimeError("shutdown failed")]
-                        if restart
+                    cleanup_error = (
+                        SystemExit("shutdown interrupted")
+                        if restart and isinstance(error, KeyboardInterrupt)
                         else RuntimeError("shutdown failed")
+                    )
+                    controller.shutdown.side_effect = (
+                        [None, cleanup_error] if restart else cleanup_error
                     )
                     owner = PlayerSessionOwner(controller)
                     generation = owner.begin()
@@ -93,7 +96,7 @@ class PlayerSessionOwnerTest(unittest.TestCase):
                             owner.start(generation)
 
                     self.assertIs(raised.exception, error)
-                    self.assertIn("shutdown failed", error.__notes__[0])
+                    self.assertIn("shutdown", error.__notes__[0])
 
     def test_stale_cleanup_preserves_operation_error_but_reports_its_own(self) -> None:
         for fails in (False, True):

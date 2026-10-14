@@ -1,13 +1,22 @@
 import hashlib
 import json
+import os
+import tempfile
 import unittest
+import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
+import vntts.authoring.model_benchmark as benchmark_module
+from tests.authoring_fixtures import tree_hashes, write_legacy_fixture
 from tests.symlink_support import symlink_or_skip
+from vntts.authoring import generation_state
+from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.model_benchmark import (
     ModelBenchmarkError,
     ModelVariant,
@@ -20,6 +29,7 @@ from vntts.authoring.model_benchmark import (
     load_model_variants,
     select_representative_items,
 )
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.synthesis import (
     SynthesisChunk,
     SynthesisChunkStream,
@@ -94,6 +104,26 @@ class ShutdownRenderBackend(FakeRenderBackend):
 
 
 class AuthoringModelBenchmarkTest(unittest.TestCase):
+    def test_json_readers_preserve_domain_errors_for_invalid_encoding(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "input.json"
+            path.write_bytes(b"\xff")
+            for load in (load_benchmark_corpus, load_model_variants):
+                with self.subTest(reader=load.__name__):
+                    with self.assertRaisesRegex(ModelBenchmarkError, "Unable to read"):
+                        load(path)
+            with patch.object(
+                benchmark_module,
+                "load_stable_generation_queue",
+                return_value=(None, "1" * 64),
+            ):
+                with self.assertRaisesRegex(ModelBenchmarkError, "Unable to capture"):
+                    benchmark_module._capture_failure_corpus_inputs(
+                        path,
+                        path,
+                        lambda *_args: self.fail("Invalid state reached loader"),
+                    )
+
     @staticmethod
     def _write_strict_corpus(root):
         corpus = root / "corpus.json"
@@ -117,6 +147,555 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
             encoding="utf-8",
         )
         return corpus
+
+    def test_model_variant_text_is_admitted_before_startup(self):
+        fields = (
+            "model_id",
+            "backend",
+            "model",
+            "model_revision",
+            "generation_profile",
+            "voice",
+        )
+        for field in fields:
+            with self.subTest(field=field):
+                values = {
+                    "model_id": "model",
+                    "backend": "moss-tts-delay",
+                    field: "\ud800",
+                }
+                with self.assertRaisesRegex(ModelBenchmarkError, "UTF-8"):
+                    ModelVariant(**values)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            path.write_text(
+                json.dumps(
+                    [{"model_id": "model", "backend": "fake", "model": "\ud800"}]
+                )
+            )
+            with self.assertRaisesRegex(ModelBenchmarkError, "UTF-8"):
+                load_model_variants(path)
+
+    def test_corpus_utf8_fields_fail_before_backend_startup(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = self._write_strict_corpus(root)
+            original = json.loads(corpus.read_text())
+            for field in ("id", "line_id", "character", "text"):
+                document = json.loads(json.dumps(original))
+                document["samples"][0][field] = "Broken \ud800 value"
+                corpus.write_text(json.dumps(document), encoding="utf-8")
+                with self.subTest(field=field):
+                    with self.assertRaises(ModelBenchmarkError):
+                        load_benchmark_corpus(corpus)
+                    with self.assertRaises(ModelBenchmarkError):
+                        benchmark_model_variants(
+                            corpus,
+                            (ModelVariant("fake", "fake"),),
+                            CharacterVoiceRegistry(),
+                            root / "output",
+                            backend_factory=lambda *a, **k: self.fail(
+                                "Backend started"
+                            ),
+                        )
+                    self.assertFalse((root / "output").exists())
+
+    def test_voice_preflight_resolves_distinct_requested_characters(self):
+        for override in (None, "Override"):
+            with self.subTest(override=override), TemporaryDirectory() as directory:
+                root = Path(directory)
+                corpus = self._write_strict_corpus(root)
+                document = json.loads(corpus.read_text())
+                sample = document["samples"][0]
+                document["samples"] = [
+                    {**sample, "id": f"sample-{index}", "character": character}
+                    for index, character in enumerate(["Zeta", "Alpha"] * 100)
+                ]
+                corpus.write_text(json.dumps(document), encoding="utf-8")
+                registry = CharacterVoiceRegistry()
+                expected = [override] if override else ["Alpha", "Zeta"]
+                with patch.object(registry, "resolve", return_value=None) as resolve:
+                    with self.assertRaisesRegex(
+                        ModelBenchmarkError, ", ".join(expected)
+                    ):
+                        benchmark_model_variants(
+                            corpus,
+                            (ModelVariant("model", "moss-tts", voice=override),),
+                            registry,
+                            root / "output",
+                            backend_factory=lambda *a, **k: self.fail(
+                                "Backend started"
+                            ),
+                        )
+                self.assertCountEqual(
+                    [call.args[0] for call in resolve.call_args_list], expected
+                )
+                self.assertFalse((root / "output").exists())
+
+    def test_corpus_versions_are_exact_integers_before_backend_startup(self):
+        for version in (True, 1.0, "1", [], {}):
+            with self.subTest(version=version), TemporaryDirectory() as directory:
+                root = Path(directory)
+                corpus = self._write_strict_corpus(root)
+                document = json.loads(corpus.read_text())
+                document["schema_version"] = version
+                corpus.write_text(json.dumps(document), encoding="utf-8")
+                calls = []
+                with self.assertRaisesRegex(ModelBenchmarkError, "schema"):
+                    load_benchmark_corpus(corpus)
+                with self.assertRaisesRegex(ModelBenchmarkError, "schema"):
+                    benchmark_model_variants(
+                        corpus,
+                        (ModelVariant("fake", "fake"),),
+                        CharacterVoiceRegistry(),
+                        root / "output",
+                        backend_factory=lambda *args, **kwargs: calls.append(args),
+                    )
+                self.assertEqual(calls, [])
+                self.assertFalse((root / "output").exists())
+
+    def test_model_variant_profile_is_text_with_compatible_default(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            for value in (None, "", "expressive", False, 2, [], {}):
+                with self.subTest(value=value):
+                    path.write_text(
+                        json.dumps(
+                            [
+                                {
+                                    "model_id": "fake",
+                                    "backend": "fake",
+                                    "generation_profile": value,
+                                }
+                            ]
+                        ),
+                        encoding="utf-8",
+                    )
+                    if value is not None and not isinstance(value, str):
+                        with self.assertRaisesRegex(
+                            ModelBenchmarkError, "generation_profile"
+                        ):
+                            load_model_variants(path)
+                    else:
+                        self.assertEqual(
+                            load_model_variants(path)[0].generation_profile,
+                            value or "stable",
+                        )
+
+    def test_comparison_voice_projection_uses_captured_data_and_original_root(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest = root / "manifest.json"
+            document = {
+                "version": 2,
+                "voices": [
+                    {
+                        "character": "Voice",
+                        "speaker": "captured",
+                        "references": ["reference.wav"],
+                    }
+                ],
+            }
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+            payload = manifest.read_bytes()
+            original_read = benchmark_module.read_regular_bytes
+
+            replaced = []
+
+            def replace_after_read(path):
+                captured = original_read(path)
+                if path == manifest:
+                    replaced.append(path)
+                    changed = json.loads(captured)
+                    changed["voices"][0]["speaker"] = "unreviewed"
+                    manifest.write_text(json.dumps(changed), encoding="utf-8")
+                return captured
+
+            with patch.object(
+                benchmark_module, "read_regular_bytes", replace_after_read
+            ):
+                context = _comparison_voice_context(manifest, None)
+
+            self.assertEqual(replaced, [manifest])
+            self.assertNotEqual(manifest.read_bytes(), payload)
+            self.assertEqual(context.sha256, hashlib.sha256(payload).hexdigest())
+            voice = context.registry.resolve("Voice")
+            self.assertEqual(voice.speaker, "captured")
+            self.assertEqual(voice.reference, root / "reference.wav")
+
+    def test_failure_corpus_projects_the_captured_queue_with_custom_loader(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root / "legacy")
+            queue = fixture["queue"].resolve()
+            original_payload = queue.read_bytes()
+            state = {
+                "items": {
+                    fixture["queue_id"]: {"status": "failed", "provider": "moss-tts"}
+                }
+            }
+            fixture["state"].write_text(json.dumps(state), encoding="utf-8")
+            original_read = generation_state.read_regular_bytes
+
+            replaced = []
+
+            def replace_after_read(path):
+                captured = original_read(path)
+                if path == queue:
+                    replaced.append(path)
+                    records = [json.loads(line) for line in captured.splitlines()]
+                    records[-1]["voice_character"] = "Unreviewed voice"
+                    queue.write_text(
+                        "".join(json.dumps(record) + "\n" for record in records),
+                        encoding="utf-8",
+                    )
+                return captured
+
+            def restore_queue(_state_path, _queue_path):
+                self.assertEqual(Path(_queue_path), queue)
+                self.assertNotEqual(queue.read_bytes(), original_payload)
+                queue.write_bytes(original_payload)
+                return state
+
+            with patch.object(
+                generation_state, "read_regular_bytes", replace_after_read
+            ):
+                corpus = build_failure_comparison_corpus(
+                    queue,
+                    fixture["state"],
+                    root / "corpus.json",
+                    state_loader=restore_queue,
+                )
+            self.assertEqual(replaced, [queue])
+            self.assertEqual(queue.read_bytes(), original_payload)
+            self.assertEqual(corpus["samples"][0]["character"], "Rhiannon")
+            self.assertEqual(
+                corpus["source_queue_sha256"],
+                hashlib.sha256(original_payload).hexdigest(),
+            )
+
+    def test_failure_corpus_default_loader_retains_current_and_legacy_state_validation(
+        self,
+    ):
+        for schema in (
+            "vntts.authoring-generation-state",
+            "r1999.bulk-generation-state",
+        ):
+            with self.subTest(schema=schema), TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture = write_legacy_fixture(root / "legacy")
+                state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+                state["schema"] = schema
+                state["items"] = {
+                    fixture["queue_id"]: {
+                        "status": "failed",
+                        "attempts": 1,
+                        "provider": "moss-tts",
+                    }
+                }
+                fixture["state"].write_text(json.dumps(state), encoding="utf-8")
+                corpus = build_failure_comparison_corpus(
+                    fixture["queue"], fixture["state"], root / "corpus.json"
+                )
+                self.assertEqual(corpus["samples"][0]["character"], "Rhiannon")
+                self.assertEqual(
+                    corpus["source_state_sha256"],
+                    hashlib.sha256(fixture["state"].read_bytes()).hexdigest(),
+                )
+
+                state["queue_sha256"] = "0" * 64
+                fixture["state"].write_text(json.dumps(state), encoding="utf-8")
+                with self.assertRaisesRegex(BulkGenerationError, "queue changed"):
+                    build_failure_comparison_corpus(
+                        fixture["queue"], fixture["state"], root / "invalid.json"
+                    )
+                self.assertFalse((root / "invalid.json").exists())
+
+    def test_failure_corpus_supports_manifest_without_selected_variants(self):
+        variants = (
+            None,
+            {},
+            {"selected_variants": None},
+            {"selected_variants": []},
+            [],
+            "bad",
+            {"selected_variants": "bad"},
+            {"selected_variants": {}},
+        )
+        for bindings in variants:
+            with self.subTest(bindings=bindings), TemporaryDirectory() as directory:
+                root = Path(directory)
+                text = "Exact failure line."
+                queue_id = "line:one:" + hashlib.sha256(text.encode()).hexdigest()[:16]
+                queue = root / "queue.jsonl"
+                write_voice_generation_queue(
+                    queue,
+                    {"game": "Fixture", "language": "en"},
+                    [
+                        {
+                            "record_type": "generation_item",
+                            "queue_id": queue_id,
+                            "line_id": "line:one",
+                            "text": text,
+                            "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                            "speaker": "Voice",
+                            "voice_character": "Voice",
+                            "action": "generate",
+                            "state": "pending",
+                        }
+                    ],
+                )
+                state = {
+                    "items": {queue_id: {"status": "failed", "provider": "moss-tts"}}
+                }
+                state_path = root / "state.json"
+                state_path.write_text(json.dumps(state), encoding="utf-8")
+                reference = root / "reference.wav"
+                reference.write_bytes(b"fixture reference")
+                manifest = root / "manifest.json"
+                document = {
+                    "version": 2,
+                    "voices": [
+                        {
+                            "character": "Voice",
+                            "speaker": "voice",
+                            "references": ["reference.wav"],
+                        }
+                    ],
+                }
+                if bindings is not None:
+                    document["vntts.authoring.source_reference_bindings"] = bindings
+                manifest.write_text(json.dumps(document), encoding="utf-8")
+                output = root / "failure-corpus.json"
+
+                def create():
+                    return build_failure_comparison_corpus(
+                        queue,
+                        state_path,
+                        output,
+                        manifest_path=manifest,
+                        state_loader=lambda *_: state,
+                    )
+
+                if not isinstance(bindings, (dict, type(None))) or (
+                    isinstance(bindings, dict)
+                    and bindings.get("selected_variants") is not None
+                    and not isinstance(bindings["selected_variants"], list)
+                ):
+                    with self.assertRaisesRegex(ModelBenchmarkError, "bindings"):
+                        create()
+                    self.assertFalse(output.exists())
+                else:
+                    result = create()
+                    self.assertEqual(result["samples"][0]["character"], "Voice")
+                    self.assertEqual(
+                        result["source_voice_manifest_sha256"],
+                        hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                    )
+                    self.assertEqual(json.loads(output.read_text()), result)
+
+    def test_model_publications_preserve_destination_created_after_precheck(self):
+        for multiple in (False, True):
+            with self.subTest(multiple=multiple), TemporaryDirectory() as directory:
+                root = Path(directory)
+                output = (root / "output").resolve()
+                corpus = self._write_strict_corpus(root)
+                backend = ShutdownRenderBackend()
+                original_rename = os.rename
+                calls = []
+
+                def publish(source, destination):
+                    destination = Path(destination)
+                    if destination == output:
+                        destination.mkdir()
+                        calls.append(destination.stat().st_ino)
+                    return rename_directory_no_replace(source, destination)
+
+                # Also wrap the old primitive so this gate can reproduce the old race.
+                def old_publish(source, destination, *args, **kwargs):
+                    destination = Path(destination)
+                    if destination == output:
+                        destination.mkdir()
+                        calls.append(destination.stat().st_ino)
+                    return original_rename(source, destination, *args, **kwargs)
+
+                with (
+                    patch.object(
+                        benchmark_module,
+                        "rename_directory_no_replace",
+                        side_effect=publish,
+                    ),
+                    patch("os.rename", side_effect=old_publish),
+                    self.assertRaisesRegex(ModelBenchmarkError, "publish"),
+                ):
+                    if multiple:
+                        benchmark_model_variants(
+                            corpus,
+                            (ModelVariant("fake", "fake"),),
+                            CharacterVoiceRegistry(),
+                            output,
+                            backend_factory=lambda *_args, **_kw: backend,
+                        )
+                    else:
+                        benchmark_renderer(
+                            ModelVariant("fake", "fake"),
+                            backend,
+                            [{"id": "one", "character": "Voice", "text": "Exact."}],
+                            output,
+                        )
+                self.assertEqual(calls, [output.stat().st_ino])
+                self.assertEqual(list(output.iterdir()), [])
+                self.assertEqual(list(root.glob(".output-*")), [])
+                self.assertEqual(backend.shutdown_calls, 1 if multiple else 0)
+
+    def test_model_output_symlinks_are_refused_before_rendering(self):
+        for multiple in (False, True):
+            for target_state in ("missing", "empty", "occupied"):
+                with (
+                    self.subTest(multiple=multiple, target=target_state),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    target = root / "target"
+                    if target_state != "missing":
+                        target.mkdir()
+                    if target_state == "occupied":
+                        (target / "sentinel").write_bytes(b"keep")
+                    output = root / "output"
+                    symlink_or_skip(output, target, target_is_directory=True)
+                    link_identity = output.lstat().st_ino
+                    corpus = self._write_strict_corpus(root)
+                    backend = FakeRenderBackend()
+                    with self.assertRaisesRegex(ModelBenchmarkError, "already exists"):
+                        if multiple:
+                            benchmark_model_variants(
+                                corpus,
+                                (ModelVariant("fake", "fake"),),
+                                CharacterVoiceRegistry(),
+                                output,
+                                backend_factory=lambda *_args, **_kw: self.fail(
+                                    "An occupied output must not load a model"
+                                ),
+                            )
+                        else:
+                            benchmark_renderer(
+                                ModelVariant("fake", "fake"),
+                                backend,
+                                [{"id": "one", "character": "Voice", "text": "Exact."}],
+                                output,
+                            )
+                    self.assertEqual(backend.requests, [])
+                    self.assertTrue(output.is_symlink())
+                    self.assertEqual(output.lstat().st_ino, link_identity)
+                    self.assertEqual(target.exists(), target_state != "missing")
+                    if target_state == "occupied":
+                        self.assertEqual((target / "sentinel").read_bytes(), b"keep")
+                        self.assertEqual(list(target.iterdir()), [target / "sentinel"])
+                    elif target_state == "empty":
+                        self.assertEqual(list(target.iterdir()), [])
+                    self.assertEqual(list(root.glob(".output-*")), [])
+
+    def test_model_batch_publishes_once_after_all_backends_stop(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = self._write_strict_corpus(root)
+            output = (root / "output").resolve()
+            output.mkdir()
+            backends = []
+            publications = []
+
+            def factory(*_args, **_kwargs):
+                backend = ShutdownRenderBackend()
+                backends.append(backend)
+                return backend
+
+            def publish(source, destination):
+                publications.append(Path(destination))
+                self.assertEqual(Path(destination), output)
+                self.assertEqual(len(backends), 2)
+                self.assertTrue(
+                    all(backend.shutdown_calls == 1 for backend in backends)
+                )
+                for model in ("first", "second"):
+                    report = json.loads(
+                        (Path(source) / model / "report.json").read_text()
+                    )
+                    self.assertEqual(report["summary"]["complete"], 1)
+                    self.assertEqual(
+                        Path(report["samples"][0]["audio"]).parent,
+                        output / model / "audio",
+                    )
+                    self.assertEqual(
+                        len(list((Path(source) / model / "audio").glob("*.wav"))), 1
+                    )
+                return rename_directory_no_replace(source, destination)
+
+            with patch.object(
+                benchmark_module, "rename_directory_no_replace", side_effect=publish
+            ):
+                aggregate = benchmark_model_variants(
+                    corpus,
+                    (ModelVariant("first", "fake"), ModelVariant("second", "fake")),
+                    CharacterVoiceRegistry(),
+                    output,
+                    backend_factory=factory,
+                )
+            self.assertEqual(publications, [output])
+            self.assertEqual(len(aggregate["reports"]), 2)
+            self.assertEqual(list(root.glob(".output-*")), [])
+
+    def test_mixed_render_outcomes_keep_order_groups_and_exact_sample_records(self):
+        class MixedBackend(FakeRenderBackend):
+            def render(self, request):
+                if request.text == "error":
+                    self.requests.append(request)
+                    raise RuntimeError("fixture render error")
+                self.completion = {
+                    "complete": SynthesisCompletion.COMPLETE,
+                    "limited": SynthesisCompletion.LIMITED,
+                    "cancelled": SynthesisCompletion.CANCELLED,
+                }[request.text]
+                return super().render(request)
+
+        with TemporaryDirectory() as directory:
+            backend = MixedBackend()
+            samples = [
+                {
+                    "id": str(index),
+                    "character": "Voice",
+                    "text": outcome,
+                    "comparison_group": "first" if index < 2 else "second",
+                }
+                for index, outcome in enumerate(
+                    ("complete", "error", "limited", "cancelled")
+                )
+            ]
+            report = benchmark_renderer(
+                ModelVariant("fake", "fake"), backend, samples, directory, seed=8
+            )
+            self.assertEqual(
+                [sample["outcome"] for sample in report["samples"]],
+                ["complete", "error", "limited", "cancelled"],
+            )
+            self.assertEqual(
+                report["summary"],
+                {"total": 4, "complete": 1, "error": 1, "limited": 1, "cancelled": 1},
+            )
+            self.assertEqual(
+                report["group_summary"]["first"],
+                {"total": 2, "complete": 1, "error": 1, "limited": 0, "cancelled": 0},
+            )
+            self.assertEqual(
+                report["group_summary"]["second"],
+                {"total": 2, "complete": 0, "error": 0, "limited": 1, "cancelled": 1},
+            )
+            self.assertEqual(len(list((Path(directory) / "audio").glob("*.wav"))), 1)
+            for expected, actual in zip(samples, report["samples"], strict=True):
+                self.assertEqual({key: actual[key] for key in expected}, expected)
+            self.assertEqual(
+                json.loads((Path(directory) / "report.json").read_text()), report
+            )
+            self.assertEqual(backend.play_calls, 0)
 
     def test_comparison_manifest_rejects_reference_symlink_outside_root(self):
         with TemporaryDirectory() as directory:
@@ -196,11 +775,120 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                 ],
             )
 
-            corpus = build_benchmark_corpus(queue, root / "corpus.json")
+            original = queue.read_bytes()
+            for alias in ("direct", "hardlink", "symlink"):
+                with self.subTest(alias=alias):
+                    output = queue if alias == "direct" else root / "alias.json"
+                    if alias == "hardlink":
+                        output.hardlink_to(queue)
+                    elif alias == "symlink":
+                        symlink_or_skip(output, queue)
+                    before = tree_hashes(root)
+                    with self.assertRaisesRegex(ModelBenchmarkError, "must differ"):
+                        build_benchmark_corpus(queue, output)
+                    self.assertEqual(tree_hashes(root), before)
+                    if alias == "symlink":
+                        self.assertTrue(output.is_symlink())
+                    if alias != "direct":
+                        output.unlink()
+            output = root / "corpus.json"
+            output.write_text("old corpus", encoding="utf-8")
+            build_benchmark_corpus(queue, output, name="first corpus")
+            corpus = build_benchmark_corpus(queue, output, name="replacement corpus")
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8")), corpus)
+            self.assertEqual(queue.read_bytes(), original)
 
         self.assertEqual(corpus["samples"][0]["character"], "Voice")
         self.assertEqual(corpus["samples"][0]["line_id"], "line:any")
         self.assertEqual(corpus["samples"][0]["text_sha256"], text_hash)
+
+    def test_failure_corpus_refuses_captured_inputs_and_unselected_success_wav(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root / "legacy")
+            queue = fixture["queue"]
+            original_item = json.loads(
+                queue.read_text(encoding="utf-8").splitlines()[1]
+            )
+            text = "Unresolved MOSS failure."
+            digest = hashlib.sha256(text.encode()).hexdigest()
+            queue_id = f"line:failed:{digest[:16]}"
+            write_voice_generation_queue(
+                queue,
+                {"game": "Reverse: 1999", "language": "en"},
+                [
+                    original_item,
+                    {
+                        "record_type": "generation_item",
+                        "queue_id": queue_id,
+                        "line_id": "line:failed",
+                        "text_sha256": digest,
+                        "text": text,
+                        "speaker": "Rhiannon",
+                        "voice_character": "Rhiannon",
+                        "action": "generate",
+                        "state": "pending",
+                    },
+                ],
+            )
+            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state["queue_sha256"] = hashlib.sha256(queue.read_bytes()).hexdigest()
+            state["active"] = None
+            state["items"][queue_id] = {
+                "status": "failed",
+                "attempts": 1,
+                "provider": "moss-tts",
+            }
+            fixture["state"].write_text(json.dumps(state), encoding="utf-8")
+            manifest = Path(fixture["job"]["voice_manifest"])
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [{"character": "Rhiannon", "speaker": "rhiannon"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            sources = [queue, fixture["state"], manifest, fixture["wav"]]
+            original = {source: source.read_bytes() for source in sources}
+
+            def create(output, name=None):
+                return build_failure_comparison_corpus(
+                    queue,
+                    fixture["state"],
+                    output,
+                    pocket_sample_size=0,
+                    control_sample_size=0,
+                    manifest_path=manifest,
+                    name=name,
+                )
+
+            for source in sources:
+                for alias in ("direct", "hardlink", "symlink"):
+                    with self.subTest(input=source.name, alias=alias):
+                        output = source if alias == "direct" else root / "alias.json"
+                        if alias == "hardlink":
+                            output.hardlink_to(source)
+                        elif alias == "symlink":
+                            symlink_or_skip(output, source)
+                        before = tree_hashes(root)
+                        with self.assertRaisesRegex(ModelBenchmarkError, "must differ"):
+                            create(output)
+                        self.assertEqual(tree_hashes(root), before)
+                        if alias == "symlink":
+                            self.assertTrue(output.is_symlink())
+                        if alias != "direct":
+                            output.unlink()
+            output = root / "corpus.json"
+            output.write_text("old corpus", encoding="utf-8")
+            create(output, "first corpus")
+            corpus = create(output, "replacement corpus")
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8")), corpus)
+            self.assertEqual([sample["id"] for sample in corpus["samples"]], [queue_id])
+            self.assertEqual(
+                {source: source.read_bytes() for source in sources}, original
+            )
 
     def test_builds_exact_failure_recovery_and_control_comparison_corpus(self):
         with TemporaryDirectory() as directory:
@@ -393,16 +1081,36 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         self.assertEqual(corpus["narrator_character"], "Centurion")
         self.assertRegex(corpus["source_voice_manifest_sha256"], r"^[0-9a-f]{64}$")
 
+    def test_unsupported_render_outcome_is_refused_before_publication(self):
+        backend = FakeRenderBackend(completion=SimpleNamespace(value="total"))
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            with self.assertRaisesRegex(
+                ModelBenchmarkError, "Unsupported render outcome"
+            ):
+                benchmark_renderer(
+                    ModelVariant("fake", "fake"),
+                    backend,
+                    [{"id": "sample", "character": "Voice", "text": "A line."}],
+                    output,
+                )
+            self.assertFalse(output.exists())
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
     def test_renderer_uses_typed_bypass_request_and_never_plays(self):
         backend = FakeRenderBackend()
         variant = ModelVariant("fake/one", "fake", generation_profile="expressive")
         with TemporaryDirectory() as directory:
-            report = benchmark_renderer(
-                variant,
-                backend,
-                [{"id": "sample", "character": "Voice", "text": "A line."}],
-                directory,
-                seed=11,
+            with patch.object(wave, "open", wraps=wave.open) as open_wav:
+                report = benchmark_renderer(
+                    variant,
+                    backend,
+                    [{"id": "sample", "character": "Voice", "text": "A line."}],
+                    directory,
+                    seed=11,
+                )
+            self.assertEqual(
+                sum(call.args[1] == "rb" for call in open_wav.call_args_list), 1
             )
 
         self.assertEqual(len(backend.requests), 1)
@@ -571,7 +1279,7 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
 
     def test_voice_controls_are_snapshotted_once_for_every_real_model(self):
         with TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             text = "A shared exact line."
             corpus = root / "corpus.json"
             corpus.write_text(
@@ -603,6 +1311,9 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                         "Rhiannon",
                         "rhiannon",
                         references=(reference,),
+                        reference_root=root.resolve(),
+                        source_character="Original identity",
+                        reference_transcript="Exact reference line.",
                     )
                 ]
             )
@@ -610,7 +1321,12 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
 
             def factory(name, received_registry, cache, **options):
                 del cache, options
-                captured_reference = received_registry.resolve("Rhiannon").references[0]
+                voice = received_registry.resolve("Rhiannon")
+                captured_reference = voice.references[0]
+                self.assertEqual(voice.reference, captured_reference)
+                self.assertEqual(voice.reference_root, captured_reference.parent.parent)
+                self.assertEqual(voice.source_character, "Original identity")
+                self.assertEqual(voice.reference_transcript, "Exact reference line.")
                 received_references.append(
                     (captured_reference, captured_reference.read_bytes())
                 )
@@ -964,6 +1680,47 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
 
             self.assertEqual(backend.shutdown_calls, 1)
             self.assertFalse(output.exists())
+
+    def test_benchmark_preserves_primary_when_cache_cleanup_fails(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = self._write_strict_corpus(root)
+            cleanup_error = OSError("benchmark cache cleanup failed")
+            real_temporary_directory = tempfile.TemporaryDirectory
+            backend = FakeRenderBackend(backend_name="different")
+
+            def temporary_directory(*args, **kwargs):
+                cache = real_temporary_directory(*args, **kwargs)
+                if kwargs.get("prefix") is None:
+                    cleanup = cache.cleanup
+
+                    def failing_cleanup():
+                        cleanup()
+                        raise cleanup_error
+
+                    cache.cleanup = failing_cleanup
+                return cache
+
+            with (
+                patch(
+                    "vntts.cleanup.TemporaryDirectory", side_effect=temporary_directory
+                ),
+                self.assertRaisesRegex(
+                    ModelBenchmarkError, "different request"
+                ) as caught,
+            ):
+                benchmark_model_variants(
+                    corpus,
+                    (ModelVariant("managed", "fake"),),
+                    CharacterVoiceRegistry(),
+                    root / "output",
+                    backend_factory=lambda *_arguments, **_keywords: backend,
+                )
+
+            self.assertIn(
+                "benchmark cache cleanup failed", " ".join(caught.exception.__notes__)
+            )
+            self.assertFalse((root / "output").exists())
 
     def test_multi_model_benchmark_publishes_its_validated_corpus(self):
         with TemporaryDirectory() as directory:

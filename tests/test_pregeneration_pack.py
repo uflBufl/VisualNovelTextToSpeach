@@ -1,15 +1,18 @@
-import hashlib
 import json
+import os
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from vntts_artifacts.atomic_io import atomic_write_json
+from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePackError
+from vntts_artifacts.generated_audio import load_generated_audio_document
 from vntts_artifacts.live_sequence import (
     load_live_sequence_plan,
     write_live_sequence_plan,
@@ -24,202 +27,350 @@ from vntts_artifacts.voice_generation_queue import (
 )
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
-from tests.test_authoring_bulk_generation import SyntheticRenderer
-from vntts.authoring.audio_events import audio_event_plan_for_record
-from vntts.authoring.bulk_generation import (
-    BulkGenerationError,
-    authorize_live_fallback,
-    is_spoken_queue_item,
-    review_generation_item,
-    run_bulk_generation,
-)
+from tests.authoring_fixtures import tree_hashes
+from tests.pregeneration_fixtures import fixture
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from vntts import pregeneration_pack as pack_module
+from vntts.authoring.bulk_generation import BulkGenerationError
+from vntts.authoring.generation_state import load_generation_state_from_snapshot
 from vntts.game_pack import import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.pregeneration_contract import OfflineGenerationCancelled
-from vntts.pregeneration_generation import OfflineGenerationResult
 from vntts.pregeneration_pack import (
     OfflinePackError,
     OfflinePackPublisher,
     _copy_file,
+    _copy_prepared_file,
     _ensure_pack_disk_space,
     _link_verified_file,
     _load_terminal_generation,
     _optional_sequence_snapshot,
+    _portable_generated_record,
     _portable_voice_entries,
     _stage_live_sequence,
+    _story_audio_pack,
+    _validate_inputs,
     _write_cumulative_routes,
     inspect_story_audio,
     load_saved_pack,
 )
-from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_setup import (
-    PregenerationJob,
     PregenerationJobStore,
-    PreparationEstimate,
+    _cached_story_index_document,
     inspect_story_index,
 )
 from vntts.source_audio_semantics import SourceAudioSemanticEvidenceError
-from vntts.synthesis import SynthesisCompletion
+from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.versioned_json import write_versioned_json
 
 
-def item(name, sequence):
-    text = f"Prepared line {name}."
-    text_sha256 = hashlib.sha256(text.encode()).hexdigest()
-    return {
-        "record_type": "generation_item",
-        "queue_id": f"pack:{name}:{text_sha256[:16]}",
-        "line_id": f"pack:{name}",
-        "text_sha256": text_sha256,
-        "text": text,
-        "speaker": "Narrator",
-        "voice_character": "Narrator",
-        "action": "generate",
-        "prompt_adapters": {},
-        "sequence": sequence,
-    }
-
-
-def fixture(
-    root,
-    names=("generated", "fallback"),
-    *,
-    include_omission=False,
-    omission_source_audio_status="absent",
-):
-    identity = "a" * 64
-    directory = root / f"generation-input-{identity[:16]}"
-    directory.parent.mkdir(parents=True, exist_ok=True)
-    directory.mkdir()
-    items = [item(name, sequence) for sequence, name in enumerate(names, 1)]
-    if include_omission:
-        text = "*chirp*"
-        event = item("omission", len(items) + 1)
-        event.update(
-            text=text,
-            text_sha256=hashlib.sha256(text.encode()).hexdigest(),
-            source_audio_status=omission_source_audio_status,
-            source_audio_reason=f"fixture_{omission_source_audio_status}",
+class SavedStoryPackSelectionTest(unittest.TestCase):
+    def test_one_shot_selection_filters_every_saved_job(self):
+        matching = SimpleNamespace(selected_line_ids=("selected",))
+        other = SimpleNamespace(selected_line_ids=("other",))
+        store = Mock()
+        store.jobs_for_content.return_value = (matching, other)
+        store.published_packs.return_value = ()
+        result = _story_audio_pack(
+            object(), iter(("selected",)), store, manifest=None, imported_pack=None
         )
-        event["action"] = {
-            "absent": "generate",
-            "unavailable": "prefer_source_audio",
-            "unknown": "resolve_audio",
-        }[omission_source_audio_status]
-        event["queue_id"] = f"pack:omission:{event['text_sha256'][:16]}"
-        event["vntts.authoring.audio_event_plan"] = audio_event_plan_for_record(event)
-        items.append(event)
-    items = tuple(items)
-    story = directory / "story-index.jsonl"
-    write_story_index_document(
-        story,
-        {"game": "Synthetic Game", "language": "en"},
-        [
-            {
-                "record_type": "line",
-                "line_id": value["line_id"],
-                "chapter": "1",
-                "sequence": value["sequence"],
-                "speaker": value["speaker"],
-                "voice_character": value["voice_character"],
-                "text": value["text"],
-                "kind": "dialogue",
-                "source_audio_status": value.get("source_audio_status", "absent"),
-                "source_audio_reason": value.get(
-                    "source_audio_reason", "fixture_absent"
-                ),
-                "speakable": True,
-            }
-            for value in items
-        ],
-    )
-    voices = directory / "voice-manifest.json"
-    write_voice_manifest(
-        voices,
-        {
-            "version": 2,
-            "voices": [
-                {
-                    "character": "Narrator",
-                    "speaker": "alba",
-                    "aliases": [],
-                    "references": [],
-                }
-            ],
-        },
-    )
-    queue = write_voice_generation_queue(
-        directory / "queue.jsonl",
-        {"game": "Synthetic Game", "language": "en"},
-        items,
-    )
-    generation_input = PregenerationInput(
-        identity,
-        directory,
-        story,
-        voices,
-        queue,
-        sha256_file(queue),
-        2,
-        2,
-        (),
-        sha256_file(story),
-        sha256_file(voices),
-        None,
-        audio_event_omission_queue_ids=(items[-1]["queue_id"],)
-        if include_omission
-        else (),
-    )
-    output = root / f"generation-output-{identity[:16]}"
-    renderer = SyntheticRenderer(
-        [SynthesisCompletion.COMPLETE, SynthesisCompletion.LIMITED]
-    )
-    renderer.name = "pocket-tts"
-    renderer.model_name = "pocket-tts"
-    generated = run_bulk_generation(
-        queue,
-        output,
-        renderer,
-        provider="pocket-tts",
-        model="pocket-tts",
-        generation_profile="default",
-        retries=0,
-        item_filter=is_spoken_queue_item,
-    )
-    review_generation_item(generated.state, items[0]["queue_id"], "approved")
-    authorize_live_fallback(
-        generated.state,
-        queue,
-        items[1]["queue_id"],
-        reason="automatic_recovery_exhausted",
-        model="pocket-tts",
-    )
-    result = OfflineGenerationResult(
-        output,
-        generated.state,
-        generated.manifest,
-        1,
-        0,
-        1,
-    )
-    job = PregenerationJob(
-        job_id="b" * 24,
-        created_at="2026-08-31T00:00:00+00:00",
-        updated_at="2026-08-31T00:00:00+00:00",
-        status="planned",
-        provider_id="synthetic",
-        game="Synthetic Game",
-        game_version="1.0",
-        story_index=str(story),
-        story_index_sha256=sha256_file(story),
-        selected_story_ids=("chapter-1",),
-        selected_line_ids=tuple(value["line_id"] for value in items),
-        estimate=PreparationEstimate(2, 0, 2, 1, 1, 1000),
-    )
-    return job, generation_input, result, items
+        store.published_packs.assert_called_once_with(matching)
+        self.assertIsNone(result.manifest)
+        self.assertFalse(result.explicit)
 
 
 class OfflinePackPublisherTest(unittest.TestCase):
+    def test_publication_reuses_the_generation_result_identity_contract(self):
+        with TemporaryDirectory() as directory:
+            job, prepared, generated, _items = fixture(Path(directory))
+            expected = (
+                prepared.directory.parent
+                / f"generation-output-{prepared.identity[:16]}"
+            )
+            self.assertEqual(prepared.output_directory, expected)
+            self.assertEqual(generated.output, expected)
+            _validate_inputs(job, prepared, generated)
+            cases = (
+                ((None, prepared, generated), "Offline preparation job is invalid"),
+                ((job, None, generated), "Offline generation input is invalid"),
+                ((job, prepared, None), "Offline generation result is invalid"),
+                (
+                    (
+                        job,
+                        prepared,
+                        replace(generated, output=expected.parent / "foreign-output"),
+                    ),
+                    "Offline pack output identity changed",
+                ),
+            )
+            for values, message in cases:
+                with (
+                    self.subTest(message=message),
+                    self.assertRaisesRegex(OfflinePackError, message),
+                ):
+                    _validate_inputs(*values)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_optional_sequence_capture_refuses_fifo_without_publishing_and_recovers(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "sequence.json"
+            payload = b"captured optional evidence"
+            path.write_bytes(payload)
+            path.chmod(0o444)
+            mode = path.stat().st_mode
+            gate: RegularFileGate = {"path": path, "armed": True}
+            with swap_at_acquisition(self, gate):
+                self.assertEqual(_optional_sequence_snapshot(path), (None, None))
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertEqual(path.stat().st_mode, mode)
+            self.assertEqual(list(Path(directory).iterdir()), [path])
+            self.assertEqual(
+                _optional_sequence_snapshot(path), (sha256_file(path), payload)
+            )
+
+    def _publication_copy_fixture(self, root, phase):
+        job, prepared, generated, items = fixture(root / "current")
+        reference = prepared.voice_manifest.parent / "references" / "voice.wav"
+        write_pcm16_wav(reference, [0.1, -0.1] * 400, 16_000)
+        voice_document, _voices = load_voice_manifest(
+            prepared.voice_manifest, allow_legacy=False
+        )
+        voice_document["voices"][0]["references"] = ["references/voice.wav"]
+        write_voice_manifest(prepared.voice_manifest, voice_document)
+        prepared = replace(
+            prepared, voice_manifest_sha256=sha256_file(prepared.voice_manifest)
+        )
+        state = json.loads(generated.state.read_text())
+        source = {
+            "story": prepared.story_index,
+            "voice-manifest": prepared.voice_manifest,
+            "reference": reference,
+            "generated": generated.output
+            / state["items"][items[0]["queue_id"]]["path"],
+        }.get(phase)
+        publisher = OfflinePackPublisher()
+        if phase.startswith("reused-"):
+            base_job, base_input, base_result, _base_items = fixture(
+                root / "base", names=("preserved", "old-fallback")
+            )
+            base_reference = (
+                base_input.voice_manifest.parent / "references" / "voice.wav"
+            )
+            write_pcm16_wav(base_reference, [0.2, -0.2] * 400, 16_000)
+            write_voice_manifest(base_input.voice_manifest, voice_document)
+            base_input = replace(
+                base_input,
+                voice_manifest_sha256=sha256_file(base_input.voice_manifest),
+            )
+            base = OfflinePackPublisher().publish(base_job, base_input, base_result)
+            base_story = load_story_index_document(base_input.story_index)
+            current_story = load_story_index_document(prepared.story_index)
+            source_story = root / "source-story.jsonl"
+            write_story_index_document(
+                source_story,
+                current_story.metadata,
+                [
+                    record.to_record() | {"chapter": str(chapter)}
+                    for chapter, selected in enumerate((base_story, current_story), 1)
+                    for record in selected.records
+                ],
+            )
+            job = replace(
+                job,
+                story_index=str(source_story),
+                story_index_sha256=sha256_file(source_story),
+            )
+            publisher = OfflinePackPublisher(base_pack=base.manifest)
+            if phase == "reused-reference":
+                _document, voices = load_voice_manifest(
+                    base.imported.voice_manifest, allow_legacy=False
+                )
+                source = base.imported.voice_manifest.parent / voices[0].references[0]
+            else:
+                source = (
+                    load_generated_audio_document(
+                        base.imported.generated_audio_manifest
+                    )
+                    .records[0]
+                    .audio
+                )
+        return publisher, job, prepared, generated, source.resolve()
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_public_copy_phases_refuse_fifo_clean_up_and_recover(self):
+        for phase in (
+            "story",
+            "voice-manifest",
+            "reference",
+            "generated",
+            "reused-reference",
+            "reused-audio",
+        ):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                publisher, job, prepared, generated, source = (
+                    self._publication_copy_fixture(root, phase)
+                )
+                source_bytes = source.read_bytes()
+                before = tree_hashes(root)
+                original_copy = pack_module.copy_regular_file
+                refused = []
+
+                def copy(original, target):
+                    if Path(original) != source:
+                        return original_copy(original, target)
+                    gate: RegularFileGate = {"path": source, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original_copy(original, target)
+                    self.assertFalse(Path(target).exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                def link_fallback(original, target, digest):
+                    if phase != "reused-audio":
+                        return _link_verified_file(original, target, digest)
+                    with patch.object(
+                        pack_module.os, "link", side_effect=OSError("no links")
+                    ) as link:
+                        try:
+                            return _link_verified_file(original, target, digest)
+                        finally:
+                            link.assert_called_once_with(
+                                Path(original).resolve(), target
+                            )
+
+                output = prepared.directory.parent / "game-packs"
+                with patch.object(pack_module, "_link_verified_file", link_fallback):
+                    with (
+                        patch.object(pack_module, "copy_regular_file", copy),
+                        self.assertRaisesRegex(
+                            OfflinePackError, "regular file"
+                        ) as caught,
+                    ):
+                        publisher.publish(job, prepared, generated)
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(caught.exception.__cause__, refused[0])
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertEqual(list(output.iterdir()), [])
+                    recovered = publisher.publish(job, prepared, generated)
+                self.assertEqual(source.read_bytes(), source_bytes)
+                recovered_tree = tree_hashes(root)
+                self.assertEqual(publisher.publish(job, prepared, generated), recovered)
+                self.assertEqual(tree_hashes(root), recovered_tree)
+                self.assertEqual(load_saved_pack(recovered.manifest), recovered)
+                if phase == "reused-audio":
+                    records = load_generated_audio_document(
+                        recovered.imported.generated_audio_manifest
+                    ).records
+                    reused = next(
+                        record.audio
+                        for record in records
+                        if record.line_id == "pack:preserved"
+                    )
+                    self.assertEqual(reused.read_bytes(), source_bytes)
+                    self.assertFalse(source.samefile(reused))
+
+    def test_saved_and_reused_packs_reject_noninteger_counts(self):
+        with TemporaryDirectory() as directory:
+            job, prepared, generated, _items = fixture(Path(directory))
+            publisher = OfflinePackPublisher()
+            published = publisher.publish(job, prepared, generated)
+            manifest_before = published.manifest.read_bytes()
+            document = json.loads(manifest_before)
+            extension = document["vntts.self-service"]
+            state_before = generated.state.read_bytes()
+            loaders = (
+                ("saved", lambda: load_saved_pack(published.manifest)),
+                ("reuse", lambda: publisher.publish(job, prepared, generated)),
+            )
+            for field in (
+                "approved_count",
+                "live_fallback_count",
+                "omission_count",
+                "story_line_count",
+            ):
+                original = extension[field]
+                for malformed in (bool(original), float(original)):
+                    extension[field] = malformed
+                    atomic_write_json(published.manifest, document)
+                    for route, loader in loaders:
+                        with (
+                            self.subTest(field=field, value=malformed, route=route),
+                            self.assertRaisesRegex(
+                                OfflinePackError, "(coverage|route counts) changed"
+                            ),
+                        ):
+                            loader()
+                extension[field] = original
+            published.manifest.write_bytes(manifest_before)
+            loaded = load_saved_pack(published.manifest)
+            self.assertEqual(loaded.identity, published.identity)
+            self.assertEqual(loaded.directory, published.directory.resolve())
+            self.assertEqual(
+                (
+                    loaded.approved,
+                    loaded.live_fallbacks,
+                    loaded.story_lines,
+                    loaded.omissions,
+                ),
+                (
+                    published.approved,
+                    published.live_fallbacks,
+                    published.story_lines,
+                    published.omissions,
+                ),
+            )
+            self.assertEqual(generated.state.read_bytes(), state_before)
+
+    def test_saved_pack_preserves_legacy_optional_count_defaults(self):
+        with TemporaryDirectory() as directory:
+            job, prepared, generated, _items = fixture(Path(directory))
+            published = OfflinePackPublisher().publish(job, prepared, generated)
+            document = json.loads(published.manifest.read_text())
+            extension = document["vntts.self-service"]
+            del extension["story_line_count"]
+            del extension["omission_count"]
+            atomic_write_json(published.manifest, document)
+            loaded = load_saved_pack(published.manifest)
+            self.assertEqual(loaded.identity, published.identity)
+            self.assertEqual(loaded.directory, published.directory.resolve())
+            self.assertEqual(
+                (
+                    loaded.approved,
+                    loaded.live_fallbacks,
+                    loaded.story_lines,
+                    loaded.omissions,
+                ),
+                (
+                    published.approved,
+                    published.live_fallbacks,
+                    published.story_lines,
+                    published.omissions,
+                ),
+            )
+            for count in (
+                loaded.approved,
+                loaded.live_fallbacks,
+                loaded.story_lines,
+                loaded.omissions,
+            ):
+                self.assertIs(type(count), int)
+            for required in ("approved_count", "live_fallback_count"):
+                value = extension.pop(required)
+                atomic_write_json(published.manifest, document)
+                with self.subTest(field=required), self.assertRaises(OfflinePackError):
+                    load_saved_pack(published.manifest)
+                extension[required] = value
+
     def test_branch_sequence_is_left_out_of_the_staged_pack(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -401,14 +552,20 @@ class OfflinePackPublisherTest(unittest.TestCase):
             replacement = root / "replacement.json"
             write_live_sequence_plan(replacement, replacement_document, current_story)
 
-            def replace_source_after_validation(path, story_index):
-                validated = load_live_sequence_plan(path, story_index)
+            from vntts.live_sequence import load_live_sequence_snapshot
+
+            def replace_source_after_validation(
+                path, story_index, plan_payload, story_payload
+            ):
+                validated = load_live_sequence_snapshot(
+                    path, story_index, plan_payload, story_payload
+                )
                 if story_index == current_story and replacement.exists():
                     replacement.replace(plans[1])
                 return validated
 
             with patch(
-                "vntts.pregeneration_pack.load_live_sequence_plan",
+                "vntts.pregeneration_pack.load_live_sequence_snapshot",
                 side_effect=replace_source_after_validation,
             ):
                 staged = _stage_live_sequence(
@@ -428,6 +585,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 .entry_event_ids,
                 ("2-one",),
             )
+            self.assertFalse(replacement.exists())
             self.assertEqual(
                 load_live_sequence_plan(plans[1], current_story).source_extract_sha256,
                 "b" * 64,
@@ -445,6 +603,80 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 self.skipTest("symlinks are unavailable on this host")
             with self.assertRaises(OfflinePackError):
                 _copy_file(alias, root / "pack.wav")
+
+    def test_current_route_cannot_overwrite_reused_base_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "published.wav"
+            source.write_bytes(b"published audio")
+            changed = root / "current.wav"
+            changed.write_bytes(b"changed after terminal validation")
+            manifest = root / "staging" / "manifest.json"
+            digest = sha256_file(source)
+            record = {"audio_sha256": digest}
+            _portable_generated_record(record, source, manifest, reuse=True)
+            destination = manifest.parent / f"audio/{digest}.wav"
+
+            with self.assertRaisesRegex(OfflinePackError, "destination conflicts"):
+                _portable_generated_record(record, changed, manifest)
+
+            self.assertEqual(source.read_bytes(), b"published audio")
+            self.assertTrue(source.samefile(destination))
+
+    def test_duplicate_copy_reuses_verified_destination_without_writing(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.wav"
+            source.write_bytes(b"same audio")
+            destination = root / "staging" / "audio.wav"
+            digest = _copy_file(source, destination)
+            with patch(
+                "vntts.pregeneration_pack.copy_regular_file",
+                side_effect=AssertionError("verified staged file must be reused"),
+            ):
+                self.assertEqual(_copy_file(source, destination), digest)
+            self.assertEqual(destination.read_bytes(), source.read_bytes())
+
+    def test_prepared_copy_reuses_digest_and_preserves_race_checks(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.json"
+            destination = root / "staged.json"
+            source.write_bytes(b"prepared document")
+            digest = sha256_file(source)
+            with patch(
+                "vntts.pregeneration_pack.sha256_file", wraps=sha256_file
+            ) as hashes:
+                _copy_prepared_file(source, destination, digest, "story index")
+            self.assertEqual(
+                [call.args[0] for call in hashes.call_args_list],
+                [source.resolve(), source.resolve(), destination],
+            )
+            destination.unlink()
+            with self.assertRaisesRegex(
+                OfflinePackError, "Prepared staged story index changed"
+            ):
+                _copy_prepared_file(source, destination, "0" * 64, "story index")
+            destination.unlink()
+            copyfile = pack_module.copy_regular_file
+
+            for target in (source, destination):
+                with self.subTest(changed=target):
+                    source.write_bytes(b"prepared document")
+
+                    def copy_then_change(original, staged):
+                        copyfile(original, staged)
+                        target.write_bytes(b"changed while copying")
+
+                    with (
+                        patch(
+                            "vntts.pregeneration_pack.copy_regular_file",
+                            side_effect=copy_then_change,
+                        ),
+                        self.assertRaisesRegex(OfflinePackError, "source changed"),
+                    ):
+                        _copy_prepared_file(source, destination, digest, "story index")
+                    destination.unlink()
 
     def test_incremental_reuse_hard_links_verified_audio(self):
         with TemporaryDirectory() as directory:
@@ -725,20 +957,25 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 )
                 return queue
 
-            with patch.object(
-                VoiceGenerationQueue, "load", side_effect=replace_queue_after_parse
+            with (
+                patch.object(
+                    VoiceGenerationQueue, "load", side_effect=replace_queue_after_parse
+                ),
+                patch(
+                    "vntts.pregeneration_pack.load_generation_state_from_snapshot",
+                    wraps=load_generation_state_from_snapshot,
+                ) as state_loader,
             ):
-                _state, queue, _voices, _entries, _omissions = (
-                    _load_terminal_generation(
-                        job,
-                        generation_input,
-                        result,
-                        sha256_file(result.state),
-                        state_document=json.loads(result.state.read_text()),
-                    )
+                _load_terminal_generation(
+                    job,
+                    generation_input,
+                    result,
+                    sha256_file(result.state),
+                    state_document=json.loads(result.state.read_text()),
                 )
 
-            self.assertEqual(queue.items[0].speaker, items[0]["speaker"])
+            validated_queue = state_loader.call_args.args[1]
+            self.assertEqual(validated_queue.items[0].speaker, items[0]["speaker"])
 
     def test_change_summary_uses_verified_resume_and_exact_replacement_candidates(self):
         with TemporaryDirectory() as directory:
@@ -750,9 +987,11 @@ class OfflinePackPublisherTest(unittest.TestCase):
             )
             base = publisher.publish(job, inputs, result)
             publisher = OfflinePackPublisher(base_pack=base.manifest)
+            _cached_story_index_document.cache_clear()
+            self.addCleanup(_cached_story_index_document.cache_clear)
             with patch(
-                "vntts.pregeneration_pack.load_story_index_document",
-                wraps=load_story_index_document,
+                "vntts.pregeneration_setup.load_story_index_snapshot",
+                wraps=load_story_index_snapshot,
             ) as story_load:
                 unchanged = publisher.inspect_changes(job, inputs)
             self.assertEqual(
@@ -888,10 +1127,11 @@ class OfflinePackPublisherTest(unittest.TestCase):
             copied_references = []
 
             def copy_then_cancel(source, destination):
-                _copy_file(source, destination)
+                digest = _copy_file(source, destination)
                 if Path(source).suffix == ".wav":
                     copied_references.append(Path(source).name)
                     cancellation.set()
+                return digest
 
             with (
                 patch(
@@ -972,9 +1212,10 @@ class OfflinePackPublisherTest(unittest.TestCase):
             copied = []
 
             def copy_then_cancel(source, destination):
-                _copy_file(source, destination)
+                digest = _copy_file(source, destination)
                 copied.append(Path(source).name)
                 cancellation.set()
+                return digest
 
             with (
                 patch(
@@ -1028,6 +1269,11 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 story.metadata,
                 records,
             )
+
+            with self.assertRaisesRegex(
+                OfflinePackError, "Prepared story index changed"
+            ):
+                OfflinePackPublisher().inspect_changes(job, generation_input)
 
             with self.assertRaisesRegex(
                 OfflinePackError, "Prepared story index changed"

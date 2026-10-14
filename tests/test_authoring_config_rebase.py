@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import os
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -16,16 +17,15 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 import vntts.authoring.config_rebase as config_rebase_module
-from tests.test_authoring_workbench import (
+from tests.authoring_fixtures import (
     create_carry_source_workspace,
     write_carry_target_manifest,
 )
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    authorize_live_fallback,
     load_generation_state,
     publish_generated_manifest,
-    review_generation_item,
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.config_rebase import (
@@ -37,6 +37,10 @@ from vntts.authoring.config_rebase import (
     rebase_workspace_config,
     validate_config_rebase_workspace,
 )
+from vntts.authoring.generation_fallback import (
+    authorize_live_fallback,
+)
+from vntts.authoring.generation_review import review_generation_item
 from vntts.authoring.queue_extension import publish_additive_generation_queue
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
@@ -87,6 +91,203 @@ def _prepare(
 
 
 class AuthoringConfigRebaseTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_existing_composition_input_hash_refuses_fifo_without_writing_and_recovers(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            destination = root / "composition.json"
+            payload = b"captured composition input"
+            destination.write_bytes(payload)
+            destination.chmod(0o444)
+            mode = destination.stat().st_mode
+            digest = hashlib.sha256(payload).hexdigest()
+            original = config_rebase_module.sha256_file
+            refused = []
+
+            def checksum(path):
+                self.assertEqual(path, destination)
+                gate: RegularFileGate = {"path": destination, "armed": True}
+                with (
+                    swap_at_acquisition(self, gate),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original(path)
+                refused.append(caught.exception)
+                raise caught.exception
+
+            with (
+                patch.object(config_rebase_module, "sha256_file", checksum),
+                self.assertRaisesRegex(OSError, "regular file") as caught,
+            ):
+                config_rebase_module._write_audio_event_composition_input(
+                    destination, payload, digest
+                )
+            self.assertEqual(len(refused), 1)
+            self.assertIs(caught.exception, refused[0])
+            self.assertEqual(destination.read_bytes(), payload)
+            self.assertEqual(destination.stat().st_mode, mode)
+            self.assertEqual(list(root.iterdir()), [destination])
+            with patch.object(Path, "write_bytes") as write:
+                config_rebase_module._write_audio_event_composition_input(
+                    destination, payload, digest
+                )
+                conflict = b"conflicting composition input"
+                with self.assertRaisesRegex(AuthoringWorkbenchError, "input conflicts"):
+                    config_rebase_module._write_audio_event_composition_input(
+                        destination, conflict, hashlib.sha256(conflict).hexdigest()
+                    )
+                write.assert_not_called()
+            self.assertEqual(destination.read_bytes(), payload)
+
+    def test_missing_rebase_manifest_fails_before_publishing_workspace(self):
+        for missing_side in ("source", "target"):
+            with (
+                self.subTest(missing_side=missing_side),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                _fixture, source, target = _prepare(root)
+                before = _tree_hashes(root)
+                original = config_rebase_module.selected_voice_manifest_path
+                missing = source if missing_side == "source" else target
+
+                def select(directory, workspace, **options):
+                    if directory == missing:
+                        return None
+                    return original(directory, workspace, **options)
+
+                with (
+                    patch.object(
+                        config_rebase_module,
+                        "selected_voice_manifest_path",
+                        side_effect=select,
+                    ),
+                    self.assertRaisesRegex(
+                        AuthoringWorkbenchError, "bound voice manifest"
+                    ),
+                ):
+                    rebase_workspace_config(source, target, root / "rebased")
+                self.assertEqual(_tree_hashes(root), before)
+                self.assertEqual(list((root / "rebased").iterdir()), [])
+
+    def test_final_rechecks_translate_io_errors_and_clean_up(self):
+        for verifier_name in (
+            "_assert_workspace_authority_snapshots",
+            "_assert_rebase_snapshots",
+        ):
+            with (
+                self.subTest(verifier=verifier_name),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                _fixture, source, target = _prepare(root)
+                before = _tree_hashes(root)
+                verifier = getattr(config_rebase_module, verifier_name)
+                failure = PermissionError("final authority is unreadable")
+
+                def fail_final_hash(*args, **kwargs):
+                    with patch.object(
+                        config_rebase_module, "sha256_file", side_effect=failure
+                    ):
+                        return verifier(*args, **kwargs)
+
+                with (
+                    patch.object(
+                        config_rebase_module, verifier_name, side_effect=fail_final_hash
+                    ),
+                    self.assertRaisesRegex(
+                        AuthoringWorkbenchError, "final authority is unreadable"
+                    ) as caught,
+                ):
+                    rebase_workspace_config(source, target, root / "rebased")
+
+                self.assertIs(caught.exception.__cause__, failure)
+                self.assertEqual(_tree_hashes(root), before)
+                self.assertEqual(list((root / "rebased").iterdir()), [])
+                self.assertFalse(list(root.rglob(".generation-lease.json")))
+
+    def test_rebase_projects_the_captured_target_state(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(
+                root, item_count=2
+            )
+            review_generation_item(
+                source.directory / "generated-audio/generation-state.json",
+                fixture["queue_id"],
+                "approved",
+            )
+            target = create_resume_workspace(
+                imported,
+                root / "workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=write_carry_target_manifest(root),
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+            ).directory
+            state_path = target / "generated-audio/generation-state.json"
+            original = state_path.read_bytes()
+            original_state = json.loads(original)
+            retained_id = next(
+                queue_id
+                for queue_id in original_state["items"]
+                if queue_id != fixture["queue_id"]
+            )
+            replacement = copy.deepcopy(original_state)
+            replacement["items"][retained_id]["model"] = "foreign-target-model"
+            replacement_payload = json.dumps(replacement).encode("utf-8")
+            state_path.write_bytes(replacement_payload)
+            try:
+                load_generation_state(state_path, target / "queue.jsonl")
+            finally:
+                state_path.write_bytes(original)
+            load_state = config_rebase_module.load_generation_state
+            captures = []
+
+            def read_replacement(path, *arguments, **keywords):
+                captures.append(Path(path).resolve())
+                if Path(path).resolve() != state_path.resolve():
+                    return load_state(path, *arguments, **keywords)
+                path.write_bytes(replacement_payload)
+                try:
+                    return load_state(path, *arguments, **keywords)
+                finally:
+                    path.write_bytes(original)
+
+            with patch.object(
+                config_rebase_module,
+                "load_generation_state",
+                side_effect=read_replacement,
+            ):
+                output = rebase_workspace_config(
+                    source.directory, target, root / "rebased"
+                ).directory
+            self.assertTrue(captures)
+            self.assertNotIn(state_path.resolve(), captures)
+            published = load_generation_state(
+                output / "generated-audio/generation-state.json", output / "queue.jsonl"
+            )
+            workspace = load_workspace_authority(output)[1]
+            provenance = (
+                output / "provenance/config-rebase/target-root/generation-state.json"
+            )
+            self.assertEqual(
+                published["items"][retained_id], original_state["items"][retained_id]
+            )
+            self.assertEqual(provenance.read_bytes(), original)
+            self.assertEqual(
+                workspace["config_rebase"]["target_state_sha256"],
+                hashlib.sha256(original).hexdigest(),
+            )
+            self.assertEqual(state_path.read_bytes(), original)
+            self.assertFalse(list((root / "rebased").glob(".config-rebase-staging-*")))
+
     def test_ledger_requires_integer_version_and_retains_legacy_versions(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

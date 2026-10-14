@@ -22,15 +22,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from vntts_artifacts.file_integrity import sha256_file
 
-from vntts.assets import (
-    ModelAssetManager,
-    ModelDownloadCancelled,
-    VoicePackManager,
-)
+from vntts.asset_integrity import ModelIntegrityError
 from vntts.async_ui import LatestTaskRunner
+from vntts.document_identity import file_sha256
+from vntts.model_assets import ModelAssetManager, ModelDownloadCancelled
 from vntts.settings import AppSettings
+from vntts.voice_packs import VoicePackManager
 
 default_model = "tts_models/multilingual/multi-dataset/xtts_v2"
 
@@ -239,7 +237,7 @@ class AssetManagerDialog(QDialog):
         self.model.addItem(default_model)
         if self.settings_value.tts_model:
             self.model.setCurrentText(self.settings_value.tts_model)
-        self.model_path = QLabel(str(self.model_manager.model_path(self.model_name())))
+        self.model_path = QLabel(self._model_path_text())
         self.model_path.setWordWrap(True)
         self.model.currentTextChanged.connect(self._model_changed)
         self.model_status = QLabel(
@@ -274,8 +272,17 @@ class AssetManagerDialog(QDialog):
         layout.addStretch()
         return tab
 
+    def _model_path_text(self) -> str:
+        name = self.model_name()
+        if not name:
+            return "Choose a model to see its download directory."
+        try:
+            return str(self.model_manager.model_path(name))
+        except ModelIntegrityError as error:
+            return f"Invalid model: {error}"
+
     def _model_changed(self, _text: str) -> None:
-        self.model_path.setText(str(self.model_manager.model_path(self.model_name())))
+        self.model_path.setText(self._model_path_text())
         if not self.operation_running:
             self.model_status.setText(
                 "Installation status not checked. Verify checksums to confirm this model."
@@ -401,15 +408,15 @@ class AssetManagerDialog(QDialog):
 
     def _validate_manifest_snapshot(self, manifest: str) -> ManifestValidationResult:
         path = Path(manifest).expanduser().resolve()
-        before = sha256_file(path)
+        before = file_sha256(path, error_type=OSError)
         validated = self.voice_manager.validate(path)
-        after = sha256_file(path)
+        after = file_sha256(path, error_type=OSError)
         if after != before:
             raise ValueError("Voice manifest changed while validation was running")
         return str(path), after, str(validated)
 
     def _manifest_validation_finished(
-        self, result: ManifestValidationResult, error: Exception | None
+        self, result: ManifestValidationResult | None, error: Exception | None
     ) -> None:
         self._set_manifest_validation_pending(False)
         selected = self.voice_manifest.text().strip()
@@ -425,10 +432,11 @@ class AssetManagerDialog(QDialog):
             self.voice_manifest.selectAll()
             self.voice_progress.setValue(0)
             return
+        assert result is not None
         path, digest, validated = result
         try:
             selected_path = str(Path(selected).expanduser().resolve())
-            selected_digest = sha256_file(selected_path)
+            selected_digest = file_sha256(selected_path, error_type=OSError)
         except OSError:
             self._voice_manifest_edited()
             self.voice_status.setText(
@@ -703,11 +711,11 @@ class AssetManagerDialog(QDialog):
         try:
             identity = (
                 str(Path(manifest).expanduser().resolve()),
-                sha256_file(manifest),
+                file_sha256(manifest, error_type=OSError),
             )
         except OSError:
             identity = None
-        if identity != self._validated_manifest_identity:
+        if identity is None or identity != self._validated_manifest_identity:
             self._accept_after_manifest_validation = True
             if not self.manifest_runner.active:
                 self.validate_voice_manifest()

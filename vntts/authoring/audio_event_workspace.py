@@ -15,10 +15,13 @@ from vntts.authoring.audio_event_composition import (
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
     AuthoritySnapshot,
+    assert_authority_snapshot,
     canonical_document_sha256,
     capture_authority_file,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import has_schema_version
 
 AUDIO_EVENT_WORKSPACE_SCHEMA = "vntts.authoring-audio-event-workspace"
 AUDIO_EVENT_WORKSPACE_VERSION = 2
@@ -29,7 +32,6 @@ AUDIO_EVENT_MODEL = "exact-source-event"
 AUDIO_EVENT_PROFILE = "exact-copy-v1"
 AUDIO_EVENT_VOICE = "Audio Event"
 
-_SHA256 = re.compile(r"[0-9a-f]{64}")
 _WORKSPACE_ID = re.compile(r"resume-[0-9a-f]{24}-[0-9a-f]{16}")
 _COMPOSITION_FIELDS = {
     "schema",
@@ -114,6 +116,18 @@ def validate_audio_event_composition_workspace(
     _validate_composition_authority(authority, config)
     base_item = _validate_base_workspace_authority(authority, config)
     _validate_outcome_merge_authority(workspace, config, base_item)
+    for snapshot, label in (
+        (authority.composition_snapshot, "composition"),
+        (authority.decision_snapshot, "decision"),
+        (authority.base_workspace_snapshot, "base workspace"),
+        (authority.base_state_snapshot, "base state"),
+        (authority.base_audio_snapshot, "base audio"),
+    ):
+        assert_authority_snapshot(
+            snapshot,
+            f"workspace audio-event {label}",
+            error_type=AudioEventWorkspaceError,
+        )
     return config
 
 
@@ -122,7 +136,7 @@ def _validate_composition_workspace_schema(value: object) -> dict[str, object]:
         not isinstance(value, dict)
         or set(value) != _COMPOSITION_FIELDS
         or value.get("schema") != AUDIO_EVENT_WORKSPACE_SCHEMA
-        or value.get("schema_version") != AUDIO_EVENT_WORKSPACE_VERSION
+        or not has_schema_version(value, AUDIO_EVENT_WORKSPACE_VERSION)
         or value.get("path") != "inputs/audio-event-composition/composition.json"
         or value.get("decision_path")
         != "inputs/audio-event-composition/composition-decision.json"
@@ -138,7 +152,7 @@ def _validate_composition_workspace_schema(value: object) -> dict[str, object]:
             "Workspace audio-event composition binding is malformed"
         )
     for field in _COMPOSITION_HASH_FIELDS:
-        if not _SHA256.fullmatch(str(value.get(field) or "")):
+        if not is_lowercase_sha256(str(value.get(field) or "")):
             raise AudioEventWorkspaceError(f"Workspace audio-event {field} is invalid")
     return value
 
@@ -227,7 +241,7 @@ def _validate_base_workspace_authority(
     base_item = base_items.get(config["queue_id"])
     if (
         authority.base_workspace.get("schema") != "vntts.authoring-workspace"
-        or authority.base_workspace.get("schema_version") != 1
+        or not has_schema_version(authority.base_workspace, 1)
         or authority.base_workspace.get("workspace_id") != config["base_workspace_id"]
         or authority.base_state.get("active") is not None
         or authority.base_state.get("queue_sha256")
@@ -249,10 +263,15 @@ def _validate_outcome_merge_authority(
 ) -> None:
     outcome_merge = workspace.get("outcome_merge")
     if isinstance(outcome_merge, dict):
+        items = outcome_merge.get("items", [])
+        if not isinstance(items, list):
+            raise AudioEventWorkspaceError(
+                "Workspace audio-event outcome items are malformed"
+            )
         source_item = next(
             (
                 item
-                for item in outcome_merge.get("items", [])
+                for item in items
                 if isinstance(item, dict) and item.get("queue_id") == config["queue_id"]
             ),
             None,
@@ -287,7 +306,12 @@ def validate_audio_event_composition_state_item(
         raise AudioEventWorkspaceError(
             "Generated audio-event item has no canonical workspace composition"
         )
-    if ledger != composition_item_ledger(config):
+    if (
+        not isinstance(ledger, dict)
+        or type(ledger.get("schema_version")) is not int
+        or ledger.get("speaker_identity_claim") is not False
+        or ledger != composition_item_ledger(config)
+    ):
         raise AudioEventWorkspaceError(
             "Generated audio-event composition ledger changed"
         )
@@ -302,6 +326,9 @@ def validate_audio_event_composition_state_item(
         raise AudioEventWorkspaceError(
             "Generated audio-event synthesis identity changed"
         )
+    assert_authority_snapshot(
+        snapshot, "audio-event workspace", error_type=AudioEventWorkspaceError
+    )
     return ledger
 
 

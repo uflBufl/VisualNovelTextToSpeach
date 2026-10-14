@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import shutil
 from collections.abc import Generator, Iterable, Mapping, MutableSequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -13,17 +12,21 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
+from durable_file import atomic_write_json
 from PIL import Image
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
-from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
     exclusive_advisory_lock,
 )
-from vntts.document_identity import is_lowercase_sha256
-from vntts.path_safety import contained_regular_file
+from vntts.document_identity import file_sha256, is_lowercase_sha256
+from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import (
+    contained_regular_file,
+    copy_regular_file,
+    read_regular_bytes,
+)
 
 QUALITY_REVIEW_SCHEMA = "vntts.authoring-source-reference-quality-review"
 QUALITY_REVIEW_VERSION = 1
@@ -98,10 +101,8 @@ def validate_source_reference_quality_review_document(
 
 
 def _validate_quality_review_header(session: JsonObject) -> None:
-    if (
-        session.get("schema") != QUALITY_REVIEW_SCHEMA
-        or type(session.get("schema_version")) is not int
-        or session["schema_version"] != QUALITY_REVIEW_VERSION
+    if session.get("schema") != QUALITY_REVIEW_SCHEMA or not has_schema_version(
+        session, QUALITY_REVIEW_VERSION
     ):
         raise SourceReferenceQualityError(
             "Unsupported source-reference quality review schema"
@@ -310,7 +311,7 @@ def record_source_reference_quality_decision(
         session = validate_source_reference_quality_review_document(
             session, session_path.parent
         )
-        if session_path.read_bytes() != original_payload:
+        if read_regular_bytes(session_path) != original_payload:
             raise SourceReferenceQualityError(
                 "Quality review changed while the decision was loaded"
             )
@@ -339,7 +340,7 @@ def record_source_reference_quality_decision(
         card["decision"] = {"decision": decision, "reviewed_at": _utc_now()}
         session["completed_count"] = quality_review_progress(session)[0]
         session["updated_at"] = _utc_now()
-        if session_path.read_bytes() != original_payload:
+        if read_regular_bytes(session_path) != original_payload:
             raise SourceReferenceQualityError(
                 "Quality review changed before the decision was saved"
             )
@@ -411,25 +412,34 @@ def capture_quality_outcomes(
             f"{generated_label} {queue_id} hash",
             error_type,
         )
-        if sha256_file(source) != digest:
+        if file_sha256(source, error_type=error_type) != digest:
             raise error_type(f"{generated_label} changed: {queue_id}")
         snapshots.append((source, digest))
-        audio = _copy_audio(source, digest, staging / relative)
+        audio = _copy_audio(source, digest, staging / relative, error_type=error_type)
         generated.append({**common, "audio": relative.as_posix(), **audio})
     return generated, excluded
 
 
-def _copy_audio(source: Path, digest: str, destination: Path) -> JsonObject:
+def _copy_audio(
+    source: Path,
+    digest: str,
+    destination: Path,
+    *,
+    error_type: type[Exception] = SourceReferenceQualityError,
+) -> JsonObject:
     try:
-        info = probe_pcm16_mono_wav(source)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        copy_regular_file(source, destination)
+        payload = read_regular_bytes(destination)
+        copied_sha256 = hashlib.sha256(payload).hexdigest()
+    except OSError as error:
+        raise error_type(f"Unable to copy review WAV {source}: {error}") from error
+    if copied_sha256 != digest:
+        raise error_type(f"Review WAV changed while copied: {source}")
+    try:
+        info = probe_pcm16_mono_wav(BytesIO(payload))
     except Pcm16MonoWavError as error:
-        raise SourceReferenceQualityError(
-            f"Invalid review WAV {source}: {error}"
-        ) from error
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination)
-    if sha256_file(destination) != digest:
-        raise SourceReferenceQualityError(f"Review WAV changed while copied: {source}")
+        raise error_type(f"Invalid review WAV {source}: {error}") from error
     return {
         "audio_sha256": digest,
         "sample_rate": info.sample_rate,
@@ -446,7 +456,7 @@ def _validate_portrait_record(root: Path, value: object, label: str) -> Path:
         value.get("image_sha256"), f"quality portrait {label} hash"
     )
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
     except OSError as error:
         raise SourceReferenceQualityError(
             f"Unable to read quality portrait {label}: {error}"
@@ -499,10 +509,14 @@ def _validate_audio_record(root: Path, value: object, label: str) -> Path:
         raise SourceReferenceQualityError(f"Quality audio {label} must be an object")
     path = _contained_file(root, value.get("audio"), f"quality audio {label}")
     digest = _required_sha256(value.get("audio_sha256"), f"quality audio {label} hash")
-    if sha256_file(path) != digest:
+    try:
+        payload = read_regular_bytes(path)
+    except OSError as error:
+        raise SourceReferenceQualityError(str(error)) from error
+    if hashlib.sha256(payload).hexdigest() != digest:
         raise SourceReferenceQualityError(f"Quality audio changed: {label}")
     try:
-        info = probe_pcm16_mono_wav(path)
+        info = probe_pcm16_mono_wav(BytesIO(payload))
     except Pcm16MonoWavError as error:
         raise SourceReferenceQualityError(
             f"Invalid quality WAV {label}: {error}"
@@ -541,8 +555,8 @@ def _validate_sample(
 def _read_json(path: str | Path, label: str) -> tuple[bytes, JsonObject]:
     path = Path(path).expanduser().resolve()
     try:
-        payload = path.read_bytes()
-        value = json.loads(payload)
+        payload = read_regular_bytes(path)
+        value = decode_json(payload)
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SourceReferenceQualityError(
             f"Unable to read {label} {path}: {error}"

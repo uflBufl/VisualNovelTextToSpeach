@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -15,10 +16,25 @@ from vntts_artifacts import (
     load_story_index_document,
     write_story_index_document,
 )
-from vntts_artifacts.audio import write_pcm16_wav
+from vntts_artifacts.audio import probe_pcm16_mono_wav
 from vntts_artifacts.hashing import text_sha256
-from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
+from vntts_artifacts.voice_manifest import (
+    VoiceManifestEntry,
+    load_voice_manifest,
+    write_voice_manifest,
+)
 
+import vntts.authoring.queue_builder as builder
+from tests.authoring_fixtures import (
+    queue_builder_story_metadata as story_metadata,
+)
+from tests.authoring_fixtures import (
+    queue_builder_story_record as story_record,
+)
+from tests.authoring_fixtures import (
+    write_queue_builder_inputs as write_inputs,
+)
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.audio_events import AUDIO_EVENT_PLAN_FIELD, STORY_AUDIO_CUES_FIELD
 from vntts.authoring.cli import main as authoring_main
@@ -28,56 +44,6 @@ from vntts.authoring.queue_builder import (
     plan_generation_queue,
     publish_generation_queue,
 )
-
-
-def story_metadata():
-    return {
-        "game": "Synthetic Novel",
-        "language": "en",
-        "generated_at": "2026-08-16T12:00:00+00:00",
-        "collections": [
-            {
-                "collection_id": "main",
-                "title": "Main Story",
-                "kind": "story",
-                "order": 1,
-            },
-            {
-                "collection_id": "side",
-                "title": "Side Story",
-                "kind": "story",
-                "order": 2,
-            },
-        ],
-    }
-
-
-def story_record(line_id, status, *, collection="main", **overrides):
-    text = f"Exact text for {line_id}."
-    record = {
-        "record_type": "line",
-        "line_id": line_id,
-        "chapter": "chapter-one",
-        "sequence": int(line_id.rsplit("-", 1)[-1]),
-        "speaker": "Ada (memory)",
-        "voice_character": "Ada Alias",
-        "text": text,
-        "text_sha256": text_sha256(text),
-        "kind": "dialogue",
-        "previous_text": "Previous.",
-        "next_text": "Next.",
-        "context": {"scene": "observatory"},
-        "source_audio_status": status,
-        "source_audio_reason": f"fixture_{status}",
-        "source_kind": "story",
-        "speakable": True,
-        "collection_id": collection,
-        "emotion": {"primary": "quiet"},
-        "prompt_adapters": {"generic": "Speak softly."},
-        "producer_extension": {"preserve": True},
-    }
-    record.update(overrides)
-    return record
 
 
 def story_audio_cue():
@@ -100,41 +66,275 @@ def story_audio_cue():
     }
 
 
-def write_inputs(root, records):
-    story_path = root / "story-index.jsonl"
-    write_story_index_document(story_path, story_metadata(), records)
-    references = root / "references"
-    references.mkdir()
-    write_pcm16_wav(references / "ada.wav", [0.0, 0.1, -0.1, 0.0], 16_000)
-    manifest_path = root / "voice-manifest.json"
-    write_voice_manifest(
-        manifest_path,
-        {
-            "version": 2,
-            "voices": [
-                {
-                    "character": "Ada",
-                    "speaker": "provider-ada",
-                    "aliases": ["Ada Alias"],
-                    "references": ["references/ada.wav"],
-                },
-                {
-                    "character": "No Local Reference",
-                    "speaker": "provider-missing",
-                    "references": ["references/missing.wav"],
-                },
-                {
-                    "character": "Narrator",
-                    "speaker": "provider-narrator",
-                    "references": ["references/ada.wav"],
-                },
-            ],
-        },
-    )
-    return story_path, manifest_path
-
-
 class AuthoringQueueBuilderTest(unittest.TestCase):
+    def test_inspection_rejects_surrogate_source_extensions_without_writes(self):
+        for phase in ("metadata", "record", "voice-alias"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                story, manifest = write_inputs(root, [story_record("line-1", "absent")])
+                if phase == "voice-alias":
+                    document = json.loads(manifest.read_text())
+                    document["voices"][1]["aliases"] = ["\ud800"]
+                    manifest.write_text(json.dumps(document), encoding="utf-8")
+                    label = "Source voice-manifest entries"
+                else:
+                    rows = [json.loads(row) for row in story.read_text().splitlines()]
+                    rows[0 if phase == "metadata" else 1]["producer_extension"] = {
+                        "label": "\ud800"
+                    }
+                    story.write_text(
+                        "\n".join(json.dumps(row, sort_keys=True) for row in rows)
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    label = "Source story-index document"
+                before = {
+                    path: path.read_bytes()
+                    for path in root.rglob("*")
+                    if path.is_file()
+                }
+
+                with self.assertRaisesRegex(
+                    GenerationQueueBuildError,
+                    f"{label} contains invalid UTF-8 text",
+                ) as caught:
+                    inspect_generation_queue(story, manifest)
+
+                self.assertIsInstance(caught.exception.__cause__, UnicodeEncodeError)
+                self.assertEqual(
+                    {
+                        path: path.read_bytes()
+                        for path in root.rglob("*")
+                        if path.is_file()
+                    },
+                    before,
+                )
+
+    def test_unicode_source_extensions_preserve_inputs_and_canonical_identity(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            record = story_record(
+                "line-1", "absent", producer_extension={"label": "реплика 音声"}
+            )
+            story, manifest = write_inputs(root, [record])
+            rows = [json.loads(row) for row in story.read_text().splitlines()]
+            rows[0]["producer_extension"] = {"label": "источник 音声"}
+            story.write_text(
+                "\n".join(
+                    json.dumps(row, ensure_ascii=False, sort_keys=True) for row in rows
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            document = json.loads(manifest.read_text())
+            document["voices"][1]["aliases"] = ["запасной 音声"]
+            manifest.write_text(
+                json.dumps(document, ensure_ascii=False), encoding="utf-8"
+            )
+            _manifest, entries = load_voice_manifest(manifest)
+            before = {
+                path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+            }
+
+            plan = inspect_generation_queue(story, manifest)
+            output = publish_generation_queue(plan, root / "queue.jsonl")
+            queue = VoiceGenerationQueue.load(output)
+
+            self.assertEqual(
+                plan.metadata["source_story_index_document_sha256"],
+                builder.canonical_document_sha256(
+                    {"metadata": rows[0], "records": rows[1:]}
+                ),
+            )
+            self.assertEqual(
+                queue.items[0].document["producer_extension"],
+                record["producer_extension"],
+            )
+            self.assertEqual(entries[1].aliases, ("запасной 音声",))
+            self.assertEqual(
+                plan.metadata["source_voice_manifest_entries_sha256"],
+                builder.canonical_document_sha256(
+                    [
+                        {
+                            "character": entry.character,
+                            "speaker": entry.speaker,
+                            "aliases": list(entry.aliases),
+                            "references": list(entry.references),
+                        }
+                        for entry in entries
+                    ]
+                ),
+            )
+            self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+    def test_source_replacement_after_capture_is_refused_during_inspection(self):
+        for source_name in ("story", "manifest"):
+            with self.subTest(source=source_name), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                story_path, manifest_path = write_inputs(
+                    root, [story_record("line-1", "absent")]
+                )
+                source = story_path if source_name == "story" else manifest_path
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["voices"][0]["character"] = "Replacement Ada"
+                read_bytes = builder.read_regular_bytes
+                captured = False
+
+                def replace_after_capture(path):
+                    nonlocal captured
+                    payload = read_bytes(path)
+                    if path == source and not captured:
+                        captured = True
+                        if source_name == "story":
+                            write_story_index_document(
+                                source,
+                                story_metadata(),
+                                [story_record("line-2", "absent")],
+                            )
+                        else:
+                            write_voice_manifest(source, manifest)
+                    return payload
+
+                with (
+                    patch.object(builder, "read_regular_bytes", replace_after_capture),
+                    self.assertRaisesRegex(
+                        GenerationQueueBuildError, "changed during queue planning"
+                    ),
+                ):
+                    inspect_generation_queue(story_path, manifest_path)
+                self.assertTrue(captured)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_inspection_captures_refuse_fifo_preserve_inputs_and_recover(self):
+        for role in ("story", "manifest"):
+            with self.subTest(role=role), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                story, manifest = write_inputs(root, [story_record("line-1", "absent")])
+                selected = story if role == "story" else manifest
+                selected.chmod(0o444)
+                mode = selected.stat().st_mode
+                before = {
+                    path: path.read_bytes()
+                    for path in root.rglob("*")
+                    if path.is_file()
+                }
+                original = builder.read_regular_bytes
+                refused = []
+
+                def capture(candidate):
+                    if Path(candidate) != selected:
+                        return original(candidate)
+                    gate: RegularFileGate = {"path": selected, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(candidate)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                error_type = (
+                    StoryIndexError if role == "story" else GenerationQueueBuildError
+                )
+                with (
+                    patch.object(builder, "read_regular_bytes", capture),
+                    self.assertRaisesRegex(error_type, "regular file") as caught,
+                ):
+                    inspect_generation_queue(story, manifest)
+                self.assertEqual(len(refused), 1)
+                cause = caught.exception.__cause__
+                if role == "manifest":
+                    cause = cause.__cause__
+                self.assertIs(cause, refused[0])
+                self.assertEqual(
+                    {
+                        path: path.read_bytes()
+                        for path in root.rglob("*")
+                        if path.is_file()
+                    },
+                    before,
+                )
+                self.assertEqual(selected.stat().st_mode, mode)
+                plan = inspect_generation_queue(story, manifest)
+                self.assertEqual(
+                    plan.metadata["source_story_index_sha256"],
+                    hashlib.sha256(before[story]).hexdigest(),
+                )
+                self.assertEqual(
+                    plan.metadata["source_voice_manifest_sha256"],
+                    hashlib.sha256(before[manifest]).hexdigest(),
+                )
+                self.assertEqual(len(plan.items), 1)
+                self.assertEqual(
+                    {
+                        path: path.read_bytes()
+                        for path in root.rglob("*")
+                        if path.is_file()
+                    },
+                    before,
+                )
+
+    def test_only_needed_references_are_probed_once_per_plan(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story_path, manifest_path = write_inputs(
+                root, [story_record("line-1", "unavailable")]
+            )
+            with patch(
+                "vntts.authoring.queue_builder.probe_pcm16_mono_wav",
+                wraps=probe_pcm16_mono_wav,
+            ) as probe:
+                plan = inspect_generation_queue(story_path, manifest_path)
+                probe.assert_not_called()
+                self.assertEqual(plan.summary.recoverable_source_audio, 1)
+
+                write_story_index_document(
+                    story_path,
+                    story_metadata(),
+                    [
+                        story_record("line-1", "absent"),
+                        story_record(
+                            "line-2",
+                            "absent",
+                            speaker="Narrator",
+                            voice_character="Narrator",
+                        ),
+                        story_record("line-3", "absent"),
+                    ],
+                )
+                plan = inspect_generation_queue(story_path, manifest_path)
+                self.assertEqual(plan.summary.ready, 3)
+                probe.assert_called_once_with(
+                    (root / "references" / "ada.wav").resolve()
+                )
+
+                (root / "references" / "ada.wav").write_bytes(b"not a WAV")
+                plan = inspect_generation_queue(story_path, manifest_path)
+                self.assertEqual(plan.summary.ready, 0)
+                self.assertEqual(plan.summary.missing_reference, 3)
+                self.assertEqual(probe.call_count, 2)
+
+    def test_unused_typed_reference_must_stay_inside_manifest_directory(self):
+        with TemporaryDirectory() as directory:
+            story_path, manifest_path = write_inputs(
+                Path(directory), [story_record("line-1", "unavailable")]
+            )
+            document = StoryIndexDocument.load(story_path)
+            entries = (
+                VoiceManifestEntry(
+                    character="Unused",
+                    speaker="unused",
+                    aliases=(),
+                    references=("../outside.wav",),
+                ),
+            )
+            with patch("vntts.authoring.queue_builder.probe_pcm16_mono_wav") as probe:
+                with self.assertRaisesRegex(GenerationQueueBuildError, "inside"):
+                    plan_generation_queue(document, entries, manifest_path)
+                probe.assert_not_called()
+
     def test_partial_source_audio_is_queued_for_complete_text_generation(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -482,6 +682,20 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                 GenerationQueueBuildError, "requires version 2"
             ):
                 inspect_generation_queue(story_path, manifest_path)
+
+    def test_non_integer_manifest_version_is_rejected_before_planning(self):
+        for version in (2.0, True, "2", [], {}):
+            with self.subTest(version=version), TemporaryDirectory() as directory:
+                story_path, manifest_path = write_inputs(
+                    Path(directory), [story_record("line-1", "absent")]
+                )
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["version"] = version
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaisesRegex(
+                    GenerationQueueBuildError, "Unsupported voice manifest version"
+                ):
+                    inspect_generation_queue(story_path, manifest_path)
 
     def test_unsafe_voice_reference_cannot_escape_preflight_or_publish_output(self):
         for reference in ("../outside.wav", "/absolute.wav", "..\\outside.wav"):

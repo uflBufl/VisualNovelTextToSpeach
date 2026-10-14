@@ -11,6 +11,7 @@ from typing import TypedDict
 
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import has_schema_version
 
 TERMINAL_CONFLICT_MERGE_SCHEMA = "vntts.authoring-terminal-conflict-workspace-merge"
 TERMINAL_CONFLICT_MERGE_VERSION = 1
@@ -137,10 +138,10 @@ def is_terminal_review_outcome(result: object) -> bool:
     return isinstance(result, dict) and (
         result.get("status"),
         result.get("review_status"),
-    ) in {
+    ) in (
         ("approved", "approved"),
         ("generated", "rejected"),
-    }
+    )
 
 
 def validate_terminal_conflict_item_provenance(
@@ -156,13 +157,14 @@ def validate_terminal_conflict_item_provenance(
         raise TerminalConflictRecordError(
             "Terminal conflict source workspace identity is invalid"
         )
-    for field, label in (
-        ("source_state_sha256", "source state SHA-256"),
-        ("source_item_sha256", "source item SHA-256"),
-        ("audio_sha256", "audio SHA-256"),
-        ("selected_candidate_id", "selected candidate ID"),
-    ):
-        _sha256(value.get(field), label)
+    source_state_sha256 = _sha256(
+        value.get("source_state_sha256"), "source state SHA-256"
+    )
+    source_item_sha256 = _sha256(value.get("source_item_sha256"), "source item SHA-256")
+    audio_sha256 = _sha256(value.get("audio_sha256"), "audio SHA-256")
+    selected_candidate_id = _sha256(
+        value.get("selected_candidate_id"), "selected candidate ID"
+    )
     if value.get("status") == "approved" and value.get("review_status") == "approved":
         status = "approved"
         review_status = "approved"
@@ -181,18 +183,12 @@ def validate_terminal_conflict_item_provenance(
         )
     return {
         "source_workspace_id": workspace_id,
-        "source_state_sha256": _sha256(
-            value.get("source_state_sha256"), "source state SHA-256"
-        ),
-        "source_item_sha256": _sha256(
-            value.get("source_item_sha256"), "source item SHA-256"
-        ),
-        "audio_sha256": _sha256(value.get("audio_sha256"), "audio SHA-256"),
+        "source_state_sha256": source_state_sha256,
+        "source_item_sha256": source_item_sha256,
+        "audio_sha256": audio_sha256,
         "status": status,
         "review_status": review_status,
-        "selected_candidate_id": _sha256(
-            value.get("selected_candidate_id"), "selected candidate ID"
-        ),
+        "selected_candidate_id": selected_candidate_id,
         "next_action": _text(value.get("next_action"), "next action"),
     }
 
@@ -204,7 +200,7 @@ def validate_terminal_conflict_state_binding(
     if (
         not isinstance(merge, dict)
         or merge.get("schema") != TERMINAL_CONFLICT_MERGE_SCHEMA
-        or merge.get("schema_version") != TERMINAL_CONFLICT_MERGE_VERSION
+        or not has_schema_version(merge, TERMINAL_CONFLICT_MERGE_VERSION)
         or not isinstance(merge.get("items"), list)
     ):
         raise TerminalConflictRecordError(

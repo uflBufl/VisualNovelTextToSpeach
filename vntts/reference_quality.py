@@ -13,10 +13,12 @@ from pathlib import Path
 from typing import Literal, TypedDict
 
 import numpy as np
+from durable_file import atomic_write_json
 from numpy.typing import NDArray
-from vntts_artifacts.atomic_io import atomic_write_json
 
 from vntts.cli import cli_error, cli_messages
+from vntts.numeric_values import optional_finite_scalar
+from vntts.path_safety import ensure_separate_output, read_regular_bytes
 
 
 class ReferenceQualityReport(TypedDict):
@@ -63,7 +65,7 @@ def analyze_reference(
 ) -> ReferenceQualityReport:
     path = Path(path).expanduser().resolve()
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
     except OSError as error:
         raise ValueError(f"Unable to read reference WAV {path}: {error}") from error
     return analyze_reference_bytes(
@@ -139,10 +141,13 @@ def _reference_metrics(
     silence_db: float,
     window_ms: float,
 ) -> ReferenceMetrics:
-    if not math.isfinite(window_ms) or window_ms <= 0:
+    window = optional_finite_scalar(window_ms)
+    if window is None or window <= 0:
         raise ValueError("Reference analysis window must be finite and positive")
-    if not math.isfinite(silence_db):
+    silence = optional_finite_scalar(silence_db)
+    if silence is None:
         raise ValueError("Reference silence threshold must be finite")
+    window_ms, silence_db = window, silence
     absolute = np.abs(samples)
     squared = np.square(samples)
     duration_seconds = len(samples) / sample_rate
@@ -241,24 +246,25 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
+        ensure_separate_output(
+            arguments.output, (path.expanduser() for path in arguments.reference)
+        )
         report = analyze_reference_set(arguments.reference)
         atomic_write_json(arguments.output, report)
     except (OSError, TypeError, ValueError) as error:
-        return int(cli_error(error))
+        return cli_error(error)
     rejected = sum(
         reference["objective_preflight"] == "reject"
         for reference in report["references"]
     )
-    return int(
-        cli_messages(
-            (
-                f"Reference preflight: {len(report['references']) - rejected} passed, "
-                f"{rejected} rejected",
-                arguments.output,
-            ),
-            exit_code=1 if rejected else 0,
-            error=bool(rejected),
-        )
+    return cli_messages(
+        (
+            f"Reference preflight: {len(report['references']) - rejected} passed, "
+            f"{rejected} rejected",
+            arguments.output,
+        ),
+        exit_code=1 if rejected else 0,
+        error=bool(rejected),
     )
 
 

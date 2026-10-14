@@ -1,5 +1,6 @@
+import sys
 import unittest
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from queue import Queue
 from threading import Event, Lock, Thread
@@ -1034,6 +1035,90 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
             [SpeechChunk(2, "Bea", "Fallback reply.")],
         )
 
+    def test_canonical_event_keeps_actual_history_without_prefilling_stability(self):
+        for stability_frames in (2, sys.maxsize):
+            with self.subTest(stability_frames=stability_frames):
+                tracker = self.create_tracker(stability_frames=stability_frames)
+                chunks = tracker.observe_canonical("Ada", "Canonical line.", "line-1")
+                self.assertEqual(len(chunks), 1)
+                self.assertEqual(
+                    (chunks[0].generation, chunks[0].ordinal, chunks[0].line_id),
+                    (1, 1, "line-1"),
+                )
+                self.assertEqual(tuple(tracker.history), ("Canonical line.",))
+                self.assertEqual(tracker.history.maxlen, stability_frames)
+                self.assertTrue(tracker.is_idle_complete())
+                self.assertEqual(
+                    tracker.observe_canonical("Ada", "Canonical line.", "line-1"), []
+                )
+                self.assertEqual(tracker.observe("Ada", "Canonical line. noise"), [])
+                self.assertEqual(tracker.flush(), [])
+                self.assertEqual(tracker.generation, 1)
+        tracker = self.create_tracker()
+        tracker.observe_canonical("Ada", "Canonical line.", "line-1")
+        tracker.expect_new_dialog()
+        self.assertEqual(tracker.observe("Bea", "A new reply."), [])
+        self.assertEqual(
+            tracker.observe("Bea", "A new reply."),
+            [SpeechChunk(2, "Bea", "A new reply.")],
+        )
+        self.assertEqual(tuple(tracker.pending_history), ())
+        self.assertEqual(tracker.next_chunk_ordinal, 2)
+
+    def test_pending_dialog_reset_discards_conflicting_and_canonical_state(self):
+        tracker = self.create_tracker()
+        tracker.observe_canonical("Ada", "Original line.", "original")
+        tracker.expect_new_dialog()
+        self.clock.advance(0.3)
+        self.assertEqual(tracker.observe("Bea", "Next line."), [])
+        self.assertEqual(tracker.pending_character, "Bea")
+        self.assertEqual(tracker.generation, 1)
+        self.assertEqual(
+            tracker.observe("Bea", "Next line."), [SpeechChunk(2, "Bea", "Next line.")]
+        )
+        self.assertIsNone(tracker.canonical_line_id)
+        self.assertIsNone(tracker.silent_event_id)
+        self.assertFalse(tracker.transition_expected)
+        self.assertFalse(tracker.conflicting_observation)
+        self.assertEqual(tracker.pending_character, None)
+        self.assertEqual(tuple(tracker.pending_history), ())
+        self.assertEqual(tracker.last_change_at, self.clock())
+        self.assertEqual(tracker.last_stable_change_at, self.clock())
+        self.assertEqual(tracker.observe("Bea", ""), [])
+        self.assertEqual(tracker.generation, 3)
+        self.assertEqual(tracker.history.maxlen, 2)
+        self.assertEqual(tuple(tracker.history), ())
+        self.assertIsNone(tracker.last_stable_change_at)
+        self.assertEqual(tracker.next_chunk_ordinal, 1)
+        self.assertTrue(tracker.observe_silent("silent"))
+        self.assertEqual(tracker.generation, 4)
+        self.assertTrue(tracker.is_idle_complete())
+
+    def test_punctuation_boundaries_preserve_decimals_ellipsis_and_clauses(self):
+        for text, sentences in (
+            (
+                "A 3.14 value. Wait... Yes!\tNext?\nTail",
+                ["A 3.14 value.", "Wait...", "Yes!", "Next?", "Tail"],
+            ),
+            ("internal.word stays", ["internal.word stays"]),
+            ("...!? ", ["...!?"]),
+        ):
+            tracker = self.create_tracker()
+            tracker.observe("Ada", text)
+            chunks = tracker.observe("Ada", text)
+            emitted = [chunk.text for chunk in chunks]
+            emitted += [chunk.text for chunk in tracker.flush()]
+            self.assertEqual(
+                emitted, [part for part in sentences if any(c.isalnum() for c in part)]
+            )
+        tracker = self.create_tracker(
+            complete_sentences_only=False, min_chunk_characters=1
+        )
+        tracker.observe("Ada", "One, two; three: tail")
+        chunks = tracker.observe("Ada", "One, two; three: tail")
+        self.assertEqual([chunk.text for chunk in chunks], ["One, two; three:"])
+        self.assertEqual([chunk.text for chunk in tracker.flush()], ["tail"])
+
     def create_tracker(self, **options):
         self.clock = FakeClock()
         return IncrementalDialogTracker(clock=self.clock, **options)
@@ -1459,6 +1544,46 @@ class LiveDialogReaderTest(unittest.TestCase):
         }
         options.update(overrides)
         return LiveDialogReader(**options)
+
+    def test_failed_capture_submission_quiesces_ocr_and_allows_restart(self):
+        with ThreadPoolExecutor(max_workers=1) as ocr_executor:
+            capture_executor = Mock()
+            capture_executor.submit.side_effect = RuntimeError("capture unavailable")
+            reader = self.create_reader(
+                ocr_executor=ocr_executor, capture_executor=capture_executor
+            )
+            try:
+                with self.assertRaisesRegex(RuntimeError, "capture unavailable"):
+                    reader.start()
+                self.assertTrue(reader.stop_event.is_set())
+                reader.wait(timeout_seconds=1)
+                self.assertTrue(reader.ocr_future.done())
+                completed_capture = Future()
+                completed_capture.set_result(None)
+                capture_executor.submit.side_effect = None
+                capture_executor.submit.return_value = completed_capture
+                self.assertTrue(reader.start())
+                self.assertTrue(reader.stop())
+                reader.wait(timeout_seconds=1)
+            finally:
+                reader.stop_event.set()
+                with reader.pause_condition:
+                    reader.pause_condition.notify_all()
+
+    def test_stop_quiesces_ocr_after_capture_has_finished(self):
+        with ThreadPoolExecutor(max_workers=1) as ocr_executor:
+            reader = self.create_reader()
+            reader.capture_future = Future()
+            reader.capture_future.set_result(None)
+            reader.ocr_future = ocr_executor.submit(reader._run_ocr, reader.stop_event)
+            try:
+                self.assertTrue(reader.stop())
+                reader.wait(timeout_seconds=1)
+                self.assertTrue(reader.ocr_future.done())
+            finally:
+                reader.stop_event.set()
+                with reader.pause_condition:
+                    reader.pause_condition.notify_all()
 
     def test_runtime_control_snapshot_reports_actual_playback_capabilities(self):
         reader = self.create_reader()

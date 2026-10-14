@@ -13,14 +13,12 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QMessageBox  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
-from tests.test_pregeneration_audition import (  # noqa: E402
+from tests.pregeneration_fixtures import (  # noqa: E402
     ambiguous_fixture,
     clean_wav_bytes,
 )
-from tests.test_pregeneration_setup import (  # noqa: E402
-    ManualThreadPool,
-    write_story_index,
-)
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
+from tests.story_fixtures import write_story_index  # noqa: E402
 from vntts.game_content_importer import Reverse1999GameImporter  # noqa: E402
 from vntts.person_link_suggestions import PersonLinkSuggestion  # noqa: E402
 from vntts.pregeneration_audition import (  # noqa: E402
@@ -300,16 +298,24 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 player.reset_mock()
                 panel.a_play.click()
                 self.assertFalse(panel.a_use.isEnabled())
+                self.assertEqual(panel.preview_phrase.count(), 2)
+                panel.preview_phrase.setCurrentIndex(1)
+                panel.preview_phrase.setCurrentIndex(0)
+                self.assertFalse(panel.a_use.isEnabled())
                 panel.a_use.click()
                 decisions.remember_many.assert_not_called()
+                self.assertEqual(pool.tasks, [])
                 if failure != "unplayable":
                     player.play_bytes.assert_not_called()
                     self.assertEqual(panel.a_play.text(), "Generate preview")
                 else:
                     player.play_bytes.return_value = object()
                     panel.a_play.click()
+                    self.assertFalse(panel.a_use.isEnabled())
+                    pool.run_next()
+                    self.application.processEvents()
                     self.assertTrue(panel.a_use.isEnabled())
-                    self.assertEqual(service.generate.call_count, 1)
+                    self.assertEqual(service.generate.call_count, 2)
 
     def test_original_playback_verifies_the_bytes_after_reference_resolution(self):
         with TemporaryDirectory() as directory:
@@ -742,12 +748,15 @@ class VoiceAuditionPanelTest(unittest.TestCase):
     def test_only_requested_samples_generate_and_cached_candidate_can_be_accepted(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            plan, group, _manifest = ambiguous_fixture(root)
+            plan, group, manifest = ambiguous_fixture(root)
             plan, group = with_second_candidate(plan, group)
             plan, second = with_second_group(plan, group)
             decisions = Mock()
             previews = Mock()
             previews.generate.return_value = generated_preview(root)
+            previews.reference_audio.return_value = (
+                manifest.parent / "references" / "rhiannon.wav"
+            )
             previews.backend.runtime_status = "GPU: RTX 2070 SUPER <8 GB>"
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
@@ -760,6 +769,11 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertEqual(pool.tasks, [])
             panel.a_original.click()
             previews.generate.assert_not_called()
+            previews.reference_audio.assert_called_once_with(
+                plan, group, group.candidates[0].source_id
+            )
+            self.assertTrue(panel.a_use.isEnabled())
+            self.assertEqual(pool.tasks, [])
             panel.a_play.click()
             self.assertEqual(panel.runtime.textFormat(), Qt.TextFormat.PlainText)
             self.assertIn("GPU: RTX 2070 SUPER", panel.runtime.text())

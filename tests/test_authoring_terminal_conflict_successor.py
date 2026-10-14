@@ -5,8 +5,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import tests.test_authoring_terminal_conflict_review as review_tests
 import vntts.authoring.terminal_conflict_successor as successor_module
+from tests.terminal_conflict_fixtures import create_terminal_conflict_fixture
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.publication import AtomicPublicationError
 from vntts.authoring.terminal_conflict_resolution import (
@@ -31,8 +31,8 @@ from vntts.authoring.terminal_conflict_successor import (
 
 class TerminalConflictSuccessorTest(unittest.TestCase):
     def create_resolution(self, root, authority):
-        _primary, _secondary, queue_id, report_path = (
-            review_tests.TerminalConflictReviewTest().create_fixture(root)
+        _primary, _secondary, queue_id, report_path = create_terminal_conflict_fixture(
+            root
         )
         review_root = root / "conflict-review"
         review = publish_terminal_conflict_review(report_path, review_root)

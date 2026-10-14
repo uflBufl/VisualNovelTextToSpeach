@@ -5,12 +5,11 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib
+from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
-from tempfile import TemporaryDirectory
 from typing import Callable, TypeAlias
 
-import numpy as np
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
@@ -55,7 +54,12 @@ from vntts.authoring.terminal_conflict_records import (
     validate_terminal_conflict_item_provenance,
 )
 from vntts.authoring.workspace_foundation import load_json_object
+from vntts.cleanup import temporary_directory
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import has_schema_version as _has_exact_schema_version
+from vntts.json_types import is_json_object
+from vntts.numeric_values import optional_finite_number
+from vntts.path_safety import read_regular_bytes
 from vntts.synthesis import SynthesisCompletion
 from vntts.voices import synthesis_character_for_line
 
@@ -115,14 +119,18 @@ FAILURE_KINDS = {
 }
 
 StateObject: TypeAlias = dict[str, object]
+StateItems: TypeAlias = dict[str, StateObject]
 QueueById: TypeAlias = dict[str, VoiceGenerationQueueItem]
 
 
-def _has_exact_schema_version(document: StateObject, expected: int) -> bool:
-    return (
-        type(document.get("schema_version")) is int
-        and document.get("schema_version") == expected
-    )
+def generation_state_items(state: StateObject) -> StateItems:
+    items = state.get("items")
+    if not isinstance(items, dict) or not all(
+        isinstance(queue_id, str) and is_json_object(record)
+        for queue_id, record in items.items()
+    ):
+        raise BulkGenerationError("Generation state items are malformed")
+    return items
 
 
 def load_stable_generation_queue(
@@ -131,12 +139,12 @@ def load_stable_generation_queue(
     """Load a queue from one immutable byte snapshot and return its SHA-256."""
     queue_path = Path(queue_path)
     try:
-        payload = queue_path.read_bytes()
+        payload = read_regular_bytes(queue_path)
     except OSError as error:
         raise BulkGenerationError(str(error)) from error
     digest = hashlib.sha256(payload).hexdigest()
     try:
-        with TemporaryDirectory() as directory:
+        with temporary_directory() as directory:
             snapshot = Path(directory) / "queue.jsonl"
             snapshot.write_bytes(payload)
             queue = VoiceGenerationQueue.load(snapshot)
@@ -584,29 +592,17 @@ def _validate_pause_diagnosis(
         ):
             raise BulkGenerationError(f"State item {queue_id!r} pause span is invalid")
         values = [
-            span.get("start_seconds"),
-            span.get("end_seconds"),
-            span.get("duration_seconds"),
+            optional_finite_number(span.get(field))
+            for field in ("start_seconds", "end_seconds", "duration_seconds")
         ]
-        if any(
-            not isinstance(value, (int, float))
-            or isinstance(value, bool)
-            or not np.isfinite(value)
-            or value < 0
-            for value in values
-        ):
+        if any(value is None or value < 0 for value in values):
             raise BulkGenerationError(
                 f"State item {queue_id!r} pause span timing is invalid"
             )
-        start_value, end_value, duration_value = values
-        assert isinstance(start_value, (int, float))
-        assert isinstance(end_value, (int, float))
-        assert isinstance(duration_value, (int, float))
-        start, end, duration = (
-            float(start_value),
-            float(end_value),
-            float(duration_value),
-        )
+        start, end, duration = values
+        assert start is not None
+        assert end is not None
+        assert duration is not None
         if (
             start < previous_end
             or end <= start
@@ -2255,7 +2251,7 @@ def _parse_synthesis_control_file(file_record: object, role: str) -> dict[str, s
     if not isinstance(file_record, dict) or set(file_record) != {"path", "sha256"}:
         raise BulkGenerationError(f"Synthesis control {role!r} file record is invalid")
     relative = file_record.get("path")
-    if not isinstance(relative, str) or "\\" in relative:
+    if not isinstance(relative, str) or "\\" in relative or "\x00" in relative:
         raise BulkGenerationError(f"Synthesis control {role!r} file path is invalid")
     pure = PurePosixPath(relative)
     if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
@@ -2551,7 +2547,7 @@ def _validate_current_success_item(result: StateObject, queue_id: str) -> None:
 
 
 def _validate_success_speech_quality(
-    result: StateObject, queue_id: str, quality: AudioQuality, samples: np.ndarray
+    result: StateObject, queue_id: str, quality: AudioQuality, samples: Sequence[int]
 ) -> None:
     stored = result.get("speech_quality")
     if not isinstance(stored, dict):
@@ -2578,7 +2574,7 @@ def _validate_success_speech_quality(
     )
     if version == LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION:
         actual.pop("analysis_version")
-    if stored != actual:
+    if stored != actual or any(isinstance(value, bool) for value in stored.values()):
         raise BulkGenerationError(
             f"Generated WAV speech quality mismatch for {queue_id!r}"
         )
@@ -2774,6 +2770,8 @@ __all__ = [
     "REVIEWED_REJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA",
     "STATE_SCHEMA",
     "STATE_VERSION",
+    "StateItems",
+    "generation_state_items",
     "contained_state_path",
     "control_directory_digest",
     "live_fallback_decision",

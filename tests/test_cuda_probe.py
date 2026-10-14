@@ -1,48 +1,14 @@
+import json
 import sys
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+from tests.cuda_fixtures import FakeTorch
 from vntts.cuda_probe import CudaProbeError, inspect_cuda, main
-
-
-class FakeCuda:
-    def __init__(self, available=True):
-        self.available = available
-
-    def is_available(self):
-        return self.available
-
-    def current_device(self):
-        return 1
-
-    def get_device_properties(self, index):
-        assert index == 1
-        return type("Properties", (), {"name": "Test GPU"})()
-
-    def mem_get_info(self, index):
-        assert index == 1
-        return 12, 34
-
-    def get_device_capability(self, index):
-        assert index == 1
-        return 8, 9
-
-    def is_bf16_supported(self):
-        return True
-
-
-class FakeTorch:
-    __version__ = "2.9.0+cu128"
-
-    def __init__(self, available=True, cuda_runtime="12.8"):
-        self.cuda = FakeCuda(available)
-        self.version = type("Version", (), {"cuda": cuda_runtime})()
-        cudnn = type("Cudnn", (), {"version": staticmethod(lambda: 91002)})()
-        self.backends = type("Backends", (), {"cudnn": cudnn})()
 
 
 class CudaProbeTest(unittest.TestCase):
@@ -72,6 +38,36 @@ class CudaProbeTest(unittest.TestCase):
         report = inspect_cuda(torch)
 
         self.assertIsNone(report["bf16_supported"])
+
+    def test_rejects_malformed_availability_before_device_inspection(self):
+        for value in ("false", 1, None):
+            with self.subTest(value=value):
+                torch = FakeTorch()
+                torch.cuda.is_available = Mock(return_value=value)
+                torch.cuda.current_device = Mock()
+
+                with self.assertRaisesRegex(CudaProbeError, "boolean"):
+                    inspect_cuda(torch)
+
+                torch.cuda.current_device.assert_not_called()
+
+    def test_requires_boolean_bf16_probe_result(self):
+        for value in ("false", 1, None):
+            with self.subTest(value=value):
+                torch = FakeTorch()
+                torch.cuda.is_bf16_supported = Mock(return_value=value)
+
+                with self.assertRaisesRegex(CudaProbeError, "boolean"):
+                    inspect_cuda(torch)
+
+        for value in (True, False):
+            with self.subTest(value=value):
+                torch = FakeTorch()
+                torch.cuda.is_bf16_supported = Mock(return_value=value)
+
+                report = inspect_cuda(torch)
+
+                self.assertIs(report["bf16_supported"], value)
 
     def test_rejects_malformed_cudnn_version(self):
         torch = FakeTorch()
@@ -112,6 +108,44 @@ class CudaProbeTest(unittest.TestCase):
                     self.assertEqual(main(["--output", str(output)]), 2)
                 self.assertIn(message, stderr.getvalue())
                 self.assertFalse(output.exists())
+
+    def test_cli_atomic_output_failure_keeps_existing_report(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "nested" / "report.json"
+            output.parent.mkdir()
+            output.write_text('{"status": "old"}\n', encoding="utf-8")
+            stderr = StringIO()
+            torch = FakeTorch()
+
+            with (
+                patch.dict(sys.modules, {"torch": torch}),
+                patch(
+                    "durable_file.publication.os.replace",
+                    side_effect=OSError("replace failed"),
+                ),
+                redirect_stderr(stderr),
+            ):
+                result = main(["--output", str(output)])
+
+            self.assertEqual(result, 2)
+            self.assertIn("replace failed", stderr.getvalue())
+            self.assertEqual(output.read_text(encoding="utf-8"), '{"status": "old"}\n')
+            self.assertEqual(list(output.parent.iterdir()), [output])
+
+    def test_cli_nested_output_preserves_json_and_stdout(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "nested" / "report.json"
+            stdout = StringIO()
+            torch = FakeTorch()
+
+            with patch.dict(sys.modules, {"torch": torch}), redirect_stdout(stdout):
+                result = main(["--output", str(output)])
+
+            self.assertEqual(result, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(output.read_text(encoding="utf-8"), stdout.getvalue())
+            self.assertEqual(payload["schema"], "vntts.cuda-probe")
+            self.assertEqual(payload["schema_version"], 1)
 
     def test_cli_returns_failure_without_traceback(self):
         with patch(

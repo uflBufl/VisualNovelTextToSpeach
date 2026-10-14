@@ -7,13 +7,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
 
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cohort_review import (
     COHORT_REVIEW_DEFECT_REASONS,
     CohortReviewError,
     JsonObject,
+    _validate_decision_against_plan,
+    _validate_plan_source_workspace,
     build_cohort_review_decision,
     load_cohort_review_decision,
     load_cohort_review_plan,
@@ -24,6 +26,8 @@ from vntts.authoring.robustness_corpus import (
     load_speech_robustness_corpus,
 )
 from vntts.authoring.workbench import AuthoringWorkbenchError, load_workspace_authority
+from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import ensure_separate_output, read_regular_text
 
 PROGRESS_SCHEMA = "vntts.legacy-reason-review-progress"
 PROGRESS_VERSION = 1
@@ -63,6 +67,7 @@ class LegacyReasonReview:
     decision_root: Path
     items: tuple[LegacyReasonReviewItem, ...]
     known_reasons: dict[tuple[str, str, str], tuple[str, ...]]
+    input_paths: tuple[Path, ...] = ()
 
 
 def build_legacy_reason_review(
@@ -129,6 +134,14 @@ def build_legacy_reason_review(
         root,
         tuple(sorted(items, key=lambda item: (item.speaker, item.line_id))),
         known,
+        input_paths=(corpus.directory / "corpus.json",)
+        + tuple(
+            corpus.directory
+            / _required_text(artifact.get("path"), "Robustness artifact path")
+            for artifact in _object_list(
+                corpus.document.get("artifacts"), "Robustness corpus artifacts"
+            )
+        ),
     )
 
 
@@ -139,7 +152,7 @@ def load_reason_review_progress(
     if not path.is_file():
         return {}
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = decode_json(read_regular_text(path, encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise LegacyReasonReviewError(
             f"Reason-review progress is invalid: {error}"
@@ -147,7 +160,7 @@ def load_reason_review_progress(
     if (
         not isinstance(document, dict)
         or document.get("schema") != PROGRESS_SCHEMA
-        or document.get("schema_version") != PROGRESS_VERSION
+        or not has_schema_version(document, PROGRESS_VERSION)
         or document.get("corpus_id") != review.corpus_id
         or not isinstance(document.get("items"), list)
     ):
@@ -194,7 +207,17 @@ def write_reason_review_progress(
             if item.item_id in selections
         ],
     }
-    atomic_write_json(Path(path).expanduser(), document)
+    path = Path(path).expanduser()
+    ensure_separate_output(
+        path,
+        (
+            review.corpus_directory / "corpus.json",
+            *review.input_paths,
+            *(item.audio for item in review.items),
+        ),
+        error_type=LegacyReasonReviewError,
+    )
+    atomic_write_json(path, document)
     return document
 
 
@@ -203,26 +226,18 @@ def publish_reason_review_decisions(
 ) -> tuple[Path, ...]:
     """Write additive v4 reassessments; never rewrite or reapply old review state."""
     selections = _validated_selections(review, selections, complete=True)
-    reasons_by_key = dict(review.known_reasons)
-    labels_by_key = {}
-    for item in review.items:
-        key = (item.workspace_id, item.queue_id, item.audio_sha256)
-        reasons_by_key[key] = selections[item.item_id]
-        labels_by_key[key] = "bad" if selections[item.item_id] else "acceptable"
-    source_paths = _source_decision_paths(review)
-    selected_decision_ids = {
-        decision_id
+    selections_by_key = {
+        (item.workspace_id, item.queue_id, item.audio_sha256): selections[item.item_id]
         for item in review.items
-        for decision_id in item.decision_ids
-        if decision_id in source_paths
     }
-    if not selected_decision_ids:
+    source_paths = _source_decision_paths(review)
+    if not source_paths:
         raise LegacyReasonReviewError(
             "No original cohort decisions were found below the selected root"
         )
     published: list[Path] = []
     covered: set[tuple[str, str, str]] = set()
-    for decision_id in sorted(selected_decision_ids):
+    for decision_id in sorted(source_paths):
         path = source_paths[decision_id]
         decision = load_cohort_review_decision(path).document
         workspace_id = _decision_workspace_id(path)
@@ -251,12 +266,12 @@ def publish_reason_review_decisions(
                         evidence.get("audio_sha256"), "Reviewed audio SHA-256"
                     ),
                 )
-                if key not in labels_by_key:
+                if key not in selections_by_key:
                     raise LegacyReasonReviewError(
                         f"No current assessment was supplied for {queue_id!r}"
                     )
-                assessment = labels_by_key[key]
-                reasons = reasons_by_key[key]
+                reasons = selections_by_key[key]
+                assessment = "bad" if reasons else "acceptable"
                 covered.add(key)
             assessments[queue_id] = {
                 "assessment": assessment,
@@ -265,8 +280,11 @@ def publish_reason_review_decisions(
         plan_id = _required_text(decision.get("plan_id"), "Plan ID")
         plan_path = path.parent / f"plan-{plan_id}.json"
         try:
+            plan = load_cohort_review_plan(plan_path)
+            _validate_plan_source_workspace(plan.document, workspace_id)
+            _validate_decision_against_plan(plan.document, decision)
             supplement = build_cohort_review_decision(
-                load_cohort_review_plan(plan_path),
+                plan,
                 _required_text(decision.get("cohort_id"), "Cohort ID"),
                 _required_text(decision.get("decision"), "Decision"),
                 reviewed_queue_ids=[

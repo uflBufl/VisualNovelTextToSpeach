@@ -6,6 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from vntts_artifacts.file_integrity import sha256_file
+
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_regeneration import (
     FailureRegenerationError,
@@ -49,21 +51,35 @@ class FailureRegenerationPlanTest(unittest.TestCase):
 
     def build(self):
         queue_id, item, repair, workspace = self.fixture()
-        with (
-            patch(
-                "vntts.authoring.failure_regeneration.load_workspace_authority",
-                return_value=(Path("/workspace"), workspace, "4" * 64),
-            ),
-            patch(
-                "vntts.authoring.failure_regeneration.generation_failure_repair_plan",
-                return_value=repair,
-            ),
-            patch(
-                "vntts.authoring.failure_regeneration.load_generation_state",
-                return_value={"items": {queue_id: item}},
-            ),
-        ):
-            return build_failure_regeneration_plan("workspace")
+        state = {"items": {queue_id: item}}
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "generated-audio").mkdir()
+            (root / "workspace.json").write_text(json.dumps(workspace))
+            (root / "queue.jsonl").write_text("fixture queue")
+            state_path = root / "generated-audio/generation-state.json"
+            state_path.write_text(json.dumps(state))
+            repair["queue_sha256"] = sha256_file(root / "queue.jsonl")
+            repair["state_sha256"] = sha256_file(state_path)
+            with (
+                patch(
+                    "vntts.authoring.failure_regeneration.load_workspace_authority",
+                    return_value=(
+                        root,
+                        workspace,
+                        sha256_file(root / "workspace.json"),
+                    ),
+                ),
+                patch(
+                    "vntts.authoring.failure_regeneration.generation_failure_repair_plan",
+                    return_value=repair,
+                ),
+                patch(
+                    "vntts.authoring.failure_regeneration.load_generation_state",
+                    return_value=state,
+                ),
+            ):
+                return build_failure_regeneration_plan(root)
 
     def test_builds_exact_legacy_failure_plan(self):
         expected = self.build()

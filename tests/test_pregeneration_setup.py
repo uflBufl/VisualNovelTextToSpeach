@@ -1,4 +1,3 @@
-import hashlib
 import os
 import unittest
 from dataclasses import replace
@@ -18,12 +17,11 @@ from PySide6.QtWidgets import (  # noqa: E402
     QMessageBox,
 )
 from vntts_artifacts import write_story_index_document  # noqa: E402
-from vntts_artifacts.atomic_io import atomic_write_json  # noqa: E402
-from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 from vntts_artifacts.story_index import load_story_index_document  # noqa: E402
 
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
+from tests.story_fixtures import write_story_index  # noqa: E402
 from tests.symlink_support import symlink_or_skip  # noqa: E402
-from vntts.document_identity import canonical_document_sha256  # noqa: E402
 from vntts.game_content_importer import (  # noqa: E402
     GameContentImportCancelled,
     ImporterAvailability,
@@ -49,7 +47,9 @@ from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
     PregenerationJobStore,
     PregenerationSetupError,
+    _cached_story_index,
     _cached_story_index_document,
+    _is_outdated_reverse1999_index,
     _story_selections,
     discover_game_content,
     estimate_preparation,
@@ -62,10 +62,6 @@ from vntts.pregeneration_voices import (  # noqa: E402
     VoicePlan,
 )
 from vntts.settings import AppSettings  # noqa: E402
-from vntts.source_audio_semantics import (  # noqa: E402
-    SEMANTIC_EVIDENCE_METHOD,
-    semantic_text_sha256,
-)
 from vntts.ui_text import plain_label_text  # noqa: E402
 from vntts.versioned_json import write_versioned_json  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
@@ -86,137 +82,6 @@ def empty_voice_plan() -> VoicePlan:
         synthesis_controls_sha256="c" * 64,
         groups=(),
     )
-
-
-def write_story_index(root, *, generated_text="Generate me."):
-    root.mkdir(parents=True, exist_ok=True)
-    path = root / "story-index.jsonl"
-    line_id = "reverse1999:1"
-    text = "Original game voice."
-    text_hash = hashlib.sha256(text.encode()).hexdigest()
-    media_hash = "a" * 64
-    entry = {
-        "locale": "en",
-        "media_id": 7,
-        "media_sha256": media_hash,
-        "displayed_text_sha256": text_hash,
-        "normalized_displayed_text_sha256": semantic_text_sha256(text),
-        "observed_transcript": text,
-        "normalized_observed_text_sha256": semantic_text_sha256(text),
-        "verdict": "full",
-        "reason": "exact-normalized-asr-transcript",
-        "method": SEMANTIC_EVIDENCE_METHOD,
-        "model_sha256": "b" * 64,
-        "source_line_ids": [line_id],
-    }
-    entry["entry_id"] = canonical_document_sha256(
-        {key: value for key, value in entry.items() if key != "source_line_ids"}
-    )
-    evidence = {
-        "schema": "r1999.source-audio-semantic-evidence",
-        "schema_version": 1,
-        "locale": "en",
-        "source_story_index_sha256": "c" * 64,
-        "model": {
-            "kind": "whisper",
-            "snapshot": "synthetic",
-            "sha256": "b" * 64,
-            "device": "cpu",
-            "decoding": "deterministic_greedy_default",
-        },
-        "entries": [entry],
-    }
-    evidence["evidence_id"] = canonical_document_sha256(evidence)
-    evidence["generated_at"] = "2026-09-14T00:00:00+00:00"
-    evidence_path = root / "source-audio-semantic-evidence.json"
-    atomic_write_json(evidence_path, evidence, sort_keys=True)
-    write_story_index_document(
-        path,
-        {
-            "game": "Reverse: 1999",
-            "game_version": "3.7",
-            "language": "en",
-            "source_audio_completion": "verified-media-duration-seconds",
-            "source_audio_semantics": {
-                "evidence_id": evidence["evidence_id"],
-                "evidence_sha256": sha256_file(evidence_path),
-                "method": SEMANTIC_EVIDENCE_METHOD,
-                "selected_chapters": ["1"],
-                "applied_count": 1,
-            },
-            "collections": [
-                {
-                    "collection_id": "main-1",
-                    "title": "Main Story 1",
-                    "kind": "main-story",
-                    "order": 1,
-                },
-                {
-                    "collection_id": "rhiannon",
-                    "title": "Rhiannon",
-                    "kind": "character-story",
-                    "order": 2,
-                },
-            ],
-        },
-        [
-            {
-                "record_type": "line",
-                "line_id": line_id,
-                "chapter": "1",
-                "sequence": 1,
-                "speaker": "Centurion",
-                "voice_character": "Centurion",
-                "episode_title": "The Storm",
-                "text": text,
-                "text_sha256": text_hash,
-                "kind": "dialogue",
-                "collection_id": "main-1",
-                "source_audio_status": "available",
-                "source_audio_duration_seconds": 1.0,
-                "source_audio_duration_media_id": 7,
-                "source_audio_duration_media_sha256": media_hash,
-                "source_audio_duration_sample_rate": 24000,
-                "source_audio_duration_sample_count": 24000,
-                "source_audio_duration_decoder": "synthetic",
-                "source_media_ids": [7],
-                "available_media_ids": [7],
-                "source_audio_completeness": "full",
-                "source_audio_completeness_reason": ("exact-normalized-asr-transcript"),
-                "source_audio_semantic_evidence_id": evidence["evidence_id"],
-                "source_audio_semantic_evidence_entry_id": entry["entry_id"],
-                "speakable": True,
-            },
-            {
-                "record_type": "line",
-                "line_id": "reverse1999:2",
-                "chapter": "1",
-                "sequence": 2,
-                "speaker": "Rhiannon",
-                "voice_character": "Rhiannon",
-                "text": generated_text,
-                "kind": "dialogue",
-                "collection_id": "main-1",
-                "source_audio_status": "absent",
-                "speakable": True,
-            },
-            {
-                "record_type": "line",
-                "line_id": "reverse1999:3",
-                "chapter": "2",
-                "sequence": 1,
-                "speaker": "Aderyn",
-                "voice_character": "Rhiannon child",
-                "episode_title": "The Wandering Child",
-                "text": "A child line.",
-                "kind": "dialogue",
-                "collection_id": "rhiannon",
-                "source_audio_status": "absent",
-                "speakable": True,
-            },
-        ],
-    )
-    return path
 
 
 def story_filter_content(content):
@@ -252,21 +117,19 @@ def story_filter_content(content):
     )
 
 
-class ManualThreadPool:
-    def __init__(self):
-        self.tasks = []
-
-    def start(self, task):
-        self.tasks.append(task)
-
-
 class PregenerationSetupTest(unittest.TestCase):
+    def test_outdated_index_detector_ignores_invalid_encoding(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "story-index.jsonl"
+            path.write_bytes(b"\xff")
+            self.assertFalse(_is_outdated_reverse1999_index(path))
+
     def test_verified_story_parse_is_reused_by_checksum(self):
         with TemporaryDirectory() as temporary_directory:
             path = write_story_index(Path(temporary_directory))
             _cached_story_index_document.cache_clear()
             with patch(
-                "vntts.pregeneration_setup.load_story_index_document",
+                "vntts.story_index_snapshot.load_story_index_document",
                 wraps=load_story_index_document,
             ) as load:
                 content = inspect_story_index(path)
@@ -306,6 +169,206 @@ class PregenerationSetupTest(unittest.TestCase):
             self.assertEqual(first.selections, second.selections)
             self.assertEqual(first.selections, rebuilt.selections)
             self.assertEqual(second.provider_id, "second")
+
+    def test_story_catalog_caches_follow_current_semantic_evidence(self):
+        for persistent in (False, True):
+            with self.subTest(persistent=persistent), TemporaryDirectory() as directory:
+                root = Path(directory)
+                story = write_story_index(root / "content")
+                evidence = story.parent / "source-audio-semantic-evidence.json"
+                payload = evidence.read_bytes()
+                settings = AppSettings(story_index=str(story))
+                environment = {"R1999_EXTRACTOR_DATA": str(root / "extractor")}
+                _cached_story_index.cache_clear()
+                self.addCleanup(_cached_story_index.cache_clear)
+                with (
+                    patch(
+                        "vntts.pregeneration_setup.get_local_data_directory",
+                        return_value=root / "data",
+                    ),
+                    patch(
+                        "vntts.pregeneration_setup.story_catalog_minimum_bytes",
+                        0 if persistent else 10**9,
+                    ),
+                ):
+                    for state, originals in (
+                        ("valid", 1),
+                        ("missing", 0),
+                        ("corrupt", 0),
+                        ("restored", 1),
+                    ):
+                        if state == "missing":
+                            evidence.unlink()
+                        elif state == "corrupt":
+                            evidence.write_bytes(b"invalid evidence")
+                        elif state == "restored":
+                            evidence.write_bytes(payload)
+                        discovered = discover_game_content(
+                            settings, environment=environment
+                        )
+                        self.assertEqual(discovered.errors, ())
+                        content = discovered.content[0]
+                        direct = inspect_story_index(story)
+                        for value in (content, direct):
+                            self.assertEqual(
+                                sum(
+                                    selection.original_audio_lines
+                                    for selection in value.selections
+                                ),
+                                originals,
+                            )
+                            self.assertEqual(
+                                sum(
+                                    selection.generation_lines
+                                    for selection in value.selections
+                                ),
+                                3 - originals,
+                            )
+                    other = root / "other"
+                    other.mkdir()
+                    other_story = other / story.name
+                    other_story.write_bytes(story.read_bytes())
+                    self.assertEqual(
+                        sum(
+                            selection.original_audio_lines
+                            for selection in inspect_story_index(other_story).selections
+                        ),
+                        0,
+                    )
+
+    def test_story_catalog_validates_the_evidence_bytes_it_captured(self):
+        with TemporaryDirectory() as directory:
+            story = write_story_index(Path(directory))
+            evidence = story.parent / "source-audio-semantic-evidence.json"
+            from vntts.chapter_voice_preload import _source_audio_evidence_payload
+
+            def capture_then_replace(path):
+                captured = _source_audio_evidence_payload(path)
+                evidence.write_bytes(b"replacement after acquisition")
+                return captured
+
+            with patch(
+                "vntts.pregeneration_setup._source_audio_evidence_payload",
+                side_effect=capture_then_replace,
+            ):
+                captured = inspect_story_index(story)
+            current = inspect_story_index(story)
+            self.assertEqual(
+                sum(
+                    selection.original_audio_lines for selection in captured.selections
+                ),
+                1,
+            )
+            self.assertEqual(
+                sum(selection.original_audio_lines for selection in current.selections),
+                0,
+            )
+
+    def test_discovery_retries_evidence_changed_during_a_cache_miss(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            story = write_story_index(root / "content")
+            evidence = story.parent / "source-audio-semantic-evidence.json"
+            payload = evidence.read_bytes()
+            from vntts.chapter_voice_preload import _source_audio_evidence_payload
+
+            captures = 0
+
+            def capture_then_remove(path):
+                nonlocal captures
+                captures += 1
+                captured = _source_audio_evidence_payload(path)
+                if captures == 1:
+                    evidence.unlink()
+                return captured
+
+            settings = AppSettings(story_index=str(story))
+            environment = {"R1999_EXTRACTOR_DATA": str(root / "extractor")}
+            _cached_story_index.cache_clear()
+            self.addCleanup(_cached_story_index.cache_clear)
+            with (
+                patch(
+                    "vntts.pregeneration_setup.get_local_data_directory",
+                    return_value=root / "data",
+                ),
+                patch(
+                    "vntts.pregeneration_setup._source_audio_evidence_payload",
+                    side_effect=capture_then_remove,
+                ),
+            ):
+                interrupted = discover_game_content(settings, environment=environment)
+            self.assertEqual(interrupted.content, ())
+            self.assertEqual(len(interrupted.errors), 1)
+            self.assertIn("Refresh to retry", interrupted.errors[0])
+            evidence.write_bytes(payload)
+            with patch(
+                "vntts.pregeneration_setup.get_local_data_directory",
+                return_value=root / "data",
+            ):
+                restored = discover_game_content(settings, environment=environment)
+            self.assertEqual(restored.errors, ())
+            self.assertEqual(
+                sum(
+                    selection.original_audio_lines
+                    for selection in restored.content[0].selections
+                ),
+                1,
+            )
+
+    def test_discovery_keeps_other_content_when_a_source_disappears(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            removed = write_story_index(root / "removed")
+            retained = write_story_index(root / "retained")
+            from vntts.pregeneration_setup import sha256_file
+
+            def remove_at_checksum(path):
+                if path == removed:
+                    path.unlink()
+                return sha256_file(path)
+
+            with (
+                patch(
+                    "vntts.pregeneration_setup.get_local_data_directory",
+                    return_value=root / "data",
+                ),
+                patch(
+                    "vntts.pregeneration_setup.sha256_file",
+                    side_effect=remove_at_checksum,
+                ),
+            ):
+                discovered = discover_game_content(
+                    AppSettings(story_index=str(removed)),
+                    extra_paths=(retained,),
+                    environment={"R1999_EXTRACTOR_DATA": str(root / "extractor")},
+                )
+            self.assertEqual(
+                tuple(content.story_index for content in discovered.content),
+                (retained,),
+            )
+            self.assertEqual(len(discovered.errors), 1)
+            self.assertIn(str(removed), discovered.errors[0])
+
+    def test_saved_job_queries_skip_damage_and_read_current_sources(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            story = write_story_index(root / "content")
+            content = inspect_story_index(story)
+            store = PregenerationJobStore(root / "jobs")
+            self.assertEqual(store.jobs_for_content(content), ())
+            self.assertEqual(store.source_story_indexes(), ())
+            first = store.create_or_resume(content, ("main-1",))
+            store.create_or_resume(content, ("rhiannon",))
+            damaged = store.path_for("d" * 24)
+            damaged.parent.mkdir()
+            damaged.write_text("invalid job", encoding="utf-8")
+            self.assertEqual(len(store.jobs_for_content(content)), 2)
+            self.assertEqual(store.source_story_indexes(), (story,))
+            store.mark_prepared(first)
+            self.assertEqual(store.latest_for_content(content).status, "prepared")
+            story.unlink()
+            self.assertEqual(store.source_story_indexes(), ())
+            self.assertEqual(len(store.jobs_for_content(content)), 2)
 
     def test_story_records_are_grouped_in_one_pass(self):
         class CountingRecords(tuple):
@@ -659,6 +722,44 @@ class PregenerationSetupTest(unittest.TestCase):
         self.assertIn("Outdated Reverse: 1999", discovery.errors[0])
         inspect.assert_not_called()
 
+    def test_large_story_selection_uses_linear_membership_work(self):
+        class CountedId(str):
+            comparisons = 0
+            __hash__ = str.__hash__
+
+            def __eq__(self, other):
+                type(self).comparisons += 1
+                return super().__eq__(other)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            selections = tuple(
+                replace(
+                    content.selections[0],
+                    selection_id=CountedId(f"story-{index}"),
+                    line_ids=(f"line-{index}",),
+                    line_count=1,
+                    generation_text_characters=index + 1,
+                )
+                for index in range(256)
+            )
+            content = replace(content, selections=selections)
+            requested = tuple(str(value.selection_id) for value in reversed(selections))
+            CountedId.comparisons = 0
+            estimate = estimate_preparation(content, requested)
+            job = PregenerationJobStore(root / "jobs").create_or_resume(
+                content, requested
+            )
+            comparisons = CountedId.comparisons
+            self.assertEqual(estimate, job.estimate)
+            self.assertEqual(job.selected_story_ids, tuple(reversed(requested)))
+            self.assertEqual(
+                job.selected_line_ids, tuple(f"line-{i}" for i in range(256))
+            )
+            self.assertEqual(estimate.generation_text_characters, sum(range(1, 257)))
+            self.assertLess(comparisons, 8 * len(selections))
+
     def test_preparation_estimate_and_job_are_checksum_bound_and_resumable(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -714,6 +815,66 @@ class PregenerationSetupTest(unittest.TestCase):
                 store.create_or_resume(content, ("missing",))
 
             self.assertFalse((root / "jobs").exists())
+
+    def test_saved_job_rejects_integer_syntax_in_sha256(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            store = PregenerationJobStore(root / "jobs")
+            job = store.create_or_resume(content, ("main-1",))
+            path = store.path_for(job.job_id)
+            for digest in ("a" * 64, "A" * 64):
+                document = {**job.to_document(), "story_index_sha256": digest}
+                write_versioned_json(path, 1, document)
+                self.assertEqual(store.load(job.job_id).story_index_sha256, digest)
+            for digest in (
+                "+" + "a" * 63,
+                "-" + "a" * 63,
+                "0x" + "a" * 62,
+                "a_" + "b" * 62,
+                "０" * 64,
+            ):
+                write_versioned_json(
+                    path, 1, {**job.to_document(), "story_index_sha256": digest}
+                )
+                with (
+                    self.subTest(digest=digest),
+                    self.assertRaisesRegex(PregenerationSetupError, "SHA-256"),
+                ):
+                    store.load(job.job_id)
+
+    def test_preparation_and_pack_ids_require_ascii_hex_digits(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            store = PregenerationJobStore(root / "jobs")
+            job = store.create_or_resume(content, ("main-1",))
+            packs = store.path_for(job.job_id).parent / "game-packs"
+            valid = ("a" * 24, "B" * 24)
+            invalid = (
+                "+" + "a" * 23,
+                "-" + "a" * 23,
+                "0x" + "a" * 22,
+                "a_" + "b" * 22,
+                "０" * 24,
+            )
+            manifests = []
+            for identity in (*valid, *invalid):
+                manifest = packs / f"pack-{identity}" / "game-pack.json"
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text("{}", encoding="utf-8")
+                if identity in valid:
+                    self.assertEqual(
+                        store.path_for(identity), store.root / identity / "job.json"
+                    )
+                    manifests.append(manifest)
+                else:
+                    with (
+                        self.subTest(identity=identity),
+                        self.assertRaisesRegex(PregenerationSetupError, "identity"),
+                    ):
+                        store.path_for(identity)
+            self.assertCountEqual(store.published_packs(job), manifests)
 
     def test_saved_job_rejects_non_text_selected_line_id(self):
         with TemporaryDirectory() as temporary_directory:
@@ -814,7 +975,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         self._voice_library_directory.cleanup()
 
     def test_inaccessible_saved_voice_returns_to_stories_without_loading(self):
-        from tests.test_pregeneration_voices import write_manifest
+        from tests.voice_manifest_fixtures import write_manifest
         from vntts.pregeneration_voices import VoicePlanStore
         from vntts.voices import CharacterVoiceRegistry, remember_voice_binding
 
@@ -2052,7 +2213,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
     def test_changed_character_default_prepares_new_inputs_only_for_selected_story(
         self,
     ):
-        from tests.test_pregeneration_voices import write_manifest
+        from tests.voice_manifest_fixtures import write_manifest
 
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3038,7 +3199,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.deleteLater()
 
     def test_narrator_draft_stays_visible_and_rolls_back_when_replan_fails(self):
-        from tests.test_pregeneration_voices import write_manifest
+        from tests.voice_manifest_fixtures import write_manifest
         from vntts.pregeneration_voices import VoicePlanStore
 
         with TemporaryDirectory() as temporary_directory:
@@ -3090,7 +3251,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.deleteLater()
 
     def test_voice_choice_replans_against_reimported_story_content(self):
-        from tests.test_pregeneration_voices import write_manifest
+        from tests.voice_manifest_fixtures import write_manifest
         from vntts.pregeneration_voices import VoicePlanStore
 
         with TemporaryDirectory() as temporary_directory:
@@ -3146,7 +3307,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.deleteLater()
 
     def test_changed_story_selection_requires_explicit_review(self):
-        from tests.test_pregeneration_voices import write_manifest
+        from tests.voice_manifest_fixtures import write_manifest
         from vntts.pregeneration_voices import VoicePlanStore
 
         with TemporaryDirectory() as temporary_directory:

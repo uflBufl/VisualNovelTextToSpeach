@@ -4,94 +4,50 @@
 from __future__ import annotations
 
 import argparse
-import html
+import hashlib
 import json
 import os
 import socket
 import sys
 import time
 import wave
-from collections import defaultdict
+from contextlib import ExitStack
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Callable, Never
 from unittest.mock import Mock, patch
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
+    from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
+    from vntts.pregeneration_queue import PregenerationInput
+    from vntts.pregeneration_setup import GameContent, PregenerationJob
+    from vntts.support import RuntimeSupportLog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG = PROJECT_ROOT / "ui-catalog.json"
 DEFAULT_OUTPUT = PROJECT_ROOT / ".codex" / "ui-catalog"
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from vntts.cleanup import cleanup_on_exit, temporary_directory  # noqa: E402
+from vntts.path_safety import read_regular_text  # noqa: E402
+from vntts.ui_catalog import (  # noqa: E402
+    UICatalog,
+    _write_catalog,
+    load_catalog,
+)
 
 
-def load_catalog(path: Path) -> dict[str, Any]:
-    document = json.loads(path.read_text(encoding="utf-8"))
-    if document.get("schema_version") != 1:
-        raise ValueError("ui-catalog.json must use schema_version 1")
-    contracts = document.get("contracts")
-    surfaces = document.get("surfaces")
-    if not isinstance(contracts, dict) or not isinstance(surfaces, list):
-        raise ValueError("catalog requires contracts and surfaces")
-
-    surface_ids = _validate_surface_definitions(surfaces, contracts)
-    _validate_surface_links(surfaces, surface_ids)
-    return document
-
-
-def _validate_surface_definitions(
-    surfaces: list[dict[str, Any]], contracts: dict[str, Any]
-) -> set[str]:
-    surface_ids: set[str] = set()
-    story_ids: set[str] = set()
-    for surface in surfaces:
-        surface_id = _required_text(surface, "id")
-        if surface_id in surface_ids:
-            raise ValueError(f"duplicate surface id: {surface_id}")
-        surface_ids.add(surface_id)
-        for field in ("title", "family", "audience", "mission", "canonical_owner"):
-            _required_text(surface, field)
-        for contract_id in surface.get("contracts", []):
-            if contract_id not in contracts:
-                raise ValueError(
-                    f"{surface_id} references unknown contract: {contract_id}"
-                )
-        for story in surface.get("stories", []):
-            story_id = _required_text(story, "id")
-            if story_id in story_ids:
-                raise ValueError(f"duplicate story id: {story_id}")
-            story_ids.add(story_id)
-            _required_text(story, "title")
-            _required_text(story, "state")
-    return surface_ids
-
-
-def _validate_surface_links(
-    surfaces: list[dict[str, Any]], surface_ids: set[str]
-) -> None:
-    for surface in surfaces:
-        surface_id = surface["id"]
-        for related_id in surface.get("related", []):
-            if related_id not in surface_ids:
-                raise ValueError(
-                    f"{surface_id} references unknown related surface: {related_id}"
-                )
-        owner = surface["canonical_owner"]
-        if owner not in surface_ids:
-            raise ValueError(f"{surface_id} references unknown owner: {owner}")
-
-
-def _required_text(value: dict[str, Any], field: str) -> str:
-    result = value.get(field)
-    if not isinstance(result, str) or not result.strip():
-        raise ValueError(f"catalog field {field!r} must be non-empty text")
-    return result
-
-
-def _set_long_authoring_review(dialog: Any, state: str) -> None:
+def _set_long_authoring_review(dialog: AuthoringWorkbenchDialog, state: str) -> None:
     if not state.startswith("review-long-names"):
         return
     first = dialog._selected_review_item()
+    assert first is not None
+    assert dialog.summary is not None
     dialog._all_reviews = (
         replace(
             first,
@@ -115,13 +71,20 @@ def _set_long_authoring_review(dialog: Any, state: str) -> None:
         dialog.review_table.setCurrentCell(1, 7)
 
 
-def _prepare_catalog_screenshot(widget: Any, story_id: str, app: Any) -> None:
+def _prepare_catalog_screenshot(
+    widget: QWidget, story_id: str, app: QApplication
+) -> None:
+    from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
+    from vntts.pregeneration_ui import OfflineAudioPreparationDialog
+
     if story_id == "offline-preparation.voice-confirmation-compact-scrolled":
+        assert isinstance(widget, OfflineAudioPreparationDialog)
         widget.content_scroll.verticalScrollBar().setValue(
             widget.content_scroll.verticalScrollBar().maximum()
         )
         app.processEvents()
     if story_id == "offline-preparation.voice-confirmation-compact-last-route":
+        assert isinstance(widget, OfflineAudioPreparationDialog)
         widget.content_scroll.verticalScrollBar().setValue(
             widget.content_scroll.verticalScrollBar().maximum()
         )
@@ -131,37 +94,289 @@ def _prepare_catalog_screenshot(widget: Any, story_id: str, app: Any) -> None:
         )
         app.processEvents()
     if story_id == "authoring-workbench.review-play-focus":
+        assert isinstance(widget, AuthoringWorkbenchDialog)
         widget.review_play.setFocus()
         app.processEvents()
 
 
+def _close_catalog_widget(widget: QWidget) -> None:
+    from PySide6.QtCore import QCoreApplication, QEvent, QTimer
+    from PySide6.QtWidgets import QApplication
+
+    from vntts.ocr_corrections_ui import OCRCorrectionsDialog
+
+    for timer in widget.findChildren(QTimer):
+        timer.stop()
+    if isinstance(widget, OCRCorrectionsDialog):
+        widget._initial_rows = widget._all_table_rows()
+    widget.close()
+    widget.deleteLater()
+    QCoreApplication.sendPostedEvents(widget, QEvent.Type.DeferredDelete)
+    QApplication.processEvents()
+
+
+def _catalog_support_log(state: str) -> RuntimeSupportLog:
+    from vntts.support import RuntimeSupportLog
+
+    recorded_at = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
+    events = RuntimeSupportLog(clock=lambda: recorded_at)
+    if state != "empty":
+        for index in range(42 if state == "new-events" else 3):
+            recorded_at = recorded_at.replace(minute=index)
+            events.add(
+                "info" if index % 7 else "warning",
+                f"Captured dialogue and checked selected voice ({index})",
+            )
+    recorded_at = datetime(2026, 9, 22, 13, 0, tzinfo=timezone.utc)
+    return events
+
+
+def _catalog_offline_content(root: Path) -> GameContent:
+    from vntts_artifacts.story_index import write_story_index_document
+
+    from vntts.document_identity import sha256_file
+    from vntts.pregeneration_setup import GameContent, StorySelection
+
+    story_index = root / "story-index.jsonl"
+    chapters = (
+        StorySelection(
+            "chapter-7",
+            "Chapter 7 - The long night",
+            "chapter",
+            0,
+            tuple(f"chapter-7:{index}" for index in range(18)),
+            18,
+            18,
+            3,
+            15,
+            3,
+            ("Narrator", "Believer IV", "Centurion"),
+            ("Narrator", "Believer IV", "Centurion"),
+            1_400,
+        ),
+        StorySelection(
+            "chapter-8",
+            "Chapter 8 - The road ahead",
+            "chapter",
+            1,
+            tuple(f"chapter-8:{index}" for index in range(24)),
+            24,
+            24,
+            5,
+            19,
+            4,
+            ("Narrator", "Believer IV", "Centurion", "Selone"),
+            ("Narrator", "Believer IV", "Centurion", "Selone"),
+            1_900,
+        ),
+        StorySelection(
+            "side-story",
+            "A long side-story title that still has to remain readable",
+            "character_story",
+            2,
+            tuple(f"side-story:{index}" for index in range(12)),
+            12,
+            12,
+            2,
+            10,
+            2,
+            ("Narrator", "Selone"),
+            ("Narrator", "Selone"),
+            900,
+        ),
+    )
+    write_story_index_document(
+        story_index,
+        {"game": "Reverse: 1999", "language": "en"},
+        [
+            {
+                "record_type": "line",
+                "line_id": line_id,
+                "chapter": selection.selection_id,
+                "sequence": index + 1,
+                "speaker": selection.speakers[index % len(selection.speakers)],
+                "text": f"Catalog dialogue {line_id}.",
+                "kind": "dialogue",
+                "source_audio_status": "available"
+                if index < selection.original_audio_lines
+                else "absent",
+                "speakable": True,
+            }
+            for selection in chapters
+            for index, line_id in enumerate(selection.line_ids)
+        ],
+    )
+    return GameContent(
+        "reverse1999",
+        "Reverse: 1999",
+        "3.7",
+        story_index,
+        sha256_file(story_index),
+        chapters,
+    )
+
+
+def _catalog_generation_input(job: PregenerationJob) -> PregenerationInput:
+    from vntts_artifacts.story_index import write_story_index_document
+    from vntts_artifacts.voice_generation_queue import (
+        expected_voice_generation_queue_id,
+        write_voice_generation_queue,
+    )
+    from vntts_artifacts.voice_manifest import write_voice_manifest
+
+    from vntts.document_identity import canonical_document_sha256, sha256_file
+    from vntts.pregeneration_queue import PregenerationInput
+    from vntts.pregeneration_setup import load_verified_story_index_document
+
+    source = Path(job.story_index)
+    story = load_verified_story_index_document(source, job.story_index_sha256)
+    selected = set(job.selected_line_ids)
+    records = [record for record in story.records if record.line_id in selected]
+    directory = source.parent / "generation-input"
+    directory.mkdir()
+    story_path = directory / "story-index.jsonl"
+    voice_path = directory / "voice-manifest.json"
+    queue_path = directory / "queue.jsonl"
+    write_story_index_document(
+        story_path, story.metadata, [r.to_record() for r in records]
+    )
+    write_voice_manifest(
+        voice_path,
+        {
+            "version": 2,
+            "voices": [
+                {
+                    "character": "Narrator",
+                    "speaker": "alba",
+                    "aliases": [],
+                    "references": [],
+                }
+            ],
+        },
+    )
+    items = []
+    for record in records:
+        if record.source_audio_status != "absent":
+            continue
+        text_sha256 = hashlib.sha256(record.text.encode()).hexdigest()
+        items.append(
+            {
+                "record_type": "generation_item",
+                "queue_id": expected_voice_generation_queue_id(
+                    record.line_id, text_sha256
+                ),
+                "line_id": record.line_id,
+                "text": record.text,
+                "text_sha256": text_sha256,
+                "speaker": record.speaker,
+                "voice_character": "Narrator",
+                "action": "generate",
+                "prompt_adapters": {},
+                "sequence": record.sequence,
+            }
+        )
+    write_voice_generation_queue(
+        queue_path, {"game": job.game, "language": story.metadata["language"]}, items
+    )
+    hashes = {
+        "story": sha256_file(story_path),
+        "voices": sha256_file(voice_path),
+        "queue": sha256_file(queue_path),
+    }
+    return PregenerationInput(
+        identity=canonical_document_sha256(hashes),
+        directory=directory,
+        story_index=story_path,
+        voice_manifest=voice_path,
+        queue=queue_path,
+        queue_sha256=hashes["queue"],
+        queue_items=len(items),
+        ready_items=len(items),
+        narrator_fallback_roles=tuple(
+            sorted({r.speaker for r in records if r.speaker != "Narrator"})
+        ),
+        story_index_sha256=hashes["story"],
+        voice_manifest_sha256=hashes["voices"],
+        source_audio_semantic_evidence_sha256=None,
+    )
+
+
+def _source_reference_review(
+    state: str, resources: ExitStack
+) -> SourceReferenceQualityDialog:
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    from tests.source_reference_fixtures import write_quality_session
+    from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
+
+    temporary = resources.enter_context(temporary_directory(prefix="vntts-ui-catalog-"))
+    session = write_quality_session(Path(temporary))
+    dialog = SourceReferenceQualityDialog(session)
+
+    current = dialog.current
+    assert current is not None
+    if state == "heard":
+        for token in (
+            "reference",
+            *(sample["queue_id"] for sample in current["generated_samples"]),
+        ):
+            dialog._playing_token = token
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+    elif state == "complete":
+        dialog._load_next(
+            dialog.decision_recorder(session, current["variant_id"], "accept")
+        )
+    elif state == "compact":
+        font = dialog.font()
+        font.setPointSize(max(font.pointSize() + 3, 16))
+        dialog.setFont(font)
+        dialog.resize(dialog.minimumSize())
+    return dialog
+
+
 def _render_stories(
-    catalog: dict[str, Any], output: Path, selected_surface: str | None
+    catalog: UICatalog, output: Path, selected_surface: str | None
 ) -> dict[str, str]:
+    surfaces = {surface["id"]: surface for surface in catalog["surfaces"]}
+    allowed_surfaces = set(surfaces)
+    if selected_surface:
+        if selected_surface not in surfaces:
+            raise ValueError(f"unknown surface: {selected_surface}")
+        target = surfaces[selected_surface]
+        allowed_surfaces = {
+            selected_surface,
+            target["canonical_owner"],
+            *target.get("related", []),
+        }
+
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    sys.path.insert(0, str(PROJECT_ROOT))
 
     from PIL import Image, ImageDraw, ImageFont
-    from PySide6.QtCore import QPoint, QSettings, QSignalBlocker, QTimer
+    from PySide6.QtCore import (
+        QPoint,
+        QRunnable,
+        QSettings,
+        QSignalBlocker,
+        QThreadPool,
+        QTimer,
+    )
     from PySide6.QtGui import QColor, QPalette, QTextCursor
     from PySide6.QtMultimedia import QMediaPlayer
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
     from r1999extractor.story_voice_candidates import REPORT_SCHEMA, REPORT_VERSION
     from r1999extractor.story_voice_review_ui import StoryVoiceReviewDialog
-    from vntts_artifacts.file_integrity import sha256_file
 
-    from tests.test_authoring_cohort_review import create_pending_cohort_workspace
-    from tests.test_authoring_failure_reference_audit import FailureReferenceAuditTest
-    from tests.test_authoring_legacy_reason_review import _legacy_bad_fixture
-    from tests.test_authoring_listening import FakePlayback, write_model_reports
-    from tests.test_authoring_missing_voice_reuse_review import (
+    from tests.authoring_fixtures import (
+        _legacy_bad_fixture,
+        create_failed_reference_workspace,
+        create_pending_cohort_workspace,
+        create_test_workspace,
+    )
+    from tests.listening_fixtures import FakePlayback, write_model_reports
+    from tests.missing_voice_reuse_fixtures import (
         create_missing_voice_reuse_review_fixture,
     )
-    from tests.test_authoring_source_reference_quality_ui import write_quality_session
-    from tests.test_authoring_terminal_conflict_review_ui import (
-        TerminalConflictReviewUiTest,
-    )
-    from tests.test_authoring_workbench import create_test_workspace
+    from tests.terminal_conflict_fixtures import create_terminal_conflict_review
     from vntts.app import (
         SettingsDialog,
         build_story_match_recovery_prompt,
@@ -186,9 +401,6 @@ def _render_stories(
     from vntts.authoring.missing_voice_reuse_review_ui import (
         MissingVoiceReuseReviewDialog,
     )
-    from vntts.authoring.source_reference_quality_ui import (
-        SourceReferenceQualityDialog,
-    )
     from vntts.authoring.terminal_conflict_review import (
         record_terminal_conflict_decision,
     )
@@ -205,11 +417,12 @@ def _render_stories(
     )
     from vntts.diagnostics import DiagnosticSnapshot
     from vntts.diagnostics_ui import DiagnosticsDialog
+    from vntts.document_identity import sha256_file
     from vntts.game_content_importer import ImporterAvailability
     from vntts.game_narrator_ui import GameNarratorDialog
     from vntts.history import DialogueHistory
     from vntts.history_ui import DialogueHistoryDialog
-    from vntts.macos_ui import MacOSPermissionsDialog
+    from vntts.macos_ui import MacOSPermissionsDialog, PermissionStatus
     from vntts.ocr import DialogRegion, OCRResult, UncertainFrameRecorder
     from vntts.ocr_corrections import OCRCorrectionStore
     from vntts.ocr_corrections_ui import OCRCorrectionsDialog
@@ -219,9 +432,7 @@ def _render_stories(
     from vntts.pregeneration_generation import OfflineGenerationProgress
     from vntts.pregeneration_setup import (
         ContentDiscovery,
-        GameContent,
         PregenerationJobStore,
-        StorySelection,
     )
     from vntts.pregeneration_ui import OfflineAudioPreparationDialog
     from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
@@ -232,7 +443,11 @@ def _render_stories(
     from vntts.support_ui import SupportCenterDialog
     from vntts.voice_library import VoiceLibrary
 
-    app = QApplication.instance() or QApplication(["vntts-ui-catalog"])
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(["vntts-ui-catalog"])
+    if not isinstance(app, QApplication):
+        raise RuntimeError("UI catalog requires a QApplication instance")
     app.setStyle("Fusion")
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window, QColor("#272727"))
@@ -275,7 +490,7 @@ def _render_stories(
             target.setframerate(16_000)
             target.writeframes(b"\x00\x00" * 1_600)
 
-    def dashboard_stories() -> Any:
+    def dashboard_stories() -> ControlDashboard:
         dashboard = ControlDashboard(settings)
         dashboard.resize(1040, 760)
         dashboard.set_status("Ready. Choose a prepared story or start live reading.")
@@ -283,7 +498,7 @@ def _render_stories(
         dashboard.show_stories()
         return dashboard
 
-    def dashboard_reading() -> Any:
+    def dashboard_reading() -> ControlDashboard:
         dashboard = ControlDashboard(settings)
         dashboard.resize(1040, 760)
         dashboard.set_status("Reading the selected game window.")
@@ -310,12 +525,12 @@ def _render_stories(
         dashboard.show_reading()
         return dashboard
 
-    def dashboard_setup() -> Any:
+    def dashboard_setup() -> ControlDashboard:
         dashboard = dashboard_stories()
         dashboard.setup_more_button.setChecked(True)
         return dashboard
 
-    def dashboard_loading() -> Any:
+    def dashboard_loading() -> ControlDashboard:
         dashboard = ControlDashboard(settings)
         dashboard.resize(1040, 760)
         dashboard.show_reading()
@@ -324,32 +539,32 @@ def _render_stories(
         dashboard.set_auto_advance_configuration(settings, busy=True)
         return dashboard
 
-    def dashboard_waiting() -> Any:
+    def dashboard_waiting() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_status("Waiting for dialogue in the selected game window.")
         dashboard.set_runtime_controls(RuntimeControlState(ready=True, live=True))
         return dashboard
 
-    def dashboard_auto_advance_off() -> Any:
+    def dashboard_auto_advance_off() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_configuration(
             replace(settings, auto_advance_enabled=False, auto_advance_key="right")
         )
         return dashboard
 
-    def dashboard_auto_advance_unavailable() -> Any:
+    def dashboard_auto_advance_unavailable() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_configuration(replace(settings, capture_mode="screen"))
         return dashboard
 
-    def dashboard_auto_advance_manual() -> Any:
+    def dashboard_auto_advance_manual() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_configuration(
             replace(settings, live_sequence_mode="audio-manual")
         )
         return dashboard
 
-    def dashboard_auto_advance_unavailable_compact() -> Any:
+    def dashboard_auto_advance_unavailable_compact() -> ControlDashboard:
         dashboard = dashboard_auto_advance_unavailable()
         dashboard.resize(620, 440)
         font = dashboard.font()
@@ -357,12 +572,12 @@ def _render_stories(
         dashboard.setFont(font)
         return dashboard
 
-    def dashboard_auto_advance_focus() -> Any:
+    def dashboard_auto_advance_focus() -> ControlDashboard:
         dashboard = dashboard_long_values()
         QTimer.singleShot(0, dashboard.auto_advance_check.setFocus)
         return dashboard
 
-    def dashboard_auto_advance_settings_route() -> Any:
+    def dashboard_auto_advance_settings_route() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.setup_more_button.setChecked(True)
         dashboard.resize(620, 440)
@@ -371,7 +586,7 @@ def _render_stories(
         dashboard.setFont(font)
         return dashboard
 
-    def dashboard_paused() -> Any:
+    def dashboard_paused() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_status(
             "Speech paused during speaker recovery. Stop reading ends speech now."
@@ -384,19 +599,19 @@ def _render_stories(
         dashboard.set_paused(True)
         return dashboard
 
-    def dashboard_stopped() -> Any:
+    def dashboard_stopped() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_status("Reading stopped. The last dialogue remains available.")
         dashboard.set_runtime_controls(RuntimeControlState(ready=True, replayable=True))
         dashboard.set_live(False)
         return dashboard
 
-    def dashboard_technical() -> Any:
+    def dashboard_technical() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.details_toggle.setChecked(True)
         return dashboard
 
-    def dashboard_story_recovery() -> Any:
+    def dashboard_story_recovery() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_sequence_status(
             LiveSequenceStatus(
@@ -411,7 +626,7 @@ def _render_stories(
         )
         return dashboard
 
-    def dashboard_story_manual() -> Any:
+    def dashboard_story_manual() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_sequence_status(
             LiveSequenceStatus(
@@ -424,7 +639,7 @@ def _render_stories(
         )
         return dashboard
 
-    def dashboard_long_values() -> Any:
+    def dashboard_long_values() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.resize(620, 440)
         font = dashboard.font()
@@ -436,7 +651,7 @@ def _render_stories(
         )
         return dashboard
 
-    def dashboard_long_capture() -> Any:
+    def dashboard_long_capture() -> ControlDashboard:
         dashboard = dashboard_long_values()
         dashboard.set_configuration(
             replace(
@@ -447,7 +662,7 @@ def _render_stories(
         dashboard.set_speech_identity(settings, narrator="Centurion")
         return dashboard
 
-    def dashboard_long_values_scrolled() -> Any:
+    def dashboard_long_values_scrolled() -> ControlDashboard:
         dashboard = dashboard_long_capture()
         dashboard.voice.setText(
             "Believer IV voice from a long user-provided reference recording"
@@ -463,7 +678,7 @@ def _render_stories(
         )
         return dashboard
 
-    def compact_sequence_recovery() -> Any:
+    def compact_sequence_recovery() -> CompactController:
         compact = CompactController(platform="win32")
         compact.set_runtime_controls(
             RuntimeControlState(ready=True, live=True, paused=True)
@@ -481,7 +696,7 @@ def _render_stories(
         )
         return compact
 
-    def dashboard_voice_saved() -> Any:
+    def dashboard_voice_saved() -> ControlDashboard:
         dashboard = ControlDashboard(settings)
         dashboard.resize(1040, 760)
         dashboard.set_status(
@@ -492,9 +707,11 @@ def _render_stories(
         dashboard.show_voices()
         return dashboard
 
-    def settings_speech() -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        reference = Path(temporary.name) / "reference.wav"
+    def settings_speech() -> SettingsDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        reference = Path(temporary) / "reference.wav"
         reference.touch()
         dialog = SettingsDialog(
             settings.updated(
@@ -502,14 +719,14 @@ def _render_stories(
                 screenshot_directory="/Users/Player/Screenshots",
                 ocr_diagnostics_directory="/Users/Player/OCR Diagnostics",
             ),
-            voice_library=VoiceLibrary(Path(temporary.name) / "voice-library"),
+            voice_library=VoiceLibrary(Path(temporary) / "voice-library"),
         )
-        dialog._catalog_temporary_directory = temporary
+
         dialog.resize(760, 600)
         dialog.section_navigation.setCurrentIndex(2)
         return dialog
 
-    def settings_validation_error() -> Any:
+    def settings_validation_error() -> SettingsDialog:
         dialog = settings_speech()
         dialog.advanced_narrator.setChecked(True)
         dialog.narrator_reference.setText("/missing/voice-reference.wav")
@@ -518,7 +735,7 @@ def _render_stories(
 
     def settings_section(
         index: int, *, advanced: bool = False, compact: bool = False
-    ) -> Any:
+    ) -> SettingsDialog:
         dialog = settings_speech()
         dialog.section_navigation.setCurrentIndex(index)
         dialog.advanced_settings.setChecked(advanced)
@@ -529,7 +746,7 @@ def _render_stories(
             dialog.setFont(font)
         return dialog
 
-    def settings_capture_window() -> Any:
+    def settings_capture_window() -> SettingsDialog:
         dialog = settings_section(1)
         dialog.capture_mode.setCurrentIndex(dialog.capture_mode.findData("window"))
         dialog.game_window.setCurrentText(
@@ -537,12 +754,12 @@ def _render_stories(
         )
         return dialog
 
-    def settings_checkbox_focus() -> Any:
+    def settings_checkbox_focus() -> SettingsDialog:
         dialog = settings_section(4)
         QTimer.singleShot(0, dialog.warm_up_voices.setFocus)
         return dialog
 
-    def settings_compact_advanced_scrolled() -> Any:
+    def settings_compact_advanced_scrolled() -> SettingsDialog:
         dialog = settings_section(2, advanced=True, compact=True)
         dialog.show()
         app.processEvents()
@@ -550,11 +767,14 @@ def _render_stories(
         scrollbar.setValue(scrollbar.maximum())
         return dialog
 
-    def readiness(state: str) -> Any:
-        class IdlePool:
-            def start(self, _task: Any) -> None:
-                pass
+    class IdlePool(QThreadPool):
+        def start(
+            self, task: QRunnable | Callable[..., object], /, priority: int | None = 0
+        ) -> None:
+            # Catalog snapshots intentionally retain a pending operation without dispatch.
+            pass
 
+    def readiness(state: str) -> ReadinessDialog:
         dialog = ReadinessDialog(
             settings.updated(ocr_language="jpn")
             if state == "non-english-ocr"
@@ -621,7 +841,7 @@ def _render_stories(
             dialog.setFont(font)
         return dialog
 
-    def onboarding(state: str) -> Any:
+    def onboarding(state: str) -> OnboardingWizard:
         wizard = OnboardingWizard(
             settings.updated(onboarding_completed=False),
             diagnostics=Mock(),
@@ -636,7 +856,9 @@ def _render_stories(
             mode = wizard.configuration_page.capture_mode
             mode.setCurrentIndex(mode.findData("screen"))
         elif state.startswith("diagnostics") or state == "compact-error":
-            wizard.diagnostics_page.runner.start = Mock()
+            resources.enter_context(
+                patch.object(wizard.diagnostics_page.runner, "start", return_value=0)
+            )
             wizard.show_page(1)
             if state != "diagnostics-loading":
                 wizard.diagnostics_page._checks_finished(
@@ -668,8 +890,8 @@ def _render_stories(
             wizard.setFont(font)
         return wizard
 
-    def macos_permissions(state: str) -> Any:
-        status = {
+    def macos_permissions(state: str) -> MacOSPermissionsDialog:
+        status: PermissionStatus = {
             "screen_capture": state == "granted",
             "accessibility": state == "granted",
         }
@@ -688,7 +910,7 @@ def _render_stories(
             dialog.setFont(font)
         return dialog
 
-    def asset_manager(state: str) -> Any:
+    def asset_manager(state: str) -> AssetManagerDialog:
         model_manager = Mock()
         model_manager.model_path.return_value = Path(
             "/Users/Player/Library/Application Support/VNTTS/models/xtts_v2"
@@ -737,7 +959,7 @@ def _render_stories(
             dialog.setFont(font)
         return dialog
 
-    def game_profiles(state: str) -> Any:
+    def game_profiles(state: str) -> GameProfilesDialog:
         region = DialogRegion(0.1, 0.6, 0.8, 0.3)
         active = GameProfile.from_settings(
             "Reverse: 1999",
@@ -771,7 +993,7 @@ def _render_stories(
             dialog.setFont(font)
         return dialog
 
-    def voice_import(state: str) -> Any:
+    def voice_import(state: str) -> VoiceImportDialog:
         dialog = VoiceImportDialog()
         dialog.resize(580, 220)
         if state != "empty":
@@ -796,7 +1018,7 @@ def _render_stories(
             dialog.setFont(font)
         return dialog
 
-    def calibration(state: str) -> Any:
+    def calibration(state: str) -> DialogRegionOverlay | CalibrationReviewDialog:
         scene = Image.new("RGB", (800, 450), "#272936")
         painter = ImageDraw.Draw(scene)
         painter.rectangle((75, 275, 730, 420), fill="#141822", outline="#7a8198")
@@ -816,7 +1038,7 @@ def _render_stories(
             if state == "overlay-save-failure":
                 overlay.save_error = "Unable to save the dialogue area: disk full"
             return overlay
-        pool = Mock()
+        pool = IdlePool()
         dialog = CalibrationReviewDialog(
             scene.crop((85, 285, 735, 425)), thread_pool=pool
         )
@@ -847,7 +1069,7 @@ def _render_stories(
         failed: bool = False,
         compact_long_values: bool = False,
         narrator_fallback: bool = False,
-    ) -> Any:
+    ) -> ControlDashboard | GameNarratorDialog:
         dashboard = ControlDashboard(settings)
         dashboard.resize(
             820 if compact_long_values else 1180,
@@ -855,19 +1077,20 @@ def _render_stories(
         )
         importer = Mock()
         importer.selected_installation_root.return_value = None
-        pool = Mock()
-        pool.start.side_effect = lambda _task: None
+        pool = IdlePool()
         previews = Mock()
         previews.backend.runtime_status = "Apple GPU · model loaded"
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        dashboard._catalog_temporary_directory = temporary
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+
         panel = GameNarratorDialog(
             settings,
             importer=importer,
             preview_service=previews,
             thread_pool=pool,
             player=Mock(),
-            voice_library=VoiceLibrary(Path(temporary.name) / "voice-library"),
+            voice_library=VoiceLibrary(Path(temporary) / "voice-library"),
         )
         panel._initializing = True
         long_role = "The Extremely Long Character Name Used to Verify Layout"
@@ -920,10 +1143,12 @@ def _render_stories(
             "Technical reference checks passed; voice quality is yours to judge."
         )
         panel._prepared[panel.references.currentData()] = (
-            Path(temporary.name) / "reference-manifest.json"
+            Path(temporary) / "reference-manifest.json"
         )
         panel._initializing = False
-        panel._engine_available = lambda: True
+        resources.enter_context(
+            patch.object(panel, "_engine_available", return_value=True)
+        )
         panel._update()
         panel.status.setText(
             "Choose a voice for this role. Nothing changes until you save."
@@ -954,7 +1179,6 @@ def _render_stories(
 
             QTimer.singleShot(0, finish_with_error)
         if narrator_fallback:
-            panel._catalog_temporary_directory = temporary
             panel.resize(940, 620)
             return panel
         dashboard.embed_narrator(panel)
@@ -963,7 +1187,7 @@ def _render_stories(
         )
         return dashboard
 
-    def unknown_speaker_prompt(*, long_name: bool = False) -> Any:
+    def unknown_speaker_prompt(*, long_name: bool = False) -> QMessageBox:
         speaker = "The Keeper of the Moonlit Observatory" if long_name else "Selone"
         prompt, _choose, _continue, _cancel = build_unknown_speaker_prompt(speaker)
         if long_name:
@@ -972,7 +1196,7 @@ def _render_stories(
             prompt.setFont(font)
         return prompt
 
-    def story_match_recovery(*, larger_text: bool = False) -> Any:
+    def story_match_recovery(*, larger_text: bool = False) -> QMessageBox:
         prompt, _read, _stories, _stop = build_story_match_recovery_prompt(
             "The visible dialogue does not match the prepared story at this point."
         )
@@ -983,70 +1207,15 @@ def _render_stories(
             prompt.setMaximumWidth(620)
         return prompt
 
-    def offline_preparation(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
-        story_index = root / "story-index.jsonl"
-        story_index.touch()
-        chapters = (
-            StorySelection(
-                "chapter-7",
-                "Chapter 7 - The long night",
-                "chapter",
-                0,
-                tuple(f"chapter-7:{index}" for index in range(18)),
-                18,
-                18,
-                3,
-                15,
-                3,
-                ("Narrator", "Believer IV", "Centurion"),
-                ("Narrator", "Believer IV", "Centurion"),
-                1_400,
-            ),
-            StorySelection(
-                "chapter-8",
-                "Chapter 8 - The road ahead",
-                "chapter",
-                1,
-                tuple(f"chapter-8:{index}" for index in range(24)),
-                24,
-                24,
-                5,
-                19,
-                4,
-                ("Narrator", "Believer IV", "Centurion", "Selone"),
-                ("Narrator", "Believer IV", "Centurion", "Selone"),
-                1_900,
-            ),
-            StorySelection(
-                "side-story",
-                "A long side-story title that still has to remain readable",
-                "character_story",
-                2,
-                tuple(f"side-story:{index}" for index in range(12)),
-                12,
-                12,
-                2,
-                10,
-                2,
-                ("Narrator", "Selone"),
-                ("Narrator", "Selone"),
-                900,
-            ),
+    def offline_preparation(state: str) -> OfflineAudioPreparationDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
         )
-        content = GameContent(
-            "reverse1999",
-            "Reverse: 1999",
-            "3.7",
-            story_index,
-            "a" * 64,
-            chapters,
-        )
+        root = Path(temporary)
+        content = _catalog_offline_content(root)
         importer = Mock()
         importer.availability.return_value = ImporterAvailability(True, "Ready")
-        pool = Mock()
-        pool.start.side_effect = lambda _task: None
+        pool = IdlePool()
         discovery = None if state == "loading" else lambda: ContentDiscovery((content,))
         offline_settings = settings.updated(
             speech_backend="pocket-tts",
@@ -1077,7 +1246,7 @@ def _render_stories(
             preview_player=Mock(),
             automatic_activation=True,
         )
-        dialog._catalog_temporary_directory = temporary
+
         dialog.resize(1040, 760)
         if state == "loading":
             return dialog
@@ -1091,10 +1260,8 @@ def _render_stories(
             dialog.continue_button.setFocus()
             return dialog
 
-        dialog._job = SimpleNamespace(
-            story_index_sha256=content.story_index_sha256,
-            selected_story_ids=("chapter-7", "chapter-8"),
-            estimate=SimpleNamespace(original_audio_lines=8, selected_lines=42),
+        dialog._job = dialog.job_store.create_or_resume(
+            content, ("chapter-7", "chapter-8")
         )
         dialog._story_selection_drafts[content.story_index_sha256] = {
             "chapter-7",
@@ -1124,7 +1291,7 @@ def _render_stories(
                 reference_duration_seconds=8.7,
             )
             plan = VoicePlan(
-                "catalog-job",
+                dialog._job.job_id,
                 "2026-09-22T00:00:00+00:00",
                 content.story_index_sha256,
                 None,
@@ -1230,7 +1397,7 @@ def _render_stories(
             dialog.continue_button.setFocus()
             return dialog
 
-        dialog._generation_input = SimpleNamespace(ready_items=34)
+        dialog._generation_input = _catalog_generation_input(dialog._job)
         dialog.generating = True
         dialog.step.setText("Step 3 of 4 - Generate and check audio")
         dialog.cancel_button.setText("Cancel generation")
@@ -1273,24 +1440,20 @@ def _render_stories(
             return dialog
 
         dialog.generating = False
-        dialog._generation_result = SimpleNamespace(
-            generated=34,
-            failed=0,
-            other_terminal=0,
-        )
-        result = SimpleNamespace(
+        dialog._stop_generation_progress()
+        dialog._render_generation_progress(OfflineGenerationProgress(generated=34))
+        dialog._show_final_handoff(
+            original=dialog._job.estimate.original_audio_lines,
             approved=34,
             live_fallbacks=0,
             story_lines=42,
             omissions=0,
         )
-        dialog._stop_generation_progress()
-        dialog._show_final_handoff(result)
         dialog.defer_activation("Reading settings changed after preparation started.")
         dialog.continue_button.setFocus()
         return dialog
 
-    def voice_audition(state: str) -> Any:
+    def voice_audition(state: str) -> OfflineAudioPreparationDialog:
         dialog = offline_preparation("confirmation")
         dialog._inspect_character_voice()
         panel = dialog.voice_panel
@@ -1299,7 +1462,14 @@ def _render_stories(
         elif state == "alternate-phrase":
             panel.preview_phrase.setCurrentIndex(1)
         elif state == "preview-ready":
-            preview = Path(dialog._catalog_temporary_directory.name) / "preview.wav"
+            preview = (
+                Path(
+                    resources.enter_context(
+                        temporary_directory(prefix="vntts-ui-catalog-")
+                    )
+                )
+                / "preview.wav"
+            )
             write_silent_wav(preview)
             panel._preview_finished(
                 SimpleNamespace(path=preview, audio_sha256=sha256_file(preview)), None
@@ -1320,9 +1490,9 @@ def _render_stories(
             panel._decision_finished(None, OSError("Application data is read-only."))
         return dialog
 
-    def ocr_review(state: str) -> Any:
-        temporary = TemporaryDirectory()
-        directory = Path(temporary.name)
+    def ocr_review(state: str) -> QDialog:
+        temporary = resources.enter_context(temporary_directory())
+        directory = Path(temporary)
         if state != "empty":
             size = (1200, 1000) if state == "enlarged-long" else (640, 200)
             image = Image.new("RGB", size, "#282b33")
@@ -1356,13 +1526,18 @@ def _render_stories(
             "game",
             "Reverse: 1999",
         )
-        dialog._catalog_temporary_directory = temporary
+
         if state in {"enlarged-screenshot", "enlarged-long"}:
             enlarged = dialog._screenshot_dialog()
             if enlarged is None:
                 raise RuntimeError("OCR review screenshot could not be enlarged")
-            enlarged._catalog_temporary_directory = temporary
-            enlarged._catalog_owner = dialog
+
+            resources.enter_context(
+                cleanup_on_exit(
+                    lambda: _close_catalog_widget(dialog),
+                    description="Catalog popup owner cleanup",
+                )
+            )
             return enlarged
         if state in {"corrected", "all-games", "saving", "save-failure", "compact"}:
             dialog.corrected_character.setText("Marcus")
@@ -1375,8 +1550,13 @@ def _render_stories(
         if state == "resolve-confirm":
             dialog.corrected_character.setText("Marcus")
             confirmation = dialog._dismissal_dialog()
-            confirmation._catalog_temporary_directory = temporary
-            confirmation._catalog_owner = dialog
+
+            resources.enter_context(
+                cleanup_on_exit(
+                    lambda: _close_catalog_widget(dialog),
+                    description="Catalog popup owner cleanup",
+                )
+            )
             return confirmation
         elif state == "saving":
             dialog._write_active = True
@@ -1396,9 +1576,11 @@ def _render_stories(
             dialog.resize(730, 560)
         return dialog
 
-    def ocr_corrections(state: str = "profile-rules") -> Any:
-        temporary = TemporaryDirectory()
-        directory = Path(temporary.name)
+    def ocr_corrections(
+        state: str = "profile-rules",
+    ) -> OCRCorrectionsDialog | QMessageBox:
+        temporary = resources.enter_context(temporary_directory())
+        directory = Path(temporary)
         profile_rules = {
             "Mareus": "Marcus",
             "Hello tiniekeeper.": "Hello timekeeper.",
@@ -1415,7 +1597,7 @@ def _render_stories(
             profile_entries={"game": profile_rules},
         )
         dialog = OCRCorrectionsDialog("game", "Reverse: 1999", store)
-        dialog._catalog_temporary_directory = temporary
+
         if state == "validation":
             dialog._append_row(dialog.global_table, "Unclear", "")
             dialog._append_row(dialog.profile_table, "Mareus", "Different")
@@ -1431,8 +1613,13 @@ def _render_stories(
         elif state == "unsaved-close":
             dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
             confirmation = dialog._discard_dialog()
-            confirmation._catalog_temporary_directory = temporary
-            confirmation._catalog_owner = dialog
+
+            resources.enter_context(
+                cleanup_on_exit(
+                    lambda: _close_catalog_widget(dialog),
+                    description="Catalog popup owner cleanup",
+                )
+            )
             return confirmation
         elif state == "compact":
             font = dialog.font()
@@ -1441,7 +1628,7 @@ def _render_stories(
             dialog.resize(560, 400)
         return dialog
 
-    def dialogue_history(state: str) -> Any:
+    def dialogue_history(state: str) -> DialogueHistoryDialog:
         history = DialogueHistory(
             clock=lambda: datetime(2026, 9, 22, 12, 34, tzinfo=timezone.utc)
         )
@@ -1460,7 +1647,6 @@ def _render_stories(
         dialog = DialogueHistoryDialog(
             history, lambda *_args: None, stop_handler=lambda: None
         )
-        dialog.timer.stop()
         if state == "filtered":
             dialog.search.setText("storm")
         elif state == "speaking":
@@ -1478,7 +1664,7 @@ def _render_stories(
             dialog.resize(600, 420)
         return dialog
 
-    def diagnostics(state: str) -> Any:
+    def diagnostics(state: str) -> DiagnosticsDialog:
         dialog = DiagnosticsDialog()
         if state != "empty":
             capture = Image.new("RGB", (760, 190), "#171a20")
@@ -1533,31 +1719,16 @@ def _render_stories(
             dialog.resize(620, 460)
         return dialog
 
-    def support_center(state: str) -> Any:
-        events: list[dict[str, str]] = []
-        if state != "empty":
-            events.extend(
-                {
-                    "recorded_at": f"2026-09-22T12:{index:02d}:00+00:00",
-                    "level": "info" if index % 7 else "warning",
-                    "message": f"Captured dialogue and checked selected voice ({index})",
-                }
-                for index in range(42 if state == "new-events" else 3)
-            )
-        dialog = SupportCenterDialog(SimpleNamespace(snapshot=lambda: list(events)))
+    def support_center(state: str) -> SupportCenterDialog:
+        events = _catalog_support_log(state)
+        dialog = SupportCenterDialog(events)
         dialog.refresh()
         if state == "new-events":
             dialog.show()
             app.processEvents()
             dialog.events.moveCursor(QTextCursor.MoveOperation.Start)
             dialog.events.verticalScrollBar().setValue(0)
-            events.append(
-                {
-                    "recorded_at": "2026-09-22T13:00:00+00:00",
-                    "level": "warning",
-                    "message": "Selected game window is no longer available",
-                }
-            )
+            events.add("warning", "Selected game window is no longer available")
             dialog.refresh()
         elif state == "exporting":
             dialog.request_export()
@@ -1570,12 +1741,14 @@ def _render_stories(
             dialog.resize(640, 440)
         return dialog
 
-    def authoring_workbench(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
+    def authoring_workbench(state: str) -> AuthoringWorkbenchDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        root = Path(temporary)
         workspace = create_test_workspace(root)[2].directory
         state_path = workspace / "generated-audio" / "generation-state.json"
-        document = json.loads(state_path.read_text(encoding="utf-8"))
+        document = json.loads(read_regular_text(state_path, encoding="utf-8"))
         if state == "ready":
             document["active"] = None
             document["items"] = {}
@@ -1636,7 +1809,7 @@ def _render_stories(
             settings=QSettings(str(root / "ui.ini"), QSettings.Format.IniFormat),
             synchronous_projection=True,
         )
-        dialog._catalog_temporary_directory = temporary
+
         _set_long_authoring_review(dialog, state)
         if state == "filtered-empty":
             dialog.review_status.setCurrentText("Awaiting review")
@@ -1657,21 +1830,23 @@ def _render_stories(
             )
         return dialog
 
-    def cohort_review(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
+    def cohort_review(state: str) -> CohortReviewBundleDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        root = Path(temporary)
         first = create_pending_cohort_workspace(root / "first")[0]
         second = create_pending_cohort_workspace(root / "second")[0]
         bundle = build_cohort_review_bundle((first, second))
         if state == "load-failure":
 
-            def fail_load(_bundle: object) -> None:
+            def fail_load(_bundle: object) -> Never:
                 raise ValueError("The sample manifest could not be read")
 
             dialog = CohortReviewBundleDialog(bundle, sample_loader=fail_load)
         else:
             dialog = CohortReviewBundleDialog(bundle)
-        dialog._catalog_temporary_directory = temporary
+
         deadline = time.monotonic() + 3
         while dialog._load_active and time.monotonic() < deadline:
             app.processEvents()
@@ -1701,9 +1876,11 @@ def _render_stories(
             dialog._update_actions()
         return dialog
 
-    def legacy_reason_review(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
+    def legacy_reason_review(state: str) -> LegacyReasonReviewDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        root = Path(temporary)
         _workspace, _queue_id, _decision, corpus = _legacy_bad_fixture(root)
         review = build_legacy_reason_review(corpus, root)
         if state in {"compact", "compact-reasons"}:
@@ -1738,7 +1915,7 @@ def _render_stories(
                 else Mock(return_value=(root / "decision.json",))
             ),
         )
-        dialog._catalog_temporary_directory = temporary
+
         if state in {
             "heard",
             "selected",
@@ -1763,9 +1940,11 @@ def _render_stories(
             QTimer.singleShot(0, dialog.reason_controls["other_or_unclear"].setFocus)
         return dialog
 
-    def character_story_review(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
+    def character_story_review(state: str) -> StoryVoiceReviewDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        root = Path(temporary)
         references = root / "references"
         references.mkdir()
         portraits = root / "portraits"
@@ -1828,7 +2007,7 @@ def _render_stories(
             encoding="utf-8",
         )
         dialog = StoryVoiceReviewDialog(report, portrait_directory=portraits)
-        dialog._catalog_temporary_directory = temporary
+
         dialog.recommended_only.setChecked(False)
         if state.startswith("compact"):
             font = dialog.font()
@@ -1841,9 +2020,11 @@ def _render_stories(
             )
         return dialog
 
-    def missing_voice_review(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
+    def missing_voice_review(state: str) -> MissingVoiceReuseReviewDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        root = Path(temporary)
         statuses = (
             ("failed", "failed")
             if state == "none"
@@ -1862,7 +2043,7 @@ def _render_stories(
                 plan_path, evidence, root / "review", seed=7
             )
         dialog = MissingVoiceReuseReviewDialog(session_path)
-        dialog._catalog_temporary_directory = temporary
+
         if state == "compared" and dialog._cohort is not None:
             for candidate in dialog.bundle["candidates"]:
                 dialog.session["heard"].append(
@@ -1880,14 +2061,16 @@ def _render_stories(
             dialog.resize(dialog.minimumSize())
         return dialog
 
-    def failed_reference_review(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
-        workspace, _queue_id = FailureReferenceAuditTest().create_failed_workspace(root)
+    def failed_reference_review(state: str) -> FailureReferenceAuditDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        root = Path(temporary)
+        workspace, _queue_id = create_failed_reference_workspace(root)
         audit = root / "audit"
         publish_failure_reference_audit(workspace, audit)
         dialog = FailureReferenceAuditDialog(audit)
-        dialog._catalog_temporary_directory = temporary
+
         if state == "heard":
             group = dialog._current_group()
             if group is not None:
@@ -1905,31 +2088,11 @@ def _render_stories(
             dialog.resize(dialog.minimumSize())
         return dialog
 
-    def source_reference_review(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        session = write_quality_session(Path(temporary.name))
-        dialog = SourceReferenceQualityDialog(session)
-        dialog._catalog_temporary_directory = temporary
-        if state == "heard":
-            for token in (
-                "reference",
-                *(sample["queue_id"] for sample in dialog.current["generated_samples"]),
-            ):
-                dialog._playing_token = token
-                dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
-        elif state == "complete":
-            dialog.session["variants"][0]["decision"] = "accept"
-            dialog._load_next(dialog.session)
-        elif state == "compact":
-            font = dialog.font()
-            font.setPointSize(max(font.pointSize() + 3, 16))
-            dialog.setFont(font)
-            dialog.resize(dialog.minimumSize())
-        return dialog
-
-    def blind_listening(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
+    def blind_listening(state: str) -> ModelListeningDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        root = Path(temporary)
         session = create_listening_session_from_reports(
             write_model_reports(root, item_count=1), root / "session"
         )
@@ -1937,14 +2100,16 @@ def _render_stories(
         dialog = ModelListeningDialog(
             session, auto_play=False, playback_factory=lambda: playback
         )
-        dialog._catalog_temporary_directory = temporary
+
         if state == "heard":
             for side in ("a", "b"):
                 dialog.play(side)
                 playback.finish()
                 dialog.poll_playback()
         elif state == "complete":
-            record_trial_preference(session, dialog.current_trial["trial_id"], "a")
+            current = dialog.current_trial
+            assert current is not None
+            record_trial_preference(session, current["trial_id"], "a")
             dialog.load_next_trial()
         elif state == "compact":
             font = dialog.font()
@@ -1953,19 +2118,23 @@ def _render_stories(
             dialog.resize(dialog.minimumSize())
         return dialog
 
-    def terminal_conflict_review(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        directory = TerminalConflictReviewUiTest().create_review(Path(temporary.name))
+    def terminal_conflict_review(state: str) -> TerminalConflictReviewDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        directory = create_terminal_conflict_review(Path(temporary))
         dialog = TerminalConflictReviewDialog(directory)
-        dialog._catalog_temporary_directory = temporary
+
         if state == "heard":
             dialog._heard = {
                 candidate["candidate_id"] for candidate in dialog._display_candidates
             }
             dialog._update_decision_buttons()
         elif state == "complete":
+            current = dialog._current
+            assert current is not None
             record_terminal_conflict_decision(
-                directory, dialog._current["case_id"], "neither_acceptable"
+                directory, current["case_id"], "neither_acceptable"
             )
             dialog._load_next()
         elif state == "compact":
@@ -1975,7 +2144,7 @@ def _render_stories(
             dialog.resize(dialog.minimumSize())
         return dialog
 
-    renderers: dict[str, Callable[[], Any]] = {
+    renderers: dict[str, Callable[[], QWidget]] = {
         "dashboard.stories-ready": dashboard_stories,
         "dashboard.reading-loading": dashboard_loading,
         "dashboard.reading-active": dashboard_reading,
@@ -2179,10 +2348,18 @@ def _render_stories(
         "failed-reference-review.heard": lambda: failed_reference_review("heard"),
         "failed-reference-review.preview": lambda: failed_reference_review("preview"),
         "failed-reference-review.compact": lambda: failed_reference_review("compact"),
-        "source-reference-review.pending": lambda: source_reference_review("pending"),
-        "source-reference-review.heard": lambda: source_reference_review("heard"),
-        "source-reference-review.complete": lambda: source_reference_review("complete"),
-        "source-reference-review.compact": lambda: source_reference_review("compact"),
+        "source-reference-review.pending": lambda: _source_reference_review(
+            "pending", resources
+        ),
+        "source-reference-review.heard": lambda: _source_reference_review(
+            "heard", resources
+        ),
+        "source-reference-review.complete": lambda: _source_reference_review(
+            "complete", resources
+        ),
+        "source-reference-review.compact": lambda: _source_reference_review(
+            "compact", resources
+        ),
         "blind-listening.pending": lambda: blind_listening("pending"),
         "blind-listening.heard": lambda: blind_listening("heard"),
         "blind-listening.complete": lambda: blind_listening("complete"),
@@ -2222,18 +2399,6 @@ def _render_stories(
             "compact-actions"
         ),
     }
-    surfaces = {surface["id"]: surface for surface in catalog["surfaces"]}
-    allowed_surfaces = set(surfaces)
-    if selected_surface:
-        if selected_surface not in surfaces:
-            raise ValueError(f"unknown surface: {selected_surface}")
-        target = surfaces[selected_surface]
-        allowed_surfaces = {
-            selected_surface,
-            target["canonical_owner"],
-            *target.get("related", []),
-        }
-
     captured: dict[str, str] = {}
     for surface in catalog["surfaces"]:
         if surface["id"] not in allowed_surfaces:
@@ -2243,167 +2408,21 @@ def _render_stories(
             renderer = renderers.get(story_id)
             if renderer is None:
                 continue
-            widget = renderer()
-            try:
-                widget.show()
-                app.processEvents()
-                _prepare_catalog_screenshot(widget, story_id, app)
-                image_name = f"{story_id}.png"
-                image_path = screenshots / image_name
-                if not widget.grab().save(str(image_path)):
-                    raise RuntimeError(f"could not save {image_path}")
-                captured[story_id] = f"screenshots/{image_name}"
-            finally:
-                for timer in widget.findChildren(QTimer):
-                    timer.stop()
-                if isinstance(widget, OCRCorrectionsDialog):
-                    widget._initial_rows = widget._all_table_rows()
-                widget.close()
-                widget.deleteLater()
-                app.processEvents()
+            with ExitStack() as resources:
+                widget = renderer()
+                with cleanup_on_exit(
+                    lambda: _close_catalog_widget(widget),
+                    description="Catalog widget cleanup",
+                ):
+                    widget.show()
+                    app.processEvents()
+                    _prepare_catalog_screenshot(widget, story_id, app)
+                    image_name = f"{story_id}.png"
+                    image_path = screenshots / image_name
+                    if not widget.grab().save(str(image_path)):
+                        raise RuntimeError(f"could not save {image_path}")
+                    captured[story_id] = f"screenshots/{image_name}"
     return captured
-
-
-def _review_packet(
-    catalog: dict[str, Any], surface: dict[str, Any], captured: dict[str, str]
-) -> dict[str, Any]:
-    by_id = {item["id"]: item for item in catalog["surfaces"]}
-    related_ids = list(
-        dict.fromkeys([surface["canonical_owner"], *surface.get("related", [])])
-    )
-
-    def public_surface(value: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "id": value["id"],
-            "title": value["title"],
-            "family": value["family"],
-            "audience": value["audience"],
-            "mission": value["mission"],
-            "canonical_owner": value["canonical_owner"],
-            "related": list(value.get("related", [])),
-            "contracts": [
-                {"id": contract_id, "rule": catalog["contracts"][contract_id]}
-                for contract_id in value.get("contracts", [])
-            ],
-            "stories": [
-                {
-                    "id": story["id"],
-                    "title": story["title"],
-                    "state": story["state"],
-                    "screenshot": captured.get(story["id"]),
-                }
-                for story in value.get("stories", [])
-            ],
-        }
-
-    return {
-        "review_boundary": (
-            "Review product behavior and visible interface only. Do not infer or "
-            "request implementation details."
-        ),
-        "target": public_surface(surface),
-        "related_surfaces": [
-            public_surface(by_id[surface_id])
-            for surface_id in related_ids
-            if surface_id != surface["id"]
-        ],
-    }
-
-
-def _write_catalog(
-    catalog: dict[str, Any], output: Path, captured: dict[str, str]
-) -> None:
-    packets = output / "review-packets"
-    packets.mkdir(parents=True, exist_ok=True)
-    for surface in catalog["surfaces"]:
-        packet = _review_packet(catalog, surface, captured)
-        (packets / f"{surface['id']}.json").write_text(
-            json.dumps(packet, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-
-    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for surface in catalog["surfaces"]:
-        groups[surface["family"]].append(surface)
-
-    navigation: list[str] = []
-    sections: list[str] = []
-    for family, surfaces in groups.items():
-        navigation.append(f"<h3>{html.escape(family)}</h3><ul>")
-        sections.append(f"<section><h2>{html.escape(family)}</h2>")
-        for surface in surfaces:
-            surface_id = surface["id"]
-            navigation.append(
-                f'<li><a href="#{html.escape(surface_id)}">'
-                f"{html.escape(surface['title'])}</a></li>"
-            )
-            owner = surface["canonical_owner"]
-            relations = ", ".join(surface.get("related", [])) or "None"
-            contracts = "".join(
-                "<li><strong>"
-                + html.escape(contract_id)
-                + ":</strong> "
-                + html.escape(catalog["contracts"][contract_id])
-                + "</li>"
-                for contract_id in surface.get("contracts", [])
-            )
-            stories = []
-            for story in surface.get("stories", []):
-                screenshot = captured.get(story["id"])
-                image = (
-                    f'<a href="{html.escape(screenshot)}"><img src="{html.escape(screenshot)}" '
-                    f'alt="{html.escape(story["title"])}"></a>'
-                    if screenshot
-                    else '<div class="missing">Map only: deterministic render not added yet.</div>'
-                )
-                stories.append(
-                    '<article class="story">'
-                    f"<h4>{html.escape(story['title'])}</h4>"
-                    f"<p>{html.escape(story['state'])}</p>{image}</article>"
-                )
-            if not stories:
-                stories.append(
-                    '<div class="missing">Mapped relationship; render when this surface is next changed.</div>'
-                )
-            sections.append(
-                f'<article class="surface" id="{html.escape(surface_id)}">'
-                f"<header><div><h3>{html.escape(surface['title'])}</h3>"
-                f"<p>{html.escape(surface['mission'])}</p></div>"
-                f'<a class="packet" href="review-packets/{html.escape(surface_id)}.json">Astra packet</a></header>'
-                '<dl class="meta">'
-                f"<dt>Audience</dt><dd>{html.escape(surface['audience'])}</dd>"
-                f"<dt>Canonical owner</dt><dd>{html.escape(owner)}</dd>"
-                f"<dt>Related</dt><dd>{html.escape(relations)}</dd></dl>"
-                f'<ul class="contracts">{contracts}</ul>'
-                f'<div class="stories">{"".join(stories)}</div></article>'
-            )
-        navigation.append("</ul>")
-        sections.append("</section>")
-
-    page = f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>{html.escape(catalog["title"])}</title>
-<style>
-:root {{ color-scheme: dark; font: 15px/1.5 system-ui, sans-serif; background:#171717; color:#eee; }}
-* {{ box-sizing:border-box; }} body {{ margin:0; }} a {{ color:#8fcbff; }}
-nav {{ position:fixed; inset:0 auto 0 0; width:270px; overflow:auto; padding:20px; background:#202020; border-right:1px solid #444; }}
-nav h1 {{ font-size:18px; margin:0 0 20px; }} nav h3 {{ margin:18px 0 4px; color:#bbb; font-size:12px; text-transform:uppercase; }}
-nav ul {{ list-style:none; margin:0; padding:0; }} nav li {{ margin:5px 0; }}
-main {{ margin-left:270px; padding:28px; max-width:1500px; }} main > p {{ color:#bbb; max-width:850px; }}
-section > h2 {{ margin-top:42px; border-bottom:1px solid #444; padding-bottom:8px; }}
-.surface {{ background:#252525; border:1px solid #444; border-radius:12px; margin:18px 0; padding:20px; }}
-.surface header {{ display:flex; gap:20px; align-items:start; justify-content:space-between; }} h3,h4,p {{ margin-top:0; }}
-.packet {{ white-space:nowrap; border:1px solid #666; border-radius:7px; padding:6px 10px; text-decoration:none; }}
-.meta {{ display:grid; grid-template-columns:max-content 1fr; gap:4px 14px; }} .meta dt {{ color:#aaa; }} .meta dd {{ margin:0; }}
-.contracts {{ padding-left:20px; color:#ccc; }} .stories {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:16px; margin-top:18px; }}
-.story {{ background:#1b1b1b; border-radius:9px; padding:14px; }} .story img {{ display:block; width:100%; height:auto; border:1px solid #555; border-radius:6px; }}
-.missing {{ color:#aaa; border:1px dashed #555; border-radius:7px; padding:12px; }}
-@media (max-width:850px) {{ nav {{ position:static; width:auto; }} main {{ margin:0; padding:18px; }} .stories {{ grid-template-columns:1fr; }} }}
-</style></head><body>
-<nav><h1>{html.escape(catalog["title"])}</h1>{"".join(navigation)}</nav>
-<main><h1>Interface catalog</h1><p>One product map, shared visual contracts and reproducible states of the real Qt widgets. Use each Astra packet with the target screenshots; it deliberately contains no source-code context.</p>{"".join(sections)}</main>
-</body></html>"""
-    (output / "index.html").write_text(page, encoding="utf-8")
 
 
 def main() -> int:
@@ -2418,7 +2437,6 @@ def main() -> int:
     if arguments.validate_only:
         print(f"Validated {len(catalog['surfaces'])} surfaces.")
         return 0
-    arguments.output.mkdir(parents=True, exist_ok=True)
     captured = _render_stories(catalog, arguments.output, arguments.surface)
     _write_catalog(catalog, arguments.output, captured)
     print(

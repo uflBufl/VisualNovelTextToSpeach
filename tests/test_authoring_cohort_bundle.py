@@ -8,8 +8,9 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import vntts.authoring.cohort_bundle as cohort_bundle_module
-from tests import test_authoring_cohort_review
+from tests.authoring_fixtures import create_pending_cohort_workspace
 from tests.symlink_support import symlink_or_skip
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_bundle import (
     CohortReviewError,
@@ -23,15 +24,19 @@ from vntts.authoring.cohort_bundle import (
     refresh_cohort_review_bundle,
     write_cohort_review_bundle,
 )
+from vntts.authoring.cohort_review import (
+    build_cohort_review_decision,
+    write_cohort_review_decision,
+    write_cohort_review_plan,
+)
 
 
 class AuthoringCohortBundleTest(unittest.TestCase):
     def create_sources(self, root):
-        fixture = test_authoring_cohort_review.AuthoringCohortReviewTest()
-        first, first_state, first_queue = fixture.create_pending_workspace(
+        first, first_state, first_queue = create_pending_cohort_workspace(
             root / "first"
         )
-        second, second_state, second_queue = fixture.create_pending_workspace(
+        second, second_state, second_queue = create_pending_cohort_workspace(
             root / "second"
         )
         return (
@@ -65,6 +70,56 @@ class AuthoringCohortBundleTest(unittest.TestCase):
         self.assertTrue(
             all(sample.item.pace_advisories == () for sample in loaded_samples)
         )
+
+    def test_bundle_retains_blocked_legacy_records_without_audio_fields(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = self.create_sources(root)
+            blocked_workspace, state_path, queue_id = sources[0]
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["items"][queue_id].pop("generation_profile")
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            before = state_path.read_bytes()
+
+            bundle = build_cohort_review_bundle([source[0] for source in sources])
+            blocked_plan = next(
+                source["plan"]
+                for source in bundle.document["sources"]
+                if source["workspace"] == str(blocked_workspace.resolve())
+            )
+            blocked_record = blocked_plan["blocked_items"][0]
+            self.assertEqual(set(blocked_record), {"queue_id", "line_id", "reason"})
+            self.assertEqual(blocked_record["queue_id"], queue_id)
+            self.assertIn("Generation profile", blocked_record["reason"])
+            self.assertEqual(bundle.document["blocked_item_count"], 1)
+            self.assertEqual(bundle.document["blocked_source_occurrence_count"], 1)
+            self.assertEqual(bundle.document["pending_item_count"], 1)
+            self.assertEqual(bundle.document["cohort_count"], 1)
+
+            publication = root / "blocked-bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            self.assertEqual(load_cohort_review_bundle(publication), bundle)
+            current, samples = load_cohort_review_bundle_samples(bundle)
+            self.assertEqual(current, bundle)
+            self.assertEqual(len(samples), 1)
+            self.assertEqual(samples[0].workspace, sources[1][0].resolve())
+            self.assertEqual(state_path.read_bytes(), before)
+
+            second_state_path = sources[1][1]
+            second_state = json.loads(second_state_path.read_text(encoding="utf-8"))
+            second_state["items"][sources[1][2]].pop("generation_profile")
+            second_state_path.write_text(json.dumps(second_state), encoding="utf-8")
+            blocked_only = build_cohort_review_bundle([source[0] for source in sources])
+            self.assertEqual(blocked_only.document["workspace_count"], 2)
+            self.assertEqual(blocked_only.document["cohort_count"], 0)
+            self.assertEqual(blocked_only.document["blocked_item_count"], 1)
+            self.assertEqual(
+                blocked_only.document["blocked_source_occurrence_count"], 2
+            )
+            self.assertEqual(load_cohort_review_bundle_samples(blocked_only)[1], ())
+            empty_publication = root / "blocked-only.json"
+            write_cohort_review_bundle(blocked_only, empty_publication)
+            self.assertEqual(load_cohort_review_bundle(empty_publication), blocked_only)
 
     def test_duplicate_source_and_tampered_inventory_are_rejected(self):
         with TemporaryDirectory() as directory:
@@ -324,7 +379,7 @@ class AuthoringCohortBundleTest(unittest.TestCase):
                     "file_sha256": digest,
                 }
             cohort = {
-                "cohort_id": "a" * 64,
+                "cohort_id": cohort_bundle_module._canonical_sha256({"voice": "Hero"}),
                 "identity": {"voice": "Hero"},
                 "item_count": 3,
                 "attention_count": 0,
@@ -612,6 +667,96 @@ class AuthoringCohortBundleTest(unittest.TestCase):
         self.assertEqual(assessments[0].assessment, "bad")
         self.assertEqual(assessments[0].defect_reasons, ("unspecified",))
 
+    def test_resume_rejects_checksum_valid_expansion_from_foreign_workspace(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, state_path, queue_id = self.create_sources(root)[0]
+            bundle = build_cohort_review_bundle([workspace])
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            foreign_plan = json.loads(json.dumps(bundle.document["sources"][0]["plan"]))
+            foreign_plan["workspace_id"] = "different-workspace-id"
+            foreign_plan["plan_id"] = cohort_bundle_module._canonical_sha256(
+                {key: value for key, value in foreign_plan.items() if key != "plan_id"}
+            )
+            decision = build_cohort_review_decision(
+                foreign_plan,
+                foreign_plan["cohorts"][0]["cohort_id"],
+                "expand",
+                reviewed_queue_ids=[queue_id],
+                sample_assessments={queue_id: "bad"},
+                next_clean_samples_per_bucket=2,
+            )
+            evidence = workspace / "cohort-reviews"
+            write_cohort_review_plan(
+                foreign_plan, evidence / f"plan-{foreign_plan['plan_id']}.json"
+            )
+            write_cohort_review_decision(
+                decision, evidence / f"decision-{decision.decision_id}.json"
+            )
+            before = state_path.read_bytes()
+
+            with self.assertRaisesRegex(CohortReviewError, "different workspace"):
+                load_resumable_cohort_review_session(publication, persist=False)
+
+            self.assertEqual(state_path.read_bytes(), before)
+            self.assertFalse(
+                cohort_bundle_module.cohort_review_progress_path(publication).exists()
+            )
+
+    def test_resume_restores_legacy_expansion_without_optional_assessments(self):
+        for version, null_statuses in ((1, False), (1, True), (2, False), (2, True)):
+            with (
+                self.subTest(version=version, null_statuses=null_statuses),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                workspace = self.create_sources(root)[0][0]
+                bundle = build_cohort_review_bundle([workspace])
+                publication = root / "bundle.json"
+                write_cohort_review_bundle(bundle, publication)
+                cohort = bundle.document["cohorts"][0]
+                queue_id = cohort["samples"][0]["queue_id"]
+                execute_cohort_bundle_decision(
+                    bundle,
+                    cohort["workspace_id"],
+                    cohort["cohort_id"],
+                    "expand",
+                    reviewed_queue_ids=[queue_id],
+                    next_clean_samples_per_bucket=2,
+                )
+                evidence = workspace / "cohort-reviews"
+                decision_path = next(evidence.glob("decision-*.json"))
+                document = json.loads(decision_path.read_text(encoding="utf-8"))
+                document["schema_version"] = version
+                document.pop("sample_assessments")
+                if null_statuses:
+                    document["item_review_statuses"] = None
+                else:
+                    document.pop("item_review_statuses")
+                document["decision_id"] = cohort_bundle_module._canonical_sha256(
+                    {
+                        key: value
+                        for key, value in document.items()
+                        if key != "decision_id"
+                    }
+                )
+                decision_path.unlink()
+                (evidence / f"decision-{document['decision_id']}.json").write_text(
+                    json.dumps(document), encoding="utf-8"
+                )
+
+                _resume, _current, _samples, assessments = (
+                    load_resumable_cohort_review_session(publication, persist=False)
+                )
+
+                self.assertEqual(len(assessments), 1)
+                self.assertEqual(assessments[0].workspace_id, cohort["workspace_id"])
+                self.assertEqual(assessments[0].cohort_id, cohort["cohort_id"])
+                self.assertEqual(assessments[0].queue_id, queue_id)
+                self.assertEqual(assessments[0].assessment, "heard")
+                self.assertEqual(assessments[0].defect_reasons, ())
+
     def test_version_one_observation_remains_readable_without_guessed_reason(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -652,6 +797,49 @@ class AuthoringCohortBundleTest(unittest.TestCase):
 
         self.assertEqual(assessments[0].assessment, "bad")
         self.assertEqual(assessments[0].defect_reasons, ())
+
+    def test_malformed_observation_assessments_raise_domain_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = self.create_sources(root)
+            bundle = build_cohort_review_bundle([value[0] for value in sources])
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            cohort = bundle.document["cohorts"][0]
+            sample = cohort["samples"][0]
+            path = cohort_bundle_module.cohort_review_observations_path(publication)
+            for version in (1, 2):
+                for assessment in ([], {}, None, True, 1, "unknown"):
+                    with self.subTest(version=version, assessment=assessment):
+                        entry = {
+                            "workspace_id": cohort["workspace_id"],
+                            "cohort_id": cohort["cohort_id"],
+                            "queue_id": sample["queue_id"],
+                            "audio_sha256": sample["audio_sha256"],
+                            "assessment": assessment,
+                        }
+                        if version == 2:
+                            entry["defect_reasons"] = []
+                        body = {
+                            "schema": cohort_bundle_module.COHORT_REVIEW_OBSERVATIONS_SCHEMA,
+                            "schema_version": version,
+                            "root_bundle_id": bundle.bundle_id,
+                            "current_bundle_id": bundle.bundle_id,
+                            "observations": [entry],
+                        }
+                        document = {
+                            **body,
+                            "observations_id": cohort_bundle_module._canonical_sha256(
+                                body
+                            ),
+                        }
+                        path.write_text(json.dumps(document), encoding="utf-8")
+                        with self.assertRaisesRegex(
+                            CohortReviewError, "authority is invalid"
+                        ):
+                            cohort_bundle_module.load_cohort_review_observations(
+                                publication, bundle, bundle
+                            )
 
     def test_successor_restores_only_exact_remaining_observations(self):
         with TemporaryDirectory() as directory:
@@ -798,6 +986,128 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             _current, samples = load_cohort_review_bundle_samples(bundle)
 
         self.assertEqual(len(samples), 2)
+
+    def test_live_samples_tolerate_bound_optional_numeric_metadata(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, state_path, queue_id = create_pending_cohort_workspace(root)
+            original = build_cohort_review_bundle([workspace]).document
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            publication = root / "bundle.json"
+            for value, expected_duration, expected_number, invalid_authority in (
+                (10**400, None, None, False),
+                (-2.5, None, -2.5, False),
+                (5e-324, 5e-324, 5e-324, False),
+                (float("nan"), None, None, True),
+            ):
+                with self.subTest(value=value):
+                    document = json.loads(json.dumps(original))
+                    result = state["items"][queue_id]
+                    result["quality"].update(duration_seconds=value, peak=value)
+                    state_path.write_text(json.dumps(state), encoding="utf-8")
+                    plan = document["sources"][0]["plan"]
+                    plan["state_sha256"] = hashlib.sha256(
+                        state_path.read_bytes()
+                    ).hexdigest()
+                    metrics = {
+                        "words_per_minute": None
+                        if value == 5e-324 or invalid_authority
+                        else value,
+                        "pace_baseline_wpm": None if invalid_authority else value,
+                        "pace_ratio": None if invalid_authority else value,
+                    }
+                    plan["cohorts"][0]["items"][0].update(metrics)
+                    plan["plan_id"] = canonical_document_sha256(
+                        {key: entry for key, entry in plan.items() if key != "plan_id"}
+                    )
+                    cohort = document["cohorts"][0]
+                    cohort["plan_id"] = plan["plan_id"]
+                    cohort["samples"][0].update(metrics)
+                    document["bundle_id"] = canonical_document_sha256(
+                        {
+                            key: entry
+                            for key, entry in document.items()
+                            if key != "bundle_id"
+                        }
+                    )
+                    publication.write_text(json.dumps(document), encoding="utf-8")
+                    before = state_path.read_bytes()
+                    if invalid_authority:
+                        with self.assertRaisesRegex(
+                            CohortReviewError, "authority is invalid"
+                        ):
+                            load_cohort_review_bundle_samples(
+                                load_cohort_review_bundle(publication)
+                            )
+                        self.assertEqual(state_path.read_bytes(), before)
+                        continue
+                    _, samples = load_cohort_review_bundle_samples(
+                        load_cohort_review_bundle(publication)
+                    )
+                    item = samples[0].item
+                    self.assertEqual(item.duration_seconds, expected_duration)
+                    self.assertEqual(item.peak, expected_number)
+                    self.assertEqual(
+                        item.words_per_minute,
+                        None if value == 5e-324 else expected_number,
+                    )
+                    self.assertEqual(item.pace_baseline_wpm, expected_number)
+                    self.assertEqual(item.pace_ratio, expected_number)
+                    self.assertEqual(state_path.read_bytes(), before)
+
+    def test_live_and_resumed_samples_reject_changed_workspace_configuration(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_sources(root)[0][0]
+            bundle = build_cohort_review_bundle([workspace])
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            configuration_path = workspace / "workspace.json"
+            original = json.loads(configuration_path.read_text(encoding="utf-8"))
+
+            for field, value in (
+                ("schema", "forged"),
+                ("schema_version", True),
+                ("workspace_id", "foreign-workspace"),
+                ("narrator_character", "Changed narrator"),
+                ("run_config", {**original["run_config"], "model": "changed"}),
+                ("queue", "queue-alias.jsonl"),
+                ("output", "audio-alias"),
+            ):
+                with self.subTest(field=field):
+                    configuration_path.write_text(
+                        json.dumps({**original, field: value}), encoding="utf-8"
+                    )
+                    with self.assertRaises(CohortReviewError):
+                        load_cohort_review_bundle_samples(bundle)
+                    with self.assertRaises(CohortReviewError):
+                        load_resumable_cohort_review_bundle_samples(
+                            publication, persist=False
+                        )
+
+    def test_live_and_resumed_samples_reject_source_symlink_aliases(self):
+        for relative in (
+            "queue.jsonl",
+            "generated-audio",
+            "generated-audio/generation-state.json",
+        ):
+            with self.subTest(relative=relative), TemporaryDirectory() as directory:
+                root = Path(directory)
+                workspace = self.create_sources(root)[0][0]
+                bundle = build_cohort_review_bundle([workspace])
+                publication = root / "bundle.json"
+                write_cohort_review_bundle(bundle, publication)
+                original = workspace / relative
+                target = original.with_name(f"{original.name}.original")
+                original.rename(target)
+                symlink_or_skip(original, target, target_is_directory=target.is_dir())
+
+                with self.assertRaises(CohortReviewError):
+                    load_cohort_review_bundle_samples(bundle)
+                with self.assertRaises(CohortReviewError):
+                    load_resumable_cohort_review_bundle_samples(
+                        publication, persist=False
+                    )
 
     def test_live_sample_rejects_invalid_review_item_metadata(self):
         with TemporaryDirectory() as directory:

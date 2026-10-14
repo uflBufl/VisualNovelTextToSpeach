@@ -103,7 +103,7 @@ def create_backend(name, reference):
         )
 
     try:
-        from vntts.assets import ModelAssetManager
+        from vntts.model_assets import ModelAssetManager
         from vntts.speech_backend import (
             activate_chatterbox_runtime,
             select_torch_device,

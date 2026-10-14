@@ -1,4 +1,7 @@
+import hashlib
 import json
+import os
+import sys
 import unittest
 import zipfile
 from dataclasses import fields
@@ -11,6 +14,8 @@ from uuid import uuid4
 
 from PIL import Image
 
+import vntts.support as support_module
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.settings import AppSettings
@@ -42,6 +47,15 @@ from vntts.voice_library import VoiceLibrary
 
 
 class NativeSpeechLogTest(unittest.TestCase):
+    def test_request_seconds_preserve_exact_float_range_admission(self):
+        log = NativeSpeechLog()
+        log.record({"operation": "probe", "request_s": int(sys.float_info.max) + 1})
+        log.record({"operation": "probe", "request_s": 0.5})
+        report = log.report()
+        self.assertEqual(report["request_seconds"], {"probe/unknown": 0.5})
+        self.assertEqual(report["total_events"], 2)
+        self.assertEqual(len(report["events"]), 2)
+
     def test_invalid_request_identifiers_do_not_abort_restoration(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "native-speech.log"
@@ -127,6 +141,54 @@ class NativeSpeechLogTest(unittest.TestCase):
         self.assertNotIn("PRIVATE", json.dumps(report))
         self.assertNotIn(str(Path.home()), persisted)
 
+    def test_native_resource_gpu_boards_survive_persistence(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "native-speech.log"
+            log = NativeSpeechLog(path=path)
+            log.record(
+                {
+                    "operation": "fresh-generation",
+                    "sampling": {"one": {"two": {"three": {"four": 4}}}},
+                    "resources": {
+                        "complete": True,
+                        "gpu": {
+                            "status": "available",
+                            "sample_count": 1,
+                            "boards": [
+                                {
+                                    "logical_index": 0,
+                                    "driver_version": "555.42",
+                                    "utilization_percent_peak": 42.0,
+                                    "vram_used_bytes_peak": 1024,
+                                    "path": "/private/gpu.log",
+                                    "token": "PRIVATE-TOKEN",
+                                }
+                            ],
+                        },
+                        "nonfinite": float("nan"),
+                        "excess": {"one": {"two": {"three": {"four": 4}}}},
+                    },
+                }
+            )
+            restarted = NativeSpeechLog(path=path)
+            persisted = path.read_text(encoding="utf-8")
+
+        native = restarted.report()["events"][0]["native"]
+        resources = native["resources"]
+        self.assertEqual(resources["gpu"]["boards"][0]["path"], "<path>")
+        self.assertEqual(resources["gpu"]["boards"][0]["token"], "<redacted>")
+        self.assertNotIn("/private/gpu.log", persisted)
+        self.assertNotIn("PRIVATE-TOKEN", persisted)
+        self.assertEqual(native["sampling"], {"one": {"two": {}}})
+        self.assertEqual(resources["gpu"]["boards"][0]["logical_index"], 0)
+        self.assertEqual(
+            resources["gpu"]["boards"][0]["utilization_percent_peak"], 42.0
+        )
+        self.assertIsNone(resources["nonfinite"])
+        self.assertNotIn("three", resources["excess"]["one"]["two"])
+        json.loads(persisted)
+        json.dumps(restarted.report(), allow_nan=False)
+
     def test_rollover_preserves_session_counts_and_runtime(self):
         log = NativeSpeechLog(maximum_entries=2)
         with patch("vntts.support.native_speech_log", log):
@@ -165,7 +227,73 @@ class NativeSpeechLogTest(unittest.TestCase):
         self.assertIn("psutil", report["versions"])
 
 
+class PregenerationSupportSummaryTest(unittest.TestCase):
+    def test_failed_item_summary_is_bounded_and_counts_all_failures(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "generation-state.json"
+            items = {
+                f"failed-{index:02d}": {"status": "failed", "line_id": str(index)}
+                for index in reversed(range(70))
+            }
+            items.update(
+                {
+                    "approved": {"status": "approved"},
+                    "bad-status": {"status": 1},
+                    "not-an-object": ["failed"],
+                }
+            )
+            path.write_text(json.dumps({"items": items}), encoding="utf-8")
+
+            with patch(
+                "vntts.support._pregeneration_failure_summary",
+                wraps=support_module._pregeneration_failure_summary,
+            ) as summarize:
+                result = support_module._pregeneration_state_summary(path)
+
+        self.assertEqual(result["status_counts"], {"approved": 1, "failed": 70})
+        self.assertEqual(result["failed_items_truncated"], 6)
+        self.assertEqual(
+            [item["queue_id"] for item in result["failed_items"]],
+            [f"failed-{index:02d}" for index in range(64)],
+        )
+        self.assertEqual(summarize.call_count, 64)
+
+
 class GenerationTimelineLogTest(unittest.TestCase):
+    def test_unrepresentable_latency_does_not_abort_publication(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "timelines.json"
+            timelines = GenerationTimelineLog(path=path)
+            for generation, value in enumerate((10**400, -(10**400), True, 125), 1):
+                timelines.record(
+                    "first-pcm",
+                    generation,
+                    float(generation),
+                    from_text_visible_ms=value,
+                )
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            timelines.latency_summary()["visible_to_first_pcm_ms"],
+            {"samples": 1, "p50_ms": 125.0, "p95_ms": 125.0},
+        )
+        self.assertEqual(len(persisted["timelines"]), 4)
+        json.dumps(persisted, allow_nan=False)
+
+    def test_unrepresentable_elapsed_time_is_reported_as_unavailable(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "timelines.json"
+            timelines = GenerationTimelineLog(path=path)
+            timelines.record("capture", 1, 0.0)
+            timelines.record("first-pcm", 1, sys.float_info.max)
+            timelines.record("capture", 2, 1.0)
+            timelines.record("ocr", 2, 1.25)
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+        events = timelines.snapshot()
+        self.assertIsNone(events[0]["events"][1]["elapsed_ms"])
+        self.assertEqual(events[1]["events"][1]["elapsed_ms"], 250.0)
+        self.assertEqual(persisted["timelines"], events)
+        json.dumps(persisted, allow_nan=False)
+
     def test_rejects_non_finite_timestamps_and_omits_invalid_metrics(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "timelines.json"
@@ -506,6 +634,85 @@ class GenerationTimelineLogTest(unittest.TestCase):
 
 
 class RuntimeSupportLogTest(unittest.TestCase):
+    def test_previous_session_keeps_valid_logs_when_integer_exceeds_parser_limit(self):
+        previous_limit = sys.get_int_max_str_digits()
+        try:
+            sys.set_int_max_str_digits(640)
+            with TemporaryDirectory() as temporary_directory:
+                directory = Path(temporary_directory)
+                corrupt = '{"timelines":[{"generation":' + "1" * 641 + ',"events":[]}]}'
+                timelines = directory / "generation-timelines.json"
+                timelines.write_text(corrupt, encoding="utf-8")
+                (directory / "runtime.log").write_text(
+                    json.dumps({"level": "info", "message": "valid evidence"}) + "\n",
+                    encoding="utf-8",
+                )
+                restored = preserve_previous_session(directory)
+                persisted = json.loads(
+                    (directory / "previous-session.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(timelines.read_text(encoding="utf-8"), corrupt)
+        finally:
+            sys.set_int_max_str_digits(previous_limit)
+        self.assertTrue(restored["available"])
+        self.assertEqual(restored["generation_timelines"], [])
+        self.assertEqual(restored["runtime_events"][0]["message"], "valid evidence")
+        self.assertEqual(persisted, restored)
+        self.assertEqual(sys.get_int_max_str_digits(), previous_limit)
+
+    def test_performance_evidence_preserves_exact_valid_integer(self):
+        log = PerformanceLog()
+        elapsed_ms = 2**53 + 1
+        log.record("probe", elapsed_ms, "failed")
+        report = log.report()
+        self.assertEqual(report["events"][0]["elapsed_ms"], elapsed_ms)
+        self.assertIsInstance(report["events"][0]["elapsed_ms"], int)
+        self.assertEqual(report["summary"]["probe"]["max_ms"], elapsed_ms)
+        self.assertIsInstance(report["summary"]["probe"]["max_ms"], int)
+
+    def test_inherited_add_cannot_abort_performance_report(self):
+        log = PerformanceLog()
+        log.add("performance", "unrepresentable", operation="probe", elapsed_ms=10**400)
+        log.add("performance", "complete", operation="probe", elapsed_ms=125)
+        report = log.report()
+        self.assertEqual(
+            report["summary"]["probe"],
+            {"count": 1, "total_ms": 125.0, "max_ms": 125.0},
+        )
+        self.assertEqual(len(report["events"]), 2)
+        json.dumps(report, allow_nan=False)
+
+    def test_unrepresentable_performance_samples_do_not_abort_recording(self):
+        log = PerformanceLog()
+        for value in (10**400, -(10**400), True, float("nan"), float("inf")):
+            log.record("scan", value, "failed")
+        log.record("scan", 125, "complete")
+        log.record("scan", -5, "failed")
+        self.assertEqual(
+            log.report()["summary"]["scan"],
+            {"count": 2, "total_ms": 120.0, "max_ms": 125.0},
+        )
+
+    def test_overflowing_totals_preserve_events_and_report_unavailable(self):
+        performance = PerformanceLog()
+        native = NativeSpeechLog()
+        for value in (sys.float_info.max, sys.float_info.max, 5.0):
+            performance.record("probe", value, "failed")
+            native.record({"operation": "probe", "request_s": value})
+        performance_report = performance.report()
+        native_report = native.report()
+        self.assertEqual(performance_report["summary"]["probe"]["count"], 3)
+        self.assertEqual(
+            performance_report["summary"]["probe"]["max_ms"], sys.float_info.max
+        )
+        self.assertIsNone(performance_report["summary"]["probe"]["total_ms"])
+        self.assertIsNone(native_report["request_seconds"]["probe/unknown"])
+        self.assertEqual(native_report["total_events"], 3)
+        self.assertEqual(len(performance_report["events"]), 3)
+        self.assertEqual(len(native_report["events"]), 3)
+        json.dumps(performance_report, allow_nan=False)
+        json.dumps(native_report, allow_nan=False)
+
     def test_non_finite_metrics_do_not_pollute_persisted_events_or_summary(self):
         with TemporaryDirectory() as temporary_directory:
             runtime_path = Path(temporary_directory) / "runtime.log"
@@ -1389,6 +1596,73 @@ class SupportBundleBuilderTest(unittest.TestCase):
         self.assertFalse(report["generation_state"]["available"])
         self.assertIn("unsafe", report["generation_state"]["reason"])
 
+    def test_active_story_index_identity_is_fresh_and_handles_unavailable_files(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "story-index.jsonl"
+            settings = AppSettings(story_index=str(path))
+            for payload in (b"A" * (1024 * 1024 + 17), b"B" * (1024 * 1024 + 17)):
+                path.write_bytes(payload)
+                self.assertEqual(
+                    collect_active_content_identity(settings),
+                    {
+                        "available": True,
+                        "active_story_index_sha256": hashlib.sha256(
+                            payload
+                        ).hexdigest(),
+                    },
+                )
+            primary = PermissionError("denied")
+            with patch("vntts.path_safety.os.open", side_effect=primary) as acquire:
+                self.assertEqual(
+                    collect_active_content_identity(settings), {"available": False}
+                )
+            acquire.assert_called_once()
+            self.assertEqual(Path(acquire.call_args.args[0]), path)
+            path.unlink()
+            self.assertEqual(
+                collect_active_content_identity(settings), {"available": False}
+            )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_active_story_identity_refuses_fifo_falls_back_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "story-index.jsonl"
+            payload = b"captured story identity"
+            path.write_bytes(payload)
+            path.chmod(0o444)
+            mode = path.stat().st_mode
+            settings = AppSettings(story_index=str(path))
+            original_hash = support_module.sha256_file
+            refused = []
+
+            def checksum(candidate):
+                self.assertEqual(Path(candidate), path)
+                gate: RegularFileGate = {"path": path, "armed": True}
+                with (
+                    swap_at_acquisition(self, gate),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original_hash(candidate)
+                refused.append(caught.exception)
+                raise caught.exception
+
+            with patch.object(support_module, "sha256_file", checksum):
+                self.assertEqual(
+                    collect_active_content_identity(settings), {"available": False}
+                )
+            self.assertEqual(len(refused), 1)
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertEqual(path.stat().st_mode, mode)
+            self.assertEqual(list(path.parent.iterdir()), [path])
+            expected = {
+                "available": True,
+                "active_story_index_sha256": hashlib.sha256(payload).hexdigest(),
+            }
+            self.assertEqual(collect_active_content_identity(settings), expected)
+            self.assertEqual(collect_active_content_identity(settings), expected)
+
     def test_active_pack_ignores_non_object_story_index_records(self):
         with TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
@@ -1476,6 +1750,81 @@ class SupportBundleBuilderTest(unittest.TestCase):
 
         self.assertFalse(active["available"])
         self.assertIn("invalid", active["reason"])
+
+    def test_ocr_average_avoids_intermediate_sum_overflow(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            for index in range(2):
+                (directory / f"uncertain-{index}.json").write_text(
+                    json.dumps({"confidence": sys.float_info.max, "attempts": 1}),
+                    encoding="utf-8",
+                )
+            metrics = collect_ocr_metrics(directory)
+        self.assertEqual(metrics["sample_count"], 2)
+        self.assertEqual(metrics["invalid_metadata_count"], 0)
+        self.assertEqual(metrics["average_confidence"], sys.float_info.max)
+        self.assertEqual(metrics["average_attempts"], 1)
+        json.dumps(metrics, allow_nan=False)
+
+    def test_ocr_average_preserves_counts_with_unrepresentable_mean(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            for index, attempts in enumerate((10**400, 1)):
+                (directory / f"uncertain-{index}.json").write_text(
+                    json.dumps({"confidence": 50, "attempts": attempts}),
+                    encoding="utf-8",
+                )
+            metrics = collect_ocr_metrics(directory)
+            self.assertEqual(metrics["sample_count"], 2)
+            self.assertEqual(metrics["invalid_metadata_count"], 0)
+            self.assertEqual(metrics["average_confidence"], 50)
+            self.assertIsNone(metrics["average_attempts"])
+            json.dumps(metrics, allow_nan=False)
+            (directory / "uncertain-1.json").write_text(
+                json.dumps({"confidence": 50, "attempts": 10**400}), encoding="utf-8"
+            )
+            integral = collect_ocr_metrics(directory)
+        self.assertEqual(integral["average_attempts"], 10**400)
+        self.assertEqual(integral["sample_count"], 2)
+        json.dumps(integral, allow_nan=False)
+
+    def test_ocr_metrics_skip_malformed_fields_and_keep_metadata_only_samples(self):
+        cases = (
+            ("confidence", True),
+            ("confidence", 10**400),
+            ("attempts", True),
+            ("attempts", 1.5),
+            ("attempts", -1),
+            ("preprocessing_profile", ["balanced"]),
+            ("text", {"bad": "shape"}),
+            ("character", 123),
+        )
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            for index, (field, value) in enumerate(cases):
+                (directory / f"uncertain-invalid-{index}.json").write_text(
+                    json.dumps({"confidence": 40, "attempts": 2, field: value}),
+                    encoding="utf-8",
+                )
+            for index, fields in enumerate(
+                (
+                    {"confidence": "42.5", "attempts": "2"},
+                    {"confidence": 57.5, "attempts": 4, "resolved": True},
+                )
+            ):
+                (directory / f"uncertain-valid-{index}.json").write_text(
+                    json.dumps(fields), encoding="utf-8"
+                )
+
+            metrics = collect_ocr_metrics(directory)
+
+        self.assertEqual(metrics["sample_count"], 2)
+        self.assertEqual(metrics["resolved_count"], 1)
+        self.assertEqual(metrics["pending_count"], 1)
+        self.assertEqual(metrics["invalid_metadata_count"], len(cases))
+        self.assertEqual(metrics["average_confidence"], 50)
+        self.assertEqual(metrics["average_attempts"], 3)
+        self.assertEqual(metrics["preprocessing_profiles"], {"unknown": 2})
 
     def test_ocr_metrics_report_resolved_pending_and_invalid_counts(self):
         with TemporaryDirectory() as temporary_directory:

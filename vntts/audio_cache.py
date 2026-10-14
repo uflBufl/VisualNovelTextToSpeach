@@ -1,20 +1,33 @@
 import json
 import os
 from collections import OrderedDict
+from collections.abc import Callable
 from hashlib import blake2b
+from math import prod
 from pathlib import Path
 from stat import S_ISREG
+from threading import RLock
 from time import time_ns
-from typing import Generic, TypeAlias, TypeVar
+from tokenize import TokenError
+from typing import BinaryIO, Generic, TypeAlias, TypeVar
 
 import numpy as np
+from numpy.lib import _format_impl as npy_format
 from numpy.typing import NDArray
 from vntts_artifacts.atomic_io import atomic_output_path
+
+from vntts.path_safety import open_regular_binary
 
 PathInput: TypeAlias = str | os.PathLike[str]
 AudioArray: TypeAlias = NDArray[np.float32]
 CacheKey = TypeVar("CacheKey")
 CacheValue = TypeVar("CacheValue")
+
+# shortcut: NumPy lacks a public NPY3 header reader; replace when one is available.
+_read_npy_header: Callable[
+    [BinaryIO, tuple[int, int]],
+    tuple[tuple[int, ...], bool, np.dtype[np.generic]],
+] = getattr(npy_format, "_read_array_header")
 
 
 def _prepared_audio(value: object) -> AudioArray | None:
@@ -29,30 +42,51 @@ def _prepared_audio(value: object) -> AudioArray | None:
     return audio
 
 
+def _read_cached_array(source: BinaryIO) -> NDArray[np.generic]:
+    version = np.lib.format.read_magic(source)
+    shape, fortran_order, dtype = _read_npy_header(source, version)
+    count = prod(shape)
+    remaining = os.fstat(source.fileno()).st_size - source.tell()
+    if (
+        dtype.hasobject
+        or any(dimension < 0 for dimension in shape)
+        or count * dtype.itemsize > remaining
+    ):
+        raise ValueError("Invalid cached array body")
+    loaded = np.fromfile(source, dtype=dtype, count=count)
+    if loaded.size != count:
+        raise ValueError("Incomplete cached array body")
+    return loaded.reshape(shape, order="F" if fortran_order else "C")
+
+
 class BoundedCache(Generic[CacheKey, CacheValue]):
     """Small least-recently-used cache shared by speech backends."""
 
     def __init__(self, max_entries: int) -> None:
         self.max_entries = max(0, int(max_entries))
         self._values: OrderedDict[CacheKey, CacheValue] = OrderedDict()
+        self._lock = RLock()
 
     def get(self, key: CacheKey) -> CacheValue | None:
-        try:
-            self._values.move_to_end(key)
-        except KeyError:
-            return None
-        return self._values[key]
+        with self._lock:
+            try:
+                self._values.move_to_end(key)
+            except KeyError:
+                return None
+            return self._values[key]
 
     def put(self, key: CacheKey, value: CacheValue) -> None:
-        if self.max_entries == 0:
-            return
-        self._values[key] = value
-        self._values.move_to_end(key)
-        while len(self._values) > self.max_entries:
-            self._values.popitem(last=False)
+        with self._lock:
+            if self.max_entries == 0:
+                return
+            self._values[key] = value
+            self._values.move_to_end(key)
+            while len(self._values) > self.max_entries:
+                self._values.popitem(last=False)
 
     def clear(self) -> None:
-        self._values.clear()
+        with self._lock:
+            self._values.clear()
 
 
 class PersistentAudioCache:
@@ -89,14 +123,14 @@ class PersistentAudioCache:
         if path is None or path.is_symlink():
             return None
         try:
-            with path.open("rb") as source:
-                loaded = np.lib.format.read_array(source, allow_pickle=False)
+            with open_regular_binary(path) as source:
+                loaded = _read_cached_array(source)
             audio = _prepared_audio(loaded)
             if audio is None:
                 return None
             self._touch_newest(path)
             return audio
-        except OSError, ValueError, TypeError, EOFError:
+        except OSError, ValueError, TypeError, EOFError, OverflowError, TokenError:
             return None
 
     def put(self, key: object, audio: object) -> Path | None:

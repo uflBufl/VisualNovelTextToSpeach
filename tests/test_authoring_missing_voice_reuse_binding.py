@@ -1,16 +1,21 @@
 import json
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from tests.test_authoring_missing_voice_reuse import (
+from vntts_artifacts.file_integrity import sha256_file
+
+from tests.authoring_fixtures import tree_hashes
+from tests.missing_voice_reuse_fixtures import (
     build_failed_missing_voice_reuse_plan_fixture,
+    create_missing_voice_reuse_binding_review,
     create_missing_voice_reuse_workspace,
 )
-from tests.test_authoring_missing_voice_reuse_review import (
-    create_missing_voice_reuse_review_fixture,
-)
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from vntts.authoring import missing_voice_reuse_binding as binding_module
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.missing_voice_reuse import write_missing_voice_reuse_plan
 from vntts.authoring.missing_voice_reuse_binding import (
     MissingVoiceReuseBindingError,
@@ -28,26 +33,7 @@ from vntts.authoring.source_reference_bindings import (
 )
 
 
-def create_missing_voice_reuse_binding_review(root, statuses=("generated", "failed")):
-    return AuthoringMissingVoiceReuseBindingTest().create_review(
-        root, statuses=statuses
-    )
-
-
 class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
-    def create_review(self, root, statuses=("generated", "failed")):
-        plan_path, evidence, snapshots, queue_id = (
-            create_missing_voice_reuse_review_fixture(root, statuses=statuses)
-        )
-        with patch(
-            "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",
-            side_effect=lambda _plan, _candidate, path: snapshots[Path(path).resolve()],
-        ):
-            session_path = build_missing_voice_reuse_review(
-                plan_path, evidence, root / "review", seed=7
-            )
-        return plan_path, session_path, queue_id
-
     def create_failed_review(self, root):
         fixture, _imported, workspace = create_missing_voice_reuse_workspace(root)
         plan = build_failed_missing_voice_reuse_plan_fixture(fixture, workspace)
@@ -93,10 +79,73 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
             )
         return plan_path, session_path, queue_id
 
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_binding_copy_refuses_swapped_acquisition_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan_path, session_path, queue_id = (
+                create_missing_voice_reuse_binding_review(root)
+            )
+            bundle, _session = load_missing_voice_reuse_review(session_path)
+            cohort = bundle["cohorts"][0]
+            selected = cohort["complete_candidate_labels"][0]
+            record_missing_voice_reuse_heard(
+                session_path, cohort["cohort_id"], queue_id, selected
+            )
+            record_missing_voice_reuse_decision(
+                session_path, cohort["cohort_id"], selected
+            )
+            expected = publish_missing_voice_reuse_binding(
+                plan_path, session_path, root / "expected"
+            )
+            before = tree_hashes(root)
+            original = binding_module.copy_regular_file
+            refused = []
+
+            def copy(source, target):
+                gate: RegularFileGate = {"path": Path(source), "armed": True}
+                with (
+                    swap_at_acquisition(self, gate),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original(source, target)
+                self.assertFalse(Path(target).exists())
+                refused.append(caught.exception)
+                raise caught.exception
+
+            output = root / "binding"
+            with (
+                patch.object(binding_module, "copy_regular_file", copy),
+                self.assertRaisesRegex(
+                    MissingVoiceReuseBindingError, "regular file"
+                ) as caught,
+            ):
+                publish_missing_voice_reuse_binding(plan_path, session_path, output)
+            self.assertEqual(len(refused), 1)
+            self.assertIs(caught.exception.__cause__, refused[0])
+            self.assertEqual(tree_hashes(root), before)
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(".missing-voice-binding-*")), [])
+            recovered = publish_missing_voice_reuse_binding(
+                plan_path, session_path, output
+            )
+            repeated = publish_missing_voice_reuse_binding(
+                plan_path, session_path, output
+            )
+            self.assertTrue(recovered.created)
+            self.assertFalse(repeated.created)
+            self.assertEqual(
+                tree_hashes(recovered.directory), tree_hashes(expected.directory)
+            )
+
     def test_selected_candidate_binds_the_full_exact_cohort(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            plan_path, session_path, queue_id = self.create_review(root)
+            plan_path, session_path, queue_id = (
+                create_missing_voice_reuse_binding_review(root)
+            )
             bundle, _session = load_missing_voice_reuse_review(session_path)
             cohort = bundle["cohorts"][0]
             selected = cohort["complete_candidate_labels"][0]
@@ -159,10 +208,137 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
             {queue_id: source_state_item_sha256},
         )
 
+    def test_review_change_after_validation_cannot_publish_or_return_existing(self):
+        for existing in (False, True):
+            for changed_field in ("decision", "updated_at"):
+                with (
+                    self.subTest(existing=existing, changed_field=changed_field),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    plan_path, session_path, queue_id = (
+                        create_missing_voice_reuse_binding_review(root)
+                    )
+                    bundle, _session = load_missing_voice_reuse_review(session_path)
+                    cohort = bundle["cohorts"][0]
+                    selected = cohort["complete_candidate_labels"][0]
+                    record_missing_voice_reuse_heard(
+                        session_path, cohort["cohort_id"], queue_id, selected
+                    )
+                    record_missing_voice_reuse_decision(
+                        session_path, cohort["cohort_id"], selected
+                    )
+                    output = root / "binding"
+                    if existing:
+                        publish_missing_voice_reuse_binding(
+                            plan_path, session_path, output
+                        )
+                    output_before = (
+                        {
+                            path.relative_to(output): path.read_bytes()
+                            for path in output.rglob("*")
+                            if path.is_file()
+                        }
+                        if existing
+                        else {}
+                    )
+                    validate = binding_module._validate_missing_voice_reuse_review
+
+                    def change_review(path, session):
+                        result = validate(path, session)
+                        changed = json.loads(session_path.read_text())
+                        if changed_field == "decision":
+                            changed["decisions"][0]["decision"] = "neither"
+                            session_path.write_text(json.dumps(changed))
+                        else:
+                            changed["updated_at"] = "2026-10-09T00:00:00+00:00"
+                            session_path.write_text(json.dumps(changed))
+                        load_missing_voice_reuse_review(session_path)
+                        return result
+
+                    with patch.object(
+                        binding_module,
+                        "_validate_missing_voice_reuse_review",
+                        change_review,
+                    ):
+                        with self.assertRaisesRegex(
+                            MissingVoiceReuseBindingError, "review session changed"
+                        ):
+                            publish_missing_voice_reuse_binding(
+                                plan_path, session_path, output
+                            )
+                    self.assertEqual(output.exists(), existing)
+                    if existing:
+                        self.assertEqual(
+                            {
+                                path.relative_to(output): path.read_bytes()
+                                for path in output.rglob("*")
+                                if path.is_file()
+                            },
+                            output_before,
+                        )
+                    self.assertFalse(list(root.glob(".missing-voice-binding-*")))
+
+    def test_manifest_change_after_capture_cannot_publish_or_return_existing(self):
+        for existing in (False, True):
+            with self.subTest(existing=existing), TemporaryDirectory() as directory:
+                root = Path(directory)
+                plan_path, session_path, _queue_id = self.create_failed_review(root)
+                output = root / "binding"
+                if existing:
+                    publish_missing_voice_reuse_binding(plan_path, session_path, output)
+                plan = json.loads(plan_path.read_text(encoding="utf-8"))
+                source = (
+                    Path(plan["source"]["workspace"]) / "inputs/voice/manifest.json"
+                ).resolve()
+                changed = json.loads(source.read_text(encoding="utf-8"))
+                changed["unreviewed_metadata"] = "must not be imported"
+                original_open = open
+                original_review_loader = (
+                    binding_module._validate_missing_voice_reuse_review
+                )
+                ready = False
+                reads = 0
+
+                def mark_source_boundary(path, session):
+                    nonlocal ready
+                    result = original_review_loader(path, session)
+                    ready = True
+                    return result
+
+                def change_on_second_read(path, mode="r", *args, **kwargs):
+                    nonlocal reads
+                    if ready and path == source and mode in ("r", "rb"):
+                        reads += 1
+                        if reads == 2:
+                            source.write_text(json.dumps(changed), encoding="utf-8")
+                    return original_open(path, mode, *args, **kwargs)
+
+                with (
+                    patch.object(
+                        binding_module,
+                        "_validate_missing_voice_reuse_review",
+                        side_effect=mark_source_boundary,
+                    ),
+                    patch(
+                        "vntts.path_safety.open",
+                        side_effect=change_on_second_read,
+                        create=True,
+                    ),
+                    self.assertRaisesRegex(
+                        MissingVoiceReuseBindingError, "manifest changed"
+                    ),
+                ):
+                    publish_missing_voice_reuse_binding(plan_path, session_path, output)
+                self.assertEqual(output.exists(), existing)
+                self.assertFalse(list(root.glob(".missing-voice-binding-*")))
+
     def test_incomplete_review_and_tampered_bundle_fail_closed(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            plan_path, session_path, _queue_id = self.create_review(root)
+            plan_path, session_path, _queue_id = (
+                create_missing_voice_reuse_binding_review(root)
+            )
             with self.assertRaisesRegex(MissingVoiceReuseBindingError, "Every"):
                 publish_missing_voice_reuse_binding(
                     plan_path, session_path, root / "binding"
@@ -189,6 +365,144 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
                 publish_missing_voice_reuse_binding(
                     plan_path, session_path, root / "binding"
                 )
+
+    def test_blind_key_mutation_preserves_domain_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan_path, session_path, _queue_id = self.create_failed_review(root)
+            key_path = session_path.with_name(".blind-key.json")
+            original_key = key_path.read_bytes()
+            load_review = binding_module._validate_missing_voice_reuse_review
+            output = root / "binding"
+            for replacement in (
+                [],
+                {"candidates": None},
+                {"candidates": [{}]},
+                {**json.loads(original_key), "unreviewed_metadata": "changed"},
+            ):
+
+                def change_key(path, session):
+                    review = load_review(path, session)
+                    key_path.write_text(json.dumps(replacement), encoding="utf-8")
+                    return review
+
+                with self.subTest(key=replacement):
+                    with patch.object(
+                        binding_module,
+                        "_validate_missing_voice_reuse_review",
+                        change_key,
+                    ):
+                        with self.assertRaisesRegex(
+                            MissingVoiceReuseBindingError, "Missing-voice blind"
+                        ):
+                            publish_missing_voice_reuse_binding(
+                                plan_path, session_path, output
+                            )
+                    self.assertFalse(output.exists())
+                key_path.write_bytes(original_key)
+
+    def test_binding_bundle_json_object_shape_is_required(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "bundle.json").write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(
+                MissingVoiceReuseBindingError, "binding bundle.*JSON object"
+            ):
+                binding_module._validate_binding_bundle(root, {}, {})
+
+    def test_existing_binding_rejects_non_integer_bundle_and_decision_versions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan_path, session_path, queue_id = (
+                create_missing_voice_reuse_binding_review(root)
+            )
+            bundle, _session = load_missing_voice_reuse_review(session_path)
+            cohort = bundle["cohorts"][0]
+            selected = cohort["complete_candidate_labels"][0]
+            record_missing_voice_reuse_heard(
+                session_path, cohort["cohort_id"], queue_id, selected
+            )
+            record_missing_voice_reuse_decision(
+                session_path, cohort["cohort_id"], selected
+            )
+            output = publish_missing_voice_reuse_binding(
+                plan_path, session_path, root / "binding"
+            ).directory
+            bundle_path = output / "bundle.json"
+            decision_path = output / "decision.json"
+            originals = {
+                path: path.read_bytes() for path in (bundle_path, decision_path)
+            }
+            for path, field, message in (
+                (bundle_path, "schema_version", "bundle identity is invalid"),
+                (decision_path, "schema_version", "decision identity changed"),
+            ):
+                for version in (True, 1.0):
+                    bundle_document = json.loads(originals[bundle_path].decode())
+                    decision_document = json.loads(originals[decision_path].decode())
+                    if path == bundle_path:
+                        bundle_document[field] = version
+                    else:
+                        decision_document[field] = version
+                        decision_document["decision_id"] = canonical_document_sha256(
+                            {
+                                key: value
+                                for key, value in decision_document.items()
+                                if key != "decision_id"
+                            }
+                        )
+                        decision_path.write_text(
+                            json.dumps(decision_document), encoding="utf-8"
+                        )
+                    for item in bundle_document["inventory"]:
+                        if item["path"] == "decision.json":
+                            item["sha256"] = sha256_file(decision_path)
+                    bundle_document["bundle_id"] = canonical_document_sha256(
+                        {
+                            key: value
+                            for key, value in bundle_document.items()
+                            if key != "bundle_id"
+                        }
+                    )
+                    bundle_path.write_text(
+                        json.dumps(bundle_document), encoding="utf-8"
+                    )
+                    with (
+                        self.subTest(path=path.name, version=version),
+                        self.assertRaisesRegex(MissingVoiceReuseBindingError, message),
+                    ):
+                        publish_missing_voice_reuse_binding(
+                            plan_path, session_path, output
+                        )
+                    for restore_path, payload in originals.items():
+                        restore_path.write_bytes(payload)
+
+    def test_existing_binding_rejects_unlisted_nested_bundle_document(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan_path, session_path, queue_id = (
+                create_missing_voice_reuse_binding_review(root)
+            )
+            bundle, _session = load_missing_voice_reuse_review(session_path)
+            cohort = bundle["cohorts"][0]
+            selected = cohort["complete_candidate_labels"][0]
+            record_missing_voice_reuse_heard(
+                session_path, cohort["cohort_id"], queue_id, selected
+            )
+            record_missing_voice_reuse_decision(
+                session_path, cohort["cohort_id"], selected
+            )
+            output = publish_missing_voice_reuse_binding(
+                plan_path, session_path, root / "binding"
+            ).directory
+            nested = output / "unlisted/bundle.json"
+            nested.parent.mkdir()
+            nested.write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                MissingVoiceReuseBindingError, "inventory is incomplete"
+            ):
+                publish_missing_voice_reuse_binding(plan_path, session_path, output)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,233 @@
+import hashlib
+import json
+import shutil
+import unittest
+from contextlib import contextmanager
+from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+import vntts.authoring.failure_reference_audit as audit_module
+from tests.authoring_fixtures import create_failed_reference_workspace
+from tests.source_reference_fixtures import (
+    DeferredCollectedResult as _CollectedResult,
+)
+from tests.source_reference_fixtures import (
+    PreviewBackendFactory as _PreviewBackendFactory,
+)
+from vntts.authoring.failure_reference_audit import (
+    FailureReferenceAuditError,
+    prepare_failure_reference_audio,
+    publish_failure_reference_audit,
+)
+from vntts.authoring.failure_reference_preview import (
+    FailureReferencePreviewError,
+    FailureReferencePreviewService,
+)
+
+
+class FailureReferencePreviewTest(unittest.TestCase):
+    def create_audit(self, root):
+        workspace, _queue_id = create_failed_reference_workspace(root)
+        audit = (root / "audit").resolve()
+        publish_failure_reference_audit(workspace, audit)
+        document = json.loads((audit / "audit.json").read_text())
+        return audit, document["groups"][0]
+
+    def swapped_read(self, path, replacement):
+        original = path.read_bytes()
+        read_text = audit_module.read_regular_text
+        reads = 0
+
+        def read(candidate, *args, **kwargs):
+            nonlocal reads
+            if candidate != path:
+                return read_text(candidate, *args, **kwargs)
+            reads += 1
+            if reads != 2:
+                return read_text(candidate, *args, **kwargs)
+            path.write_text(json.dumps(replacement))
+            try:
+                return read_text(candidate, *args, **kwargs)
+            finally:
+                path.write_bytes(original)
+
+        return patch.object(audit_module, "read_regular_text", read)
+
+    def test_preview_rejects_text_from_reopened_unvalidated_audit(self):
+        with TemporaryDirectory() as directory:
+            audit, group = self.create_audit(Path(directory))
+            path = audit / "audit.json"
+            altered = json.loads(path.read_text())
+            altered["groups"][0]["cases"][0]["text"] = "This line was never audited."
+            factory = _PreviewBackendFactory()
+            service = FailureReferencePreviewService(audit, backend_factory=factory)
+            try:
+                with self.swapped_read(path, altered):
+                    with self.assertRaises(FailureReferencePreviewError):
+                        service.generate(
+                            group["group_id"],
+                            group["candidates"][0]["candidate_id"],
+                            "This line was never audited.",
+                        )
+                self.assertEqual(factory.backends, [])
+            finally:
+                service.close()
+
+    def test_audio_preparation_uses_the_validated_candidate_document(self):
+        with TemporaryDirectory() as directory:
+            audit, group = self.create_audit(Path(directory))
+            candidate = group["candidates"][0]
+            path = audit / "audit.json"
+            altered = json.loads(path.read_text())
+            original = (audit / candidate["audio"]).read_bytes()
+            alternate = original + b"not an audited candidate"
+            (audit / "alternate.wav").write_bytes(alternate)
+            changed = altered["groups"][0]["candidates"][0]
+            changed["audio"] = "alternate.wav"
+            changed["sha256"] = hashlib.sha256(alternate).hexdigest()
+            with self.swapped_read(path, altered):
+                audio = prepare_failure_reference_audio(
+                    audit, group["group_id"], candidate["candidate_id"]
+                )
+            self.assertEqual(audio.payload, original)
+            self.assertEqual(audio.sha256, candidate["sha256"])
+            self.assertEqual(audio.path, audit / candidate["audio"])
+
+    def test_preview_rechecks_audit_after_final_source_capture(self):
+        with TemporaryDirectory() as directory:
+            audit, group = self.create_audit(Path(directory))
+            candidate = group["candidates"][0]
+            audio = audit / candidate["audio"]
+            path = audit / "audit.json"
+            original = path.read_bytes()
+            changed = json.loads(original)
+            changed["groups"][0]["cases"][0]["text"] = (
+                "Changed after the final media read."
+            )
+            rendered = False
+            original_open = open
+
+            def on_render(_backend, _request):
+                nonlocal rendered
+                rendered = True
+
+            @contextmanager
+            def change_after_capture(candidate_path, *args, **kwargs):
+                try:
+                    with original_open(candidate_path, *args, **kwargs) as stream:
+                        yield stream
+                finally:
+                    if Path(candidate_path) == audio and rendered:
+                        path.write_text(json.dumps(changed))
+
+            factory = _PreviewBackendFactory(on_render=on_render)
+            service = FailureReferencePreviewService(audit, backend_factory=factory)
+            try:
+                with patch(
+                    "vntts.path_safety.open",
+                    side_effect=change_after_capture,
+                    create=True,
+                ):
+                    with self.assertRaisesRegex(
+                        FailureReferenceAuditError, "identity changed"
+                    ):
+                        service.generate(
+                            group["group_id"],
+                            candidate["candidate_id"],
+                            group["cases"][0]["text"],
+                        )
+                self.assertEqual(len(factory.backends[0].requests), 1)
+                path.write_bytes(original)
+                self.assertEqual(
+                    service.generate(
+                        group["group_id"],
+                        candidate["candidate_id"],
+                        group["cases"][0]["text"],
+                    ).text,
+                    group["cases"][0]["text"],
+                )
+                self.assertEqual(len(factory.backends[0].requests), 2)
+            finally:
+                path.write_bytes(original)
+                service.close()
+
+    def test_close_cleans_ephemeral_files_when_backend_shutdown_fails(self):
+        with TemporaryDirectory() as directory:
+            audit, group = self.create_audit(Path(directory))
+            candidate = group["candidates"][0]
+            factory = _PreviewBackendFactory()
+            service = FailureReferencePreviewService(audit, backend_factory=factory)
+            service.generate(
+                group["group_id"], candidate["candidate_id"], group["cases"][0]["text"]
+            )
+            backend = factory.backends[0]
+            reference = backend.registry.resolve(
+                f"Reference candidate {candidate['sha256'][:16]}"
+            ).references[0]
+            try:
+                with patch.object(
+                    backend, "stop", side_effect=RuntimeError("shutdown failed")
+                ) as stop:
+                    with self.assertRaisesRegex(RuntimeError, "shutdown failed"):
+                        service.close()
+                    self.assertFalse(reference.parent.exists())
+                    service.close()
+                    stop.assert_called_once()
+                with self.assertRaisesRegex(FailureReferencePreviewError, "closed"):
+                    service.generate(
+                        group["group_id"],
+                        candidate["candidate_id"],
+                        group["cases"][0]["text"],
+                    )
+            finally:
+                service.close()
+                shutil.rmtree(reference.parent, ignore_errors=True)
+
+    def test_preview_rejects_invalid_sample_rates_without_caching_audio(self):
+        with TemporaryDirectory() as directory:
+            audit, group = self.create_audit(Path(directory))
+            for rate in (
+                True,
+                16000.5,
+                "16000",
+                None,
+                0,
+                -1,
+                float("nan"),
+                float("inf"),
+            ):
+                with self.subTest(rate=rate):
+                    factory = _PreviewBackendFactory()
+
+                    def create(*args, **kwargs):
+                        backend = factory(*args, **kwargs)
+                        render = backend.render
+
+                        def invalid(request):
+                            result = render(request).collect()
+                            return _CollectedResult(
+                                lambda: replace(result, sample_rate=rate)
+                            )
+
+                        backend.render = invalid
+                        return backend
+
+                    service = FailureReferencePreviewService(
+                        audit, backend_factory=create
+                    )
+                    try:
+                        with self.assertRaisesRegex(
+                            FailureReferencePreviewError, "sample rate"
+                        ):
+                            service.generate(
+                                group["group_id"],
+                                group["candidates"][0]["candidate_id"],
+                                group["cases"][0]["text"],
+                            )
+                        self.assertEqual(len(factory.backends[0].requests), 1)
+                        self.assertFalse((service._root / "preview.wav").exists())
+                        self.assertEqual(service._cache, {})
+                    finally:
+                        service.close()

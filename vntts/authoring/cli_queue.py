@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from vntts.authoring.delivery import LEGACY_ENGLISH_POLICY, PRESERVE_DELIVERY_POLICY
@@ -12,6 +11,7 @@ from vntts.authoring.queue_builder import (
     publish_generation_queue,
 )
 from vntts.authoring.queue_extension import publish_additive_generation_queue
+from vntts.cli import print_json
 
 COMMANDS = frozenset({"preflight-queue", "build-queue", "extend-queue"})
 
@@ -63,7 +63,7 @@ def handle(arguments: argparse.Namespace) -> int:
         output = publish_additive_generation_queue(
             arguments.base_queue, arguments.extension_queue, arguments.output
         )
-        print(json.dumps({"output": str(output)}, indent=2, sort_keys=True))
+        print_json({"output": str(output)})
         return 0
     plan = inspect_generation_queue(
         arguments.story_index,
@@ -79,5 +79,5 @@ def handle(arguments: argparse.Namespace) -> int:
     if arguments.command == "build-queue":
         output = publish_generation_queue(plan, arguments.output)
         payload["output"] = str(output)
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    print_json(payload)
     return 0

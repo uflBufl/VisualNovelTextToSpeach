@@ -1,4 +1,3 @@
-import json
 import math
 import os
 from collections.abc import Callable, Mapping, Sequence
@@ -7,16 +6,23 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from time import monotonic
-from typing import Protocol, TypeVar
+from typing import Protocol, Self, TypeVar
 from uuid import uuid4
 
 import pytesseract
+from durable_file import atomic_write_json
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from pytesseract import pytesseract as pytesseract_runtime
-from vntts_artifacts.atomic_io import atomic_output_group, atomic_write_json
+from vntts_artifacts.atomic_io import atomic_output_group
 
-from vntts.dialog import is_probable_character_name, parse_dialog
+from vntts.dialog import (
+    MAX_CHARACTER_NAME_LENGTH,
+    is_probable_character_name,
+    parse_dialog,
+)
+from vntts.json_types import decode_json
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION
+from vntts.path_safety import read_regular_text
 from vntts.versioned_json import write_versioned_json
 
 default_dialog_region_file = Path("~/.config/vntts/dialog-region.json").expanduser()
@@ -49,8 +55,13 @@ def _call_ocr(
 def _ocr_budget(
     timeout: float | None, cancelled: Callable[[], bool] | None
 ) -> Callable[[], float | None]:
-    if timeout is not None and timeout <= 0:
-        raise ValueError("OCR timeout must be positive")
+    if timeout is not None:
+        try:
+            finite = math.isfinite(timeout)
+        except OverflowError:
+            finite = False
+        if not finite or timeout <= 0:
+            raise ValueError("OCR timeout must be positive and finite")
     deadline = monotonic() + timeout if timeout is not None else None
 
     def remaining() -> float | None:
@@ -113,6 +124,18 @@ class DialogRegion:
             raise ValueError("Dialog region values must be positive and normalized")
         if self.left + self.width > 1 or self.top + self.height > 1:
             raise ValueError("Dialog region must fit inside the screen")
+
+    @classmethod
+    def from_mapping(cls, value: object) -> Self:
+        if not isinstance(value, Mapping):
+            raise ValueError("dialog_region must be an object")
+        coordinates: list[float] = []
+        for name in ("left", "top", "width", "height"):
+            coordinate = value.get(name)
+            if not isinstance(coordinate, (int, float)):
+                raise ValueError(f"dialog_region {name} must be a number")
+            coordinates.append(coordinate)
+        return cls(*coordinates)
 
     def crop(self, image: Image.Image) -> Image.Image:
         return image.crop(self._pixel_box(*image.size))
@@ -177,21 +200,10 @@ class OCRRegions:
         if not isinstance(value, Mapping):
             raise ValueError("ocr_regions must be an object")
 
-        def rectangle(name: str) -> DialogRegion:
-            values = value.get(name)
-            if not isinstance(values, Mapping):
-                raise ValueError(f"ocr_regions {name} must be an object")
-            coordinates = []
-            for key in ("left", "top", "width", "height"):
-                coordinate = values.get(key)
-                if not isinstance(coordinate, (int, float)) or isinstance(
-                    coordinate, bool
-                ):
-                    raise ValueError(f"ocr_regions {name} {key} must be a number")
-                coordinates.append(coordinate)
-            return DialogRegion(*coordinates)
-
-        return cls(rectangle("speaker"), rectangle("dialogue"))
+        return cls(
+            DialogRegion.from_mapping(value.get("speaker")),
+            DialogRegion.from_mapping(value.get("dialogue")),
+        )
 
     def to_json(self) -> dict[str, dict[str, float]]:
         return {"speaker": self.speaker.to_json(), "dialogue": self.dialogue.to_json()}
@@ -341,13 +353,8 @@ def get_dialog_region_file() -> Path:
 def load_dialog_region(path: str | Path) -> DialogRegion:
     path = Path(path).expanduser()
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        return DialogRegion(
-            left=value["left"],
-            top=value["top"],
-            width=value["width"],
-            height=value["height"],
-        )
+        value = decode_json(read_regular_text(path, encoding="utf-8"))
+        return DialogRegion.from_mapping(value)
     except (OSError, KeyError, TypeError, ValueError) as error:
         raise ValueError(f"Unable to load dialog region {path}: {error}") from error
 
@@ -363,11 +370,27 @@ def save_dialog_region(
 
 
 def load_ocr_regions(path: str | Path) -> OCRRegions | None:
-    value = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    value = decode_json(read_regular_text(Path(path).expanduser(), encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError("Dialog region configuration must be an object")
     regions = value.get("ocr_regions")
     return None if regions is None else OCRRegions.from_mapping(regions)
+
+
+def get_ocr_regions(
+    capture_region: DialogRegion,
+    profile_region: DialogRegion | None = None,
+    profile_regions: OCRRegions | None = None,
+) -> OCRRegions | None:
+    if profile_region is not None:
+        return profile_regions if capture_region == profile_region else None
+    path = get_dialog_region_file()
+    try:
+        if not path.is_file() or capture_region != load_dialog_region(path):
+            return None
+        return load_ocr_regions(path)
+    except OSError, TypeError, ValueError:
+        return None
 
 
 def get_dialog_region(profile_region: DialogRegion | None = None) -> DialogRegion:
@@ -671,14 +694,7 @@ def _recognize_preprocessed_dialog(
                 profile_name,
                 attempt,
                 processed_image=dialog_image,
-                speaker_image=image.crop(
-                    (
-                        speaker_line.left,
-                        speaker_line.top,
-                        speaker_line.right,
-                        speaker_line.bottom,
-                    )
-                ),
+                speaker_image=image,
                 dialogue_confidence=calculate_ocr_confidence(dialog_data),
             )
 
@@ -754,7 +770,7 @@ def recognize_speaker_from_data(
 
     if voice_registry is not None:
         for line in lines:
-            if len(line.text) > 40:
+            if len(line.text) > MAX_CHARACTER_NAME_LENGTH:
                 continue
             character = voice_registry.resolve_closest_character(line.text)
             if character is not None and _has_dialog_below(line, lines):
@@ -762,7 +778,7 @@ def recognize_speaker_from_data(
 
     candidates = []
     for position, line in enumerate(lines[:-1]):
-        if len(line.text) > 40:
+        if len(line.text) > MAX_CHARACTER_NAME_LENGTH:
             continue
         if _normalize_unknown_nameplate(
             line.text
@@ -916,7 +932,11 @@ def extract_ocr_lines(data: OcrData) -> list[OCRLine]:
             paragraph,
             line,
         )
-        grouped_words.setdefault(key, []).append(
+        try:
+            words = grouped_words.setdefault(key, [])
+        except TypeError:
+            continue
+        words.append(
             (
                 text,
                 left,
@@ -998,13 +1018,16 @@ def _recognized_words(data: OcrData) -> list[tuple[str, float]]:
         if not text or position >= len(confidences):
             continue
         raw_confidence = confidences[position]
-        if not isinstance(raw_confidence, (str, int, float)):
+        if isinstance(raw_confidence, bool) or not isinstance(
+            raw_confidence, (str, int, float)
+        ):
             continue
         try:
             confidence = float(raw_confidence)
-        except TypeError, ValueError:
+        except TypeError, ValueError, OverflowError:
             continue
-        if confidence < 0:
+        # Tesseract reports word confidence on a 0..100 percent scale.
+        if not 0 <= confidence <= 100:
             continue
         words.append((text, confidence))
     return words
@@ -1059,7 +1082,7 @@ def parse_recognized_dialog(
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     if voice_registry is not None:
         for position, line in enumerate(lines[:6]):
-            if len(line) > 40:
+            if len(line) > MAX_CHARACTER_NAME_LENGTH:
                 continue
             character = voice_registry.resolve_closest_character(line)
             if character is None:

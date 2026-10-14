@@ -1,15 +1,16 @@
 import hashlib
 import io
 import json
-import math
+import os
 import shutil
+import stat
+import tempfile
 import unittest
 from contextlib import redirect_stdout
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
@@ -23,24 +24,32 @@ from vntts_artifacts.story_index import write_story_index_document
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
-import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.game_pack as game_pack_module
+import vntts.authoring.generation_fallback as fallback_module
+from tests.authoring_fixtures import tree_hashes
+from tests.bulk_generation_fixtures import audio_samples
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from tests.source_reference_fixtures import (
+    write_reference_render_comparison_fixture as write_comparison,
+)
+from tests.story_fixtures import semantic_evidence_document, semantic_evidence_entry
 from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_render_hypothesis_review import write_comparison
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     _canonical_sha256,
-    authorize_live_fallback,
-    review_generation_item,
     run_bulk_generation,
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pack
+from vntts.authoring.generation_fallback import (
+    authorize_live_fallback,
+)
 from vntts.authoring.generation_manifest import (
     RUNTIME_PROGRESS_MANIFEST_NAME,
     write_runtime_progress_manifest_from_state,
 )
+from vntts.authoring.generation_review import review_generation_item
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.render_hypothesis_review import (
     publish_render_hypothesis_review,
@@ -56,8 +65,6 @@ from vntts.game_pack import import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.source_audio_semantics import (
     SEMANTIC_EVIDENCE_METHOD,
-    canonical_document_sha256,
-    semantic_text_sha256,
 )
 from vntts.synthesis import (
     SynthesisChunk,
@@ -68,11 +75,6 @@ from vntts.synthesis import (
     SynthesisResult,
     SynthesisTiming,
 )
-
-
-def audio_samples(sample_rate=16_000):
-    indexes = np.arange(sample_rate // 4, dtype=np.float32)
-    return (0.25 * np.sin(2 * math.pi * 220 * indexes / sample_rate)).astype(np.float32)
 
 
 class SyntheticRenderer:
@@ -149,45 +151,26 @@ def prepare_authoring_fixture(
         entries = []
         for index, item in enumerate(items, start=1):
             media_sha256 = hashlib.sha256(f"media-{index}".encode()).hexdigest()
-            entry = {
-                "locale": "en",
-                "media_id": index,
-                "media_sha256": media_sha256,
-                "displayed_text_sha256": item["text_sha256"],
-                "normalized_displayed_text_sha256": semantic_text_sha256(item["text"]),
-                "observed_transcript": item["text"],
-                "normalized_observed_text_sha256": semantic_text_sha256(item["text"]),
-                "verdict": "full",
-                "reason": "exact-normalized-asr-transcript",
-                "method": SEMANTIC_EVIDENCE_METHOD,
-                "model_sha256": "2" * 64,
-                "source_line_ids": [item["line_id"]],
-            }
-            entry["entry_id"] = canonical_document_sha256(
-                {key: value for key, value in entry.items() if key != "source_line_ids"}
+            entry, _entry_id = semantic_evidence_entry(
+                line_id=item["line_id"],
+                text=item["text"],
+                displayed_text_sha256=item["text_sha256"],
+                media_id=index,
+                media_sha256=media_sha256,
+                model_sha256="2" * 64,
             )
             entries.append(entry)
             semantic_entries[item["line_id"]] = entry
-        semantic_document = {
-            "schema": "r1999.source-audio-semantic-evidence",
-            "schema_version": 1,
-            "locale": "en",
-            "source_story_index_sha256": "3" * 64,
-            "model": {
-                "kind": "whisper",
-                "snapshot": "synthetic",
-                "sha256": "2" * 64,
-                "device": "cpu",
-                "decoding": "deterministic_greedy_default",
-            },
-            "entries": entries,
-        }
-        semantic_document["evidence_id"] = canonical_document_sha256(semantic_document)
-        semantic_document["generated_at"] = "2026-08-30T00:00:00Z"
+        semantic_document, evidence_id = semantic_evidence_document(
+            entries,
+            model_sha256="2" * 64,
+            source_story_index_sha256="3" * 64,
+            generated_at="2026-08-30T00:00:00Z",
+        )
         semantic_evidence = root / "inputs" / "source-audio-semantic-evidence.json"
         atomic_write_json(semantic_evidence, semantic_document, sort_keys=True)
         semantic_metadata = {
-            "evidence_id": semantic_document["evidence_id"],
+            "evidence_id": evidence_id,
             "evidence_sha256": sha256_file(semantic_evidence),
             "method": SEMANTIC_EVIDENCE_METHOD,
             "selected_chapters": ["chapter-one"],
@@ -397,11 +380,242 @@ def write_fixture_live_sequence(fixture, path, *, story_path=None):
     return path
 
 
+def prepare_failure_reference_overlay(fixture, binding):
+    old_item, new_item = fixture["items"]
+    review_generation_item(fixture["state"], old_item["queue_id"], "approved")
+    selected = binding / "references" / ("a" * 64) / "selected.wav"
+    selected.parent.mkdir(parents=True)
+    shutil.copyfile(fixture["reference"], selected)
+    selected_sha256 = sha256_file(selected)
+    overrides = {new_item["queue_id"]: "Selected failure reference aaaaaaaaaaaaaaaa"}
+    identity = {
+        "schema": "vntts.authoring-failure-reference-binding",
+        "schema_version": 1,
+        "audit_id": "1" * 64,
+        "decision_set_id": "2" * 64,
+        "source_authority": {
+            "workspace_id": "resume-" + "3" * 24 + "-" + "4" * 16,
+            "workspace_sha256": "5" * 64,
+            "queue_sha256": sha256_file(fixture["queue"]),
+            "state_sha256": "6" * 64,
+            "voice_manifest_sha256": sha256_file(fixture["voices"]),
+            "audit_sha256": "7" * 64,
+            "blind_key_sha256": "8" * 64,
+            "decisions_sha256": "9" * 64,
+        },
+        "groups": [
+            {
+                "group_id": "a" * 64,
+                "synthesis_voice_character": "Hero",
+                "control_character": "Hero",
+                "speaker": "synthetic-hero",
+                "candidate_id": "candidate-01",
+                "voice_character": overrides[new_item["queue_id"]],
+                "reference": "references/" + "a" * 64 + "/selected.wav",
+                "reference_sha256": selected_sha256,
+                "source_reference": "references/hero.wav",
+                "cases": [
+                    {
+                        "queue_id": new_item["queue_id"],
+                        "failure_sha256": "b" * 64,
+                    }
+                ],
+            }
+        ],
+        "queue_voice_overrides": overrides,
+        "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
+        "authority": "Exact test overlay",
+    }
+    document = {
+        **identity,
+        "binding_id": _canonical_sha256(identity),
+        "published_at": "2026-08-16T12:04:00+00:00",
+    }
+    binding_path = binding / "binding.json"
+    binding_path.write_text(json.dumps(document, sort_keys=True))
+
+    run_bulk_generation(
+        fixture["queue"],
+        fixture["output"],
+        SyntheticRenderer(),
+        provider="synthetic",
+        model="synthetic-v1",
+        generation_profile="stable",
+        include_queue_ids=(new_item["queue_id"],),
+        regenerate_existing=True,
+        control_files={
+            "voice_manifest": fixture["voices"],
+            "voice_reference:0001": fixture["reference"],
+            "failure_reference_binding": binding_path,
+            "failure_reference_selected:0001": selected,
+        },
+        queue_voice_overrides=overrides,
+    )
+    review_generation_item(fixture["state"], new_item["queue_id"], "approved")
+    return binding_path, selected, document
+
+
 class AuthoringGamePackTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_public_control_copies_refuse_acquisition_clean_up_and_recover(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source_root = root / "source"
+            fixture = prepare_authoring_fixture(
+                source_root, names=("old", "new"), source_audio_semantics=True
+            )
+            binding, selected_reference, _document = prepare_failure_reference_overlay(
+                fixture, source_root / "binding"
+            )
+            sequence = write_fixture_live_sequence(
+                fixture, source_root / "inputs/live-sequence.json"
+            )
+            options = {
+                "live_sequence_plan_path": sequence,
+                "source_audio_semantic_evidence_path": fixture[
+                    "source_audio_semantic_evidence"
+                ],
+                "failure_reference_binding_path": binding,
+            }
+            expected = publish(fixture, root / "expected", **options)
+            expected_tree = tree_hashes(expected.directory)
+            before = tree_hashes(source_root)
+            phases = (
+                ("story index", fixture["story"]),
+                ("voice manifest", fixture["voices"]),
+                ("failure-reference binding", binding),
+                ("selected reference", selected_reference),
+                (
+                    "source-audio semantic evidence",
+                    fixture["source_audio_semantic_evidence"],
+                ),
+                ("live sequence plan", sequence),
+                ("voice reference", fixture["reference"]),
+                ("generated WAV", next((fixture["output"] / "audio").rglob("*.wav"))),
+            )
+            for index, (label, selected) in enumerate(phases):
+                with self.subTest(artifact=label):
+                    destination = root / f"pack-{index}"
+                    original_copy = game_pack_module.copy_regular_file
+                    refused = []
+
+                    def copy(source, target):
+                        if Path(source) != selected:
+                            return original_copy(source, target)
+                        gate: RegularFileGate = {"path": selected, "armed": True}
+                        with (
+                            swap_at_acquisition(self, gate),
+                            self.assertRaisesRegex(OSError, "regular file") as caught,
+                        ):
+                            original_copy(source, target)
+                        self.assertFalse(Path(target).exists())
+                        refused.append(caught.exception)
+                        raise caught.exception
+
+                    with (
+                        patch.object(game_pack_module, "copy_regular_file", copy),
+                        self.assertRaisesRegex(
+                            FinalGamePackError,
+                            f"Unable to copy {label} .*regular file",
+                        ) as caught,
+                    ):
+                        publish(fixture, destination, **options)
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(caught.exception.__cause__, refused[0])
+                    self.assertEqual(tree_hashes(source_root), before)
+                    self.assertFalse(destination.exists())
+                    self.assertFalse(list(root.glob(f".{destination.name}.staging-*")))
+                    self.assertFalse(
+                        (root / f".{destination.name}.publication.json").exists()
+                    )
+                    self.assertFalse(list(source_root.rglob(".generation-lease.json")))
+                    recovered = publish(fixture, destination, **options)
+                    self.assertEqual(tree_hashes(recovered.directory), expected_tree)
+                    self.assertEqual(tree_hashes(source_root), before)
+
+    def test_state_reader_preserves_domain_error_for_invalid_encoding(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            path.write_bytes(b"\xff")
+            with self.assertRaisesRegex(
+                FinalGamePackError, "Unable to read generation state"
+            ):
+                game_pack_module._load_stable_state(path, None, "1" * 64)
+
+    def test_publication_preserves_primary_when_staging_cleanup_fails(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root / "source", names=("one",))
+            for item in fixture["items"]:
+                review_generation_item(fixture["state"], item["queue_id"], "approved")
+            cleanup_error = OSError("staging cleanup failed")
+            real_temporary_directory = tempfile.TemporaryDirectory
+
+            def temporary_directory(*args, **kwargs):
+                staging = real_temporary_directory(*args, **kwargs)
+                if kwargs.get("prefix") == ".pack.staging-":
+                    cleanup = staging.cleanup
+
+                    def failing_cleanup():
+                        cleanup()
+                        raise cleanup_error
+
+                    staging.cleanup = failing_cleanup
+                return staging
+
+            with (
+                patch(
+                    "vntts.cleanup.TemporaryDirectory", side_effect=temporary_directory
+                ),
+                patch.object(
+                    game_pack_module,
+                    "_write_staged_game_pack",
+                    side_effect=RuntimeError("staging operation failed"),
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError, "staging operation failed"
+                ) as caught,
+            ):
+                publish(fixture, root / "pack")
+
+            self.assertIn(
+                "staging cleanup failed", " ".join(caught.exception.__notes__)
+            )
+            self.assertFalse((root / "pack").exists())
+
+    def test_publication_indexes_story_once_for_all_route_groups(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root / "source", names=("one", "two"))
+            for item in fixture["items"]:
+                review_generation_item(fixture["state"], item["queue_id"], "approved")
+            reads = []
+            original_validate = game_pack_module._validate_generated_story_records
+
+            def count_story_reads(story, *groups):
+                class CountedStory:
+                    @property
+                    def records(self):
+                        reads.append(story)
+                        return story.records
+
+                return original_validate(CountedStory(), *groups)
+
+            with patch.object(
+                game_pack_module,
+                "_validate_generated_story_records",
+                side_effect=count_story_reads,
+            ):
+                result = publish(fixture, root / "pack")
+            self.assertEqual(len(reads), 1)
+            self.assertEqual(result.approved_count, 2)
+
     def test_self_service_preset_inputs_record_actual_narrator_and_character_voices(
         self,
     ):
-        from tests.test_voice_default_impact import voice_impact_fixture
+        from tests.pregeneration_fixtures import voice_impact_fixture
         from vntts.pregeneration_queue import PregenerationInputStore
         from vntts.pregeneration_voices import VoicePlanStore
 
@@ -721,80 +935,9 @@ class AuthoringGamePackTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture = prepare_authoring_fixture(root / "source", names=("old", "new"))
-            old_item, new_item = fixture["items"]
-            review_generation_item(fixture["state"], old_item["queue_id"], "approved")
-            binding = root / "binding"
-            selected = binding / "references" / ("a" * 64) / "selected.wav"
-            selected.parent.mkdir(parents=True)
-            shutil.copyfile(fixture["reference"], selected)
-            selected_sha256 = sha256_file(selected)
-            overrides = {
-                new_item["queue_id"]: "Selected failure reference aaaaaaaaaaaaaaaa"
-            }
-            identity = {
-                "schema": "vntts.authoring-failure-reference-binding",
-                "schema_version": 1,
-                "audit_id": "1" * 64,
-                "decision_set_id": "2" * 64,
-                "source_authority": {
-                    "workspace_id": "resume-" + "3" * 24 + "-" + "4" * 16,
-                    "workspace_sha256": "5" * 64,
-                    "queue_sha256": sha256_file(fixture["queue"]),
-                    "state_sha256": "6" * 64,
-                    "voice_manifest_sha256": sha256_file(fixture["voices"]),
-                    "audit_sha256": "7" * 64,
-                    "blind_key_sha256": "8" * 64,
-                    "decisions_sha256": "9" * 64,
-                },
-                "groups": [
-                    {
-                        "group_id": "a" * 64,
-                        "synthesis_voice_character": "Hero",
-                        "control_character": "Hero",
-                        "speaker": "synthetic-hero",
-                        "candidate_id": "candidate-01",
-                        "voice_character": overrides[new_item["queue_id"]],
-                        "reference": "references/" + "a" * 64 + "/selected.wav",
-                        "reference_sha256": selected_sha256,
-                        "source_reference": "references/hero.wav",
-                        "cases": [
-                            {
-                                "queue_id": new_item["queue_id"],
-                                "failure_sha256": "b" * 64,
-                            }
-                        ],
-                    }
-                ],
-                "queue_voice_overrides": overrides,
-                "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
-                "authority": "Exact test overlay",
-            }
-            document = {
-                **identity,
-                "binding_id": _canonical_sha256(identity),
-                "published_at": "2026-08-16T12:04:00+00:00",
-            }
-            binding_path = binding / "binding.json"
-            binding_path.write_text(json.dumps(document, sort_keys=True))
-
-            run_bulk_generation(
-                fixture["queue"],
-                fixture["output"],
-                SyntheticRenderer(),
-                provider="synthetic",
-                model="synthetic-v1",
-                generation_profile="stable",
-                include_queue_ids=(new_item["queue_id"],),
-                regenerate_existing=True,
-                control_files={
-                    "voice_manifest": fixture["voices"],
-                    "voice_reference:0001": fixture["reference"],
-                    "failure_reference_binding": binding_path,
-                    "failure_reference_selected:0001": selected,
-                },
-                queue_voice_overrides=overrides,
+            binding_path, _selected, document = prepare_failure_reference_overlay(
+                fixture, root / "binding"
             )
-            review_generation_item(fixture["state"], new_item["queue_id"], "approved")
 
             result = publish(
                 fixture,
@@ -1096,7 +1239,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                 root
             )
             before = fixture["state"].read_bytes()
-            real_write = bulk_generation_module._write_generated_manifest_from_state
+            real_write = fallback_module._write_generated_manifest_from_state
 
             def mutate_evidence(*args, **kwargs):
                 result = real_write(*args, **kwargs)
@@ -1108,7 +1251,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                 return result
 
             with patch.object(
-                bulk_generation_module,
+                fallback_module,
                 "_write_generated_manifest_from_state",
                 side_effect=mutate_evidence,
             ):
@@ -1202,7 +1345,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                 self.prepare_rejected_render_hypothesis_fixture(root)
             )
             before = state.read_bytes()
-            real_write = bulk_generation_module._write_generated_manifest_from_state
+            real_write = fallback_module._write_generated_manifest_from_state
 
             def mutate_review(*args, **kwargs):
                 result = real_write(*args, **kwargs)
@@ -1214,7 +1357,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                 return result
 
             with patch.object(
-                bulk_generation_module,
+                fallback_module,
                 "_write_generated_manifest_from_state",
                 side_effect=mutate_review,
             ):
@@ -1261,7 +1404,7 @@ class AuthoringGamePackTest(unittest.TestCase):
             fixture = prepare_authoring_fixture(root / "source", names=("one",))
             queue_id = fixture["items"][0]["queue_id"]
             review_generation_item(fixture["state"], queue_id, "rejected")
-            real_write = bulk_generation_module._write_generated_manifest_from_state
+            real_write = fallback_module._write_generated_manifest_from_state
 
             def mutate_state(*args, **kwargs):
                 result = real_write(*args, **kwargs)
@@ -1273,7 +1416,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                 return result
 
             with patch.object(
-                bulk_generation_module,
+                fallback_module,
                 "_write_generated_manifest_from_state",
                 side_effect=mutate_state,
             ):
@@ -1846,6 +1989,96 @@ class AuthoringGamePackTest(unittest.TestCase):
                 )
             self.assertFalse(lease_path.exists())
 
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_publication_lease_captures_refuse_fifo_and_recover(self):
+        for selected_call in (1, 2, 3):
+            with self.subTest(capture=selected_call), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                fixture = prepare_authoring_fixture(root / "source", names=("one",))
+                review_generation_item(
+                    fixture["state"], fixture["items"][0]["queue_id"], "approved"
+                )
+                source_before = tree_hashes(root / "source")
+                destination = root / "final-pack"
+                publication = game_pack_module._PublicationLease(destination)
+                payload = json.dumps(
+                    {
+                        "schema": "vntts.game-pack-publication-lease",
+                        "schema_version": 1,
+                        "owner": "stale-owner",
+                        "pid": 999999,
+                        "hostname": game_pack_module.socket.gethostname(),
+                        "process_started_at": "stale-start",
+                        "destination": str(destination),
+                    }
+                ).encode()
+                publication.path.write_bytes(payload)
+                publication.path.chmod(0o444)
+                publication.guard_path.touch()
+                guard_inode = publication.guard_path.stat().st_ino
+                before = tree_hashes(root)
+                original = game_pack_module.read_regular_bytes
+                calls, refused = [], []
+
+                def refuse_capture(path):
+                    if path != publication.path:
+                        return original(path)
+                    calls.append(path)
+                    if len(calls) != selected_call:
+                        return original(path)
+                    gate: RegularFileGate = {"path": path, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(path)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                error_type = OSError if selected_call == 3 else FinalGamePackError
+                label = {
+                    1: "Unable to inspect publication lease: .*regular file",
+                    2: "Unable to inspect stale publication lease: .*regular file",
+                    3: "regular file",
+                }[selected_call]
+                with patch.object(
+                    game_pack_module, "process_is_alive", return_value=False
+                ):
+                    with (
+                        patch.object(
+                            game_pack_module, "read_regular_bytes", refuse_capture
+                        ),
+                        self.assertRaisesRegex(error_type, label) as caught,
+                    ):
+                        publish(fixture, destination)
+                    self.assertEqual(len(calls), selected_call)
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(
+                        caught.exception
+                        if selected_call == 3
+                        else caught.exception.__cause__,
+                        refused[0],
+                    )
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertEqual(
+                        stat.S_IMODE(publication.path.stat().st_mode), 0o444
+                    )
+                    self.assertFalse(destination.exists())
+                    self.assertFalse(list(root.glob(".final-pack.staging-*")))
+                    self.assertFalse(list(root.glob("*.interrupted-*")))
+                    recovered = publish(fixture, destination)
+                self.assertEqual(
+                    load_game_pack(recovered.manifest).game_id, "synthetic-game"
+                )
+                self.assertEqual(tree_hashes(root / "source"), source_before)
+                self.assertFalse(publication.path.exists())
+                archives = list(root.glob("*.interrupted-*"))
+                self.assertEqual(len(archives), 1)
+                self.assertEqual(archives[0].read_bytes(), payload)
+                self.assertEqual(publication.guard_path.stat().st_ino, guard_inode)
+
     def test_stale_publication_recovery_cannot_archive_a_replacement_owner(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2113,6 +2346,102 @@ class AuthoringGamePackTest(unittest.TestCase):
             self.assertEqual(
                 Path(payload["live_sequence_plan"]), pack.live_sequence_plan.path
             )
+
+    def test_reference_projection_decodes_checked_stereo_flac_payload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.flac"
+            game_pack_module.sf.write(
+                source, [[0.2, -0.1], [-0.2, 0.1]], 24_000, subtype="PCM_24"
+            )
+            source_payload = source.read_bytes()
+            digest = hashlib.sha256(source_payload).hexdigest()
+            destination = root / "projected.wav"
+            read_audio = game_pack_module.sf.read
+
+            def replace_before_decode(stream, **kwargs):
+                source.write_bytes(b"replaced after checksum")
+                return read_audio(stream, **kwargs)
+
+            with patch.object(
+                game_pack_module.sf, "read", side_effect=replace_before_decode
+            ):
+                record = game_pack_module._project_voice_reference(
+                    source,
+                    PurePosixPath(source.name),
+                    PurePosixPath(destination.name),
+                    destination,
+                    "Role",
+                    digest,
+                )
+            samples, sample_rate = read_audio(destination)
+            self.assertEqual(sample_rate, 24_000)
+            self.assertEqual(samples.shape, (2,))
+            for actual, expected in zip(samples, (0.05, -0.05), strict=True):
+                self.assertAlmostEqual(actual, expected, delta=1 / 32768)
+            self.assertEqual(record["source_sha256"], digest)
+            self.assertEqual(record["output_sha256"], sha256_file(destination))
+            self.assertEqual(record["sample_count"], 2)
+            self.assertEqual(record["channels"], 1)
+            self.assertEqual(record["subtype"], "PCM_16")
+
+    def test_reference_projection_metadata_and_hash_use_same_output_payload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.flac"
+            game_pack_module.sf.write(source, [0.2, -0.2], 24_000)
+            digest = sha256_file(source)
+            destination = root / "projected.wav"
+            probe = game_pack_module.probe_pcm16_mono_wav
+            copied = []
+
+            def replace_before_decode(stream):
+                copied.append(destination.read_bytes())
+                destination.write_bytes(b"replaced after capture")
+                return probe(stream)
+
+            with patch.object(
+                game_pack_module,
+                "probe_pcm16_mono_wav",
+                side_effect=replace_before_decode,
+            ):
+                record = game_pack_module._project_voice_reference(
+                    source,
+                    PurePosixPath(source.name),
+                    PurePosixPath(destination.name),
+                    destination,
+                    "Role",
+                    digest,
+                )
+            self.assertEqual(len(copied), 1)
+            self.assertEqual(
+                record["output_sha256"], hashlib.sha256(copied[0]).hexdigest()
+            )
+            self.assertEqual(record["sample_rate"], 24_000)
+            self.assertEqual(record["sample_count"], 2)
+            self.assertEqual(destination.read_bytes(), b"replaced after capture")
+
+    def test_reference_projection_rejects_source_checksum_before_decode(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.flac"
+            source.write_bytes(b"changed source")
+            destination = root / "projected.wav"
+            with (
+                patch.object(game_pack_module.sf, "read") as decode,
+                self.assertRaisesRegex(FinalGamePackError, "changed before projection"),
+            ):
+                game_pack_module._project_voice_reference(
+                    source,
+                    PurePosixPath(source.name),
+                    PurePosixPath(destination.name),
+                    destination,
+                    "Role",
+                    "0" * 64,
+                )
+            decode.assert_not_called()
+            self.assertFalse(destination.exists())
+            self.assertEqual(source.read_bytes(), b"changed source")
 
 
 if __name__ == "__main__":

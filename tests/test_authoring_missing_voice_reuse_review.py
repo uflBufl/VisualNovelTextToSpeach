@@ -1,21 +1,36 @@
 import json
+import os
+import stat
 import unittest
-import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event, Thread
 from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
-from tests.test_authoring_missing_voice_reuse import (
+from tests.authoring_fixtures import tree_hashes
+from tests.missing_voice_reuse_fixtures import (
+    _write_wav as write_wav,
+)
+from tests.missing_voice_reuse_fixtures import (
     build_failed_missing_voice_reuse_plan_fixture,
-    build_missing_voice_reuse_plan_fixture,
+    create_missing_voice_reuse_binding_review,
+    create_missing_voice_reuse_review_fixture,
     create_missing_voice_reuse_workspace,
 )
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from vntts.authoring import missing_voice_reuse_review as review_module
+from vntts.authoring.advisory_lock import (
+    AdvisoryLockBusyError,
+    exclusive_advisory_lock,
+)
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.missing_voice_reuse import write_missing_voice_reuse_plan
 from vntts.authoring.missing_voice_reuse_review import (
     AUTOMATIC_UNRESOLVED_ORIGIN,
     MissingVoiceReuseReviewError,
+    _review_cohorts,
     build_missing_voice_reuse_review,
     load_missing_voice_reuse_review,
     missing_voice_reuse_review_progress,
@@ -24,83 +39,256 @@ from vntts.authoring.missing_voice_reuse_review import (
 )
 
 
-def write_wav(path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(path), "wb") as output:
-        output.setnchannels(1)
-        output.setsampwidth(2)
-        output.setframerate(8_000)
-        output.writeframes(b"\x00\x00" * 800)
-
-
-def create_missing_voice_reuse_review_fixture(root, statuses=("generated", "failed")):
-    return AuthoringMissingVoiceReuseReviewTest().fixture(root, statuses=statuses)
-
-
 class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
     def fixture(self, root, statuses=("generated", "failed")):
-        fixture, _imported, workspace = create_missing_voice_reuse_workspace(root)
-        plan = build_missing_voice_reuse_plan_fixture(workspace)
-        plan_path = root / "plan.json"
-        write_missing_voice_reuse_plan(plan, plan_path)
-        queue_id = fixture["queue_id"]
-        snapshots = {}
-        evidence = {}
-        for index, (candidate, status) in enumerate(
-            zip(plan.document["candidates"], statuses, strict=True), start=1
-        ):
-            candidate_root = root / f"candidate-{index}"
-            candidate_root.mkdir()
-            evidence[candidate["candidate_id"]] = (candidate_root,)
-            item = {
-                "status": status,
-                "attempts": 1,
-                "provider": "moss-tts",
-                "model": "/models/moss-test",
-                "generation_profile": "stable",
-                "seed": 0,
-                "source_reference_binding": {
-                    "queue_id": queue_id,
-                    "synthesis_voice_character": candidate["voice_character"],
-                },
-            }
-            if status == "generated":
-                audio = candidate_root / "generated-audio/audio/sample.wav"
-                write_wav(audio)
-                item.update(
-                    {
-                        "path": "audio/sample.wav",
-                        "file_sha256": sha256_file(audio),
-                        "quality": {"duration_seconds": 0.1},
-                    }
+        return create_missing_voice_reuse_review_fixture(root, statuses=statuses)
+
+    def test_review_audio_hardlink_and_copy_fallback_preserve_source(self):
+        for fallback in (False, True):
+            with self.subTest(fallback=fallback), TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "sources" / "source.wav"
+                source.parent.mkdir()
+                source.write_bytes(b"review audio")
+                source.chmod(0o600)
+                os.utime(source, ns=(1_650_000_000_000_000_000,) * 2)
+                source_stat = source.stat()
+                parent_stat = source.parent.stat()
+                destination = root / "output" / "audio" / "alias.wav"
+                destination.parent.mkdir(parents=True)
+                if fallback:
+                    with patch.object(
+                        review_module.os, "link", side_effect=OSError("no links")
+                    ) as link:
+                        review_module._link_or_copy(source, destination)
+                    link.assert_called_once_with(source, destination)
+                else:
+                    review_module._link_or_copy(source, destination)
+                self.assertEqual(destination.read_bytes(), b"review audio")
+                self.assertEqual(source.read_bytes(), b"review audio")
+                self.assertEqual(source.samefile(destination), not fallback)
+                self.assertEqual(
+                    stat.S_IMODE(destination.stat().st_mode),
+                    stat.S_IMODE(source_stat.st_mode),
                 )
-            else:
-                item.update(
-                    {
-                        "failure": {"kind": "missed_eos_audio_limit"},
-                        "last_error": "Typed limited render",
-                    }
+                self.assertEqual(
+                    destination.stat().st_mtime_ns, source_stat.st_mtime_ns
                 )
-            snapshots[candidate_root.resolve()] = {
-                "directory": candidate_root.resolve(),
-                "workspace": {
-                    "workspace_id": f"workspace-{index}",
-                    "run_config": {
-                        "backend": "moss-tts",
-                        "model": "/models/moss-test",
-                        "generation_profile": "stable",
-                    },
-                },
-                "state": {"items": {queue_id: item}},
-                "authority": {
-                    "path": str(candidate_root.resolve()),
-                    "workspace_id": f"workspace-{index}",
-                    "workspace_sha256": f"{index}" * 64,
-                    "state_sha256": f"{index + 2}" * 64,
-                    "voice_manifest_sha256": f"{index + 4}" * 64,
-                },
-            }
-        return plan_path, evidence, snapshots, queue_id
+                self.assertEqual(list(source.parent.iterdir()), [source])
+                self.assertEqual(
+                    source.parent.stat().st_mtime_ns, parent_stat.st_mtime_ns
+                )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_review_copy_fallback_refusal_cleans_staging_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan_path, evidence, snapshots, _queue_id = self.fixture(root)
+            destination = root / "review"
+            before = tree_hashes(root)
+            link = review_module._link_or_copy
+
+            def refuse(source, target):
+                gate: RegularFileGate = {"path": Path(source), "armed": True}
+                with (
+                    swap_at_acquisition(self, gate),
+                    patch.object(
+                        review_module.os, "link", side_effect=OSError("no links")
+                    ),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    link(source, target)
+                self.assertFalse(Path(target).exists())
+                raise caught.exception
+
+            with patch.object(
+                review_module,
+                "_load_candidate_workspace",
+                side_effect=lambda _plan, _candidate, path: snapshots[
+                    Path(path).resolve()
+                ],
+            ):
+                with patch.object(review_module, "_link_or_copy", refuse):
+                    with self.assertRaisesRegex(OSError, "regular file"):
+                        build_missing_voice_reuse_review(
+                            plan_path, evidence, destination
+                        )
+                self.assertEqual(tree_hashes(root), before)
+                self.assertFalse(destination.exists())
+                self.assertEqual(list(root.glob(".review-*")), [])
+                recovered = build_missing_voice_reuse_review(
+                    plan_path, evidence, destination
+                )
+            bundle, _session = load_missing_voice_reuse_review(recovered)
+            for candidate in bundle["candidates"]:
+                for sample in candidate["samples"]:
+                    if sample["status"] == "generated":
+                        self.assertTrue((destination / sample["audio"]).is_file())
+            if os.name != "nt":
+                self.assertEqual(
+                    stat.S_IMODE((destination / ".blind-key.json").stat().st_mode),
+                    0o600,
+                )
+
+    def _race_review_writers(self, session_path, first_call, second_call):
+        publishing = Event()
+        release = Event()
+        outcomes = {}
+        write_json = review_module.atomic_write_json
+
+        def pause_first_publication(path, *args, **kwargs):
+            if Path(path) == session_path and not publishing.is_set():
+                publishing.set()
+                if not release.wait(10):
+                    raise AssertionError("Review writer was not released")
+            return write_json(path, *args, **kwargs)
+
+        def save(name, operation):
+            try:
+                outcomes[name] = operation()
+            except Exception as error:
+                outcomes[name] = error
+
+        first = Thread(target=save, args=("first", first_call))
+        second = Thread(target=save, args=("second", second_call))
+        with patch.object(review_module, "atomic_write_json", pause_first_publication):
+            first.start()
+            try:
+                self.assertTrue(publishing.wait(10))
+                with self.assertRaises(AdvisoryLockBusyError):
+                    with exclusive_advisory_lock(
+                        session_path.with_name(f".{session_path.name}.guard")
+                    ):
+                        self.fail("Review writer did not hold the shared guard")
+                second.start()
+            finally:
+                release.set()
+                first.join(10)
+                if second.ident is not None:
+                    second.join(10)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(set(outcomes), {"first", "second"})
+        return outcomes
+
+    def test_concurrent_heard_saves_merge_and_replay_is_idempotent(self):
+        with TemporaryDirectory() as directory:
+            _plan, session_path, queue_id = create_missing_voice_reuse_binding_review(
+                Path(directory), statuses=("generated", "generated")
+            )
+            bundle, _session = load_missing_voice_reuse_review(session_path)
+            cohort_id = bundle["cohorts"][0]["cohort_id"]
+            first_label, second_label = [
+                candidate["label"] for candidate in bundle["candidates"]
+            ]
+            outcomes = self._race_review_writers(
+                session_path,
+                lambda: record_missing_voice_reuse_heard(
+                    session_path, cohort_id, queue_id, first_label
+                ),
+                lambda: record_missing_voice_reuse_heard(
+                    session_path, cohort_id, queue_id, second_label
+                ),
+            )
+            self.assertFalse(
+                any(isinstance(value, Exception) for value in outcomes.values())
+            )
+            _bundle, session = load_missing_voice_reuse_review(session_path)
+            self.assertEqual(
+                {(record["queue_id"], record["label"]) for record in session["heard"]},
+                {(queue_id, first_label), (queue_id, second_label)},
+            )
+            self.assertIsNone(session["decisions"][0]["decision"])
+            before = session_path.read_bytes()
+            record_missing_voice_reuse_heard(
+                session_path, cohort_id, queue_id, first_label
+            )
+            self.assertEqual(session_path.read_bytes(), before)
+
+    def test_concurrent_terminal_saves_preserve_first_decision(self):
+        with TemporaryDirectory() as directory:
+            _plan, session_path, queue_id = create_missing_voice_reuse_binding_review(
+                Path(directory), statuses=("generated", "generated")
+            )
+            bundle, _session = load_missing_voice_reuse_review(session_path)
+            cohort_id = bundle["cohorts"][0]["cohort_id"]
+            for candidate in bundle["candidates"]:
+                record_missing_voice_reuse_heard(
+                    session_path, cohort_id, queue_id, candidate["label"]
+                )
+            first_label = bundle["candidates"][0]["label"]
+            heard = load_missing_voice_reuse_review(session_path)[1]["heard"]
+            outcomes = self._race_review_writers(
+                session_path,
+                lambda: record_missing_voice_reuse_decision(
+                    session_path, cohort_id, first_label
+                ),
+                lambda: record_missing_voice_reuse_decision(
+                    session_path, cohort_id, "neither"
+                ),
+            )
+            self.assertNotIsInstance(outcomes["first"], Exception)
+            self.assertIsInstance(outcomes["second"], MissingVoiceReuseReviewError)
+            self.assertIn("already has a decision", str(outcomes["second"]))
+            _bundle, session = load_missing_voice_reuse_review(session_path)
+            self.assertEqual(session["decisions"][0]["decision"], first_label)
+            self.assertEqual(session["heard"], heard)
+
+    def test_busy_guard_uses_review_error_for_both_writers(self):
+        with TemporaryDirectory() as directory:
+            _plan, session_path, queue_id = create_missing_voice_reuse_binding_review(
+                Path(directory)
+            )
+            bundle, _session = load_missing_voice_reuse_review(session_path)
+            cohort_id = bundle["cohorts"][0]["cohort_id"]
+            label = bundle["cohorts"][0]["complete_candidate_labels"][0]
+            before = session_path.read_bytes()
+            for writer, arguments in (
+                (
+                    record_missing_voice_reuse_heard,
+                    (session_path, cohort_id, queue_id, label),
+                ),
+                (record_missing_voice_reuse_decision, (session_path, cohort_id, label)),
+            ):
+                with (
+                    self.subTest(writer=writer.__name__),
+                    patch.object(
+                        review_module,
+                        "exclusive_advisory_lock",
+                        side_effect=AdvisoryLockBusyError("guard busy"),
+                    ),
+                    self.assertRaisesRegex(
+                        MissingVoiceReuseReviewError, "guard busy"
+                    ) as raised,
+                ):
+                    writer(*arguments)
+                self.assertIsInstance(raised.exception.__cause__, AdvisoryLockBusyError)
+                self.assertEqual(session_path.read_bytes(), before)
+
+    def test_non_finite_bundle_identity_uses_review_error(self):
+        with TemporaryDirectory() as directory:
+            _plan, session_path, _queue_id = create_missing_voice_reuse_binding_review(
+                Path(directory)
+            )
+            bundle_path = session_path.with_name("bundle.json")
+            original = bundle_path.read_bytes()
+            document = json.loads(original)
+            try:
+                for value in (float("nan"), float("inf"), float("-inf")):
+                    with self.subTest(value=value):
+                        bundle_path.write_text(json.dumps({**document, "seed": value}))
+                        with self.assertRaisesRegex(
+                            MissingVoiceReuseReviewError, "bundle identity is invalid"
+                        ):
+                            load_missing_voice_reuse_review(session_path)
+            finally:
+                bundle_path.write_bytes(original)
+            self.assertEqual(
+                load_missing_voice_reuse_review(session_path)[0]["bundle_id"],
+                document["bundle_id"],
+            )
 
     def test_failed_arm_stays_visible_and_cannot_be_selected(self):
         with TemporaryDirectory() as directory:
@@ -162,6 +350,71 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
                 ],
                 generated["label"],
             )
+
+    def test_review_cohorts_preserve_plan_order_and_candidate_gates(self):
+        class CountingSamples(list):
+            def __init__(self, values):
+                super().__init__(values)
+                self.iterations = 0
+                self.rows = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                for value in super().__iter__():
+                    self.rows += 1
+                    yield value
+
+        document = {
+            "comparison_sample_queue_ids": ["q1", "q2", "q3", "q4"],
+            "cohorts": [{"cohort_id": "first"}, {"cohort_id": "second"}],
+        }
+        sample_by_id = {
+            queue_id: {
+                "queue_id": queue_id,
+                "cohort_id": "first" if queue_id in {"q1", "q2"} else "second",
+                "text": queue_id,
+            }
+            for queue_id in ("q4", "q2", "q3", "q1")
+        }
+        candidate_samples = CountingSamples(
+            [
+                {"queue_id": queue_id, "status": "generated"}
+                for queue_id in document["comparison_sample_queue_ids"]
+            ]
+        )
+        partial_samples = CountingSamples(
+            [
+                {
+                    "queue_id": queue_id,
+                    "status": "failed" if queue_id == "q2" else "generated",
+                }
+                for queue_id in document["comparison_sample_queue_ids"]
+            ]
+        )
+        candidates = [
+            {"label": "A", "samples": candidate_samples},
+            {"label": "B", "samples": partial_samples},
+        ]
+
+        cohorts = _review_cohorts(document, sample_by_id, candidates)
+
+        self.assertEqual(
+            [
+                [sample["queue_id"] for sample in cohort["samples"]]
+                for cohort in cohorts
+            ],
+            [["q1", "q2"], ["q3", "q4"]],
+        )
+        self.assertEqual(cohorts[0]["complete_candidate_labels"], ["A"])
+        self.assertEqual(cohorts[0]["decision_options"], ["A", "neither"])
+        self.assertEqual(cohorts[1]["complete_candidate_labels"], ["A", "B"])
+        self.assertEqual(cohorts[1]["decision_options"], ["A", "B", "neither"])
+        self.assertEqual(candidate_samples.iterations, 2)
+        self.assertEqual(partial_samples.iterations, 2)
+        self.assertEqual(candidate_samples.rows, 8)
+        self.assertEqual(partial_samples.rows, 8)
+        cohorts[0]["samples"][0]["text"] = "changed"
+        self.assertEqual(sample_by_id["q1"]["text"], "q1")
 
     def test_all_failed_cohort_is_automatically_unresolved(self):
         with TemporaryDirectory() as directory:
@@ -352,6 +605,51 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
 
             with self.assertRaisesRegex(MissingVoiceReuseReviewError, "audio changed"):
                 load_missing_voice_reuse_review(session_path)
+
+    def test_blind_key_schema_version_requires_exact_integer(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan_path, evidence, snapshots, _queue_id = self.fixture(root)
+            with patch(
+                "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",
+                side_effect=lambda _plan, _candidate, path: snapshots[
+                    Path(path).resolve()
+                ],
+            ):
+                session_path = build_missing_voice_reuse_review(
+                    plan_path, evidence, root / "review"
+                )
+            session_root = session_path.parent
+            key_path = session_root / ".blind-key.json"
+            bundle_path = session_root / "bundle.json"
+            session_file = session_root / "session.json"
+            original = {
+                path: path.read_bytes()
+                for path in (key_path, bundle_path, session_file)
+            }
+            for version in (True, 1.0):
+                key = json.loads(original[key_path].decode())
+                key["schema_version"] = version
+                key_path.write_text(json.dumps(key), encoding="utf-8")
+                bundle = json.loads(original[bundle_path].decode())
+                bundle["blind_key_sha256"] = sha256_file(key_path)
+                bundle["bundle_id"] = canonical_document_sha256(
+                    {key: value for key, value in bundle.items() if key != "bundle_id"}
+                )
+                bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+                session = json.loads(original[session_file].decode())
+                session["bundle_id"] = bundle["bundle_id"]
+                session["bundle_sha256"] = sha256_file(bundle_path)
+                session_file.write_text(json.dumps(session), encoding="utf-8")
+                with (
+                    self.subTest(version=version),
+                    self.assertRaisesRegex(
+                        MissingVoiceReuseReviewError, "blind key is invalid"
+                    ),
+                ):
+                    load_missing_voice_reuse_review(session_path)
+                for path, payload in original.items():
+                    path.write_bytes(payload)
 
 
 if __name__ == "__main__":

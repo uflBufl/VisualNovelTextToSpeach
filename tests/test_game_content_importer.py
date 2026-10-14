@@ -13,18 +13,22 @@ from vntts_artifacts import load_story_index_document, write_story_index_documen
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
+import vntts.game_content_importer as importer_module
+from tests.story_fixtures import (
+    write_content,
+    write_source_audio_semantic_evidence,
+    write_story_index,
+)
 from tests.symlink_support import symlink_or_skip
-from tests.test_pregeneration_setup import write_story_index
-from tests.test_pregeneration_voices import write_content
-from vntts.document_identity import canonical_document_sha256
 from vntts.game_content_importer import (
     GameContentImportCancelled,
     GameContentImportError,
     Reverse1999GameImporter,
+    _cached_playable_voice_roles,
     resolve_reverse1999_installation,
 )
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
-from vntts.source_audio_semantics import SEMANTIC_EVIDENCE_METHOD, semantic_text_sha256
+from vntts.source_audio_semantics import SEMANTIC_EVIDENCE_METHOD
 
 
 class FinishedProcess:
@@ -68,6 +72,51 @@ class Reverse1999GameImporterTest(unittest.TestCase):
         override.start()
         self.addCleanup(override.stop)
 
+    def test_narrator_banks_keep_mapping_and_list_contracts(self):
+        for document in ({"Rhiannon": "hero.bnk"}, ["Rhiannon"], "Rhiannon", [42]):
+            with self.subTest(document=document), TemporaryDirectory() as directory:
+                story = write_story_index(Path(directory) / "story")
+                banks = story.parent / "narrator-banks.json"
+                banks.write_text(json.dumps(document), encoding="utf-8")
+                arguments = (story, banks, sha256_file(story), sha256_file(banks))
+                if isinstance(document, (dict, list)) and document != [42]:
+                    self.assertIn(
+                        "Rhiannon",
+                        Reverse1999GameImporter._cached_narrator_characters(*arguments),
+                    )
+                else:
+                    with self.assertRaisesRegex(
+                        GameContentImportError, "Narrator banks"
+                    ):
+                        Reverse1999GameImporter._cached_narrator_characters(*arguments)
+                    self.assertFalse(
+                        (story.parent / "narrator-characters.json").exists()
+                    )
+
+    def test_story_catalog_rollback_failure_keeps_extractor_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = write_story_index(root / "reverse1999")
+            importer = Reverse1999GameImporter(output_root=root)
+            with (
+                patch.object(
+                    importer, "_run", side_effect=RuntimeError("extractor failed")
+                ),
+                patch(
+                    "vntts.game_content_importer.os.replace",
+                    side_effect=OSError("rollback failed"),
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "extractor failed") as raised:
+                    importer._replace_story_catalog(("extractor",), None)
+            self.assertTrue(story.is_file())
+            self.assertTrue(
+                any(
+                    "story catalog rollback failed" in note
+                    for note in raised.exception.__notes__
+                )
+            )
+
     def test_installed_story_change_check_reuses_saved_file_signatures(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -106,6 +155,195 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 importer._remember_story_inputs(story, roots)
             with patch.object(importer, "_bank_index_is_stale", return_value=True):
                 self.assertTrue(importer.installed_story_changed())
+
+    def test_story_change_check_handles_nonobject_source_metadata(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = root / "reverse1999" / "story-index.jsonl"
+            story.parent.mkdir()
+            importer = Reverse1999GameImporter(output_root=root)
+            with patch.object(
+                importer, "_previous_installation", return_value=(root, root, root)
+            ):
+                for metadata in ([], None, True, 1, "metadata"):
+                    with self.subTest(metadata=metadata):
+                        story.write_text(json.dumps(metadata) + "\n", encoding="utf-8")
+                        self.assertFalse(importer.installed_story_changed())
+
+    def test_source_signatures_reject_noninteger_versions_and_counts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = root / "story-index.jsonl"
+            story.write_bytes(b"x")
+            inputs = tuple(root / f"input-{index}" for index in range(3))
+            for path in inputs:
+                path.write_bytes(b"x")
+            importer = Reverse1999GameImporter(output_root=root)
+            saved = {
+                "version": 1,
+                "story_index": importer._file_signature(story),
+                "inputs": {
+                    str(path): importer._file_signature(path) for path in inputs
+                },
+            }
+            self.assertFalse(importer._saved_story_inputs_changed(story, saved))
+            for version in (True, 1.0):
+                with self.subTest(version=version):
+                    self.assertTrue(
+                        importer._saved_story_inputs_changed(
+                            story, saved | {"version": version}
+                        )
+                    )
+            for target in ("story_index", "inputs"):
+                for count in (True, 1.0):
+                    with self.subTest(target=target, count=count):
+                        malformed = json.loads(json.dumps(saved))
+                        signature = (
+                            malformed["story_index"]
+                            if target == "story_index"
+                            else malformed["inputs"][str(inputs[0])]
+                        )
+                        signature[0] = count
+                        self.assertTrue(
+                            importer._saved_story_inputs_changed(story, malformed)
+                        )
+
+    def test_narrator_banks_replacement_cannot_publish_names_under_old_digest(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = write_story_index(root)
+            banks = root / "narrator-banks.json"
+            original = b'["Rhiannon"]'
+            banks.write_bytes(original)
+            story_checksum = sha256_file(story)
+            banks_checksum = sha256_file(banks)
+            read_bytes = importer_module.read_regular_bytes
+            captures = []
+
+            def replaced_read(path):
+                if path != banks:
+                    return read_bytes(path)
+                captures.append(path)
+                banks.write_bytes(b'["Unbound character"]')
+                try:
+                    return read_bytes(path)
+                finally:
+                    banks.write_bytes(original)
+
+            with (
+                patch.object(importer_module, "read_regular_bytes", replaced_read),
+                self.assertRaisesRegex(GameContentImportError, "banks changed while"),
+            ):
+                Reverse1999GameImporter._cached_narrator_characters(
+                    story, banks, story_checksum, banks_checksum
+                )
+            self.assertEqual(captures, [banks])
+            self.assertEqual(banks.read_bytes(), original)
+            self.assertFalse((root / "narrator-characters.json").exists())
+
+    def test_optional_voice_caches_require_integer_versions(self):
+        for version in (1, 2, True, 1.0, 2.0):
+            with self.subTest(version=version), TemporaryDirectory() as directory:
+                root = Path(directory)
+                story = write_story_index(root)
+                banks = root / "narrator-banks.json"
+                banks.write_text('["Rhiannon"]', encoding="utf-8")
+                checksum = sha256_file(story)
+                atomic_write_json(
+                    root / "playable-voice-roles.json",
+                    {"version": version, "index_sha256": checksum, "roles": ["cached"]},
+                )
+                with self.subTest(cache="playable"):
+                    self.assertEqual(
+                        _cached_playable_voice_roles(story),
+                        {"cached"}
+                        if type(version) is int and version == 2
+                        else {"centurion"},
+                    )
+                atomic_write_json(
+                    root / "narrator-characters.json",
+                    {
+                        "version": version,
+                        "story_index_sha256": checksum,
+                        "narrator_banks_sha256": sha256_file(banks),
+                        "characters": ["Cached"],
+                    },
+                )
+                names = Reverse1999GameImporter._cached_narrator_characters(
+                    story, banks, checksum, sha256_file(banks)
+                )
+                self.assertEqual(
+                    names,
+                    ("Cached",)
+                    if type(version) is int and version == 2
+                    else ("Centurion", "Rhiannon"),
+                )
+
+    def test_narrator_cache_rejects_changed_inputs_before_publication(self):
+        for changed_source in ("story", "banks"):
+            with (
+                self.subTest(changed_source=changed_source),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                story = write_story_index(root)
+                banks = root / "narrator-banks.json"
+                banks.write_text('["Rhiannon"]', encoding="utf-8")
+                index_sha256 = sha256_file(story)
+                banks_sha256 = sha256_file(banks)
+                if changed_source == "story":
+                    story.write_text(
+                        story.read_text(encoding="utf-8").replace(
+                            "Centurion", "Changed"
+                        ),
+                        encoding="utf-8",
+                    )
+                else:
+                    banks.write_text('["Changed"]', encoding="utf-8")
+                with self.assertRaisesRegex(
+                    (GameContentImportError, ValueError), "changed"
+                ):
+                    Reverse1999GameImporter._cached_narrator_characters(
+                        story, banks, index_sha256, banks_sha256
+                    )
+                self.assertFalse((root / "narrator-characters.json").exists())
+
+    def test_narrator_checksum_disappearance_uses_import_error_boundary(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "reverse1999"
+            story = write_story_index(output)
+            (output / "narrator-index.jsonl").write_bytes(story.read_bytes())
+            (output / "narrator-banks.json").write_text("[]", encoding="utf-8")
+            (output / "english-bank-index.json").write_text("{}", encoding="utf-8")
+            importer = Reverse1999GameImporter(output_root=root)
+            with (
+                patch.object(
+                    importer,
+                    "_bank_index_is_stale",
+                    side_effect=lambda _path: (
+                        (output / "narrator-index.jsonl").unlink(),
+                        False,
+                    )[1],
+                ),
+            ):
+                with self.assertRaises(GameContentImportError) as raised:
+                    importer.narrator_characters()
+            self.assertIsInstance(raised.exception.__cause__, FileNotFoundError)
+
+    def test_precancelled_import_does_not_start_a_process(self):
+        with TemporaryDirectory() as directory:
+            process_factory = Mock(return_value=RunningProcess())
+            importer = Reverse1999GameImporter(
+                command=("worker",),
+                output_root=directory,
+                popen_factory=process_factory,
+            )
+            cancelled = Event()
+            cancelled.set()
+            with self.assertRaises(GameContentImportCancelled):
+                importer.import_installed(cancelled)
+            process_factory.assert_not_called()
 
     def test_prepares_selected_stage_semantics_as_an_immutable_successor(self):
         with TemporaryDirectory() as directory:
@@ -190,53 +428,24 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 timed = Path(arguments[arguments.index("--story-index") + 1])
                 record = load_story_index_document(timed).records[0].to_record()
                 untimed = load_story_index_document(timed).records[1].to_record()
-                entry = {
-                    "locale": "en",
-                    "media_sha256": "a" * 64,
-                    "displayed_text_sha256": text_hash,
-                    "normalized_displayed_text_sha256": semantic_text_sha256(text),
-                    "observed_transcript": text,
-                    "normalized_observed_text_sha256": semantic_text_sha256(text),
-                    "verdict": "full",
-                    "reason": "exact-normalized-asr-transcript",
-                    "method": SEMANTIC_EVIDENCE_METHOD,
-                    "model_sha256": "b" * 64,
-                    "source_line_ids": ["voice:1"],
-                }
-                entry["entry_id"] = canonical_document_sha256(
-                    {
-                        key: value
-                        for key, value in entry.items()
-                        if key != "source_line_ids"
-                    }
-                )
-                evidence = {
-                    "schema": "r1999.source-audio-semantic-evidence",
-                    "schema_version": 1,
-                    "locale": "en",
-                    "source_story_index_sha256": "c" * 64,
-                    "model": {
-                        "kind": "whisper",
-                        "snapshot": "test",
-                        "sha256": "b" * 64,
-                        "device": "cpu",
-                        "decoding": "deterministic_greedy_default",
-                    },
-                    "entries": [entry],
-                }
-                evidence["evidence_id"] = canonical_document_sha256(evidence)
-                evidence["generated_at"] = "2026-09-29T00:00:00+00:00"
                 evidence_path = Path(
                     arguments[arguments.index("--evidence-output") + 1]
                 )
-                atomic_write_json(evidence_path, evidence, sort_keys=True)
+                evidence = write_source_audio_semantic_evidence(
+                    evidence_path,
+                    line_id="voice:1",
+                    text=text,
+                    media_id=None,
+                    snapshot="test",
+                    generated_at="2026-09-29T00:00:00+00:00",
+                )
                 record.update(
                     source_audio_completeness="full",
                     source_audio_completeness_reason=(
                         "exact-normalized-asr-transcript"
                     ),
-                    source_audio_semantic_evidence_id=evidence["evidence_id"],
-                    source_audio_semantic_evidence_entry_id=entry["entry_id"],
+                    source_audio_semantic_evidence_id=evidence.evidence_id,
+                    source_audio_semantic_evidence_entry_id=evidence.entry_id,
                 )
                 write_story_index_document(
                     Path(arguments[arguments.index("--story-output") + 1]),
@@ -245,8 +454,8 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                         "language": "en",
                         "source_audio_completion": "verified-media-duration-seconds",
                         "source_audio_semantics": {
-                            "evidence_id": evidence["evidence_id"],
-                            "evidence_sha256": sha256_file(evidence_path),
+                            "evidence_id": evidence.evidence_id,
+                            "evidence_sha256": evidence.sha256,
                             "method": SEMANTIC_EVIDENCE_METHOD,
                             "selected_chapters": ["314501"],
                             "applied_count": 1,
@@ -421,9 +630,15 @@ class Reverse1999GameImporterTest(unittest.TestCase):
 
     def test_narrator_decoder_uses_cancellable_subprocess_runner(self):
         cancellation = Event()
-        cancellation.set()
         process = RunningProcess()
-        importer = Reverse1999GameImporter(popen_factory=Mock(return_value=process))
+
+        def start_process(*args, **kwargs):
+            cancellation.set()
+            return process
+
+        importer = Reverse1999GameImporter(
+            popen_factory=Mock(side_effect=start_process)
+        )
         with self.assertRaises(GameContentImportCancelled):
             importer._decode_narrator(
                 ["decoder", "-i", "source.wem"],
@@ -605,7 +820,13 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 bundle.unlink()
                 (configs / "datacfg_1.dat").unlink()
                 self.assertIsNone(restarted._previous_installation())
-                for malformed in ("null", "[]", "{}", "not json"):
+                for malformed in (
+                    "null",
+                    "[]",
+                    "{}",
+                    "not json",
+                    "[" * 100000 + "0" + "]" * 100000,
+                ):
                     saved.write_text(malformed)
                     self.assertIsNone(restarted._previous_installation())
 
@@ -746,15 +967,18 @@ class Reverse1999GameImporterTest(unittest.TestCase):
 
     def test_cancellation_terminates_only_the_owned_importer_process(self):
         process = RunningProcess()
+        cancelled = Event()
+
+        def start_process(*args, **kwargs):
+            cancelled.set()
+            return process
+
         with TemporaryDirectory() as temporary_directory:
             importer = Reverse1999GameImporter(
                 command=("r1999-bootstrap",),
                 output_root=temporary_directory,
-                popen_factory=Mock(return_value=process),
+                popen_factory=Mock(side_effect=start_process),
             )
-            cancelled = Event()
-            cancelled.set()
-
             with self.assertRaises(GameContentImportCancelled):
                 importer.import_installed(cancelled)
 
@@ -843,19 +1067,24 @@ class Reverse1999GameImporterTest(unittest.TestCase):
         )
 
     def test_frozen_app_uses_hidden_source_audio_publisher_worker(self):
-        with (
-            patch("vntts.game_content_importer.shutil.which", return_value=None),
-            patch.object(sys, "frozen", True, create=True),
-        ):
-            command = Reverse1999GameImporter._publisher_command(
-                "r1999-source-audio-semantics",
-                "r1999extractor.source_audio_semantics",
-            )
-
-        self.assertEqual(
-            command,
-            (sys.executable, "--source-audio-publisher-worker", "semantics"),
-        )
+        for worker in ("duration", "semantics"):
+            for conflicting_executable in (None, f"/outside/r1999-{worker}"):
+                with (
+                    self.subTest(worker=worker, executable=conflicting_executable),
+                    patch(
+                        "vntts.game_content_importer.shutil.which",
+                        return_value=conflicting_executable,
+                    ),
+                    patch.object(sys, "frozen", True, create=True),
+                ):
+                    command = Reverse1999GameImporter._publisher_command(
+                        f"r1999-source-audio-{worker}",
+                        f"r1999extractor.source_audio_{worker}",
+                    )
+                    self.assertEqual(
+                        command,
+                        (sys.executable, "--source-audio-publisher-worker", worker),
+                    )
 
     def test_one_selected_installation_folder_resolves_all_importer_inputs(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1060,7 +1289,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     cache.write_text(json.dumps(saved_roles), encoding="utf-8")
 
                     with patch(
-                        "vntts.game_content_importer.load_story_index_document",
+                        "vntts.game_content_importer.load_story_index_snapshot",
                         side_effect=AssertionError("reference index was reparsed"),
                     ):
                         self.assertEqual(

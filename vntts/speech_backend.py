@@ -5,7 +5,7 @@ from contextvars import copy_context
 from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Full, Queue
-from threading import Event, Lock, Thread
+from threading import TIMEOUT_MAX, Event, Lock, Thread
 from time import monotonic
 from types import MethodType
 from typing import ClassVar, Protocol, TypeAlias, TypedDict, TypeGuard, TypeVar
@@ -21,7 +21,9 @@ from vntts.audio_output import (
     StreamingAudioStream,
     SynchronousPcmPlaybackMixin,
     resolve_audio_output,
+    sanitize_playback_audio,
 )
+from vntts.numeric_values import optional_finite_number
 from vntts.playback import (
     PlaybackOutcome,
     PlaybackStatus,
@@ -140,8 +142,8 @@ class _PocketTTSModelFactory(Protocol):
 
 
 class _MossGeneratedChunk(Protocol):
-    audio: object
-    generation_limited: object
+    @property
+    def audio(self) -> object: ...
 
 
 class _MossTTSModel(Protocol):
@@ -563,6 +565,7 @@ class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
         persistent_audio_cache_directory: str | Path | None = None,
         persistent_audio_cache_max_entries: int | None = None,
     ) -> None:
+        validate_volume(volume)
         if model_factory is None:
             runtime_site_packages = activate_chatterbox_runtime(runtime_directory)
             try:
@@ -1029,6 +1032,54 @@ def _install_pocket_generation_cancellation(
     return True
 
 
+def _finite_streaming_seconds(value: float, name: str) -> float:
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise TTSConfigurationError(f"{name} must be a finite number") from error
+    if optional_finite_number(seconds) is None:
+        raise TTSConfigurationError(f"{name} must be a finite number")
+    return seconds
+
+
+def _moss_streaming_options(
+    cached_stream_chunk_seconds: float,
+    streaming_first_chunk_frames: int,
+    streaming_interval: float,
+    playback_consumer_join_timeout: float,
+) -> tuple[float, int, float, float]:
+    cached_seconds = _finite_streaming_seconds(
+        cached_stream_chunk_seconds, "cached_stream_chunk_seconds"
+    )
+    try:
+        first_frames = max(1, int(streaming_first_chunk_frames))
+    except (TypeError, ValueError, OverflowError) as error:
+        raise TTSConfigurationError(
+            "streaming_first_chunk_frames must be convertible to an integer"
+        ) from error
+    interval = max(
+        0.08, _finite_streaming_seconds(streaming_interval, "streaming_interval")
+    )
+    join_timeout = max(
+        0.01,
+        _finite_streaming_seconds(
+            playback_consumer_join_timeout, "playback_consumer_join_timeout"
+        ),
+    )
+    if join_timeout > TIMEOUT_MAX:
+        raise TTSConfigurationError(
+            "playback_consumer_join_timeout exceeds the thread timeout range"
+        )
+    return cached_seconds, first_frames, interval, join_timeout
+
+
+def _streaming_samples(sample_rate: int, seconds: float, name: str) -> int:
+    try:
+        return max(1, round(sample_rate * seconds))
+    except OverflowError as error:
+        raise TTSConfigurationError(f"{name} exceeds the sample count range") from error
+
+
 class PocketTTSVoiceRouterBackend:
     """Experimental CPU voice cloning with first-chunk streaming playback."""
 
@@ -1064,6 +1115,13 @@ class PocketTTSVoiceRouterBackend:
         cached_stream_chunk_seconds: float = 0.2,
         stream_prefill_seconds: float = 0.25,
     ) -> None:
+        validate_volume(volume)
+        cached_stream_chunk_seconds = _finite_streaming_seconds(
+            cached_stream_chunk_seconds, "cached_stream_chunk_seconds"
+        )
+        stream_prefill_seconds = _finite_streaming_seconds(
+            stream_prefill_seconds, "stream_prefill_seconds"
+        )
         if model_factory is None:
             runtime_site_packages = activate_pocket_tts_runtime(runtime_directory)
             try:
@@ -1085,6 +1143,12 @@ class PocketTTSVoiceRouterBackend:
         self.clock = clock
         self.playback_latency = playback_latency
         self.sample_rate = int(self.model.sample_rate)
+        self.cached_stream_chunk_samples = _streaming_samples(
+            self.sample_rate, cached_stream_chunk_seconds, "cached_stream_chunk_seconds"
+        )
+        self.stream_prefill_samples = _streaming_samples(
+            self.sample_rate, stream_prefill_seconds, "stream_prefill_seconds"
+        )
         self.voice_states: dict[str, object] = {}
         self.voice_state_cache_directory = Path(
             voice_state_cache_directory
@@ -1123,14 +1187,6 @@ class PocketTTSVoiceRouterBackend:
             backend=self.name,
             model=self.model,
             sample_rate=self.sample_rate,
-        )
-        self.cached_stream_chunk_samples = max(
-            1,
-            round(self.sample_rate * float(cached_stream_chunk_seconds)),
-        )
-        self.stream_prefill_samples = max(
-            1,
-            round(self.sample_rate * float(stream_prefill_seconds)),
         )
         self.set_volume(volume)
         self.set_speed(1.0)
@@ -1688,9 +1744,7 @@ class PocketTTSVoiceRouterBackend:
 
     def _prepare_audio(self, audio: object) -> AudioArray:
         prepared = np.asarray(audio, dtype=np.float32).reshape(-1).copy()
-        np.nan_to_num(prepared, copy=False)
-        prepared *= self.volume
-        np.clip(prepared, -0.95, 0.95, out=prepared)
+        sanitize_playback_audio(prepared, self.volume)
         return prepared
 
 
@@ -1739,53 +1793,42 @@ class MossTTSVoiceRouterBackend:
         generation_profile: object = "stable",
         playback_consumer_join_timeout: float = 5.0,
     ) -> None:
-        self.model_name = str(
-            model_name
-            or os.environ.get("VNTTS_MOSS_MODEL", "")
-            or default_moss_tts_model
-        )
-        self._mlx: object | None = None
-        if model_factory is None:
-            runtime_site_packages = activate_moss_tts_runtime(runtime_directory)
-            try:
-                import mlx.core as mx
-                from mlx_audio.tts import load
-            except ImportError as error:
-                raise TTSConfigurationError(
-                    "MOSS-TTS could not be imported from "
-                    f"{runtime_site_packages}: {error}"
-                ) from error
-            from vntts.moss_compat import install_moss_quantized_codec_compat
-
-            install_moss_quantized_codec_compat()
-            self._mlx = mx
-            model_factory = load
-        try:
-            # VNTTS constructs the backend on its startup worker and performs
-            # live generation on a playback worker. MLX lazy parameters retain
-            # the thread-local stream that created their graph, then fail on
-            # first use in the other worker with "There is no Stream(...) in
-            # current thread". Materialize the model before it crosses that
-            # boundary; streamed audio generation remains lazy and incremental.
-            self.model = model_factory(self.model_name, lazy=False)
-        except Exception as error:
-            raise TTSConfigurationError(
-                f"MOSS-TTS could not load {self.model_name!r}: {error}"
-            ) from error
-        self.registry = registry
-        self.narrator_speaker = "MOSS reference voice"
-        self.narrator_reference = narrator_reference
-        self.language = normalize_moss_language(language)
+        validate_volume(volume)
         (
             self.generation_profile,
             self.generation_options,
         ) = get_moss_tts_generation_profile(
             generation_profile, profiles=self._generation_profiles
         )
+        (
+            cached_stream_chunk_seconds,
+            streaming_first_chunk_frames,
+            streaming_interval,
+            playback_consumer_join_timeout,
+        ) = _moss_streaming_options(
+            cached_stream_chunk_seconds,
+            streaming_first_chunk_frames,
+            streaming_interval,
+            playback_consumer_join_timeout,
+        )
+        self.model_name = str(
+            model_name
+            or os.environ.get("VNTTS_MOSS_MODEL", "")
+            or default_moss_tts_model
+        )
+        self._mlx: object | None = None
+        self.model = self._load_moss_model(model_factory, runtime_directory)
+        self.registry = registry
+        self.narrator_speaker = "MOSS reference voice"
+        self.narrator_reference = narrator_reference
+        self.language = normalize_moss_language(language)
         self.audio_output = audio_output
         self.clock = clock
         self.playback_latency = playback_latency
         self.sample_rate = int(getattr(self.model, "sample_rate", 48_000))
+        self.cached_stream_chunk_samples = _streaming_samples(
+            self.sample_rate, cached_stream_chunk_seconds, "cached_stream_chunk_seconds"
+        )
         self.prompt_audio_codes: dict[str, object] = {}
         self.prompt_cache_directory = Path(
             prompt_cache_directory
@@ -1828,17 +1871,44 @@ class MossTTSVoiceRouterBackend:
             model_identity=self.model_name,
             sample_rate=self.sample_rate,
         )
-        self.cached_stream_chunk_samples = max(
-            1,
-            round(self.sample_rate * float(cached_stream_chunk_seconds)),
-        )
-        self.streaming_first_chunk_frames = max(1, int(streaming_first_chunk_frames))
-        self.streaming_interval = max(0.08, float(streaming_interval))
-        self.playback_consumer_join_timeout = max(
-            0.01, float(playback_consumer_join_timeout)
-        )
+        self.streaming_first_chunk_frames = streaming_first_chunk_frames
+        self.streaming_interval = streaming_interval
+        self.playback_consumer_join_timeout = playback_consumer_join_timeout
         self.set_volume(volume)
         self.set_speed(1.0)
+
+    def _load_moss_model(
+        self,
+        model_factory: _MossTTSModelFactory | None,
+        runtime_directory: str | Path | None,
+    ) -> _MossTTSModel:
+        if model_factory is None:
+            runtime_site_packages = activate_moss_tts_runtime(runtime_directory)
+            try:
+                import mlx.core as mx
+                from mlx_audio.tts import load
+            except ImportError as error:
+                raise TTSConfigurationError(
+                    "MOSS-TTS could not be imported from "
+                    f"{runtime_site_packages}: {error}"
+                ) from error
+            from vntts.moss_compat import install_moss_quantized_codec_compat
+
+            install_moss_quantized_codec_compat()
+            self._mlx = mx
+            model_factory = load
+        try:
+            # VNTTS constructs the backend on its startup worker and performs
+            # live generation on a playback worker. MLX lazy parameters retain
+            # the thread-local stream that created their graph, then fail on
+            # first use in the other worker with "There is no Stream(...) in
+            # current thread". Materialize the model before it crosses that
+            # boundary; streamed audio generation remains lazy and incremental.
+            return model_factory(self.model_name, lazy=False)
+        except Exception as error:
+            raise TTSConfigurationError(
+                f"MOSS-TTS could not load {self.model_name!r}: {error}"
+            ) from error
 
     def prepare(self, character: str, text: str) -> object:
         prepared = self.prepare_playback(character, text)
@@ -2557,6 +2627,7 @@ class MossTTSVoiceRouterBackend:
         profile = generation_profile or self.generation_profile
         options = generation_options or self.generation_options
         seed_identity = {} if seed is None else {"seed": seed}
+        max_tokens, max_audio_seconds = moss_generation_limits(text)
         return str(
             self.persistent_cache_keys.key(
                 voice_key=voice_key,
@@ -2567,8 +2638,8 @@ class MossTTSVoiceRouterBackend:
                 generation_profile=profile,
                 **options,
                 **seed_identity,
-                max_tokens=moss_generation_limits(text)[0],
-                max_audio_seconds=moss_generation_limits(text)[1],
+                max_tokens=max_tokens,
+                max_audio_seconds=max_audio_seconds,
                 streaming_first_chunk_frames=self.streaming_first_chunk_frames,
                 streaming_interval=self.streaming_interval,
             )
@@ -2602,9 +2673,7 @@ class MossTTSVoiceRouterBackend:
 
     def _prepare_audio(self, audio: AudioArray) -> AudioArray:
         prepared = np.asarray(audio, dtype=np.float32).copy()
-        np.nan_to_num(prepared, copy=False)
-        prepared *= self.volume
-        np.clip(prepared, -0.95, 0.95, out=prepared)
+        sanitize_playback_audio(prepared, self.volume)
         return prepared
 
     def _evaluate_array(self, value: object) -> None:

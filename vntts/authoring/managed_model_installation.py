@@ -3,21 +3,21 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NotRequired, TypeAlias, TypedDict
 
-from vntts_artifacts.atomic_io import atomic_write_json, atomic_write_text
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json, atomic_write_text
 
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
     staged_directory,
 )
+from vntts.document_identity import file_sha256
+from vntts.json_types import decode_json
+from vntts.path_safety import copy_regular_file, read_regular_text
 
 PathInput: TypeAlias = str | Path
 JsonDocument: TypeAlias = dict[str, object]
@@ -64,7 +64,7 @@ def _tree_sha256(path: Path) -> str:
             relative = candidate.relative_to(path).as_posix().encode("utf-8")
             digest.update(len(relative).to_bytes(8, "big"))
             digest.update(relative)
-            digest.update(bytes.fromhex(sha256_file(candidate)))
+            digest.update(bytes.fromhex(file_sha256(candidate, error_type=OSError)))
     return digest.hexdigest()
 
 
@@ -72,10 +72,14 @@ def _verify(model_directory: Path, model: ManagedModelFiles) -> VerificationResu
     actual_files: dict[str, str | None] = {}
     for filename, expected in (model.file_sha256s or {}).items():
         path = model_directory / filename
-        actual_files[filename] = sha256_file(path) if path.is_file() else None
+        actual_files[filename] = (
+            file_sha256(path, error_type=OSError) if path.is_file() else None
+        )
         if actual_files[filename] != expected:
             return f"model file changed: {filename}", None, actual_files
-    actual_tree = _tree_sha256(model_directory)
+    actual_tree = (
+        _tree_sha256(model_directory) if model.tree_sha256 is not None else None
+    )
     if model.tree_sha256 is not None and actual_tree != model.tree_sha256:
         return "model tree checksum changed", actual_tree, actual_files
     return None, actual_tree, actual_files
@@ -110,14 +114,14 @@ def managed_model_status(
                 status = "invalid"
             else:
                 try:
-                    actual_metadata = json.loads(
-                        (installation / "managed-model.json").read_text(
-                            encoding="utf-8"
+                    actual_metadata = decode_json(
+                        read_regular_text(
+                            installation / "managed-model.json", encoding="utf-8"
                         )
                     )
-                    actual_notice = (
-                        installation / "THIRD_PARTY_NOTICES.txt"
-                    ).read_text(encoding="utf-8")
+                    actual_notice = read_regular_text(
+                        installation / "THIRD_PARTY_NOTICES.txt", encoding="utf-8"
+                    )
                 except (OSError, ValueError) as error:
                     status, reason = (
                         "invalid",
@@ -183,7 +187,7 @@ def install_managed_model(
                 raise error_type(
                     f"Pinned {model_label} source file is missing: {candidate}"
                 )
-            shutil.copyfile(candidate, model_directory / filename)
+            copy_regular_file(candidate, model_directory / filename)
         reason, actual_tree, _actual_files = _verify(model_directory, model)
         if reason == "model tree checksum changed":
             reason = (

@@ -9,22 +9,43 @@ import json
 import os
 import random
 import re
-import shutil
 import struct
 import unicodedata
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Literal, NotRequired, Protocol, TypedDict, TypeGuard
+from typing import BinaryIO, Literal, NotRequired, Protocol, TypedDict, TypeGuard
 
-from vntts_artifacts.atomic_io import atomic_output_path, atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
+from vntts_artifacts.atomic_io import atomic_output_path
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
+from vntts.authoring.authority import (
+    AuthoringAuthorityError,
+    AuthoritySnapshot,
+    capture_authority_file,
+)
 from vntts.authoring.private_files import private_file_is_restricted
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    no_replace_destination,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.workspace_foundation import load_json_object
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import (
+    canonical_document_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
+from vntts.json_types import has_schema_version, is_utf8_text
+from vntts.json_types import is_json_object as _is_json_object
+from vntts.path_safety import (
+    copy_regular_file,
+    ensure_separate_output,
+    open_regular_binary,
+)
 from vntts.settings import get_local_data_directory
 
 SESSION_SCHEMA = "vntts.model-listening-session"
@@ -54,18 +75,18 @@ class TrialRating(TypedDict):
 
 
 class StoredTrialRating(TrialRating, total=False):
-    acceptability: Literal["neither"]
-    reviewed_at: str
+    acceptability: Literal["neither"] | None
+    reviewed_at: object
 
 
 class _ValidatedListeningTrial(TypedDict):
     trial_id: str
     queue_id: str
-    line_id: str | None
-    text_sha256: str | None
-    text: str | None
+    line_id: NotRequired[str | None]
+    text_sha256: NotRequired[str | None]
+    text: NotRequired[str | None]
     audio: TrialAudio
-    rating: StoredTrialRating | None
+    rating: NotRequired[StoredTrialRating | None]
     audio_sha256: NotRequired[TrialAudio]
 
 
@@ -129,8 +150,8 @@ class ListeningKey(TypedDict):
 class ModelReport(TypedDict):
     backend: str
     model_id: str
-    provider: NotRequired[object]
-    model: NotRequired[object]
+    provider: str
+    model: str
 
 
 class ModelReportSample(TypedDict):
@@ -153,11 +174,14 @@ class ModelStats(TypedDict):
     reviewed_trials: int
 
 
-class PreferenceStats(TypedDict):
+class ListeningReportPreference(TypedDict):
+    rate: float | None
+
+
+class PreferenceStats(ListeningReportPreference):
     wins: int
     losses: int
     ties: int
-    rate: float | None
     rejections: NotRequired[int]
 
 
@@ -178,13 +202,23 @@ class PairwiseStats(TypedDict):
     neither_acceptable: int
 
 
+class ReportPairwise(TypedDict):
+    left_model: str
+    right_model: str
+    trials: int
+    left_wins: int
+    right_wins: int
+    ties: int
+    neither_acceptable: NotRequired[int]
+
+
 class ReportFields(TypedDict):
     complete: bool
     completed_trials: int
     pending_trials: int
     manual_selection_required: bool
     models: list[ReportModel]
-    pairwise: list[dict[str, object]]
+    pairwise: list[ReportPairwise]
 
 
 class ListeningTrial(TypedDict):
@@ -201,6 +235,7 @@ class ListeningSession(TypedDict):
 
 class ListeningReportModel(TypedDict):
     model_id: str
+    preference: ListeningReportPreference
 
 
 class ListeningReport(TypedDict):
@@ -224,12 +259,19 @@ def _normalized_text(text: object) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
-def _source_digest(paths: Iterable[PathInput]) -> tuple[list[SourceRecord], str]:
-    sources: list[SourceRecord] = []
-    for path in paths:
-        resolved = Path(path).expanduser().resolve()
-        sources.append({"path": str(resolved), "sha256": sha256_file(resolved)})
-    payload = json.dumps(sources, ensure_ascii=False, sort_keys=True).encode("utf-8")
+def _source_digest(
+    snapshots: Iterable[AuthoritySnapshot],
+) -> tuple[list[SourceRecord], str]:
+    sources: list[SourceRecord] = [
+        {"path": str(snapshot.path), "sha256": snapshot.sha256}
+        for snapshot in snapshots
+    ]
+    try:
+        payload = json.dumps(sources, ensure_ascii=False, sort_keys=True).encode(
+            "utf-8"
+        )
+    except UnicodeEncodeError as error:
+        raise ModelListeningError("Model report paths must be UTF-8 text") from error
     return sources, hashlib.sha256(payload).hexdigest()
 
 
@@ -240,7 +282,7 @@ def _link_blind_audio(source: PathInput, destination: PathInput) -> None:
     try:
         os.link(source, destination)
     except OSError:
-        shutil.copy2(source, destination)
+        copy_regular_file(source, destination, preserve_metadata=True)
 
 
 def create_listening_session_from_reports(
@@ -254,13 +296,38 @@ def create_listening_session_from_reports(
     resolved_paths = [Path(path).expanduser().resolve() for path in report_paths]
     if len(resolved_paths) < 2:
         raise ModelListeningError("At least two model reports are required")
+    try:
+        snapshots = tuple(
+            capture_authority_file(path, "model report") for path in resolved_paths
+        )
+    except AuthoringAuthorityError as error:
+        raise ModelListeningError(str(error)) from error
+    return _create_listening_session_from_captured_reports(
+        snapshots, output_directory, seed=seed, sample_ids=sample_ids
+    )
+
+
+def _create_listening_session_from_captured_reports(
+    snapshots: Sequence[AuthoritySnapshot],
+    output_directory: PathInput,
+    *,
+    seed: int = 0,
+    sample_ids: Iterable[str] | None = None,
+    authority_hashes: Mapping[Path, str] | None = None,
+) -> Path:
+    if authority_hashes is not None:
+        for snapshot in snapshots:
+            expected = authority_hashes.get(snapshot.path)
+            if expected is not None and expected != snapshot.sha256:
+                raise ModelListeningError("Model report changed after validation")
     selected_ids = _selected_model_report_ids(sample_ids)
     model_metadata: dict[str, ListeningModel] = {}
     audio_by_model: defaultdict[str, dict[str, AudioRecord]] = defaultdict(dict)
     corpus_items: dict[str, CorpusItem] = {}
-    for report_path in resolved_paths:
+    sources, source_sha256 = _source_digest(snapshots)
+    for snapshot in snapshots:
         _collect_model_report_samples(
-            report_path,
+            snapshot,
             selected_ids,
             model_metadata,
             audio_by_model,
@@ -270,7 +337,6 @@ def create_listening_session_from_reports(
         _validate_selected_samples(
             selected_ids, model_metadata, audio_by_model, corpus_items
         )
-    sources, source_sha256 = _source_digest(resolved_paths)
     return _write_listening_session(
         output_directory,
         list(model_metadata.values()),
@@ -279,6 +345,7 @@ def create_listening_session_from_reports(
         sources=sources,
         source_sha256=source_sha256,
         seed=seed,
+        authority_hashes=authority_hashes,
     )
 
 
@@ -289,7 +356,7 @@ def _selected_model_report_ids(
         return None
     raw_selected_ids = tuple(sample_ids)
     if not raw_selected_ids or any(
-        not isinstance(value, str) or not value.strip() for value in raw_selected_ids
+        not is_utf8_text(value) or not value.strip() for value in raw_selected_ids
     ):
         raise ModelListeningError(
             "Selected model-report sample IDs must be non-empty text"
@@ -300,25 +367,28 @@ def _selected_model_report_ids(
 
 
 def _collect_model_report_samples(
-    report_path: Path,
+    snapshot: AuthoritySnapshot,
     selected_ids: frozenset[str] | None,
     model_metadata: dict[str, ListeningModel],
     audio_by_model: defaultdict[str, dict[str, AudioRecord]],
     corpus_items: dict[str, CorpusItem],
 ) -> None:
-    report, samples = _load_model_report(report_path)
-    backend = report["backend"]
+    report, samples = _load_model_report(snapshot)
     model_id = report["model_id"]
     metadata = model_metadata.setdefault(
         model_id,
         {
             "model_id": model_id,
-            "provider": str(report.get("provider") or backend),
-            "model": str(report.get("model") or model_id),
+            "provider": report["provider"],
+            "model": report["model"],
             "reports": [],
         },
     )
-    report_name = str(report_path)
+    if any(metadata[field] != report[field] for field in ("provider", "model")):
+        raise ModelListeningError(
+            f"Model {model_id!r} has conflicting report metadata: {snapshot.path}"
+        )
+    report_name = str(snapshot.path)
     if report_name not in metadata["reports"]:
         metadata["reports"].append(report_name)
     for sample in samples:
@@ -419,15 +489,92 @@ def _write_listening_session(
     sources: list[SourceRecord],
     source_sha256: str,
     seed: int,
+    authority_hashes: Mapping[Path, str] | None = None,
 ) -> Path:
-    output_directory = Path(output_directory).expanduser().resolve()
-    session_path = output_directory / "session.json"
-    if session_path.exists() or (
-        output_directory.exists() and any(output_directory.iterdir())
+    output_directory = no_replace_destination(output_directory)
+    if output_directory.is_symlink() or (
+        output_directory.exists()
+        and (not output_directory.is_dir() or any(output_directory.iterdir()))
     ):
         raise ModelListeningError(
             f"Listening session directory is not empty: {output_directory}"
         )
+    output_directory.parent.mkdir(parents=True, exist_ok=True)
+    with staged_directory(
+        output_directory.parent, prefix=f".{output_directory.name}-"
+    ) as staging:
+        _write_listening_session_staged(
+            staging,
+            models,
+            audio_by_model,
+            corpus_items,
+            sources=sources,
+            source_sha256=source_sha256,
+            seed=seed,
+        )
+        for source in sources:
+            try:
+                unchanged = _listening_source_unchanged(
+                    Path(source["path"]), source["sha256"]
+                )
+            except OSError as error:
+                raise ModelListeningError(
+                    f"Unable to verify model report: {source['path']}: {error}"
+                ) from error
+            if not unchanged:
+                raise ModelListeningError(
+                    f"Model report changed while creating listening session: {source['path']}"
+                )
+        _assert_listening_authority(authority_hashes, sources)
+        try:
+            if output_directory.exists():
+                output_directory.rmdir()
+            rename_directory_no_replace(staging, output_directory)
+        except (AtomicPublicationError, OSError) as error:
+            raise ModelListeningError(
+                f"Unable to publish listening session: {error}"
+            ) from error
+    return output_directory / "session.json"
+
+
+def _listening_source_unchanged(path: Path, digest: str) -> bool:
+    return not path.is_symlink() and path.is_file() and sha256_file(path) == digest
+
+
+def _assert_listening_authority(
+    authority_hashes: Mapping[Path, str] | None, sources: Sequence[SourceRecord]
+) -> None:
+    if authority_hashes is None:
+        return
+    report_paths = {Path(source["path"]) for source in sources}
+    for path, digest in authority_hashes.items():
+        if path in report_paths:
+            continue
+        try:
+            unchanged = (
+                not path.is_symlink() and path.is_file() and sha256_file(path) == digest
+            )
+        except OSError as error:
+            raise ModelListeningError(
+                f"Unable to verify listening authority: {path}: {error}"
+            ) from error
+        if not unchanged:
+            raise ModelListeningError(
+                f"Listening authority changed before publication: {path}"
+            )
+
+
+def _write_listening_session_staged(
+    output_directory: Path,
+    models: Sequence[ListeningModel],
+    audio_by_model: dict[str, dict[str, AudioRecord]],
+    corpus_items: Sequence[CorpusItem],
+    *,
+    sources: list[SourceRecord],
+    source_sha256: str,
+    seed: int,
+) -> None:
+    session_path = output_directory / "session.json"
     model_ids = [model["model_id"] for model in models]
     if len(model_ids) != len(set(model_ids)):
         raise ModelListeningError("Model reports contain duplicate model IDs")
@@ -523,10 +670,16 @@ def _write_listening_session(
         "trials": trials,
     }
     atomic_write_json(session_path, session, sort_keys=True)
-    return session_path
 
 
 def load_listening_session(path: PathInput) -> ListeningSession:
+    session, _key = _load_listening_documents(path)
+    return _public_session(session)
+
+
+def _load_listening_documents(
+    path: PathInput,
+) -> tuple[_ValidatedListeningSession, ListeningKey]:
     path = Path(path).expanduser().resolve()
     session = _load_schema(
         path,
@@ -545,8 +698,8 @@ def load_listening_session(path: PathInput) -> ListeningSession:
         _validate_listening_trial(path, trial, current_schema, legacy_audio_hashes)
     if not _is_listening_session(session):
         raise ModelListeningError("Listening session is invalid")
-    _load_blind_key(path, session)
-    return _public_session(session)
+    key = _load_blind_key(path, session)
+    return session, key
 
 
 def _session_trials(session: dict[str, object]) -> list[object]:
@@ -586,7 +739,7 @@ def _validate_listening_trial_ids(
 def _validate_listening_progress(
     session: Mapping[str, object], trials: Sequence[_ValidatedListeningTrial]
 ) -> None:
-    completed = sum(trial["rating"] is not None for trial in trials)
+    completed = sum(trial.get("rating") is not None for trial in trials)
     if (
         type(session.get("completed_count")) is not int
         or session["completed_count"] != completed
@@ -610,11 +763,11 @@ def _validate_current_trial_identity(trial: _ValidatedListeningTrial) -> None:
     line_id = trial.get("line_id")
     text = trial.get("text")
     text_hash = trial.get("text_sha256")
-    if not isinstance(line_id, str) or not line_id.strip():
+    if not is_utf8_text(line_id) or not line_id.strip():
         raise ModelListeningError(
             f"Listening trial line identity is invalid: {trial['trial_id']}"
         )
-    if not isinstance(text, str) or not text or not is_lowercase_sha256(text_hash):
+    if not is_utf8_text(text) or not text or not is_lowercase_sha256(text_hash):
         raise ModelListeningError(
             f"Listening trial text identity is invalid: {trial['trial_id']}"
         )
@@ -626,14 +779,10 @@ def _validate_current_trial_identity(trial: _ValidatedListeningTrial) -> None:
 
 def _validate_listening_trial_rating(trial: _ValidatedListeningTrial) -> None:
     rating = trial.get("rating")
-    if rating is not None and (
-        not isinstance(rating, dict)
-        or rating.get("preference") not in {"a", "b", "tie"}
-        or rating.get("acceptability") not in {None, "neither"}
-        or (
-            rating.get("acceptability") == "neither"
-            and rating.get("preference") != "tie"
-        )
+    if (
+        rating is not None
+        and rating.get("acceptability") == "neither"
+        and rating["preference"] != "tie"
     ):
         raise ModelListeningError(
             f"Listening trial rating is invalid: {trial['trial_id']}"
@@ -677,8 +826,12 @@ def _load_blind_key(
     session_path: PathInput, session: _ValidatedListeningSession
 ) -> ListeningKey:
     key_path = Path(session_path).expanduser().resolve().with_name(".blind-key.json")
-    _validate_blind_key_file(key_path, session)
-    key = _load_schema(key_path, {_blind_key_schema(session)}, "listening key")
+    snapshot = _capture_blind_key(key_path, session)
+    try:
+        document = snapshot.json_document("listening key")
+    except AuthoringAuthorityError as error:
+        raise ModelListeningError(str(error)) from error
+    key = _validate_schema(document, {_blind_key_schema(session)}, "listening key")
     _validate_blind_key_identity(key, session)
     if not _is_listening_key(key):
         raise ModelListeningError("Listening session blind key is invalid")
@@ -692,15 +845,20 @@ def _load_blind_key(
     return key
 
 
-def _validate_blind_key_file(
+def _capture_blind_key(
     key_path: Path, session: _ValidatedListeningSession
-) -> None:
+) -> AuthoritySnapshot:
     if key_path.is_file() and not private_file_is_restricted(key_path):
         raise ModelListeningError("Listening session blind key mode must be 0600")
-    if not key_path.is_file() or sha256_file(key_path) != session.get(
-        "blind_key_sha256"
-    ):
+    try:
+        snapshot = capture_authority_file(key_path, "listening key")
+    except AuthoringAuthorityError as error:
+        raise ModelListeningError(
+            "Listening session blind key is missing or changed"
+        ) from error
+    if snapshot.sha256 != session.get("blind_key_sha256"):
         raise ModelListeningError("Listening session blind key is missing or changed")
+    return snapshot
 
 
 def _blind_key_schema(session: _ValidatedListeningSession) -> str:
@@ -735,12 +893,9 @@ def _validate_blind_assignments(
     assignments: Sequence[BlindAssignment],
     model_ids: Sequence[str],
 ) -> None:
+    trial_by_id = {trial["trial_id"]: trial for trial in session["trials"]}
     for assignment in assignments:
-        trial = next(
-            item
-            for item in session["trials"]
-            if item["trial_id"] == assignment["trial_id"]
-        )
+        trial = trial_by_id[assignment["trial_id"]]
         sides = _validate_blind_assignment_sides(
             key_path, session, trial, assignment, model_ids
         )
@@ -802,7 +957,7 @@ def next_pending_trial(session: Mapping[str, object]) -> ListeningTrial | None:
     if trials is None:
         raise ModelListeningError("Listening session trial count is invalid")
     for trial in trials:
-        if _is_listening_trial(trial) and trial["rating"] is None:
+        if _is_listening_trial(trial) and trial.get("rating") is None:
             return _public_trial(trial)
     return None
 
@@ -812,7 +967,8 @@ def listening_progress(session: Mapping[str, object]) -> tuple[int, int]:
     if trials is None:
         raise ModelListeningError("Listening session trial count is invalid")
     return sum(
-        _is_listening_trial(trial) and trial["rating"] is not None for trial in trials
+        _is_listening_trial(trial) and trial.get("rating") is not None
+        for trial in trials
     ), len(trials)
 
 
@@ -824,15 +980,17 @@ def record_trial_preference(
     overwrite: bool = False,
     report_path: PathInput | None = None,
 ) -> ListeningSession:
-    if preference not in {"a", "b", "tie", "neither"}:
+    if not isinstance(preference, str) or preference not in {
+        "a",
+        "b",
+        "tie",
+        "neither",
+    }:
         raise ModelListeningError("Preference must be a, b, tie, or neither")
     session_path = Path(session_path).expanduser().resolve()
     guard_path = session_path.with_name(f".{session_path.name}.guard")
     with exclusive_advisory_lock(guard_path, blocking=True):
-        session = load_listening_session(session_path)
-        if not _is_listening_session(session):
-            raise ModelListeningError("Listening session is invalid")
-        _load_blind_key(session_path, session)
+        session, _key = _load_listening_documents(session_path)
         trial = next(
             (item for item in session["trials"] if item.get("trial_id") == trial_id),
             None,
@@ -863,13 +1021,49 @@ def record_trial_preference(
 
 
 def aggregate_listening_report(
-    session_path: PathInput, output_path: PathInput | None = None
+    session_path: PathInput,
+    output_path: PathInput | None = None,
+    *,
+    expected_session: Mapping[str, object] | None = None,
+    expected_key: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    """Aggregate current preferences, optionally bound to captured input documents."""
     session_path = Path(session_path).expanduser().resolve()
-    session = load_listening_session(session_path)
-    if not _is_listening_session(session):
-        raise ModelListeningError("Listening session is invalid")
-    key = _load_blind_key(session_path, session)
+    session, key = _load_listening_documents(session_path)
+    if output_path is not None:
+        inputs = [session_path, session_path.with_name(".blind-key.json")]
+        inputs.extend(
+            _within(session_path.parent, relative, "listening trial audio")
+            for trial in session["trials"]
+            for relative in trial["audio"].values()
+        )
+        inputs.extend(
+            Path(arm["source"]).expanduser().resolve()
+            for assignment in key["assignments"]
+            for arm in (assignment["a"], assignment["b"])
+            if Path(arm["source"]).expanduser().is_file()
+        )
+        if session["schema"] == LEGACY_SESSION_SCHEMA:
+            inputs.append(session_path.with_name("import.json"))
+        ensure_separate_output(output_path, inputs, error_type=ModelListeningError)
+    for label, actual, expected in (
+        ("session", session, expected_session),
+        ("key", key, expected_key),
+    ):
+        if expected is None:
+            continue
+        try:
+            matches = canonical_document_sha256(actual) == canonical_document_sha256(
+                expected
+            )
+        except (TypeError, ValueError) as error:
+            raise ModelListeningError(
+                f"Listening {label} report input is not valid JSON"
+            ) from error
+        if not matches:
+            raise ModelListeningError(
+                f"Listening {label} changed before report aggregation"
+            )
     fields = _report_fields(session, key)
     report = {
         "schema": (
@@ -893,10 +1087,7 @@ def ensure_listening_report(
     """Return a current report without rewriting an equivalent legacy snapshot."""
     session_path = Path(session_path).expanduser().resolve()
     output_path = Path(output_path or session_path.with_name("report.json")).resolve()
-    session = load_listening_session(session_path)
-    if not _is_listening_session(session):
-        raise ModelListeningError("Listening session is invalid")
-    key = _load_blind_key(session_path, session)
+    session, key = _load_listening_documents(session_path)
     expected = _report_fields(session, key)
     expected_schema = (
         LEGACY_REPORT_SCHEMA
@@ -1075,28 +1266,33 @@ def _report_model(value: ModelStats, supports_acceptability: bool) -> ReportMode
 
 def _report_pairwise(
     pairwise: Mapping[tuple[str, str], PairwiseStats], supports_acceptability: bool
-) -> list[dict[str, object]]:
-    return [
-        {
+) -> list[ReportPairwise]:
+    reports: list[ReportPairwise] = []
+    for (left, right), values in sorted(pairwise.items()):
+        report: ReportPairwise = {
             "left_model": left,
             "right_model": right,
-            **(
-                values
-                if supports_acceptability
-                else {
-                    field: value
-                    for field, value in values.items()
-                    if field != "neither_acceptable"
-                }
-            ),
+            "trials": values["trials"],
+            "left_wins": values["left_wins"],
+            "right_wins": values["right_wins"],
+            "ties": values["ties"],
         }
-        for (left, right), values in sorted(pairwise.items())
-    ]
+        if supports_acceptability:
+            report["neither_acceptable"] = values["neither_acceptable"]
+        reports.append(report)
+    return reports
 
 
-def _load_model_report(path: PathInput) -> tuple[ModelReport, list[ModelReportSample]]:
-    report = _load_schema(
-        path, {MODEL_REPORT_SCHEMA, TTS_MODEL_REPORT_SCHEMA}, "model report"
+def _load_model_report(
+    snapshot: AuthoritySnapshot,
+) -> tuple[ModelReport, list[ModelReportSample]]:
+    path = snapshot.path
+    try:
+        document = snapshot.json_document("model report")
+    except AuthoringAuthorityError as error:
+        raise ModelListeningError(str(error)) from error
+    report = _validate_schema(
+        document, {MODEL_REPORT_SCHEMA, TTS_MODEL_REPORT_SCHEMA}, "model report"
     )
     parsed_report = _model_report_metadata(report, path)
     samples = report.get("samples")
@@ -1117,11 +1313,20 @@ def _model_report_metadata(
 ) -> ModelReport:
     backend = report.get("backend")
     model_id = report.get("model_id")
-    if not isinstance(backend, str) or not backend.strip():
+    if not is_utf8_text(backend) or not backend.strip():
         raise ModelListeningError(f"Model report backend is invalid: {path}")
-    if not isinstance(model_id, str) or not model_id.strip():
+    if not is_utf8_text(model_id) or not model_id.strip():
         raise ModelListeningError(f"Model report model_id is invalid: {path}")
-    return {"backend": backend.strip(), "model_id": model_id.strip()}
+    for field in ("provider", "model"):
+        value = report.get(field)
+        if value is not None and not is_utf8_text(value):
+            raise ModelListeningError(f"Model report {field} is invalid: {path}")
+    return {
+        "backend": backend.strip(),
+        "model_id": model_id.strip(),
+        "provider": str(report.get("provider") or backend.strip()),
+        "model": str(report.get("model") or model_id.strip()),
+    }
 
 
 def _parse_model_report_sample(
@@ -1146,7 +1351,7 @@ def _model_report_sample_id(
     sample: Mapping[str, object], index: int, seen_ids: set[str]
 ) -> str:
     sample_id = sample.get("id")
-    if not isinstance(sample_id, str) or not sample_id.strip():
+    if not is_utf8_text(sample_id) or not sample_id.strip():
         raise ModelListeningError(f"Model report sample {index} id is invalid")
     if sample_id in seen_ids:
         raise ModelListeningError(f"Duplicate model report sample ID: {sample_id!r}")
@@ -1160,9 +1365,9 @@ def _model_report_sample_text(
     line_id = sample.get("line_id")
     text = sample.get("text")
     text_hash = sample.get("text_sha256")
-    if not isinstance(line_id, str) or not line_id.strip():
+    if not is_utf8_text(line_id) or not line_id.strip():
         raise ModelListeningError(f"Model report sample {index} line_id is invalid")
-    if not isinstance(text, str) or not text:
+    if not is_utf8_text(text) or not text:
         raise ModelListeningError(f"Model report sample {index} text is invalid")
     if (
         not is_lowercase_sha256(text_hash)
@@ -1172,7 +1377,12 @@ def _model_report_sample_text(
             f"Model report sample {index} text_sha256 does not match exact text"
         )
     outcome = sample.get("outcome", "complete")
-    if outcome not in {"complete", "limited", "cancelled", "error"}:
+    if not isinstance(outcome, str) or outcome not in {
+        "complete",
+        "limited",
+        "cancelled",
+        "error",
+    }:
         raise ModelListeningError(f"Model report sample {index} outcome is invalid")
     if outcome != "complete":
         return None
@@ -1194,7 +1404,7 @@ def _model_report_sample_audio(
             f"Model report sample {index} audio_sha256 is invalid"
         )
     raw_audio = sample.get("audio")
-    if not isinstance(raw_audio, str) or not raw_audio.strip():
+    if not is_utf8_text(raw_audio) or not raw_audio.strip():
         raise ModelListeningError(f"Model report sample {index} audio is invalid")
     audio = Path(raw_audio).expanduser()
     if not audio.is_absolute():
@@ -1202,8 +1412,8 @@ def _model_report_sample_audio(
     audio = audio.resolve()
     _verify_pcm_audio(audio, audio_hash, "model report audio")
     return {
-        "id": sample_id.strip(),
-        "line_id": line_id.strip(),
+        "id": sample_id,
+        "line_id": line_id,
         "text": text,
         "text_sha256": text_hash,
         "audio_sha256": audio_hash,
@@ -1229,7 +1439,7 @@ def _verify_pcm_audio(path: PathInput, expected_hash: object, label: str) -> Non
 
 def _probe_supported_wav(path: PathInput) -> None:
     """Validate the PCM16 or legacy float32 WAV envelope without decoding."""
-    with Path(path).open("rb") as stream:
+    with open_regular_binary(path) as stream:
         header = stream.read(12)
         if (
             len(header) != 12
@@ -1243,11 +1453,7 @@ def _probe_supported_wav(path: PathInput) -> None:
             if len(chunk) != 8:
                 raise ValueError("truncated WAV chunk")
             chunk_id, chunk_size = struct.unpack("<4sI", chunk)
-            payload = stream.read(chunk_size)
-            if len(payload) != chunk_size:
-                raise ValueError("truncated WAV payload")
-            if chunk_size % 2:
-                stream.read(1)
+            payload = _read_wav_chunk_prefix(stream, chunk_size)
             if chunk_id == b"fmt " and chunk_size >= 16:
                 format_fields = struct.unpack("<HHIIHH", payload[:16])
             elif chunk_id == b"data":
@@ -1269,6 +1475,22 @@ def _probe_supported_wav(path: PathInput) -> None:
             raise ValueError("unsupported WAV encoding")
 
 
+def _read_wav_chunk_prefix(stream: BinaryIO, chunk_size: int) -> bytes:
+    """Read the format prefix and verify the physical end of a declared chunk."""
+    prefix_size = min(chunk_size, 16)
+    payload = stream.read(prefix_size)
+    if len(payload) != prefix_size:
+        raise ValueError("truncated WAV payload")
+    remaining = chunk_size - prefix_size
+    if remaining:
+        stream.seek(remaining - 1, os.SEEK_CUR)
+        if len(stream.read(1)) != 1:
+            raise ValueError("truncated WAV payload")
+    if chunk_size % 2 and len(stream.read(1)) != 1:
+        raise ValueError("truncated WAV padding")
+    return payload
+
+
 def _legacy_import_audio_hashes(root: PathInput) -> dict[str, str]:
     manifest_path = Path(root) / "import.json"
     if not manifest_path.is_file():
@@ -1276,8 +1498,7 @@ def _legacy_import_audio_hashes(root: PathInput) -> dict[str, str]:
     manifest = _load_json(manifest_path, "listening import manifest")
     if (
         manifest.get("schema") != "vntts.authoring-listening-import"
-        or type(manifest.get("schema_version")) is not int
-        or manifest["schema_version"] != 1
+        or not has_schema_version(manifest, 1)
         or _object_list(manifest.get("artifacts")) is None
     ):
         raise ModelListeningError("Unsupported listening import manifest schema")
@@ -1318,7 +1539,12 @@ def _atomic_write_private_json(path: PathInput, value: object) -> Path:
 
 
 def _within(root: PathInput, value: object, label: str) -> Path:
-    if not isinstance(value, str) or not value.strip() or "\\" in value:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or "\\" in value
+        or "\x00" in value
+    ):
         raise ModelListeningError(f"{label} must be a POSIX-relative path")
     pure = PurePosixPath(value)
     if pure.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")):
@@ -1335,25 +1561,23 @@ def _within(root: PathInput, value: object, label: str) -> Path:
 def _load_schema(
     path: PathInput, schemas: set[str], description: str
 ) -> dict[str, object]:
-    value = _load_json(path, description)
+    return _validate_schema(_load_json(path, description), schemas, description)
+
+
+def _validate_schema(
+    value: dict[str, object], schemas: set[str], description: str
+) -> dict[str, object]:
     if (
-        value.get("schema") not in schemas
-        or type(value.get("schema_version")) is not int
-        or value["schema_version"] != SCHEMA_VERSION
+        not isinstance(value.get("schema"), str)
+        or value.get("schema") not in schemas
+        or not has_schema_version(value, SCHEMA_VERSION)
     ):
         raise ModelListeningError(f"Unsupported {description} schema")
     return value
 
 
 def _load_json(path: PathInput, description: str) -> dict[str, object]:
-    value: object = load_json_object(path, description, error_type=ModelListeningError)
-    if not _is_json_object(value):
-        raise ModelListeningError(f"{description.title()} must be a JSON object")
-    return value
-
-
-def _is_json_object(value: object) -> TypeGuard[dict[str, object]]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return load_json_object(path, description, error_type=ModelListeningError)
 
 
 def _object_list(value: object) -> list[object] | None:
@@ -1367,19 +1591,21 @@ def _is_trial_audio(value: object) -> TypeGuard[TrialAudio]:
 
 
 def _is_trial_rating(value: object) -> TypeGuard[StoredTrialRating]:
-    return _is_json_object(value) and value.get("preference") in {"a", "b", "tie"}
+    return (
+        _is_json_object(value)
+        and isinstance(value.get("preference"), str)
+        and value.get("preference") in {"a", "b", "tie"}
+        and value.get("acceptability") in (None, "neither")
+    )
 
 
 def _is_listening_trial(value: object) -> TypeGuard[_ValidatedListeningTrial]:
     if not _is_json_object(value):
         return False
     return (
-        (
-            isinstance(value.get("trial_id"), str)
-            and isinstance(value.get("queue_id"), str)
-            and value.get("line_id") is None
-            or isinstance(value.get("line_id"), str)
-        )
+        isinstance(value.get("trial_id"), str)
+        and isinstance(value.get("queue_id"), str)
+        and (value.get("line_id") is None or isinstance(value.get("line_id"), str))
         and (value.get("text") is None or isinstance(value.get("text"), str))
         and (
             value.get("text_sha256") is None
@@ -1395,6 +1621,7 @@ def _is_listening_session(
     value: Mapping[str, object],
 ) -> TypeGuard[_ValidatedListeningSession]:
     trials = _object_list(value.get("trials"))
+    dimensions = value.get("dimensions")
     return (
         isinstance(value.get("schema"), str)
         and type(value.get("schema_version")) is int
@@ -1409,9 +1636,9 @@ def _is_listening_session(
         and all(_is_listening_trial(trial) for trial in trials)
         and (
             "dimensions" not in value
-            or all(
-                isinstance(item, str)
-                for item in _object_list(value["dimensions"]) or []
+            or (
+                isinstance(dimensions, list)
+                and all(isinstance(item, str) for item in dimensions)
             )
         )
     )
@@ -1491,7 +1718,11 @@ def _is_public_report(value: object) -> TypeGuard[ListeningReport]:
         _is_json_object(value)
         and models is not None
         and all(
-            _is_json_object(model) and isinstance(model.get("model_id"), str)
+            _is_json_object(model)
+            and isinstance(model.get("model_id"), str)
+            and _is_json_object(preference := model.get("preference"))
+            and "rate" in preference
+            and (preference["rate"] is None or type(preference["rate"]) in (int, float))
             for model in models
         )
     )

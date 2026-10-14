@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import math
 import wave
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
-from typing import Protocol, TypeAlias, TypedDict
+from typing import NamedTuple, Protocol, TypeAlias, TypedDict
 
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
@@ -30,6 +27,7 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
+from vntts.authoring.authority import AuthoringAuthorityError, capture_authority_file
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
@@ -44,6 +42,11 @@ from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
 )
+from vntts.cleanup import attempt_cleanup
+from vntts.document_identity import canonical_document_sha256, is_sha256, sha256_file
+from vntts.json_types import decode_json, has_schema_version
+from vntts.numeric_values import optional_finite_number
+from vntts.path_safety import open_regular_binary, read_regular_text
 from vntts.person_link_suggestions import (
     PersonLinkSuggestion,
     suggest_person_links,
@@ -79,18 +82,26 @@ from vntts.voices import (
 )
 
 JsonObject: TypeAlias = dict[str, object]
-VariantEvidence: TypeAlias = tuple[str | None, str | None, str | None]
+
+
+class VariantEvidence(NamedTuple):
+    portrait: str | None
+    source_bank: str | None
+    source_voice_id: str | None
+
+
 PortraitSnapshot: TypeAlias = tuple[str | None, str | None]
-GroupValue: TypeAlias = tuple[
-    StoryIndexRecord,
-    str,
-    VariantEvidence,
-    str,
-    str | None,
-    str | None,
-    str | None,
-    str | None,
-]
+
+
+class GroupValue(NamedTuple):
+    record: StoryIndexRecord
+    character: str
+    evidence: VariantEvidence
+    routing_role: str
+    variant_key: str | None
+    bound_source: str | None
+    portrait_image: str | None
+    portrait_image_sha256: str | None
 
 
 class SynthesisControls(TypedDict):
@@ -135,6 +146,27 @@ class PregenerationVoiceError(RuntimeError):
 
 class PregenerationVoiceCancelled(PregenerationVoiceError):
     """The player cancelled voice planning before publication."""
+
+
+def _rollback_voice_bindings(
+    library: VoiceLibrary,
+    rollback: VoiceBindingRollback,
+    *,
+    primary_error: Exception,
+) -> None:
+    """Restore unchanged bindings while preserving the failed owner operation."""
+
+    def restore() -> None:
+        if not library.rollback_bindings(rollback):
+            primary_error.add_note(
+                "Voice bindings changed concurrently; rollback was skipped"
+            )
+
+    attempt_cleanup(
+        restore,
+        description="Unable to restore the previous voice bindings",
+        primary_error=primary_error,
+    )
 
 
 def resolve_pregeneration_settings(settings: AppSettings) -> AppSettings:
@@ -376,18 +408,9 @@ class VoiceDecisionStore:
                 )
             except Exception as error:
                 if self.voice_library is not None and rollback is not None:
-                    try:
-                        restored = self.voice_library.rollback_bindings(rollback)
-                    except Exception as rollback_error:
-                        error.add_note(
-                            "Unable to restore the previous voice bindings: "
-                            f"{rollback_error}"
-                        )
-                    else:
-                        if not restored:
-                            error.add_note(
-                                "Voice bindings changed concurrently; rollback was skipped"
-                            )
+                    _rollback_voice_bindings(
+                        self.voice_library, rollback, primary_error=error
+                    )
                 raise
         _record_plan_phase("save-decision", started, cpu_started)
 
@@ -418,10 +441,10 @@ class VoiceDecisionStore:
             result: dict[str, JsonObject] = {}
             for key, value in values.items():
                 if (
-                    not _is_sha256(key)
+                    not is_sha256(key)
                     or not isinstance(value, dict)
                     or value.get("group_id") is None
-                    or not _is_sha256(value.get("decision_context_sha256"))
+                    or not is_sha256(value.get("decision_context_sha256"))
                 ):
                     raise ValueError("decision entry is invalid")
                 _required_text(value.get("source_id"), "voice source")
@@ -546,18 +569,9 @@ class VoicePlanStore:
             )
         except Exception as error:
             if self.voice_library is not None and rollback is not None:
-                try:
-                    restored = self.voice_library.rollback_bindings(rollback)
-                except Exception as rollback_error:
-                    error.add_note(
-                        "Unable to restore the previous voice bindings: "
-                        f"{rollback_error}"
-                    )
-                else:
-                    if not restored:
-                        error.add_note(
-                            "Voice bindings changed concurrently; rollback was skipped"
-                        )
+                _rollback_voice_bindings(
+                    self.voice_library, rollback, primary_error=error
+                )
             raise
 
     def validate_saved_voice_access(
@@ -765,7 +779,7 @@ class VoicePlanStore:
             bound_source = assignment_source or (None if variant_key else line_source)
             portrait_image, portrait_image_sha256 = _portrait_snapshot(
                 Path(job.story_index).expanduser().resolve().parent,
-                evidence[0],
+                evidence.portrait,
                 portrait_snapshots,
             )
             identity = [
@@ -775,15 +789,15 @@ class VoicePlanStore:
             ]
             group_id = _digest(identity)
             grouped.setdefault(group_id, []).append(
-                (
-                    record,
-                    character,
-                    evidence,
-                    routing_role,
-                    variant_key,
-                    bound_source,
-                    portrait_image,
-                    portrait_image_sha256,
+                GroupValue(
+                    record=record,
+                    character=character,
+                    evidence=evidence,
+                    routing_role=routing_role,
+                    variant_key=variant_key,
+                    bound_source=bound_source,
+                    portrait_image=portrait_image,
+                    portrait_image_sha256=portrait_image_sha256,
                 )
             )
 
@@ -1001,19 +1015,27 @@ class VoicePlanStore:
         person_aliases: Mapping[str, str],
         rollback: VoiceBindingRollback | None,
     ) -> VoiceGroup:
-        records = tuple(value[0] for value in values)
-        character = values[0][1]
-        portrait, source_bank, source_voice_id = values[0][2]
-        routing_role = values[0][3]
-        variant_key = values[0][4]
-        if any(value[2][1] != source_bank for value in values):
+        records = tuple(value.record for value in values)
+        character = values[0].character
+        source_bank, source_voice_id = (
+            values[0].evidence.source_bank,
+            values[0].evidence.source_voice_id,
+        )
+        routing_role = values[0].routing_role
+        variant_key = values[0].variant_key
+        if any(value.evidence.source_bank != source_bank for value in values):
             source_bank = None
-        if any(value[2][2] != source_voice_id for value in values):
+        if any(value.evidence.source_voice_id != source_voice_id for value in values):
             source_voice_id = None
-        bound_source = values[0][5]
-        portrait_value = next((value for value in values if value[6]), values[0])
-        portrait = portrait_value[2][0]
-        portrait_image, portrait_image_sha256 = portrait_value[6:8]
+        bound_source = values[0].bound_source
+        portrait_value = next(
+            (value for value in values if value.portrait_image), values[0]
+        )
+        portrait = portrait_value.evidence.portrait
+        portrait_image, portrait_image_sha256 = (
+            portrait_value.portrait_image,
+            portrait_value.portrait_image_sha256,
+        )
         speakers = tuple(dict.fromkeys(record.speaker for record in records))
         assignment_source = _effective_assignment_source(
             settings,
@@ -1349,20 +1371,22 @@ def _load_registry(
     if manifest_path is None:
         return CharacterVoiceRegistry(), None, {}
     try:
-        before = sha256_file(manifest_path)
-        registry = CharacterVoiceRegistry.from_file(manifest_path)
+        snapshot = capture_authority_file(manifest_path, "character voice manifest")
         manifest_document = _json_object(
-            json.loads(manifest_path.read_text(encoding="utf-8")),
+            snapshot.json_document("character voice manifest"),
             "character voice manifest",
         )
+        registry = CharacterVoiceRegistry.from_document(
+            manifest_document, manifest_path
+        )
         after = sha256_file(manifest_path)
-    except (OSError, VoiceManifestError, ValueError) as error:
+    except (AuthoringAuthorityError, OSError, VoiceManifestError, ValueError) as error:
         raise PregenerationVoiceError(
             f"Unable to read character voices: {error}"
         ) from error
-    if before != after:
+    if snapshot.sha256 != after:
         raise PregenerationVoiceError("Character voices changed while they were read")
-    return registry, before, manifest_document
+    return registry, snapshot.sha256, manifest_document
 
 
 def _materialize_voice_catalog(
@@ -1788,7 +1812,10 @@ def _reference_duration_seconds(references: Sequence[Path]) -> float | None:
     total = 0.0
     try:
         for reference in references:
-            with wave.open(str(reference), "rb") as audio:
+            with (
+                open_regular_binary(reference) as source,
+                wave.open(source, "rb") as audio,
+            ):
                 total += audio.getnframes() / audio.getframerate()
     except EOFError, OSError, ValueError, wave.Error, ZeroDivisionError:
         return None
@@ -1861,7 +1888,7 @@ def _matching_independent_choice(
         ] != candidate_identities:
             continue
         context = previous.get("decision_context_sha256")
-        if not isinstance(context, str) or not _is_sha256(context):
+        if not isinstance(context, str) or not is_sha256(context):
             continue
         source = decisions.choice_for(group_id, context)
         if (
@@ -1997,7 +2024,7 @@ def _validate_player_voice_variant(variant: object, index: int) -> None:
     duration = variant.get("duration_seconds")
     quality = variant.get("quality_score")
     checks = (
-        ("variant_id", _is_sha256(variant.get("variant_id"))),
+        ("variant_id", is_sha256(variant.get("variant_id"))),
         ("character", isinstance(character, str) and bool(character.strip())),
         (
             "portrait",
@@ -2008,7 +2035,7 @@ def _validate_player_voice_variant(variant: object, index: int) -> None:
             "voice_character",
             isinstance(voice_character, str) and bool(voice_character.strip()),
         ),
-        ("reference_sha256", _is_sha256(variant.get("reference_sha256"))),
+        ("reference_sha256", is_sha256(variant.get("reference_sha256"))),
         (
             "source_voice_ids",
             _canonical_texts(variant.get("source_voice_ids"), allow_empty=True),
@@ -2025,7 +2052,7 @@ def _validate_player_voice_variant(variant: object, index: int) -> None:
             "duration_seconds",
             not isinstance(duration, bool)
             and isinstance(duration, (int, float))
-            and math.isfinite(duration)
+            and optional_finite_number(duration) is not None
             and duration > 0,
         ),
         (
@@ -2037,7 +2064,7 @@ def _validate_player_voice_variant(variant: object, index: int) -> None:
         (
             "portrait_image_sha256",
             variant.get("portrait_image_sha256") is None
-            or _is_sha256(variant["portrait_image_sha256"]),
+            or is_sha256(variant["portrait_image_sha256"]),
         ),
         (
             "candidate_origin",
@@ -2095,9 +2122,8 @@ def _manifest_candidate_variants(
     player = manifest_document.get(PLAYER_VOICE_CANDIDATES_FIELD)
     if player is None:
         return tuple(variants)
-    if (
-        isinstance(player, dict)
-        and player.get("schema_version") != PLAYER_VOICE_CANDIDATES_VERSION
+    if isinstance(player, dict) and not has_schema_version(
+        player, PLAYER_VOICE_CANDIDATES_VERSION
     ):
         raise PregenerationVoiceError(
             "Game voice references need refreshing to show their source dialogue"
@@ -2114,7 +2140,7 @@ def _manifest_candidate_variants(
         not isinstance(player, dict)
         or set(player) != expected_fields
         or player.get("schema") != PLAYER_VOICE_CANDIDATES_SCHEMA
-        or player.get("schema_version") != PLAYER_VOICE_CANDIDATES_VERSION
+        or not has_schema_version(player, PLAYER_VOICE_CANDIDATES_VERSION)
         or player.get("story_index_sha256") != story_index_sha256
         or manifest_path is None
     ):
@@ -2124,6 +2150,7 @@ def _manifest_candidate_variants(
         not isinstance(report_relative, str)
         or not report_relative.strip()
         or "\\" in report_relative
+        or "\x00" in report_relative
     ):
         raise PregenerationVoiceError("Player voice candidate report path is invalid")
     relative = PurePosixPath(report_relative)
@@ -2141,7 +2168,7 @@ def _manifest_candidate_variants(
     if (
         report.is_symlink()
         or not report.is_file()
-        or not _is_sha256(player.get("candidate_report_sha256"))
+        or not is_sha256(player.get("candidate_report_sha256"))
         or sha256_file(report) != player["candidate_report_sha256"]
     ):
         raise PregenerationVoiceError("Player voice candidate report changed")
@@ -2180,7 +2207,7 @@ def _manifest_candidate_variants(
 def player_voice_catalog_is_current(manifest_path: Path | str) -> bool:
     """Return whether a cached game candidate catalog has source provenance."""
     try:
-        document = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        document = decode_json(read_regular_text(Path(manifest_path), encoding="utf-8"))
     except OSError, ValueError, TypeError:
         return False
     if not isinstance(document, dict):
@@ -2188,7 +2215,7 @@ def player_voice_catalog_is_current(manifest_path: Path | str) -> bool:
     player = document.get(PLAYER_VOICE_CANDIDATES_FIELD)
     return player is None or (
         isinstance(player, dict)
-        and player.get("schema_version") == PLAYER_VOICE_CANDIDATES_VERSION
+        and has_schema_version(player, PLAYER_VOICE_CANDIDATES_VERSION)
     )
 
 
@@ -2201,7 +2228,7 @@ def validated_player_voice_candidates(
         document.get(PLAYER_VOICE_CANDIDATES_FIELD), "player voice candidates"
     )
     story_sha256 = player.get("story_index_sha256")
-    if not isinstance(story_sha256, str) or not _is_sha256(story_sha256):
+    if not isinstance(story_sha256, str) or not is_sha256(story_sha256):
         raise PregenerationVoiceError(
             "Player voice candidate story checksum is invalid"
         )
@@ -2277,10 +2304,12 @@ def _candidate_identity(
 
 
 def _variant_evidence(record: StoryIndexRecord) -> VariantEvidence:
-    return (
-        _optional_variant(record.producer_fields.get("portrait")),
-        _optional_variant(record.producer_fields.get("source_bank")),
-        _optional_variant(record.producer_fields.get("source_voice_id")),
+    return VariantEvidence(
+        portrait=_optional_variant(record.producer_fields.get("portrait")),
+        source_bank=_optional_variant(record.producer_fields.get("source_bank")),
+        source_voice_id=_optional_variant(
+            record.producer_fields.get("source_voice_id")
+        ),
     )
 
 
@@ -2305,9 +2334,7 @@ def _portrait_snapshot(
         if candidate.is_symlink() or not candidate.is_file():
             continue
         resolved = candidate.resolve()
-        try:
-            resolved.relative_to(root)
-        except ValueError:
+        if not resolved.is_relative_to(root):
             continue
         before = sha256_file(resolved)
         if sha256_file(resolved) != before:
@@ -2377,29 +2404,13 @@ def _path_identity(value: str | Path | None) -> JsonObject | None:
 
 
 def _decision_key(group_id: str, decision_context_sha256: str) -> str:
-    if not _is_sha256(group_id) or not _is_sha256(decision_context_sha256):
+    if not is_sha256(group_id) or not is_sha256(decision_context_sha256):
         raise PregenerationVoiceError("Voice decision identity is invalid")
     return _digest([group_id, decision_context_sha256])
 
 
 def _digest(value: object) -> str:
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _is_sha256(value: object) -> bool:
-    if not isinstance(value, str) or len(value) != 64:
-        return False
-    try:
-        int(value, 16)
-    except ValueError:
-        return False
-    return True
+    return canonical_document_sha256(value, allow_nan=True)
 
 
 def _required_text(value: object, label: str) -> str:

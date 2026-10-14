@@ -2,7 +2,7 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import (
@@ -11,9 +11,12 @@ from vntts_artifacts.generated_audio import (
 )
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
-from tests import test_authoring_audio_event_projection_fallback
-from tests.test_authoring_workbench import create_test_workspace
-from tests.test_generated_audio import FakeAudioOutput
+import vntts.authoring.reviewed_rejection_fallback as rejection
+from tests.audio_output_fixtures import FakeAudioOutput
+from tests.authoring_fixtures import (
+    create_audio_event_projection_fixture,
+    create_test_workspace,
+)
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.game_pack import _decision_records
@@ -36,10 +39,8 @@ from vntts.speech_backend import SpeechBackendCapabilities
 
 class ReviewedRejectionFallbackTests(unittest.TestCase):
     def _base(self, root):
-        base, queue_item = (
-            test_authoring_audio_event_projection_fallback.AudioEventProjectionFallbackTests()._base(
-                root, text="A rejected line."
-            )
+        base, queue_item = create_audio_event_projection_fixture(
+            root, text="A rejected line."
         )
         workspace = json.loads((base / "workspace.json").read_text(encoding="utf-8"))
         voice_manifest = base / workspace["voice_manifest"]["path"]
@@ -210,6 +211,79 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
         self.assertEqual(ledger["route_source"], "voice_manifest")
         self.assertEqual(ledger["synthesis_character"], "Rhiannon")
         self.assertEqual(len(ledger["route_reference_sha256s"]), 2)
+
+    def test_invalid_config_route_references_fail_before_staging(self):
+        for references in ([[]], [1], ["not-a-sha256"]):
+            with self.subTest(references=references), TemporaryDirectory() as directory:
+                root = Path(directory)
+                base, item = self._base(root / "source")
+                path = base / "generated-audio/generation-state.json"
+                original = json.loads(path.read_text())
+                original["items"][item.queue_id]["config_rebase"][
+                    "target_reference_sha256s"
+                ] = references
+                path.write_text(json.dumps(original))
+                state_bytes = path.read_bytes()
+                target = root / "workspaces"
+                with self.assertRaises(AuthoringWorkbenchError):
+                    create_reviewed_rejection_fallback_workspace(base, target)
+                self.assertEqual(path.read_bytes(), state_bytes)
+                self.assertFalse(target.exists())
+
+    def test_batch_version_requires_an_exact_integer(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, _item = self._base(root / "source")
+            result = create_reviewed_rejection_fallback_workspace(
+                base, root / "workspaces"
+            )
+            workspace = json.loads((result.directory / "workspace.json").read_text())
+            batch = workspace["reviewed_rejection_live_fallback"]
+            for version in (True, 1.0):
+                with self.subTest(version=version):
+                    forged = {**batch, "schema_version": version}
+                    forged["batch_id"] = canonical_document_sha256(
+                        {
+                            key: value
+                            for key, value in forged.items()
+                            if key != "batch_id"
+                        }
+                    )
+                    with self.assertRaisesRegex(
+                        AuthoringWorkbenchError, "batch is malformed"
+                    ):
+                        _validated_rejection_batch(forged)
+
+    def test_base_snapshot_cannot_change_between_hashing_and_decoding(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, _item = self._base(root / "source")
+            result = create_reviewed_rejection_fallback_workspace(
+                base, root / "workspaces"
+            )
+            workspace = json.loads((result.directory / "workspace.json").read_text())
+            original = rejection._validate_rejection_authority_snapshots
+
+            def replace_after_capture(*args):
+                captured = original(*args)
+                path = (
+                    result.directory
+                    / workspace["reviewed_rejection_live_fallback"]["base_state_path"]
+                )
+                document = json.loads(path.read_text())
+                document["items"]["unexpected-approved-result"] = {"status": "approved"}
+                path.write_text(json.dumps(document))
+                return captured
+
+            with patch.object(
+                rejection,
+                "_validate_rejection_authority_snapshots",
+                side_effect=replace_after_capture,
+            ):
+                with self.assertRaises(AuthoringWorkbenchError):
+                    rejection.validate_reviewed_rejection_fallback_workspace(
+                        result.directory, workspace
+                    )
 
     def test_only_declared_downstream_overlay_ids_are_exempt(self):
         workspace = {

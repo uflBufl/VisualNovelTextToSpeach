@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
 from vntts.authoring.audio_event_review import (
@@ -29,6 +30,8 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.json_types import has_schema_version
+from vntts.path_safety import copy_regular_file
 
 AUDIO_EVENT_COMPOSITION_SCHEMA = "vntts.authoring-audio-event-composition"
 AUDIO_EVENT_COMPOSITION_VERSION = 1
@@ -169,7 +172,9 @@ def publish_audio_event_composition(
             (queue_snapshot, "audio-event queue"),
             (audio_snapshot, "accepted audio-event WAV"),
         ):
-            assert_authority_snapshot(snapshot, label)
+            assert_authority_snapshot(
+                snapshot, label, error_type=AudioEventCompositionError
+            )
         try:
             rename_directory_no_replace(staging, output)
         except (AtomicPublicationError, OSError) as error:
@@ -241,7 +246,11 @@ def load_audio_event_composition(directory: str | Path) -> AudioEventComposition
         decision = _validate_composition_decision(
             terminal_document, document, composition_snapshot.sha256
         )
-        assert_authority_snapshot(terminal_snapshot, "audio-event composition decision")
+        assert_authority_snapshot(
+            terminal_snapshot,
+            "audio-event composition decision",
+            error_type=AudioEventCompositionError,
+        )
     for snapshot, label in (
         (composition_snapshot, "audio-event composition"),
         (review_snapshot, "copied audio-event review"),
@@ -249,7 +258,9 @@ def load_audio_event_composition(directory: str | Path) -> AudioEventComposition
         (queue_snapshot, "copied audio-event queue"),
         (audio_snapshot, "final event audio"),
     ):
-        assert_authority_snapshot(snapshot, label)
+        assert_authority_snapshot(
+            snapshot, label, error_type=AudioEventCompositionError
+        )
     composition_id = document.get("composition_id")
     review_id = document.get("review_id")
     queue_id = document.get("queue_id")
@@ -274,7 +285,10 @@ def record_audio_event_composition_decision(
     directory: str | Path, decision: str
 ) -> AudioEventComposition:
     """Record the final exact production-composition approval or rejection."""
-    if decision not in AUDIO_EVENT_COMPOSITION_DECISIONS:
+    if (
+        not isinstance(decision, str)
+        or decision not in AUDIO_EVENT_COMPOSITION_DECISIONS
+    ):
         raise AudioEventCompositionError(
             "Audio-event composition decision must be approved or rejected"
         )
@@ -357,7 +371,7 @@ def _validate_composition_document(
         not isinstance(document, dict)
         or set(document) != required
         or document.get("schema") != AUDIO_EVENT_COMPOSITION_SCHEMA
-        or document.get("schema_version") != AUDIO_EVENT_COMPOSITION_VERSION
+        or not has_schema_version(document, AUDIO_EVENT_COMPOSITION_VERSION)
         or review.decision != "accept"
         or not isinstance(candidate, dict)
         or document.get("review_id") != review.review_id
@@ -384,29 +398,45 @@ def _validate_composition_document(
     ):
         raise AudioEventCompositionError("Audio-event composition authority changed")
     composition = document.get("composition")
-    if composition != {
-        "kind": "source-event-only",
-        "sample_offset": 0,
-        "gain": 1.0,
-        "fade_in_samples": 0,
-        "fade_out_samples": 0,
-        "byte_transform": "exact-copy",
-        "speaker_identity_claim": False,
-        "synthesis_provider": None,
-        "synthesis_voice_character": None,
-    }:
+    if (
+        not isinstance(composition, dict)
+        or any(
+            type(composition.get(field)) is not int
+            for field in ("sample_offset", "fade_in_samples", "fade_out_samples")
+        )
+        or isinstance(composition.get("gain"), bool)
+        or composition.get("speaker_identity_claim") is not False
+        or composition
+        != {
+            "kind": "source-event-only",
+            "sample_offset": 0,
+            "gain": 1.0,
+            "fade_in_samples": 0,
+            "fade_out_samples": 0,
+            "byte_transform": "exact-copy",
+            "speaker_identity_claim": False,
+            "synthesis_provider": None,
+            "synthesis_voice_character": None,
+        }
+    ):
         raise AudioEventCompositionError("Audio-event composition ledger changed")
     try:
-        info = probe_pcm16_mono_wav(audio_snapshot.path)
+        info = probe_pcm16_mono_wav(io.BytesIO(audio_snapshot.payload))
     except (OSError, Pcm16MonoWavError) as error:
         raise AudioEventCompositionError(str(error)) from error
-    if any(
-        document.get(field) != value
-        for field, value in (
-            ("sample_rate", info.sample_rate),
-            ("sample_count", info.sample_count),
-            ("duration_seconds", info.duration_seconds),
-            ("peak", info.peak),
+    if (
+        type(document.get("sample_rate")) is not int
+        or type(document.get("sample_count")) is not int
+        or isinstance(document.get("duration_seconds"), bool)
+        or isinstance(document.get("peak"), bool)
+        or any(
+            document.get(field) != value
+            for field, value in (
+                ("sample_rate", info.sample_rate),
+                ("sample_count", info.sample_count),
+                ("duration_seconds", info.duration_seconds),
+                ("peak", info.peak),
+            )
         )
     ):
         raise AudioEventCompositionError("Final event audio metadata changed")
@@ -434,6 +464,7 @@ def _validate_composition_document(
 def _validate_composition_decision(
     value: dict[str, object], composition: dict[str, object], composition_sha256: str
 ) -> str:
+    decision = value.get("decision")
     if (
         not isinstance(value, dict)
         or set(value)
@@ -447,11 +478,12 @@ def _validate_composition_decision(
             "reviewed_at",
         }
         or value.get("schema") != AUDIO_EVENT_COMPOSITION_DECISION_SCHEMA
-        or value.get("schema_version") != AUDIO_EVENT_COMPOSITION_DECISION_VERSION
+        or not has_schema_version(value, AUDIO_EVENT_COMPOSITION_DECISION_VERSION)
         or value.get("composition_id") != composition.get("composition_id")
         or value.get("composition_sha256") != composition_sha256
         or value.get("final_audio_sha256") != composition.get("final_audio_sha256")
-        or value.get("decision") not in AUDIO_EVENT_COMPOSITION_DECISIONS
+        or not isinstance(decision, str)
+        or decision not in AUDIO_EVENT_COMPOSITION_DECISIONS
     ):
         raise AudioEventCompositionError("Audio-event composition decision changed")
     reviewed_at = value.get("reviewed_at")
@@ -469,9 +501,6 @@ def _validate_composition_decision(
         raise AudioEventCompositionError(
             "Audio-event composition decision timestamp needs a timezone"
         )
-    decision = value.get("decision")
-    if not isinstance(decision, str):
-        raise AudioEventCompositionError("Audio-event composition decision changed")
     return decision
 
 
@@ -485,7 +514,7 @@ def _copy_review_snapshot(source: Path, target: Path) -> None:
             destination.mkdir(parents=True, exist_ok=True)
         elif path.is_file():
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(path.read_bytes())
+            copy_regular_file(path, destination)
 
 
 def _safe_directory(value: str | Path, label: str) -> Path:

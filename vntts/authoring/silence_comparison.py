@@ -5,30 +5,46 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import math
 import shutil
-import wave
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.audio import Pcm16MonoWavError, write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
+from vntts_artifacts.audio import (
+    Pcm16MonoWavError,
+    read_pcm16_mono_wav,
+    write_pcm16_wav,
+)
 
+from vntts.authoring.authority import (
+    AuthoringAuthorityError,
+    AuthoritySnapshot,
+    capture_authority_file,
+)
 from vntts.authoring.failure_repair import (
     DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS,
+    InternalSilenceCompression,
     compress_single_sentence_boundary_silence,
 )
 from vntts.authoring.listening import (
     ModelListeningError,
+    _create_listening_session_from_captured_reports,
     create_listening_session_from_reports,
 )
-from vntts.authoring.publication import rename_directory_no_replace, staged_directory
+from vntts.authoring.publication import (
+    no_replace_destination,
+    publication_errors,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.workspace_foundation import contained_regular_file
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import is_lowercase_sha256, sha256_file
+from vntts.json_types import decode_json, has_schema_version
+from vntts.numeric_values import optional_finite_number
+from vntts.path_safety import read_regular_bytes
 
 SILENCE_COMPARISON_SCHEMA = "vntts.authoring-silence-comparison"
 SILENCE_COMPARISON_VERSION = 1
@@ -87,9 +103,9 @@ def _read_silence_comparison_input_plan(
         raise SilenceComparisonError("Silence comparison input plan is a symlink")
     source = source.resolve()
     try:
-        payload = source.read_bytes()
-        document = json.loads(payload)
-    except (OSError, json.JSONDecodeError) as error:
+        payload = read_regular_bytes(source)
+        document = decode_json(payload)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SilenceComparisonError(
             f"Unable to read silence comparison input plan: {error}"
         ) from error
@@ -103,11 +119,8 @@ def _validate_silence_comparison_input_document(document: object) -> list[object
         "samples",
     }:
         raise SilenceComparisonError("Silence comparison input plan is malformed")
-    if (
-        document["schema"] != SILENCE_COMPARISON_INPUT_SCHEMA
-        or not isinstance(document["schema_version"], int)
-        or isinstance(document["schema_version"], bool)
-        or document["schema_version"] != SILENCE_COMPARISON_INPUT_VERSION
+    if document["schema"] != SILENCE_COMPARISON_INPUT_SCHEMA or not has_schema_version(
+        document, SILENCE_COMPARISON_INPUT_VERSION
     ):
         raise SilenceComparisonError("Unsupported silence comparison input schema")
     records = document["samples"]
@@ -136,13 +149,10 @@ def _silence_comparison_input_samples(
     for record in records:
         if not isinstance(record, dict) or set(record) != required_fields:
             raise SilenceComparisonError("Silence comparison input sample is malformed")
-        text = record["text"]
-        if (
-            not isinstance(text, str)
-            or not text
-            or text != text.strip()
-            or hashlib.sha256(text.encode("utf-8")).hexdigest() != record["text_sha256"]
-        ):
+        queue_id = _comparison_text(record["queue_id"], "input queue_id")
+        line_id = _comparison_text(record["line_id"], "input line_id")
+        text = _comparison_text(record["text"], "input text")
+        if hashlib.sha256(text.encode("utf-8")).hexdigest() != record["text_sha256"]:
             raise SilenceComparisonError(
                 "Silence comparison input text identity is invalid"
             )
@@ -160,16 +170,14 @@ def _silence_comparison_input_samples(
             raise SilenceComparisonError(
                 "Raw and segmented comparison audio must be different"
             )
-        sample = _validate_sample(
-            SilenceComparisonSample(
-                record["queue_id"],
-                record["line_id"],
-                text,
-                raw_path,
-                segmented_path,
-                raw_sha256,
-                segmented_sha256,
-            )
+        sample = SilenceComparisonSample(
+            queue_id,
+            line_id,
+            text,
+            raw_path,
+            segmented_path,
+            raw_sha256,
+            segmented_sha256,
         )
         if sample.queue_id in queue_ids:
             raise SilenceComparisonError(
@@ -180,6 +188,7 @@ def _silence_comparison_input_samples(
     return samples
 
 
+@publication_errors(SilenceComparisonError)
 def publish_silence_comparison(
     samples: Iterable[SilenceComparisonSample],
     output_directory: str | Path,
@@ -188,6 +197,7 @@ def publish_silence_comparison(
     input_plan_sha256: str | None = None,
 ) -> SilenceComparisonResult:
     """Publish immutable segmentation/compression reports for later blind review."""
+    _silence_comparison_target_seconds(target_seconds)
     values = _publishable_silence_comparison_samples(samples, input_plan_sha256)
     output = _silence_comparison_output_directory(output_directory)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -213,8 +223,6 @@ def publish_silence_comparison(
 @dataclass(frozen=True)
 class _StagedSilenceComparison:
     records: list[dict[str, object]]
-    segmented_report_samples: list[dict[str, object]]
-    compressed_report_samples: list[dict[str, object]]
     checked_sources: list[tuple[Path, str, str]]
 
 
@@ -246,14 +254,12 @@ def _silence_comparison_output_directory(output_directory: str | Path) -> Path:
 def _stage_silence_comparison_samples(
     values: Iterable[SilenceComparisonSample], staging: Path, target_seconds: float
 ) -> _StagedSilenceComparison:
-    staged = _StagedSilenceComparison([], [], [], [])
+    staged = _StagedSilenceComparison([], [])
     for value in values:
-        record, segmented_report, compressed_report, checked_sources = (
-            _stage_silence_comparison_sample(value, staging, target_seconds)
+        record, checked_sources = _stage_silence_comparison_sample(
+            value, staging, target_seconds
         )
         staged.records.append(record)
-        staged.segmented_report_samples.append(segmented_report)
-        staged.compressed_report_samples.append(compressed_report)
         staged.checked_sources.extend(checked_sources)
     return staged
 
@@ -261,8 +267,6 @@ def _stage_silence_comparison_samples(
 def _stage_silence_comparison_sample(
     value: SilenceComparisonSample, staging: Path, target_seconds: float
 ) -> tuple[
-    dict[str, object],
-    dict[str, object],
     dict[str, object],
     tuple[tuple[Path, str, str], tuple[Path, str, str]],
 ]:
@@ -295,12 +299,6 @@ def _stage_silence_comparison_sample(
     write_pcm16_wav(staging / compressed_relative, compression.pcm, raw_rate)
     compressed_sha256 = sha256_file(staging / compressed_relative)
     text_sha256 = hashlib.sha256(value.text.encode("utf-8")).hexdigest()
-    common = {
-        "id": value.queue_id,
-        "line_id": value.line_id,
-        "text": value.text,
-        "text_sha256": text_sha256,
-    }
     return (
         {
             "queue_id": value.queue_id,
@@ -316,27 +314,27 @@ def _stage_silence_comparison_sample(
             "compressed_audio": compressed_relative,
             "compressed_audio_sha256": compressed_sha256,
             "sample_rate": raw_rate,
-            "transform": {
-                key: result
-                for key, result in asdict(compression).items()
-                if key != "pcm"
-            },
-        },
-        {
-            **common,
-            "audio": f"../{segmented_relative}",
-            "audio_sha256": segmented_sha256,
-        },
-        {
-            **common,
-            "audio": f"../{compressed_relative}",
-            "audio_sha256": compressed_sha256,
+            "transform": _compression_metadata(compression),
         },
         (
             (raw_path, raw_sha256, "raw comparison audio"),
             (segmented_path, segmented_sha256, "segmented comparison audio"),
         ),
     )
+
+
+def _compression_metadata(
+    compression: InternalSilenceCompression,
+) -> dict[str, int | float]:
+    return {
+        "source_span_start_sample": compression.source_span_start_sample,
+        "source_span_end_sample": compression.source_span_end_sample,
+        "removed_start_sample": compression.removed_start_sample,
+        "removed_end_sample": compression.removed_end_sample,
+        "removed_samples": compression.removed_samples,
+        "source_pause_seconds": compression.source_pause_seconds,
+        "repaired_pause_seconds": compression.repaired_pause_seconds,
+    }
 
 
 def _validate_silence_comparison_sources(
@@ -384,7 +382,12 @@ def _write_silence_comparison_reports(
         _model_report(
             "sentence-segmentation",
             "independently rendered sentence segments",
-            staged.segmented_report_samples,
+            [
+                _comparison_report_sample(
+                    sample, "segmented_copy", "segmented_source_sha256"
+                )
+                for sample in staged.records
+            ],
         ),
         sort_keys=True,
     )
@@ -393,7 +396,12 @@ def _write_silence_comparison_reports(
         _model_report(
             "silence-compression",
             "center-only compression of one verified silent span",
-            staged.compressed_report_samples,
+            [
+                _comparison_report_sample(
+                    sample, "compressed_audio", "compressed_audio_sha256"
+                )
+                for sample in staged.records
+            ],
         ),
         sort_keys=True,
     )
@@ -435,7 +443,7 @@ def _silence_comparison_artifacts(staging: Path) -> list[dict[str, str]]:
         for path in sorted(
             value
             for value in staging.rglob("*")
-            if value.is_file() and value.name != "comparison.json"
+            if value.is_file() and value != staging / "comparison.json"
         )
     ]
 
@@ -456,17 +464,39 @@ def _validate_silence_comparison_staging(
             raise SilenceComparisonError(f"{label.title()} changed during staging")
 
 
+@dataclass(frozen=True)
+class _ValidatedSilenceComparison:
+    document: dict[str, object]
+    snapshot: AuthoritySnapshot
+    reports: tuple[AuthoritySnapshot, AuthoritySnapshot]
+    artifacts: dict[str, str]
+
+
 def load_silence_comparison(directory: str | Path) -> dict[str, object]:
     """Validate a published comparison and every checksum-bound artifact."""
+    return _load_validated_silence_comparison(directory).document
+
+
+def _load_validated_silence_comparison(
+    directory: str | Path,
+) -> _ValidatedSilenceComparison:
     root = Path(directory).expanduser().resolve()
-    document = _read_silence_comparison_document(root)
-    policy, reports, samples, artifacts = _validate_silence_comparison_document(
+    try:
+        snapshot = capture_authority_file(
+            root / "comparison.json", "silence comparison", root=root
+        )
+        document = snapshot.json_document("silence comparison")
+    except AuthoringAuthorityError as error:
+        raise SilenceComparisonError(str(error)) from error
+    target_seconds, reports, samples, artifacts = _validate_silence_comparison_document(
         document
     )
     seen = _validate_silence_comparison_artifacts(root, artifacts)
     _validate_silence_comparison_inventory(root, seen, reports)
-    by_queue_id = _validate_silence_comparison_samples(root, samples, seen, policy)
-    _validate_comparison_report(
+    by_queue_id = _validate_silence_comparison_samples(
+        root, samples, seen, target_seconds
+    )
+    segmented = _validate_comparison_report(
         root,
         reports[0],
         "sentence-segmentation",
@@ -474,8 +504,9 @@ def load_silence_comparison(directory: str | Path) -> dict[str, object]:
         "segmented_copy",
         "segmented_source_sha256",
         by_queue_id,
+        seen,
     )
-    _validate_comparison_report(
+    compressed = _validate_comparison_report(
         root,
         reports[1],
         "silence-compression",
@@ -483,25 +514,16 @@ def load_silence_comparison(directory: str | Path) -> dict[str, object]:
         "compressed_audio",
         "compressed_audio_sha256",
         by_queue_id,
+        seen,
     )
-    return document
-
-
-def _read_silence_comparison_document(root: Path) -> dict[str, object]:
-    try:
-        document = json.loads((root / "comparison.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise SilenceComparisonError(
-            f"Unable to read silence comparison: {error}"
-        ) from error
-    if not isinstance(document, dict):
-        raise SilenceComparisonError("Silence comparison document is malformed")
-    return document
+    return _ValidatedSilenceComparison(
+        document, snapshot, (segmented, compressed), seen
+    )
 
 
 def _validate_silence_comparison_document(
     document: dict[str, object],
-) -> tuple[dict[str, object], list[object], list[object], list[object]]:
+) -> tuple[float, list[object], list[object], list[object]]:
     required_document_fields = {
         "schema",
         "schema_version",
@@ -522,11 +544,8 @@ def _validate_silence_comparison_document(
         raise SilenceComparisonError(
             "Silence comparison input plan checksum is invalid"
         )
-    if (
-        document["schema"] != SILENCE_COMPARISON_SCHEMA
-        or not isinstance(document["schema_version"], int)
-        or isinstance(document["schema_version"], bool)
-        or document["schema_version"] != SILENCE_COMPARISON_VERSION
+    if document["schema"] != SILENCE_COMPARISON_SCHEMA or not has_schema_version(
+        document, SILENCE_COMPARISON_VERSION
     ):
         raise SilenceComparisonError("Unsupported silence comparison schema")
     _silence_comparison_created_at(document["created_at"])
@@ -543,12 +562,9 @@ def _validate_silence_comparison_document(
         or policy["kind"] != "single_sentence_boundary_silence_compression"
         or policy["production_enabled"] is not False
         or policy["requires_blind_review"] is not True
-        or not isinstance(policy["target_seconds"], (int, float))
-        or isinstance(policy["target_seconds"], bool)
-        or not math.isfinite(policy["target_seconds"])
-        or policy["target_seconds"] <= 0
     ):
         raise SilenceComparisonError("Silence comparison policy is invalid")
+    target_seconds = _silence_comparison_target_seconds(policy["target_seconds"])
     reports = document.get("reports")
     samples = document.get("samples")
     artifacts = document.get("artifacts")
@@ -563,7 +579,7 @@ def _validate_silence_comparison_document(
         or not isinstance(artifacts, list)
     ):
         raise SilenceComparisonError("Silence comparison inventory is malformed")
-    return policy, reports, samples, artifacts
+    return target_seconds, reports, samples, artifacts
 
 
 def _silence_comparison_created_at(value: object) -> datetime:
@@ -584,17 +600,23 @@ def _silence_comparison_created_at(value: object) -> datetime:
 
 def _validate_silence_comparison_artifacts(
     root: Path, artifacts: Iterable[object]
-) -> dict[object, object]:
-    seen: dict[object, object] = {}
+) -> dict[str, str]:
+    seen: dict[str, str] = {}
     for artifact in artifacts:
         if not isinstance(artifact, dict) or set(artifact) != {"path", "sha256"}:
             raise SilenceComparisonError("Silence comparison artifact is malformed")
         relative = artifact["path"]
+        if not isinstance(relative, str):
+            raise SilenceComparisonError("Silence comparison artifact path is invalid")
         if relative in seen:
             raise SilenceComparisonError("Silence comparison artifact is duplicated")
         path = _contained_file(root, relative)
         digest = artifact["sha256"]
-        if not is_lowercase_sha256(digest) or sha256_file(path) != digest:
+        if (
+            not isinstance(digest, str)
+            or not is_lowercase_sha256(digest)
+            or sha256_file(path) != digest
+        ):
             raise SilenceComparisonError(
                 f"Silence comparison artifact checksum changed: {relative}"
             )
@@ -603,7 +625,7 @@ def _validate_silence_comparison_artifacts(
 
 
 def _validate_silence_comparison_inventory(
-    root: Path, seen: Mapping[object, object], reports: Iterable[object]
+    root: Path, seen: Mapping[str, str], reports: Iterable[object]
 ) -> None:
     actual_inventory = set()
     for path in root.rglob("*"):
@@ -611,7 +633,7 @@ def _validate_silence_comparison_inventory(
             raise SilenceComparisonError(
                 "Silence comparison artifacts must not use symlinks"
             )
-        if path.is_file() and path.name != "comparison.json":
+        if path.is_file() and path != root / "comparison.json":
             actual_inventory.add(path.relative_to(root).as_posix())
     if set(seen) != actual_inventory:
         raise SilenceComparisonError(
@@ -626,8 +648,8 @@ def _validate_silence_comparison_inventory(
 def _validate_silence_comparison_samples(
     root: Path,
     samples: list[object],
-    seen: Mapping[object, object],
-    policy: Mapping[str, object],
+    seen: Mapping[str, str],
+    target_seconds: float,
 ) -> dict[str, dict[str, object]]:
     required_sample_fields = {
         "queue_id",
@@ -645,16 +667,14 @@ def _validate_silence_comparison_samples(
         "sample_rate",
         "transform",
     }
-    sample_ids = set()
     by_queue_id: dict[str, dict[str, object]] = {}
     for sample in samples:
         if not isinstance(sample, dict) or set(sample) != required_sample_fields:
             raise SilenceComparisonError("Silence comparison sample is malformed")
-        queue_id = sample["queue_id"]
-        if not isinstance(queue_id, str) or not queue_id or queue_id in sample_ids:
+        queue_id = _comparison_text(sample["queue_id"], "sample ID")
+        if queue_id in by_queue_id:
             raise SilenceComparisonError("Silence comparison sample ID is invalid")
-        sample_ids.add(queue_id)
-        _validate_silence_comparison_sample(root, sample, seen, policy)
+        _validate_silence_comparison_sample(root, sample, seen, target_seconds)
         by_queue_id[queue_id] = sample
     return by_queue_id
 
@@ -662,22 +682,16 @@ def _validate_silence_comparison_samples(
 def _validate_silence_comparison_sample(
     root: Path,
     sample: dict[str, object],
-    seen: Mapping[object, object],
-    policy: Mapping[str, object],
+    seen: Mapping[str, str],
+    target_seconds: float,
 ) -> None:
-    if (
-        not isinstance(sample["line_id"], str)
-        or not sample["line_id"]
-        or not isinstance(sample["text"], str)
-        or not sample["text"]
-        or hashlib.sha256(sample["text"].encode("utf-8")).hexdigest()
-        != sample["text_sha256"]
-    ):
+    _comparison_text(sample["line_id"], "sample identity")
+    text = _comparison_text(sample["text"], "sample identity")
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != sample["text_sha256"]:
         raise SilenceComparisonError("Silence comparison sample identity is invalid")
     _validate_silence_comparison_sample_artifacts(sample, seen)
     sample_rate = _silence_comparison_sample_rate(sample)
     audio = _silence_comparison_sample_audio(root, sample, sample_rate)
-    target_seconds = _silence_comparison_policy_target(policy)
     try:
         compression = compress_single_sentence_boundary_silence(
             audio["raw_copy"],
@@ -689,9 +703,7 @@ def _validate_silence_comparison_sample(
         raise SilenceComparisonError(
             "Silence comparison transform cannot be reproduced"
         ) from error
-    expected_transform = {
-        key: value for key, value in asdict(compression).items() if key != "pcm"
-    }
+    expected_transform = _compression_metadata(compression)
     if sample["transform"] != expected_transform or not np.array_equal(
         audio["compressed_audio"], compression.pcm
     ):
@@ -701,7 +713,7 @@ def _validate_silence_comparison_sample(
 
 
 def _validate_silence_comparison_sample_artifacts(
-    sample: Mapping[str, object], seen: Mapping[object, object]
+    sample: Mapping[str, object], seen: Mapping[str, str]
 ) -> None:
     for path_field, digest_field in (
         ("raw_copy", "raw_source_sha256"),
@@ -710,7 +722,8 @@ def _validate_silence_comparison_sample_artifacts(
     ):
         relative = sample[path_field]
         if (
-            not is_lowercase_sha256(sample[digest_field])
+            not isinstance(relative, str)
+            or not is_lowercase_sha256(sample[digest_field])
             or seen.get(relative) != sample[digest_field]
         ):
             raise SilenceComparisonError(
@@ -736,11 +749,19 @@ def _silence_comparison_sample_audio(
     root: Path, sample: Mapping[str, object], sample_rate: int
 ) -> dict[str, np.ndarray]:
     audio = {}
-    for path_field in ("raw_copy", "segmented_copy", "compressed_audio"):
-        _path, _payload, _digest, pcm, rate = _read_source_wav(
+    for path_field, digest_field in (
+        ("raw_copy", "raw_source_sha256"),
+        ("segmented_copy", "segmented_source_sha256"),
+        ("compressed_audio", "compressed_audio_sha256"),
+    ):
+        _path, _payload, digest, pcm, rate = _read_source_wav(
             _contained_file(root, sample[path_field]),
             "published silence comparison audio",
         )
+        if digest != sample[digest_field]:
+            raise SilenceComparisonError(
+                "Silence comparison audio changed during validation"
+            )
         if rate != sample_rate:
             raise SilenceComparisonError(
                 "Silence comparison sample rate does not match its WAV"
@@ -749,9 +770,9 @@ def _silence_comparison_sample_audio(
     return audio
 
 
-def _silence_comparison_policy_target(policy: Mapping[str, object]) -> float:
-    target_seconds = policy["target_seconds"]
-    if not isinstance(target_seconds, (int, float)) or isinstance(target_seconds, bool):
+def _silence_comparison_target_seconds(value: object) -> float:
+    target_seconds = optional_finite_number(value)
+    if target_seconds is None or target_seconds <= 0:
         raise SilenceComparisonError("Silence comparison policy is invalid")
     return target_seconds
 
@@ -764,40 +785,21 @@ def _validate_comparison_report(
     audio_field: str,
     digest_field: str,
     samples: dict[str, dict[str, object]],
-) -> None:
+    artifacts: Mapping[str, str],
+) -> AuthoritySnapshot:
     path = _contained_file(root, relative)
     try:
-        report = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        snapshot = capture_authority_file(path, "silence comparison report", root=root)
+        report = snapshot.json_document("silence comparison report")
+    except AuthoringAuthorityError as error:
+        raise SilenceComparisonError(str(error)) from error
+    if not isinstance(relative, str) or snapshot.sha256 != artifacts[relative]:
         raise SilenceComparisonError(
-            f"Unable to read silence comparison report: {error}"
-        ) from error
-    if (
-        not isinstance(report, dict)
-        or set(report)
-        != {
-            "schema",
-            "schema_version",
-            "model_id",
-            "provider",
-            "backend",
-            "model",
-            "samples",
-        }
-        or report["schema"] != "vntts.voice-model-report"
-        or not isinstance(report["schema_version"], int)
-        or isinstance(report["schema_version"], bool)
-        or report["schema_version"] != 1
-        or report["model_id"] != model_id
-        or report["provider"] != "derived-comparison"
-        or report["backend"] != "derived-comparison"
-        or report["model"] != model
-        or not isinstance(report["samples"], list)
-        or len(report["samples"]) != len(samples)
-    ):
-        raise SilenceComparisonError("Silence comparison report is malformed")
+            "Silence comparison report changed during validation"
+        )
+    records = _comparison_report_records(report, model_id, model, len(samples))
     seen = set()
-    for record in report["samples"]:
+    for record in records:
         if not isinstance(record, dict) or set(record) != {
             "id",
             "line_id",
@@ -810,21 +812,17 @@ def _validate_comparison_report(
                 "Silence comparison report sample is malformed"
             )
         queue_id = record["id"]
+        if not isinstance(queue_id, str):
+            raise SilenceComparisonError(
+                "Silence comparison report sample identity is invalid"
+            )
         source = samples.get(queue_id)
         if source is None or queue_id in seen:
             raise SilenceComparisonError(
                 "Silence comparison report sample identity is invalid"
             )
         seen.add(queue_id)
-        expected_audio = f"../{source[audio_field]}"
-        if record != {
-            "id": queue_id,
-            "line_id": source["line_id"],
-            "text": source["text"],
-            "text_sha256": source["text_sha256"],
-            "audio": expected_audio,
-            "audio_sha256": source[digest_field],
-        }:
+        if record != _comparison_report_sample(source, audio_field, digest_field):
             raise SilenceComparisonError(
                 "Silence comparison report diverges from its sample ledger"
             )
@@ -838,6 +836,48 @@ def _validate_comparison_report(
         raise SilenceComparisonError(
             "Silence comparison report sample inventory is incomplete"
         )
+    return snapshot
+
+
+def _comparison_report_sample(
+    sample: Mapping[str, object], audio_field: str, digest_field: str
+) -> dict[str, object]:
+    return {
+        "id": sample["queue_id"],
+        "line_id": sample["line_id"],
+        "text": sample["text"],
+        "text_sha256": sample["text_sha256"],
+        "audio": f"../{sample[audio_field]}",
+        "audio_sha256": sample[digest_field],
+    }
+
+
+def _comparison_report_records(
+    report: dict[str, object], model_id: str, model: str, sample_count: int
+) -> list[object]:
+    records = report.get("samples")
+    if (
+        set(report)
+        != {
+            "schema",
+            "schema_version",
+            "model_id",
+            "provider",
+            "backend",
+            "model",
+            "samples",
+        }
+        or report["schema"] != "vntts.voice-model-report"
+        or not has_schema_version(report, 1)
+        or report["model_id"] != model_id
+        or report["provider"] != "derived-comparison"
+        or report["backend"] != "derived-comparison"
+        or report["model"] != model
+        or not isinstance(records, list)
+        or len(records) != sample_count
+    ):
+        raise SilenceComparisonError("Silence comparison report is malformed")
+    return records
 
 
 def create_silence_comparison_session(
@@ -848,14 +888,18 @@ def create_silence_comparison_session(
 ) -> Path:
     """Create a standard blind A/B session from one verified comparison bundle."""
     root = Path(comparison_directory).expanduser().resolve()
-    document = load_silence_comparison(root)
-    reports = document["reports"]
-    if not isinstance(reports, list):
-        raise SilenceComparisonError("Silence comparison report inventory is malformed")
-    report_paths = tuple(_contained_file(root, value) for value in reports)
+    validated = _load_validated_silence_comparison(root)
+    authority_hashes = {
+        _contained_file(root, relative): digest
+        for relative, digest in validated.artifacts.items()
+    }
+    authority_hashes[validated.snapshot.path] = validated.snapshot.sha256
     try:
-        return create_listening_session_from_reports(
-            report_paths, output_directory, seed=seed
+        return _create_listening_session_from_captured_reports(
+            validated.reports,
+            output_directory,
+            seed=seed,
+            authority_hashes=authority_hashes,
         )
     except ModelListeningError as error:
         raise SilenceComparisonError(str(error)) from error
@@ -867,13 +911,23 @@ def _validate_sample(value: object) -> SilenceComparisonSample:
             "Silence comparison samples must be SilenceComparisonSample values"
         )
     for field in ("queue_id", "line_id", "text"):
-        text = getattr(value, field)
-        if not isinstance(text, str) or not text or text != text.strip():
-            raise SilenceComparisonError(f"Silence comparison {field} is invalid")
+        _comparison_text(getattr(value, field), field)
     for field in ("raw_audio_sha256", "segmented_audio_sha256"):
         digest = getattr(value, field)
         if digest is not None and not is_lowercase_sha256(digest):
             raise SilenceComparisonError(f"Silence comparison {field} is invalid")
+    return value
+
+
+def _comparison_text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise SilenceComparisonError(f"Silence comparison {label} is invalid")
+    try:
+        value.encode("utf-8")
+    except UnicodeError as error:
+        raise SilenceComparisonError(
+            f"Silence comparison {label} is invalid"
+        ) from error
     return value
 
 
@@ -925,29 +979,16 @@ def _read_source_wav(
         raise SilenceComparisonError(f"{label.title()} must not be a symlink")
     source = source.resolve()
     try:
-        payload = source.read_bytes()
-        with wave.open(io.BytesIO(payload), "rb") as wav:
-            if (
-                wav.getcomptype() != "NONE"
-                or wav.getnchannels() != 1
-                or wav.getsampwidth() != 2
-                or wav.getframerate() < 1
-            ):
-                raise Pcm16MonoWavError("expected mono 16-bit PCM WAV")
-            rate = wav.getframerate()
-            count = wav.getnframes()
-            pcm_payload = wav.readframes(count)
-        pcm: np.ndarray = np.frombuffer(pcm_payload, dtype="<i2")
-        if len(pcm) != count:
-            raise Pcm16MonoWavError("WAV sample data is incomplete")
-    except (OSError, EOFError, wave.Error, Pcm16MonoWavError) as error:
+        payload = read_regular_bytes(source)
+        samples, info = read_pcm16_mono_wav(io.BytesIO(payload))
+    except (OSError, Pcm16MonoWavError) as error:
         raise SilenceComparisonError(f"Unable to read {label}: {error}") from error
     return (
         source,
         payload,
         hashlib.sha256(payload).hexdigest(),
-        pcm.astype(np.float32) / 32768.0,
-        rate,
+        np.asarray(samples, dtype=np.float32) / 32768.0,
+        info.sample_rate,
     )
 
 
@@ -974,9 +1015,7 @@ def _new_directory(value: str | Path) -> Path:
     path = Path(value).expanduser()
     if not path.name or path.name in {".", ".."}:
         raise SilenceComparisonError("Silence comparison requires a directory name")
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    return path.parent.resolve() / path.name
+    return no_replace_destination(path)
 
 
 def _contained_file(root: Path, relative: object) -> Path:

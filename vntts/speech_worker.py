@@ -25,7 +25,14 @@ from typing import TYPE_CHECKING, Protocol, TypeAlias, TypeGuard
 import numpy as np
 from numpy.typing import NDArray
 
-from vntts.audio_output import AudioOutput, StreamingAudioStream, resolve_audio_output
+from vntts.audio_output import (
+    AudioOutput,
+    StreamingAudioStream,
+    resolve_audio_output,
+    sanitize_playback_audio,
+)
+from vntts.cleanup import attempt_cleanup
+from vntts.json_types import is_json_object
 from vntts.moss_delay_backend import MossTTSDelayVoiceRouterBackend
 from vntts.path_safety import contained_path
 from vntts.playback import (
@@ -40,6 +47,7 @@ from vntts.runtime_paths import (
     get_bundle_root,
     resolve_speech_runtime_root,
 )
+from vntts.runtime_preparation import Cancellation
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
     MossTTSVoiceRouterBackend,
@@ -139,11 +147,6 @@ _CAPABILITIES = {
 WorkerFrame: TypeAlias = tuple[FrameDocument, bytes]
 
 
-class _CancellationToken(Protocol):
-    def is_set(self) -> bool: ...
-
-
-Cancellation: TypeAlias = Callable[[], bool] | _CancellationToken | None
 WorkerOptions: TypeAlias = dict[str, object]
 RuntimePaths: TypeAlias = tuple[Path, Path, Path]
 ProcessFactory: TypeAlias = Callable[..., object]
@@ -213,7 +216,7 @@ WorkerBackendFactory: TypeAlias = Callable[..., object]
 
 
 def _is_document(value: object) -> TypeGuard[FrameDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _required_text(document: Mapping[str, object], field: str) -> str:
@@ -542,8 +545,8 @@ def probe_speech_runtime(
     runtime_use: RuntimeUse | None = None,
 ) -> FrameDocument:
     """Use the real worker import/provenance gate without loading model weights."""
-    from vntts.runtime_installation import _run
     from vntts.runtime_ownership import claim_runtime
+    from vntts.runtime_preparation import run_runtime_command
 
     root, interpreter, site = paths
     request = BytesIO()
@@ -557,7 +560,7 @@ def probe_speech_runtime(
     )
     use: RuntimeUse | None = runtime_use or claim_runtime(backend, root)
     try:
-        output = _run(
+        output = run_runtime_command(
             [
                 str(interpreter),
                 "-I",
@@ -916,6 +919,17 @@ def worker_main(
         return 1
 
 
+def _worker_timeout_seconds(value: float, name: str) -> float:
+    message = f"Speech worker {name} timeout must be positive and finite"
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise TTSConfigurationError(message) from error
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise TTSConfigurationError(message)
+    return seconds
+
+
 class IsolatedSpeechBackend:
     """Parent-side audio owner for a model loaded in its locked interpreter."""
 
@@ -965,16 +979,8 @@ class IsolatedSpeechBackend:
         self.audio_output: AudioOutput | None = audio_output
         self.clock = clock
         self.process_factory = process_factory
-        self.startup_timeout = float(startup_timeout)
-        self.request_timeout = float(request_timeout)
-        if not math.isfinite(self.startup_timeout) or self.startup_timeout <= 0:
-            raise TTSConfigurationError(
-                "Speech worker startup timeout must be positive and finite"
-            )
-        if not math.isfinite(self.request_timeout) or self.request_timeout <= 0:
-            raise TTSConfigurationError(
-                "Speech worker request timeout must be positive and finite"
-            )
+        self.startup_timeout = _worker_timeout_seconds(startup_timeout, "startup")
+        self.request_timeout = _worker_timeout_seconds(request_timeout, "request")
         self.startup_cancellation = startup_cancellation
         self.startup_progress = startup_progress
         self.playback_latency = playback_latency or (
@@ -982,6 +988,7 @@ class IsolatedSpeechBackend:
         )
         self.allow_gated_model_access = bool(allow_gated_model_access)
         self.worker_options: WorkerOptions = worker_options
+        validate_volume(volume)
         from vntts.runtime_installation import ensure_speech_runtime
 
         self.runtime_root, self.interpreter, self.runtime_site = ensure_speech_runtime(
@@ -1026,12 +1033,20 @@ class IsolatedSpeechBackend:
                 self._runtime_use = claim_runtime("moss-tts", self.runtime_root)
         try:
             self._launch_worker()
-        except BaseException:
-            try:
-                self._terminate_process(self.process)
-            finally:
-                if self._runtime_use is not None:
-                    self._runtime_use.close()
+        except BaseException as error:
+            attempt_cleanup(
+                lambda: self._terminate_process(self.process),
+                description="Speech worker termination",
+                primary_error=error,
+            )
+            if self._runtime_use is not None:
+                try:
+                    attempt_cleanup(
+                        self._runtime_use.close,
+                        description="Speech runtime claim cleanup",
+                        primary_error=error,
+                    )
+                finally:
                     self._runtime_use = None
             raise
 
@@ -1063,27 +1078,7 @@ class IsolatedSpeechBackend:
                 environment.pop("HUGGING_FACE_HUB_TOKEN", None)
         if self._runtime_use is not None:
             self._runtime_use.begin_launch()
-        try:
-            candidate = self.process_factory(
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=str(self.worker_working_directory),
-                env=environment,
-                bufsize=0,
-            )
-        except Exception:
-            if self._runtime_use is not None:
-                self._runtime_use.launched(None)
-            raise
-        if not _is_worker_process(candidate):
-            if _has_process_controls(candidate):
-                self._terminate_process(candidate)
-                if self._runtime_use is not None and candidate.poll() is not None:
-                    self._runtime_use.launched(None)
-            raise TTSConfigurationError("Speech worker process factory is malformed")
-        process = candidate
+        process = self._create_worker_process(command, environment)
         self.process = process
         if self._runtime_use is not None:
             self._runtime_use.launched(process)
@@ -1099,45 +1094,38 @@ class IsolatedSpeechBackend:
             name=f"vntts-{self.name}-worker-stderr",
             daemon=True,
         ).start()
-        try:
-            self._send(
-                process,
-                {
-                    "type": "initialize",
-                    "backend": self.name,
-                    "runtime_site": str(self.runtime_site),
-                    "registry": _serialize_registry(self.registry),
-                    "options": self._json_worker_options(),
-                },
-            )
-            deadline = monotonic() + self.startup_timeout
-            while True:
-                if self._startup_cancelled():
-                    self._terminate_process(process)
-                    raise TTSSynthesisError(
-                        f"{self.name} isolated worker startup was cancelled"
-                    )
-                remaining = deadline - monotonic()
-                if remaining <= 0:
-                    self._terminate_process(process)
-                    details = "\n".join(self._stderr)
-                    raise TTSConfigurationError(
-                        f"{self.name} isolated worker health check timed out after "
-                        f"{self.startup_timeout:g} seconds"
-                        + (f": {details}" if details else "")
-                    )
-                try:
-                    message, _payload = self._next_frame(
-                        process, timeout=min(0.1, remaining)
-                    )
-                except queue.Empty:
-                    continue
-                break
-        except Exception:
-            self._terminate_process(process)
-            raise
+        self._send(
+            process,
+            {
+                "type": "initialize",
+                "backend": self.name,
+                "runtime_site": str(self.runtime_site),
+                "registry": _serialize_registry(self.registry),
+                "options": self._json_worker_options(),
+            },
+        )
+        deadline = monotonic() + self.startup_timeout
+        while True:
+            if self._startup_cancelled():
+                raise TTSSynthesisError(
+                    f"{self.name} isolated worker startup was cancelled"
+                )
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                details = "\n".join(self._stderr)
+                raise TTSConfigurationError(
+                    f"{self.name} isolated worker health check timed out after "
+                    f"{self.startup_timeout:g} seconds"
+                    + (f": {details}" if details else "")
+                )
+            try:
+                message, _payload = self._next_frame(
+                    process, timeout=min(0.1, remaining)
+                )
+            except queue.Empty:
+                continue
+            break
         if message.get("type") != "health":
-            self._terminate_process(process)
             details = "\n".join(self._stderr)
             reason = message.get("error") or details or str(message)
             raise TTSConfigurationError(
@@ -1147,13 +1135,50 @@ class IsolatedSpeechBackend:
             Path(_required_text(message, "interpreter")).resolve()
             != self.interpreter.resolve()
         ):
-            self._terminate_process(process)
             raise TTSConfigurationError("Speech worker used an unexpected interpreter")
         if Path(_required_text(message, "prefix")).resolve() != self.runtime_root:
-            self._terminate_process(process)
             raise TTSConfigurationError("Speech worker used an unexpected environment")
         self.health = message
         self.sample_rate = _required_integer(message, "sample_rate")
+
+    def _create_worker_process(
+        self, command: list[str], environment: dict[str, str]
+    ) -> WorkerProcess:
+        """Validate a factory result before handing it to the startup owner."""
+        try:
+            candidate = self.process_factory(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(self.worker_working_directory),
+                env=environment,
+                bufsize=0,
+            )
+        except Exception as error:
+            runtime_use = self._runtime_use
+            if runtime_use is not None:
+                attempt_cleanup(
+                    lambda: runtime_use.launched(None),
+                    description="Speech runtime launch reset",
+                    primary_error=error,
+                )
+            raise
+        if not _is_worker_process(candidate):
+            configuration_error = TTSConfigurationError(
+                "Speech worker process factory is malformed"
+            )
+            if _has_process_controls(candidate):
+                try:
+                    self._terminate_process(candidate)
+                    if self._runtime_use is not None and candidate.poll() is not None:
+                        self._runtime_use.launched(None)
+                except BaseException as cleanup_error:
+                    configuration_error.add_note(
+                        f"Malformed speech worker cleanup failed: {cleanup_error}"
+                    )
+            raise configuration_error
+        return candidate
 
     def _startup_cancelled(self) -> bool:
         cancellation = self.startup_cancellation
@@ -1631,9 +1656,7 @@ class IsolatedSpeechBackend:
 
     def _prepare_audio(self, audio: object) -> NDArray[np.float32]:
         prepared = np.asarray(audio, dtype=np.float32).copy()
-        np.nan_to_num(prepared, copy=False)
-        prepared *= self.volume
-        np.clip(prepared, -0.95, 0.95, out=prepared)
+        sanitize_playback_audio(prepared, self.volume)
         return prepared
 
 
@@ -1685,6 +1708,22 @@ class RetainedWorkerRuntime:
     def __call__(
         self, registry: CharacterVoiceRegistry, **options: object
     ) -> _RetainedWorkerLease:
+        validate_volume(options.get("volume", 1.0))
+        narrator_reference = options.get("narrator_reference")
+        if narrator_reference is not None and not isinstance(
+            narrator_reference, (str, Path)
+        ):
+            raise TTSConfigurationError(
+                "Speech worker narrator_reference must be text or a path"
+            )
+        startup_cancellation = options.get("startup_cancellation")
+        if not _is_cancellation(startup_cancellation):
+            raise TTSConfigurationError(
+                "Speech worker startup cancellation must be callable or Event-like"
+            )
+        startup_progress = options.get("startup_progress")
+        if not _is_startup_progress(startup_progress):
+            raise TTSConfigurationError("Speech worker startup progress is invalid")
         identity = self._configuration_identity(registry, options)
         with self._lock:
             instance = self._instance
@@ -1701,27 +1740,12 @@ class RetainedWorkerRuntime:
                 self._identity = identity
             else:
                 instance.registry = registry
-                narrator_reference = options.get(
-                    "narrator_reference", instance.narrator_reference
+                instance.narrator_reference = (
+                    narrator_reference
+                    if "narrator_reference" in options
+                    else instance.narrator_reference
                 )
-                if narrator_reference is not None and not isinstance(
-                    narrator_reference, (str, Path)
-                ):
-                    raise TTSConfigurationError(
-                        "Speech worker narrator_reference must be text or a path"
-                    )
-                instance.narrator_reference = narrator_reference
-                startup_cancellation = options.get("startup_cancellation")
-                if not _is_cancellation(startup_cancellation):
-                    raise TTSConfigurationError(
-                        "Speech worker startup cancellation must be callable or Event-like"
-                    )
                 instance.startup_cancellation = startup_cancellation
-                startup_progress = options.get("startup_progress")
-                if not _is_startup_progress(startup_progress):
-                    raise TTSConfigurationError(
-                        "Speech worker startup progress is invalid"
-                    )
                 instance.startup_progress = startup_progress
                 if "volume" in options:
                     instance.set_volume(options["volume"])
@@ -1793,6 +1817,7 @@ def create_qwen_worker_backend(
     progress = options.get("startup_progress")
     if not _is_startup_progress(progress):
         raise TTSConfigurationError("Speech worker startup progress is invalid")
+    validate_volume(options.get("volume", 1.0))
     if "runtime_directory" not in options:
         from vntts.runtime_installation import ensure_speech_runtime
 

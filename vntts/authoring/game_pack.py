@@ -6,22 +6,20 @@ import copy
 import hashlib
 import json
 import os
-import shutil
 import socket
 from collections.abc import Callable, Mapping, Sequence, Set
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path, PurePosixPath
-from tempfile import TemporaryDirectory
 from types import TracebackType
 from typing import Literal, Protocol, TypeAlias
 from uuid import uuid4
 
 import numpy as np
 import soundfile as sf
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json
 from vntts_artifacts.audio import probe_pcm16_mono_wav
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePackError, load_game_pack, write_game_pack
 from vntts_artifacts.generated_audio import (
     GeneratedAudioManifestError,
@@ -32,11 +30,7 @@ from vntts_artifacts.live_sequence import (
     load_live_sequence_plan,
 )
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
-from vntts_artifacts.voice_manifest import (
-    VoiceManifestError,
-    load_voice_manifest,
-    normalize_character_name,
-)
+from vntts_artifacts.voice_manifest import VoiceManifestError, normalize_character_name
 
 from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
@@ -67,6 +61,8 @@ from vntts.authoring.generation_state import (
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
+    no_replace_destination,
+    staged_directory,
 )
 from vntts.authoring.publication import (
     rename_directory_no_replace as _rename_directory_no_replace,
@@ -76,13 +72,20 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_from_manifest,
     queue_voice_overrides_sha256,
 )
-from vntts.path_safety import safe_relative_path
+from vntts.document_identity import sha256_file
+from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import (
+    copy_regular_file,
+    read_regular_bytes,
+    read_regular_text,
+    safe_relative_path,
+)
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidence,
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
 )
-from vntts.voices import synthesis_character_for_line
+from vntts.voices import load_voice_manifest, synthesis_character_for_line
 
 _canonical_sha256 = canonical_document_sha256
 Inventory: TypeAlias = dict[Path, str]
@@ -94,7 +97,7 @@ VoiceControlPaths: TypeAlias = dict[Path, tuple[str, RoleMatcher]]
 
 class _QueueItem(Protocol):
     queue_id: str
-    speaker: str
+    speaker: str | None
     voice_character: str | None
 
 
@@ -256,8 +259,9 @@ def publish_final_game_pack(
     )
     initial_state = _load_initial_publication_state(request.paths.state)
     request.paths.destination.parent.mkdir(parents=True, exist_ok=True)
-    with _PublicationLease(request.paths.destination) as publication_lease:
-        with generation_publication_leases(
+    with (
+        _PublicationLease(request.paths.destination) as publication_lease,
+        generation_publication_leases(
             (
                 (
                     request.paths.state.parent,
@@ -265,41 +269,42 @@ def publish_final_game_pack(
                 ),
             ),
             process_checker=process_is_alive,
-        ) as generation_leases:
-            generation_lease = generation_leases[0]
-            queue, queue_sha256, state, state_sha256 = _select_stable_publication_state(
-                request.paths
+        ) as generation_leases,
+    ):
+        generation_lease = generation_leases[0]
+        queue, queue_sha256, state, state_sha256 = _select_stable_publication_state(
+            request.paths
+        )
+        with staged_directory(
+            request.paths.destination.parent,
+            prefix=f".{request.paths.destination.name}.staging-",
+        ) as staging_directory:
+            controls = _stage_publication_controls(
+                request.paths, Path(staging_directory), state_sha256, queue_sha256
             )
-            with TemporaryDirectory(
-                dir=request.paths.destination.parent,
-                prefix=f".{request.paths.destination.name}.staging-",
-            ) as staging_directory:
-                controls = _stage_publication_controls(
-                    request.paths, Path(staging_directory), state_sha256, queue_sha256
-                )
-                validated_voices = _validate_staged_voice_controls(
-                    state,
-                    queue,
-                    request.paths,
-                    controls,
-                )
-                generated = _stage_generated_audio(state, queue, request, controls)
-                resolved_game_id, counts = _write_staged_game_pack(
-                    request,
-                    state,
-                    queue,
-                    state_sha256,
-                    queue_sha256,
-                    controls,
-                    validated_voices,
-                    generated,
-                )
-                _publish_staged_game_pack(
-                    request.paths.destination,
-                    controls,
-                    generation_lease,
-                    publication_lease,
-                )
+            validated_voices = _validate_staged_voice_controls(
+                state,
+                queue,
+                request.paths,
+                controls,
+            )
+            generated = _stage_generated_audio(state, queue, request, controls)
+            resolved_game_id, counts = _write_staged_game_pack(
+                request,
+                state,
+                queue,
+                state_sha256,
+                queue_sha256,
+                controls,
+                validated_voices,
+                generated,
+            )
+            _publish_staged_game_pack(
+                request.paths.destination,
+                controls,
+                generation_lease,
+                publication_lease,
+            )
     return _publication_result(
         request, resolved_game_id, counts, queue_sha256, state_sha256
     )
@@ -608,10 +613,11 @@ def _validate_generated_story_records(
     omissions: Sequence[DecisionRecord],
     reviewed: Sequence[DecisionRecord],
 ) -> None:
-    _validate_story_records(generated, story, "Approved generated item")
-    _validate_story_records(fallback, story, "Live fallback item")
-    _validate_story_records(omissions, story, "Audio-event omission")
-    _validate_story_records(reviewed, story, "Reviewed waveform")
+    lines = {record.line_id: record for record in story.records}
+    _validate_story_records(generated, lines, "Approved generated item")
+    _validate_story_records(fallback, lines, "Live fallback item")
+    _validate_story_records(omissions, lines, "Audio-event omission")
+    _validate_story_records(reviewed, lines, "Reviewed waveform")
 
 
 def _copy_generated_audio(
@@ -880,8 +886,8 @@ class _PublicationLease:
                     )
                 if self.path.exists():
                     try:
-                        existing_payload = self.path.read_bytes()
-                        existing = json.loads(existing_payload.decode("utf-8"))
+                        existing_payload = read_regular_bytes(self.path)
+                        existing = decode_json(existing_payload.decode("utf-8"))
                     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
                         raise FinalGamePackError(
                             f"Unable to inspect publication lease: {error}"
@@ -924,7 +930,9 @@ class _PublicationLease:
         try:
             with exclusive_advisory_lock(self.guard_path, blocking=True):
                 try:
-                    document = json.loads(self.path.read_text(encoding="utf-8"))
+                    document = decode_json(
+                        read_regular_text(self.path, encoding="utf-8")
+                    )
                 except OSError, UnicodeDecodeError, json.JSONDecodeError:
                     ownership_lost = True
                 else:
@@ -945,7 +953,7 @@ class _PublicationLease:
 
     def assert_owned(self) -> None:
         try:
-            document = json.loads(self.path.read_text(encoding="utf-8"))
+            document = decode_json(read_regular_text(self.path, encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise FinalGamePackError(
                 "Final game-pack publication lease became unreadable"
@@ -962,7 +970,7 @@ class _PublicationLease:
         if (
             not isinstance(document, dict)
             or document.get("schema") != "vntts.game-pack-publication-lease"
-            or document.get("schema_version") != 1
+            or not has_schema_version(document, 1)
             or not isinstance(document.get("owner"), str)
             or not document["owner"]
             or document.get("destination") != str(self.destination)
@@ -980,7 +988,7 @@ class _PublicationLease:
 
     def _archive_stale(self, expected_payload: bytes) -> None:
         try:
-            payload = self.path.read_bytes()
+            payload = read_regular_bytes(self.path)
         except OSError as error:
             raise FinalGamePackError(
                 f"Unable to inspect stale publication lease: {error}"
@@ -995,7 +1003,7 @@ class _PublicationLease:
             raise FinalGamePackError(
                 f"Stale publication lease archive already exists: {archive}"
             )
-        if self.path.read_bytes() != expected_payload:
+        if read_regular_bytes(self.path) != expected_payload:
             raise FinalGamePackError(
                 "Final game-pack publication lease changed during stale recovery"
             )
@@ -1125,7 +1133,7 @@ def _copy_control(
     digest = _capture_control(source, inventory, label)
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        shutil.copyfile(source, destination)
+        copy_regular_file(source, destination)
         copied_digest = sha256_file(destination)
     except OSError as error:
         raise FinalGamePackError(f"Unable to copy {label} {source}: {error}") from error
@@ -1312,7 +1320,12 @@ def _project_voice_reference(
 ) -> DecisionRecord:
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        samples, sample_rate = sf.read(source, dtype="float32", always_2d=True)
+        source_payload = read_regular_bytes(source)
+        if hashlib.sha256(source_payload).hexdigest() != source_sha256:
+            raise ValueError("voice reference changed before projection")
+        samples, sample_rate = sf.read(
+            BytesIO(source_payload), dtype="float32", always_2d=True
+        )
         if samples.size == 0 or sample_rate < 1:
             raise ValueError("decoded reference is empty")
         sf.write(
@@ -1322,7 +1335,8 @@ def _project_voice_reference(
             format="WAV",
             subtype="PCM_16",
         )
-        info = probe_pcm16_mono_wav(destination)
+        output_payload = read_regular_bytes(destination)
+        info = probe_pcm16_mono_wav(BytesIO(output_payload))
     except Exception as error:
         raise FinalGamePackError(
             f"Unable to project voice reference {source} to PCM16 WAV: {error}"
@@ -1332,7 +1346,7 @@ def _project_voice_reference(
         "source_reference": relative.as_posix(),
         "source_sha256": source_sha256,
         "output_reference": portable.as_posix(),
-        "output_sha256": sha256_file(destination),
+        "output_sha256": hashlib.sha256(output_payload).hexdigest(),
         "sample_rate": info.sample_rate,
         "sample_count": info.sample_count,
         "channels": 1,
@@ -1492,9 +1506,9 @@ def _load_stable_state(
     state_path: Path, queue: _Queue, queue_sha256: str
 ) -> tuple[JsonDocument, str]:
     try:
-        payload = state_path.read_bytes()
-        state = json.loads(payload)
-    except (OSError, json.JSONDecodeError) as error:
+        payload = read_regular_bytes(state_path)
+        state = decode_json(payload)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise FinalGamePackError(
             f"Unable to read generation state {state_path}: {error}"
         ) from error
@@ -1952,9 +1966,8 @@ def _resolved_narrator_selection(
 
 
 def _validate_story_records(
-    records: Sequence[DecisionRecord], story: _Story, label: str
+    records: Sequence[DecisionRecord], lines: Mapping[str, _StoryRecord], label: str
 ) -> None:
-    lines = {record.line_id: record for record in story.records}
     for record in records:
         line_id = record.get("line_id")
         if not isinstance(line_id, str):
@@ -2004,9 +2017,7 @@ def _new_destination(value: str | Path) -> Path:
         raise FinalGamePackError(
             "Final game-pack destination requires a directory name"
         )
-    if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
-    return candidate.parent.resolve() / candidate.name
+    return no_replace_destination(candidate)
 
 
 def _path_exists(path: str | Path) -> bool:

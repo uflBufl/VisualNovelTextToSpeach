@@ -195,6 +195,48 @@ class SettingsTest(unittest.TestCase):
                 self.assertEqual(settings.speech_backend, backend)
                 self.assertEqual(settings.offline_speech_backend, backend)
 
+    def test_normalized_backend_override_preserves_linked_or_split_engines(self):
+        for offline in ("moss-tts", "pocket-tts"):
+            saved = AppSettings(
+                speech_backend="moss-tts", offline_speech_backend=offline
+            )
+            for raw in ("coqui-xtts", "  coqui-xtts  ", "\ncoqui-xtts\t"):
+                with self.subTest(offline=offline, raw=raw):
+                    warnings = []
+                    effective = saved.with_environment_overrides(
+                        {"VNTTS_SPEECH_BACKEND": raw}, warn=warnings.append
+                    )
+                    self.assertEqual(effective.speech_backend, "coqui-xtts")
+                    self.assertEqual(
+                        effective.offline_speech_backend,
+                        "coqui-xtts" if offline == "moss-tts" else offline,
+                    )
+                    self.assertEqual(warnings, [])
+                    self.assertEqual(saved.speech_backend, "moss-tts")
+                    self.assertEqual(saved.offline_speech_backend, offline)
+
+    def test_saved_offline_backend_uses_live_backend_whitespace_normalization(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            for raw in ("coqui-xtts", "  coqui-xtts  ", "\ncoqui-xtts\t"):
+                with self.subTest(raw=raw):
+                    before = json.dumps(
+                        {
+                            "schema_version": settings_schema_version,
+                            "speech_backend": "pocket-tts",
+                            "offline_speech_backend": raw,
+                        }
+                    ).encode()
+                    path.write_bytes(before)
+                    warnings = []
+                    loaded = load_app_settings(
+                        path, environment={}, warn=warnings.append
+                    )
+                    self.assertEqual(loaded.speech_backend, "pocket-tts")
+                    self.assertEqual(loaded.offline_speech_backend, "coqui-xtts")
+                    self.assertEqual(warnings, [])
+                    self.assertEqual(path.read_bytes(), before)
+
     def test_environment_override_keeps_split_engines_independent(self):
         saved = AppSettings(
             speech_backend="pocket-tts", offline_speech_backend="moss-tts"

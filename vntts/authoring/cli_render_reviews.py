@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from vntts.authoring.reference_render_comparison import (
@@ -24,6 +23,7 @@ from vntts.authoring.render_hypothesis_review import (
     publish_render_hypothesis_review,
     record_render_hypothesis_decision,
 )
+from vntts.cli import print_json
 
 ReferenceRenderComparisonError = _ReferenceRenderComparisonError
 RenderHypothesisReviewError = _RenderHypothesisReviewError
@@ -130,23 +130,19 @@ def handle(arguments: argparse.Namespace) -> int:
             arguments.review,
             arguments.queue_id,
         )
-        print(json.dumps(selection.to_dict(), indent=2, sort_keys=True))
+        print_json(selection.to_dict())
         return 0
     elif arguments.command == "failure-reference-render-comparison":
         plan = load_reference_render_plan(arguments.plan)
         comparison = publish_reference_render_comparison(plan, arguments.output)
-        print(
-            json.dumps(
-                {
-                    "directory": str(comparison.directory),
-                    "comparison_id": comparison.comparison_id,
-                    "arm_count": comparison.arm_count,
-                    "sample_count": comparison.sample_count,
-                    "complete_pair_count": comparison.complete_pair_count,
-                },
-                indent=2,
-                sort_keys=True,
-            )
+        print_json(
+            {
+                "directory": str(comparison.directory),
+                "comparison_id": comparison.comparison_id,
+                "arm_count": comparison.arm_count,
+                "sample_count": comparison.sample_count,
+                "complete_pair_count": comparison.complete_pair_count,
+            }
         )
         return 0
     elif arguments.command == "failure-reference-render-session":
@@ -156,15 +152,11 @@ def handle(arguments: argparse.Namespace) -> int:
             seed=arguments.seed,
             arm_ids=arguments.arm_id,
         )
-        print(
-            json.dumps(
-                {
-                    "comparison": arguments.comparison.as_posix(),
-                    "session": session.as_posix(),
-                },
-                indent=2,
-                sort_keys=True,
-            )
+        print_json(
+            {
+                "comparison": arguments.comparison.as_posix(),
+                "session": session.as_posix(),
+            }
         )
         return 0
     elif arguments.command == "failure-reference-import-listening":
@@ -174,9 +166,9 @@ def handle(arguments: argparse.Namespace) -> int:
             arguments.session,
             arguments.queue_id,
         )
-        print(json.dumps(reference_selection.to_dict(), indent=2, sort_keys=True))
+        print_json(reference_selection.to_dict())
         return 0
     else:
         raise ValueError(f"Unsupported render-review command: {arguments.command!r}")
-    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    print_json(result.to_dict())
     return 0

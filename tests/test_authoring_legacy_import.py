@@ -1,27 +1,21 @@
 import io
 import json
 import os
+import stat
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import numpy as np
-from vntts_artifacts.audio import (
-    PCM16_MONO_WAV_FORMAT,
-    probe_pcm16_mono_wav,
-    write_pcm16_wav,
-)
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.generated_audio import write_generated_audio_manifest
-from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
-    expected_voice_generation_queue_id,
-    write_voice_generation_queue,
 )
 
+from tests.authoring_fixtures import tree_hashes, write_legacy_fixture
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from vntts.authoring import legacy_import as legacy_module
 from vntts.authoring.cli import main
 from vntts.authoring.legacy_import import (
     IMPORT_SCHEMA,
@@ -31,174 +25,324 @@ from vntts.authoring.legacy_import import (
     import_standalone_generation,
     inspect_standalone_generation,
 )
-
-
-def write_legacy_fixture(
-    root,
-    *,
-    job_name="original-job",
-    title="Patch 3.7",
-    text="Preserve this generated line exactly.",
-):
-    root.mkdir(parents=True, exist_ok=True)
-    story = root / "story-index.jsonl"
-    story.write_text("synthetic story provenance\n", encoding="utf-8")
-    voices = root / "voice-manifest.json"
-    voices.write_text('{"version": 2, "voices": []}\n', encoding="utf-8")
-    text_hash = text_sha256(text)
-    line_id = "reverse1999:315401:7"
-    queue_id = expected_voice_generation_queue_id(line_id, text_hash)
-    queue = root / "shared" / "queue.jsonl"
-    write_voice_generation_queue(
-        queue,
-        {
-            "game": "Reverse: 1999",
-            "language": "en",
-            "generated_at": "2026-08-16T17:00:00+00:00",
-        },
-        [
-            {
-                "record_type": "generation_item",
-                "queue_id": queue_id,
-                "line_id": line_id,
-                "text_sha256": text_hash,
-                "speaker": "Rhiannon",
-                "voice_character": "Rhiannon",
-                "text": text,
-                "action": "generate",
-                "state": "pending",
-                "emotion": "warm",
-                "provider_extension": {"keep": True},
-            }
-        ],
-    )
-    queue_hash = sha256_file(queue)
-    output = root / "shared" / "generated-audio"
-    wav = output / "audio" / "rhiannon" / "line.wav"
-    write_pcm16_wav(
-        wav,
-        np.sin(np.linspace(0, 4 * np.pi, 4_000, dtype=np.float32)) * 0.1,
-        16_000,
-    )
-    info = probe_pcm16_mono_wav(wav)
-    quality = {
-        "duration_seconds": round(info.duration_seconds, 4),
-        "sample_rate": info.sample_rate,
-        "channels": 1,
-        "sample_count": info.sample_count,
-        "peak": round(info.peak, 6),
-    }
-    state_path = output / "generation-state.json"
-    state = {
-        "schema": "r1999.bulk-generation-state",
-        "schema_version": 1,
-        "queue_sha256": queue_hash,
-        "game": "Reverse: 1999",
-        "language": "en",
-        "active": {
-            "queue_id": queue_id,
-            "line_id": line_id,
-            "phase": "retrying",
-            "attempt": 1,
-            "attempt_limit": 3,
-            "total_attempts": 4,
-            "seed": 12,
-            "started_at": "2026-08-16T17:00:00+00:00",
-            "updated_at": "2026-08-16T17:00:01+00:00",
-            "last_error": "interrupted diagnostic",
-        },
-        "items": {
-            queue_id: {
-                "status": "approved",
-                "review_status": "approved",
-                "attempts": 3,
-                "path": "audio/rhiannon/line.wav",
-                "line_id": line_id,
-                "text_sha256": text_hash,
-                "file_sha256": sha256_file(wav),
-                "provider": "moss-tts",
-                "model": "moss-v1.5",
-                "prompt_sha256": "a" * 64,
-                "seed": 11,
-                "quality": quality,
-                "updated_at": "2026-08-16T17:05:00+00:00",
-            }
-        },
-    }
-    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-    manifest = output / "manifest.json"
-    write_generated_audio_manifest(
-        manifest,
-        {
-            "game": "Reverse: 1999",
-            "language": "en",
-            "source_queue_sha256": queue_hash,
-            "generated_at": "2026-08-16T17:06:00+00:00",
-        },
-        [
-            {
-                "queue_id": queue_id,
-                "line_id": line_id,
-                "text_sha256": text_hash,
-                "audio": "audio/rhiannon/line.wav",
-                "audio_format": PCM16_MONO_WAV_FORMAT,
-                "audio_sha256": sha256_file(wav),
-                "sample_rate": info.sample_rate,
-                "sample_count": info.sample_count,
-                "provider": "moss-tts",
-                "model": "moss-v1.5",
-                "prompt_sha256": "a" * 64,
-                "seed": 11,
-                "review_status": "approved",
-            }
-        ],
-    )
-    jobs = root / "jobs"
-    job_directory = jobs / job_name
-    job_directory.mkdir(parents=True)
-    job = {
-        "schema": "r1999.pregeneration-job",
-        "schema_version": 1,
-        "created_at": "2026-08-16T16:00:00+00:00",
-        "updated_at": "2026-08-16T17:00:00+00:00",
-        "status": "complete",
-        "title": title,
-        "targets": [
-            {
-                "target_id": "hero-story:rhiannon",
-                "category": "Character stories",
-                "title": "The Eaglet Takes Wing",
-                "chapters": ["315401"],
-                "episode_count": 1,
-                "line_count": 1,
-            }
-        ],
-        "story_index": str(story),
-        "queue": str(queue),
-        "output": str(output),
-        "voice_manifest": str(voices),
-        "vntts_python": "/legacy/vntts/python",
-        "model": "moss-v1.5",
-        "narrator_character": "Matilda",
-    }
-    (job_directory / "job.json").write_text(
-        json.dumps(job, sort_keys=True), encoding="utf-8"
-    )
-    return {
-        "job_directory": job_directory,
-        "jobs": jobs,
-        "job": job,
-        "queue": queue,
-        "queue_id": queue_id,
-        "line_id": line_id,
-        "text_hash": text_hash,
-        "state": state_path,
-        "manifest": manifest,
-        "wav": wav,
-    }
+from vntts.authoring.publication import AtomicPublicationError
 
 
 class LegacyAuthoringImportTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_public_hash_acquisitions_refuse_fifo_clean_up_and_recover(self):
+        for importer in (import_legacy_job, import_standalone_generation):
+            for phase in ("initial", "prepublication"):
+                with (
+                    self.subTest(importer=importer.__name__, phase=phase),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory).resolve()
+                    fixture = write_legacy_fixture(root)
+                    arguments = (
+                        (fixture["job_directory"],)
+                        if importer is import_legacy_job
+                        else (fixture["queue"], fixture["state"].parent)
+                    )
+                    source = fixture["queue"]
+                    destination = root / "app-data"
+                    before = tree_hashes(root)
+                    original = legacy_module.sha256_file
+                    refused = []
+
+                    def checksum(path):
+                        staged_manifest = any(destination.glob(".*/import.json"))
+                        if Path(path) != source or (
+                            phase == "prepublication" and not staged_manifest
+                        ):
+                            return original(path)
+                        self.assertEqual(staged_manifest, phase == "prepublication")
+                        gate: RegularFileGate = {"path": source, "armed": True}
+                        with (
+                            swap_at_acquisition(self, gate),
+                            self.assertRaisesRegex(OSError, "regular file") as caught,
+                        ):
+                            original(path)
+                        refused.append(caught.exception)
+                        raise caught.exception
+
+                    with (
+                        patch.object(legacy_module, "sha256_file", checksum),
+                        self.assertRaisesRegex(
+                            LegacyAuthoringImportError, "regular file"
+                        ) as caught,
+                    ):
+                        importer(*arguments, destination)
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(caught.exception.__cause__, refused[0])
+                    self.assertEqual(tree_hashes(root), before)
+                    if destination.exists():
+                        self.assertEqual(list(destination.iterdir()), [])
+                    recovered = importer(*arguments, destination)
+                    artifact = next(
+                        item
+                        for item in recovered.manifest["artifacts"]
+                        if Path(item["source_path"]) == source
+                    )
+                    self.assertEqual(
+                        (recovered.destination / artifact["path"]).read_bytes(),
+                        source.read_bytes(),
+                    )
+                    recovered_tree = tree_hashes(root)
+                    repeated = importer(*arguments, destination)
+                    self.assertTrue(recovered.created)
+                    self.assertFalse(repeated.created)
+                    self.assertEqual(repeated.destination, recovered.destination)
+                    self.assertEqual(repeated.manifest, recovered.manifest)
+                    self.assertEqual(tree_hashes(root), recovered_tree)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_public_copy_sources_refuse_swapped_acquisition_and_recover(self):
+        for importer in (import_legacy_job, import_standalone_generation):
+            for source_name in ("queue", "wav"):
+                with (
+                    self.subTest(importer=importer.__name__, source=source_name),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory).resolve()
+                    fixture = write_legacy_fixture(root)
+                    arguments = (
+                        (fixture["job_directory"],)
+                        if importer is import_legacy_job
+                        else (fixture["queue"], fixture["state"].parent)
+                    )
+                    source = fixture[source_name]
+                    destination = root / "app-data"
+                    before = tree_hashes(root)
+                    original_copy = legacy_module.copy_regular_file
+                    refused = []
+
+                    def copy(path, target, **kwargs):
+                        if Path(path) != source:
+                            return original_copy(path, target, **kwargs)
+                        gate: RegularFileGate = {"path": source, "armed": True}
+                        with (
+                            swap_at_acquisition(self, gate),
+                            self.assertRaisesRegex(OSError, "regular file") as caught,
+                        ):
+                            original_copy(path, target, **kwargs)
+                        self.assertFalse(Path(target).exists())
+                        refused.append(caught.exception)
+                        raise caught.exception
+
+                    with (
+                        patch.object(legacy_module, "copy_regular_file", copy),
+                        self.assertRaisesRegex(
+                            LegacyAuthoringImportError, "regular file"
+                        ) as caught,
+                    ):
+                        importer(*arguments, destination)
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(caught.exception.__cause__, refused[0])
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertEqual(list(destination.iterdir()), [])
+                    recovered = importer(*arguments, destination)
+                    recovered_tree = tree_hashes(root)
+                    repeated = importer(*arguments, destination)
+                    self.assertTrue(recovered.created)
+                    self.assertFalse(repeated.created)
+                    self.assertEqual(repeated.destination, recovered.destination)
+                    self.assertEqual(repeated.manifest, recovered.manifest)
+                    self.assertEqual(tree_hashes(root), recovered_tree)
+                    artifact = next(
+                        item
+                        for item in recovered.manifest["artifacts"]
+                        if Path(item["source_path"]) == source
+                    )
+                    self.assertEqual(
+                        (recovered.destination / artifact["path"]).read_bytes(),
+                        source.read_bytes(),
+                    )
+
+    def test_public_imports_preserve_copied_artifact_mode_and_mtime(self):
+        for importer in (import_legacy_job, import_standalone_generation):
+            with (
+                self.subTest(importer=importer.__name__),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory).resolve()
+                fixture = write_legacy_fixture(root / "source")
+                sources = (
+                    fixture["job_directory"] / "job.json",
+                    fixture["queue"],
+                    fixture["state"],
+                    fixture["manifest"],
+                    fixture["wav"],
+                )
+                for source in sources:
+                    source.chmod(0o600)
+                    os.utime(source, ns=(1_650_000_000_000_000_000,) * 2)
+                metadata = {
+                    source: (
+                        stat.S_IMODE(source.stat().st_mode),
+                        source.stat().st_mtime_ns,
+                    )
+                    for source in sources
+                }
+                before = tree_hashes(root / "source")
+                arguments = (
+                    (fixture["job_directory"],)
+                    if importer is import_legacy_job
+                    else (fixture["queue"], fixture["state"].parent)
+                )
+                result = importer(*arguments, root / "app-data")
+                self.assertTrue(result.created)
+                for artifact in result.manifest["artifacts"]:
+                    original = Path(artifact["source_path"])
+                    target = result.destination / artifact["path"]
+                    for path in (original, target):
+                        self.assertEqual(
+                            (
+                                stat.S_IMODE(path.stat().st_mode),
+                                path.stat().st_mtime_ns,
+                            ),
+                            metadata[original],
+                        )
+                    self.assertEqual(target.read_bytes(), original.read_bytes())
+                self.assertEqual(tree_hashes(root / "source"), before)
+
+    def test_final_inspection_read_failure_is_a_domain_error_and_discovery_diagnostic(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            before = tree_hashes(root)
+            failure = PermissionError("Final legacy source read was blocked")
+            original_check = legacy_module._verify_source_controls_unchanged
+
+            def fail_final_read(plan):
+                with patch.object(legacy_module, "sha256_file", side_effect=failure):
+                    return original_check(plan)
+
+            with patch.object(
+                legacy_module,
+                "_verify_source_controls_unchanged",
+                side_effect=fail_final_read,
+            ):
+                with self.assertRaises(LegacyAuthoringImportError) as caught:
+                    inspect_standalone_generation(
+                        fixture["queue"], fixture["state"].parent
+                    )
+                self.assertIs(caught.exception.__cause__, failure)
+                candidates = discover_legacy_jobs(fixture["job_directory"].parent)
+                selected = next(
+                    item
+                    for item in candidates
+                    if item.job_directory.resolve()
+                    == fixture["job_directory"].resolve()
+                )
+                self.assertIn(str(failure), selected.compatibility_error)
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with (
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as exited,
+                ):
+                    main(
+                        [
+                            "inspect-standalone",
+                            "--queue",
+                            str(fixture["queue"]),
+                            "--output",
+                            str(fixture["state"].parent),
+                        ]
+                    )
+                self.assertEqual(exited.exception.code, 2)
+                self.assertIn(str(failure), stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(tree_hashes(root), before)
+
+    def test_initial_standalone_read_failure_preserves_cause_cli_and_discovery_error(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            before = tree_hashes(root)
+            failure = PermissionError("Initial standalone source read was blocked")
+            with patch.object(legacy_module, "sha256_file", side_effect=failure):
+                with self.assertRaises(LegacyAuthoringImportError) as caught:
+                    inspect_standalone_generation(
+                        fixture["queue"], fixture["state"].parent
+                    )
+                self.assertIs(caught.exception.__cause__, failure)
+                candidates = discover_legacy_jobs(fixture["jobs"])
+                selected = next(
+                    item
+                    for item in candidates
+                    if item.job_directory.resolve()
+                    == fixture["job_directory"].resolve()
+                )
+                self.assertFalse(selected.compatible)
+                self.assertIn(str(failure), selected.compatibility_error)
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with (
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as exited,
+                ):
+                    main(
+                        [
+                            "inspect-standalone",
+                            "--queue",
+                            str(fixture["queue"]),
+                            "--output",
+                            str(fixture["state"].parent),
+                        ]
+                    )
+                self.assertEqual(exited.exception.code, 2)
+                self.assertIn(str(failure), stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(tree_hashes(root), before)
+
+    def test_atomic_publication_failure_is_translated_and_cleans_staging(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            for importer, arguments in (
+                (import_legacy_job, (fixture["job_directory"],)),
+                (
+                    import_standalone_generation,
+                    (fixture["queue"], fixture["state"].parent),
+                ),
+            ):
+                with self.subTest(importer=importer.__name__):
+                    failure = AtomicPublicationError("Atomic publication unavailable")
+                    with (
+                        patch.object(
+                            legacy_module,
+                            "rename_directory_no_replace",
+                            side_effect=failure,
+                        ),
+                        self.assertRaisesRegex(
+                            LegacyAuthoringImportError, "Atomic publication unavailable"
+                        ) as caught,
+                    ):
+                        importer(*arguments, root / "app-data")
+                    self.assertIs(caught.exception.__cause__, failure)
+                    self.assertEqual(list((root / "app-data").iterdir()), [])
+
+    def test_optional_metadata_ignores_invalid_encoding(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "metadata.json"
+            path.write_bytes(b"\xff")
+            for load in (
+                legacy_module._load_json_optional,
+                legacy_module._load_jsonl_metadata_optional,
+            ):
+                with self.subTest(reader=load.__name__):
+                    self.assertEqual(load(path), {})
+
     def test_preserves_validated_source_job_timestamps(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -405,6 +549,82 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             with self.assertRaisesRegex(LegacyAuthoringImportError, "conflicts"):
                 import_legacy_job(second_fixture["job_directory"], root / "app-data")
 
+    def test_queue_extension_utf8_admission_preserves_job_and_standalone_sources(self):
+        for importer in (import_legacy_job, import_standalone_generation):
+            for label in ("\ud800", "сохранить 音声"):
+                with (
+                    self.subTest(importer=importer.__name__, label=label),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    fixture = write_legacy_fixture(root)
+                    rows = [
+                        json.loads(line)
+                        for line in fixture["queue"]
+                        .read_text(encoding="utf-8")
+                        .splitlines()
+                    ]
+                    rows[1]["provider_extension"]["label"] = label
+                    fixture["queue"].write_text(
+                        "\n".join(json.dumps(row, sort_keys=True) for row in rows)
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    queue_hash = sha256_file(fixture["queue"])
+                    for name, field in (
+                        ("state", "queue_sha256"),
+                        ("manifest", "source_queue_sha256"),
+                    ):
+                        document = json.loads(fixture[name].read_text(encoding="utf-8"))
+                        document[field] = queue_hash
+                        fixture[name].write_text(
+                            json.dumps(document, sort_keys=True), encoding="utf-8"
+                        )
+                    arguments = (
+                        (fixture["job_directory"],)
+                        if importer is import_legacy_job
+                        else (fixture["queue"], fixture["state"].parent)
+                    )
+                    destination = root / "app-data"
+                    destination.mkdir()
+                    (destination / "keep.txt").write_text("keep", encoding="utf-8")
+                    before = tree_hashes(root)
+                    if label == "\ud800":
+                        with self.assertRaisesRegex(
+                            LegacyAuthoringImportError, "invalid UTF-8 text"
+                        ) as caught:
+                            importer(*arguments, destination)
+                        self.assertIsInstance(
+                            caught.exception.__cause__, UnicodeEncodeError
+                        )
+                        self.assertIn(fixture["queue_id"], str(caught.exception))
+                        self.assertEqual(tree_hashes(root), before)
+                        self.assertEqual(
+                            list(destination.iterdir()), [destination / "keep.txt"]
+                        )
+                    else:
+                        imported = importer(*arguments, destination)
+                        repeated = importer(*arguments, destination)
+                        self.assertTrue(imported.created)
+                        self.assertFalse(repeated.created)
+                        self.assertEqual(
+                            (imported.destination / "queue.jsonl").read_bytes(),
+                            fixture["queue"].read_bytes(),
+                        )
+                        self.assertEqual(
+                            {
+                                path: digest
+                                for path, digest in tree_hashes(root).items()
+                                if not path.startswith("app-data/")
+                            },
+                            {
+                                path: digest
+                                for path, digest in before.items()
+                                if not path.startswith("app-data/")
+                            },
+                        )
+                        self.assertEqual((destination / "keep.txt").read_text(), "keep")
+
     def test_rejects_invalid_status_review_combinations(self):
         for status, review in (("failed", "approved"), ("generated", "approved")):
             with (
@@ -441,12 +661,12 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             job["status"] = "complete"
             job["pid"] = None
             job_path.write_text(json.dumps(job, sort_keys=True), encoding="utf-8")
-            original_copy = __import__("shutil").copy2
+            original_copy = legacy_module.copy_regular_file
             mutated = False
 
-            def mutate_after_queue_copy(source, destination):
+            def mutate_after_queue_copy(source, destination, **kwargs):
                 nonlocal mutated
-                result = original_copy(source, destination)
+                result = original_copy(source, destination, **kwargs)
                 if Path(source).resolve() == fixture["queue"].resolve() and not mutated:
                     state = json.loads(fixture["state"].read_text(encoding="utf-8"))
                     state["active"]["updated_at"] = "2026-08-16T17:00:02+00:00"
@@ -458,7 +678,7 @@ class LegacyAuthoringImportTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.legacy_import.shutil.copy2",
+                    "vntts.authoring.legacy_import.copy_regular_file",
                     side_effect=mutate_after_queue_copy,
                 ),
                 self.assertRaisesRegex(LegacyAuthoringImportError, "retry when idle"),
@@ -529,12 +749,12 @@ class LegacyAuthoringImportTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture = write_legacy_fixture(root)
-            original_copy = __import__("shutil").copy2
+            original_copy = legacy_module.copy_regular_file
             mutated = False
 
-            def mutate_after_wav_copy(source, destination):
+            def mutate_after_wav_copy(source, destination, **kwargs):
                 nonlocal mutated
-                result = original_copy(source, destination)
+                result = original_copy(source, destination, **kwargs)
                 if Path(source).resolve() == fixture["wav"].resolve() and not mutated:
                     fixture["wav"].write_bytes(b"changed after copy")
                     mutated = True
@@ -542,7 +762,7 @@ class LegacyAuthoringImportTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.legacy_import.shutil.copy2",
+                    "vntts.authoring.legacy_import.copy_regular_file",
                     side_effect=mutate_after_wav_copy,
                 ),
                 self.assertRaisesRegex(LegacyAuthoringImportError, "retry when idle"),
@@ -1040,6 +1260,30 @@ class LegacyAuthoringImportTest(unittest.TestCase):
 
         self.assertTrue(json.loads(first_output.getvalue())["created"])
         self.assertFalse(json.loads(second_output.getvalue())["created"])
+
+    def test_generated_wav_metadata_uses_checksum_bound_payload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            audio = fixture["wav"]
+            digest = sha256_file(audio)
+            probe = legacy_module.probe_pcm16_mono_wav
+            expected = probe(audio)
+
+            def replace_before_decode(source):
+                audio.write_bytes(b"replaced after checksum")
+                return probe(source)
+
+            with patch.object(
+                legacy_module,
+                "probe_pcm16_mono_wav",
+                side_effect=replace_before_decode,
+            ):
+                info = legacy_module._validate_generated_wav(
+                    audio, digest, fixture["queue_id"]
+                )
+            self.assertEqual(info, expected)
+            self.assertEqual(audio.read_bytes(), b"replaced after checksum")
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias, TypedDict, TypeGuard
+from typing import TypeAlias, TypedDict
 
 from vntts.authoring.authority import write_json_document_no_replace
 from vntts.authoring.cohort_review import (
@@ -19,6 +19,9 @@ from vntts.authoring.workbench import (
     list_review_items,
 )
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.json_types import decode_json, has_schema_version
+from vntts.json_types import is_json_object as _is_json_document
+from vntts.path_safety import read_regular_text
 
 PENDING_RESOLUTION_PLAN_SCHEMA = "vntts.authoring-pending-resolution-plan"
 PENDING_RESOLUTION_PLAN_VERSION = 1
@@ -37,7 +40,7 @@ class _ResolutionRecord(TypedDict):
     action: str
 
 
-class _PlanDocument(TypedDict):
+class _PlanBody(TypedDict):
     schema: str
     schema_version: int
     workspace_id: str
@@ -47,6 +50,9 @@ class _PlanDocument(TypedDict):
     blocked_pending_count: int
     action_counts: dict[str, int]
     records: list[_ResolutionRecord]
+
+
+class _PlanDocument(_PlanBody):
     plan_id: str
 
 
@@ -154,7 +160,7 @@ def build_pending_resolution_plan(
         cohort_plan.document.get("state_sha256"), "State SHA-256"
     )
     action_counts = {RECOVER_OR_REGENERATE: len(records)} if records else {}
-    body: JsonDocument = {
+    body: _PlanBody = {
         "schema": PENDING_RESOLUTION_PLAN_SCHEMA,
         "schema_version": PENDING_RESOLUTION_PLAN_VERSION,
         "workspace_id": workspace_id,
@@ -166,18 +172,7 @@ def build_pending_resolution_plan(
         "records": records,
     }
     plan_id = canonical_document_sha256(body)
-    document: _PlanDocument = {
-        "schema": PENDING_RESOLUTION_PLAN_SCHEMA,
-        "schema_version": PENDING_RESOLUTION_PLAN_VERSION,
-        "workspace_id": workspace_id,
-        "workspace_config_fingerprint": workspace_fingerprint,
-        "queue_sha256": queue_sha256,
-        "state_sha256": state_sha256,
-        "blocked_pending_count": len(records),
-        "action_counts": action_counts,
-        "records": records,
-        "plan_id": plan_id,
-    }
+    document: _PlanDocument = {**body, "plan_id": plan_id}
     return PendingResolutionPlan(plan_id, document)
 
 
@@ -263,17 +258,13 @@ def load_pending_resolution_plan(path: str | Path) -> PendingResolutionPlan:
     """Load and fully validate one immutable pending-resolution plan."""
     path = Path(path).expanduser().resolve()
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = decode_json(read_regular_text(path, encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise PendingResolutionError(
             f"Unable to read pending resolution plan {path}: {error}"
         ) from error
     validated = _validated_plan_document(document)
     return PendingResolutionPlan(validated["plan_id"], validated)
-
-
-def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
 def _documents(value: object, label: str) -> list[JsonDocument]:
@@ -304,19 +295,15 @@ def _validated_plan_document(plan: object) -> _PlanDocument:
         raise PendingResolutionError("Pending resolution plan fields are invalid")
     if document.get("schema") != PENDING_RESOLUTION_PLAN_SCHEMA:
         raise PendingResolutionError("Pending resolution plan schema is unsupported")
-    if (
-        type(document.get("schema_version")) is not int
-        or document["schema_version"] != PENDING_RESOLUTION_PLAN_VERSION
-    ):
+    if not has_schema_version(document, PENDING_RESOLUTION_PLAN_VERSION):
         raise PendingResolutionError("Pending resolution plan version is unsupported")
-    _required_text(document.get("workspace_id"), "Workspace ID")
-    for field, label in (
-        ("workspace_config_fingerprint", "Workspace config fingerprint"),
-        ("queue_sha256", "Queue SHA-256"),
-        ("state_sha256", "State SHA-256"),
-        ("plan_id", "Plan ID"),
-    ):
-        _required_sha256(document.get(field), label)
+    workspace_id = _required_text(document.get("workspace_id"), "Workspace ID")
+    workspace_fingerprint = _required_sha256(
+        document.get("workspace_config_fingerprint"), "Workspace config fingerprint"
+    )
+    queue_sha256 = _required_sha256(document.get("queue_sha256"), "Queue SHA-256")
+    state_sha256 = _required_sha256(document.get("state_sha256"), "State SHA-256")
+    plan_id = _required_sha256(document.get("plan_id"), "Plan ID")
     records = document.get("records")
     if not isinstance(records, list):
         raise PendingResolutionError("Pending resolution records must be a list")
@@ -346,17 +333,14 @@ def _validated_plan_document(plan: object) -> _PlanDocument:
     return {
         "schema": PENDING_RESOLUTION_PLAN_SCHEMA,
         "schema_version": PENDING_RESOLUTION_PLAN_VERSION,
-        "workspace_id": _required_text(document.get("workspace_id"), "Workspace ID"),
-        "workspace_config_fingerprint": _required_sha256(
-            document.get("workspace_config_fingerprint"),
-            "Workspace config fingerprint",
-        ),
-        "queue_sha256": _required_sha256(document.get("queue_sha256"), "Queue SHA-256"),
-        "state_sha256": _required_sha256(document.get("state_sha256"), "State SHA-256"),
+        "workspace_id": workspace_id,
+        "workspace_config_fingerprint": workspace_fingerprint,
+        "queue_sha256": queue_sha256,
+        "state_sha256": state_sha256,
         "blocked_pending_count": len(canonical),
         "action_counts": expected_counts,
         "records": canonical,
-        "plan_id": _required_sha256(document.get("plan_id"), "Plan ID"),
+        "plan_id": plan_id,
     }
 
 

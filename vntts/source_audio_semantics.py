@@ -8,17 +8,23 @@ import re
 import unicodedata
 from copy import deepcopy
 from pathlib import Path
-from typing import Literal, TypeAlias, TypedDict, TypeGuard, cast
+from typing import Literal, TypeAlias, TypedDict, cast
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
     load_story_index_document,
 )
 
-from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.document_identity import (
+    canonical_document_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
+from vntts.json_types import decode_json, has_schema_version
+from vntts.json_types import is_json_object as _is_json_document
+from vntts.path_safety import read_regular_bytes
 
 SEMANTIC_EVIDENCE_SCHEMA = "r1999.source-audio-semantic-evidence"
 SEMANTIC_EVIDENCE_VERSION = 1
@@ -53,6 +59,15 @@ class SourceAudioSemanticEvidenceError(RuntimeError):
     """Semantic source-audio evidence is missing, stale or malformed."""
 
 
+def _semantic_document_sha256(document: object) -> str:
+    try:
+        return canonical_document_sha256(document)
+    except (TypeError, ValueError) as error:
+        raise SourceAudioSemanticEvidenceError(
+            "Semantic evidence contains invalid JSON values"
+        ) from error
+
+
 def normalize_semantic_text(text: object) -> str:
     normalized = unicodedata.normalize("NFKC", str(text or ""))
     return " ".join(
@@ -67,11 +82,14 @@ def semantic_text_sha256(text: object) -> str:
 def load_source_audio_semantic_evidence(
     path: str | Path,
     story_index_path: str | Path | StoryIndexDocument | None = None,
+    *,
+    payload: bytes | None = None,
 ) -> SourceAudioSemanticEvidence:
     evidence_path = Path(path).expanduser().resolve()
     try:
-        payload = evidence_path.read_bytes()
-        document = json.loads(payload.decode("utf-8"))
+        if payload is None:
+            payload = read_regular_bytes(evidence_path)
+        document = decode_json(payload.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SourceAudioSemanticEvidenceError(
             f"Unable to read source-audio semantic evidence {evidence_path}: {error}"
@@ -91,8 +109,7 @@ def validate_source_audio_semantic_evidence(
     if (
         not _is_json_document(document)
         or document.get("schema") != SEMANTIC_EVIDENCE_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != SEMANTIC_EVIDENCE_VERSION
+        or not has_schema_version(document, SEMANTIC_EVIDENCE_VERSION)
     ):
         raise SourceAudioSemanticEvidenceError(
             "Unsupported source-audio semantic evidence schema"
@@ -134,7 +151,7 @@ def validate_source_audio_semantic_evidence(
         for key, value in document.items()
         if key not in {"evidence_id", "generated_at"}
     }
-    if document.get("evidence_id") != canonical_document_sha256(authority):
+    if document.get("evidence_id") != _semantic_document_sha256(authority):
         raise SourceAudioSemanticEvidenceError("Semantic evidence ID changed")
     if not isinstance(document.get("generated_at"), str):
         raise SourceAudioSemanticEvidenceError(
@@ -188,7 +205,7 @@ def _validate_semantic_evidence_entry(
         or source_line_ids != sorted(set(source_line_ids))
     ):
         raise SourceAudioSemanticEvidenceError("Semantic source line IDs are invalid")
-    expected_entry_id = canonical_document_sha256(
+    expected_entry_id = _semantic_document_sha256(
         {
             key: value
             for key, value in entry.items()
@@ -302,7 +319,7 @@ def project_source_audio_semantics(
         if key not in {"evidence_id", "generated_at", "entries"}
     }
     projected_evidence["entries"] = projected_entries
-    projected_evidence["evidence_id"] = canonical_document_sha256(projected_evidence)
+    projected_evidence["evidence_id"] = _semantic_document_sha256(projected_evidence)
     projected_evidence["generated_at"] = evidence["generated_at"]
     projected_records = deepcopy(records)
     for record in projected_records:
@@ -356,7 +373,3 @@ def _require_sha256(value: object, label: str) -> str:
     if not isinstance(value, str) or not is_lowercase_sha256(value):
         raise SourceAudioSemanticEvidenceError(f"{label} SHA-256 is invalid")
     return value
-
-
-def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)

@@ -5,21 +5,20 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+from string import hexdigits
 from time import perf_counter, process_time
 from typing import TYPE_CHECKING
 
 from platformdirs import user_data_path
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
     StoryIndexRecord,
-    load_story_index_document,
 )
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueueError,
@@ -33,16 +32,21 @@ from vntts.authoring.generation_state import (
 )
 from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
+    _source_audio_evidence_payload,
     _validated_source_audio_line_ids,
 )
+from vntts.document_identity import is_sha256, sha256_file
+from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_text, read_regular_bytes
 from vntts.settings import AppSettings
+from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.versioned_json import read_versioned_json, write_versioned_json
 
 if TYPE_CHECKING:
     from vntts.pregeneration_queue import PregenerationInput
 
 job_schema_version = 1
-story_catalog_schema_version = 6
+story_catalog_schema_version = 7
 story_catalog_minimum_bytes = 8 * 1024 * 1024
 # ponytail: assumes 12 text chars/sec and PCM16 mono 24 kHz; upgrade with measured
 # durations and the selected backend's output format if storage estimates matter.
@@ -203,7 +207,10 @@ class PregenerationJob:
 
 
 def inspect_story_index(
-    path: PathInput, *, provider_id: str = "local-story-index"
+    path: PathInput,
+    *,
+    provider_id: str = "local-story-index",
+    source_audio_evidence_payload: bytes | None = None,
 ) -> GameContent:
     started = perf_counter()
     cpu_started = process_time()
@@ -213,9 +220,12 @@ def inspect_story_index(
     try:
         size = path.stat().st_size
         checksum = sha256_file(path)
+        if source_audio_evidence_payload is None:
+            source_audio_evidence_payload = _source_audio_evidence_payload(path)
+        evidence_sha256 = hashlib.sha256(source_audio_evidence_payload).hexdigest()
         persistent_cache = size >= story_catalog_minimum_bytes
         content = (
-            _load_story_catalog(path, checksum, provider_id)
+            _load_story_catalog(path, checksum, provider_id, evidence_sha256)
             if persistent_cache
             else None
         )
@@ -225,7 +235,9 @@ def inspect_story_index(
             document = _cached_story_index_document(str(path), checksum)
             selections = _story_selections(
                 document,
-                _validated_source_audio_line_ids(path, document),
+                _validated_source_audio_line_ids(
+                    path, document, evidence_payload=source_audio_evidence_payload
+                ),
             )
             if not selections:
                 raise PregenerationSetupError(
@@ -249,7 +261,7 @@ def inspect_story_index(
                 else "miss"
             )
             if persistent_cache:
-                _save_story_catalog(content)
+                _save_story_catalog(content, evidence_sha256)
     except (OSError, StoryIndexError, ValueError) as error:
         raise PregenerationSetupError(f"Story content is invalid: {error}") from error
     from vntts.support import record_background_operation
@@ -279,7 +291,7 @@ def _story_catalog_path(checksum: str) -> Path:
 
 
 def _load_story_catalog(
-    path: Path, checksum: str, provider_id: str
+    path: Path, checksum: str, provider_id: str, evidence_sha256: str
 ) -> GameContent | None:
     catalog = _story_catalog_path(checksum)
     if not catalog.is_file():
@@ -295,11 +307,13 @@ def _load_story_catalog(
             != {
                 "schema_version",
                 "source_story_index_sha256",
+                "source_audio_semantic_evidence_sha256",
                 "game",
                 "game_version",
                 "selections",
             }
             or document["source_story_index_sha256"] != checksum
+            or document["source_audio_semantic_evidence_sha256"] != evidence_sha256
         ):
             raise ValueError("story catalog cache identity changed")
         raw_selections = document["selections"]
@@ -320,7 +334,7 @@ def _load_story_catalog(
         return None
 
 
-def _save_story_catalog(content: GameContent) -> None:
+def _save_story_catalog(content: GameContent, evidence_sha256: str) -> None:
     try:
         catalog = _story_catalog_path(content.story_index_sha256)
         catalog.parent.mkdir(parents=True, exist_ok=True)
@@ -329,6 +343,7 @@ def _save_story_catalog(content: GameContent) -> None:
             story_catalog_schema_version,
             {
                 "source_story_index_sha256": content.story_index_sha256,
+                "source_audio_semantic_evidence_sha256": evidence_sha256,
                 "game": content.game,
                 "game_version": content.game_version,
                 "selections": [asdict(value) for value in content.selections],
@@ -400,7 +415,10 @@ def _cached_story_selection(document: object) -> StorySelection:
 
 @lru_cache(maxsize=8)
 def _cached_story_index_document(path: str, expected_sha256: str) -> StoryIndexDocument:
-    document = load_story_index_document(path)
+    payload = read_regular_bytes(Path(path))
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
+        raise StoryContentChanged("Story content changed while it was being read")
+    document = load_story_index_snapshot(path, payload)
     if sha256_file(path) != expected_sha256:
         raise StoryContentChanged("Story content changed while it was being read")
     return document
@@ -418,9 +436,18 @@ def load_verified_story_index_document(
 
 @lru_cache(maxsize=8)
 def _cached_story_index(
-    path: str, provider_id: str, expected_sha256: str
+    path: str, provider_id: str, expected_sha256: str, evidence_sha256: str
 ) -> GameContent:
-    content = inspect_story_index(path, provider_id=provider_id)
+    evidence_payload = _source_audio_evidence_payload(path)
+    if hashlib.sha256(evidence_payload).hexdigest() != evidence_sha256:
+        raise PregenerationSetupError(
+            "Story audio evidence changed while it was being inspected. Refresh to retry."
+        )
+    content = inspect_story_index(
+        path,
+        provider_id=provider_id,
+        source_audio_evidence_payload=evidence_payload,
+    )
     if content.story_index_sha256 != expected_sha256:
         raise PregenerationSetupError(
             "Story content changed while it was being inspected. Refresh to retry."
@@ -483,9 +510,10 @@ def discover_game_content(
                     str(path),
                     "reverse1999" if path in trusted_game_paths else provider_id,
                     sha256_file(path),
+                    hashlib.sha256(_source_audio_evidence_payload(path)).hexdigest(),
                 )
             )
-        except PregenerationSetupError as error:
+        except (OSError, PregenerationSetupError) as error:
             errors.append(str(error))
     discovered.sort(key=lambda content: len(content.selections), reverse=True)
     return ContentDiscovery(tuple(discovered), tuple(errors))
@@ -495,15 +523,16 @@ def estimate_preparation(
     content: GameContent, selected_story_ids: Iterable[object]
 ) -> PreparationEstimate:
     selected_ids = _normalized_selection_ids(content, selected_story_ids)
+    selected_id_set = set(selected_ids)
     selected = tuple(
-        value for value in content.selections if value.selection_id in selected_ids
+        value for value in content.selections if value.selection_id in selected_id_set
     )
     generation_lines = sum(value.generation_lines for value in selected)
     speakers: set[str] = set()
     for value in selected:
         if value.generation_lines:
             speakers.update(value.speakers)
-    text_characters = _generation_text_characters(content, selected_ids)
+    text_characters = sum(value.generation_text_characters for value in selected)
     rough_audio_seconds = _rough_audio_seconds(text_characters)
     return PreparationEstimate(
         selected_lines=sum(value.line_count for value in selected),
@@ -531,11 +560,7 @@ def estimate_generation_resources(
             raise PregenerationSetupError(
                 "Generation queue changed before estimating storage"
             )
-        state_path = (
-            generation_input.directory.parent
-            / f"generation-output-{generation_input.identity[:16]}"
-            / "generation-state.json"
-        )
+        state_path = generation_input.output_directory / "generation-state.json"
         state = (
             load_generation_state_from_snapshot(state_path, queue, queue_sha256)
             if state_path.is_file()
@@ -642,8 +667,11 @@ class PregenerationJobStore:
         self, content: GameContent, selected_story_ids: Iterable[object]
     ) -> PregenerationJob:
         selected_ids = _normalized_selection_ids(content, selected_story_ids)
+        selected_id_set = set(selected_ids)
         selected = tuple(
-            value for value in content.selections if value.selection_id in selected_ids
+            value
+            for value in content.selections
+            if value.selection_id in selected_id_set
         )
         line_ids = tuple(line_id for value in selected for line_id in value.line_ids)
         identity = hashlib.sha256()
@@ -713,32 +741,24 @@ class PregenerationJobStore:
             default=None,
         )
 
+    def _saved_jobs(self) -> Iterator[PregenerationJob]:
+        if self.root.is_dir():
+            for path in self.root.glob("*/job.json"):
+                try:
+                    yield self.load(path.parent.name)
+                except PregenerationSetupError:
+                    continue
+
     def jobs_for_content(self, content: GameContent) -> tuple[PregenerationJob, ...]:
-        if not self.root.is_dir():
-            return ()
-        matches: list[PregenerationJob] = []
-        for path in self.root.glob("*/job.json"):
-            try:
-                job = self.load(path.parent.name)
-            except PregenerationSetupError:
-                continue
-            if job.story_index_sha256 == content.story_index_sha256:
-                matches.append(job)
-        return tuple(matches)
+        return tuple(
+            job
+            for job in self._saved_jobs()
+            if job.story_index_sha256 == content.story_index_sha256
+        )
 
     def source_story_indexes(self) -> tuple[Path, ...]:
-        if not self.root.is_dir():
-            return ()
-        sources: list[Path] = []
-        for path in self.root.glob("*/job.json"):
-            try:
-                job = self.load(path.parent.name)
-            except PregenerationSetupError:
-                continue
-            source = Path(job.story_index).expanduser()
-            if source.is_file():
-                sources.append(source)
-        return tuple(dict.fromkeys(sources))
+        sources = (Path(job.story_index).expanduser() for job in self._saved_jobs())
+        return tuple(dict.fromkeys(source for source in sources if source.is_file()))
 
     def prepared_story_ids(self, content: GameContent) -> frozenset[str]:
         return frozenset(
@@ -779,9 +799,7 @@ class PregenerationJobStore:
                     for path in (manifest.parent, manifest)
                 )
             ):
-                try:
-                    int(identity, 16)
-                except ValueError:
+                if not all(character in hexdigits for character in identity):
                     continue
                 manifests.append(manifest)
         return tuple(manifests)
@@ -807,12 +825,12 @@ class PregenerationJobStore:
         return prepared
 
     def path_for(self, job_id: str) -> Path:
-        if not isinstance(job_id, str) or len(job_id) != 24:
+        if (
+            not isinstance(job_id, str)
+            or len(job_id) != 24
+            or not all(character in hexdigits for character in job_id)
+        ):
             raise PregenerationSetupError("Preparation identity is invalid")
-        try:
-            int(job_id, 16)
-        except ValueError as error:
-            raise PregenerationSetupError("Preparation identity is invalid") from error
         return self.root / job_id / "job.json"
 
 
@@ -917,9 +935,9 @@ def _collection_stage_groups(
 
 def _is_outdated_reverse1999_index(path: Path) -> bool:
     try:
-        with path.open(encoding="utf-8") as stream:
-            metadata = json.loads(next(stream))
-    except OSError, StopIteration, json.JSONDecodeError:
+        with open_regular_text(path, encoding="utf-8") as stream:
+            metadata = decode_json(next(stream))
+    except OSError, UnicodeError, StopIteration, json.JSONDecodeError:
         return False
     return (
         isinstance(metadata, dict)
@@ -1002,16 +1020,6 @@ def _selection_from_records(
     return selection
 
 
-def _generation_text_characters(
-    content: GameContent, selected_ids: Iterable[str]
-) -> int:
-    return sum(
-        selection.generation_text_characters
-        for selection in content.selections
-        if selection.selection_id in selected_ids
-    )
-
-
 def _rough_audio_seconds(text_characters: int) -> int:
     return (
         text_characters + ROUGH_SPEECH_CHARACTERS_PER_SECOND - 1
@@ -1028,10 +1036,11 @@ def _normalized_selection_ids(
     unknown = tuple(value for value in requested if value not in declared)
     if unknown:
         raise PregenerationSetupError(f"Unknown story selection: {', '.join(unknown)}")
+    requested_ids = set(requested)
     return tuple(
         value.selection_id
         for value in content.selections
-        if value.selection_id in requested
+        if value.selection_id in requested_ids
     )
 
 
@@ -1052,9 +1061,8 @@ def _optional_text(value: object) -> str | None:
 
 def _sha256_text(document: Mapping[str, object], name: str) -> str:
     value = _required_text(document, name)
-    if len(value) != 64:
+    if not is_sha256(value):
         raise ValueError(f"{name} must be SHA-256 text")
-    int(value, 16)
     return value
 
 

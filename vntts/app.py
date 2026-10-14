@@ -1,5 +1,6 @@
 import argparse
 import sys
+from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from multiprocessing import freeze_support
@@ -55,7 +56,6 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.asset_ui import AssetManagerDialog
-from vntts.assets import ModelDownloadCancelled
 from vntts.async_ui import LatestTaskRunner
 from vntts.auto_advance_policy import (
     auto_advance_control_state,
@@ -66,6 +66,7 @@ from vntts.calibration import (
     capture_calibration_background,
     show_calibration_overlay,
 )
+from vntts.cleanup import attempt_cleanup
 from vntts.configuration_apply import ConfigurationApplyMixin
 from vntts.controller import AppController, LiveSequenceStatus
 from vntts.dashboard_ui import (
@@ -87,18 +88,15 @@ from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.game_pack import GamePackError, apply_game_pack
 from vntts.generated_audio import AudioRouteTrace
 from vntts.history_ui import DialogueHistoryDialog
-from vntts.hotkey_ui import HotkeyRecorder
-from vntts.hotkeys import (
-    HotkeyValidationError,
-    macos_hotkey_limitation,
-    validate_hotkey_assignments,
-)
+from vntts.hotkey_ui import HotkeyRecorder, hotkey_recording_errors
+from vntts.hotkeys import macos_hotkey_limitation, validate_hotkey_assignments
 from vntts.live import LiveDialogReader
 from vntts.macos import (
     configure_macos_launch_at_login,
     get_macos_permission_status,
 )
 from vntts.macos_ui import MacOSPermissionsDialog
+from vntts.model_assets import ModelDownloadCancelled
 from vntts.moss_runtime import RetainedMossRuntime
 from vntts.ocr import (
     DialogRegion,
@@ -1112,10 +1110,10 @@ class SettingsDialog(QDialog):
             if message:
                 errors.append((section, widget, message))
 
-        try:
-            validate_hotkey_assignments(self.hotkey_assignments())
-        except HotkeyValidationError as error:
-            add(0, self.read_hotkey, f"Keyboard shortcuts: {error}.")
+        for recorder, message in hotkey_recording_errors(
+            {"Read once": self.read_hotkey, "Live reading": self.live_hotkey}
+        ):
+            add(0, recorder, message)
         add(
             1,
             self.screenshot_directory,
@@ -1464,15 +1462,14 @@ class SettingsDialog(QDialog):
         self.accept()
 
     def _raw_settings(self) -> AppSettings:
+        """Project draft controls; recorded shortcuts are applied on save."""
+
         def optional_text(widget: QLineEdit) -> str | None:
             return widget.text().strip() or None
 
-        hotkeys = self.hotkey_assignments()
         return AppSettings.from_mapping(
             {
                 **asdict(self.original_settings),
-                "read_hotkey": hotkeys["Read once"],
-                "live_hotkey": hotkeys["Live reading"],
                 "screenshot_directory": self.screenshot_directory.text().strip(),
                 "ocr_diagnostics_directory": (
                     self.ocr_diagnostics_directory.text().strip()
@@ -1572,9 +1569,11 @@ class SettingsDialog(QDialog):
         )
 
     def settings(self) -> AppSettings:
-        return guard_auto_advance_settings(
-            self._settings_with_game_pack(self._raw_settings())
+        hotkeys = self.hotkey_assignments()
+        settings = self._raw_settings().updated(
+            read_hotkey=hotkeys["Read once"], live_hotkey=hotkeys["Live reading"]
         )
+        return guard_auto_advance_settings(self._settings_with_game_pack(settings))
 
     def hotkey_assignments(self) -> dict[str, str]:
         return {
@@ -1809,7 +1808,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.unknown_speaker_continue_button: QPushButton | None = None
         self.unknown_speaker_cancel_button: QPushButton | None = None
         self.pending_unknown_speaker: str | None = None
-        self._queued_unknown_speakers: list[str] = []
+        self._queued_unknown_speakers: deque[str] = deque()
         self.unknown_speaker_mapping_in_progress: str | None = None
         self.resume_live_after_unknown_mapping = False
         self.onboarding_cancel_event = Event()
@@ -1823,41 +1822,41 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _build_actions(self) -> None:
         self.tray = QSystemTrayIcon(self._application_icon(), self)
-        self.menu: QMenu = QMenu()
-        self.status_action = QAction("Starting...")
+        self.menu: QMenu = QMenu(self.dashboard)
+        self.status_action = QAction("Starting...", self)
         self.status_action.setEnabled(False)
-        self.dialog_action = QAction("No dialogue detected")
+        self.dialog_action = QAction("No dialogue detected", self)
         self.dialog_action.setEnabled(False)
-        self.read_action = QAction("Read current dialogue")
-        self.show_dashboard_action = QAction("Full controls")
-        self.show_compact_action = QAction("Compact controls")
-        self.live_action = QAction("Start reading")
-        self.sequence_resync_action = QAction("Set story position / resync...")
-        self.sequence_expected_action = QAction("Use expected next line")
-        self.auto_advance_action = QAction("Auto advance dialogue")
+        self.read_action = QAction("Read current dialogue", self)
+        self.show_dashboard_action = QAction("Full controls", self)
+        self.show_compact_action = QAction("Compact controls", self)
+        self.live_action = QAction("Start reading", self)
+        self.sequence_resync_action = QAction("Set story position / resync...", self)
+        self.sequence_expected_action = QAction("Use expected next line", self)
+        self.auto_advance_action = QAction("Auto advance dialogue", self)
         self.auto_advance_action.setCheckable(True)
         self.auto_advance_action.setChecked(self.settings.auto_advance_enabled)
-        self.auto_advance_reason_action = QAction()
+        self.auto_advance_reason_action = QAction(self)
         self.auto_advance_reason_action.setEnabled(False)
-        self.calibrate_action = QAction("Calibrate dialogue region...")
-        self.diagnostics_action = QAction("Live diagnostics")
-        self.readiness_action = QAction("Check readiness")
-        self.settings_action = QAction("Settings...")
-        self.profiles_action = QAction("Game profiles...")
-        self.corrections_action = QAction("OCR corrections...")
-        self.ocr_review_action = QAction("Review uncertain OCR...")
-        self.pregeneration_action = QAction("Prepare offline audio...")
-        self.setup_action = QAction("Run setup")
-        self.assets_action = QAction("Manage models and voices...")
-        self.moss_runtime_action = QAction("Load OpenMOSS")
-        self.voice_preview_action = QAction("Choose narrator voice...")
-        self.speaker_mapping_action = QAction("Manage character voices...")
-        self.history_action = QAction("Dialogue history...")
-        self.support_action = QAction("Support and logs")
-        self.macos_permissions_action = QAction("macOS permissions...")
+        self.calibrate_action = QAction("Calibrate dialogue region...", self)
+        self.diagnostics_action = QAction("Live diagnostics", self)
+        self.readiness_action = QAction("Check readiness", self)
+        self.settings_action = QAction("Settings...", self)
+        self.profiles_action = QAction("Game profiles...", self)
+        self.corrections_action = QAction("OCR corrections...", self)
+        self.ocr_review_action = QAction("Review uncertain OCR...", self)
+        self.pregeneration_action = QAction("Prepare offline audio...", self)
+        self.setup_action = QAction("Run setup", self)
+        self.assets_action = QAction("Manage models and voices...", self)
+        self.moss_runtime_action = QAction("Load OpenMOSS", self)
+        self.voice_preview_action = QAction("Choose narrator voice...", self)
+        self.speaker_mapping_action = QAction("Manage character voices...", self)
+        self.history_action = QAction("Dialogue history...", self)
+        self.support_action = QAction("Support and logs", self)
+        self.macos_permissions_action = QAction("macOS permissions...", self)
         self.macos_permissions_action.setVisible(sys.platform == "darwin")
-        self.settings_folder_action = QAction("Open settings folder")
-        self.quit_action = QAction("Quit")
+        self.settings_folder_action = QAction("Open settings folder", self)
+        self.quit_action = QAction("Quit", self)
 
     def _build_main_menu(self) -> None:
         self.read_action.setEnabled(False)
@@ -2161,7 +2160,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.set_status(
             "Choose stories to prepare, or open Reading to set up playback."
         )
-        QTimer.singleShot(0, self._load_initial_library)
+        QTimer.singleShot(0, self, self._load_initial_library)
 
     def _load_initial_library(self) -> None:
         section = self.dashboard.sections.currentIndex()
@@ -2271,7 +2270,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._start_live_after_initial_start = False
 
     def schedule_hotkeys(self) -> None:
-        QTimer.singleShot(250, self._start_hotkeys_safely)
+        QTimer.singleShot(250, self, self._start_hotkeys_safely)
 
     def _start_hotkeys_safely(self) -> None:
         if self._shutting_down:
@@ -2308,10 +2307,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         try:
             listener.start()
         except BaseException as error:
-            try:
-                listener.stop()
-            except Exception as cleanup_error:
-                error.add_note(f"Hotkey listener cleanup failed: {cleanup_error}")
+            attempt_cleanup(
+                listener.stop,
+                description="Hotkey listener cleanup",
+                primary_error=error,
+            )
             raise
         previous = self.hotkey_listener
         self.hotkey_listener = listener
@@ -2578,16 +2578,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             reader.stop()
         self._live_stop_generation = self._lifecycle_generation
         self._live_stop_continuation = None
+        self.signals.live_changed.emit(False)
+        self.signals.speech_paused_changed.emit(False)
+        self.set_status("Stopping reading and speech...")
         self.live_stop_runner.start(
             self.session_owner.run,
             self._lifecycle_generation,
             lambda _cancellation: self._stop_reader_and_wait(reader),
             False,
         )
-        self.signals.live_changed.emit(False)
-        self.signals.speech_paused_changed.emit(False)
         self._apply_controller_action_state()
-        self.set_status("Stopping reading and speech...")
 
     def _stop_reader_and_wait(self, reader: LiveDialogReader | None) -> bool:
         started = perf_counter()
@@ -2624,13 +2624,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.set_status("Live capture is already stopping; please wait")
             return
         if self.controller.is_live_running is True:
+            if self.diagnostics_dialog is not None:
+                self.diagnostics_dialog.set_calibration_pending(True)
             started = self._stop_live_then(
                 self.calibrate,
                 "Stopping reading before capture calibration...",
                 wait_for_speech=False,
             )
-            if started and self.diagnostics_dialog is not None:
-                self.diagnostics_dialog.set_calibration_pending(True)
+            if not started and self.diagnostics_dialog is not None:
+                self.diagnostics_dialog.set_calibration_pending(False)
             return
         self._calibration_capture_pending = True
         self.restore_compact_after_calibration = self.compact_controller.isVisible()
@@ -2642,7 +2644,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self.readiness_dialog is not None:
             self.readiness_dialog.hide()
         self.set_status("Capturing game window for calibration...")
-        QTimer.singleShot(200, self._start_calibration_capture)
+        QTimer.singleShot(200, self, self._start_calibration_capture)
 
     def _start_calibration_capture(self) -> None:
         if self._shutting_down or not self._calibration_capture_pending:
@@ -2783,6 +2785,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         generation = self.diagnostics_refresh_generation
         QTimer.singleShot(
             200,
+            self,
             lambda: self._capture_diagnostic_snapshot(generation),
         )
 
@@ -3032,7 +3035,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _onboarding_test_finished(
-        self, result: tuple[bool, str], error: Exception | None
+        self, result: tuple[bool, str] | None, error: Exception | None
     ) -> None:
         generation = self._onboarding_test_generation
         self._onboarding_test_generation = None
@@ -3042,6 +3045,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if error is not None:
             result = False, format_runtime_error(error)
         self.set_ready(self.controller.is_ready)
+        assert result is not None
         self.signals.onboarding_test_finished.emit(*result)
 
     def cancel_onboarding_download(self) -> None:
@@ -3463,7 +3467,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._set_modal_launchers_enabled(False)
         self.set_status(status)
         if reader is None:
-            QTimer.singleShot(0, lambda: self._live_stop_finished(True, None))
+            QTimer.singleShot(0, self, lambda: self._live_stop_finished(True, None))
         else:
             self.live_stop_runner.start(
                 self._wait_for_live_reader, reader, wait_for_speech
@@ -3499,7 +3503,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.diagnostics_dialog.set_warning(message)
             return
         if continuation is not None:
-            QTimer.singleShot(0, continuation)
+            QTimer.singleShot(0, self, continuation)
         else:
             self.signals.live_changed.emit(False)
             self.set_status("Reading and speech stopped")
@@ -3615,7 +3619,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             plan = self.pregeneration_dialog.voice_plan()
             content = self.pregeneration_dialog.current_content()
             if isinstance(content, GameContent):
-                selected_ids = self.pregeneration_dialog.selected_story_ids()
+                selected_ids = set(self.pregeneration_dialog.selected_story_ids())
                 selected = [
                     item
                     for item in content.selections
@@ -3801,7 +3805,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     mapping_speaker
                     and dialog.voice_library.binding(mapping_speaker) is not None
                 )
-                profile_synced = self._sync_active_profile(candidate)
+                profile_synced = self._sync_active_profile()
                 return_to_stories |= self._apply_narrator_to_preparation(
                     dialog, candidate, preparation
                 )
@@ -3848,15 +3852,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if not resolved:
             self.pending_unknown_speaker = speaker
             QTimer.singleShot(
-                0, lambda current=speaker: self._show_unknown_speaker_prompt(current)
+                0,
+                self,
+                lambda current=speaker: self._show_unknown_speaker_prompt(current),
             )
             return False
         if self._queued_unknown_speakers:
-            next_speaker = self._queued_unknown_speakers.pop(0)
+            next_speaker = self._queued_unknown_speakers.popleft()
             self.pending_unknown_speaker = next_speaker
             self.speaker_mapping_action.setText(f"Manage voice for {next_speaker}...")
             QTimer.singleShot(
                 0,
+                self,
                 lambda current=next_speaker: self._show_unknown_speaker_prompt(current),
             )
             return False
@@ -3903,6 +3910,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._show_unknown_speaker_prompt(speaker)
 
     def _show_unknown_speaker_prompt(self, speaker: str) -> None:
+        if self._shutting_down:
+            return
         if self.unknown_speaker_prompt is not None:
             self.unknown_speaker_prompt.close()
         # A QMessageBox parented to a hidden dashboard becomes a macOS sheet.
@@ -3921,7 +3930,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         prompt.open()
         # Keep the prompt visible above a fullscreen game and exclude it from
         # screen-region OCR so the warning cannot become dialogue itself.
-        QTimer.singleShot(0, lambda: configure_floating_window(prompt))
+        QTimer.singleShot(0, prompt, lambda: configure_floating_window(prompt))
 
     def _unknown_speaker_prompt_clicked(self, button: QAbstractButton) -> None:
         prompt = self.sender()
@@ -3934,7 +3943,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if button is self.unknown_speaker_choose_button:
             prompt.setProperty("vntts_unknown_resolved", True)
             self.unknown_speaker_mapping_in_progress = speaker
-            QTimer.singleShot(0, lambda: self._open_pending_speaker_mapping(speaker))
+            QTimer.singleShot(
+                0, self, lambda: self._open_pending_speaker_mapping(speaker)
+            )
         elif button is self.unknown_speaker_continue_button:
             prompt.setProperty("vntts_unknown_resolved", True)
             self._continue_unknown_with_narrator(speaker)
@@ -3980,7 +3991,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _continue_unknown_with_narrator(self, speaker: str) -> None:
         self.controller.allow_narrator_fallback(speaker)
         if self._queued_unknown_speakers:
-            next_speaker = self._queued_unknown_speakers.pop(0)
+            next_speaker = self._queued_unknown_speakers.popleft()
             self.pending_unknown_speaker = next_speaker
             self.speaker_mapping_action.setText(f"Manage voice for {next_speaker}...")
             self._show_unknown_speaker_prompt(next_speaker)
@@ -4475,7 +4486,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             and dialog is not None
             and isinstance(dialog.pack_result(), OfflinePackResult)
         ):
-            QTimer.singleShot(0, self._activate_ready_preparation)
+            QTimer.singleShot(0, self, self._activate_ready_preparation)
 
     def set_speech_paused(self, paused: bool) -> None:
         self._reported_speech_paused = bool(paused)
@@ -4497,6 +4508,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         message = format_runtime_error(error)
         self.last_controller_error = message
         self.signals.error_reported.emit(message)
+
+    def _dispose_tray(self) -> None:
+        self.tray.hide()
+        self.menu.close()
+        self.tray.deleteLater()
+        self.menu.deleteLater()
 
     def shutdown(self) -> None:
         if self._shutting_down:
@@ -4538,8 +4555,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.unknown_speaker_cancel_button = None
         self.dashboard.keep_running_on_close = False
         self.dashboard._quitting = True
-        self.tray.hide()
-        self.tray.deleteLater()
+        self._dispose_tray()
         self.dashboard.close()
         self.compact_controller.close()
         if self.diagnostics_dialog is not None:
@@ -4573,13 +4589,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self.narrator_dialog is not None:
             # Reopen after the native close event finishes, so cancellation
             # progress stays visible while the worker winds down.
-            QTimer.singleShot(0, self.dashboard.show)
+            QTimer.singleShot(0, self.dashboard, self.dashboard.show)
             self.dashboard.show_voices()
             self.set_status("Cancelling voice preview before quitting...")
             self.narrator_dialog.reject()
             return
         if self.pregeneration_dialog is not None:
-            QTimer.singleShot(0, self.dashboard.show)
+            QTimer.singleShot(0, self.dashboard, self.dashboard.show)
             self.dashboard.show_stories()
             self.set_status(
                 "Closing story preparation safely; completed audio stays saved."
@@ -4587,6 +4603,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.pregeneration_dialog.reject()
             return
         self.application.quit()
+
+
+def _worker_exit_code(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("Worker returned a non-integer exit code")
+    return value
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -4625,15 +4647,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.game_content_import_worker == "reverse1999":
         from r1999extractor.bootstrap import main as reverse1999_bootstrap_main
 
-        return reverse1999_bootstrap_main(qt_arguments)
+        return _worker_exit_code(reverse1999_bootstrap_main(qt_arguments))
     if arguments.source_audio_publisher_worker == "duration":
         from r1999extractor.source_audio_duration import main as duration_main
 
-        return duration_main(qt_arguments)
+        return _worker_exit_code(duration_main(qt_arguments))
     if arguments.source_audio_publisher_worker == "semantics":
         from r1999extractor.source_audio_semantics import main as semantics_main
 
-        return semantics_main(qt_arguments)
+        return _worker_exit_code(semantics_main(qt_arguments))
     if arguments.offline_generation_worker:
         from vntts.authoring.cli_generation import main as generation_main
 
@@ -4641,7 +4663,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.prepared_sequence_worker:
         from r1999extractor.live_sequence import main as live_sequence_main
 
-        return live_sequence_main(qt_arguments)
+        return _worker_exit_code(live_sequence_main(qt_arguments))
     if arguments.package_self_test:
         return run_package_self_test(arguments.package_self_test_report).exit_code
     if any(

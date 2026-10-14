@@ -1,3 +1,4 @@
+import hashlib
 import json
 import unittest
 from contextlib import redirect_stdout
@@ -7,8 +8,16 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
+
+from tests.authoring_fixtures import (
+    create_pending_cohort_workspace,
+    current_carry_fields,
+    write_legacy_fixture,
+)
 from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_workbench import create_test_workspace
+from vntts.authoring import cohort_review as cohort_review_module
+from vntts.authoring import workspace_inspection as inspection_module
 from vntts.authoring.bulk_generation import _canonical_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import (
@@ -24,29 +33,125 @@ from vntts.authoring.cohort_review import (
 )
 
 
-def create_pending_cohort_workspace(root):
-    return AuthoringCohortReviewTest().create_pending_workspace(root)
-
-
 class AuthoringCohortReviewTest(unittest.TestCase):
     def create_pending_workspace(self, root):
-        _fixture, _imported, created = create_test_workspace(root)
-        state_path = created.directory / "generated-audio/generation-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        queue_id, result = next(iter(state["items"].items()))
-        result.update(
-            {
-                "status": "generated",
-                "review_status": "pending_review",
-                "generation_profile": "stable",
-                "voice_character": "Rhiannon",
-                "prompt_applied": False,
-                "synthesis_provenance_sha256": "b" * 64,
-            }
-        )
-        state["active"] = None
-        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-        return created.directory, state_path, queue_id
+        return create_pending_cohort_workspace(root)
+
+    def test_second_state_projection_cannot_hide_pending_items(self):
+        with TemporaryDirectory() as directory:
+            workspace, path, queue_id = self.create_pending_workspace(Path(directory))
+            payload = path.read_bytes()
+            original_load = inspection_module._load_json_snapshot
+            original_project = inspection_module._list_review_items_from_read
+            state_reads = 0
+
+            def alternate_second_capture(candidate, *arguments, **keywords):
+                nonlocal state_reads
+                if Path(candidate) == path:
+                    state_reads += 1
+                    if state_reads == 2:
+                        alternate = json.loads(payload)
+                        alternate["items"][queue_id].update(
+                            status="approved", review_status="approved"
+                        )
+                        path.write_text(json.dumps(alternate), encoding="utf-8")
+                return original_load(candidate, *arguments, **keywords)
+
+            def restore_after_projection(*arguments, **keywords):
+                rows = original_project(*arguments, **keywords)
+                path.write_bytes(payload)
+                return rows
+
+            with (
+                patch.object(
+                    inspection_module,
+                    "_load_json_snapshot",
+                    side_effect=alternate_second_capture,
+                ),
+                patch.object(
+                    inspection_module,
+                    "_list_review_items_from_read",
+                    side_effect=restore_after_projection,
+                ),
+            ):
+                plan = build_cohort_review_plan(workspace)
+            self.assertEqual(plan.document["pending_item_count"], 1)
+            self.assertEqual(
+                plan.document["state_sha256"], hashlib.sha256(payload).hexdigest()
+            )
+
+    def test_review_snapshot_binds_rows_and_state_even_when_no_pending_rows(self):
+        with TemporaryDirectory() as directory:
+            workspace, path, queue_id = self.create_pending_workspace(Path(directory))
+            for status, review_status in (
+                ("generated", "pending_review"),
+                ("approved", "approved"),
+            ):
+                state = json.loads(path.read_text())
+                state["items"][queue_id].update(
+                    status=status, review_status=review_status
+                )
+                path.write_text(json.dumps(state), encoding="utf-8")
+                snapshot = inspection_module.load_review_items_snapshot(workspace)
+                self.assertEqual(snapshot.state, state)
+                self.assertEqual(
+                    snapshot.state_sha256, hashlib.sha256(path.read_bytes()).hexdigest()
+                )
+                self.assertEqual(snapshot.items[0].status, status)
+                self.assertEqual(snapshot.items[0].review_status, review_status)
+                self.assertEqual(
+                    snapshot.items[0].authority.state_sha256, snapshot.state_sha256
+                )
+                self.assertEqual(
+                    snapshot.items, inspection_module.list_review_items(workspace)
+                )
+                plan = build_cohort_review_plan(workspace)
+                self.assertEqual(plan.document["state_sha256"], snapshot.state_sha256)
+                self.assertEqual(
+                    plan.document["pending_item_count"], int(status == "generated")
+                )
+
+    def test_review_snapshot_keeps_active_and_legacy_review_supported(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, path, queue_id = self.create_pending_workspace(
+                root / "workspace"
+            )
+            fixture = write_legacy_fixture(root / "legacy")
+            active = json.loads(fixture["state"].read_text())["active"]
+            self.assertEqual(active["queue_id"], queue_id)
+            queue_item = VoiceGenerationQueue.load(workspace / "queue.jsonl").items[0]
+            state = json.loads(path.read_text())
+            result = state["items"][queue_id]
+            result.update(
+                current_carry_fields(
+                    workspace, queue_item, path.parent / result["path"]
+                )
+            )
+            result.update(status="generated", review_status="pending_review")
+            path.write_text(json.dumps(state), encoding="utf-8")
+            for schema in (
+                "vntts.authoring-generation-state",
+                "r1999.bulk-generation-state",
+            ):
+                state = json.loads(path.read_text())
+                state["schema"] = schema
+                state["active"] = active
+                path.write_text(json.dumps(state), encoding="utf-8")
+                snapshot = inspection_module.load_review_items_snapshot(workspace)
+                self.assertEqual(snapshot.state["active"], active)
+                plan = build_cohort_review_plan(workspace)
+                self.assertEqual(plan.document["pending_item_count"], 1)
+                self.assertEqual(plan.document["state_sha256"], snapshot.state_sha256)
+
+    def test_review_snapshot_without_state_keeps_empty_list_behavior(self):
+        with TemporaryDirectory() as directory:
+            workspace, path, _queue_id = self.create_pending_workspace(Path(directory))
+            path.unlink()
+            self.assertIsNone(inspection_module.load_review_items_snapshot(workspace))
+            self.assertEqual(inspection_module.list_review_items(workspace), ())
+            with self.assertRaisesRegex(CohortReviewError, "no generation state"):
+                build_cohort_review_plan(workspace)
 
     def test_plan_is_deterministic_and_samples_every_attention_item(self):
         with TemporaryDirectory() as directory:
@@ -78,6 +183,305 @@ class AuthoringCohortReviewTest(unittest.TestCase):
         self.assertEqual(cohort["items"][0]["pace_advisories"], [])
         self.assertTrue(cohort["items"][0]["sampled"])
         self.assertEqual(first.plan_id, first.document["plan_id"])
+
+    def test_sampling_reads_records_once_and_preserves_attention_and_expansion(self):
+        class CountedRecords(list):
+            def __iter__(self):
+                self.traversals += 1
+                return super().__iter__()
+
+        values = [
+            {
+                "queue_id": f"{bucket}-{index}",
+                "length_bucket": bucket,
+                "technical_flags": ["pause"] if index == 0 else [],
+            }
+            for bucket in ("short", "medium", "long")
+            for index in range(7)
+        ]
+        attention = {f"{bucket}-0" for bucket in ("short", "medium", "long")}
+        previous = attention
+        for count in range(1, 6):
+            with self.subTest(count=count):
+                records = CountedRecords(values)
+                records.traversals = 0
+                sampled = cohort_review_module._sample_cohort_queue_ids(
+                    "a" * 64, records, count
+                )
+                self.assertEqual(records.traversals, 1)
+                self.assertTrue(previous.issubset(sampled))
+                self.assertEqual(len(sampled), 3 * (count + 1))
+                self.assertEqual(
+                    sampled,
+                    cohort_review_module._sample_cohort_queue_ids(
+                        "a" * 64, tuple(reversed(values)), count
+                    ),
+                )
+                for bucket in ("short", "medium", "long"):
+                    self.assertEqual(
+                        sum(queue_id.startswith(bucket) for queue_id in sampled),
+                        count + 1,
+                    )
+                previous = sampled
+
+    def test_plan_selection_accepts_iterables_and_preserves_exact_identity(self):
+        with TemporaryDirectory() as directory:
+            workspace, _state, queue_id = self.create_pending_workspace(Path(directory))
+            expected = build_cohort_review_plan(workspace, queue_ids=[queue_id])
+            for selected in ((queue_id,), {queue_id}, iter([queue_id])):
+                self.assertEqual(
+                    build_cohort_review_plan(workspace, queue_ids=selected), expected
+                )
+            for selected in (queue_id, b"queue", iter([]), iter([queue_id, queue_id])):
+                with self.assertRaises(CohortReviewError):
+                    build_cohort_review_plan(workspace, queue_ids=selected)
+
+    def test_plan_loader_validates_nested_records_and_inventory(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, queue_id = self.create_pending_workspace(root)
+            plan = build_cohort_review_plan(workspace)
+            output = root / "malformed-plan.json"
+
+            mutations = (
+                lambda d: d["cohorts"][0]["items"][0].__setitem__("queue_id", []),
+                lambda d: d["cohorts"][0]["items"][0].__setitem__(
+                    "audio_sha256", "bad"
+                ),
+                lambda d: d["cohorts"][0]["items"][0].__setitem__(
+                    "technical_flags", [[]]
+                ),
+                lambda d: d["cohorts"][0]["items"][0].__setitem__("word_count", True),
+                lambda d: d["cohorts"][0]["items"][0].__setitem__("word_count", -1),
+                lambda d: d["cohorts"][0]["items"][0].__setitem__(
+                    "length_bucket", "wrong"
+                ),
+                lambda d: d["cohorts"][0]["items"][0].__setitem__("sampled", False),
+                lambda d: d["cohorts"][0].__setitem__("sample_queue_ids", [[]]),
+                lambda d: d["cohorts"][0].__setitem__(
+                    "sample_queue_ids", [queue_id, queue_id]
+                ),
+                lambda d: d["cohorts"][0].__setitem__("sample_queue_ids", ["missing"]),
+                lambda d: d["cohorts"][0]["items"].append(
+                    deepcopy(d["cohorts"][0]["items"][0])
+                ),
+                lambda d: d["cohorts"][0].__setitem__("item_count", 2),
+                lambda d: d["cohorts"][0].__setitem__("attention_count", 1),
+                lambda d: d["cohorts"][0]["identity"].__setitem__(
+                    "provider", "changed"
+                ),
+                lambda d: d.__setitem__("sample_item_count", 2),
+                lambda d: d.__setitem__("pending_item_count", 2),
+                lambda d: d.__setitem__("cohort_count", 2),
+                lambda d: d.__setitem__("blocked_item_count", 1),
+                lambda d: d.__setitem__(
+                    "blocked_items",
+                    [{"queue_id": queue_id, "line_id": "blocked", "reason": "unbound"}],
+                ),
+                lambda d: d["policy"]["length_buckets"].__setitem__(
+                    "short_max_words", 6.0
+                ),
+            )
+            for index, mutate in enumerate(mutations):
+                with self.subTest(mutation=index):
+                    document = deepcopy(plan.document)
+                    mutate(document)
+                    document["plan_id"] = _canonical_sha256(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "plan_id"
+                        }
+                    )
+                    output.write_text(json.dumps(document))
+                    with self.assertRaises(CohortReviewError):
+                        load_cohort_review_plan(output)
+
+    def test_legacy_plans_do_not_require_optional_pace_reports(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id = self.create_pending_workspace(root)
+            plan = build_cohort_review_plan(workspace)
+            output = root / "legacy-plan.json"
+            for version in (1, 2, 3):
+                with self.subTest(version=version):
+                    document = deepcopy(plan.document)
+                    for item in document["cohorts"][0]["items"]:
+                        for field in (
+                            "words_per_minute",
+                            "pace_baseline_wpm",
+                            "pace_ratio",
+                            "pace_baseline_scope",
+                            "pace_advisories",
+                        ):
+                            item.pop(field, None)
+                    document["policy"]["schema_version"] = version
+                    if version == 1:
+                        document["policy"].pop("attention_thresholds")
+                    elif version == 2:
+                        document["policy"]["attention_thresholds"] = {
+                            "silence_ratio_at_least": 0.3,
+                            "internal_pause_seconds_at_least": 1.0,
+                        }
+                    document["plan_id"] = _canonical_sha256(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "plan_id"
+                        }
+                    )
+                    output.write_text(json.dumps(document))
+                    self.assertEqual(load_cohort_review_plan(output).document, document)
+
+    def test_decision_enums_raise_domain_errors_in_builders_and_loaders(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, queue_id = self.create_pending_workspace(root)
+            plan = build_cohort_review_plan(workspace)
+            cohort_id = plan.document["cohorts"][0]["cohort_id"]
+            accepted = build_cohort_review_decision(
+                plan, cohort_id, "accepted", reviewed_queue_ids=[queue_id]
+            )
+            output = root / "invalid-decision.json"
+            for value in ([], {}, True, 4, None, "unknown"):
+                with self.subTest(value=value):
+                    with self.assertRaises(CohortReviewError):
+                        build_cohort_review_decision(
+                            plan, cohort_id, value, reviewed_queue_ids=[queue_id]
+                        )
+                    with self.assertRaises(CohortReviewError):
+                        build_cohort_review_decision(
+                            plan,
+                            cohort_id,
+                            "accepted",
+                            reviewed_queue_ids=[queue_id],
+                            sample_assessments={
+                                queue_id: {"assessment": value, "defect_reasons": []}
+                            },
+                        )
+                    for mutate in (
+                        lambda d: d.__setitem__("decision", value),
+                        lambda d: d["sample_assessments"][0].__setitem__(
+                            "assessment", value
+                        ),
+                        lambda d: d["item_review_statuses"][0].__setitem__(
+                            "review_status", value
+                        ),
+                    ):
+                        document = deepcopy(accepted.document)
+                        mutate(document)
+                        document["decision_id"] = _canonical_sha256(
+                            {
+                                key: item
+                                for key, item in document.items()
+                                if key != "decision_id"
+                            }
+                        )
+                        output.write_text(json.dumps(document))
+                        with self.assertRaises(CohortReviewError):
+                            load_cohort_review_decision(output)
+
+    def test_all_decision_versions_preserve_terminal_and_expand_statuses(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, queue_id = self.create_pending_workspace(root)
+            plan = build_cohort_review_plan(workspace)
+            cohort_id = plan.document["cohorts"][0]["cohort_id"]
+            output = root / "versioned-decision.json"
+            for name in ("accepted", "rejected", "expand"):
+                decision = build_cohort_review_decision(
+                    plan,
+                    cohort_id,
+                    name,
+                    reviewed_queue_ids=[queue_id],
+                    next_clean_samples_per_bucket=2 if name == "expand" else None,
+                )
+                for version in (1, 2, 3, 4):
+                    with self.subTest(decision=name, version=version):
+                        document = deepcopy(decision.document)
+                        document["schema_version"] = version
+                        if version < 3:
+                            document.pop("item_review_statuses")
+                        if version == 1:
+                            for assessment in document["sample_assessments"]:
+                                assessment.pop("defect_reasons")
+                        document["decision_id"] = _canonical_sha256(
+                            {
+                                key: item
+                                for key, item in document.items()
+                                if key != "decision_id"
+                            }
+                        )
+                        output.write_text(json.dumps(document))
+                        self.assertEqual(
+                            load_cohort_review_decision(output).document, document
+                        )
+
+    def test_legacy_null_item_statuses_preserve_terminal_projection(self):
+        for version in (1, 2):
+            for name, expected in (("accepted", "approved"), ("rejected", "rejected")):
+                with (
+                    self.subTest(version=version, decision=name),
+                    TemporaryDirectory() as directory,
+                ):
+                    workspace, state_path, queue_id = self.create_pending_workspace(
+                        Path(directory)
+                    )
+                    plan = build_cohort_review_plan(workspace)
+                    decision = build_cohort_review_decision(
+                        plan,
+                        plan.document["cohorts"][0]["cohort_id"],
+                        name,
+                        reviewed_queue_ids=[queue_id],
+                    ).to_dict()
+                    decision["schema_version"] = version
+                    decision["item_review_statuses"] = None
+                    decision.pop("sample_assessments")
+                    decision["decision_id"] = _canonical_sha256(
+                        {
+                            key: value
+                            for key, value in decision.items()
+                            if key != "decision_id"
+                        }
+                    )
+                    projection = apply_cohort_review_decision(workspace, plan, decision)
+                    self.assertEqual(projection.queue_ids, (queue_id,))
+                    self.assertEqual(projection.review_status, expected)
+                    state = json.loads(state_path.read_text())
+                    self.assertEqual(
+                        state["items"][queue_id]["review_status"], expected
+                    )
+                    self.assertEqual(
+                        state["items"][queue_id]["cohort_review"][
+                            "item_review_statuses"
+                        ],
+                        [],
+                    )
+                    self.assertIsNone(decision["item_review_statuses"])
+
+    def test_projection_rejects_noninteger_workspace_version_before_state_write(self):
+        with TemporaryDirectory() as directory:
+            workspace, state, queue_id = self.create_pending_workspace(Path(directory))
+            plan = build_cohort_review_plan(workspace)
+            decision = build_cohort_review_decision(
+                plan,
+                plan.document["cohorts"][0]["cohort_id"],
+                "accepted",
+                reviewed_queue_ids=[queue_id],
+            )
+            workspace_path = workspace / "workspace.json"
+            configuration = json.loads(workspace_path.read_text())
+            before = state.read_bytes()
+            for version in (float(configuration["schema_version"]), True, []):
+                with self.subTest(version=version):
+                    workspace_path.write_text(
+                        json.dumps(dict(configuration, schema_version=version))
+                    )
+                    with self.assertRaisesRegex(
+                        CohortReviewError, "Unsupported authoring workspace"
+                    ):
+                        apply_cohort_review_decision(workspace, plan, decision)
+                    self.assertEqual(state.read_bytes(), before)
 
     def test_legacy_policy_v1_plan_remains_readable(self):
         with TemporaryDirectory() as directory:
@@ -210,7 +614,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                 Path(directory)
             )
 
-            def mutate(_workspace):
+            def mutate(*_arguments, **_keywords):
                 state = json.loads(state_path.read_text(encoding="utf-8"))
                 state["active"] = {"phase": "changed"}
                 state_path.write_text(
@@ -220,7 +624,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.cohort_review.list_review_items",
+                    "vntts.authoring.workspace_inspection._list_review_items_from_read",
                     side_effect=mutate,
                 ),
                 self.assertRaisesRegex(CohortReviewError, "state changed"),
@@ -329,8 +733,8 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                     side_effect=AssertionError("full plan rescan"),
                 ),
                 patch(
-                    "vntts.authoring.cohort_review.inspect_workspace",
-                    side_effect=AssertionError("broad workspace inspection"),
+                    "vntts.authoring.cohort_review.load_review_items_snapshot",
+                    side_effect=AssertionError("review state rescan"),
                 ),
             ):
                 projection = apply_cohort_review_decision(workspace, plan, decision)
@@ -843,7 +1247,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.bulk_generation.os.replace",
+                    "vntts.authoring.generation_review.os.replace",
                     side_effect=fail_state_commit,
                 ),
                 self.assertRaisesRegex(CohortReviewError, "remains fail-closed"),
@@ -878,9 +1282,9 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             state_before = state_path.read_bytes()
             manifest_path = state_path.parent / "manifest.json"
             manifest_before = manifest_path.read_bytes()
-            from vntts.authoring import bulk_generation
+            from vntts.authoring import generation_review
 
-            original = bulk_generation._write_generated_manifest_from_state
+            original = generation_review._write_generated_manifest_from_state
 
             def mutate_after_staging(*args, **kwargs):
                 original(*args, **kwargs)
@@ -888,7 +1292,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.bulk_generation._write_generated_manifest_from_state",
+                    "vntts.authoring.generation_review._write_generated_manifest_from_state",
                     side_effect=mutate_after_staging,
                 ),
                 self.assertRaisesRegex(CohortReviewError, "authority changed"),

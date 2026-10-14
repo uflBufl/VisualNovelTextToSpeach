@@ -1,34 +1,28 @@
 import hashlib
 import json
 import os
-import struct
 import time
 import unittest
-import zlib
-from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import patch
 
-import numpy as np
-from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
-
+from tests.source_reference_fixtures import write_quality_session
 from vntts.authoring.source_reference_quality import (
-    QUALITY_REVIEW_SCHEMA,
-    QUALITY_REVIEW_VERSION,
     load_source_reference_quality_review,
 )
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QPoint, Qt, QTimer
+    from PySide6.QtCore import QEvent, QPoint, Qt, QThreadPool, QTimer
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
+    from tests.qt_task_fixtures import release_and_wait_for_pool
     from vntts.authoring.source_reference_quality_ui import (
         SourceReferenceQualityDialog,
     )
@@ -41,98 +35,6 @@ except ModuleNotFoundError as error:
     QTest = None
     QTimer = None
     SourceReferenceQualityDialog = None
-
-
-def _write_audio(root, name, value):
-    path = root / name
-    write_pcm16_wav(path, np.full(800, value, dtype=np.float32), 16_000)
-    info = probe_pcm16_mono_wav(path)
-    return {
-        "audio": name,
-        "audio_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "sample_rate": info.sample_rate,
-        "sample_count": info.sample_count,
-        "duration_seconds": round(info.duration_seconds, 6),
-    }
-
-
-def _write_png(root, name):
-    def chunk(kind, payload):
-        return (
-            struct.pack(">I", len(payload))
-            + kind
-            + payload
-            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
-        )
-
-    payload = b"\x89PNG\r\n\x1a\n"
-    payload += chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 6, 0, 0, 0))
-    rows = b"\x00" + b"\x7f\x30\x10\xff" * 2
-    payload += chunk(b"IDAT", zlib.compress(rows * 2))
-    payload += chunk(b"IEND", b"")
-    path = root / name
-    path.write_bytes(payload)
-    return {
-        "image": name,
-        "image_sha256": hashlib.sha256(payload).hexdigest(),
-        "width": 2,
-        "height": 2,
-    }
-
-
-def write_quality_session(root):
-    reference = _write_audio(root, "reference.wav", 0.1)
-    generated_one = _write_audio(root, "generated-one.wav", 0.2)
-    generated_two = _write_audio(root, "generated-two.wav", 0.3)
-    portrait = _write_png(root, "portrait.png")
-    now = datetime.now(timezone.utc).isoformat()
-    samples = []
-    for index, audio in enumerate((generated_one, generated_two), start=1):
-        text = f"Generated sample {index}."
-        samples.append(
-            {
-                "queue_id": f"queue-{index}",
-                "evaluation_kind": ("source-match" if index == 1 else "fixed-1"),
-                "text": text,
-                "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
-                **audio,
-            }
-        )
-    session = root / "review.json"
-    session.write_text(
-        json.dumps(
-            {
-                "schema": QUALITY_REVIEW_SCHEMA,
-                "schema_version": QUALITY_REVIEW_VERSION,
-                "created_at": now,
-                "updated_at": now,
-                "source_reference_plan_sha256": "1" * 64,
-                "source_reference_evaluation_sha256": "2" * 64,
-                "generation_state_sha256": "3" * 64,
-                "variant_count": 1,
-                "completed_count": 0,
-                "variants": [
-                    {
-                        "variant_id": "cluster-a-anchor-1",
-                        "cluster_id": "cluster-a",
-                        "character": "Dobharchu",
-                        "portrait": "534704",
-                        "portrait_image": portrait,
-                        "source_bank": "hero.bnk",
-                        "media_id": 123,
-                        "affected_queue_item_count": 37,
-                        "reference": reference,
-                        "generated_samples": samples,
-                        "excluded_results": [],
-                        "decision": None,
-                    }
-                ],
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    return session
 
 
 @unittest.skipIf(QApplication is None, "PySide6 is not installed")
@@ -193,15 +95,15 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
                 & Qt.TextInteractionFlag.TextSelectableByMouse
             )
             self.assertEqual(
-                dialog.decision_context.values["game_speaker"].text(), "Dobharchu"
+                dialog.decision_context.values["game_speaker"], "Dobharchu"
             )
             self.assertIn(
                 "legacy review format",
-                dialog.decision_context.values["model"].text(),
+                dialog.decision_context.values["model"],
             )
             self.assertIn(
                 "later voice binding",
-                dialog.decision_context.values["effect"].text(),
+                dialog.decision_context.values["effect"],
             )
 
             self.finish_audio(dialog, "reference")
@@ -314,6 +216,41 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
 
         self.assertEqual(message, "Exact game portrait is not installed")
         self.assertLessEqual(maximum_height, 48)
+
+    def test_decision_context_normalizes_strings_and_preserves_summary_widgets(self):
+        from vntts.authoring.review_context_ui import ReviewDecisionContext
+
+        card = ReviewDecisionContext()
+        self.addCleanup(card.deleteLater)
+        card.set_context(
+            {"purpose": "  Compare  ", "reference": None, "controls": 0, "effect": " "},
+            technical="  provenance  ",
+        )
+        self.assertTrue(all(isinstance(value, str) for value in card.values.values()))
+        self.assertEqual(card.values["reference"], "Unknown")
+        self.assertEqual(card.purpose.text(), "You are deciding: Compare")
+        self.assertEqual(
+            card.identity.text(),
+            "Speaker in game: Unknown | Voice used: Unknown | Reference: Unknown",
+        )
+        self.assertEqual(
+            card.synthesis.text(), "Synthesis: Unknown | Unknown | Unknown | 0"
+        )
+        self.assertEqual(card.effect.text(), "Your decision will: Unknown")
+        self.assertEqual(card.identity.accessibleName(), "Speaker voice and reference")
+        self.assertTrue(card.identity.wordWrap())
+        self.assertTrue(
+            card.identity.textInteractionFlags()
+            & Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.assertEqual(card.technical.text(), "provenance")
+        card.technical_toggle.setChecked(True)
+        card.set_context({})
+        self.assertEqual(card.purpose.text(), "You are deciding: Unknown")
+        self.assertEqual(card.values["controls"], "Unknown")
+        self.assertTrue(card.technical_toggle.isHidden())
+        self.assertFalse(card.technical_toggle.isChecked())
+        self.assertTrue(card.technical.isHidden())
 
     def test_model_label_shortens_both_native_path_formats(self):
         from vntts.authoring.review_context_ui import review_model_label
@@ -464,6 +401,47 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             dialog.close_button.click()
             self.assertFalse(dialog.isVisible())
 
+    def test_catalog_completion_persists_a_valid_accepted_decision(self):
+        from contextlib import ExitStack
+
+        from scripts.render_ui_catalog import (
+            _close_catalog_widget,
+            _source_reference_review,
+        )
+
+        with ExitStack() as resources:
+            dialog = _source_reference_review("complete", resources)
+            try:
+                self.assertIsNone(dialog.current)
+                persisted = load_source_reference_quality_review(dialog.session_path)
+                self.assertEqual(persisted["completed_count"], 1)
+                self.assertEqual(
+                    persisted["variants"][0]["decision"]["decision"], "accept"
+                )
+            finally:
+                _close_catalog_widget(dialog)
+
+    def test_completed_review_scroll_does_not_outlive_dialog(self):
+        with TemporaryDirectory() as directory:
+            session = write_quality_session(Path(directory))
+            document = json.loads(session.read_bytes())
+            from vntts.authoring.source_reference_quality_records import (
+                record_source_reference_quality_decision,
+            )
+
+            record_source_reference_quality_decision(
+                session, document["variants"][0]["variant_id"], "accept"
+            )
+            self.application.processEvents()
+            with patch("sys.excepthook") as exception_hook:
+                dialog = SourceReferenceQualityDialog(session)
+                self.assertIsNone(dialog.current)
+                dialog.close()
+                dialog.deleteLater()
+                self.application.sendPostedEvents(dialog, QEvent.Type.DeferredDelete)
+                self.application.processEvents()
+            exception_hook.assert_not_called()
+
     def test_complete_message_remains_visible_with_large_text(self):
         with TemporaryDirectory() as directory:
             session = write_quality_session(Path(directory))
@@ -471,8 +449,15 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             font = dialog.font()
             font.setPixelSize(48)
             dialog.setFont(font)
-            dialog.session["variants"][0]["decision"] = "accept"
-            dialog._load_next(dialog.session)
+            current = dialog.current
+            self.assertIsNotNone(current)
+            dialog._load_next(
+                dialog.decision_recorder(session, current["variant_id"], "accept")
+            )
+            persisted = load_source_reference_quality_review(session)
+            self.assertEqual(persisted["completed_count"], 1)
+            self.assertEqual(persisted["variants"][0]["decision"]["decision"], "accept")
+            self.assertIsNone(dialog.current)
             dialog.show()
             self.application.processEvents()
 
@@ -487,11 +472,28 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             dialog.close()
 
     def test_slow_decision_keeps_qt_responsive_and_defers_close(self):
-        with TemporaryDirectory() as directory:
+        release = Event()
+        pool = QThreadPool()
+        dialog = None
+        with (
+            TemporaryDirectory() as directory,
+            release_and_wait_for_pool(
+                pool,
+                release,
+                finish=lambda: self.wait_for(
+                    lambda: (
+                        dialog is None
+                        or (
+                            not dialog._decision_active
+                            and not dialog.playback_runner.active
+                        )
+                    )
+                ),
+            ),
+        ):
             root = Path(directory)
             session = write_quality_session(root)
             started = Event()
-            release = Event()
 
             def slow_recorder(*args):
                 started.set()
@@ -505,6 +507,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             dialog = SourceReferenceQualityDialog(
                 session,
                 decision_recorder=slow_recorder,
+                thread_pool=pool,
                 confirmer=lambda _decision: True,
             )
             self.authorize_accept(dialog)
@@ -521,6 +524,15 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             self.assertFalse(dialog.accept_button.isEnabled())
             self.assertTrue(dialog.play_reference.isEnabled())
             self.assertIn("Saving the exact", dialog.status.text())
+            self.finish_audio(dialog, "reference")
+            for button in (
+                dialog.accept_button,
+                dialog.reject_reference,
+                dialog.needs_sample,
+            ):
+                self.assertFalse(button.isEnabled())
+                self.assertIn("Unavailable", button.accessibleDescription())
+                self.assertIn("Saving the exact", button.accessibleDescription())
             close_event = QCloseEvent()
             dialog.closeEvent(close_event)
             self.assertFalse(close_event.isAccepted())

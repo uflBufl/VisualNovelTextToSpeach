@@ -8,12 +8,19 @@ from pathlib import Path
 from typing import TypedDict
 
 from vntts.authoring.authority import (
+    AuthoringAuthorityError,
+    AuthoritySnapshot,
+    assert_authority_snapshot,
     canonical_document_sha256,
+    capture_authority_file,
     write_json_document_no_replace,
 )
 from vntts.authoring.bulk_generation import (
-    generation_failure_repair_plan,
+    BulkGenerationError,
     load_generation_state,
+)
+from vntts.authoring.generation_failures import (
+    generation_failure_repair_plan,
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
@@ -21,6 +28,8 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
 )
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import read_regular_text
 
 FAILURE_REGENERATION_PLAN_SCHEMA = "vntts.authoring-failure-regeneration-plan"
 FAILURE_REGENERATION_PLAN_VERSION = 1
@@ -85,14 +94,20 @@ def build_failure_regeneration_plan(
 ) -> FailureRegenerationPlan:
     """Bind every current provenance-unbound failure without changing state."""
     try:
-        directory, workspace, _workspace_sha256 = load_workspace_authority(
+        directory, workspace, workspace_sha256 = load_workspace_authority(
             workspace_directory
         )
         queue_path = directory / "queue.jsonl"
         state_path = directory / "generated-audio/generation-state.json"
         repair = generation_failure_repair_plan(state_path, queue_path)
-        state = load_generation_state(state_path, queue_path)
-    except (AuthoringWorkbenchError, OSError, ValueError) as error:
+        state, sources = _failure_plan_inputs(directory, workspace_sha256, repair)
+    except (
+        AuthoringWorkbenchError,
+        AuthoringAuthorityError,
+        BulkGenerationError,
+        OSError,
+        ValueError,
+    ) as error:
         raise FailureRegenerationError(str(error)) from error
     records: list[FailureRegenerationRecord] = []
     state_items = _object_field(state, "items", "Generation state items")
@@ -131,11 +146,38 @@ def build_failure_regeneration_plan(
         "failure_count": len(records),
         "records": records,
     }
+    try:
+        for source in sources:
+            assert_authority_snapshot(source, "failure regeneration source")
+    except AuthoringAuthorityError as error:
+        raise FailureRegenerationError(str(error)) from error
     plan_id = canonical_document_sha256(body)
     return FailureRegenerationPlan(
         plan_id,
         _validated_plan_document({**body, "plan_id": plan_id}),
     )
+
+
+def _failure_plan_inputs(
+    directory: Path, workspace_sha256: str, repair: dict[str, object]
+) -> tuple[dict[str, object], tuple[AuthoritySnapshot, ...]]:
+    workspace = capture_authority_file(
+        directory / "workspace.json", "workspace configuration"
+    )
+    queue = capture_authority_file(directory / "queue.jsonl", "generation queue")
+    state = capture_authority_file(
+        directory / "generated-audio/generation-state.json", "generation state"
+    )
+    if (
+        workspace.sha256 != workspace_sha256
+        or queue.sha256 != repair.get("queue_sha256")
+        or state.sha256 != repair.get("state_sha256")
+    ):
+        raise FailureRegenerationError("Failure repair sources changed while planning")
+    document = load_generation_state(state.path, queue.path)
+    if document != state.json_document("generation state"):
+        raise FailureRegenerationError("Generation state changed while planning")
+    return document, (workspace, queue, state)
 
 
 def build_failure_regeneration_command(
@@ -215,7 +257,7 @@ def write_failure_regeneration_plan(
 def load_failure_regeneration_plan(path: str | Path) -> FailureRegenerationPlan:
     path = Path(path).expanduser().resolve()
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = decode_json(read_regular_text(path, encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise FailureRegenerationError(
             f"Unable to read failure regeneration plan {path}: {error}"
@@ -241,22 +283,21 @@ def _validated_plan_document(
     }
     if not isinstance(document, dict) or set(document) != required:
         raise FailureRegenerationError("Failure regeneration plan fields are invalid")
-    if (
-        document.get("schema") != FAILURE_REGENERATION_PLAN_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != FAILURE_REGENERATION_PLAN_VERSION
+    if document.get(
+        "schema"
+    ) != FAILURE_REGENERATION_PLAN_SCHEMA or not has_schema_version(
+        document, FAILURE_REGENERATION_PLAN_VERSION
     ):
         raise FailureRegenerationError(
             "Failure regeneration plan schema is unsupported"
         )
-    _required_text(document.get("workspace_id"), "Workspace ID")
-    for field, label in (
-        ("workspace_config_fingerprint", "Workspace config fingerprint"),
-        ("queue_sha256", "Queue SHA-256"),
-        ("state_sha256", "State SHA-256"),
-        ("plan_id", "Plan ID"),
-    ):
-        _required_sha256(document.get(field), label)
+    workspace_id = _required_text(document.get("workspace_id"), "Workspace ID")
+    config_fingerprint = _required_sha256(
+        document.get("workspace_config_fingerprint"), "Workspace config fingerprint"
+    )
+    queue_sha256 = _required_sha256(document.get("queue_sha256"), "Queue SHA-256")
+    state_sha256 = _required_sha256(document.get("state_sha256"), "State SHA-256")
+    plan_id = _required_sha256(document.get("plan_id"), "Plan ID")
     records = document.get("records")
     if not isinstance(records, list):
         raise FailureRegenerationError("Failure regeneration records must be a list")
@@ -279,16 +320,13 @@ def _validated_plan_document(
     return {
         "schema": FAILURE_REGENERATION_PLAN_SCHEMA,
         "schema_version": FAILURE_REGENERATION_PLAN_VERSION,
-        "workspace_id": _required_text(document.get("workspace_id"), "Workspace ID"),
-        "workspace_config_fingerprint": _required_sha256(
-            document.get("workspace_config_fingerprint"),
-            "Workspace config fingerprint",
-        ),
-        "queue_sha256": _required_sha256(document.get("queue_sha256"), "Queue SHA-256"),
-        "state_sha256": _required_sha256(document.get("state_sha256"), "State SHA-256"),
+        "workspace_id": workspace_id,
+        "workspace_config_fingerprint": config_fingerprint,
+        "queue_sha256": queue_sha256,
+        "state_sha256": state_sha256,
         "failure_count": failure_count,
         "records": canonical,
-        "plan_id": _required_sha256(document.get("plan_id"), "Plan ID"),
+        "plan_id": plan_id,
     }
 
 
@@ -304,10 +342,6 @@ def _validated_record(record: object) -> FailureRegenerationRecord:
     }
     if not isinstance(record, dict) or set(record) != required:
         raise FailureRegenerationError("Failure regeneration record is malformed")
-    _required_text(record.get("queue_id"), "Queue ID")
-    _required_text(record.get("line_id"), "Line ID")
-    _required_text(record.get("failure_kind"), "Failure kind")
-    _required_sha256(record.get("item_sha256"), "Item SHA-256")
     attempts = record.get("attempts")
     if not isinstance(attempts, int) or isinstance(attempts, bool) or attempts < 0:
         raise FailureRegenerationError("Failure attempts must be non-negative")

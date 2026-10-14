@@ -1,0 +1,1280 @@
+"""Shared authoring input fixtures for tests and the UI catalog."""
+
+import hashlib
+import json
+from collections.abc import Sequence
+from copy import deepcopy
+from dataclasses import asdict
+from pathlib import Path
+from typing import TypedDict
+
+import numpy as np
+import soundfile as sf
+from vntts_artifacts.audio import (
+    PCM16_MONO_WAV_FORMAT,
+    probe_pcm16_mono_wav,
+    write_pcm16_wav,
+)
+from vntts_artifacts.generated_audio import write_generated_audio_manifest
+from vntts_artifacts.hashing import text_sha256
+from vntts_artifacts.story_index import write_story_index_document
+from vntts_artifacts.voice_generation_queue import (
+    VoiceGenerationQueue,
+    VoiceGenerationQueueItem,
+    expected_voice_generation_queue_id,
+    write_voice_generation_queue,
+)
+from vntts_artifacts.voice_manifest import write_voice_manifest
+
+from vntts.authoring import bulk_generation as bulk_generation_module
+from vntts.authoring import workspace_creation as workspace_creation_module
+from vntts.authoring.audio_event_review import (
+    AudioEventReview,
+    publish_source_audio_event_review,
+)
+from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.cohort_review import (
+    CohortReviewDecision,
+    CohortReviewPlan,
+    _object,
+    _object_list,
+    _required_text,
+    build_cohort_review_decision,
+    build_cohort_review_plan,
+    write_cohort_review_plan,
+)
+from vntts.authoring.generation_fallback import authorize_live_fallback
+from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.legacy_import import import_legacy_job
+from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
+from vntts.authoring.robustness_corpus import publish_speech_robustness_corpus
+from vntts.authoring.silence_comparison import (
+    SILENCE_COMPARISON_INPUT_SCHEMA,
+    SILENCE_COMPARISON_INPUT_VERSION,
+    SilenceComparisonSample,
+)
+from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
+from vntts.authoring.specialist_failure_plan import OFFLINE_FALLBACK_BACKEND
+from vntts.authoring.workbench import WorkspaceCreationResult, create_resume_workspace
+from vntts.authoring.workspace_foundation import load_json_object
+from vntts.document_identity import sha256_file
+
+
+def tree_hashes(root: Path) -> dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): sha256_file(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+class LegacyJob(TypedDict):
+    schema: str
+    schema_version: int
+    created_at: str
+    updated_at: str
+    status: str
+    title: str
+    targets: list[dict[str, object]]
+    story_index: str
+    queue: str
+    output: str
+    voice_manifest: str
+    vntts_python: str
+    model: str
+    narrator_character: str
+
+
+class LegacyFixture(TypedDict):
+    job_directory: Path
+    jobs: Path
+    job: LegacyJob
+    queue: Path
+    queue_id: str
+    line_id: str
+    text_hash: str
+    state: Path
+    manifest: Path
+    wav: Path
+
+
+def write_legacy_fixture(
+    root: Path,
+    *,
+    job_name: str = "original-job",
+    title: str = "Patch 3.7",
+    text: str = "Preserve this generated line exactly.",
+) -> LegacyFixture:
+    root.mkdir(parents=True, exist_ok=True)
+    story = root / "story-index.jsonl"
+    story.write_text("synthetic story provenance\n", encoding="utf-8")
+    voices = root / "voice-manifest.json"
+    voices.write_text('{"version": 2, "voices": []}\n', encoding="utf-8")
+    text_hash = text_sha256(text)
+    line_id = "reverse1999:315401:7"
+    queue_id = expected_voice_generation_queue_id(line_id, text_hash)
+    queue = root / "shared" / "queue.jsonl"
+    write_voice_generation_queue(
+        queue,
+        {
+            "game": "Reverse: 1999",
+            "language": "en",
+            "generated_at": "2026-08-16T17:00:00+00:00",
+        },
+        [
+            {
+                "record_type": "generation_item",
+                "queue_id": queue_id,
+                "line_id": line_id,
+                "text_sha256": text_hash,
+                "speaker": "Rhiannon",
+                "voice_character": "Rhiannon",
+                "text": text,
+                "action": "generate",
+                "state": "pending",
+                "emotion": "warm",
+                "provider_extension": {"keep": True},
+            }
+        ],
+    )
+    queue_hash = sha256_file(queue)
+    output = root / "shared" / "generated-audio"
+    wav = output / "audio" / "rhiannon" / "line.wav"
+    write_pcm16_wav(
+        wav,
+        np.sin(np.linspace(0, 4 * np.pi, 4_000, dtype=np.float32)) * 0.1,
+        16_000,
+    )
+    info = probe_pcm16_mono_wav(wav)
+    quality = {
+        "duration_seconds": round(info.duration_seconds, 4),
+        "sample_rate": info.sample_rate,
+        "channels": 1,
+        "sample_count": info.sample_count,
+        "peak": round(info.peak, 6),
+    }
+    state_path = output / "generation-state.json"
+    state = {
+        "schema": "r1999.bulk-generation-state",
+        "schema_version": 1,
+        "queue_sha256": queue_hash,
+        "game": "Reverse: 1999",
+        "language": "en",
+        "active": {
+            "queue_id": queue_id,
+            "line_id": line_id,
+            "phase": "retrying",
+            "attempt": 1,
+            "attempt_limit": 3,
+            "total_attempts": 4,
+            "seed": 12,
+            "started_at": "2026-08-16T17:00:00+00:00",
+            "updated_at": "2026-08-16T17:00:01+00:00",
+            "last_error": "interrupted diagnostic",
+        },
+        "items": {
+            queue_id: {
+                "status": "approved",
+                "review_status": "approved",
+                "attempts": 3,
+                "path": "audio/rhiannon/line.wav",
+                "line_id": line_id,
+                "text_sha256": text_hash,
+                "file_sha256": sha256_file(wav),
+                "provider": "moss-tts",
+                "model": "moss-v1.5",
+                "prompt_sha256": "a" * 64,
+                "seed": 11,
+                "quality": quality,
+                "updated_at": "2026-08-16T17:05:00+00:00",
+            }
+        },
+    }
+    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    manifest = output / "manifest.json"
+    write_generated_audio_manifest(
+        manifest,
+        {
+            "game": "Reverse: 1999",
+            "language": "en",
+            "source_queue_sha256": queue_hash,
+            "generated_at": "2026-08-16T17:06:00+00:00",
+        },
+        [
+            {
+                "queue_id": queue_id,
+                "line_id": line_id,
+                "text_sha256": text_hash,
+                "audio": "audio/rhiannon/line.wav",
+                "audio_format": PCM16_MONO_WAV_FORMAT,
+                "audio_sha256": sha256_file(wav),
+                "sample_rate": info.sample_rate,
+                "sample_count": info.sample_count,
+                "provider": "moss-tts",
+                "model": "moss-v1.5",
+                "prompt_sha256": "a" * 64,
+                "seed": 11,
+                "review_status": "approved",
+            }
+        ],
+    )
+    jobs = root / "jobs"
+    job_directory = jobs / job_name
+    job_directory.mkdir(parents=True)
+    job: LegacyJob = {
+        "schema": "r1999.pregeneration-job",
+        "schema_version": 1,
+        "created_at": "2026-08-16T16:00:00+00:00",
+        "updated_at": "2026-08-16T17:00:00+00:00",
+        "status": "complete",
+        "title": title,
+        "targets": [
+            {
+                "target_id": "hero-story:rhiannon",
+                "category": "Character stories",
+                "title": "The Eaglet Takes Wing",
+                "chapters": ["315401"],
+                "episode_count": 1,
+                "line_count": 1,
+            }
+        ],
+        "story_index": str(story),
+        "queue": str(queue),
+        "output": str(output),
+        "voice_manifest": str(voices),
+        "vntts_python": "/legacy/vntts/python",
+        "model": "moss-v1.5",
+        "narrator_character": "Matilda",
+    }
+    (job_directory / "job.json").write_text(
+        json.dumps(job, sort_keys=True), encoding="utf-8"
+    )
+    return {
+        "job_directory": job_directory,
+        "jobs": jobs,
+        "job": job,
+        "queue": queue,
+        "queue_id": queue_id,
+        "line_id": line_id,
+        "text_hash": text_hash,
+        "state": state_path,
+        "manifest": manifest,
+        "wav": wav,
+    }
+
+
+def create_test_workspace(
+    root: Path, *, text: str | None = None
+) -> tuple[LegacyFixture, Path, WorkspaceCreationResult]:
+    fixture_options = {} if text is None else {"text": text}
+    fixture = write_legacy_fixture(root / "legacy", **fixture_options)
+    queue_item = VoiceGenerationQueue.load(fixture["queue"]).items[0]
+    side_text = "A source-audio line outside the generation queue."
+    write_story_index_document(
+        fixture["job"]["story_index"],
+        {
+            "game": "Reverse: 1999",
+            "language": "en",
+            "generated_at": "2026-08-16T15:00:00+00:00",
+            "collections": [
+                {
+                    "collection_id": "main",
+                    "title": "The Eaglet Takes Wing",
+                    "kind": "character-story",
+                    "order": 1,
+                },
+                {
+                    "collection_id": "source-only",
+                    "title": "Installed source audio",
+                    "kind": "reference",
+                    "order": 2,
+                },
+            ],
+        },
+        [
+            {
+                "record_type": "line",
+                "line_id": queue_item.line_id,
+                "text_sha256": queue_item.text_sha256,
+                "text": queue_item.text,
+                "speaker": queue_item.speaker,
+                "voice_character": queue_item.voice_character,
+                "kind": "dialogue",
+                "chapter": "315401",
+                "sequence": 7,
+                "collection_id": "main",
+                "source_audio_status": "absent",
+                "source_audio_reason": "fixture_absent",
+                "source_kind": "story",
+                "speakable": True,
+            },
+            {
+                "record_type": "line",
+                "line_id": "reverse1999:source:1",
+                "text_sha256": text_sha256(side_text),
+                "text": side_text,
+                "speaker": "Rhiannon",
+                "voice_character": "Rhiannon",
+                "kind": "dialogue",
+                "chapter": "source",
+                "sequence": 1,
+                "collection_id": "source-only",
+                "source_audio_status": "available",
+                "source_audio_reason": "fixture_available",
+                "source_kind": "story",
+                "speakable": True,
+            },
+        ],
+    )
+    voice_reference = root / "legacy" / "rhiannon.wav"
+    voice_reference.write_bytes(b"voice-reference")
+    second_voice_reference = root / "legacy" / "rhiannon-2.wav"
+    second_voice_reference.write_bytes(b"second-voice-reference")
+    Path(fixture["job"]["voice_manifest"]).write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "voices": [
+                    {
+                        "character": "Rhiannon",
+                        "speaker": "Rhiannon",
+                        "references": ["rhiannon.wav", "rhiannon-2.wav"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    imported = import_legacy_job(fixture["job_directory"], root / "imports").destination
+    workspace = create_resume_workspace(
+        imported,
+        root / "workspaces",
+        story_index=fixture["job"]["story_index"],
+        voice_manifest=fixture["job"]["voice_manifest"],
+        backend="moss-tts",
+        model="model with spaces",
+        generation_profile="stable",
+        narrator_character="Rhiannon",
+    )
+    return fixture, imported, workspace
+
+
+def create_pending_cohort_workspace(root: Path) -> tuple[Path, Path, str]:
+    _fixture, _imported, created = create_test_workspace(root)
+    state_path = created.directory / "generated-audio/generation-state.json"
+    state = load_json_object(state_path, "fixture generation state")
+    items = state["items"]
+    assert isinstance(items, dict)
+    queue_id, result = next(iter(items.items()))
+    assert isinstance(queue_id, str)
+    assert isinstance(result, dict)
+    result.update(
+        {
+            "status": "generated",
+            "review_status": "pending_review",
+            "generation_profile": "stable",
+            "voice_character": "Rhiannon",
+            "prompt_applied": False,
+            "synthesis_provenance_sha256": "b" * 64,
+        }
+    )
+    state["active"] = None
+    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    return created.directory, state_path, queue_id
+
+
+def create_failed_reference_workspace(root: Path) -> tuple[Path, str]:
+    _fixture, _imported, created = create_test_workspace(root)
+    state_path = created.directory / "generated-audio/generation-state.json"
+    state = load_json_object(state_path, "fixture generation state")
+    items = state["items"]
+    assert isinstance(items, dict)
+    queue_id, result = next(iter(items.items()))
+    assert isinstance(queue_id, str)
+    assert isinstance(result, dict)
+    for field in ("path", "file_sha256", "quality", "review_status"):
+        result.pop(field, None)
+    result.update(
+        {
+            "status": "failed",
+            "provider": "moss-tts",
+            "model": "model",
+            "generation_profile": "stable",
+            "voice_character": "Rhiannon",
+            "synthesis_provenance_sha256": "a" * 64,
+            "failure": {
+                "schema_version": 1,
+                "kind": "speech_silence",
+                "completion": "complete",
+                "error_type": "SpeechSilenceValidationError",
+                "speech_quality": {
+                    "leading_silence_seconds": 0.0,
+                    "trailing_silence_seconds": 0.0,
+                    "longest_internal_silence_seconds": 2.0,
+                    "silence_ratio": 0.4,
+                },
+                "text_features": {
+                    "word_count": 4,
+                    "character_count": 20,
+                    "sentence_boundary_count": 1,
+                    "comma_count": 0,
+                    "ellipsis_count": 0,
+                },
+            },
+        }
+    )
+    state_path.write_text(json.dumps(state, sort_keys=True))
+    return created.directory, queue_id
+
+
+def _legacy_bad_fixture(root: Path) -> tuple[Path, str, Path, Path]:
+    workspace, _state, queue_id = create_pending_cohort_workspace(root)
+    reviews = workspace / "cohort-reviews"
+    reviews.mkdir()
+    plan = build_cohort_review_plan(workspace)
+    write_cohort_review_plan(plan, reviews / f"plan-{plan.plan_id}.json")
+    cohorts = plan.document["cohorts"]
+    assert isinstance(cohorts, list)
+    cohort = cohorts[0]
+    assert isinstance(cohort, dict)
+    cohort_id = cohort["cohort_id"]
+    assert isinstance(cohort_id, str)
+    decision = build_cohort_review_decision(
+        plan,
+        cohort_id,
+        "rejected",
+        reviewed_queue_ids=[queue_id],
+        sample_assessments={queue_id: "bad"},
+    )
+    document = deepcopy(decision.document)
+    document["schema_version"] = 1
+    document.pop("item_review_statuses")
+    assessments = document["sample_assessments"]
+    assert isinstance(assessments, list)
+    assessment = assessments[0]
+    assert isinstance(assessment, dict)
+    assessment.pop("defect_reasons")
+    document["decision_id"] = canonical_document_sha256(
+        {key: value for key, value in document.items() if key != "decision_id"}
+    )
+    decision_path = reviews / f"decision-{document['decision_id']}.json"
+    decision_path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+    corpus = root / "corpus-v3"
+    publish_speech_robustness_corpus([reviews], [], corpus)
+    return workspace, queue_id, decision_path, corpus
+
+
+def create_voice_quality_review(
+    root: Path,
+) -> tuple[Path, Path, str, CohortReviewPlan, CohortReviewDecision]:
+    workspace, state_path, queue_id = create_pending_cohort_workspace(root)
+    state = load_json_object(state_path, "voice-quality fixture state")
+    result = _object(_object(state["items"])[queue_id])
+    result.update(
+        {
+            "provider": "moss-tts",
+            "model": "model with spaces",
+            "generation_profile": "stable",
+        }
+    )
+    state_path.write_text(json.dumps(state, sort_keys=True))
+    return create_voice_quality_review_from_workspace(workspace, state_path, queue_id)
+
+
+def create_voice_quality_review_from_workspace(
+    workspace: Path, state_path: Path, queue_id: str
+) -> tuple[Path, Path, str, CohortReviewPlan, CohortReviewDecision]:
+    plan = build_cohort_review_plan(workspace)
+    cohort = _object_list(plan.document["cohorts"])[0]
+    cohort_id = _required_text(cohort["cohort_id"], "Fixture cohort ID")
+    decision = build_cohort_review_decision(
+        plan,
+        cohort_id,
+        "accepted",
+        reviewed_queue_ids=[queue_id],
+        sample_assessments={queue_id: "acceptable"},
+    )
+    return workspace, state_path, queue_id, plan, decision
+
+
+def create_carry_source_workspace(
+    root: Path,
+    *,
+    text: str | None = None,
+    queue_voice_override: str | None = None,
+    item_count: int = 1,
+) -> tuple[LegacyFixture, Path, WorkspaceCreationResult]:
+    kwargs: dict[str, str] = {} if text is None else {"text": text}
+    fixture = write_legacy_fixture(root / "legacy", **kwargs)
+    queue = VoiceGenerationQueue.load(fixture["queue"])
+    if item_count > 1:
+        state = load_json_object(fixture["state"], "carry fixture state")
+        template = queue.items[0]
+        records: list[dict[str, object]] = [template.document]
+        state_items = _object(state["items"])
+        for index in range(1, item_count):
+            record = deepcopy(template.document)
+            line_id = f"reverse1999:315401:{7 + index}"
+            line_text = f"{template.text} Line {index}."
+            text_hash = text_sha256(line_text)
+            queue_id = expected_voice_generation_queue_id(line_id, text_hash)
+            record.update(
+                line_id=line_id,
+                text=line_text,
+                text_sha256=text_hash,
+                queue_id=queue_id,
+            )
+            records.append(record)
+            result = deepcopy(_object(state_items[template.queue_id]))
+            original_audio = fixture["state"].parent / _required_text(
+                result["path"], "Fixture audio path"
+            )
+            result.update(
+                line_id=line_id,
+                text_sha256=text_hash,
+                path=f"audio/rhiannon/line-{index}.wav",
+            )
+            (
+                fixture["state"].parent
+                / _required_text(result["path"], "Fixture audio path")
+            ).write_bytes(original_audio.read_bytes())
+            state_items[queue_id] = result
+        write_voice_generation_queue(fixture["queue"], queue.metadata, records)
+        state["queue_sha256"] = sha256_file(fixture["queue"])
+        fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        queue = VoiceGenerationQueue.load(fixture["queue"])
+    write_story_index_document(
+        fixture["job"]["story_index"],
+        {
+            "game": "Reverse: 1999",
+            "language": "en",
+            "generated_at": "2026-08-16T15:00:00+00:00",
+            "collections": [
+                {
+                    "collection_id": "main",
+                    "title": "Carry-forward fixture",
+                    "kind": "character-story",
+                    "order": 1,
+                }
+            ],
+        },
+        [
+            {
+                "record_type": "line",
+                "line_id": queue_item.line_id,
+                "text_sha256": queue_item.text_sha256,
+                "text": queue_item.text,
+                "speaker": queue_item.speaker,
+                "voice_character": queue_item.voice_character,
+                "kind": "dialogue",
+                "chapter": "315401",
+                "sequence": 7,
+                "collection_id": "main",
+                "source_audio_status": "absent",
+                "source_audio_reason": "fixture_absent",
+                "source_kind": "story",
+                "speakable": True,
+            }
+            for queue_item in queue.items
+        ],
+    )
+    for name, payload in (
+        ("rhiannon.wav", b"rhiannon-reference-one"),
+        ("rhiannon-2.wav", b"rhiannon-reference-two"),
+    ):
+        (root / "legacy" / name).write_bytes(payload)
+    voice_manifest = Path(fixture["job"]["voice_manifest"])
+    voice_document: dict[str, object] = {
+        "version": 2,
+        "voices": [
+            {
+                "character": "Rhiannon",
+                "speaker": "Rhiannon",
+                "references": ["rhiannon.wav", "rhiannon-2.wav"],
+            }
+        ],
+    }
+    if queue_voice_override is not None:
+        _object_list(voice_document["voices"]).append(
+            {
+                "character": queue_voice_override,
+                "speaker": "bound-variant",
+                "reference": "rhiannon-2.wav",
+            }
+        )
+        overrides = {fixture["queue_id"]: queue_voice_override}
+        voice_document["vntts.authoring.source_reference_bindings"] = {
+            "schema": "vntts.authoring-source-reference-bindings",
+            "schema_version": 1,
+            "source_reference_plan_sha256": "a" * 64,
+            "selected_variants": [
+                {
+                    "variant_id": "bound-variant",
+                    "voice_character": queue_voice_override,
+                }
+            ],
+            "queue_voice_overrides": overrides,
+            "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
+        }
+    voice_manifest.write_text(json.dumps(voice_document), encoding="utf-8")
+    state = load_json_object(fixture["state"], "carry fixture state")
+    state["active"] = None
+    for value in _object(state["items"]).values():
+        result = _object(value)
+        result["status"] = "generated"
+        result["review_status"] = "pending_review"
+    fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    write_generated_audio_manifest(
+        fixture["manifest"],
+        {
+            "game": "Reverse: 1999",
+            "language": "en",
+            "source_queue_sha256": sha256_file(fixture["queue"]),
+            "generated_at": "2026-08-16T17:06:00+00:00",
+        },
+        [],
+    )
+    imported = import_legacy_job(fixture["job_directory"], root / "imports").destination
+    source = create_resume_workspace(
+        imported,
+        root / "workspaces",
+        story_index=fixture["job"]["story_index"],
+        voice_manifest=voice_manifest,
+        backend="moss-tts",
+        model="model with spaces",
+        generation_profile="stable",
+        narrator_character="Rhiannon",
+    )
+    return fixture, imported, source
+
+
+def write_carry_target_manifest(
+    root: Path, *, rhiannon_payloads: Sequence[bytes] | None = None
+) -> Path:
+    target = root / "target-voices"
+    target.mkdir()
+    payloads = rhiannon_payloads or (
+        b"rhiannon-reference-one",
+        b"rhiannon-reference-two",
+    )
+    (target / "rhiannon.wav").write_bytes(payloads[0])
+    (target / "rhiannon-2.wav").write_bytes(payloads[1])
+    (target / "paper-heron.wav").write_bytes(b"paper-heron-reference")
+    manifest = target / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "voices": [
+                    {
+                        "character": "Rhiannon",
+                        "speaker": "Rhiannon",
+                        "references": ["rhiannon.wav", "rhiannon-2.wav"],
+                    },
+                    {
+                        "character": "Paper Heron",
+                        "speaker": "Paper Heron",
+                        "reference": "paper-heron.wav",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def current_carry_fields(
+    workspace_directory: Path,
+    queue_item: VoiceGenerationQueueItem,
+    audio: Path,
+    *,
+    voice_character: str = "Rhiannon",
+) -> dict[str, object]:
+    workspace = load_json_object(
+        workspace_directory / "workspace.json", "carry fixture workspace"
+    )
+    return {
+        "status": "approved",
+        "review_status": "approved",
+        "file_sha256": sha256_file(audio),
+        "provider": "moss-tts",
+        "model": "model with spaces",
+        "prompt_sha256": bulk_generation_module.NO_PROMPT_SHA256,
+        "prompt_applied": False,
+        "queue_annotations_sha256": bulk_generation_module._canonical_sha256(
+            queue_item.document.get("prompt_adapters") or {}
+        ),
+        "synthesis_text_sha256": hashlib.sha256(
+            queue_item.text.encode("utf-8")
+        ).hexdigest(),
+        "text_transform": "short-trailing-ellipsis-v1",
+        "synthesis_provenance_sha256": workspace_creation_module._workspace_generation_provenance(
+            workspace_directory, workspace
+        ),
+        "generation_profile": "stable",
+        "voice_character": voice_character,
+        "quality": asdict(bulk_generation_module.inspect_generated_wav(audio)),
+        "speech_quality": asdict(
+            bulk_generation_module.inspect_generated_speech(audio)
+        ),
+    }
+
+
+def write_authority(
+    path: Path,
+    queue_id: str,
+    source_item_sha256: str,
+    *,
+    kind: str = "voice",
+    origin: str | None = None,
+) -> Path:
+    origin = origin or "automatic_no_complete_candidate"
+    if kind == "voice":
+        body: dict[str, object] = {
+            "schema": "vntts.authoring-missing-voice-reuse-decision",
+            "schema_version": 1,
+            "binding": {
+                "target_mode": "failed",
+                "queue_voice_overrides": {},
+                "selected_candidates": [],
+                "decisions": [
+                    {
+                        "decision": "neither",
+                        "review_decision_origin": origin,
+                        "queue_ids": [queue_id],
+                    }
+                ],
+                "source_failed_state_item_sha256s": {queue_id: source_item_sha256},
+            },
+        }
+        document = {
+            **body,
+            "decision_id": bulk_generation_module._canonical_sha256(body),
+        }
+    else:
+        body = {
+            "schema": "vntts.authoring-failed-prompt-selection",
+            "schema_version": 1,
+            "decisions": [
+                {
+                    "decision": "keep_unresolved",
+                    "review_decision_origin": origin,
+                    "queue_ids": [queue_id],
+                    "source_state_item_sha256s": {queue_id: source_item_sha256},
+                }
+            ],
+        }
+        document = {
+            **body,
+            "selection_id": bulk_generation_module._canonical_sha256(body),
+        }
+    path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def create_explicit_fallback_merge_fixture(root: Path) -> tuple[Path, Path, str]:
+    fixture, imported, base = create_test_workspace(root)
+    base_directory = base.directory
+    source = create_resume_workspace(
+        imported,
+        root / "workspaces",
+        story_index=base_directory / "inputs/story-index.jsonl",
+        voice_manifest=base_directory / "inputs/voice/manifest.json",
+        narrator_character="Rhiannon",
+        backend="moss-tts",
+        model="model with spaces",
+        generation_profile="fallback-source",
+    ).directory
+    queue_id = fixture["queue_id"]
+    source_state = source / "generated-audio/generation-state.json"
+    source_document = load_json_object(source_state, "source fixture state")
+    removed_source = _object(_object(source_document["items"]).pop(queue_id))
+    source_document["active"] = None
+    (
+        source
+        / "generated-audio"
+        / _required_text(removed_source["path"], "Fixture audio path")
+    ).unlink()
+    source_state.write_text(
+        json.dumps(source_document, sort_keys=True), encoding="utf-8"
+    )
+    write_generated_manifest_from_state(
+        source_document,
+        source / "generated-audio",
+        source / "generated-audio/manifest.json",
+    )
+    authorize_live_fallback(
+        source_state,
+        source / "queue.jsonl",
+        queue_id,
+        reason="reference_unavailable_after_audit",
+        model="pocket-tts",
+    )
+
+    base_state_path = base_directory / "generated-audio/generation-state.json"
+    base_state = load_json_object(base_state_path, "base fixture state")
+    removed = _object(_object(base_state["items"]).pop(queue_id))
+    base_state["active"] = None
+    audio = (
+        base_directory
+        / "generated-audio"
+        / _required_text(removed["path"], "Fixture audio path")
+    )
+    audio.unlink()
+    base_state_path.write_text(json.dumps(base_state, sort_keys=True), encoding="utf-8")
+    write_generated_manifest_from_state(
+        base_state,
+        base_directory / "generated-audio",
+        base_directory / "generated-audio/manifest.json",
+    )
+    return base_directory, source, queue_id
+
+
+def create_reviewed_waveform_fixture(
+    root: Path,
+) -> tuple[Path, VoiceGenerationQueueItem]:
+    fixture = write_legacy_fixture(root / "legacy", text="An approved line.")
+    old_queue = VoiceGenerationQueue.load(fixture["queue"])
+    document = dict(old_queue.items[0].document)
+    document.update({"speaker": "Narrator", "voice_character": "Narrator"})
+    write_voice_generation_queue(fixture["queue"], old_queue.metadata, [document])
+    queue_item = VoiceGenerationQueue.load(fixture["queue"]).items[0]
+    state_path = fixture["state"]
+    state = load_json_object(state_path, "successor fixture state")
+    item = _object(_object(state["items"])[fixture["queue_id"]])
+    item.update({"status": "approved", "review_status": "approved"})
+    state["active"] = None
+    state["queue_sha256"] = sha256_file(fixture["queue"])
+    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    write_story_index_document(
+        fixture["job"]["story_index"],
+        {
+            "game": "Reverse: 1999",
+            "language": "en",
+            "generated_at": "2026-08-29T00:00:00+00:00",
+        },
+        [
+            {
+                "record_type": "line",
+                "line_id": queue_item.line_id,
+                "text_sha256": queue_item.text_sha256,
+                "text": queue_item.text,
+                "speaker": queue_item.speaker,
+                "voice_character": queue_item.voice_character,
+                "kind": "narration",
+                "chapter": "315401",
+                "sequence": 1,
+                "source_audio_status": "absent",
+                "source_audio_reason": "fixture_absent",
+                "source_kind": "story",
+                "speakable": True,
+            }
+        ],
+    )
+    voice_manifest = Path(fixture["job"]["voice_manifest"])
+    reference = voice_manifest.parent / "centurion.ogg"
+    sf.write(
+        reference,
+        np.sin(np.linspace(0, 8 * np.pi, 8_000, dtype=np.float32)) * 0.2,
+        16_000,
+        format="OGG",
+        subtype="VORBIS",
+    )
+    voice_manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "voices": [
+                    {
+                        "character": "Centurion",
+                        "speaker": "centurion",
+                        "references": ["centurion.ogg"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    imported = import_legacy_job(fixture["job_directory"], root / "imports").destination
+    workspace = create_resume_workspace(
+        imported,
+        root / "base-workspaces",
+        story_index=fixture["job"]["story_index"],
+        voice_manifest=voice_manifest,
+        narrator_character="Centurion",
+        backend="moss-tts",
+        model="model",
+        generation_profile="stable",
+    )
+    return workspace.directory, queue_item
+
+
+def create_audio_event_projection_fixture(
+    root: Path, text: str = "No! *gasp*"
+) -> tuple[Path, VoiceGenerationQueueItem]:
+    fixture = write_legacy_fixture(root / "legacy", text=text)
+    old_queue = VoiceGenerationQueue.load(fixture["queue"])
+    document = dict(old_queue.items[0].document)
+    document.update({"speaker": "Poacher I", "voice_character": "Poacher I"})
+    write_voice_generation_queue(fixture["queue"], old_queue.metadata, [document])
+    queue = VoiceGenerationQueue.load(fixture["queue"])
+    queue_item = queue.items[0]
+    policy = MissingVoicePolicy(NARRATOR_ROLES, ("Poacher I",))
+    state_path = fixture["state"]
+    state = load_json_object(state_path, "successor fixture state")
+    state["active"] = None
+    item = _object(_object(state["items"])[fixture["queue_id"]])
+    item.update(
+        {
+            "status": "generated",
+            "review_status": "rejected",
+            "speaker": "Poacher I",
+            "requested_voice_character": "Poacher I",
+            "voice_character": "Narrator",
+            "narrator_character": "Rhiannon",
+            "synthesis_configuration": {
+                "missing_voice_policy": policy.to_document(),
+                "synthesis_character_overrides": {"poacheri": "Narrator"},
+            },
+            "synthesis_fallback": {
+                "schema_version": 1,
+                "kind": "missing_voice_to_narrator",
+                "policy": policy.to_document(),
+                "source_voice_character": "Poacher I",
+                "synthesis_voice_character": "Narrator",
+                "narrator_character": "Rhiannon",
+            },
+        }
+    )
+    state["queue_sha256"] = sha256_file(fixture["queue"])
+    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    write_generated_manifest_from_state(
+        state,
+        state_path.parent,
+        state_path.parent / "manifest.json",
+    )
+    write_story_index_document(
+        fixture["job"]["story_index"],
+        {
+            "game": "Reverse: 1999",
+            "language": "en",
+            "generated_at": "2026-08-28T00:00:00+00:00",
+        },
+        [
+            {
+                "record_type": "line",
+                "line_id": queue_item.line_id,
+                "text_sha256": queue_item.text_sha256,
+                "text": queue_item.text,
+                "speaker": queue_item.speaker,
+                "voice_character": queue_item.voice_character,
+                "kind": "dialogue",
+                "chapter": "315401",
+                "sequence": 7,
+                "source_audio_status": "absent",
+                "source_audio_reason": "fixture_absent",
+                "source_kind": "story",
+                "speakable": True,
+            }
+        ],
+    )
+    voice_manifest = Path(fixture["job"]["voice_manifest"])
+    (voice_manifest.parent / "rhiannon.wav").write_bytes(b"voice-reference")
+    voice_manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "voices": [
+                    {
+                        "character": "Rhiannon",
+                        "speaker": "Rhiannon",
+                        "references": ["rhiannon.wav"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    imported = import_legacy_job(fixture["job_directory"], root / "imports").destination
+    workspace = create_resume_workspace(
+        imported,
+        root / "base-workspaces",
+        story_index=fixture["job"]["story_index"],
+        voice_manifest=voice_manifest,
+        narrator_character="Rhiannon",
+        backend="moss-tts",
+        model="model",
+        generation_profile="stable",
+        missing_voice_policy=policy,
+    )
+    return workspace.directory, queue_item
+
+
+def write_audio_event_queue(path: Path, text: str = "Tsk!") -> str:
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    queue_id = f"line:tsk:{digest[:16]}"
+    write_voice_generation_queue(
+        path,
+        {"game": "Synthetic", "language": "en"},
+        [
+            {
+                "record_type": "generation_item",
+                "queue_id": queue_id,
+                "line_id": "line:tsk",
+                "text_sha256": digest,
+                "text": text,
+                "speaker": "Poacher I",
+                "voice_character": "Poacher I",
+                "action": "manual_review",
+                "state": "pending",
+            }
+        ],
+    )
+    return queue_id
+
+
+def write_audio_event_source_story(path: Path) -> Path:
+    text = "Tsk!"
+    path.write_text(
+        json.dumps(
+            {
+                "record_type": "line",
+                "line_id": "reverse1999:200308:6",
+                "text": text,
+                "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                "speaker": "Kanjira",
+                "source_audio_id": "610008734",
+                "source_audio_status": "available",
+                "source_event": "play_activityvoc_hero3071_660",
+                "source_bank": "activityvoc_hero3071molu1_3_part02.bnk",
+                "source_media_ids": [410389900],
+            }
+        )
+        + "\n"
+    )
+    return path
+
+
+def publish_audio_event_review_fixture(
+    root: Path, *, text: str = "Tsk!", sample_count: int = 1_200
+) -> tuple[AudioEventReview, Path, Path]:
+    queue = root / "queue.jsonl"
+    queue_id = write_audio_event_queue(queue, text)
+    audio = root / "source.wav"
+    samples = np.zeros(sample_count, dtype=np.float32)
+    samples[300:340] = 0.4
+    write_pcm16_wav(audio, samples, 24_000)
+    output = root / "review"
+    story = write_audio_event_source_story(root / "story-index.jsonl")
+    result = publish_source_audio_event_review(
+        queue,
+        queue_id,
+        story,
+        audio,
+        output,
+        source_line_id="reverse1999:200308:6",
+        source_speaker="Kanjira",
+        source_event="play_activityvoc_hero3071_660",
+        source_bank="activityvoc_hero3071molu1_3_part02.bnk",
+        source_media_id=410389900,
+        source_audio_id="610008734",
+    )
+    return result, queue, audio
+
+
+def create_specialist_failure_workspace(
+    root: Path, strategy: str, queue_id: str
+) -> Path:
+    workspace = root / queue_id
+    (workspace / "generated-audio").mkdir(parents=True)
+    configuration = {
+        "workspace_id": f"workspace-{queue_id}",
+        "config_fingerprint": "a" * 64,
+        "carry_forward": {"failed_queue_ids": [queue_id]},
+    }
+    queue = [
+        {"record_type": "metadata"},
+        {
+            "queue_id": queue_id,
+            "line_id": f"line-{queue_id}",
+            "text": "First sentence. Second sentence.",
+            "speaker": "Narrator",
+        },
+    ]
+    result = {
+        "status": "failed",
+        "provider": "moss-tts"
+        if strategy != OFFLINE_FALLBACK_BACKEND
+        else "pocket-tts",
+        "model": "model",
+        "generation_profile": "stable",
+        "voice_character": "Narrator",
+        "attempts_by_provider": {"moss-tts": 1},
+        "failure_repair": {"strategy": strategy},
+        "failure": {
+            "kind": "missed_eos_audio_limit"
+            if strategy != OFFLINE_FALLBACK_BACKEND
+            else "speech_silence",
+            "completion": "limited"
+            if strategy != OFFLINE_FALLBACK_BACKEND
+            else "complete",
+            "error_type": "ExampleError",
+            "text_features": {
+                "word_count": 4,
+                "sentence_boundary_count": 2,
+                "ellipsis_count": 0,
+            },
+        },
+    }
+    (workspace / "workspace.json").write_text(json.dumps(configuration))
+    (workspace / "queue.jsonl").write_text(
+        "\n".join(json.dumps(value) for value in queue) + "\n"
+    )
+    (workspace / "generated-audio/generation-state.json").write_text(
+        json.dumps({"items": {queue_id: result}})
+    )
+    return workspace
+
+
+def write_silence_comparison_sample(root: str | Path) -> SilenceComparisonSample:
+    root = Path(root)
+    speech = np.full(800, 0.2, dtype=np.float32)
+    raw = root / "raw.wav"
+    segmented = root / "segmented.wav"
+    write_pcm16_wav(
+        raw,
+        np.concatenate((speech, np.zeros(1_600, dtype=np.float32), speech)),
+        1_000,
+    )
+    write_pcm16_wav(
+        segmented,
+        np.concatenate((speech, np.zeros(180, dtype=np.float32), speech)),
+        1_000,
+    )
+    sample = SilenceComparisonSample(
+        "queue:one",
+        "line:one",
+        "The gate is already open. We should leave before dawn.",
+        raw,
+        segmented,
+    )
+    return sample
+
+
+def write_silence_comparison_input_plan(
+    root: str | Path, sample: SilenceComparisonSample
+) -> Path:
+    root = Path(root)
+    plan = root / "comparison-input.json"
+    text_sha256 = hashlib.sha256(sample.text.encode("utf-8")).hexdigest()
+    plan.write_text(
+        json.dumps(
+            {
+                "schema": SILENCE_COMPARISON_INPUT_SCHEMA,
+                "schema_version": SILENCE_COMPARISON_INPUT_VERSION,
+                "samples": [
+                    {
+                        "queue_id": sample.queue_id,
+                        "line_id": sample.line_id,
+                        "text": sample.text,
+                        "text_sha256": text_sha256,
+                        "raw_audio": sample.raw_audio.name,
+                        "raw_audio_sha256": sha256_file(sample.raw_audio),
+                        "segmented_audio": sample.segmented_audio.name,
+                        "segmented_audio_sha256": sha256_file(sample.segmented_audio),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return plan
+
+
+def queue_builder_story_metadata() -> dict[str, object]:
+    return {
+        "game": "Synthetic Novel",
+        "language": "en",
+        "generated_at": "2026-08-16T12:00:00+00:00",
+        "collections": [
+            {
+                "collection_id": "main",
+                "title": "Main Story",
+                "kind": "story",
+                "order": 1,
+            },
+            {
+                "collection_id": "side",
+                "title": "Side Story",
+                "kind": "story",
+                "order": 2,
+            },
+        ],
+    }
+
+
+def queue_builder_story_record(
+    line_id: str, status: str, *, collection: str = "main", **overrides: object
+) -> dict[str, object]:
+    text = f"Exact text for {line_id}."
+    record: dict[str, object] = {
+        "record_type": "line",
+        "line_id": line_id,
+        "chapter": "chapter-one",
+        "sequence": int(line_id.rsplit("-", 1)[-1]),
+        "speaker": "Ada (memory)",
+        "voice_character": "Ada Alias",
+        "text": text,
+        "text_sha256": text_sha256(text),
+        "kind": "dialogue",
+        "previous_text": "Previous.",
+        "next_text": "Next.",
+        "context": {"scene": "observatory"},
+        "source_audio_status": status,
+        "source_audio_reason": f"fixture_{status}",
+        "source_kind": "story",
+        "speakable": True,
+        "collection_id": collection,
+        "emotion": {"primary": "quiet"},
+        "prompt_adapters": {"generic": "Speak softly."},
+        "producer_extension": {"preserve": True},
+    }
+    record.update(overrides)
+    return record
+
+
+def write_queue_builder_inputs(
+    root: Path, records: Sequence[dict[str, object]]
+) -> tuple[Path, Path]:
+    story_path = root / "story-index.jsonl"
+    write_story_index_document(story_path, queue_builder_story_metadata(), records)
+    references = root / "references"
+    references.mkdir()
+    write_pcm16_wav(references / "ada.wav", [0.0, 0.1, -0.1, 0.0], 16_000)
+    manifest_path = root / "voice-manifest.json"
+    write_voice_manifest(
+        manifest_path,
+        {
+            "version": 2,
+            "voices": [
+                {
+                    "character": "Ada",
+                    "speaker": "provider-ada",
+                    "aliases": ["Ada Alias"],
+                    "references": ["references/ada.wav"],
+                },
+                {
+                    "character": "No Local Reference",
+                    "speaker": "provider-missing",
+                    "references": ["references/missing.wav"],
+                },
+                {
+                    "character": "Narrator",
+                    "speaker": "provider-narrator",
+                    "references": ["references/ada.wav"],
+                },
+            ],
+        },
+    )
+    return story_path, manifest_path

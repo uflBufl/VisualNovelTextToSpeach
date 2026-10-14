@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from vntts.authoring.cohort_review import (
@@ -34,6 +33,7 @@ from vntts.authoring.voice_repair_comparison import (
     VoiceRepairComparisonError as _VoiceRepairComparisonError,
 )
 from vntts.authoring.workbench import default_workspaces_root
+from vntts.cli import print_json
 
 VoiceQualityGateError = _VoiceQualityGateError
 VoiceRepairComparisonError = _VoiceRepairComparisonError
@@ -106,7 +106,7 @@ def _print_document(
     | VoiceRepairComparisonPlan
     | VoiceRepairCandidateWorkspace,
 ) -> None:
-    print(json.dumps(value.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+    print_json(value.to_dict(), ensure_ascii=False)
 
 
 def handle(arguments: argparse.Namespace) -> int:
@@ -156,6 +156,6 @@ def handle(arguments: argparse.Namespace) -> int:
             arguments.candidate_id,
             arguments.workspace,
         )
-        print(json.dumps({"command": list(command)}, indent=2, sort_keys=True))
+        print_json({"command": list(command)})
         return 0
     raise ValueError(f"Unsupported voice-quality command: {arguments.command!r}")

@@ -30,6 +30,63 @@ from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 _default_audio_output = object()
 
 
+class SpeechBackendStartupAdmissionTest(unittest.TestCase):
+    def test_volume_setter_keeps_raw_input_and_initialized_model(self):
+        for backend_type, model in (
+            (ChatterboxNanoVoiceRouterBackend, FakeChatterboxModel()),
+            (PocketTTSVoiceRouterBackend, FakePocketModel()),
+        ):
+            with self.subTest(backend=backend_type.name), TemporaryDirectory() as root:
+
+                class CheckedBackend(backend_type):
+                    def set_volume(self, volume):
+                        self.setter_model = self.model
+                        self.setter_volume = volume
+                        super().set_volume(volume)
+
+                options = {}
+                if backend_type is ChatterboxNanoVoiceRouterBackend:
+                    torch_module = Mock()
+                    torch_module.cuda.is_available.return_value = False
+                    options["torch_module"] = torch_module
+                backend = CheckedBackend(
+                    CharacterVoiceRegistry(),
+                    volume=1,
+                    model_factory=Mock(return_value=model),
+                    persistent_audio_cache_directory=Path(root) / "cache",
+                    **options,
+                )
+                self.assertIs(backend.setter_model, model)
+                self.assertIs(type(backend.setter_volume), int)
+
+    def test_invalid_volume_never_activates_runtime_or_loads_model(self):
+        for backend_type, activation in (
+            (ChatterboxNanoVoiceRouterBackend, "activate_chatterbox_runtime"),
+            (PocketTTSVoiceRouterBackend, "activate_pocket_tts_runtime"),
+        ):
+            for volume in (True, "0.5", None, -0.1, 1.1, float("nan"), float("inf")):
+                for injected in (False, True):
+                    with self.subTest(
+                        backend=backend_type.name, volume=volume, injected=injected
+                    ):
+                        factory = Mock()
+                        with (
+                            patch(f"vntts.speech_backend.{activation}") as activate,
+                            patch(
+                                "vntts.speech_backend._load_torch_module"
+                            ) as load_torch,
+                            self.assertRaises(TTSConfigurationError),
+                        ):
+                            backend_type(
+                                CharacterVoiceRegistry(),
+                                volume=volume,
+                                model_factory=factory if injected else None,
+                            )
+                        activate.assert_not_called()
+                        load_torch.assert_not_called()
+                        factory.assert_not_called()
+
+
 class FakeTensor:
     def __init__(self, audio):
         self.audio = np.asarray(audio, dtype=np.float32)

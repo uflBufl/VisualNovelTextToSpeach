@@ -8,9 +8,13 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from vntts_artifacts.file_integrity import sha256_file
-
-from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.document_identity import (
+    canonical_document_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
+from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import read_regular_bytes
 
 FAILED_VOICE_DECISION_SCHEMA = "vntts.authoring-missing-voice-reuse-decision"
 FAILED_PROMPT_SELECTION_SCHEMA = "vntts.authoring-failed-prompt-selection"
@@ -224,10 +228,10 @@ def _snapshot_authority(
         raise OfflineFallbackAuthorityError(
             "Workspace offline fallback authority ledger is malformed"
         )
-    if (
-        record.get("schema") != OFFLINE_FALLBACK_AUTHORITY_SCHEMA
-        or type(record.get("schema_version")) is not int
-        or record.get("schema_version") != OFFLINE_FALLBACK_AUTHORITY_VERSION
+    if record.get(
+        "schema"
+    ) != OFFLINE_FALLBACK_AUTHORITY_SCHEMA or not has_schema_version(
+        record, OFFLINE_FALLBACK_AUTHORITY_VERSION
     ):
         raise OfflineFallbackAuthorityError(
             "Workspace offline fallback authority schema is unsupported"
@@ -240,7 +244,7 @@ def _snapshot_authority_at_path(
     relative: Path,
     directory: str | Path,
 ) -> OfflineFallbackAuthority:
-    if relative.is_absolute() or ".." in relative.parts:
+    if "\x00" in str(relative) or relative.is_absolute() or ".." in relative.parts:
         raise OfflineFallbackAuthorityError(
             "Workspace offline fallback authority path is unsafe"
         )
@@ -309,8 +313,8 @@ def _authority_source(path: str | Path) -> Path:
 
 def _authority_document(source: Path) -> tuple[bytes, dict[str, object]]:
     try:
-        payload = source.read_bytes()
-        document = json.loads(payload.decode("utf-8"))
+        payload = read_regular_bytes(source)
+        document = decode_json(payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise OfflineFallbackAuthorityError(str(error)) from error
     if not isinstance(document, dict):
@@ -337,8 +341,7 @@ def _failed_voice_authority_definition(
     authority_id = _canonical_id(document, "decision_id")
     binding = document.get("binding")
     if (
-        type(document.get("schema_version")) is not int
-        or document.get("schema_version") != 1
+        not has_schema_version(document, 1)
         or not isinstance(binding, dict)
         or binding.get("target_mode") != "failed"
         or binding.get("queue_voice_overrides") != {}
@@ -360,10 +363,7 @@ def _failed_prompt_authority_definition(
     document: dict[str, object],
 ) -> _AuthorityDefinition:
     authority_id = _canonical_id(document, "selection_id")
-    if (
-        type(document.get("schema_version")) is not int
-        or document.get("schema_version") != 1
-    ):
+    if not has_schema_version(document, 1):
         raise OfflineFallbackAuthorityError(
             "Failed-prompt fallback authority schema is unsupported"
         )

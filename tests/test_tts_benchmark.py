@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
+from tests.symlink_support import symlink_or_skip
 from vntts.audio_cache import BoundedCache
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.synthesis import (
@@ -454,6 +455,58 @@ class TTSBenchmarkTest(unittest.TestCase):
             self.assertEqual(len(wavs), 1)
             self.assertEqual(wavs[0].read_bytes(), b"published elsewhere")
 
+    def test_wav_symlink_is_not_followed_and_retry_keeps_other_outputs(self):
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
+        )
+        for target_exists in (False, True):
+            with (
+                self.subTest(target_exists=target_exists),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                output = root / "output"
+                output.mkdir()
+                sentinel = output / "existing.txt"
+                sentinel.write_bytes(b"keep")
+                target = output / "target.wav"
+                if target_exists:
+                    target.write_bytes(b"original")
+                destination = output / "fake-Kamuta-Kamuta.wav"
+                symlink_or_skip(destination, target)
+                backend = FakeRenderingBackend()
+                with self.assertRaisesRegex(FileExistsError, "refusing to overwrite"):
+                    benchmark_backend(
+                        "fake",
+                        registry,
+                        ["Kamuta"],
+                        "A line.",
+                        output,
+                        backend_factory=lambda *_args: backend,
+                    )
+                self.assertEqual(backend.stop_calls, 1)
+                self.assertTrue(destination.is_symlink())
+                self.assertEqual(target.exists(), target_exists)
+                if target_exists:
+                    self.assertEqual(target.read_bytes(), b"original")
+                self.assertEqual(sentinel.read_bytes(), b"keep")
+                self.assertEqual(list(root.glob(".tts-benchmark-*")), [])
+                destination.unlink()
+                report = benchmark_backend(
+                    "fake",
+                    registry,
+                    ["Kamuta"],
+                    "A line.",
+                    output,
+                    backend_factory=lambda *_args: FakeRenderingBackend(),
+                )
+                self.assertEqual(
+                    Path(report["samples"][0]["audio"]), destination.resolve()
+                )
+                self.assertTrue(destination.is_file())
+                self.assertEqual(sentinel.read_bytes(), b"keep")
+                self.assertEqual(target.exists(), target_exists)
+
     def test_failed_staging_cleanup_removes_published_wav(self):
         registry = CharacterVoiceRegistry(
             [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
@@ -487,6 +540,106 @@ class TTSBenchmarkTest(unittest.TestCase):
                 )
 
             self.assertEqual(list(output.glob("*.wav")), [])
+
+    def test_temporary_cleanup_keeps_benchmark_failure_for_cache_and_staging(self):
+        for fail_staging in (False, True):
+            with (
+                self.subTest(fail_staging=fail_staging),
+                TemporaryDirectory() as directory,
+            ):
+                output = Path(directory).resolve() / "output"
+                primary = ValueError("benchmark rendering failed")
+                original_cleanup = TemporaryDirectory.cleanup
+
+                def cleanup_then_fail(temporary):
+                    original_cleanup(temporary)
+                    is_staging = Path(temporary.name).name.startswith(".tts-benchmark-")
+                    if is_staging == fail_staging:
+                        raise OSError("temporary cleanup failed")
+
+                def fail_backend(*_args):
+                    raise primary
+
+                with (
+                    patch.object(
+                        TemporaryDirectory,
+                        "cleanup",
+                        autospec=True,
+                        side_effect=cleanup_then_fail,
+                    ),
+                    self.assertRaises(ValueError) as raised,
+                ):
+                    benchmark_backend(
+                        "fake",
+                        CharacterVoiceRegistry(),
+                        ["Narrator"],
+                        "A line.",
+                        output,
+                        backend_factory=fail_backend,
+                    )
+                self.assertIs(raised.exception, primary)
+                self.assertTrue(
+                    any(
+                        "temporary cleanup failed" in note for note in primary.__notes__
+                    )
+                )
+                self.assertFalse(tuple(output.glob("*.wav")))
+
+    def test_publication_rollback_failures_keep_staging_error_and_attempt_all_wavs(
+        self,
+    ):
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
+        )
+        with TemporaryDirectory() as directory:
+            output = Path(directory).resolve() / "output"
+            original_unlink = type(output).unlink
+            staged_unlinks = 0
+            rollback_attempts = []
+
+            def fail_cleanup(path, *args, **kwargs):
+                nonlocal staged_unlinks
+                if path.parent == output:
+                    rollback_attempts.append(path)
+                    raise OSError("published cleanup failed")
+                if path.parent.name.startswith(".tts-benchmark-"):
+                    staged_unlinks += 1
+                    if staged_unlinks == 2:
+                        raise OSError("staging cleanup failed")
+                return original_unlink(path, *args, **kwargs)
+
+            with (
+                patch.object(
+                    type(output),
+                    "unlink",
+                    autospec=True,
+                    side_effect=fail_cleanup,
+                ),
+                self.assertRaisesRegex(OSError, "staging cleanup failed") as raised,
+            ):
+                benchmark_backend(
+                    "fake",
+                    registry,
+                    [],
+                    "unused",
+                    output,
+                    benchmark_samples=[
+                        {"id": "one", "character": "Kamuta", "text": "One"},
+                        {"id": "two", "character": "Kamuta", "text": "Two"},
+                    ],
+                    backend_factory=lambda _name, _registry, _cache: (
+                        FakeRenderingBackend()
+                    ),
+                )
+
+            self.assertEqual(len(rollback_attempts), 2)
+            self.assertEqual(
+                sum(
+                    "published cleanup failed" in note
+                    for note in raised.exception.__notes__
+                ),
+                2,
+            )
 
     def test_uses_typed_render_sample_rate_for_published_wav(self):
         registry = CharacterVoiceRegistry(
@@ -765,6 +918,68 @@ class TTSBenchmarkTest(unittest.TestCase):
         }
         self.assertEqual(len(identities), 1)
 
+    def test_cache_lives_until_backend_shutdown_on_every_exit(self):
+        class CacheFinalizingBackend(FakeRenderingBackend):
+            def __init__(self, cache, limited, shutdown_fails):
+                super().__init__(
+                    completions=(
+                        SynthesisCompletion.LIMITED
+                        if limited
+                        else SynthesisCompletion.COMPLETE,
+                    )
+                )
+                self.cache = Path(cache)
+                (self.cache / "state").write_text("backend state", encoding="utf-8")
+                self.shutdown_fails = shutdown_fails
+                self.shutdown_calls = 0
+                self.finalized_state = None
+
+            def shutdown(self):
+                self.shutdown_calls += 1
+                self.finalized_state = (self.cache / "state").read_text(
+                    encoding="utf-8"
+                )
+                if self.shutdown_fails:
+                    raise RuntimeError("shutdown failed")
+
+        for limited, shutdown_fails, error in (
+            (False, False, None),
+            (False, True, "shutdown failed"),
+            (True, False, "limited"),
+            (True, True, "limited"),
+        ):
+            with (
+                self.subTest(error=error, limited=limited),
+                TemporaryDirectory() as directory,
+            ):
+                created = []
+
+                def factory(_name, _registry, cache):
+                    backend = CacheFinalizingBackend(cache, limited, shutdown_fails)
+                    created.append(backend)
+                    return backend
+
+                output = Path(directory) / "output"
+                expected = (
+                    self.assertRaisesRegex(RuntimeError, error)
+                    if error
+                    else nullcontext()
+                )
+                with expected:
+                    benchmark_backend(
+                        "fake",
+                        CharacterVoiceRegistry(),
+                        ["Kamuta"],
+                        "Text",
+                        output,
+                        backend_factory=factory,
+                    )
+                backend = created[0]
+                self.assertEqual(backend.shutdown_calls, 1)
+                self.assertEqual(backend.finalized_state, "backend state")
+                self.assertFalse(backend.cache.exists())
+                self.assertEqual(len(list(output.glob("*.wav"))), 0 if error else 1)
+
     def test_shutdown_releases_backend_and_preserves_primary_errors(self):
         class ShutdownBackend(FakeRenderingBackend):
             def __init__(self, limited, shutdown_fails):
@@ -811,6 +1026,26 @@ class TTSBenchmarkTest(unittest.TestCase):
                 self.assertEqual(backend.shutdown_calls, 1)
                 self.assertEqual(len(list(output.glob("*.wav"))), 0 if error else 1)
 
+    def test_unrelated_outer_error_cannot_hide_shutdown_failure_or_publish_audio(self):
+        with TemporaryDirectory() as directory:
+            backend = FakeRenderingBackend()
+            backend.shutdown = Mock(side_effect=RuntimeError("shutdown failed"))
+            output = Path(directory) / "output"
+            try:
+                raise ValueError("unrelated outer error")
+            except ValueError:
+                with self.assertRaisesRegex(RuntimeError, "shutdown failed"):
+                    benchmark_backend(
+                        "fake",
+                        CharacterVoiceRegistry(),
+                        ["Kamuta"],
+                        "Text",
+                        output,
+                        backend_factory=lambda *_arguments: backend,
+                    )
+            backend.shutdown.assert_called_once_with()
+            self.assertFalse(output.exists())
+
     def test_rejects_invalid_samples_before_starting_backend(self):
         for text, digest in (("Text", "0" * 64), ("  ", None)):
             with self.subTest(text=text), TemporaryDirectory() as directory:
@@ -832,7 +1067,87 @@ class TTSBenchmarkTest(unittest.TestCase):
                 factory.assert_not_called()
                 self.assertFalse(output.exists())
 
+    def test_utf8_report_labels_are_admitted_before_backend_startup(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            corpus.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "name": "\ud800",
+                        "samples": [
+                            {"id": "one", "character": "Kamuta", "text": "Text"}
+                        ],
+                    }
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "UTF-8"):
+                load_tts_benchmark_corpus(corpus)
+            for field in ("backend_name", "model_id", "corpus_name"):
+                with self.subTest(field=field):
+                    options = {"backend_name": "fake", field: "Broken\ud800"}
+                    factory = Mock(return_value=FakeRenderingBackend())
+                    with self.assertRaisesRegex(ValueError, "UTF-8"):
+                        benchmark_backend(
+                            registry=CharacterVoiceRegistry(),
+                            characters=["Kamuta"],
+                            text="Text",
+                            output_directory=root / "output",
+                            backend_factory=factory,
+                            **options,
+                        )
+                    factory.assert_not_called()
+                    self.assertFalse((root / "output").exists())
+
+    def test_utf8_sample_fields_are_admitted_before_backend_startup(self):
+        original = {
+            "id": "one",
+            "line_id": "line-one",
+            "character": "Kamuta",
+            "text": "Text",
+        }
+        for field in original:
+            with self.subTest(field=field), TemporaryDirectory() as directory:
+                root = Path(directory)
+                sample = {**original, field: "Broken \ud800 value"}
+                sample["text_sha256"] = hashlib.sha256(b"Text").hexdigest()
+                corpus = root / "corpus.json"
+                for strict in (False, True):
+                    document = {"schema_version": 1, "samples": [dict(sample)]}
+                    if strict:
+                        document["schema"] = "vntts.tts-benchmark-corpus"
+                    else:
+                        document["samples"][0].pop("line_id")
+                        document["samples"][0].pop("text_sha256")
+                        if field == "line_id":
+                            continue
+                    corpus.write_text(json.dumps(document), encoding="utf-8")
+                    with self.subTest(strict=strict):
+                        with self.assertRaisesRegex(ValueError, "UTF-8"):
+                            load_tts_benchmark_corpus(corpus)
+                factory = Mock(return_value=FakeRenderingBackend())
+                with self.assertRaisesRegex(ValueError, "UTF-8"):
+                    benchmark_backend(
+                        "fake",
+                        CharacterVoiceRegistry(),
+                        [],
+                        "unused",
+                        root / "output",
+                        benchmark_samples=[sample],
+                        backend_factory=factory,
+                    )
+                factory.assert_not_called()
+                self.assertFalse((root / "output").exists())
+
     def test_samples_remain_bound_if_factory_mutates_original_inputs(self):
+        class ModelLabel:
+            value = "original-model"
+
+            def __str__(self):
+                return self.value
+
+        model_id = ModelLabel()
         sample = {
             "id": "one",
             "line_id": "line:1",
@@ -844,6 +1159,7 @@ class TTSBenchmarkTest(unittest.TestCase):
 
         def factory(_name, _registry, _cache):
             sample.update(id="replacement", text="Replaced")
+            model_id.value = "replaced-model"
             return backend
 
         with TemporaryDirectory() as directory:
@@ -854,8 +1170,10 @@ class TTSBenchmarkTest(unittest.TestCase):
                 "unused",
                 directory,
                 benchmark_samples=[sample],
+                model_id=model_id,
                 backend_factory=factory,
             )
+        self.assertEqual(report["model_id"], "original-model")
         self.assertEqual(report["samples"][0]["id"], "one")
         self.assertEqual(report["samples"][0]["text"], "Original")
         self.assertEqual(
@@ -895,6 +1213,120 @@ class TTSBenchmarkTest(unittest.TestCase):
                     )
                 self.assertEqual(len(backend.render_requests), 1)
                 self.assertEqual(list(Path(directory).glob("*.wav")), [])
+
+    def test_cli_report_cannot_replace_inputs_before_starting_backend(self):
+        for collision in ("manifest", "corpus", "reference", "narrator"):
+            for alias in ("direct", "hardlink", "symlink"):
+                with (
+                    self.subTest(collision=collision, alias=alias),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory).resolve()
+                    report_path = root / "pocket-tts.json"
+                    inputs = {
+                        "manifest": root / "manifest.json",
+                        "corpus": root / "corpus.json",
+                        "reference": root / "reference.wav",
+                        "narrator": root / "narrator.wav",
+                    }
+                    if alias == "direct":
+                        inputs[collision] = report_path
+                    inputs["reference"].write_bytes(b"voice reference")
+                    inputs["narrator"].write_bytes(b"narrator reference")
+                    inputs["manifest"].write_text(
+                        json.dumps(
+                            {
+                                "voices": [
+                                    {
+                                        "character": "Kamuta",
+                                        "speaker": "kamuta",
+                                        "references": [inputs["reference"].name],
+                                    }
+                                ]
+                            }
+                        )
+                    )
+                    inputs["corpus"].write_text(
+                        json.dumps(
+                            {
+                                "schema_version": 1,
+                                "samples": [
+                                    {"character": "Kamuta", "text": "Sentence"}
+                                ],
+                            }
+                        )
+                    )
+                    if alias == "hardlink":
+                        report_path.hardlink_to(inputs[collision])
+                    elif alias == "symlink":
+                        symlink_or_skip(report_path, inputs[collision])
+                    before = {path.name: path.read_bytes() for path in root.iterdir()}
+                    with (
+                        patch("vntts.tts_benchmark.benchmark_backend") as benchmark,
+                        redirect_stderr(StringIO()) as errors,
+                    ):
+                        result = main(
+                            [
+                                "--backend",
+                                "pocket-tts",
+                                "--output",
+                                str(root),
+                                "--manifest",
+                                str(inputs["manifest"]),
+                                "--corpus",
+                                str(inputs["corpus"]),
+                                "--narrator-reference",
+                                str(inputs["narrator"]),
+                            ]
+                        )
+                    self.assertEqual(result, 1)
+                    self.assertIn("must differ from input files", errors.getvalue())
+                    benchmark.assert_not_called()
+                    self.assertEqual(
+                        {path.name: path.read_bytes() for path in root.iterdir()},
+                        before,
+                    )
+                    self.assertTrue(report_path.samefile(inputs[collision]))
+                    if alias == "symlink":
+                        self.assertTrue(report_path.is_symlink())
+
+    def test_cli_replaces_unrelated_report_with_real_benchmark_results(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            reference = root / "narrator.wav"
+            reference.write_bytes(b"narrator reference")
+            report_path = root / "pocket-tts.json"
+            report_path.write_text("old report")
+            with (
+                patch(
+                    "vntts.tts_benchmark.find_default_voice_manifest", return_value=None
+                ),
+                patch(
+                    "vntts.tts_benchmark.create_backend",
+                    return_value=FakeRenderingBackend(),
+                ),
+                redirect_stdout(StringIO()),
+            ):
+                self.assertEqual(
+                    main(
+                        [
+                            "--backend",
+                            "pocket-tts",
+                            "--output",
+                            str(root),
+                            "--character",
+                            "Narrator",
+                            "--narrator-reference",
+                            str(reference),
+                        ]
+                    ),
+                    0,
+                )
+            report = json.loads(report_path.read_text())
+            self.assertEqual(report["backend"], "pocket-tts")
+            self.assertEqual(report["samples"][0]["character"], "Narrator")
+            self.assertEqual(reference.read_bytes(), b"narrator reference")
+            self.assertTrue(Path(report["samples"][0]["audio"]).is_file())
 
     def test_cli_handles_malformed_corpus_without_starting_or_publishing(self):
         errors = StringIO()

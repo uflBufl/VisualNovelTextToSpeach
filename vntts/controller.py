@@ -11,7 +11,6 @@ from threading import Event, Lock, RLock
 from time import monotonic
 from typing import Protocol, TypeGuard, runtime_checkable
 
-from vntts.assets import ModelAssetManager
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.auto_advance import DialogueAdvancer
 from vntts.auto_advance_policy import auto_advance_allowed
@@ -65,15 +64,16 @@ from vntts.live import (
 )
 from vntts.live_sequence import (
     LiveSequenceEvent,
-    LiveSequencePlan,
     StoryCursor,
     StoryCursorError,
     StoryCursorSnapshot,
     StoryCursorState,
+    load_live_sequence_plan,
 )
 from vntts.live_snapshot import read_live_snapshot as read_live_snapshot
 from vntts.live_speaker_corpus import LiveSpeakerCorpus
 from vntts.live_speech import TypedPlaybackBackend, play_typed_text
+from vntts.model_assets import ModelAssetManager
 from vntts.ocr import (
     DialogRegion,
     OCRRegions,
@@ -81,9 +81,7 @@ from vntts.ocr import (
     UncertainFrameRecorder,
     default_minimum_ocr_confidence,
     get_dialog_region,
-    get_dialog_region_file,
-    load_dialog_region,
-    load_ocr_regions,
+    get_ocr_regions,
 )
 from vntts.ocr_corrections import OCRCorrectionDictionary, OCRCorrectionStore
 from vntts.playback import PreparedPlayback
@@ -166,7 +164,7 @@ class _Executor(Protocol):
         self, callback: Callable[..., object], /, *args: object, **kwargs: object
     ) -> _ExecutorFuture: ...
 
-    def shutdown(self, wait: bool = True) -> None: ...
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None: ...
 
 
 class _VoiceRouter(Protocol):
@@ -341,10 +339,12 @@ class _ScheduledDialogRead:
         submit: Callable[[Callable[[str, str], object]], _DialogReadFuture],
         deliver: Callable[[str, str], object],
         live_reader: _LiveReaderState | None,
+        shutdown_requested: Event | None = None,
     ) -> None:
         self._submit = submit
         self._deliver = deliver
         self._live_reader = live_reader
+        self._shutdown_requested = shutdown_requested
         self._active_read: _DialogReadFuture | None = None
         self._generation = 0
         self._lock = RLock()
@@ -366,6 +366,11 @@ class _ScheduledDialogRead:
 
     def __call__(self) -> bool:
         with self._lock:
+            if (
+                self._shutdown_requested is not None
+                and self._shutdown_requested.is_set()
+            ):
+                return False
             if self._live_reader is not None and self._live_reader.is_running:
                 print("Stop live reading before requesting a one-time read")
                 return False
@@ -378,7 +383,10 @@ class _ScheduledDialogRead:
 
             def guarded_deliver(character: str, text: str) -> object:
                 with self._lock:
-                    if generation != self._generation:
+                    if generation != self._generation or (
+                        self._shutdown_requested is not None
+                        and self._shutdown_requested.is_set()
+                    ):
                         return False
                     return self._deliver(character, text)
 
@@ -392,6 +400,7 @@ def create_dialog_read_scheduler(
     screenshot_directory: str | Path,
     *,
     live_reader: _LiveReaderState | None = None,
+    shutdown_requested: Event | None = None,
     error_handler: Callable[[Exception], object] | None = None,
     capture_target: object | None = None,
     speech_handler: Callable[..., object] | None = None,
@@ -431,7 +440,7 @@ def create_dialog_read_scheduler(
             else None,
         )
 
-    return _ScheduledDialogRead(submit, deliver, live_reader)
+    return _ScheduledDialogRead(submit, deliver, live_reader, shutdown_requested)
 
 
 @dataclass(frozen=True)
@@ -515,7 +524,7 @@ class AppController:
         pipeline_event_handler: Callable[..., object] | None = None,
         live_sequence_plan_factory: Callable[
             [str, str], _LiveSequencePlanContract
-        ] = LiveSequencePlan.load,
+        ] = load_live_sequence_plan,
         voice_library: VoiceLibrary | None = None,
         profile_store: GameProfileStore | None = None,
     ) -> None:
@@ -597,7 +606,9 @@ class AppController:
         self.last_diagnostic = None
         self.last_audio_source_description = "Not selected"
         self.last_audio_route_trace = None
-        self.capture_interval_ms = float(self.settings.live_interval_ms)
+        self.capture_interval_ms = (
+            get_live_configuration(self.settings)["interval_seconds"] * 1000
+        )
         self.game_focused = True
         self.diagnostic_lock = Lock()
         self.voice_prime_lock = Lock()
@@ -994,21 +1005,11 @@ class AppController:
 
     def _capture_ocr_regions(self) -> OCRRegions | None:
         profile = self.profile_store.get(self.settings.active_profile_id)
-        if profile is not None:
-            return (
-                profile.ocr_regions
-                if self._capture_region() == profile.dialog_region
-                else None
-            )
-        path = get_dialog_region_file()
-        if not path.is_file():
-            return None
-        try:
-            if self._capture_region() != load_dialog_region(path):
-                return None
-            return load_ocr_regions(path)
-        except OSError, ValueError, TypeError:
-            return None
+        return get_ocr_regions(
+            self._capture_region(),
+            profile.dialog_region if profile is not None else None,
+            profile.ocr_regions if profile is not None else None,
+        )
 
     def _recognize_live_frame(self, frame: object) -> tuple[str, str]:
         voice_router = self.voice_router
@@ -1057,7 +1058,7 @@ class AppController:
             self._refresh_diagnostic_metrics()
         return choice.label, text
 
-    def _speak_with_live_backend(self, character: str, text: str) -> object:
+    def _speak_with_live_backend(self, character: str, text: str) -> bool:
         live_backend: object = self.speech_backend
         if isinstance(live_backend, GeneratedAudioFallbackBackend):
             live_backend = live_backend.live_backend
@@ -1117,24 +1118,29 @@ class AppController:
             return None
         return UncertainFrameRecorder(self.settings.ocr_diagnostics_directory)
 
+    def _finish_observed_dialogue(self) -> bool:
+        self.history.finish_current()
+        with self.story_cursor_lock:
+            if (
+                self.story_cursor is not None
+                and is_live_sequence_audio_mode(self.settings.live_sequence_mode)
+                and self.story_cursor.state
+                not in {
+                    StoryCursorState.UNSYNCHRONIZED,
+                    StoryCursorState.ANCHORING,
+                }
+            ):
+                return False
+        self.dialog_handler("Narrator", "")
+        return True
+
     def _dialog_observed(
         self, character: str | None, text: str
     ) -> DialogObservationDecision:
+        if self.shutdown_requested.is_set():
+            return False
         if not text:
-            self.history.finish_current()
-            with self.story_cursor_lock:
-                if (
-                    self.story_cursor is not None
-                    and is_live_sequence_audio_mode(self.settings.live_sequence_mode)
-                    and self.story_cursor.state
-                    not in {
-                        StoryCursorState.UNSYNCHRONIZED,
-                        StoryCursorState.ANCHORING,
-                    }
-                ):
-                    return False
-            self.dialog_handler("Narrator", "")
-            return True
+            return self._finish_observed_dialogue()
         observed_character = character or "Narrator"
         character = self._canonical_observed_character(character, text)
         canonical_routing = False
@@ -1249,6 +1255,39 @@ class AppController:
             return None
         return line
 
+    def _sequence_cursor_for_lease_locked(
+        self, lease: SequenceEventLease
+    ) -> _StoryCursor | None:
+        cursor = self.story_cursor
+        if (
+            cursor is None
+            or cursor.current_event_id != lease.event_id
+            or cursor.occurrence_id != lease.occurrence_id
+        ):
+            return None
+        return cursor
+
+    def _seal_sequence_route_locked(
+        self, cursor: _StoryCursor, lease: SequenceEventLease, route: str
+    ) -> bool:
+        existing = self.sequence_event_terminal_routes.setdefault(lease, route)
+        if existing != route:
+            cursor.desynchronize("conflicting-terminal-audio-route")
+            self._publish_live_sequence_status()
+            return False
+        return True
+
+    def _start_live_sequence_session(self) -> None:
+        with self.story_cursor_lock:
+            cursor = self.story_cursor
+            if cursor is None:
+                return
+            if self.explicit_sequence_anchor_pending:
+                self.explicit_sequence_anchor_pending = False
+            else:
+                cursor.reset("live-session-started")
+            self._publish_live_sequence_status()
+
     def _mark_sequence_silence_locked(self, event_id: str) -> bool:
         cursor = self.story_cursor
         if cursor is None or cursor.current_event_id != event_id:
@@ -1257,12 +1296,7 @@ class AppController:
         if event is None or event.kind != "silent":
             return False
         lease = SequenceEventLease(event.event_id, cursor.occurrence_id)
-        existing = self.sequence_event_terminal_routes.setdefault(lease, "silence")
-        if existing != "silence":
-            cursor.desynchronize("conflicting-terminal-audio-route")
-            self._publish_live_sequence_status()
-            return False
-        return True
+        return self._seal_sequence_route_locked(cursor, lease, "silence")
 
     def _load_live_sequence_plan(self) -> bool:
         with self.story_cursor_lock:
@@ -2477,13 +2511,10 @@ class AppController:
         started_at = monotonic()
         settings = self.settings
         with self.story_cursor_lock:
-            cursor = self.story_cursor
             authorized = bool(
                 backend is self.speech_backend
                 and settings is self.settings
-                and cursor is not None
-                and cursor.current_event_id == owner_lease.event_id
-                and cursor.occurrence_id == owner_lease.occurrence_id
+                and self._sequence_cursor_for_lease_locked(owner_lease) is not None
                 and self.game_focused
                 and is_live_sequence_audio_mode(self.settings.live_sequence_mode)
             )
@@ -2531,13 +2562,10 @@ class AppController:
                 outcome = "failed"
                 self.error_handler(error)
         with self.story_cursor_lock:
-            cursor = self.story_cursor
             if outcome in {"reserved", "prepared"} and (
                 backend is not self.speech_backend
                 or settings is not self.settings
-                or cursor is None
-                or cursor.current_event_id != owner_lease.event_id
-                or cursor.occurrence_id != owner_lease.occurrence_id
+                or self._sequence_cursor_for_lease_locked(owner_lease) is None
                 or not self.game_focused
             ):
                 outcome = "stale"
@@ -2609,14 +2637,10 @@ class AppController:
         self, lease: SequenceEventLease | None, outcome: PlaybackOutcome | None
     ) -> bool:
         with self.story_cursor_lock:
-            cursor = self.story_cursor
-            if (
-                not isinstance(lease, SequenceEventLease)
-                or cursor is None
-                or cursor.current_event_id != lease.event_id
-                or cursor.occurrence_id != lease.occurrence_id
-                or cursor.state != StoryCursorState.PLAYING
-            ):
+            if not isinstance(lease, SequenceEventLease):
+                return False
+            cursor = self._sequence_cursor_for_lease_locked(lease)
+            if cursor is None or cursor.state != StoryCursorState.PLAYING:
                 return False
             successful = isinstance(outcome, PlaybackOutcome) and outcome.successful
             audible = bool(
@@ -2626,13 +2650,7 @@ class AppController:
             )
             if (successful or audible) and isinstance(outcome, PlaybackOutcome):
                 route = str(outcome.audio_source or "unknown")
-                existing = self.sequence_event_terminal_routes.setdefault(
-                    lease,
-                    route,
-                )
-                if existing != route:
-                    cursor.desynchronize("conflicting-terminal-audio-route")
-                    self._publish_live_sequence_status()
+                if not self._seal_sequence_route_locked(cursor, lease, route):
                     return False
             cursor.finish_playback(successful=successful)
             generation = (
@@ -2782,10 +2800,12 @@ class AppController:
         ):
             return False
         with self.voice_prime_lock:
+            if self.shutdown_requested.is_set():
+                return False
             if key in self.primed_voice_keys:
                 return False
-            self.primed_voice_keys.add(key)
             future = self.speech_executor.submit(prime, character)
+            self.primed_voice_keys.add(key)
             self.voice_prime_futures.add(future)
         future.add_done_callback(self._voice_prime_finished)
         return True
@@ -2815,6 +2835,8 @@ class AppController:
             self.error_handler(error)
 
     def _enqueue_dialog(self, character: str, text: str) -> bool:
+        if self.shutdown_requested.is_set():
+            return False
         canonical_character = self._canonical_observed_character(character, text)
         resolved_text = self._resolve_early_indexed_dialogue(canonical_character, text)
         if resolved_text is not None:
@@ -3292,6 +3314,8 @@ class AppController:
             )
         if outcome is None:
             raise TypeError("Speech backend does not implement typed playback")
+        if not isinstance(outcome, PlaybackOutcome):
+            raise TypeError("Speech backend returned an untyped playback outcome")
         return outcome
 
     def _report_live_playback_outcome(
@@ -3761,23 +3785,6 @@ class AppController:
             )
             self.last_diagnostic = snapshot
         self.diagnostic_handler(snapshot)
-
-    def _stop_tts(self) -> None:
-        active_tts = self.tts
-        if active_tts is not None and hasattr(active_tts, "stop"):
-            try:
-                active_tts.stop()
-            except Exception as error:
-                self.error_handler(error)
-        shutdown = getattr(active_tts, "shutdown", None)
-        if callable(shutdown):
-            try:
-                shutdown()
-            except Exception as error:
-                self.error_handler(error)
-        self.tts = None
-        self.voice_router = None
-        self.speech_backend = None
 
     def _interrupt_speech(self) -> bool | None:
         if self.tts is not None and hasattr(self.tts, "stop"):

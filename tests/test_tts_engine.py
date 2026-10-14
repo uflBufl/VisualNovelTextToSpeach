@@ -10,6 +10,7 @@ import numpy as np
 from vntts.playback import PlaybackStatus, PreparedPlayback
 from vntts.services.tts_engine import (
     AudioPlaybackError,
+    TTSConfigurationError,
     TTSEngine,
     TTSSynthesisError,
     get_tts_profile,
@@ -118,6 +119,18 @@ class TTSEngineTest(unittest.TestCase):
         )
         return engine, tts, audio_output
 
+    def test_invalid_volume_does_not_load_torch_or_construct_model(self):
+        for volume in (True, "0.5", -1, 2, float("nan"), float("inf")):
+            with self.subTest(volume=volume):
+                factory = Mock()
+                with patch(
+                    "vntts.services.tts_engine._load_torch_module"
+                ) as load_torch:
+                    with self.assertRaises(TTSConfigurationError):
+                        TTSEngine(volume=volume, tts_factory=factory)
+                load_torch.assert_not_called()
+                factory.assert_not_called()
+
     def test_xtts_uses_stable_profile_by_default(self):
         engine, _, _ = self.create_engine(model_name="xtts_v2")
 
@@ -144,6 +157,28 @@ class TTSEngineTest(unittest.TestCase):
             prepare_speech_text("Wait, this is still appearing,"),
             "Wait, this is still appearing.",
         )
+
+    def test_terminal_punctuation_preserves_mixed_and_interior_runs(self):
+        for text, expected in (
+            ("", ""),
+            ("  ", ""),
+            (" ... ", "."),
+            ("Hello .", "Hello ."),
+            ("Hello ….", "Hello …."),
+            ("Hello .……", "Hello .."),
+            ("Hello ……...", "Hello ……."),
+            ("Hello,,", "Hello,."),
+            ("Hello ;;", "Hello ;."),
+            ("Hello :", "Hello."),
+            ("Hello \n ...", "Hello."),
+            ("I ... don't know ... yet.", "I ... don't know ... yet."),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(prepare_speech_text(text), expected)
+        for punctuation in (" ", ".", "…"):
+            text = "A" + punctuation * 4096 + "B,"
+            with self.subTest(punctuation=punctuation):
+                self.assertEqual(prepare_speech_text(text), text[:-1] + ".")
 
     def test_synthesize_normalizes_only_the_spoken_copy(self):
         engine, tts, _ = self.create_engine()

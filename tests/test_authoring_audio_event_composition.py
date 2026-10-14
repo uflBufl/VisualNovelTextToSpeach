@@ -1,11 +1,17 @@
 import io
 import json
+import os
+import stat
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-from tests.test_authoring_audio_event_review import publish
+import vntts.authoring.audio_event_composition as composition_module
+from tests.authoring_fixtures import publish_audio_event_review_fixture as publish
+from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring.audio_event_composition import (
     AudioEventCompositionError,
     load_audio_event_composition,
@@ -18,6 +24,87 @@ from vntts.authoring.cli import main as authoring_main
 
 
 class AudioEventCompositionTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_review_copy_acquisition_refuses_fifo_cleans_up_and_recovers(self):
+        for role in ("queue", "audio"):
+            with self.subTest(role=role), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                review, _queue, _source = publish(root)
+                record_audio_event_review_decision(review.directory, "accept")
+                selected = (
+                    review.directory / "queue.jsonl"
+                    if role == "queue"
+                    else review.audio
+                )
+                selected.chmod(0o444)
+                before = tree_hashes(root)
+                output = root / "composition"
+                original = composition_module.copy_regular_file
+                refused = []
+
+                def copy(source, target, **options):
+                    if Path(source) != selected:
+                        return original(source, target, **options)
+                    self.assertEqual(options, {})
+                    gate: RegularFileGate = {"path": selected, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(source, target, **options)
+                    self.assertFalse(Path(target).exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                with (
+                    patch.object(composition_module, "copy_regular_file", copy),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    publish_audio_event_composition(review.directory, output)
+                self.assertEqual(len(refused), 1)
+                self.assertIs(caught.exception, refused[0])
+                self.assertFalse(output.exists())
+                self.assertFalse(list(root.glob(".composition.staging-*")))
+                self.assertEqual(tree_hashes(root), before)
+                recovered = publish_audio_event_composition(review.directory, output)
+                copied = output / "review" / selected.relative_to(review.directory)
+                self.assertEqual(copied.read_bytes(), selected.read_bytes())
+                self.assertTrue(stat.S_IMODE(copied.stat().st_mode) & stat.S_IWUSR)
+                self.assertEqual(
+                    recovered.audio.read_bytes(), review.audio.read_bytes()
+                )
+                self.assertEqual(recovered.audio_sha256, review.audio_sha256)
+                self.assertFalse(
+                    publish_audio_event_composition(review.directory, output).created
+                )
+
+    def test_final_audio_metadata_decodes_the_captured_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            review, _queue, _source = publish(root)
+            record_audio_event_review_decision(review.directory, "accept")
+            result = publish_audio_event_composition(
+                review.directory, root / "composition"
+            )
+            payload = result.audio.read_bytes()
+            probe = composition_module.probe_pcm16_mono_wav
+
+            def replace_before_decode(source):
+                result.audio.write_bytes(b"RIFF")
+                try:
+                    return probe(source)
+                finally:
+                    result.audio.write_bytes(payload)
+
+            with patch.object(
+                composition_module, "probe_pcm16_mono_wav", replace_before_decode
+            ):
+                loaded = load_audio_event_composition(result.directory)
+            self.assertEqual(loaded.audio_sha256, result.audio_sha256)
+            self.assertEqual(loaded.composition_id, result.composition_id)
+
     def test_publishes_exact_speaker_neutral_event_and_is_idempotent(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -92,6 +179,166 @@ class AudioEventCompositionTest(unittest.TestCase):
                 AudioEventCompositionError, "authority changed"
             ):
                 load_audio_event_composition(output)
+
+    def test_composition_and_decision_versions_require_integers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            review, _queue, _audio = publish(root)
+            record_audio_event_review_decision(review.directory, "accept")
+            output = root / "composition"
+            publish_audio_event_composition(review.directory, output)
+            path = output / "composition.json"
+            payload = path.read_bytes()
+            for version in (True, 1.0):
+                with self.subTest(composition_version=version):
+                    document = json.loads(payload)
+                    document["schema_version"] = version
+                    identity = {
+                        key: value
+                        for key, value in document.items()
+                        if key
+                        not in {
+                            "composition_id",
+                            "created_at",
+                            "review",
+                            "review_decision",
+                            "queue",
+                            "final_audio",
+                            "sample_rate",
+                            "sample_count",
+                            "duration_seconds",
+                            "peak",
+                        }
+                    }
+                    document["composition_id"] = canonical_document_sha256(identity)
+                    path.write_text(json.dumps(document, sort_keys=True))
+                    with self.assertRaisesRegex(
+                        AudioEventCompositionError, "authority changed"
+                    ):
+                        load_audio_event_composition(output)
+            path.write_bytes(payload)
+            record_audio_event_composition_decision(output, "approved")
+            terminal = output / "composition-decision.json"
+            decision = json.loads(terminal.read_text())
+            for version in (True, 1.0):
+                with self.subTest(decision_version=version):
+                    decision["schema_version"] = version
+                    terminal.write_text(json.dumps(decision, sort_keys=True))
+                    with self.assertRaisesRegex(
+                        AudioEventCompositionError, "decision changed"
+                    ):
+                        load_audio_event_composition(output)
+
+    def test_composition_metadata_and_recipe_keep_their_field_types(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            review, _queue, _audio = publish(root)
+            record_audio_event_review_decision(review.directory, "accept")
+            output = root / "composition"
+            publish_audio_event_composition(review.directory, output)
+            path = output / "composition.json"
+            payload = path.read_bytes()
+            cases = (
+                ("sample_rate", 24_000.0),
+                ("sample_count", 1_200.0),
+                ("sample_offset", False),
+                ("fade_in_samples", False),
+                ("fade_out_samples", False),
+                ("gain", True),
+                ("speaker_identity_claim", 0),
+            )
+            for field, value in cases:
+                with self.subTest(field=field):
+                    document = json.loads(payload)
+                    if field in document:
+                        document[field] = value
+                    else:
+                        document["composition"][field] = value
+                    identity = {
+                        key: value
+                        for key, value in document.items()
+                        if key
+                        not in {
+                            "composition_id",
+                            "created_at",
+                            "review",
+                            "review_decision",
+                            "queue",
+                            "final_audio",
+                            "sample_rate",
+                            "sample_count",
+                            "duration_seconds",
+                            "peak",
+                        }
+                    }
+                    document["composition_id"] = canonical_document_sha256(identity)
+                    path.write_text(json.dumps(document, sort_keys=True))
+                    with self.assertRaisesRegex(
+                        AudioEventCompositionError, "metadata|ledger"
+                    ):
+                        load_audio_event_composition(output)
+
+    def test_loader_and_publisher_races_raise_composition_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            review, _queue, _audio = publish(root)
+            record_audio_event_review_decision(review.directory, "accept")
+            output = root / "composition"
+            publish_audio_event_composition(review.directory, output)
+            original = composition_module._validate_composition_document
+
+            def validate_then_mutate(*args):
+                original(*args)
+                path = output / "composition.json"
+                path.write_bytes(path.read_bytes() + b" ")
+
+            with patch.object(
+                composition_module,
+                "_validate_composition_document",
+                validate_then_mutate,
+            ):
+                with self.assertRaisesRegex(AudioEventCompositionError, "changed"):
+                    load_audio_event_composition(output)
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            review, _queue, _audio = publish(root)
+            record_audio_event_review_decision(review.directory, "accept")
+            original = load_audio_event_composition
+
+            def load_then_mutate(path):
+                loaded = original(path)
+                queue = review.directory / "queue.jsonl"
+                queue.write_bytes(queue.read_bytes() + b"\n")
+                return loaded
+
+            with patch.object(
+                composition_module, "load_audio_event_composition", load_then_mutate
+            ):
+                with self.assertRaisesRegex(AudioEventCompositionError, "changed"):
+                    publish_audio_event_composition(
+                        review.directory, root / "composition"
+                    )
+            self.assertFalse((root / "composition").exists())
+            self.assertFalse(list(root.glob(".composition.staging-*")))
+
+    def test_persisted_decision_rejects_non_strings_with_composition_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            review, _queue, _audio = publish(root)
+            record_audio_event_review_decision(review.directory, "accept")
+            output = root / "composition"
+            publish_audio_event_composition(review.directory, output)
+            record_audio_event_composition_decision(output, "approved")
+            path = output / "composition-decision.json"
+            document = json.loads(path.read_text())
+            for decision in ([], {}, None, True, 1):
+                with self.subTest(decision=decision):
+                    document["decision"] = decision
+                    path.write_text(json.dumps(document, sort_keys=True))
+                    with self.assertRaisesRegex(
+                        AudioEventCompositionError, "decision changed"
+                    ):
+                        load_audio_event_composition(output)
 
     def test_final_decision_is_exact_idempotent_and_cli_visible(self):
         with TemporaryDirectory() as directory:

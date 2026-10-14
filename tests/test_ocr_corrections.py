@@ -9,7 +9,8 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt, QTimer  # noqa: E402
+from durable_file import atomic_write_bytes  # noqa: E402
+from PySide6.QtCore import Qt, QThreadPool, QTimer  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -20,11 +21,16 @@ from PySide6.QtWidgets import (  # noqa: E402
     QMessageBox,
 )
 
+from tests.qt_task_fixtures import (  # noqa: E402
+    ManualThreadPool,
+    release_and_wait_for_pool,
+)
 from vntts.main import recognize_screenshot_result  # noqa: E402
 from vntts.ocr import OCRResult  # noqa: E402
 from vntts.ocr_corrections import (  # noqa: E402
     OCRCorrectionDictionary,
     OCRCorrectionStore,
+    corrections_schema_version,
 )
 from vntts.ocr_corrections_ui import OCRCorrectionsDialog  # noqa: E402
 
@@ -170,21 +176,88 @@ class OCRCorrectionStoreTest(unittest.TestCase):
                 ("remove_profile", ("game",)),
             ):
                 with self.subTest(method=method, arguments=arguments):
+                    disk_error = OSError("disk full")
                     with (
                         patch(
-                            "vntts.versioned_json.write_versioned_json",
-                            side_effect=OSError("disk full"),
-                        ),
-                        self.assertRaisesRegex(OSError, "disk full"),
+                            "vntts.versioned_json.atomic_write_bytes",
+                            side_effect=disk_error,
+                        ) as write,
+                        self.assertRaisesRegex(OSError, "disk full") as raised,
                     ):
                         getattr(store, method)(*arguments)
 
+                    self.assertIs(raised.exception, disk_error)
+                    write.assert_called_once()
                     self.assertEqual(store.global_entries, {"Mareus": "Marcus"})
                     self.assertEqual(
                         store.profile_entries, {"game": {"Vertln": "Vertin"}}
                     )
                     self.assertEqual(store._revision, revision)
                     self.assertEqual(store.path.read_bytes(), original)
+
+    def test_replacement_while_saving_preserves_foreign_entries_until_reload(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "ocr-corrections.json"
+            store = OCRCorrectionStore(
+                path,
+                global_entries={"Mareus": "Marcus"},
+                profile_entries={"game": {"Vertln": "Vertin"}},
+            )
+            store.save()
+            revision = store._revision
+            foreign_global = {"Mareus": "Marcus", "Poaeher": "Poacher"}
+            foreign_profiles = {
+                "game": {"Vertln": "Vertin"},
+                "external": {"Wrong": "Foreign"},
+            }
+            foreign = (
+                json.dumps(
+                    {
+                        "schema_version": corrections_schema_version,
+                        "global": foreign_global,
+                        "profiles": foreign_profiles,
+                    },
+                    indent=2,
+                ).encode()
+                + b"\n"
+            )
+            replacement = path.with_name("external.json")
+            replacement.write_bytes(foreign)
+
+            def replace_after_write(destination, payload):
+                result = atomic_write_bytes(destination, payload)
+                if Path(destination) == path:
+                    replacement.replace(path)
+                return result
+
+            with (
+                patch(
+                    "vntts.versioned_json.atomic_write_bytes",
+                    side_effect=replace_after_write,
+                ) as write,
+                self.assertRaisesRegex(OSError, "changed while saving"),
+            ):
+                store.upsert_entries({"New": "Mine"}, "game")
+            write.assert_called_once()
+            self.assertEqual(store.global_entries, {"Mareus": "Marcus"})
+            self.assertEqual(store.profile_entries, {"game": {"Vertln": "Vertin"}})
+            self.assertEqual(store._revision, revision)
+            self.assertEqual(path.read_bytes(), foreign)
+            with self.assertRaisesRegex(OSError, "changed on disk"):
+                store.upsert_entries({"New": "Mine"}, "game")
+            self.assertEqual(path.read_bytes(), foreign)
+
+            reloaded = OCRCorrectionStore.load(path)
+            reloaded.upsert_entries({"New": "Mine"}, "game")
+            saved = OCRCorrectionStore.load(path)
+            self.assertEqual(saved.global_entries, foreign_global)
+            self.assertEqual(
+                saved.profile_entries,
+                {
+                    **foreign_profiles,
+                    "game": {"Vertln": "Vertin", "New": "Mine"},
+                },
+            )
 
     def test_stale_store_cannot_overwrite_another_store(self):
         with TemporaryDirectory() as directory:
@@ -342,27 +415,36 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
             release.wait(3)
 
         store.replace_entries.side_effect = replace_entries
-        dialog = OCRCorrectionsDialog("game", "Game", store)
-        dialog._append_row(dialog.global_table, "Mareus", "Marcus")
-        heartbeat = []
-        QTimer.singleShot(0, lambda: heartbeat.append("painted"))
+        pool = QThreadPool()
+        dialog = None
+        with release_and_wait_for_pool(
+            pool,
+            release,
+            finish=lambda: self.wait_for(
+                lambda: dialog is None or (not dialog._save_active)
+            ),
+        ):
+            dialog = OCRCorrectionsDialog("game", "Game", store, thread_pool=pool)
+            dialog._append_row(dialog.global_table, "Mareus", "Marcus")
+            heartbeat = []
+            QTimer.singleShot(0, lambda: heartbeat.append("painted"))
 
-        before = time.monotonic()
-        dialog.save()
-        elapsed = time.monotonic() - before
-        self.wait_for(lambda: started.is_set() and bool(heartbeat))
+            before = time.monotonic()
+            dialog.save()
+            elapsed = time.monotonic() - before
+            self.wait_for(lambda: started.is_set() and bool(heartbeat))
 
-        self.assertLess(elapsed, 0.1)
-        self.assertTrue(dialog._save_active)
-        self.assertFalse(dialog.buttons.isEnabled())
-        close_event = QCloseEvent()
-        dialog.closeEvent(close_event)
-        self.assertFalse(close_event.isAccepted())
-        self.assertIn("Close is deferred", dialog.status.text())
+            self.assertLess(elapsed, 0.1)
+            self.assertTrue(dialog._save_active)
+            self.assertFalse(dialog.buttons.isEnabled())
+            close_event = QCloseEvent()
+            dialog.closeEvent(close_event)
+            self.assertFalse(close_event.isAccepted())
+            self.assertIn("Close is deferred", dialog.status.text())
 
-        release.set()
-        self.wait_for(lambda: not dialog._save_active)
-        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            release.set()
+            self.wait_for(lambda: not dialog._save_active)
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
 
     def test_save_failure_restores_controls_for_retry(self):
         store = Mock(global_entries={}, profile_entries={})
@@ -382,6 +464,55 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
         self.wait_for(lambda: not dialog._save_active)
         self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
         self.assertEqual(store.replace_entries.call_count, 2)
+
+    def test_submission_failure_preserves_rules_and_restores_save_for_retry(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "ocr-corrections.json"
+            store = OCRCorrectionStore(path, global_entries={"Mareus": "Marcus"})
+            store.save()
+            original = path.read_bytes()
+            pool = ManualThreadPool()
+            dialog = OCRCorrectionsDialog("game", "Game", store, thread_pool=pool)
+            self.addCleanup(dialog.deleteLater)
+            dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
+
+            with patch.object(
+                store, "replace_entries", wraps=store.replace_entries
+            ) as save:
+                with patch.object(
+                    pool, "start", side_effect=RuntimeError("pool unavailable")
+                ):
+                    dialog.save()
+                self.application.processEvents()
+
+                save.assert_not_called()
+                self.assertFalse(dialog.save_runner.active)
+                self.assertFalse(dialog._save_active)
+                self.assertTrue(dialog.tabs.isEnabled())
+                self.assertTrue(dialog.buttons.isEnabled())
+                self.assertTrue(dialog.save_button.isEnabled())
+                self.assertIn("pool unavailable", dialog.status.text())
+                self.assertIn("select Save again", dialog.status.text())
+                self.assertEqual(dialog.profile_table.item(0, 1).text(), "Vertin")
+                self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+                self.assertEqual(store.global_entries, {"Mareus": "Marcus"})
+                self.assertEqual(store.profile_entries, {})
+                self.assertEqual(path.read_bytes(), original)
+
+                dialog.save()
+                self.assertTrue(dialog._save_active)
+                self.assertFalse(dialog.buttons.isEnabled())
+                pool.run_next()
+                self.application.processEvents()
+                save.assert_called_once_with(
+                    {"Mareus": "Marcus"}, "game", {"Vertln": "Vertin"}
+                )
+
+            self.assertFalse(dialog._save_active)
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            loaded = OCRCorrectionStore.load(path)
+            self.assertEqual(loaded.global_entries, {"Mareus": "Marcus"})
+            self.assertEqual(loaded.profile_entries, {"game": {"Vertln": "Vertin"}})
 
     def test_stale_rules_request_reopen_instead_of_retry(self):
         with TemporaryDirectory() as temporary_directory:

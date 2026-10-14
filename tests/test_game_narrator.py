@@ -20,17 +20,19 @@ from PySide6.QtWidgets import (  # noqa: E402
     QSizePolicy,
 )
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
-from vntts_artifacts.story_index import load_story_index_document  # noqa: E402
 
-from tests.test_authoring_pcm_playback import FakeAudioModule  # noqa: E402
-from tests.test_pregeneration_audition import FakeBackend, clean_wav_bytes  # noqa: E402
-from tests.test_pregeneration_setup import ManualThreadPool  # noqa: E402
-from tests.test_pregeneration_voices import (  # noqa: E402
-    write_content,
+from tests.audio_output_fixtures import FakeAudioModule  # noqa: E402
+from tests.pregeneration_fixtures import (  # noqa: E402
+    FakeBackend,
+    clean_wav_bytes,
+    voice_impact_fixture,  # noqa: E402
+)
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
+from tests.story_fixtures import write_content  # noqa: E402
+from tests.voice_manifest_fixtures import (  # noqa: E402
     write_manifest,
     write_player_candidate_manifest,
 )
-from tests.test_voice_default_impact import voice_impact_fixture  # noqa: E402
 from vntts.app import TrayApplication  # noqa: E402
 from vntts.authoring.pcm_playback import PersistentPcmPlayer  # noqa: E402
 from vntts.game_content_importer import Reverse1999GameImporter  # noqa: E402
@@ -52,7 +54,9 @@ from vntts.pregeneration_voices import VoicePlanStore  # noqa: E402
 from vntts.qt_audio import QtPcmPlayer  # noqa: E402
 from vntts.runtime_config import initialize_voice_registry  # noqa: E402
 from vntts.settings import AppSettings, load_app_settings  # noqa: E402
+from vntts.story_index_snapshot import load_story_index_snapshot  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
+from vntts.voices import CharacterVoiceRegistry  # noqa: E402
 
 
 class GameNarratorTest(unittest.TestCase):
@@ -133,6 +137,26 @@ class GameNarratorTest(unittest.TestCase):
             self.assertNotEqual(original.sha256, sha256_file(original.path))
             self.assertEqual(original.duration_seconds, 1.2)
             self.assertEqual(original.rejection_reasons, ())
+
+    def test_preview_checksum_disappearance_uses_value_error_boundary(self):
+        with TemporaryDirectory() as directory:
+            manifest = self.narrator_manifest(Path(directory))
+            original_loader = CharacterVoiceRegistry.from_file
+
+            def load_then_disappear(path):
+                registry = original_loader(path)
+                manifest.unlink()
+                return registry
+
+            with patch(
+                "vntts.game_narrator.CharacterVoiceRegistry.from_file",
+                side_effect=load_then_disappear,
+            ):
+                with self.assertRaises(ValueError) as raised:
+                    narrator_preview_plan(
+                        AppSettings(), manifest, "character:centurion", "Line."
+                    )
+            self.assertIsInstance(raised.exception.__cause__, FileNotFoundError)
 
     def test_original_and_preview_report_device_failures(self):
         with TemporaryDirectory() as directory:
@@ -1695,6 +1719,10 @@ class GameNarratorTest(unittest.TestCase):
                 self.run_task(pool)
 
     def test_discovery_reuses_import_and_manual_folder_reimports(self):
+        from vntts.pregeneration_setup import _cached_story_index_document
+
+        _cached_story_index_document.cache_clear()
+        self.addCleanup(_cached_story_index_document.cache_clear)
         with TemporaryDirectory() as directory:
             root = Path(directory)
             importer = Reverse1999GameImporter(output_root=root)
@@ -1729,8 +1757,8 @@ class GameNarratorTest(unittest.TestCase):
                     importer, "import_installed", side_effect=importing_game
                 ) as importing,
                 patch(
-                    "vntts.game_content_importer.load_story_index_document",
-                    wraps=load_story_index_document,
+                    "vntts.pregeneration_setup.load_story_index_snapshot",
+                    wraps=load_story_index_snapshot,
                 ) as parse_index,
             ):
                 self.assertEqual(importer.narrator_characters(), ("Centurion",))
@@ -1738,6 +1766,7 @@ class GameNarratorTest(unittest.TestCase):
                 cache = root / "reverse1999" / "narrator-characters.json"
                 self.assertTrue(cache.is_file())
                 Reverse1999GameImporter._cached_narrator_characters.cache_clear()
+                _cached_story_index_document.cache_clear()
                 self.assertEqual(
                     Reverse1999GameImporter(output_root=root).narrator_characters(),
                     ("Centurion",),
@@ -1754,7 +1783,7 @@ class GameNarratorTest(unittest.TestCase):
                 self.assertEqual(
                     importer.narrator_characters(), ("Centurion", "Rhiannon")
                 )
-                self.assertEqual(parse_index.call_count, 3)
+                self.assertEqual(parse_index.call_count, 2)
                 story = root / "reverse1999" / "story-index.jsonl"
                 (root / "reverse1999" / "narrator-index.jsonl").write_text(
                     story.read_text()
@@ -1762,7 +1791,7 @@ class GameNarratorTest(unittest.TestCase):
                 self.assertEqual(
                     importer.narrator_characters(), ("Centurion", "Rhiannon")
                 )
-                self.assertEqual(parse_index.call_count, 4)
+                self.assertEqual(parse_index.call_count, 3)
                 importer.narrator_characters(installation_root=root / "game")
                 self.assertEqual(importing.call_count, 2)
                 self.assertEqual(importing.call_args.args[1], root / "game")

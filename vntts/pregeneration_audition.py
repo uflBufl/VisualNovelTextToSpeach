@@ -5,21 +5,24 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import secrets
 import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
+from io import BytesIO
 from pathlib import Path
 from time import monotonic
-from typing import Protocol, TypeAlias
+from typing import BinaryIO, NamedTuple, Protocol, TypeAlias
 
 import numpy as np
 from numpy.typing import NDArray
 from vntts_artifacts.atomic_io import atomic_output_path
-from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.audio import (
+    Pcm16MonoWavError,
+    probe_pcm16_mono_wav,
+    write_pcm16_wav,
+)
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.application_directories import get_local_data_directory
@@ -28,7 +31,10 @@ from vntts.authoring.advisory_lock import (
     exclusive_advisory_lock,
 )
 from vntts.authoring.generation_lease import BulkGenerationError
-from vntts.authoring.generation_manifest import AudioQuality, inspect_generated_wav
+from vntts.authoring.generation_manifest import (
+    AudioQuality,
+    inspect_generated_wav_with_samples,
+)
 from vntts.authoring.speech_quality import (
     MAX_INTERNAL_SILENCE_SECONDS,
     MAX_LEADING_SILENCE_SECONDS,
@@ -36,9 +42,17 @@ from vntts.authoring.speech_quality import (
     MAX_TRAILING_SILENCE_SECONDS,
     SpeechQuality,
     SpeechSilenceValidationError,
-    inspect_generated_speech,
+    inspect_generated_speech_samples,
 )
-from vntts.document_identity import canonical_document_sha256
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit
+from vntts.document_identity import (
+    canonical_document_sha256,
+    file_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
+from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_binary, read_regular_bytes
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference
 from vntts.speech_backend_runtime import shutdown_speech_backend
@@ -95,7 +109,17 @@ class _BackendFactory(Protocol):
 
 
 NativePreviewContext: TypeAlias = dict[str, object]
-BackendConfig: TypeAlias = tuple[str, str | None, str | None, str, bool, bool]
+
+
+class BackendConfig(NamedTuple):
+    backend: str
+    model: str | None
+    language: str | None
+    profile: str
+    pocket_voice_cloning: bool
+    xtts_terms_accepted: bool
+
+
 ProgressReporter: TypeAlias = Callable[[str], object]
 
 
@@ -336,13 +360,13 @@ class VoiceAuditionPreviewService:
         progress: ProgressReporter | None,
         notify: ProgressReporter,
     ) -> None:
-        config = (
-            plan.synthesis_backend,
-            plan.synthesis_model,
-            plan.synthesis_language,
-            plan.synthesis_profile,
-            plan.pocket_voice_cloning,
-            plan.xtts_terms_accepted,
+        config = BackendConfig(
+            backend=plan.synthesis_backend,
+            model=plan.synthesis_model,
+            language=plan.synthesis_language,
+            profile=plan.synthesis_profile,
+            pocket_voice_cloning=plan.pocket_voice_cloning,
+            xtts_terms_accepted=plan.xtts_terms_accepted,
         )
         if self._backend is not None and self._backend_config == config:
             self._backend.registry = registry
@@ -441,12 +465,17 @@ class VoiceAuditionPreviewService:
         notify: ProgressReporter,
     ) -> str:
         samples = _mono_pcm(result.pcm)
-        sample_rate = int(result.sample_rate)
-        if not len(samples) or sample_rate < 1:
+        if not len(samples):
             raise VoiceAuditionError("Voice preview generation produced no audio")
         staging = _staging_path(target)
-        try:
-            write_pcm16_wav(staging, samples, sample_rate)
+        with cleanup_on_exit(
+            lambda: staging.unlink(missing_ok=True),
+            description="voice preview staging cleanup",
+        ):
+            try:
+                write_pcm16_wav(staging, samples, result.sample_rate)
+            except Pcm16MonoWavError as error:
+                raise VoiceAuditionError(str(error)) from error
             notify("Checking generated audio for silence and other failures...")
             try:
                 _inspect_preview(staging, preview_text)
@@ -468,14 +497,20 @@ class VoiceAuditionPreviewService:
                 audio_sha256 = sha256_file(staging)
                 _write_preview_manifest(target, identity, telemetry.seed, audio_sha256)
                 os.replace(staging, target)
-            except Exception:
-                target.unlink(missing_ok=True)
-                _preview_manifest_path(target).unlink(missing_ok=True)
+            except BaseException as error:
+                attempt_cleanup(
+                    lambda: target.unlink(missing_ok=True),
+                    description="voice preview target cleanup",
+                    primary_error=error,
+                )
+                attempt_cleanup(
+                    lambda: _preview_manifest_path(target).unlink(missing_ok=True),
+                    description="voice preview manifest cleanup",
+                    primary_error=error,
+                )
                 raise
             telemetry.cache_source = result.diagnostics.cache_source
             return audio_sha256
-        finally:
-            staging.unlink(missing_ok=True)
 
     def cancel(self) -> None:
         self._cancel.set()
@@ -543,9 +578,10 @@ class VoiceAuditionPreviewService:
             if voice is None or not voice.references:
                 return None
             reference = voice.references[0]
-            if sha256_file(reference) != candidate.reference_sha256s[0]:
+            payload = read_regular_bytes(reference)
+            if hashlib.sha256(payload).hexdigest() != candidate.reference_sha256s[0]:
                 raise VoiceAuditionError("Original voice anchor changed after planning")
-            probe_pcm16_mono_wav(reference)
+            probe_pcm16_mono_wav(BytesIO(payload))
             return Path(reference)
         except (OSError, ValueError, VoiceManifestError) as error:
             raise VoiceAuditionError(
@@ -558,9 +594,11 @@ class VoiceAuditionPreviewService:
             if self._closed:
                 return
             self._closed = True
-            shutdown_speech_backend(self._backend)
-            self._backend = None
-            self._backend_config = None
+            try:
+                shutdown_speech_backend(self._backend)
+            finally:
+                self._backend = None
+                self._backend_config = None
 
 
 def _preflight_preview(
@@ -795,23 +833,22 @@ def _cached_preview_metadata(
             "Cached voice preview manifest must not be a symbolic link"
         )
     try:
-        with manifest.open("rb") as source:
+        with open_regular_binary(manifest) as source:
             payload = source.read(1025)
         if len(payload) > 1024:
             raise ValueError("preview manifest is too large")
-        document = json.loads(payload)
+        document = decode_json(payload)
         if not isinstance(document, dict):
             raise ValueError("preview manifest must be an object")
         seed = document["seed"]
-        audio_sha256 = sha256_file(target)
+        audio_sha256 = file_sha256(target, error_type=OSError)
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise VoiceAuditionError(
             f"Cached voice preview manifest is invalid: {error}"
         ) from error
     if (
         document.get("identity") != identity
-        or not isinstance(document.get("audio_sha256"), str)
-        or not re.fullmatch(r"[0-9a-f]{64}", document["audio_sha256"])
+        or not is_lowercase_sha256(document.get("audio_sha256"))
         or document["audio_sha256"] != audio_sha256
         or (seed is not None and (type(seed) is not int or not 0 <= seed < 2**64))
         or (seed is None) != (plan.synthesis_backend == "pocket-tts")
@@ -846,11 +883,16 @@ def _preflight_candidate_references(
             )
 
 
-def _inspect_preview(path: Path, text: str) -> AudioQuality:
+def _inspect_preview(path: Path | BinaryIO, text: str) -> AudioQuality:
     audio_quality: AudioQuality | None = None
     try:
-        audio_quality = inspect_generated_wav(path)
-        speech_quality = inspect_generated_speech(path, text=text)
+        audio_quality, samples = inspect_generated_wav_with_samples(path)
+        speech_quality = inspect_generated_speech_samples(
+            samples,
+            sample_rate=audio_quality.sample_rate,
+            duration_seconds=audio_quality.sample_count / audio_quality.sample_rate,
+            text=text,
+        )
     except SpeechSilenceValidationError as error:
         _record_preview_quality(
             "rejected", "speech-silence", audio_quality, error.quality
@@ -913,9 +955,12 @@ def _cached_preview(
     if target.is_symlink():
         raise VoiceAuditionError("Cached voice preview must not be a symbolic link")
     try:
-        info = _inspect_preview(target, text)
-        audio_sha256 = sha256_file(target)
+        payload = read_regular_bytes(target)
+        audio_sha256 = hashlib.sha256(payload).hexdigest()
         if expected_audio_sha256 is not None and audio_sha256 != expected_audio_sha256:
+            raise VoiceAuditionError("Voice preview changed while it was validated")
+        info = _inspect_preview(BytesIO(payload), text)
+        if file_sha256(target, error_type=OSError) != audio_sha256:
             raise VoiceAuditionError("Voice preview changed while it was validated")
     except (OSError, ValueError, VoiceAuditionError) as error:
         raise VoiceAuditionError(f"Cached voice preview is invalid: {error}") from error
@@ -969,7 +1014,15 @@ def _staging_path(target: Path) -> Path:
         suffix=".wav",
         dir=target.parent,
     )
-    os.close(descriptor)
+    try:
+        os.close(descriptor)
+    except BaseException as error:
+        attempt_cleanup(
+            lambda: Path(name).unlink(missing_ok=True),
+            description="Voice preview stage acquisition cleanup",
+            primary_error=error,
+        )
+        raise
     return Path(name)
 
 

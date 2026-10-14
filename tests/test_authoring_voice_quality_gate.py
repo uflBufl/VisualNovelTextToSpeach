@@ -6,12 +6,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import vntts.authoring.voice_quality_gate as voice_quality_gate_module
-from tests import test_authoring_cohort_review
-from tests.test_authoring_workbench import create_test_workspace
+from tests.authoring_fixtures import (
+    create_test_workspace,
+    create_voice_quality_review,
+    create_voice_quality_review_from_workspace,
+)
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import (
     build_cohort_review_decision,
-    build_cohort_review_plan,
     write_cohort_review_decision,
     write_cohort_review_plan,
 )
@@ -37,36 +39,12 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
             voice_quality_gate_module.VoiceQualityCohortCompatibility,
         )
 
-    def create_review(self, root):
-        fixture = test_authoring_cohort_review.AuthoringCohortReviewTest()
-        workspace, state_path, queue_id = fixture.create_pending_workspace(root)
-        state = json.loads(state_path.read_text())
-        result = state["items"][queue_id]
-        result.update(
-            {
-                "provider": "moss-tts",
-                "model": "model with spaces",
-                "generation_profile": "stable",
-            }
-        )
-        state_path.write_text(json.dumps(state, sort_keys=True))
-        return self.create_review_from_workspace(workspace, state_path, queue_id)
-
-    def create_review_from_workspace(self, workspace, state_path, queue_id):
-        plan = build_cohort_review_plan(workspace)
-        decision = build_cohort_review_decision(
-            plan,
-            plan.document["cohorts"][0]["cohort_id"],
-            "accepted",
-            reviewed_queue_ids=[queue_id],
-            sample_assessments={queue_id: "acceptable"},
-        )
-        return workspace, state_path, queue_id, plan, decision
-
     def test_gate_binds_controls_but_not_story_seed(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace, state_path, queue_id, plan, decision = self.create_review(root)
+            workspace, state_path, queue_id, plan, decision = (
+                create_voice_quality_review(root)
+            )
             gate = build_voice_quality_gate(workspace, plan, decision)
             state = json.loads(state_path.read_text())
             state["items"][queue_id]["seed"] += 1
@@ -83,12 +61,16 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
     def test_narrator_gate_resolves_explicit_workspace_character(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace, state_path, queue_id, _plan, _decision = self.create_review(root)
+            workspace, state_path, queue_id, _plan, _decision = (
+                create_voice_quality_review(root)
+            )
             state = json.loads(state_path.read_text())
             state["items"][queue_id]["voice_character"] = "Narrator"
             state_path.write_text(json.dumps(state, sort_keys=True))
             workspace, _state, _queue_id, plan, decision = (
-                self.create_review_from_workspace(workspace, state_path, queue_id)
+                create_voice_quality_review_from_workspace(
+                    workspace, state_path, queue_id
+                )
             )
 
             gate = build_voice_quality_gate(workspace, plan, decision)
@@ -112,14 +94,14 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
     def test_narrator_gate_detects_changed_workspace_character(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            source, state_path, queue_id, _plan, _decision = self.create_review(
-                root / "source"
+            source, state_path, queue_id, _plan, _decision = (
+                create_voice_quality_review(root / "source")
             )
             state = json.loads(state_path.read_text())
             state["items"][queue_id]["voice_character"] = "Narrator"
             state_path.write_text(json.dumps(state, sort_keys=True))
             source, _state, _queue_id, plan, decision = (
-                self.create_review_from_workspace(source, state_path, queue_id)
+                create_voice_quality_review_from_workspace(source, state_path, queue_id)
             )
             gate = build_voice_quality_gate(source, plan, decision)
 
@@ -174,12 +156,16 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
     def test_narrator_gate_rejects_missing_or_ambiguous_workspace_character(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace, state_path, queue_id, _plan, _decision = self.create_review(root)
+            workspace, state_path, queue_id, _plan, _decision = (
+                create_voice_quality_review(root)
+            )
             state = json.loads(state_path.read_text())
             state["items"][queue_id]["voice_character"] = "Narrator"
             state_path.write_text(json.dumps(state, sort_keys=True))
             workspace, _state, _queue_id, plan, _decision = (
-                self.create_review_from_workspace(workspace, state_path, queue_id)
+                create_voice_quality_review_from_workspace(
+                    workspace, state_path, queue_id
+                )
             )
             workspace_path = Path(workspace) / "workspace.json"
             workspace_document = json.loads(workspace_path.read_text())
@@ -208,7 +194,7 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
     def test_reordered_references_require_new_review(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace, _state, _queue_id, plan, decision = self.create_review(
+            workspace, _state, _queue_id, plan, decision = create_voice_quality_review(
                 root / "source"
             )
             gate = build_voice_quality_gate(workspace, plan, decision)
@@ -284,7 +270,7 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
             )
             state_path.write_text(json.dumps(state, sort_keys=True))
             workspace, _state, _queue, plan, decision = (
-                self.create_review_from_workspace(
+                create_voice_quality_review_from_workspace(
                     workspace.directory, state_path, queue_id
                 )
             )
@@ -299,7 +285,9 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
     def test_rejected_decision_and_tampered_gate_fail_closed(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace, _state, queue_id, plan, _decision = self.create_review(root)
+            workspace, _state, queue_id, plan, _decision = create_voice_quality_review(
+                root
+            )
             rejected = build_cohort_review_decision(
                 plan,
                 plan.document["cohorts"][0]["cohort_id"],
@@ -325,10 +313,184 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
             with self.assertRaisesRegex(VoiceQualityGateError, "identity"):
                 load_voice_quality_gate(output)
 
+    def test_gate_rejects_recomputed_malformed_source_evidence(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id, plan, decision = create_voice_quality_review(
+                root
+            )
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            document = gate.to_dict()
+            source = document["source_review"]
+            source["reviewed_samples"] = ["malformed"]
+            document["gate_id"] = voice_quality_gate_module.canonical_document_sha256(
+                {key: item for key, item in document.items() if key != "gate_id"}
+            )
+            output = root / "gate.json"
+            output.write_text(json.dumps(document))
+
+            with self.assertRaisesRegex(VoiceQualityGateError, "decision item"):
+                load_voice_quality_gate(output)
+
+    def test_gate_rejects_reviewed_record_with_different_target_identity(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id, plan, decision = create_voice_quality_review(
+                root
+            )
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            output = root / "gate.json"
+            for field in ("audio_sha256", "text_sha256", "line_id", "technical_flags"):
+                with self.subTest(field=field):
+                    document = gate.to_dict()
+                    record = document["source_review"]["reviewed_samples"][0]
+                    record[field] = (
+                        ["other flag"] if field == "technical_flags" else "a" * 64
+                    )
+                    document["gate_id"] = (
+                        voice_quality_gate_module.canonical_document_sha256(
+                            {
+                                key: item
+                                for key, item in document.items()
+                                if key != "gate_id"
+                            }
+                        )
+                    )
+                    output.write_text(json.dumps(document))
+                    with self.assertRaisesRegex(
+                        VoiceQualityGateError, "reviewed evidence"
+                    ):
+                        load_voice_quality_gate(output)
+
+    def test_gate_rejects_recomputed_malformed_source_assessment(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id, plan, decision = create_voice_quality_review(
+                root
+            )
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            document = gate.to_dict()
+            document["source_review"]["sample_assessments"] = [
+                {"queue_id": "wrong", "assessment": "acceptable"}
+            ]
+            document["gate_id"] = voice_quality_gate_module.canonical_document_sha256(
+                {key: item for key, item in document.items() if key != "gate_id"}
+            )
+            output = root / "gate.json"
+            output.write_text(json.dumps(document))
+
+            with self.assertRaisesRegex(VoiceQualityGateError, "assessments"):
+                load_voice_quality_gate(output)
+
+    def test_gate_rejects_incomplete_source_review_samples(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id, plan, decision = create_voice_quality_review(
+                root
+            )
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            document = gate.to_dict()
+            document["source_review"]["reviewed_samples"] = []
+            document["gate_id"] = voice_quality_gate_module.canonical_document_sha256(
+                {key: item for key, item in document.items() if key != "gate_id"}
+            )
+            output = root / "gate.json"
+            output.write_text(json.dumps(document))
+
+            with self.assertRaisesRegex(VoiceQualityGateError, "reviewed evidence"):
+                load_voice_quality_gate(output)
+
+    def test_gate_rejects_unhashable_and_malformed_current_assessments(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id, plan, decision = create_voice_quality_review(
+                root
+            )
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            output = root / "gate.json"
+
+            for assessment in (
+                {"queue_id": "wrong", "assessment": []},
+                {
+                    "queue_id": "wrong",
+                    "assessment": "acceptable",
+                    "defect_reasons": ["invalid"],
+                },
+            ):
+                document = gate.to_dict()
+                document["source_review"]["sample_assessments"] = [assessment]
+                document["gate_id"] = (
+                    voice_quality_gate_module.canonical_document_sha256(
+                        {
+                            key: item
+                            for key, item in document.items()
+                            if key != "gate_id"
+                        }
+                    )
+                )
+                output.write_text(json.dumps(document))
+                with self.assertRaises(VoiceQualityGateError):
+                    load_voice_quality_gate(output)
+
+    def test_gate_rejects_unhashable_model_control_kind(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id, plan, decision = create_voice_quality_review(
+                root
+            )
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            document = gate.to_dict()
+            document["identity"]["model_control"]["kind"] = []
+            document["gate_id"] = voice_quality_gate_module.canonical_document_sha256(
+                {key: item for key, item in document.items() if key != "gate_id"}
+            )
+            output = root / "gate.json"
+            output.write_text(json.dumps(document))
+
+            with self.assertRaisesRegex(VoiceQualityGateError, "model control"):
+                load_voice_quality_gate(output)
+
+    def test_gate_accepts_legacy_and_empty_source_assessments(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id, plan, decision = create_voice_quality_review(
+                root
+            )
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            output = root / "gate.json"
+
+            for assessments in (
+                [
+                    {
+                        "queue_id": item["queue_id"],
+                        "assessment": item["assessment"],
+                    }
+                    for item in gate.document["source_review"]["sample_assessments"]
+                ],
+                [],
+            ):
+                document = gate.to_dict()
+                document["source_review"]["sample_assessments"] = assessments
+                document["gate_id"] = (
+                    voice_quality_gate_module.canonical_document_sha256(
+                        {
+                            key: item
+                            for key, item in document.items()
+                            if key != "gate_id"
+                        }
+                    )
+                )
+                output.write_text(json.dumps(document))
+                self.assertEqual(
+                    load_voice_quality_gate(output).gate_id, document["gate_id"]
+                )
+
     def test_gate_rejects_non_integer_schema_version(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace, _state, _queue_id, plan, decision = self.create_review(root)
+            workspace, _state, _queue_id, plan, decision = create_voice_quality_review(
+                root
+            )
             gate = build_voice_quality_gate(workspace, plan, decision)
             output = root / "gate.json"
             write_voice_quality_gate(gate, output)
@@ -353,7 +515,9 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
     def test_publication_never_replaces_existing_gate(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace, _state, _queue_id, plan, decision = self.create_review(root)
+            workspace, _state, _queue_id, plan, decision = create_voice_quality_review(
+                root
+            )
             gate = build_voice_quality_gate(workspace, plan, decision)
             output = root / "gate.json"
             write_voice_quality_gate(gate, output)
@@ -364,7 +528,9 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
     def test_cli_publishes_and_checks_without_projecting_review(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace, _state, queue_id, plan, decision = self.create_review(root)
+            workspace, _state, queue_id, plan, decision = create_voice_quality_review(
+                root
+            )
             plan_path = root / "plan.json"
             decision_path = root / "decision.json"
             gate_path = root / "gate.json"

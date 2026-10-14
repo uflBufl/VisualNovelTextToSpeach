@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import sys
 import time
 import unittest
 from pathlib import Path
@@ -10,16 +12,17 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QPoint
+    from PySide6.QtCore import QPoint, QThreadPool, QTimer
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtWidgets import QApplication
 
-    import tests.test_authoring_terminal_conflict_review as conflict_tests
+    from tests.qt_task_fixtures import release_and_wait_for_pool
+    from tests.symlink_support import symlink_or_skip
+    from tests.terminal_conflict_fixtures import create_terminal_conflict_review
     from vntts.authoring.terminal_conflict_review import (
         TerminalConflictReviewError,
         load_terminal_conflict_review_progress,
-        publish_terminal_conflict_review,
         record_terminal_conflict_decision,
     )
     from vntts.authoring.terminal_conflict_review_ui import (
@@ -67,19 +70,156 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
         self.application.processEvents()
 
     def create_review(self, root):
-        _primary, _secondary, _queue_id, report = (
-            conflict_tests.TerminalConflictReviewTest().create_fixture(root)
+        return create_terminal_conflict_review(root)
+
+    def create_dialog(self, directory, **options):
+        dialog = TerminalConflictReviewDialog(directory, **options)
+        self.wait_for(lambda: not dialog.load_runner.active)
+        if dialog.load_error is not None:
+            dialog.close()
+            raise dialog.load_error
+        return dialog
+
+    def _run_cli_in_subprocess(self):
+        # QApplication.exec/exit owns process lifetime; keep it out of the
+        # application's shared Qt test instance used by later modal dialogs.
+        child_key = "VNTTS_TERMINAL_CONFLICT_CLI_TEST"
+        if os.environ.get(child_key) == self.id():
+            return False
+        completed = subprocess.run(
+            [sys.executable, "-m", "unittest", self.id()],
+            cwd=Path(__file__).resolve().parents[1],
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen", child_key: self.id()},
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
-        directory = root / "conflict-review"
-        publish_terminal_conflict_review(report, directory)
-        return directory
+        self.assertEqual(
+            completed.returncode, 0, f"{completed.stdout}\n{completed.stderr}"
+        )
+        return True
+
+    def test_open_and_refresh_keep_event_loop_responsive_and_cancel_stale_load(self):
+        from vntts.authoring.terminal_conflict_review import (
+            load_terminal_conflict_review_session,
+        )
+
+        started = Event()
+        release = Event()
+        finished = Event()
+
+        def slow_loader(directory):
+            started.set()
+            release.wait(3)
+            result = load_terminal_conflict_review_session(directory)
+            finished.set()
+            return result
+
+        pool = QThreadPool()
+        dialog = None
+        with (
+            TemporaryDirectory() as directory,
+            release_and_wait_for_pool(
+                pool,
+                release,
+                finish=lambda: self.wait_for(
+                    lambda: dialog is None or not dialog.load_runner.active
+                ),
+            ),
+        ):
+            review = self.create_review(Path(directory))
+            with patch(
+                "vntts.authoring.terminal_conflict_review_ui.load_terminal_conflict_review_session",
+                side_effect=slow_loader,
+            ):
+                dialog = TerminalConflictReviewDialog(review, thread_pool=pool)
+                dialog.show()
+                try:
+                    for refresh in (False, True):
+                        if refresh:
+                            started.clear()
+                            release.clear()
+                            finished.clear()
+                            dialog._load_next()
+                        self.assertTrue(started.wait(1))
+                        heartbeat = []
+                        QTimer.singleShot(0, lambda: heartbeat.append(True))
+                        self.wait_for(lambda: bool(heartbeat))
+                        self.assertFalse(finished.is_set())
+                        self.assertTrue(dialog.load_runner.active)
+                        self.assertTrue(
+                            all(
+                                not button.isEnabled()
+                                for button in dialog.choose_buttons
+                            )
+                        )
+                        if refresh:
+                            dialog.close()
+                        release.set()
+                        self.wait_for(finished.is_set)
+                        self.wait_for(lambda: not dialog.load_runner.active)
+                        self.application.processEvents()
+                        if refresh:
+                            self.assertIsNone(dialog._current)
+                        else:
+                            self.assertIsNotNone(dialog._current)
+                finally:
+                    release.set()
+                    dialog.close()
+
+    def test_primary_async_load_failure_keeps_native_error_and_exit_status(self):
+        with TemporaryDirectory() as directory:
+            review = self.create_review(Path(directory))
+            symlink_or_skip(review / "progress.json", "missing-progress.json")
+            if self._run_cli_in_subprocess():
+                return
+            with patch(
+                "vntts.authoring.terminal_conflict_review_ui.QMessageBox.critical"
+            ) as critical:
+                self.assertEqual(terminal_conflict_main([str(review)]), 2)
+            self.assertEqual(critical.call_count, 1)
+            self.assertIn("Terminal conflict progress", critical.call_args.args[2])
+
+    def test_initial_display_validation_failure_keeps_native_error_and_exit_status(
+        self,
+    ):
+        if self._run_cli_in_subprocess():
+            return
+        from dataclasses import replace
+
+        from vntts.authoring.terminal_conflict_review import (
+            load_terminal_conflict_review_session,
+        )
+
+        with TemporaryDirectory() as directory:
+            review = self.create_review(Path(directory))
+            session = load_terminal_conflict_review_session(review)
+            case = session.review["cases"][0]
+            unsupported = {
+                **case,
+                "candidates": case["candidates"] + case["candidates"][:1],
+            }
+            wrong_session = replace(
+                session, review={**session.review, "cases": [unsupported]}
+            )
+            with (
+                patch(
+                    "vntts.authoring.terminal_conflict_review_ui.load_terminal_conflict_review_session",
+                    return_value=wrong_session,
+                ),
+                patch(
+                    "vntts.authoring.terminal_conflict_review_ui.QMessageBox.critical"
+                ) as critical,
+            ):
+                self.assertEqual(terminal_conflict_main([str(review)]), 2)
+            self.assertEqual(critical.call_count, 1)
+            self.assertIn("exactly two distinct candidates", critical.call_args.args[2])
 
     def test_requires_both_candidates_and_saves_neither_in_background(self):
         with TemporaryDirectory() as directory:
             review = self.create_review(Path(directory))
-            dialog = TerminalConflictReviewDialog(
-                review, confirmer=lambda _decision: True
-            )
+            dialog = self.create_dialog(review, confirmer=lambda _decision: True)
             dialog.show()
             self.application.processEvents()
             self.assertTrue(dialog.text.isVisibleTo(dialog))
@@ -94,16 +234,16 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             self.assertFalse(dialog.stop.isEnabled())
             self.assertTrue(dialog.stop.accessibleName())
             self.assertEqual(
-                dialog.decision_context.values["game_speaker"].text(),
+                dialog.decision_context.values["game_speaker"],
                 dialog._current["speaker"],
             )
             self.assertIn(
                 "compared blind",
-                dialog.decision_context.values["reference"].text(),
+                dialog.decision_context.values["reference"],
             )
             self.assertIn(
                 "require repair",
-                dialog.decision_context.values["effect"].text(),
+                dialog.decision_context.values["effect"],
             )
             dialog.play_buttons[0].click()
             self.assertFalse(dialog.neither.isEnabled())
@@ -120,7 +260,7 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             self.assertTrue(dialog._active)
             self.assertIn("Saving in background", dialog.status.text())
 
-            self.wait_for(lambda: not dialog._active)
+            self.wait_for(lambda: not dialog._active and not dialog.load_runner.active)
 
             progress = load_terminal_conflict_review_progress(review)
             self.assertEqual(progress["decisions"][0]["decision"], "neither_acceptable")
@@ -134,7 +274,7 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
     def test_stopped_audio_does_not_unlock_conflict_decision(self):
         with TemporaryDirectory() as directory:
             review = self.create_review(Path(directory))
-            dialog = TerminalConflictReviewDialog(review)
+            dialog = self.create_dialog(review)
             dialog._playing_candidate = dialog._display_candidates[0]["candidate_id"]
 
             dialog._stop()
@@ -147,15 +287,15 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
     def test_dangling_progress_link_blocks_review_on_open(self):
         with TemporaryDirectory() as directory:
             review = self.create_review(Path(directory))
-            (review / "progress.json").symlink_to("missing-progress.json")
+            symlink_or_skip(review / "progress.json", "missing-progress.json")
 
             with self.assertRaises(TerminalConflictReviewError):
-                TerminalConflictReviewDialog(review)
+                self.create_dialog(review)
 
     def test_enlarged_text_keeps_line_playback_and_decisions_visible(self):
         with TemporaryDirectory() as directory:
             review = self.create_review(Path(directory))
-            dialog = TerminalConflictReviewDialog(review)
+            dialog = self.create_dialog(review)
             font = dialog.font()
             font.setPointSize(16)
             dialog.setFont(font)
@@ -183,7 +323,7 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
     def test_scaled_font_keeps_keyboard_journey_scroll_reachable(self):
         with TemporaryDirectory() as directory:
             review = self.create_review(Path(directory))
-            dialog = TerminalConflictReviewDialog(review)
+            dialog = self.create_dialog(review)
             base_point_size = dialog.font().pointSizeF()
             for scale in (1.5, 2.0, None):
                 font = dialog.font()
@@ -243,11 +383,30 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             release.wait(3)
             return record_terminal_conflict_decision(*args)
 
-        with TemporaryDirectory() as directory:
+        pool = QThreadPool()
+        dialog = None
+        with (
+            TemporaryDirectory() as directory,
+            release_and_wait_for_pool(
+                pool,
+                release,
+                finish=lambda: self.wait_for(
+                    lambda: (
+                        dialog is None
+                        or (
+                            not dialog._active
+                            and not dialog.load_runner.active
+                            and not dialog.playback_runner.active
+                        )
+                    )
+                ),
+            ),
+        ):
             review = self.create_review(Path(directory))
-            dialog = TerminalConflictReviewDialog(
+            dialog = self.create_dialog(
                 review,
                 decision_recorder=slow_recorder,
+                thread_pool=pool,
                 confirmer=lambda _decision: True,
             )
             dialog.show()
@@ -267,14 +426,12 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             self.assertTrue(dialog._close_pending)
             self.assertTrue(heartbeat)
             release.set()
-            self.wait_for(lambda: not dialog._active)
+            self.wait_for(lambda: not dialog._active and not dialog.load_runner.active)
 
     def test_irreversible_decision_can_be_cancelled(self):
         with TemporaryDirectory() as directory:
             review = self.create_review(Path(directory))
-            dialog = TerminalConflictReviewDialog(
-                review, confirmer=lambda _decision: False
-            )
+            dialog = self.create_dialog(review, confirmer=lambda _decision: False)
             dialog._heard = {"candidate-a", "candidate-b"}
 
             dialog._save("neither_acceptable")
@@ -289,7 +446,7 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             audio = review / document["cases"][0]["candidates"][0]["audio"]
             audio.write_bytes(b"changed")
             with self.assertRaises(TerminalConflictReviewError):
-                TerminalConflictReviewDialog(review)
+                self.create_dialog(review)
 
     def test_main_reports_open_failure_in_a_native_dialog(self):
         with (

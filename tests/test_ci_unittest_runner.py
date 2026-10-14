@@ -1,12 +1,16 @@
 import json
 import subprocess
+import sys
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, TemporaryFile
 from unittest.mock import Mock, patch
 
 from scripts.run_ci_unittests import (
     _flatten_suite,
+    _isolate_pregeneration_tests,
     _run_exact_test_file,
     _run_sharded_full_discovery,
     main,
@@ -36,6 +40,51 @@ class CiUnitTestRunnerTest(unittest.TestCase):
         self.assertEqual(ocr, (values[2],))
         self.assertEqual(remainder, tuple(values[3:]))
         self.assertEqual(sorted((*app, *assets, *ocr, *remainder)), sorted(values))
+
+    def test_pregeneration_shard_preserves_every_exact_test_once(self):
+        values = (
+            "tests.test_settings.SettingsTest.test_value",
+            "tests.test_self_service_pregeneration.JourneyTest.test_first",
+            "tests.test_self_service_pregeneration.JourneyTest.test_last",
+        )
+        isolated, remaining = _isolate_pregeneration_tests(values)
+        self.assertEqual(isolated, values[1:])
+        self.assertEqual(remaining, values[:1])
+        self.assertEqual(sorted((*isolated, *remaining)), sorted(values))
+        self.assertEqual(len(set((*isolated, *remaining))), len(values))
+
+    def test_selected_pregeneration_runs_only_its_isolated_shard(self):
+        test_ids = (
+            "tests.test_app.AppTest.test_ui",
+            "tests.test_asset_ui.AssetTest.test_ui",
+            "tests.test_ocr_review.OcrTest.test_ui",
+            "tests.test_self_service_pregeneration.JourneyTest.test_ui",
+            "tests.test_settings.SettingsTest.test_value",
+        )
+        for system in ("Darwin", "Windows"):
+            with (
+                self.subTest(system=system),
+                patch(
+                    "scripts.run_ci_unittests._flatten_suite",
+                    return_value=(
+                        Mock(id=Mock(return_value=value)) for value in test_ids
+                    ),
+                ),
+                patch(
+                    "scripts.run_ci_unittests.subprocess.run",
+                    return_value=Mock(returncode=0),
+                ) as run,
+            ):
+                self.assertEqual(
+                    _run_sharded_full_discovery(
+                        system, ["tests.test_self_service_pregeneration"]
+                    ),
+                    0,
+                )
+                run.assert_called_once()
+                self.assertEqual(
+                    run.call_args.args[0][-3:-1], ["--shard", "qt-pregeneration"]
+                )
 
     def test_partition_rejects_duplicates_and_missing_app_shard(self):
         with self.assertRaisesRegex(ValueError, "duplicate"):
@@ -81,6 +130,40 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             workflow_failure_sections(output), ("FAIL: test_one\ntrace one",)
         )
 
+    def test_exact_inventory_encoding_error_returns_diagnostic_status(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "tests.json"
+            path.write_bytes(b"\xff")
+            output = StringIO()
+            with redirect_stderr(output):
+                result = _run_exact_test_file(path)
+        self.assertEqual(result, 2)
+        self.assertIn("Unable to load exact test inventory", output.getvalue())
+
+    def test_duplicate_exact_inventory_is_rejected_before_loading_or_running(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "tests.json"
+            name = f"{__name__}.CiUnitTestRunnerTest.test_partition_assigns_every_test_exactly_once"
+            path.write_text(json.dumps([name, name]), encoding="utf-8")
+            output = StringIO()
+            with (
+                patch(
+                    "scripts.run_ci_unittests.unittest.defaultTestLoader.loadTestsFromNames"
+                ) as load,
+                patch("scripts.run_ci_unittests.unittest.TextTestRunner") as runner,
+                redirect_stderr(output),
+            ):
+                self.assertEqual(main(["--exact-test-ids-file", str(path)]), 2)
+            load.assert_not_called()
+            runner.assert_not_called()
+        self.assertIn("Exact test inventory is malformed", output.getvalue())
+
+    def test_discovery_rejects_an_executed_suite_with_empty_slots(self):
+        suite = unittest.TestSuite()
+        suite._tests = [None]
+        with self.assertRaisesRegex(ValueError, "empty test slot"):
+            tuple(_flatten_suite(suite))
+
     def test_exact_inventory_executes_each_named_test_once(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "tests.json"
@@ -92,6 +175,56 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             ]
             path.write_text(json.dumps(names), encoding="utf-8")
             self.assertEqual(_run_exact_test_file(path), 0)
+
+    def test_shard_spawn_failure_survives_transcript_and_inventory_cleanup(self):
+        primary = OSError("shard launch failed")
+        original_cleanup = TemporaryDirectory.cleanup
+        transcripts = []
+
+        def transcript(*args, **kwargs):
+            value = TemporaryFile(*args, **kwargs)
+            transcripts.append(value)
+            original_close = value.close
+
+            def close_then_fail():
+                original_close()
+                raise KeyboardInterrupt("transcript cleanup failed")
+
+            value.close = close_then_fail
+            return value
+
+        def remove_then_fail(directory):
+            original_cleanup(directory)
+            if Path(directory.name).name.startswith("vntts-unittest-shards-"):
+                raise OSError("inventory cleanup failed")
+
+        with (
+            patch(
+                "scripts.run_ci_unittests._flatten_suite",
+                return_value=(Mock(id=Mock(return_value="test-id")),),
+            ),
+            patch(
+                "scripts.run_ci_unittests.partition_ui_test_ids",
+                return_value=(("app-id",), (), (), ()),
+            ),
+            patch("scripts.run_ci_unittests.subprocess.run", side_effect=primary),
+            patch(
+                "scripts.run_ci_unittests.tempfile.TemporaryFile",
+                side_effect=transcript,
+            ),
+            patch.object(TemporaryDirectory, "cleanup", new=remove_then_fail),
+            self.assertRaises(OSError) as caught,
+        ):
+            _run_sharded_full_discovery("Darwin")
+        self.assertIs(caught.exception, primary)
+        self.assertTrue(all(value.closed for value in transcripts))
+        self.assertEqual(
+            primary.__notes__,
+            [
+                "Unittest transcript cleanup failed: transcript cleanup failed",
+                "Temporary directory cleanup failed: inventory cleanup failed",
+            ],
+        )
 
     def test_macos_shard_timeout_fails_instead_of_hanging(self):
         run = Mock(side_effect=subprocess.TimeoutExpired(("python",), 60))
@@ -142,6 +275,63 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             )
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0][-3:-1], ["--shard", "qt-app"])
+
+    def test_selected_modules_are_forwarded_once_in_first_seen_order(self):
+        selected = ["tests.test_alpha", "tests.test_beta"]
+        for system in ("Darwin", "Windows", "Linux"):
+            with (
+                self.subTest(system=system),
+                patch("scripts.run_ci_unittests.platform.system", return_value=system),
+                patch(
+                    "scripts.run_ci_unittests._run_sharded_full_discovery",
+                    return_value=0,
+                ) as sharded,
+                patch(
+                    "scripts.run_ci_unittests.subprocess.run",
+                    return_value=Mock(returncode=0, stdout=""),
+                ) as run,
+            ):
+                self.assertEqual(main(["--selected", *selected, selected[0]]), 0)
+                if system == "Linux":
+                    sharded.assert_not_called()
+                    run.assert_called_once_with(
+                        [sys.executable, "-u", "-m", "unittest", *selected],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                else:
+                    sharded.assert_called_once_with(system, selected)
+                    run.assert_not_called()
+
+    def test_selected_modules_reject_unknown_names_before_running(self):
+        test_ids = (
+            "tests.test_app.AppTest.test_ui",
+            "tests.test_asset_ui.AssetTest.test_ui",
+            "tests.test_ocr_review.OcrTest.test_ui",
+            "tests.test_settings.SettingsTest.test_value",
+        )
+        for system in ("Darwin", "Windows"):
+            with (
+                self.subTest(system=system),
+                patch(
+                    "scripts.run_ci_unittests._flatten_suite",
+                    return_value=(
+                        Mock(id=Mock(return_value=value)) for value in test_ids
+                    ),
+                ),
+                patch(
+                    "scripts.run_ci_unittests.subprocess.run",
+                    return_value=Mock(returncode=0),
+                ) as run,
+            ):
+                self.assertEqual(
+                    _run_sharded_full_discovery(
+                        system, ["tests.test_settings", "tests.test_typo_missing"]
+                    ),
+                    2,
+                )
+                run.assert_not_called()
 
     def test_shard_captures_stacks_before_deadline_and_cancels_timer(self):
         for result in (0, RuntimeError("test loading failed")):

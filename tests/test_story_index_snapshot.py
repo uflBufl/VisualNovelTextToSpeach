@@ -1,0 +1,231 @@
+import hashlib
+import json
+import os
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from vntts_artifacts import StoryIndexError, load_story_index_document
+
+import vntts.game_content_importer as importer
+import vntts.game_pack as game_pack
+import vntts.pregeneration_setup as setup
+import vntts.story_index_snapshot as snapshots
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from tests.story_fixtures import write_story_index
+
+
+class StoryIndexSnapshotTest(unittest.TestCase):
+    def setUp(self):
+        setup._cached_story_index_document.cache_clear()
+        self.addCleanup(setup._cached_story_index_document.cache_clear)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_story_capture_refuses_fifo_before_parse_or_cache_and_recovers(self):
+        for owner in (setup, importer, game_pack):
+            with self.subTest(owner=owner.__name__), TemporaryDirectory() as directory:
+                setup._cached_story_index_document.cache_clear()
+                path = write_story_index(Path(directory)).resolve()
+                payload = path.read_bytes()
+                checksum = hashlib.sha256(payload).hexdigest()
+                expected = (
+                    {"centurion"}
+                    if owner is importer
+                    else load_story_index_document(path)
+                )
+                path.chmod(0o444)
+                mode = path.stat().st_mode
+                original = owner.read_regular_bytes
+                refused = []
+                # Importer/game_pack cases qualify their actual private story readers.
+                load = {
+                    setup: lambda: setup.load_verified_story_index_document(
+                        path, checksum
+                    ),
+                    importer: lambda: importer._cached_playable_voice_roles(path),
+                    game_pack: lambda: game_pack._load_bound_story_index(
+                        path, checksum
+                    ),
+                }[owner]
+
+                def capture(candidate):
+                    self.assertEqual(Path(candidate), path)
+                    gate: RegularFileGate = {"path": path, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(candidate)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                with (
+                    patch.object(owner, "read_regular_bytes", capture),
+                    patch.object(owner, "load_story_index_snapshot") as parse,
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    load()
+                self.assertEqual(len(refused), 1)
+                self.assertIs(caught.exception, refused[0])
+                parse.assert_not_called()
+                self.assertEqual(
+                    setup._cached_story_index_document.cache_info().currsize, 0
+                )
+                self.assertFalse(path.with_name("playable-voice-roles.json").exists())
+                self.assertEqual(path.read_bytes(), payload)
+                self.assertEqual(path.stat().st_mode, mode)
+                with (
+                    patch.object(
+                        owner, "read_regular_bytes", wraps=original
+                    ) as capture,
+                    patch.object(
+                        owner,
+                        "load_story_index_snapshot",
+                        wraps=snapshots.load_story_index_snapshot,
+                    ) as parse,
+                ):
+                    self.assertEqual(load(), expected)
+                    self.assertEqual(load(), expected)
+                self.assertEqual(capture.call_count, 2 if owner is game_pack else 1)
+                self.assertEqual(parse.call_count, 2 if owner is game_pack else 1)
+                self.assertEqual(
+                    setup._cached_story_index_document.cache_info().currsize,
+                    1 if owner is setup else 0,
+                )
+                self.assertEqual(path.read_bytes(), payload)
+
+    def test_parse_errors_retain_original_source_path_and_cause(self):
+        with TemporaryDirectory() as directory:
+            source = write_story_index(Path(directory)).resolve()
+            metadata = source.read_bytes().splitlines()[0]
+            for payload in (b"", b"not-json\n", metadata + b"\nnot-json\n", b"{}\n"):
+                with self.subTest(payload=payload):
+                    source.write_bytes(payload)
+                    with self.assertRaises(StoryIndexError) as direct:
+                        load_story_index_document(source)
+                    with self.assertRaises(StoryIndexError) as captured:
+                        snapshots.load_story_index_snapshot(source, payload)
+                    self.assertEqual(str(captured.exception), str(direct.exception))
+                    self.assertIs(
+                        type(captured.exception.__cause__),
+                        type(direct.exception.__cause__),
+                    )
+                    self.assertEqual(
+                        str(captured.exception.__cause__),
+                        str(direct.exception.__cause__),
+                    )
+                    self.assertEqual(source.read_bytes(), payload)
+
+    def test_cache_data_stays_bound_through_transient_source_replacement(self):
+        for owner in (setup, importer, game_pack):
+            error_type = {
+                setup: setup.StoryContentChanged,
+                importer: importer.GameContentImportError,
+                game_pack: game_pack.GamePackError,
+            }[owner]
+            for restore in (True, False):
+                with (
+                    self.subTest(owner=owner.__name__, restore=restore),
+                    TemporaryDirectory() as directory,
+                ):
+                    path = write_story_index(Path(directory))
+                    original = path.read_bytes()
+                    checksum = hashlib.sha256(original).hexdigest()
+                    expected = load_story_index_document(path)
+                    rows = [json.loads(row) for row in original.decode().splitlines()]
+                    rows[1]["speaker"] = "Unbound role"
+                    rows[1]["voice_character"] = "Unbound role"
+                    replacement = (
+                        "\n".join(json.dumps(row) for row in rows) + "\n"
+                    ).encode()
+                    cache = path.with_name("playable-voice-roles.json")
+
+                    def load():
+                        if owner is setup:
+                            return setup.load_verified_story_index_document(
+                                path, checksum
+                            )
+                        if owner is game_pack:
+                            return game_pack._load_bound_story_index(path, checksum)
+                        return importer._cached_playable_voice_roles(path)
+
+                    def replace_during_parse(source):
+                        path.write_bytes(replacement)
+                        try:
+                            return load_story_index_document(source)
+                        finally:
+                            if restore:
+                                path.write_bytes(original)
+
+                    with (
+                        patch.object(
+                            owner,
+                            "load_story_index_document",
+                            side_effect=replace_during_parse,
+                            create=True,
+                        ),
+                        patch.object(
+                            snapshots,
+                            "load_story_index_document",
+                            side_effect=replace_during_parse,
+                        ) as parse,
+                    ):
+                        if not restore:
+                            with self.assertRaisesRegex(error_type, "changed while"):
+                                load()
+                            self.assertFalse(cache.exists())
+                            self.assertEqual(
+                                setup._cached_story_index_document.cache_info().currsize,
+                                0,
+                            )
+                            continue
+                        actual = load()
+                        self.assertEqual(
+                            actual, {"centurion"} if owner is importer else expected
+                        )
+                        self.assertEqual(parse.call_count, 1)
+                        self.assertEqual(load(), actual)
+                        self.assertEqual(
+                            parse.call_count, 2 if owner is game_pack else 1
+                        )
+                    if owner is importer:
+                        self.assertEqual(
+                            json.loads(cache.read_text())["index_sha256"], checksum
+                        )
+                    self.assertEqual(path.read_bytes(), original)
+                    setup._cached_story_index_document.cache_clear()
+
+    def test_changed_captured_bytes_reject_before_parsing_or_cache_publication(self):
+        for owner in (setup, importer, game_pack):
+            error_type = {
+                setup: setup.StoryContentChanged,
+                importer: importer.GameContentImportError,
+                game_pack: game_pack.GamePackError,
+            }[owner]
+            with self.subTest(owner=owner.__name__), TemporaryDirectory() as directory:
+                path = write_story_index(Path(directory))
+                checksum = hashlib.sha256(path.read_bytes()).hexdigest()
+                path.write_bytes(path.read_bytes() + b"\n")
+                with (
+                    patch.object(owner, "sha256_file", return_value=checksum),
+                    patch.object(snapshots, "load_story_index_document") as parse,
+                    self.assertRaisesRegex(error_type, "changed while"),
+                ):
+                    if owner is setup:
+                        setup.load_verified_story_index_document(path, checksum)
+                    elif owner is game_pack:
+                        game_pack._load_bound_story_index(path, checksum)
+                    else:
+                        importer._cached_playable_voice_roles(path)
+                parse.assert_not_called()
+                self.assertFalse(path.with_name("playable-voice-roles.json").exists())
+                self.assertEqual(
+                    setup._cached_story_index_document.cache_info().currsize, 0
+                )
+
+
+if __name__ == "__main__":
+    unittest.main()

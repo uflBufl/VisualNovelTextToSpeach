@@ -21,7 +21,9 @@ MODEL_ID = "speechbrain-ecapa-voxceleb"
 REPOSITORY = "speechbrain/spkrec-ecapa-voxceleb"
 REVISION = "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286"
 IMPLEMENTATION = "speechbrain"
+# Keep snapshot provenance stable for existing installations.
 IMPLEMENTATION_VERSION = "1.0.3"
+RUNTIME_VERSION = "1.1.1"
 IMPLEMENTATION_REVISION = "31c1e329048c0380dc7f2acbe680c44a036b6286"
 MODEL_LICENSE = "Apache-2.0"
 MODEL_LICENSE_URL = f"https://huggingface.co/{REPOSITORY}"
@@ -178,17 +180,17 @@ def install_managed_speaker_identity_model(
 ) -> ManagedModelStatus:
     installation = managed_speaker_identity_installation(root=root)
     fetch = _download_file if fetch_file is None else fetch_file
+    metadata = _metadata()
     result = install_managed_model(
         installation,
         _files(),
-        metadata=_metadata(),
+        metadata=metadata,
         notice=_notice(),
         source=source,
         fetch_file=fetch,
         error_type=SpeakerIdentityModelError,
         model_label="speaker-model",
     )
-    metadata = _metadata()
     result["licenses"] = metadata["licenses"]
     result["runtime"] = metadata["runtime"]
     return result

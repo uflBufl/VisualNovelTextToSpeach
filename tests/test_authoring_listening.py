@@ -1,19 +1,30 @@
-import hashlib
 import json
 import os
+import stat
+import struct
 import time
 import unittest
 import wave
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event, Lock, Thread
+from threading import Barrier, Event, Lock, Thread
 from unittest.mock import Mock, patch
 
 import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
-from tests.test_authoring_listening_import import write_listening_fixture
+import vntts.authoring.listening as listening_module
+from tests.audio_output_fixtures import FakeAudioModule
+from tests.authoring_fixtures import tree_hashes
+from tests.listening_fixtures import (
+    FakePlayback,
+    write_listening_fixture,
+    write_model_reports,
+)
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring.listening import (
     REPORT_SCHEMA,
     ModelListeningError,
@@ -28,7 +39,7 @@ from vntts.authoring.listening import (
 )
 from vntts.authoring.listening_cli import main as listening_main
 from vntts.authoring.listening_import import import_listening_session
-from vntts.authoring.pcm_playback import PcmClip, PlaybackSnapshot
+from vntts.authoring.pcm_playback import PcmClip, PersistentPcmPlayer
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -51,127 +62,689 @@ except ModuleNotFoundError as error:
     ModelListeningDialog = None
 
 
-class FakePlayback:
-    def __init__(self):
-        self.sample_rate = 16_000
-        self.channels = 1
-        self.token = 0
-        self.clip = PcmClip(np.empty((0, 1), dtype=np.float32), self.sample_rate)
-        self.position = 0
-        self.started = False
-        self.playing = False
-        self.finished = False
-        self.underflowed = False
-        self.error = None
-        self.play_calls = []
-        self.pause_calls = 0
-        self.closed = False
-
-    def load(self, path):
-        with wave.open(str(path), "rb") as source:
-            frames = source.getnframes()
-        return PcmClip(np.zeros((frames, 1), dtype=np.float32), self.sample_rate)
-
-    def play(self, clip, *, position_frames=0):
-        self.token += 1
-        self.clip = clip
-        self.position = position_frames
-        self.started = False
-        self.playing = True
-        self.finished = False
-        self.underflowed = False
-        self.error = None
-        self.play_calls.append((clip, position_frames))
-        return self.token
-
-    def finish(self, *, underflowed=False):
-        self.position = self.clip.frames
-        self.started = True
-        self.playing = False
-        self.finished = True
-        self.underflowed = underflowed
-
-    def snapshot(self):
-        return PlaybackSnapshot(
-            token=self.token,
-            position_frames=self.position,
-            total_frames=self.clip.frames,
-            started=self.started,
-            playing=self.playing,
-            finished=self.finished,
-            underflowed=self.underflowed,
-            error=self.error,
-        )
-
-    def pause(self):
-        self.pause_calls += 1
-        self.playing = False
-
-    def resume(self):
-        self.token += 1
-        self.playing = True
-        self.started = False
-        self.finished = False
-        return self.token
-
-    def seek(self, position_frames):
-        self.token += 1
-        self.position = max(0, min(self.clip.frames, position_frames))
-        self.finished = False
-        return self.token
-
-    def stop(self):
-        self.token += 1
-        self.playing = False
-        self.finished = False
-
-    def close(self):
-        self.closed = True
-
-
-def write_model_reports(root, *, item_count=2):
-    reports = []
-    for model_index, model_id in enumerate(("synthetic/one", "synthetic/two"), start=1):
-        samples = []
-        for item_index in range(item_count):
-            text = f"Shared listening line {item_index} ..."
-            if model_index == 2:
-                text = text.replace("...", "…")
-            audio = root / model_id.replace("/", "-") / f"sample-{item_index}.wav"
-            values = np.full(800, model_index * 0.05, dtype=np.float32)
-            write_pcm16_wav(audio, values, 16_000)
-            samples.append(
-                {
-                    "id": f"sample-{item_index}",
-                    "line_id": f"line-{item_index}",
-                    "character": "Voice",
-                    "text": text,
-                    "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
-                    "audio": str(audio),
-                    "audio_sha256": sha256_file(audio),
-                }
-            )
-        report = root / f"report-{model_index}.json"
-        report.write_text(
-            json.dumps(
-                {
-                    "schema": "vntts.voice-model-report",
-                    "schema_version": 1,
-                    "model_id": model_id,
-                    "provider": "synthetic",
-                    "backend": "synthetic",
-                    "model": model_id.rsplit("/", 1)[-1],
-                    "samples": samples,
-                },
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
-        reports.append(report)
-    return reports
-
-
 class AuthoringListeningTest(unittest.TestCase):
+    def test_session_output_symlinks_are_refused_without_redirecting(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            reports = write_model_reports(root, item_count=1)
+            benchmark = root / "benchmark.json"
+            benchmark.write_text(
+                json.dumps(
+                    {
+                        "schema": "vntts.voice-model-benchmark",
+                        "schema_version": 1,
+                        "reports": [str(report) for report in reports],
+                    }
+                )
+            )
+            for aggregate in (False, True):
+                for state in ("missing", "empty", "occupied"):
+                    with self.subTest(aggregate=aggregate, target=state):
+                        target = root / f"target-{aggregate}-{state}"
+                        if state != "missing":
+                            target.mkdir()
+                        if state == "occupied":
+                            (target / "keep").write_bytes(b"unchanged")
+                        output = root / f"output-{aggregate}-{state}"
+                        symlink_or_skip(output, target, target_is_directory=True)
+                        with self.assertRaisesRegex(
+                            ModelListeningError, "Listening session directory"
+                        ):
+                            if aggregate:
+                                create_listening_session(benchmark, output)
+                            else:
+                                create_listening_session_from_reports(reports, output)
+                        self.assertTrue(output.is_symlink())
+                        self.assertEqual(output.readlink(), target)
+                        self.assertEqual(target.exists(), state != "missing")
+                        if target.exists():
+                            self.assertEqual(
+                                list(target.iterdir()),
+                                [target / "keep"] if state == "occupied" else [],
+                            )
+                        if state == "occupied":
+                            self.assertEqual(
+                                (target / "keep").read_bytes(), b"unchanged"
+                            )
+                        self.assertEqual(list(root.glob(f".{output.name}-*")), [])
+
+    def test_blind_audio_hardlink_and_copy_fallback_preserve_source(self):
+        for fallback in (False, True):
+            with self.subTest(fallback=fallback), TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "sources" / "source.wav"
+                source.parent.mkdir()
+                source.write_bytes(b"blind audio")
+                source.chmod(0o600)
+                os.utime(source, ns=(1_650_000_000_000_000_000,) * 2)
+                source_stat = source.stat()
+                parent_stat = source.parent.stat()
+                destination = root / "output" / "audio" / "alias.wav"
+                if fallback:
+                    with patch.object(
+                        listening_module.os, "link", side_effect=OSError("no links")
+                    ) as link:
+                        listening_module._link_blind_audio(
+                            str(source), str(destination)
+                        )
+                    link.assert_called_once_with(source, destination)
+                else:
+                    listening_module._link_blind_audio(source, destination)
+                self.assertEqual(destination.read_bytes(), b"blind audio")
+                self.assertEqual(source.read_bytes(), b"blind audio")
+                self.assertEqual(source.samefile(destination), not fallback)
+                self.assertEqual(
+                    stat.S_IMODE(destination.stat().st_mode),
+                    stat.S_IMODE(source_stat.st_mode),
+                )
+                self.assertEqual(
+                    destination.stat().st_mtime_ns, source_stat.st_mtime_ns
+                )
+                self.assertEqual(list(source.parent.iterdir()), [source])
+                self.assertEqual(
+                    source.parent.stat().st_mtime_ns, parent_stat.st_mtime_ns
+                )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_session_copy_fallback_refusal_cleans_staging_and_recovers(self):
+        for existing_empty in (False, True):
+            with (
+                self.subTest(existing_empty=existing_empty),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory).resolve()
+                reports = write_model_reports(root, item_count=1)
+                destination = root / "session"
+                if existing_empty:
+                    destination.mkdir()
+                before = tree_hashes(root)
+                link = listening_module._link_blind_audio
+
+                def refuse(source, target):
+                    gate: RegularFileGate = {"path": Path(source), "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        patch.object(
+                            listening_module.os, "link", side_effect=OSError("no links")
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        link(source, target)
+                    self.assertFalse(Path(target).exists())
+                    raise caught.exception
+
+                with patch.object(listening_module, "_link_blind_audio", refuse):
+                    with self.assertRaisesRegex(OSError, "regular file"):
+                        create_listening_session_from_reports(reports, destination)
+                self.assertEqual(tree_hashes(root), before)
+                self.assertEqual(destination.exists(), existing_empty)
+                if existing_empty:
+                    self.assertEqual(list(destination.iterdir()), [])
+                self.assertEqual(list(root.glob(".session-*")), [])
+                recovered = create_listening_session_from_reports(reports, destination)
+                session = load_listening_session(recovered)
+                self.assertEqual(len(session["trials"]), 1)
+                for relative in session["trials"][0]["audio"].values():
+                    self.assertTrue((destination / relative).is_file())
+                if os.name != "nt":
+                    self.assertEqual(
+                        stat.S_IMODE((destination / ".blind-key.json").stat().st_mode),
+                        0o600,
+                    )
+
+    def test_loader_rejects_malformed_trial_identity_and_enum_fields(self):
+        mutations = (
+            ("trial_id", Ellipsis),
+            ("queue_id", Ellipsis),
+            ("trial_id", None),
+            ("trial_id", []),
+            ("trial_id", {}),
+            ("trial_id", 1),
+            ("queue_id", None),
+            ("queue_id", []),
+            ("rating", {"preference": []}),
+            ("rating", {"preference": "tie", "acceptability": {}}),
+        )
+        for legacy in (False, True):
+            for field, value in mutations:
+                with (
+                    self.subTest(legacy=legacy, field=field, value=value),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    path = (
+                        (write_listening_fixture(root) / "session.json")
+                        if legacy
+                        else create_listening_session_from_reports(
+                            write_model_reports(root, item_count=1), root / "session"
+                        )
+                    )
+                    session = json.loads(path.read_text())
+                    trial = session["trials"][0]
+                    trial["line_id"] = "line-0"
+                    if value is Ellipsis:
+                        trial.pop(field, None)
+                    else:
+                        trial[field] = value
+                    if field == "rating":
+                        session["completed_count"] = sum(
+                            item.get("rating") is not None for item in session["trials"]
+                        )
+                    path.write_text(json.dumps(session), encoding="utf-8")
+                    before = path.read_bytes()
+                    with self.assertRaises(ModelListeningError):
+                        load_listening_session(path)
+                    self.assertEqual(path.read_bytes(), before)
+
+    def test_unrated_legacy_trial_can_omit_rating_and_text(self):
+        with TemporaryDirectory() as directory:
+            path = write_listening_fixture(Path(directory)) / "session.json"
+            document = json.loads(path.read_text())
+            for trial in document["trials"]:
+                for field in ("rating", "line_id", "text", "text_sha256"):
+                    trial.pop(field, None)
+            document["completed_count"] = 0
+            path.write_text(json.dumps(document), encoding="utf-8")
+            before = path.read_bytes()
+            loaded = load_listening_session(path)
+            self.assertEqual(listening_progress(loaded), (0, len(document["trials"])))
+            self.assertIsNotNone(next_pending_trial(loaded))
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_current_session_rejects_non_list_dimensions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session"
+            )
+            document = json.loads(path.read_text())
+            document["dimensions"] = {"invalid": "container"}
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaises(ModelListeningError):
+                load_listening_session(path)
+
+    def test_malformed_report_schema_and_outcome_are_domain_errors(self):
+        for field in ("schema", "outcome"):
+            for value in ([], {}):
+                with (
+                    self.subTest(field=field, value=value),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    reports = write_model_reports(root, item_count=1)
+                    document = json.loads(reports[0].read_text())
+                    target = document["samples"][0] if field == "outcome" else document
+                    target[field] = value
+                    reports[0].write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaises(ModelListeningError):
+                        create_listening_session_from_reports(reports, root / "session")
+                    self.assertFalse((root / "session").exists())
+
+    def test_malformed_model_labels_are_domain_errors(self):
+        for field in ("backend", "model_id", "provider", "model"):
+            for value in ([], {}, "\ud800"):
+                with (
+                    self.subTest(field=field, value=value),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    reports = write_model_reports(root, item_count=1)
+                    document = json.loads(reports[0].read_text())
+                    target = document
+                    target[field] = value
+                    reports[0].write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaises(ModelListeningError):
+                        create_listening_session_from_reports(reports, root / "session")
+                    self.assertFalse((root / "session").exists())
+
+    def test_report_sample_id_and_line_id_remain_exact(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reports = write_model_reports(root, item_count=1)
+            for path in reports:
+                document = json.loads(path.read_text())
+                document["samples"].append(
+                    {
+                        **document["samples"][0],
+                        "id": " sample-0 ",
+                        "line_id": " line-0 ",
+                    }
+                )
+                path.write_text(json.dumps(document), encoding="utf-8")
+            for selected in (None, (" sample-0 ",)):
+                with self.subTest(selected=selected):
+                    path = create_listening_session_from_reports(
+                        reports,
+                        root / ("all" if selected is None else "selected"),
+                        sample_ids=selected,
+                    )
+                    trials = load_listening_session(path)["trials"]
+                    expected = (
+                        {"line-0", " line-0 "} if selected is None else {" line-0 "}
+                    )
+                    self.assertEqual({trial["line_id"] for trial in trials}, expected)
+                    self.assertEqual(len(trials), len(expected))
+                    for trial in trials:
+                        sample_id = (
+                            " sample-0 "
+                            if trial["line_id"].startswith(" ")
+                            else "sample-0"
+                        )
+                        self.assertTrue(
+                            trial["queue_id"].startswith(f"corpus:{sample_id}:")
+                        )
+
+    def test_reports_for_one_model_require_consistent_metadata(self):
+        for field in (None, "provider", "model"):
+            with self.subTest(field=field), TemporaryDirectory() as directory:
+                root = Path(directory)
+                reports = write_model_reports(root, item_count=2)
+                original = json.loads(reports[0].read_text())
+                additional = {**original, "samples": original["samples"][1:]}
+                if field is not None:
+                    additional[field] = "conflicting-value"
+                extra = root / "additional.json"
+                extra.write_text(json.dumps(additional), encoding="utf-8")
+                original["samples"] = original["samples"][:1]
+                reports[0].write_text(json.dumps(original), encoding="utf-8")
+                reports.append(extra)
+                output = root / "session"
+                if field is not None:
+                    with self.assertRaisesRegex(
+                        ModelListeningError, "conflicting report metadata"
+                    ):
+                        create_listening_session_from_reports(reports, output)
+                    self.assertFalse(output.exists())
+                else:
+                    path = create_listening_session_from_reports(reports, output)
+                    self.assertEqual(len(load_listening_session(path)["trials"]), 2)
+                    key = json.loads(path.with_name(".blind-key.json").read_text())
+                    self.assertEqual(
+                        key["models"][0]["reports"],
+                        [str(reports[0].resolve()), str(extra.resolve())],
+                    )
+
+    def test_report_sample_utf8_fields_fail_before_audio_inspection(self):
+        for field in ("id", "line_id", "text", "audio"):
+            with self.subTest(field=field), TemporaryDirectory() as directory:
+                root = Path(directory)
+                reports = write_model_reports(root, item_count=1)
+                document = json.loads(reports[0].read_text())
+                document["samples"][0][field] = "invalid\ud800"
+                reports[0].write_text(json.dumps(document), encoding="utf-8")
+                with patch.object(listening_module, "_verify_pcm_audio") as inspect:
+                    with self.assertRaises(ModelListeningError):
+                        create_listening_session_from_reports(reports, root / "session")
+                inspect.assert_not_called()
+                self.assertFalse((root / "session").exists())
+
+    def test_current_trial_utf8_text_is_a_domain_error_without_mutation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session"
+            )
+            document = json.loads(path.read_text())
+            document["trials"][0]["text"] = "invalid\ud800"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            before = path.read_bytes()
+            with self.assertRaises(ModelListeningError):
+                record_trial_preference(path, document["trials"][0]["trial_id"], "tie")
+            self.assertEqual(path.read_bytes(), before)
+            self.assertFalse(path.with_name("report.json").exists())
+
+    def test_hidden_key_and_report_keep_explicit_model_metadata(self):
+        for explicit in (False, True):
+            with self.subTest(explicit=explicit), TemporaryDirectory() as directory:
+                root = Path(directory)
+                reports = write_model_reports(root, item_count=1)
+                expected = {}
+                for index, path in enumerate(reports):
+                    document = json.loads(path.read_text())
+                    if explicit:
+                        document.update(
+                            provider=f"provider-{index}", model=f"model-{index}"
+                        )
+                    else:
+                        document.pop("provider")
+                        document.pop("model")
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    expected[document["model_id"]] = (
+                        document.get("provider", document["backend"]),
+                        document.get("model", document["model_id"]),
+                    )
+                session = create_listening_session_from_reports(
+                    reports, root / "session"
+                )
+                key = json.loads(session.with_name(".blind-key.json").read_text())
+                report = aggregate_listening_report(session)
+                for models in (key["models"], report["models"]):
+                    self.assertEqual(
+                        {
+                            item["model_id"]: (item["provider"], item["model"])
+                            for item in models
+                        },
+                        expected,
+                    )
+                self.assertNotIn("provider-", session.read_text())
+
+    def test_blind_assignment_matching_grows_linearly(self):
+        class CountedId(str):
+            comparisons = 0
+            __hash__ = str.__hash__
+
+            def __eq__(self, other):
+                type(self).comparisons += 1
+                return super().__eq__(other)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=16), root / "session"
+            )
+            expected = load_listening_session(path)
+            read_json = listening_module._load_json
+
+            def count_ids(path, description):
+                value = read_json(path, description)
+                if description == "listening session":
+                    for trial in value["trials"]:
+                        trial["trial_id"] = CountedId(trial["trial_id"])
+                return value
+
+            with patch.object(listening_module, "_load_json", side_effect=count_ids):
+                actual = load_listening_session(path)
+            comparisons = CountedId.comparisons
+            self.assertEqual(actual, expected)
+            self.assertLessEqual(comparisons, 4 * len(expected["trials"]))
+
+    def test_session_creation_failure_leaves_destination_retryable(self):
+        for existing_empty in (False, True):
+            with (
+                self.subTest(existing_empty=existing_empty),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                reports = write_model_reports(root, item_count=1)
+                destination = root / "session"
+                if existing_empty:
+                    destination.mkdir()
+                verify = listening_module._verify_pcm_audio
+                aliases = []
+
+                def fail_alias(path, digest, label):
+                    verify(path, digest, label)
+                    if label == "blind audio alias":
+                        aliases.append(path)
+                        if len(aliases) == 2:
+                            raise ModelListeningError(
+                                "injected alias validation failure"
+                            )
+
+                with patch.object(
+                    listening_module, "_verify_pcm_audio", side_effect=fail_alias
+                ):
+                    with self.assertRaisesRegex(ModelListeningError, "injected alias"):
+                        create_listening_session_from_reports(reports, destination)
+                self.assertEqual(destination.exists(), existing_empty)
+                if existing_empty:
+                    self.assertEqual(list(destination.iterdir()), [])
+                self.assertEqual(list(root.glob(".session-*")), [])
+                path = create_listening_session_from_reports(reports, destination)
+                self.assertEqual(len(load_listening_session(path)["trials"]), 1)
+
+    def test_session_creation_rejects_changed_report_before_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reports = write_model_reports(root, item_count=1)
+            link = listening_module._link_blind_audio
+
+            def change_report(source, destination):
+                link(source, destination)
+                document = json.loads(reports[0].read_text())
+                document["model"] = "changed model"
+                reports[0].write_text(json.dumps(document), encoding="utf-8")
+
+            with patch.object(
+                listening_module, "_link_blind_audio", side_effect=change_report
+            ):
+                with self.assertRaisesRegex(ModelListeningError, "report changed"):
+                    create_listening_session_from_reports(reports, root / "session")
+            self.assertFalse((root / "session").exists())
+            self.assertEqual(list(root.glob(".session-*")), [])
+
+    def test_concurrent_session_creators_preserve_one_complete_winner(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reports = write_model_reports(root, item_count=1)
+            barrier = Barrier(2)
+            link = listening_module._link_blind_audio
+            results, errors = [], []
+
+            def overlap(source, destination):
+                if destination.name.endswith("-a.wav"):
+                    barrier.wait(timeout=10)
+                link(source, destination)
+
+            def create(seed):
+                try:
+                    results.append(
+                        create_listening_session_from_reports(
+                            reports, root / "session", seed=seed
+                        )
+                    )
+                except Exception as error:
+                    errors.append(error)
+
+            with patch.object(
+                listening_module, "_link_blind_audio", side_effect=overlap
+            ):
+                threads = [Thread(target=create, args=(seed,)) for seed in (1, 2)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=15)
+                self.assertTrue(all(not thread.is_alive() for thread in threads))
+            self.assertEqual(len(results), 1)
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], ModelListeningError)
+            self.assertEqual(len(load_listening_session(results[0])["trials"]), 1)
+            self.assertEqual(list(root.glob(".session-*")), [])
+
+    def test_public_creation_and_loading_reject_truncated_wav_payloads(self):
+        for loading, missing_padding in (
+            (False, False),
+            (True, False),
+            (False, True),
+            (True, True),
+        ):
+            with (
+                self.subTest(loading=loading, missing_padding=missing_padding),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                reports = write_model_reports(root, item_count=1)
+                if loading:
+                    session_path = create_listening_session_from_reports(
+                        reports, root / "session"
+                    )
+                    session = json.loads(session_path.read_text())
+                    audio = session_path.parent / session["trials"][0]["audio"]["a"]
+                else:
+                    document = json.loads(reports[0].read_text())
+                    audio = Path(document["samples"][0]["audio"])
+                payload = audio.read_bytes()
+                if missing_padding:
+                    payload += b"JUNK" + struct.pack("<I", 17) + b"x" * 17
+                    payload = (
+                        payload[:4] + struct.pack("<I", len(payload) - 8) + payload[8:]
+                    )
+                else:
+                    payload = payload[:-100]
+                audio.write_bytes(payload)
+                if not loading:
+                    document["samples"][0]["audio_sha256"] = sha256_file(audio)
+                    reports[0].write_text(json.dumps(document), encoding="utf-8")
+                with self.assertRaisesRegex(ModelListeningError, "not a supported WAV"):
+                    if loading:
+                        load_listening_session(session_path)
+                    else:
+                        create_listening_session_from_reports(reports, root / "session")
+                if not loading:
+                    self.assertFalse((root / "session").exists())
+
+    def test_public_creation_and_loading_use_bounded_wav_probe_reads(self):
+        class ProbeStream:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return self.stream.__exit__(*args)
+
+            def read(self, size):
+                if size > 16:
+                    raise AssertionError("WAV envelope probe read the full audio chunk")
+                return self.stream.read(size)
+
+            def seek(self, *args):
+                return self.stream.seek(*args)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reports = write_model_reports(root, item_count=1)
+            probe = listening_module._probe_supported_wav
+            admit = listening_module.open_regular_binary
+
+            def bounded_probe(path):
+                @contextmanager
+                def bounded_stream(candidate):
+                    with admit(candidate) as stream:
+                        yield ProbeStream(stream)
+
+                with patch.object(
+                    listening_module, "open_regular_binary", bounded_stream
+                ):
+                    return probe(path)
+
+            with patch.object(
+                listening_module, "_probe_supported_wav", side_effect=bounded_probe
+            ):
+                path = create_listening_session_from_reports(reports, root / "session")
+                self.assertEqual(len(load_listening_session(path)["trials"]), 1)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_wav_probe_refuses_fifo_swap_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "audio.wav"
+            with wave.open(str(path), "wb") as audio:
+                audio.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+                audio.writeframes(b"\x00\x00" * 16_000)
+            gate: RegularFileGate = {"path": path, "armed": True}
+            with (
+                swap_at_acquisition(self, gate),
+                self.assertRaises(OSError),
+            ):
+                listening_module._probe_supported_wav(path)
+            self.assertFalse(gate["armed"], "regular file must be swapped at open")
+            listening_module._probe_supported_wav(path)
+
+    def test_aggregation_refuses_reports_over_admitted_inputs(self):
+        for kind in ("current", "legacy"):
+            with self.subTest(kind=kind), TemporaryDirectory() as directory:
+                root = Path(directory)
+                if kind == "current":
+                    session = create_listening_session_from_reports(
+                        write_model_reports(root, item_count=1),
+                        root / "session",
+                        seed=5,
+                    )
+                else:
+                    session = (
+                        import_listening_session(
+                            write_listening_fixture(root), root / "app-data"
+                        ).destination
+                        / "session.json"
+                    )
+                document = json.loads(session.read_text(encoding="utf-8"))
+                key_path = session.with_name(".blind-key.json")
+                key = json.loads(key_path.read_text(encoding="utf-8"))
+                inputs = [session, key_path]
+                inputs.extend(
+                    session.parent / relative
+                    for trial in document["trials"]
+                    for relative in trial["audio"].values()
+                )
+                inputs.extend(
+                    Path(assignment[side]["source"])
+                    for assignment in key["assignments"]
+                    for side in ("a", "b")
+                )
+                if kind == "legacy":
+                    inputs.append(session.with_name("import.json"))
+                original = {path: path.read_bytes() for path in inputs}
+                for source in inputs:
+                    for alias in ("direct", "hardlink", "symlink"):
+                        with self.subTest(input=source.name, alias=alias):
+                            output = (
+                                source if alias == "direct" else root / "output.json"
+                            )
+                            if alias == "hardlink":
+                                os.link(source, output)
+                            elif alias == "symlink":
+                                symlink_or_skip(output, source)
+                            with (
+                                patch.object(
+                                    listening_module, "atomic_write_json"
+                                ) as write,
+                                self.assertRaisesRegex(
+                                    ModelListeningError, "Output must differ"
+                                ),
+                            ):
+                                aggregate_listening_report(session, output)
+                            write.assert_not_called()
+                            self.assertEqual(
+                                {path: path.read_bytes() for path in inputs}, original
+                            )
+                            self.assertEqual(output.read_bytes(), original[source])
+                            if alias != "direct":
+                                output.unlink()
+
+    def test_report_replacement_preserves_inputs_without_optional_sources(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session", seed=5
+            )
+            key_path = session.with_name(".blind-key.json")
+            key = json.loads(key_path.read_text(encoding="utf-8"))
+            for assignment in key["assignments"]:
+                for side in ("a", "b"):
+                    Path(assignment[side]["source"]).unlink()
+            document = json.loads(session.read_text(encoding="utf-8"))
+            inputs = [
+                session,
+                key_path,
+                *(
+                    session.parent / path
+                    for path in document["trials"][0]["audio"].values()
+                ),
+            ]
+            original = {path: path.read_bytes() for path in inputs}
+            output = session.with_name("report.json")
+            output.write_text("old report", encoding="utf-8")
+            first = aggregate_listening_report(session, output)
+            second = aggregate_listening_report(session, output)
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8")), second)
+            self.assertEqual(first["completed_trials"], second["completed_trials"])
+            self.assertEqual({path: path.read_bytes() for path in inputs}, original)
+
     def test_creates_deterministic_blind_trials_without_public_model_names(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -295,6 +868,169 @@ class AuthoringListeningTest(unittest.TestCase):
         self.assertEqual(report["models"][0]["model_id"], "synthetic/one")
         self.assertEqual(report["models"][0]["preference"]["wins"], 2)
         self.assertEqual(report["pairwise"][0]["trials"], 2)
+
+    def test_aggregate_parses_only_session_bound_key_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session_path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session"
+            )
+            key_path = session_path.with_name(".blind-key.json")
+            original = key_path.read_bytes()
+            changed = json.loads(original)
+            changed["models"][0]["provider"] = "unbound-provider"
+            replacement = json.dumps(changed).encode()
+            original_hash = listening_module.sha256_file
+            original_capture = listening_module.capture_authority_file
+
+            def replace_after_hash(path):
+                if Path(path) != key_path:
+                    return original_hash(path)
+                key_path.write_bytes(original)
+                digest = original_hash(path)
+                key_path.write_bytes(replacement)
+                return digest
+
+            def replace_after_capture(path, label, **kwargs):
+                if Path(path) == key_path:
+                    key_path.write_bytes(original)
+                snapshot = original_capture(path, label, **kwargs)
+                if Path(path) == key_path:
+                    key_path.write_bytes(replacement)
+                return snapshot
+
+            with (
+                patch.object(
+                    listening_module, "sha256_file", side_effect=replace_after_hash
+                ),
+                patch.object(
+                    listening_module,
+                    "capture_authority_file",
+                    side_effect=replace_after_capture,
+                ),
+            ):
+                report = aggregate_listening_report(session_path)
+
+            self.assertEqual(key_path.read_bytes(), replacement)
+            self.assertEqual(
+                {model["provider"] for model in report["models"]}, {"synthetic"}
+            )
+
+    def test_aggregate_accepts_matching_captured_session_and_key(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session_path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session", seed=5
+            )
+            session = load_listening_session(session_path)
+            key = json.loads(
+                session_path.with_name(".blind-key.json").read_text(encoding="utf-8")
+            )
+            captured = aggregate_listening_report(session_path)
+            report = aggregate_listening_report(
+                session_path,
+                session_path.with_name("captured-report.json"),
+                expected_session=session,
+                expected_key=key,
+            )
+
+        captured.pop("generated_at")
+        report.pop("generated_at")
+        self.assertEqual(report, captured)
+
+    def test_aggregate_rejects_mismatched_captured_documents_without_overwrite(self):
+        for mismatch in ("session", "key"):
+            with self.subTest(mismatch=mismatch), TemporaryDirectory() as directory:
+                root = Path(directory)
+                session_path = create_listening_session_from_reports(
+                    write_model_reports(root, item_count=1), root / "session", seed=5
+                )
+                session = load_listening_session(session_path)
+                key = json.loads(
+                    session_path.with_name(".blind-key.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                expected_session = json.loads(json.dumps(session))
+                expected_key = json.loads(json.dumps(key))
+                if mismatch == "session":
+                    expected_session["completed_count"] += 1
+                else:
+                    expected_key["assignments"][0]["a"]["model_id"] += "-changed"
+                output = session_path.with_name("report.json")
+                output.write_text("preserve this report", encoding="utf-8")
+
+                with self.assertRaisesRegex(
+                    ModelListeningError,
+                    f"Listening {mismatch} changed before report aggregation",
+                ):
+                    aggregate_listening_report(
+                        session_path,
+                        output,
+                        expected_session=expected_session,
+                        expected_key=expected_key,
+                    )
+
+                self.assertEqual(
+                    output.read_text(encoding="utf-8"), "preserve this report"
+                )
+
+    def test_aggregate_uses_exact_json_number_semantics_for_captured_documents(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session_path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session", seed=5
+            )
+            session = load_listening_session(session_path)
+            key = json.loads(
+                session_path.with_name(".blind-key.json").read_text(encoding="utf-8")
+            )
+            expected_session = json.loads(json.dumps(session))
+            expected_session["completed_count"] = bool(
+                expected_session["completed_count"]
+            )
+            expected_key = json.loads(json.dumps(key))
+            expected_key["schema_version"] = float(expected_key["schema_version"])
+
+            self.assertEqual(expected_session, session)
+            self.assertEqual(expected_key, key)
+            for expected_session_value, expected_key_value, label in (
+                (expected_session, key, "session"),
+                (session, expected_key, "key"),
+            ):
+                with (
+                    self.subTest(label=label),
+                    self.assertRaisesRegex(
+                        ModelListeningError,
+                        f"Listening {label} changed before report aggregation",
+                    ),
+                ):
+                    aggregate_listening_report(
+                        session_path,
+                        expected_session=expected_session_value,
+                        expected_key=expected_key_value,
+                    )
+
+    def test_aggregate_rejects_non_finite_captured_documents_with_domain_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session_path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session", seed=5
+            )
+            session = load_listening_session(session_path)
+            key = json.loads(session_path.with_name(".blind-key.json").read_text())
+            for expected in ("session", "key"):
+                with self.subTest(expected=expected):
+                    captured = dict(session if expected == "session" else key)
+                    captured["invalid"] = float("nan")
+                    with self.assertRaisesRegex(ModelListeningError, "not valid JSON"):
+                        aggregate_listening_report(
+                            session_path,
+                            expected_session=captured
+                            if expected == "session"
+                            else session,
+                            expected_key=captured if expected == "key" else key,
+                        )
 
     def test_neither_acceptable_is_not_counted_as_a_tie_or_win(self):
         with TemporaryDirectory() as directory:
@@ -559,6 +1295,52 @@ class AuthoringListeningTest(unittest.TestCase):
                 self.assertEqual(repaired["schema"], REPORT_SCHEMA)
                 self.assertEqual(repaired["session"], str(session_path.resolve()))
 
+    def test_public_report_projection_requires_numeric_preference_rate(self):
+        for preference in (None, {}, {"rate": "0.5"}, {"rate": True}):
+            with self.subTest(preference=preference):
+                report = {"models": [{"model_id": "model", "preference": preference}]}
+                with self.assertRaisesRegex(ModelListeningError, "report is invalid"):
+                    listening_module._public_report(report)
+        with self.assertRaises(ModelListeningError):
+            listening_module._public_report({"models": [{"model_id": "model"}]})
+        for rate in (None, 0, 0.5):
+            with self.subTest(rate=rate):
+                report = {
+                    "models": [{"model_id": "model", "preference": {"rate": rate}}],
+                    "extra": "preserved",
+                }
+                self.assertIs(listening_module._public_report(report), report)
+
+    def test_public_report_repairs_invalid_preference_and_preserves_valid_bytes(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy), TemporaryDirectory() as directory:
+                root = Path(directory)
+                session = (
+                    import_listening_session(
+                        write_listening_fixture(root), root / "app-data"
+                    ).destination
+                    / "session.json"
+                    if legacy
+                    else create_listening_session_from_reports(
+                        write_model_reports(root, item_count=1), root / "session"
+                    )
+                )
+                expected = ensure_listening_report(session)
+                report_path = session.with_name("report.json")
+                valid_bytes = report_path.read_bytes()
+                self.assertEqual(ensure_listening_report(session), expected)
+                self.assertEqual(report_path.read_bytes(), valid_bytes)
+                for preference in (None, {}, {"rate": "0.5"}, {"rate": True}):
+                    with self.subTest(preference=preference):
+                        invalid = json.loads(valid_bytes)
+                        invalid["models"][0]["preference"] = preference
+                        report_path.write_text(json.dumps(invalid), encoding="utf-8")
+                        repaired = ensure_listening_report(session)
+                        self.assertEqual(repaired["models"], expected["models"])
+                        repaired_bytes = report_path.read_bytes()
+                        self.assertEqual(ensure_listening_report(session), repaired)
+                        self.assertEqual(report_path.read_bytes(), repaired_bytes)
+
     def test_report_failure_explicitly_preserves_and_reports_saved_rating(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -602,7 +1384,7 @@ class AuthoringListeningTest(unittest.TestCase):
             ]
             from vntts.authoring import listening as listening_module
 
-            original_load = listening_module.load_listening_session
+            original_load = listening_module._load_listening_documents
             first_loaded = Event()
             release_first = Event()
             calls_lock = Lock()
@@ -629,7 +1411,7 @@ class AuthoringListeningTest(unittest.TestCase):
 
             with patch.object(
                 listening_module,
-                "load_listening_session",
+                "_load_listening_documents",
                 side_effect=coordinated_load,
             ):
                 first = Thread(target=record, args=(trial_ids[0], "a"))
@@ -683,7 +1465,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
         playback = FakePlayback()
         dialog = ModelListeningDialog(
             session,
-            auto_play=False,
+            auto_play=kwargs.pop("auto_play", False),
             playback_factory=lambda: playback,
             **kwargs,
         )
@@ -738,11 +1520,11 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertEqual(dialog.trial_heading.text(), "Trial 1 of 3 | line-0")
             self.assertIn(
                 "blind comparison",
-                dialog.decision_context.values["model"].text(),
+                dialog.decision_context.values["model"],
             )
             self.assertIn(
                 "preference only",
-                dialog.decision_context.values["effect"].text(),
+                dialog.decision_context.values["effect"],
             )
             self.assertEqual(
                 dialog.dialogue.toPlainText(), "Shared listening line 0 ..."
@@ -912,6 +1694,27 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertEqual(dialog.stop.text(), "Pause")
             dialog.deleteLater()
 
+    def test_close_cancels_queued_auto_playback(self):
+        for side in ("a", "b"):
+            with self.subTest(side=side), TemporaryDirectory() as directory:
+                _session, dialog = self.create_dialog(
+                    Path(directory), auto_play=side == "a"
+                )
+                dialog.show()
+                if side == "b":
+                    dialog.start_auto_playback()
+                    dialog.playback.finish()
+                    dialog.poll_playback()
+                playback = dialog.playback
+                play_count = len(playback.play_calls)
+
+                dialog.close()
+                self.application.processEvents()
+
+                self.assertTrue(playback.closed)
+                self.assertEqual(len(playback.play_calls), play_count)
+                dialog.deleteLater()
+
     def test_seek_skip_and_track_click(self):
         with TemporaryDirectory() as directory:
             _session, dialog = self.create_dialog(Path(directory))
@@ -1024,6 +1827,100 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertIn("Preference was saved", dialog.status.text())
             self.assertFalse(dialog.prefer_a.isEnabled())
             dialog.deleteLater()
+
+    def test_real_pcm_pause_cannot_erase_an_unpolled_underflow(self):
+        for underflow in (False, True):
+            with self.subTest(underflow=underflow), TemporaryDirectory() as directory:
+                root = Path(directory)
+                session = create_listening_session_from_reports(
+                    write_model_reports(root, item_count=1), root / "session"
+                )
+                audio = FakeAudioModule(sample_rate=16_000, channels=1)
+                player = PersistentPcmPlayer(audio)
+                dialog = ModelListeningDialog(
+                    session, auto_play=False, playback_factory=lambda: player
+                )
+                try:
+                    dialog.play("a")
+                    audio.stream.pump(160)
+                    audio.stream.time += audio.latency
+                    dialog.poll_playback()
+                    audio.stream.pump(160, underflow=underflow)
+                    dialog.toggle_playback()
+                    self.assertEqual(dialog.playback_control_state, "stopped")
+                    dialog.toggle_playback()
+                    audio.stream.pump(800)
+                    audio.stream.time += audio.latency
+                    dialog.poll_playback()
+
+                    self.assertEqual("a" in dialog.completed_sides, not underflow)
+                    self.assertFalse(dialog.prefer_a.isEnabled())
+                    if underflow:
+                        self.assertIn("underflowed", dialog.status.text())
+                    dialog.play("a")
+                    audio.stream.pump(800)
+                    audio.stream.time += audio.latency
+                    dialog.poll_playback()
+                    self.assertIn("a", dialog.completed_sides)
+                    dialog.play("b")
+                    audio.stream.pump(800)
+                    audio.stream.time += audio.latency
+                    dialog.poll_playback()
+                    self.assertTrue(dialog.prefer_a.isEnabled())
+                    self.assertEqual(
+                        load_listening_session(session)["completed_count"], 0
+                    )
+                finally:
+                    dialog.close()
+                    dialog.deleteLater()
+
+    def test_replay_during_save_keeps_decisions_locked_until_retry(self):
+        with TemporaryDirectory() as directory:
+            started = Event()
+            release = Event()
+            attempts = 0
+
+            def slow_recorder(*args, **kwargs):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    started.set()
+                    release.wait(3)
+                    raise OSError("temporary disk failure")
+                return record_trial_preference(*args, **kwargs)
+
+            session, dialog = self.create_dialog(
+                Path(directory), preference_recorder=slow_recorder
+            )
+            dialog.completed_sides = {"a", "b"}
+            dialog.set_preference_buttons_enabled(True)
+            try:
+                dialog.save_preference("a")
+                self.wait_for(started.is_set)
+                dialog.play("b")
+                dialog.playback.finish()
+                dialog.poll_playback()
+                for button in (
+                    dialog.prefer_a,
+                    dialog.prefer_b,
+                    dialog.tie,
+                    dialog.neither,
+                ):
+                    self.assertFalse(button.isEnabled())
+                    self.assertIn("Decision saving", button.accessibleDescription())
+                self.assertIn("Decision saving", dialog.decision_reason.text())
+                self.assertIn("Decision saving", dialog.status.text())
+                dialog.save_preference("b")
+                self.assertEqual(attempts, 1)
+            finally:
+                release.set()
+                self.wait_for(lambda: not dialog._preference_active)
+            self.assertTrue(dialog.prefer_a.isEnabled())
+            self.assertEqual(load_listening_session(session)["completed_count"], 0)
+            dialog.save_preference("a")
+            self.wait_for(lambda: not dialog._preference_active)
+            self.assertEqual(load_listening_session(session)["completed_count"], 1)
+            self.assertEqual(attempts, 2)
 
     def test_slow_save_keeps_qt_responsive_and_defers_close(self):
         with TemporaryDirectory() as directory:

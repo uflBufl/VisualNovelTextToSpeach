@@ -1,16 +1,22 @@
+import hashlib
 import io
 import json
 import os
 import shutil
 import unittest
+from itertools import product
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from unittest.mock import patch
 from urllib.error import HTTPError
 
+import vntts.asset_integrity as asset_integrity
 import vntts.assets as assets
 import vntts.authoring.advisory_lock as advisory_lock
+import vntts.model_assets as model_assets
+import vntts.voice_packs as voice_packs
+from tests.regular_file_fixtures import swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.assets import (
     ModelAsset,
@@ -20,6 +26,43 @@ from vntts.assets import (
     VoicePackManager,
 )
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
+
+
+class AssetCompatibilityTest(unittest.TestCase):
+    def test_facade_reexports_canonical_objects(self):
+        owners = (
+            (
+                asset_integrity,
+                ("AssetError", "ModelIntegrityError", "asset_manifest_name"),
+            ),
+            (
+                model_assets,
+                (
+                    "ModelAsset",
+                    "ModelAssetManager",
+                    "ModelDownloadCancelled",
+                    "UnsupportedModelError",
+                    "load_coqui_model_asset",
+                ),
+            ),
+            (
+                voice_packs,
+                ("VoicePackManager", "read_json", "supported_audio_extensions"),
+            ),
+        )
+        exports = [(owner, name) for owner, names in owners for name in names]
+        self.assertEqual(len(exports), 11)
+        for owner, name in exports:
+            with self.subTest(name=name):
+                self.assertIs(getattr(assets, name), getattr(owner, name))
+        for error in (
+            assets.ModelIntegrityError,
+            assets.ModelDownloadCancelled,
+            assets.UnsupportedModelError,
+        ):
+            with self.subTest(error=error):
+                self.assertEqual(error.__bases__, (assets.AssetError,))
+        self.assertEqual(assets.AssetError.__bases__, (RuntimeError,))
 
 
 class MemoryResponse:
@@ -72,6 +115,134 @@ class MemoryOpener:
 
 
 class ModelAssetManagerTest(unittest.TestCase):
+    def test_zero_offset_partial_response_requires_complete_range_and_body(self):
+        url = "https://models.invalid/model.bin"
+        asset = ModelAsset("zero-offset", (url,))
+        for advertised, (content_range, message), prior_partial in product(
+            (None, 6),
+            (
+                (None, "invalid resume range"),
+                ("bytes 2-5/6", "invalid resume range"),
+                ("bytes 0-3/6", "invalid resume range"),
+                ("bytes 0-5/6", "wrong size"),
+            ),
+            (None, b""),
+        ):
+            with (
+                self.subTest(
+                    advertised=advertised,
+                    content_range=content_range,
+                    prior_partial=prior_partial,
+                ),
+                TemporaryDirectory() as directory,
+            ):
+                requests = []
+
+                def opener(request, timeout):
+                    requests.append(request)
+                    if request.get_method() == "HEAD":
+                        if advertised is None:
+                            raise OSError("HEAD unavailable")
+                        return MemoryResponse(
+                            b"", headers={"Content-Length": str(advertised)}
+                        )
+                    headers = {"Content-Length": "4"}
+                    if content_range is not None:
+                        headers["Content-Range"] = content_range
+                    return MemoryResponse(b"cdef", status=206, headers=headers)
+
+                manager = ModelAssetManager(directory, opener=opener)
+                model = manager.model_path(asset.name)
+                model.mkdir(parents=True)
+                output = model / "model.bin"
+                checksum = model / assets.asset_manifest_name
+                output.write_bytes(b"previous model")
+                checksum.write_bytes(b"invalid prior checksum")
+                partial = model / "model.bin.part"
+                if prior_partial is not None:
+                    partial.write_bytes(prior_partial)
+                with self.assertRaisesRegex(ModelIntegrityError, message):
+                    manager.download(asset.name, asset=asset)
+                self.assertIsNone(requests[-1].get_header("Range"))
+                self.assertEqual(output.read_bytes(), b"previous model")
+                self.assertEqual(checksum.read_bytes(), b"invalid prior checksum")
+                if message == "wrong size":
+                    self.assertEqual(partial.read_bytes(), b"cdef")
+                elif prior_partial is None:
+                    self.assertFalse(partial.exists())
+                else:
+                    self.assertEqual(partial.read_bytes(), prior_partial)
+                self.assertFalse(manager.is_ready(asset.name, asset=asset))
+
+    def test_complete_zero_offset_partial_response_restarts_without_appending(self):
+        url = "https://models.invalid/model.bin"
+        asset = ModelAsset("zero-offset", (url,))
+        for advertised, prior_partial in (
+            (None, None),
+            (None, b""),
+            (6, None),
+            (6, b""),
+            (6, b"oversized prior partial"),
+        ):
+            with (
+                self.subTest(advertised=advertised, prior_partial=prior_partial),
+                TemporaryDirectory() as directory,
+            ):
+                requests = []
+
+                def opener(request, timeout):
+                    requests.append(request)
+                    if request.get_method() == "HEAD":
+                        if advertised is None:
+                            raise OSError("HEAD unavailable")
+                        return MemoryResponse(
+                            b"", headers={"Content-Length": str(advertised)}
+                        )
+                    return MemoryResponse(
+                        b"abcdef",
+                        status=206,
+                        headers={"Content-Length": "6", "Content-Range": "bytes 0-5/6"},
+                    )
+
+                manager = ModelAssetManager(directory, opener=opener)
+                model = manager.model_path(asset.name)
+                model.mkdir(parents=True)
+                partial = model / "model.bin.part"
+                if prior_partial is not None:
+                    partial.write_bytes(prior_partial)
+                manager.download(asset.name, asset=asset)
+                self.assertIsNone(requests[-1].get_header("Range"))
+                self.assertEqual((model / "model.bin").read_bytes(), b"abcdef")
+                self.assertFalse(partial.exists())
+                self.assertTrue(manager.is_ready(asset.name, asset=asset))
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_publisher_checksum_rejects_fifo_swap_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            path = root / "hash.md5"
+            payload = b"publisher\r\n"
+            path.write_bytes(payload)
+            asset = ModelAsset("test", (), expected_hash="publisher")
+            with (
+                swap_at_acquisition(self, {"path": path, "armed": True}),
+                self.assertRaisesRegex(OSError, "regular file"),
+            ):
+                ModelAssetManager._validate_upstream_hash(root, asset)
+            self.assertIsNone(ModelAssetManager._validate_upstream_hash(root, asset))
+            self.assertEqual(path.read_bytes(), payload)
+
+    def test_deep_optional_json_returns_default_without_rewriting(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "cache.json"
+            payload = b"[" * 100000 + b"0" + b"]" * 100000
+            path.write_bytes(payload)
+            default = object()
+            self.assertIs(assets.read_json(path, default), default)
+            self.assertEqual(path.read_bytes(), payload)
+
     def test_checksum_manifest_rejects_model_url_without_filename(self):
         asset = ModelAsset("empty", ("https://example.invalid/",))
         with self.assertRaisesRegex(ModelIntegrityError, "no filename"):
@@ -107,6 +278,141 @@ class ModelAssetManagerTest(unittest.TestCase):
                     asset.name,
                     asset,
                 )
+
+    def test_rejects_colliding_model_storage_names_before_io(self):
+        for names in (
+            ("vntts-asset.json",),
+            ("VNTTS-ASSET.JSON",),
+            ("weights.bin", "Weights.bin"),
+            ("weights.bin.part", "weights.bin"),
+            ("weights.bin", "WEIGHTS.BIN.PART"),
+        ):
+            with self.subTest(names=names), TemporaryDirectory() as directory:
+                asset = ModelAsset(
+                    "collision",
+                    tuple("https://models.invalid/" + name for name in names),
+                )
+                opener = MemoryOpener({url: b"data" for url in asset.urls})
+                manager = ModelAssetManager(directory, opener=opener)
+                with self.assertRaises(ModelIntegrityError):
+                    manager.download(asset.name, asset=asset)
+                self.assertEqual(opener.requests, [])
+                self.assertFalse(manager.model_path(asset.name).exists())
+
+    def test_colliding_inventory_validation_preserves_existing_files(self):
+        asset = ModelAsset(
+            "collision",
+            (
+                "https://models.invalid/weights.bin",
+                "https://models.invalid/weights.bin.part",
+            ),
+        )
+        for managed in (False, True):
+            with self.subTest(managed=managed), TemporaryDirectory() as directory:
+                opener = MemoryOpener({url: b"replacement" for url in asset.urls})
+                manager = ModelAssetManager(directory, opener=opener)
+                model = manager.model_path(asset.name)
+                model.mkdir(parents=True)
+                for name in ("weights.bin", "weights.bin.part"):
+                    (model / name).write_bytes(b"original")
+                manifest_path = model / assets.asset_manifest_name
+                if managed:
+                    manifest_path.write_text(
+                        json.dumps(
+                            {
+                                "version": 1,
+                                "model": asset.name,
+                                "files": {
+                                    name: {
+                                        "size": 8,
+                                        "sha256": hashlib.sha256(
+                                            (model / name).read_bytes()
+                                        ).hexdigest(),
+                                    }
+                                    for name in ("weights.bin", "weights.bin.part")
+                                },
+                            }
+                        )
+                    )
+                before = manifest_path.read_bytes() if managed else None
+                with self.assertRaises(ModelIntegrityError):
+                    manager.download(asset.name, asset=asset)
+                with self.assertRaises(ModelIntegrityError):
+                    manager.validate(asset.name, asset=asset)
+                self.assertEqual(opener.requests, [])
+                after = manifest_path.read_bytes() if manifest_path.exists() else None
+                self.assertEqual(after, before)
+                for name in ("weights.bin", "weights.bin.part"):
+                    self.assertEqual((model / name).read_bytes(), b"original")
+
+    def test_standalone_part_filename_is_valid_and_keeps_source_case(self):
+        asset = ModelAsset("standalone", ("https://models.invalid/Weights.bin.part",))
+        opener = MemoryOpener({asset.urls[0]: b"weights"})
+        with TemporaryDirectory() as directory:
+            manager = ModelAssetManager(directory, opener=opener)
+            model = manager.download(asset.name, asset=asset)
+            self.assertEqual((model / "Weights.bin.part").read_bytes(), b"weights")
+            self.assertFalse((model / "Weights.bin.part.part").exists())
+            self.assertEqual(manager.validate(asset.name, asset=asset), model)
+
+    def test_model_directory_names_cannot_escape_flat_cache(self):
+        for name in (
+            "",
+            ".",
+            "..",
+            "nested\\model",
+            "C:\\model",
+            "C:model",
+            ".. ",
+            "model.",
+            " model",
+            "NUL",
+        ):
+            with self.subTest(name=name), TemporaryDirectory() as directory:
+                asset = ModelAsset(name, ("https://models.invalid/weights.bin",))
+                opener = MemoryOpener({asset.urls[0]: b"weights"})
+                manager = ModelAssetManager(Path(directory) / "models", opener=opener)
+                with self.assertRaises(ModelIntegrityError):
+                    manager.download(name, asset=asset)
+                with self.assertRaises(ModelIntegrityError):
+                    manager.model_path(name)
+                with self.assertRaises(ModelIntegrityError):
+                    _ = asset.directory_name
+                self.assertEqual(opener.requests, [])
+                self.assertFalse(manager.storage_root.exists())
+
+    def test_model_url_names_are_flat_on_all_supported_hosts(self):
+        for filename in (
+            "..",
+            "nested\\weights.bin",
+            "C:weights.bin",
+            "weights.bin:stream",
+            "weights.bin.",
+            " weights.bin",
+            "NUL.bin",
+        ):
+            with self.subTest(filename=filename), TemporaryDirectory() as directory:
+                asset = ModelAsset("model", ("https://models.invalid/" + filename,))
+                opener = MemoryOpener({asset.urls[0]: b"weights"})
+                manager = ModelAssetManager(directory, opener=opener)
+                with self.assertRaises(ModelIntegrityError):
+                    manager.download(asset.name, asset=asset)
+                self.assertEqual(opener.requests, [])
+                self.assertFalse(manager.model_path(asset.name).exists())
+
+    def test_ordinary_model_directory_and_nested_url_keep_layout(self):
+        asset = ModelAsset(
+            "tts_models/test/data/model",
+            ("https://models.invalid/nested/.Weights.bin",),
+        )
+        with TemporaryDirectory() as directory:
+            manager = ModelAssetManager(
+                directory, opener=MemoryOpener({asset.urls[0]: b"weights"})
+            )
+            model = manager.download(asset.name, asset=asset)
+            self.assertEqual(asset.directory_name, "tts_models--test--data--model")
+            self.assertEqual(model, manager.coqui_cache_root / asset.directory_name)
+            self.assertEqual((model / ".Weights.bin").read_bytes(), b"weights")
 
     def test_configures_private_huggingface_model_cache(self):
         with TemporaryDirectory() as temporary_directory:
@@ -227,7 +533,7 @@ class ModelAssetManagerTest(unittest.TestCase):
                     return MemoryResponse(b"", headers={"Content-Length": "100"})
 
                 with patch(
-                    "vntts.assets.load_coqui_model_asset", return_value=asset
+                    "vntts.model_assets.load_coqui_model_asset", return_value=asset
                 ) as catalog:
                     manager = ModelAssetManager(directory, opener=opener)
                     with self.assertRaises(ModelDownloadCancelled):
@@ -826,7 +1132,10 @@ class VoicePackManagerTest(unittest.TestCase):
                 raise OSError("copy failed")
 
             with (
-                patch("vntts.assets.shutil.copy2", side_effect=fail_after_partial_copy),
+                patch(
+                    "vntts.voice_packs.VoicePackManager._copy_reference",
+                    side_effect=fail_after_partial_copy,
+                ),
                 self.assertRaisesRegex(OSError, "copy failed"),
             ):
                 manager.import_voice("Ada", [source])
@@ -995,7 +1304,7 @@ class VoicePackManagerTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            real_copy = shutil.copy2
+            real_copy = VoicePackManager._copy_reference
             copies = 0
 
             def fail_on_second_copy(source, destination):
@@ -1007,7 +1316,10 @@ class VoicePackManagerTest(unittest.TestCase):
                 return real_copy(source, destination)
 
             with (
-                patch("vntts.assets.shutil.copy2", side_effect=fail_on_second_copy),
+                patch(
+                    "vntts.voice_packs.VoicePackManager._copy_reference",
+                    side_effect=fail_on_second_copy,
+                ),
                 self.assertRaisesRegex(OSError, "copy failed"),
             ):
                 manager.import_pack(source_manifest, pack_name="custom")
@@ -1072,6 +1384,213 @@ class VoicePackManagerTest(unittest.TestCase):
                         original_references,
                     )
                     self.assertEqual(manager.validate(manifest), manifest)
+
+    def test_partial_voice_pack_rollback_retains_backups_and_referenced_audio(self):
+        for failed_name in ("manifest.json", "vntts-asset.json"):
+            with (
+                self.subTest(failed_name=failed_name),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                old = root / "old.wav"
+                new = root / "new.wav"
+                old.write_bytes(b"old voice")
+                new.write_bytes(b"new voice")
+                manager = VoicePackManager(root / "managed")
+                manifest = manager.import_voice("Ada", [old])
+                original_manifest = manifest.read_bytes()
+                primary = OSError("checksum failed")
+                original_replace = os.replace
+                restores = []
+
+                def fail_one_restore(source, destination):
+                    source = Path(source)
+                    if source.parent.name.startswith(".voice-pack-backup-"):
+                        restores.append(Path(destination).name)
+                        if Path(destination).name == failed_name:
+                            raise PermissionError("restore denied")
+                    return original_replace(source, destination)
+
+                with (
+                    patch.object(
+                        manager, "_write_voice_checksums", side_effect=primary
+                    ),
+                    patch("vntts.voice_packs.os.replace", side_effect=fail_one_restore),
+                    self.assertRaises(OSError) as raised,
+                ):
+                    manager.import_voice("Ada", [new])
+                self.assertIs(raised.exception, primary)
+                self.assertEqual(restores, ["manifest.json", "vntts-asset.json"])
+                backups = tuple(manifest.parent.glob(".voice-pack-backup-*"))
+                self.assertEqual(len(backups), 1)
+                self.assertTrue((backups[0] / failed_name).is_file())
+                if failed_name == "manifest.json":
+                    self.assertEqual(
+                        (backups[0] / failed_name).read_bytes(), original_manifest
+                    )
+                self.assertIn(str(backups[0]), "\n".join(primary.__notes__))
+                references = (
+                    CharacterVoiceRegistry.from_file(manifest).resolve("Ada").references
+                )
+                self.assertTrue(all(reference.is_file() for reference in references))
+                self.assertEqual(
+                    len(tuple((manifest.parent / "references").iterdir())), 2
+                )
+
+    def test_failed_copy_cleanup_keeps_copy_error_and_attempts_all_references(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = [root / "one.wav", root / "two.wav"]
+            for source in sources:
+                source.write_bytes(b"voice")
+            manager = VoicePackManager(root / "managed")
+            primary = OSError("copy failed")
+            original_unlink = type(root).unlink
+            cleanup_attempts = []
+
+            def fail_reference_unlink(path, *args, **kwargs):
+                if path.parent.name == "references":
+                    cleanup_attempts.append(path)
+                    raise PermissionError("reference cleanup denied")
+                return original_unlink(path, *args, **kwargs)
+
+            with (
+                patch(
+                    "vntts.voice_packs.VoicePackManager._copy_reference",
+                    side_effect=primary,
+                ),
+                patch.object(
+                    type(root),
+                    "unlink",
+                    autospec=True,
+                    side_effect=fail_reference_unlink,
+                ),
+                self.assertRaises(OSError) as raised,
+            ):
+                manager.import_voice("Ada", sources)
+            self.assertIs(raised.exception, primary)
+            self.assertEqual(len(cleanup_attempts), 2)
+            self.assertEqual(len(primary.__notes__), 2)
+
+    def test_postpublication_cleanup_failures_preserve_committed_voice_pack(self):
+        for import_mode in ("voice", "pack"):
+            for failed_phase in ("backup", "reference"):
+                with (
+                    self.subTest(import_mode=import_mode, failed_phase=failed_phase),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    old = root / "old.wav"
+                    new = root / "new.wav"
+                    old.write_bytes(b"old voice")
+                    new.write_bytes(b"new voice")
+                    manager = VoicePackManager(root / "managed")
+                    manifest = manager.import_voice("Ada", [old])
+                    old_reference = (
+                        CharacterVoiceRegistry.from_file(manifest)
+                        .resolve("Ada")
+                        .references[0]
+                    )
+                    source_manifest = VoicePackManager(root / "source").import_voice(
+                        "Ada", [new]
+                    )
+                    original_rmtree = shutil.rmtree
+                    original_unlink = type(root).unlink
+                    cleanup_attempts = []
+
+                    def remove_backup(path, *args, **kwargs):
+                        cleanup_attempts.append("backup")
+                        if failed_phase == "backup":
+                            raise PermissionError("backup cleanup denied")
+                        return original_rmtree(path, *args, **kwargs)
+
+                    def remove_reference(path, *args, **kwargs):
+                        if path == old_reference:
+                            cleanup_attempts.append("reference")
+                            if failed_phase == "reference":
+                                raise PermissionError("reference cleanup denied")
+                        return original_unlink(path, *args, **kwargs)
+
+                    with (
+                        patch(
+                            "vntts.voice_packs.shutil.rmtree", side_effect=remove_backup
+                        ),
+                        patch.object(
+                            type(root),
+                            "unlink",
+                            autospec=True,
+                            side_effect=remove_reference,
+                        ),
+                        self.assertLogs("vntts.assets", level="WARNING") as warnings,
+                    ):
+                        imported = (
+                            manager.import_voice("Ada", [new])
+                            if import_mode == "voice"
+                            else manager.import_pack(
+                                source_manifest, pack_name="custom"
+                            )
+                        )
+                    self.assertEqual(imported, manifest)
+                    self.assertEqual(manager.validate(imported), manifest)
+                    references = (
+                        CharacterVoiceRegistry.from_file(imported)
+                        .resolve("Ada")
+                        .references
+                    )
+                    self.assertEqual(
+                        [path.read_bytes() for path in references], [b"new voice"]
+                    )
+                    self.assertEqual(cleanup_attempts, ["backup", "reference"])
+                    self.assertEqual(
+                        old_reference.exists(), failed_phase == "reference"
+                    )
+                    backups = tuple(manifest.parent.glob(".voice-pack-backup-*"))
+                    self.assertEqual(len(backups), int(failed_phase == "backup"))
+                    self.assertEqual(len(warnings.output), 1)
+                    self.assertIn(f"{failed_phase} cleanup", warnings.output[0])
+                    self.assertIn("cleanup denied", warnings.output[0])
+                    self.assertIn(
+                        str(backups[0] if backups else manifest.parent / "references"),
+                        warnings.output[0],
+                    )
+
+    def test_postpublication_cleanup_preserves_process_exit_exceptions(self):
+        for import_mode in ("voice", "pack"):
+            for failed_phase in ("backup", "reference"):
+                for error_type in (KeyboardInterrupt, SystemExit):
+                    with (
+                        self.subTest(
+                            import_mode=import_mode,
+                            failed_phase=failed_phase,
+                            error_type=error_type,
+                        ),
+                        TemporaryDirectory() as directory,
+                    ):
+                        root = Path(directory)
+                        source = root / "voice.wav"
+                        source.write_bytes(b"voice")
+                        manager = VoicePackManager(root / "managed")
+                        source_manifest = VoicePackManager(
+                            root / "source"
+                        ).import_voice("Ada", [source])
+                        failure = error_type("cleanup interrupted")
+                        target = (
+                            "vntts.voice_packs.shutil.rmtree"
+                            if failed_phase == "backup"
+                            else "vntts.voice_packs.VoicePackManager._remove_unreferenced_files"
+                        )
+                        with (
+                            patch(target, side_effect=failure),
+                            self.assertNoLogs("vntts.assets", level="WARNING"),
+                            self.assertRaises(error_type) as raised,
+                        ):
+                            if import_mode == "voice":
+                                manager.import_voice("Ada", [source])
+                            else:
+                                manager.import_pack(source_manifest, pack_name="custom")
+                        self.assertIs(raised.exception, failure)
+                        manifest = manager.storage_root / "custom" / "manifest.json"
+                        self.assertEqual(manager.validate(manifest), manifest)
 
     def test_import_manifest_removes_replaced_managed_references(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1147,14 +1666,14 @@ class VoicePackManagerTest(unittest.TestCase):
             voice_import_started = Event()
             voice_manifest_read = Event()
             errors = []
-            original_copy2 = shutil.copy2
-            original_read_json = assets.read_json
+            original_copy_reference = VoicePackManager._copy_reference
+            original_read_json = voice_packs.read_json
 
-            def blocking_copy2(source, destination, *args, **kwargs):
+            def blocking_copy_reference(source, destination, *args, **kwargs):
                 if Path(source).resolve() == source_reference.resolve():
                     pack_copy_started.set()
                     self.assertTrue(release_pack_copy.wait(2))
-                return original_copy2(source, destination, *args, **kwargs)
+                return original_copy_reference(source, destination, *args, **kwargs)
 
             def observing_read_json(path, default):
                 if Path(path).resolve() == target_manifest:
@@ -1168,8 +1687,11 @@ class VoicePackManagerTest(unittest.TestCase):
                     errors.append(error)
 
             with (
-                patch("vntts.assets.shutil.copy2", side_effect=blocking_copy2),
-                patch("vntts.assets.read_json", side_effect=observing_read_json),
+                patch(
+                    "vntts.voice_packs.VoicePackManager._copy_reference",
+                    side_effect=blocking_copy_reference,
+                ),
+                patch("vntts.voice_packs.read_json", side_effect=observing_read_json),
             ):
                 pack_import = Thread(
                     target=lambda: run(

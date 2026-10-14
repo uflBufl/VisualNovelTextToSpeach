@@ -4,21 +4,19 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
+import io
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol, TypeAlias, TypedDict, TypeGuard
+from typing import BinaryIO, Protocol, TypeAlias, TypedDict, TypeGuard
 
-import numpy as np
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json
 from vntts_artifacts.audio import (
     PCM16_MONO_WAV_FORMAT,
     Pcm16MonoWavError,
     read_pcm16_mono_wav,
 )
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import (
     GENERATED_AUDIO_SCHEMA,
     GENERATED_AUDIO_SCHEMA_VERSION,
@@ -32,6 +30,8 @@ from vntts_artifacts.voice_manifest import (
 
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.document_identity import canonical_document_sha256
+from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_bytes
 from vntts.voices import pocket_tts_preset_voices
 
 
@@ -97,11 +97,12 @@ def snapshot_recorded_voices(
     if manifest is None or manifest["kind"] != "file":
         return {}
     try:
-        payload = manifest["path"].read_bytes()
+        payload = read_regular_bytes(manifest["path"])
         if hashlib.sha256(payload).hexdigest() != manifest["sha256"]:
             raise BulkGenerationError("Recorded voice manifest changed during capture")
-        document = json.loads(payload)
+        document = decode_json(payload)
         voices = validate_voice_manifest(document)
+        assert isinstance(document, dict)
         references = {
             control["path"]: control["sha256"]
             for control in controls
@@ -166,16 +167,29 @@ def snapshot_recorded_voices(
 
 
 def inspect_generated_wav(
-    path: Path | str, *, allow_short_audio_event: bool = False
+    path: Path | str | BinaryIO, *, allow_short_audio_event: bool = False
 ) -> AudioQuality:
     """Validate the normalized generated-audio WAV contract."""
+    quality, _samples = inspect_generated_wav_with_samples(
+        path, allow_short_audio_event=allow_short_audio_event
+    )
+    return quality
+
+
+def inspect_generated_wav_with_samples(
+    path: Path | str | BinaryIO, *, allow_short_audio_event: bool = False
+) -> tuple[AudioQuality, Sequence[int]]:
+    """Validate one generated WAV and retain its decoded PCM16 samples."""
     try:
-        _samples, info = read_pcm16_mono_wav(path)
+        samples, info = read_pcm16_mono_wav(path)
     except (OSError, Pcm16MonoWavError) as error:
         raise BulkGenerationError(
             f"Generated output is not a readable PCM16 mono WAV: {error}"
         ) from error
-    return _audio_quality(info, allow_short_audio_event=allow_short_audio_event)
+    return (
+        _audio_quality(info, allow_short_audio_event=allow_short_audio_event),
+        samples,
+    )
 
 
 def _audio_quality(
@@ -320,7 +334,6 @@ def _manifest_entries(
             "speech_quality",
             "carry_forward",
             "failure_repair",
-            "synthesis_text_sha256",
             "attempts",
             "attempts_by_provider",
             "cohort_review",
@@ -347,7 +360,9 @@ def write_generated_manifest_from_state(
 ) -> None:
     """Atomically publish the approved-only projection of one generation state."""
     entries = (
-        approved_manifest_entries(state, output_directory)
+        approved_manifest_entries(
+            state, output_directory, validate_files=validate_files
+        )
         if entries is None
         else entries
     )
@@ -432,28 +447,32 @@ def validate_success_file(
 
 def validate_success_file_with_samples(
     queue_id: str, result: _GenerationResult, audio: Path
-) -> tuple[AudioQuality, np.ndarray]:
+) -> tuple[AudioQuality, Sequence[int]]:
     """Validate one WAV and retain its already-read samples for deeper checks."""
     if not audio.is_file():
         raise BulkGenerationError(f"Generated WAV is missing for {queue_id!r}: {audio}")
-    if sha256_file(audio) != result.get("file_sha256"):
-        raise BulkGenerationError(f"Generated WAV checksum mismatch for {queue_id!r}")
     try:
-        samples, info = read_pcm16_mono_wav(audio)
-    except (OSError, Pcm16MonoWavError) as error:
+        payload = read_regular_bytes(audio)
+    except OSError as error:
         raise BulkGenerationError(
             f"Generated output is not a readable PCM16 mono WAV: {error}"
         ) from error
-    quality = _audio_quality(
-        info,
-        allow_short_audio_event=(result.get("provider") == "original-game-audio-event"),
-    )
+    if hashlib.sha256(payload).hexdigest() != result.get("file_sha256"):
+        raise BulkGenerationError(f"Generated WAV checksum mismatch for {queue_id!r}")
+    with io.BytesIO(payload) as source:
+        quality, samples = inspect_generated_wav_with_samples(
+            source,
+            allow_short_audio_event=(
+                result.get("provider") == "original-game-audio-event"
+            ),
+        )
     stored = result.get("quality")
     if not isinstance(stored, dict):
         raise BulkGenerationError(f"Generated WAV quality is missing for {queue_id!r}")
     expected = asdict(quality)
     for field, value in expected.items():
-        if stored.get(field) != value:
+        stored_value = stored.get(field)
+        if isinstance(stored_value, bool) or stored_value != value:
             raise BulkGenerationError(
                 f"Generated WAV quality {field} mismatch for {queue_id!r}"
             )
@@ -461,7 +480,7 @@ def validate_success_file_with_samples(
 
 
 def safe_generation_relative_path(value: object, label: str) -> Path:
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not value or "\x00" in value:
         raise BulkGenerationError(f"{label} must be a relative POSIX path")
     if "\\" in value:
         raise BulkGenerationError(f"{label} must use POSIX separators")
@@ -502,6 +521,7 @@ __all__ = [
     "approved_manifest_entries",
     "contained_generation_path",
     "inspect_generated_wav",
+    "inspect_generated_wav_with_samples",
     "runtime_progress_manifest_entries",
     "runtime_progress_live_fallback_entries",
     "safe_generation_relative_path",

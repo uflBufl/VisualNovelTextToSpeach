@@ -10,12 +10,14 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
+    from PySide6.QtCore import QThreadPool
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtWidgets import QApplication
 
-    from tests.test_authoring_missing_voice_reuse_review import (
+    from tests.missing_voice_reuse_fixtures import (
         create_missing_voice_reuse_review_fixture,
     )
+    from tests.qt_task_fixtures import release_and_wait_for_pool
     from vntts.authoring.missing_voice_reuse_review import (
         AUTOMATIC_UNRESOLVED_ORIGIN,
         build_missing_voice_reuse_review,
@@ -209,13 +211,36 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             session_path, _queue_id = self.create_review(Path(directory))
             dialog = MissingVoiceReuseReviewDialog(session_path)
-            dialog._pending_heard = [("cohort", "queue", "A")]
+            dialog._pending_heard.append(("cohort", "queue", "A"))
 
             dialog.reject()
 
             self.assertTrue(dialog._close_pending)
             self.assertIn("Close requested", dialog.status.text())
-            dialog._pending_heard = []
+            dialog._pending_heard.clear()
+            dialog.close()
+            dialog.deleteLater()
+
+    def test_failed_heard_save_removes_duplicates_and_starts_next_in_order(self):
+        with TemporaryDirectory() as directory:
+            session_path, _queue_id = self.create_review(Path(directory))
+            dialog = MissingVoiceReuseReviewDialog(session_path)
+            failed = ("cohort", "first", "A")
+            next_key = ("cohort", "second", "B")
+            last_key = ("cohort", "third", "A")
+            dialog._saving_heard = failed
+            dialog._pending_heard.extend((failed, next_key, failed, last_key))
+
+            with patch.object(dialog.heard_runner, "start") as start:
+                dialog._heard_saved(None, RuntimeError("save refused"))
+
+            start.assert_called_once_with(
+                dialog.heard_recorder, dialog.session_path, *next_key
+            )
+            self.assertEqual(dialog._saving_heard, next_key)
+            self.assertEqual(tuple(dialog._pending_heard), (last_key,))
+            dialog._pending_heard.clear()
+            dialog._saving_heard = None
             dialog.close()
             dialog.deleteLater()
 
@@ -245,19 +270,19 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             dialog = MissingVoiceReuseReviewDialog(session_path)
 
             values = dialog.decision_context.values
-            self.assertEqual(values["game_speaker"].text(), "Aderyn")
+            self.assertEqual(values["game_speaker"], "Aderyn")
             self.assertEqual(
-                values["synthesis_voice"].text(),
+                values["synthesis_voice"],
                 "Hidden for this blind comparison",
             )
             self.assertEqual(
-                values["reference"].text(),
+                values["reference"],
                 "Hidden for this blind comparison",
             )
-            self.assertEqual(values["backend"].text(), "moss-tts")
-            self.assertEqual(values["generation_profile"].text(), "stable")
-            self.assertIn("Seed: 0", values["controls"].text())
-            self.assertIn("bind one complete candidate", values["effect"].text())
+            self.assertEqual(values["backend"], "moss-tts")
+            self.assertEqual(values["generation_profile"], "stable")
+            self.assertIn("Seed: 0", values["controls"])
+            self.assertIn("bind one complete candidate", values["effect"])
             self.assertIn("Plan:", dialog.decision_context.technical.text())
             dialog.deleteLater()
 
@@ -298,11 +323,29 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             release.wait(3)
             return record_missing_voice_reuse_decision(*arguments)
 
-        with TemporaryDirectory() as directory:
+        pool = QThreadPool()
+        dialog = None
+        with (
+            TemporaryDirectory() as directory,
+            release_and_wait_for_pool(
+                pool,
+                release,
+                finish=lambda: self.wait_for(
+                    lambda: (
+                        dialog is None
+                        or (
+                            not dialog.decision_runner.active
+                            and not dialog.heard_runner.active
+                        )
+                    )
+                ),
+            ),
+        ):
             session_path, _queue_id = self.create_review(Path(directory))
             dialog = MissingVoiceReuseReviewDialog(
                 session_path,
                 decision_recorder=slow_decision,
+                thread_pool=pool,
                 confirmer=lambda _decision: True,
             )
             dialog.player = Mock()

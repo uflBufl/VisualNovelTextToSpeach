@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QFont  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -30,6 +30,17 @@ from vntts.ui_text import plain_label_text, set_labeled_text  # noqa: E402
 
 
 class ControlDashboardTest(unittest.TestCase):
+    def test_compact_show_callback_does_not_outlive_window(self):
+        self.application.processEvents()
+        compact = CompactController()
+        with patch("sys.excepthook") as exception_hook:
+            compact.show_for_game()
+            compact.close()
+            compact.deleteLater()
+            self.application.sendPostedEvents(compact, QEvent.Type.DeferredDelete)
+            self.application.processEvents()
+        exception_hook.assert_not_called()
+
     def test_auto_advance_control_shows_key_and_capture_policy(self):
         dashboard = ControlDashboard(
             AppSettings(

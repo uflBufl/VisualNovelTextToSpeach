@@ -1,13 +1,19 @@
-import hashlib
 import json
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import load_voice_manifest
 
+from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from tests.source_reference_fixtures import (
+    write_experimental_composite_voice_fixture,
+    write_experimental_composite_wav,
+)
+from vntts.authoring import experimental_composite_voice as experimental
 from vntts.authoring.experimental_composite_voice import (
     EXPERIMENTAL_COMPOSITE_VOICE_FIELD,
     ExperimentalCompositeVoiceError,
@@ -19,130 +25,87 @@ from vntts.authoring.source_reference_bindings import (
 
 
 class AuthoringExperimentalCompositeVoiceTest(unittest.TestCase):
-    def create_fixture(self, root):
-        source = root / "source"
-        source.mkdir()
-        (source / "centurion.wav").write_bytes(b"centurion")
-        manifest = source / "manifest.json"
-        manifest.write_text(
-            json.dumps(
-                {
-                    "version": 2,
-                    "game": "fixture",
-                    "language": "en",
-                    "voices": [
-                        {
-                            "character": "Centurion",
-                            "speaker": "centurion",
-                            "references": ["centurion.wav"],
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        composite = root / "composite"
-        (composite / "clips").mkdir(parents=True)
-        (composite / "composite.wav").write_bytes(b"composite")
-        clips = []
-        for index, payload in enumerate((b"one", b"two"), start=1):
-            path = composite / "clips" / f"{index}.wav"
-            path.write_bytes(payload)
-            clips.append(
-                {
-                    "media_id": index,
-                    "reference": f"clips/{index}.wav",
-                    "reference_sha256": hashlib.sha256(payload).hexdigest(),
-                }
-            )
-        reference_sha256 = sha256_file(composite / "composite.wav")
-        ledger = {
-            "schema": "vntts.authoring-exact-bank-reference-composite",
-            "schema_version": 1,
-            "character": "Hotelier",
-            "portrait": "505401.png",
-            "source_bank": "hotel.bnk",
-            "clips": clips,
-            "composite": {
-                "path": "composite.wav",
-                "sha256": reference_sha256,
-            },
-        }
-        (composite / "composite.json").write_text(
-            json.dumps(ledger, sort_keys=True), encoding="utf-8"
-        )
-        ledger_sha256 = sha256_file(composite / "composite.json")
-        evaluation = {
-            "schema": "vntts.authoring-exact-bank-composite-evaluation",
-            "schema_version": 1,
-            "source_composite_sha256": ledger_sha256,
-        }
-        (composite / "evaluation.json").write_text(
-            json.dumps(evaluation, sort_keys=True), encoding="utf-8"
-        )
-        quality = root / "quality"
-        quality.mkdir()
-        review_path = quality / "review.json"
-        review_path.write_text("{}", encoding="utf-8")
-        review = {
-            "source_reference_plan_sha256": ledger_sha256,
-            "source_reference_evaluation_sha256": sha256_file(
-                composite / "evaluation.json"
-            ),
-            "variants": [
-                {
-                    "variant_id": f"exact-bank-composite:{reference_sha256}",
-                    "reference_kind": "exact_bank_composite",
-                    "character": "Hotelier",
-                    "portrait": "505401.png",
-                    "source_bank": "hotel.bnk",
-                    "reference": {"audio_sha256": reference_sha256},
-                    "decision": {"decision": "needs_sample"},
-                }
-            ],
-        }
-        return manifest, composite, review_path, review
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_artifact_copies_refuse_acquisition_clean_up_and_recover(self):
+        for role in ("manifest_reference", "composite", "quality_review"):
+            with self.subTest(role=role), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                manifest, composite, review, _document = (
+                    write_experimental_composite_voice_fixture(root)
+                )
+                selected = {
+                    "manifest_reference": manifest.parent / "centurion.wav",
+                    "composite": composite / "composite.wav",
+                    "quality_review": review,
+                }[role]
+                output = root / "output"
+                before = tree_hashes(root)
+                original = experimental.copy_regular_file
+                refused = []
 
-    def publish(self, root, review, *, output=None):
-        manifest, composite, review_path, _ = self.create_fixture(root)
-        with patch(
-            "vntts.authoring.experimental_composite_voice."
-            "load_source_reference_quality_review",
-            return_value=review,
-        ):
-            result = publish_experimental_composite_voice_input(
-                manifest,
-                composite,
-                review_path,
-                "Experimental Hotelier exact-bank composite",
-                output or root / "output",
-            )
-        return result, manifest, composite, review_path
+                def copy(source, target, **kwargs):
+                    if Path(source) != selected:
+                        return original(source, target, **kwargs)
+                    gate: RegularFileGate = {"path": selected, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(source, target, **kwargs)
+                    self.assertFalse(Path(target).exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                def publish():
+                    return publish_experimental_composite_voice_input(
+                        manifest,
+                        composite,
+                        review,
+                        "Experimental Hotelier exact-bank composite",
+                        output,
+                    )
+
+                with (
+                    patch.object(experimental, "copy_regular_file", copy),
+                    self.assertRaisesRegex(
+                        ExperimentalCompositeVoiceError, "regular file"
+                    ) as caught,
+                ):
+                    publish()
+                self.assertEqual(len(refused), 1)
+                self.assertIs(caught.exception.__cause__, refused[0])
+                self.assertFalse(output.exists())
+                self.assertEqual(tree_hashes(root), before)
+                self.assertFalse(list(root.glob(".experimental-composite-*")))
+                recovered = publish()
+                repeated = publish()
+                self.assertTrue(recovered.created)
+                self.assertFalse(repeated.created)
+                self.assertEqual(recovered.bundle_id, repeated.bundle_id)
 
     def test_publishes_idempotent_comparison_only_manifest(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            manifest, composite, review_path, review = self.create_fixture(root)
+            manifest, composite, review_path, _review = (
+                write_experimental_composite_voice_fixture(root)
+            )
             output = root / "output"
-            with patch(
-                "vntts.authoring.experimental_composite_voice."
-                "load_source_reference_quality_review",
-                return_value=review,
-            ):
-                first = publish_experimental_composite_voice_input(
-                    manifest,
-                    composite,
-                    review_path,
-                    "Experimental Hotelier exact-bank composite",
-                    output,
-                )
-                second = publish_experimental_composite_voice_input(
-                    manifest,
-                    composite,
-                    review_path,
-                    "Experimental Hotelier exact-bank composite",
-                    output,
-                )
+            first = publish_experimental_composite_voice_input(
+                manifest,
+                composite,
+                review_path,
+                "Experimental Hotelier exact-bank composite",
+                output,
+            )
+            second = publish_experimental_composite_voice_input(
+                manifest,
+                composite,
+                review_path,
+                "Experimental Hotelier exact-bank composite",
+                output,
+            )
 
             document = json.loads(
                 (output / "manifest.json").read_text(encoding="utf-8")
@@ -171,72 +134,73 @@ class AuthoringExperimentalCompositeVoiceTest(unittest.TestCase):
     def test_rejects_non_needs_sample_card_and_composite_tampering(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            manifest, composite, review_path, review = self.create_fixture(root)
+            manifest, composite, review_path, review = (
+                write_experimental_composite_voice_fixture(root)
+            )
             rejected = json.loads(json.dumps(review))
             rejected["variants"][0]["decision"]["decision"] = "reject"
-            with patch(
-                "vntts.authoring.experimental_composite_voice."
-                "load_source_reference_quality_review",
-                return_value=rejected,
+            review_path.write_text(
+                json.dumps(rejected, sort_keys=True), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                ExperimentalCompositeVoiceError, "needs_sample"
             ):
-                with self.assertRaisesRegex(
-                    ExperimentalCompositeVoiceError, "needs_sample"
-                ):
-                    publish_experimental_composite_voice_input(
-                        manifest,
-                        composite,
-                        review_path,
-                        "Experimental Hotelier exact-bank composite",
-                        root / "rejected",
-                    )
+                publish_experimental_composite_voice_input(
+                    manifest,
+                    composite,
+                    review_path,
+                    "Experimental Hotelier exact-bank composite",
+                    root / "rejected",
+                )
 
-            (composite / "composite.wav").write_bytes(b"changed")
-            with patch(
-                "vntts.authoring.experimental_composite_voice."
-                "load_source_reference_quality_review",
-                return_value=review,
+            write_experimental_composite_wav(composite / "composite.wav", (5000, -5000))
+            with self.assertRaisesRegex(
+                ExperimentalCompositeVoiceError, "Composite WAV changed"
             ):
-                with self.assertRaisesRegex(
-                    ExperimentalCompositeVoiceError, "Composite WAV changed"
-                ):
-                    publish_experimental_composite_voice_input(
-                        manifest,
-                        composite,
-                        review_path,
-                        "Experimental Hotelier exact-bank composite",
-                        root / "tampered",
-                    )
+                publish_experimental_composite_voice_input(
+                    manifest,
+                    composite,
+                    review_path,
+                    "Experimental Hotelier exact-bank composite",
+                    root / "tampered",
+                )
 
     def test_rejects_changed_composite_clip(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            manifest, composite, review_path, review = self.create_fixture(root)
-            (composite / "clips/1.wav").write_bytes(b"changed")
-            with patch(
-                "vntts.authoring.experimental_composite_voice."
-                "load_source_reference_quality_review",
-                return_value=review,
+            manifest, composite, review_path, _review = (
+                write_experimental_composite_voice_fixture(root)
+            )
+            write_experimental_composite_wav(composite / "clips/1.wav", (5000, -5000))
+            with self.assertRaisesRegex(
+                ExperimentalCompositeVoiceError, "Composite clip changed"
             ):
-                with self.assertRaisesRegex(
-                    ExperimentalCompositeVoiceError, "Composite clip changed"
-                ):
-                    publish_experimental_composite_voice_input(
-                        manifest,
-                        composite,
-                        review_path,
-                        "Experimental Hotelier exact-bank composite",
-                        root / "output",
-                    )
+                publish_experimental_composite_voice_input(
+                    manifest,
+                    composite,
+                    review_path,
+                    "Experimental Hotelier exact-bank composite",
+                    root / "output",
+                )
 
     def test_existing_output_tampering_and_different_source_fail_closed(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            manifest, composite, review_path, review = self.create_fixture(root)
+            manifest, composite, review_path, _review = (
+                write_experimental_composite_voice_fixture(root)
+            )
             output = root / "output"
-            with patch(
-                "vntts.authoring.experimental_composite_voice."
-                "load_source_reference_quality_review",
-                return_value=review,
+            publish_experimental_composite_voice_input(
+                manifest,
+                composite,
+                review_path,
+                "Experimental Hotelier exact-bank composite",
+                output,
+            )
+            reference = next((output / "experimental-composites").rglob("*.wav"))
+            reference.write_bytes(b"forged")
+            with self.assertRaisesRegex(
+                ExperimentalCompositeVoiceError, "artifact changed"
             ):
                 publish_experimental_composite_voice_input(
                     manifest,
@@ -245,18 +209,6 @@ class AuthoringExperimentalCompositeVoiceTest(unittest.TestCase):
                     "Experimental Hotelier exact-bank composite",
                     output,
                 )
-                reference = next((output / "experimental-composites").rglob("*.wav"))
-                reference.write_bytes(b"forged")
-                with self.assertRaisesRegex(
-                    ExperimentalCompositeVoiceError, "artifact changed"
-                ):
-                    publish_experimental_composite_voice_input(
-                        manifest,
-                        composite,
-                        review_path,
-                        "Experimental Hotelier exact-bank composite",
-                        output,
-                    )
 
 
 if __name__ == "__main__":

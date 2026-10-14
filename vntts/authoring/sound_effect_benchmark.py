@@ -11,7 +11,6 @@ import wave
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from time import monotonic
 from typing import Protocol, TypedDict
 
@@ -20,9 +19,13 @@ from numpy.typing import NDArray
 
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    no_replace_destination,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.cuda_probe import CudaProbeError, inspect_cuda
+from vntts.json_types import decode_json, has_schema_version, is_utf8_text
+from vntts.path_safety import read_regular_bytes
 
 CORPUS_SCHEMA = "vntts.sound-effect-benchmark-corpus"
 REPORT_SCHEMA = "vntts.sound-effect-benchmark"
@@ -51,23 +54,33 @@ class SoundEffectCorpus(TypedDict):
 
 
 class SoundEffectPipeline(Protocol):
-    sample_rate: object
+    sample_rate: int
 
-    def __call__(self, **values: object) -> object: ...
+    def __call__(
+        self,
+        *,
+        prompt: str,
+        seconds: float,
+        num_inference_steps: int,
+        cfg_scale: float,
+        sigma_shift: float,
+        seed: int,
+    ) -> object: ...
 
 
 def load_sound_effect_corpus(path: str | Path) -> SoundEffectCorpus:
-    path = Path(path).expanduser().resolve()
+    path = Path(path).expanduser()
     try:
-        payload = path.read_bytes()
-        document = json.loads(payload)
-    except (OSError, json.JSONDecodeError) as error:
+        path = path.resolve()
+        _validate_utf8_text(str(path), "Sound-effect corpus path")
+        payload = read_regular_bytes(path)
+        document = decode_json(payload)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SoundEffectBenchmarkError(f"Unable to read corpus: {error}") from error
     if (
         not isinstance(document, dict)
         or document.get("schema") != CORPUS_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != SCHEMA_VERSION
+        or not has_schema_version(document, SCHEMA_VERSION)
         or not isinstance(document.get("samples"), list)
         or not document["samples"]
     ):
@@ -76,16 +89,24 @@ def load_sound_effect_corpus(path: str | Path) -> SoundEffectCorpus:
     seen_ids: set[str] = set()
     for index, item in enumerate(document["samples"]):
         sample = _validate_sample(item, index)
-        if sample["id"].casefold() in seen_ids:
+        if sample["id"] in seen_ids:
             raise SoundEffectBenchmarkError("Sound-effect sample IDs must be unique")
-        seen_ids.add(sample["id"].casefold())
+        seen_ids.add(sample["id"])
         samples.append(sample)
     return {
         "path": path,
         "sha256": hashlib.sha256(payload).hexdigest(),
-        "name": str(document.get("name") or path.stem),
+        "name": _validate_utf8_text(
+            str(document.get("name") or path.stem), "Sound-effect corpus name"
+        ),
         "samples": samples,
     }
+
+
+def _validate_utf8_text(value: str, label: str) -> str:
+    if not is_utf8_text(value):
+        raise SoundEffectBenchmarkError(f"{label} is invalid UTF-8 text")
+    return value
 
 
 def _validate_sample(item: object, index: int) -> SoundEffectSample:
@@ -107,19 +128,27 @@ def _validate_sample(item: object, index: int) -> SoundEffectSample:
         raise SoundEffectBenchmarkError(
             f"Sound-effect sample {sample_id} prompt is invalid"
         )
-    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+    if (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or not 0 < seconds <= 30
+    ):
         raise SoundEffectBenchmarkError(
             f"Sound-effect sample {sample_id} duration is invalid"
         )
     seconds = round(float(seconds), 1)
-    if not 0 < seconds <= 30:
+    if seconds <= 0:
         raise SoundEffectBenchmarkError(
             f"Sound-effect sample {sample_id} duration is invalid"
         )
     return {
         "id": sample_id,
-        "kind": kind.strip(),
-        "prompt": prompt.strip(),
+        "kind": _validate_utf8_text(
+            kind.strip(), f"Sound-effect sample {sample_id} kind"
+        ),
+        "prompt": _validate_utf8_text(
+            prompt.strip(), f"Sound-effect sample {sample_id} prompt"
+        ),
         "seconds": seconds,
     }
 
@@ -139,8 +168,12 @@ def benchmark_sound_effects(
     clock: Callable[[], float] = monotonic,
 ) -> dict[str, object]:
     corpus = load_sound_effect_corpus(corpus_path)
+    _validate_utf8_text(model, "Model identifier")
     seeds = _validate_controls(seeds, num_inference_steps, cfg_scale, sigma_shift)
-    if re.fullmatch(r"[0-9a-f]{40,64}", model_revision) is None:
+    if (
+        not isinstance(model_revision, str)
+        or re.fullmatch(r"[0-9a-f]{40,64}", model_revision) is None
+    ):
         raise SoundEffectBenchmarkError("Model revision must be an exact commit")
     cuda = inspect_cuda(torch_module)
     if cuda["bf16_supported"] is not True:
@@ -159,8 +192,8 @@ def benchmark_sound_effects(
                 "MOSS-SoundEffect v2 is not installed in this runtime"
             ) from error
         pipeline_factory = MossSoundEffectPipeline.from_pretrained
-    output_directory = Path(output_directory).expanduser().resolve()
-    if output_directory.exists():
+    output_directory = no_replace_destination(output_directory)
+    if output_directory.exists() or output_directory.is_symlink():
         raise SoundEffectBenchmarkError(
             f"Benchmark output already exists; refusing to overwrite: {output_directory}"
         )
@@ -176,15 +209,15 @@ def benchmark_sound_effects(
         raise SoundEffectBenchmarkError(
             f"Unable to load MOSS-SoundEffect v2: {error}"
         ) from error
-    sample_rate = int(getattr(pipeline, "sample_rate", 0))
-    if sample_rate <= 0:
+    sample_rate = getattr(pipeline, "sample_rate", None)
+    # Mono PCM16 byte rate must also fit the unsigned 32-bit WAV header.
+    if type(sample_rate) is not int or not 0 < sample_rate <= 0xFFFFFFFF // 2:
         raise SoundEffectBenchmarkError(
             "MOSS-SoundEffect returned an invalid sample rate"
         )
-    with TemporaryDirectory(
-        prefix=f".{output_directory.name}-", dir=output_directory.parent
-    ) as staging:
-        root = Path(staging) / output_directory.name
+    with staged_directory(
+        output_directory.parent, prefix=f".{output_directory.name}-"
+    ) as root:
         audio_directory = root / "audio"
         audio_directory.mkdir(parents=True)
         results: list[dict[str, object]] = []
@@ -233,7 +266,7 @@ def benchmark_sound_effects(
             rename_directory_no_replace(root, output_directory)
         except AtomicPublicationError as error:
             raise SoundEffectBenchmarkError(
-                f"Benchmark output already exists; refusing to overwrite: {output_directory}"
+                f"Unable to publish sound-effect benchmark: {error}"
             ) from error
     return report
 
@@ -241,7 +274,12 @@ def benchmark_sound_effects(
 def _validate_controls(
     seeds: Sequence[int], steps: int, cfg_scale: float, sigma_shift: float
 ) -> tuple[int, ...]:
-    seeds = tuple(seeds)
+    try:
+        seeds = tuple(seeds)
+    except TypeError as error:
+        raise SoundEffectBenchmarkError(
+            "At least one integer seed is required"
+        ) from error
     if not seeds or any(
         isinstance(seed, bool) or not isinstance(seed, int) for seed in seeds
     ):
@@ -250,9 +288,17 @@ def _validate_controls(
         raise SoundEffectBenchmarkError("Sound-effect seeds must be unique")
     if isinstance(steps, bool) or not isinstance(steps, int) or not 10 <= steps <= 150:
         raise SoundEffectBenchmarkError("Inference steps must be between 10 and 150")
-    if not 1 <= float(cfg_scale) <= 8:
+    if (
+        isinstance(cfg_scale, bool)
+        or not isinstance(cfg_scale, (int, float))
+        or not 1 <= cfg_scale <= 8
+    ):
         raise SoundEffectBenchmarkError("CFG scale must be between 1 and 8")
-    if not 0 <= float(sigma_shift) <= 10:
+    if (
+        isinstance(sigma_shift, bool)
+        or not isinstance(sigma_shift, (int, float))
+        or not 0 <= sigma_shift <= 10
+    ):
         raise SoundEffectBenchmarkError("Sigma shift must be between 0 and 10")
     return seeds
 
@@ -269,11 +315,11 @@ def _render_sample(
     torch_module: object,
     clock: Callable[[], float],
 ) -> dict[str, object]:
-    cuda = getattr(torch_module, "cuda")
-    if callable(getattr(cuda, "reset_peak_memory_stats", None)):
-        cuda.reset_peak_memory_stats()
-    started = clock()
     try:
+        cuda = getattr(torch_module, "cuda")
+        if callable(getattr(cuda, "reset_peak_memory_stats", None)):
+            cuda.reset_peak_memory_stats()
+        started = clock()
         audio = pipeline(
             prompt=sample["prompt"],
             seconds=sample["seconds"],
@@ -286,19 +332,20 @@ def _render_sample(
             cuda.synchronize()
         elapsed = clock() - started
         pcm = _mono_pcm(audio)
+        filename = f"{sample['id']}-seed-{seed}.wav"
+        path = audio_directory / filename
+        _write_pcm16_mono(path, pcm, sample_rate)
+        payload = read_regular_bytes(path)
+        peak_memory = (
+            int(cuda.max_memory_allocated())
+            if callable(getattr(cuda, "max_memory_allocated", None))
+            else None
+        )
     except Exception as error:
         raise SoundEffectBenchmarkError(
             f"Sound-effect render failed for {sample['id']} seed {seed}: {error}"
         ) from error
-    filename = f"{sample['id']}-seed-{seed}.wav"
-    path = audio_directory / filename
-    _write_pcm16_mono(path, pcm, sample_rate)
-    payload = path.read_bytes()
-    peak_memory = (
-        int(cuda.max_memory_allocated())
-        if callable(getattr(cuda, "max_memory_allocated", None))
-        else None
-    )
+    absolute = np.abs(pcm)
     return {
         **sample,
         "seed": seed,
@@ -310,8 +357,8 @@ def _render_sample(
         "actual_seconds": pcm.size / sample_rate,
         "render_seconds": elapsed,
         "realtime_factor": elapsed / (pcm.size / sample_rate),
-        "peak": float(np.max(np.abs(pcm))),
-        "near_silence_ratio": float(np.mean(np.abs(pcm) < 1e-4)),
+        "peak": float(np.max(absolute)),
+        "near_silence_ratio": float(np.mean(absolute < 1e-4)),
         "peak_cuda_memory_bytes": peak_memory,
         "human_review": {
             "adherence": "pending",

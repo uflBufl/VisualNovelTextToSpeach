@@ -13,6 +13,7 @@ from PySide6.QtGui import QCloseEvent, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QDialogButtonBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -38,6 +39,7 @@ from vntts.authoring.source_reference_quality_records import (
     quality_review_progress,
     record_source_reference_quality_decision,
 )
+from vntts.path_safety import read_regular_bytes
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
 
@@ -67,9 +69,9 @@ class _ExcludedSample(TypedDict):
     text_sha256: str
     status: str
     attempts: int
-    failure_kind: NotRequired[str]
-    completion: NotRequired[str]
-    error: NotRequired[str]
+    failure_kind: NotRequired[str | None]
+    completion: NotRequired[str | None]
+    error: NotRequired[str | None]
 
 
 class _PortraitRecord(TypedDict):
@@ -170,6 +172,22 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         confirmer: DecisionConfirmer | None = None,
     ) -> None:
         super().__init__(parent)
+        self._initialize_state(session_path, decision_recorder, thread_pool, confirmer)
+        self._build_identity_widgets()
+        playback = self._build_generated_widgets()
+        decisions, buttons = self._build_decision_widgets()
+        self._build_layout(playback, decisions, buttons)
+        self._configure_navigation()
+        self._initialize_player()
+        self._load_next(self.session)
+
+    def _initialize_state(
+        self,
+        session_path: str | Path,
+        decision_recorder: DecisionRecorder,
+        thread_pool: QThreadPool | None,
+        confirmer: DecisionConfirmer | None,
+    ) -> None:
         self.session_path = Path(session_path).expanduser().resolve()
         self.session: _QualitySession = _load_review(self.session_path)
         self.decision_recorder = decision_recorder
@@ -190,6 +208,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self._audio_buffer: object | None = None
         self._playing_token: str | None = None
 
+    def _build_identity_widgets(self) -> None:
         self.setWindowTitle("Source-reference quality review")
         self.setMinimumSize(700, 500)
         self.progress = QLabel()
@@ -214,6 +233,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.play_reference.setShortcut(QKeySequence("Ctrl+O"))
         self.play_reference.clicked.connect(self._play_reference)
 
+    def _build_generated_widgets(self) -> QFormLayout:
         self.generated = QListWidget()
         self.generated.setMaximumHeight(96)
         self.generated.setAccessibleName("Generated samples for this reference")
@@ -245,7 +265,9 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.stop.setEnabled(False)
         playback = review_form_layout()
         playback.addRow(self.play_generated, self.stop)
+        return playback
 
+    def _build_decision_widgets(self) -> tuple[QFormLayout, QDialogButtonBox]:
         self.failures = QLabel()
         self.failures.setWordWrap(True)
         self.failures.setAccessibleName("Excluded generation diagnostics")
@@ -295,7 +317,14 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.close_button.setAccessibleDescription(
             "Close this review without making another source-reference decision"
         )
+        return decisions, buttons
 
+    def _build_layout(
+        self,
+        playback: QFormLayout,
+        decisions: QFormLayout,
+        buttons: QDialogButtonBox,
+    ) -> None:
         review_content = QWidget()
         review_layout = QVBoxLayout(review_content)
         review_layout.setContentsMargins(0, 0, 0, 0)
@@ -329,6 +358,8 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         layout.addWidget(self.evidence_progress)
         layout.addLayout(decisions)
         layout.addWidget(buttons)
+
+    def _configure_navigation(self) -> None:
         self.setTabOrder(self.play_reference, self.generated)
         self.setTabOrder(self.generated, self.play_generated)
         self.setTabOrder(self.play_generated, self.stop)
@@ -339,12 +370,12 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.setTabOrder(self.reject_reference, self.needs_sample)
         self.setTabOrder(self.needs_sample, self.close_button)
 
+    def _initialize_player(self) -> None:
         player = QMediaPlayer(self)
         player.playbackStateChanged.connect(self._playback_state_changed)
         player.mediaStatusChanged.connect(self._media_status_changed)
         player.errorOccurred.connect(self._playback_error)
         self.player: QMediaPlayer = player
-        self._load_next()
 
     def _load_next(self, session: _QualitySession | None = None) -> None:
         self._stop()
@@ -399,7 +430,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         ):
             button.setVisible(False)
         QTimer.singleShot(
-            0, lambda: self.review_scroll.ensureWidgetVisible(self.status)
+            0, self, lambda: self.review_scroll.ensureWidgetVisible(self.status)
         )
 
     def _show_current_review(self, total: int) -> None:
@@ -527,7 +558,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         path = (self.session_path.parent / record["image"]).resolve()
         try:
             path.relative_to(self.session_path.parent)
-            payload = path.read_bytes()
+            payload = read_regular_bytes(path)
         except (OSError, ValueError) as error:
             self._set_portrait_message(f"Portrait unavailable: {error}")
             return
@@ -586,6 +617,9 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.needs_sample.setEnabled(enabled)
         if reason is not None:
             self.evidence_progress.setText(reason)
+        self._update_decision_accessibility()
+
+    def _update_decision_accessibility(self) -> None:
         for button, action in (
             (self.accept_button, "accept this exact reference"),
             (self.reject_reference, "reject this exact reference"),
@@ -613,6 +647,12 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
                 if len(summary) > 84:
                     summary = summary[:81].rstrip() + "..."
                 item.setText(f"{index + 1}. {heard} - {summary}")
+        if self._decision_active:
+            self._set_actions_enabled(
+                False,
+                "Saving the exact variant-local decision; playback remains available.",
+            )
+            return
         generated_tokens = {
             sample["queue_id"] for sample in self.current["generated_samples"]
         }
@@ -631,16 +671,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
             "Reject and Need another require the original; Accept requires all "
             "published generated samples too."
         )
-        for button, action in (
-            (self.accept_button, "accept this exact reference"),
-            (self.reject_reference, "reject this exact reference"),
-            (self.needs_sample, "request another sample"),
-        ):
-            button.setAccessibleDescription(
-                f"Ready to {action}"
-                if button.isEnabled()
-                else f"Unavailable: {self.evidence_progress.text()}"
-            )
+        self._update_decision_accessibility()
 
     def _play_reference(self) -> None:
         if self.current is not None:
@@ -679,18 +710,19 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
             raise ValueError("audio path is a symlink")
         path = path.resolve()
         path.relative_to(root)
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
         if hashlib.sha256(payload).hexdigest() != record["audio_sha256"]:
             raise ValueError("audio checksum changed")
         return variant_id, token, record["audio_sha256"], payload
 
     def _playback_prepared(
-        self, result: PlaybackPayload, error: Exception | None
+        self, result: PlaybackPayload | None, error: Exception | None
     ) -> None:
         if error is not None:
             self.status.setText(f"Playback blocked: {error}")
             self.stop.setEnabled(False)
             return
+        assert result is not None
         variant_id, token, digest, payload = result
         if self.current is None or self.current["variant_id"] != variant_id:
             self.status.setText("Playback cancelled: review card changed")
@@ -784,10 +816,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
             self.status.setText("Decision cancelled; review evidence is unchanged.")
             return
         self._decision_active = True
-        self._set_actions_enabled(
-            False,
-            "Saving the exact variant-local decision; playback remains available.",
-        )
+        self._update_decision_enabled()
         self.status.setText(
             "Saving the exact reference decision... Playback remains available."
         )
@@ -812,9 +841,10 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         )
 
     def _decision_finished(
-        self, result: _QualitySession, error: Exception | None
+        self, result: _QualitySession | None, error: Exception | None
     ) -> None:
         if error is None:
+            assert result is not None
             self._load_next(result)
         else:
             self.status.setText(

@@ -1,15 +1,19 @@
 import hashlib
 import json
+import os
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 import vntts.live_replay_capture as live_replay_capture
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.dialog_capture import (
     CapturedDialogFrame,
@@ -22,7 +26,7 @@ from vntts.live_replay_capture import (
     LiveReplayCaptureSession,
     capture_replay_session,
 )
-from vntts.ocr import OCRResult
+from vntts.ocr import DialogRegion, OCRRegions, OCRResult
 from vntts.settings import AppSettings
 
 
@@ -78,6 +82,68 @@ def frame(color):
 
 
 class LiveReplayCaptureTest(unittest.TestCase):
+    def test_cli_preserves_split_regions_and_ignores_ellipsis_outside_dialogue(self):
+        region = DialogRegion(0, 0.5, 1, 0.5)
+        regions = OCRRegions(
+            DialogRegion(0.1, 0.1, 0.2, 0.1),
+            DialogRegion(0.4, 0.4, 0.5, 0.4),
+        )
+        image = Image.new("RGB", (200, 100), "#202020")
+        draw = ImageDraw.Draw(image)
+        for left in (8, 14, 20):
+            draw.rectangle((left, 60, left + 1, 61), fill="white")
+        captured = CapturedDialogFrame(image, 0.0, regions)
+        self.assertTrue(detect_standalone_ellipsis_frame(image))
+        profile = SimpleNamespace(dialog_region=region, ocr_regions=regions)
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "capture"
+            result = SimpleNamespace(
+                dialogue_count=1,
+                frame_count=1,
+                boundary_review_count=0,
+                corpus=output / "corpus.json",
+                report=output / "capture-report.json",
+            )
+
+            def capture_session(_session, **kwargs):
+                frame = kwargs["capture_frame"]()
+                self.assertEqual(
+                    kwargs["recognize_frame"](frame), ("Rhiannon", "Hello there.")
+                )
+                return result
+
+            with (
+                patch.object(
+                    live_replay_capture, "load_app_settings", return_value=AppSettings()
+                ),
+                patch.object(live_replay_capture.GameProfileStore, "load") as profiles,
+                patch.object(
+                    live_replay_capture, "get_dialog_region", return_value=region
+                ),
+                patch.object(
+                    live_replay_capture, "get_ocr_regions", return_value=regions
+                ) as layout,
+                patch.object(live_replay_capture.OCRCorrectionStore, "load"),
+                patch.object(
+                    live_replay_capture, "capture_live_frame", return_value=captured
+                ) as capture,
+                patch.object(
+                    live_replay_capture,
+                    "recognize_screenshot_result",
+                    return_value=OCRResult("Rhiannon", "Hello there.", 95, "split", 1),
+                ) as recognize,
+                patch.object(
+                    live_replay_capture,
+                    "capture_replay_session",
+                    side_effect=capture_session,
+                ),
+            ):
+                profiles.return_value.get.return_value = profile
+                self.assertEqual(live_replay_capture.main([str(output)]), 0)
+                layout.assert_called_once_with(region, region, regions)
+                self.assertEqual(capture.call_args.kwargs["ocr_regions"], regions)
+                self.assertEqual(recognize.call_args.kwargs["ocr_regions"], regions)
+
     def test_capture_story_loader_uses_one_snapshot_and_keeps_optional_evidence(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -137,15 +203,195 @@ class LiveReplayCaptureTest(unittest.TestCase):
                 session.story_index_sha256, hashlib.sha256(original).hexdigest()
             )
 
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_capture_story_acquisitions_refuse_fifo_before_session_and_recover(self):
+        for phase in ("initial capture", "final hash"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                story = root / "story.jsonl"
+                payload = b"captured original story"
+                story.write_bytes(payload)
+                story.chmod(0o444)
+                mode = story.stat().st_mode
+                output = root / "capture"
+                alias = (
+                    "read_regular_bytes"
+                    if phase == "initial capture"
+                    else "sha256_file"
+                )
+                original_acquisition = getattr(live_replay_capture, alias)
+                refused = []
+
+                def checksum(candidate):
+                    self.assertEqual(Path(candidate), story)
+                    gate: RegularFileGate = {"path": story, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original_acquisition(candidate)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                def capture(session, **_kwargs):
+                    session.observe(frame("red"), "Rhiannon", "Hello there.")
+                    return session.finish()
+
+                with (
+                    patch.object(
+                        live_replay_capture,
+                        "load_app_settings",
+                        return_value=AppSettings(),
+                    ),
+                    patch.object(
+                        live_replay_capture.GameProfileStore, "load"
+                    ) as profiles,
+                    patch.object(
+                        live_replay_capture, "get_dialog_region", return_value=None
+                    ),
+                    patch.object(live_replay_capture.OCRCorrectionStore, "load"),
+                    patch.object(
+                        live_replay_capture.ChapterVoicePreloader,
+                        "load_optional",
+                        return_value=FakeStoryResolver(),
+                    ) as load_story,
+                    patch.object(
+                        live_replay_capture,
+                        "capture_replay_session",
+                        side_effect=capture,
+                    ) as run_capture,
+                    patch.object(
+                        live_replay_capture, "cli_error", return_value=1
+                    ) as cli_failure,
+                ):
+                    profiles.return_value.get.return_value = None
+                    with patch.object(live_replay_capture, alias, checksum):
+                        self.assertEqual(
+                            live_replay_capture.main(
+                                [str(output), "--story-index", str(story)]
+                            ),
+                            1,
+                        )
+                    self.assertEqual(len(refused), 1)
+                    cli_failure.assert_called_once_with(refused[0])
+                    run_capture.assert_not_called()
+                    self.assertEqual(
+                        load_story.call_count, 0 if phase == "initial capture" else 1
+                    )
+                    self.assertFalse(output.exists())
+                    self.assertEqual(story.read_bytes(), payload)
+                    self.assertEqual(story.stat().st_mode, mode)
+                    self.assertEqual(list(root.iterdir()), [story])
+                    self.assertEqual(
+                        live_replay_capture.main(
+                            [str(output), "--story-index", str(story)]
+                        ),
+                        0,
+                    )
+                    run_capture.assert_called_once()
+                document = json.loads((output / "corpus.json").read_text())
+                self.assertEqual(
+                    document["capture"]["story_index_sha256"],
+                    hashlib.sha256(payload).hexdigest(),
+                )
+                self.assertEqual(
+                    len(load_live_replay_corpus(output / "corpus.json").dialogue), 1
+                )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_capture_finish_hashes_refuse_fifo_preserve_frames_and_recover(self):
+        for role in ("story", "dialogue-frame", "observation-frame"):
+            with self.subTest(role=role), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                story = root / "story.jsonl"
+                payload = b"bound story"
+                story.write_bytes(payload)
+                session = LiveReplayCaptureSession(
+                    root / "capture",
+                    story_resolver=FakeStoryResolver(),
+                    story_index_path=story,
+                    story_index_sha256=hashlib.sha256(payload).hexdigest(),
+                )
+                session.observe(frame("red"), "Rhiannon", "Hello there.")
+                if role == "observation-frame":
+                    session.note_uncertain_observation(frame("blue"))
+                selected = (
+                    story
+                    if role == "story"
+                    else sorted(session.frames_directory.iterdir())[-1]
+                )
+                selected.chmod(0o444)
+                mode = selected.stat().st_mode
+                before = {
+                    path: path.read_bytes()
+                    for path in root.rglob("*")
+                    if path.is_file()
+                }
+                original_hash = live_replay_capture.sha256_file
+                refused = []
+
+                def checksum(candidate):
+                    if Path(candidate) != selected:
+                        return original_hash(candidate)
+                    gate: RegularFileGate = {"path": selected, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original_hash(candidate)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                with (
+                    patch.object(live_replay_capture, "sha256_file", checksum),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    session.finish()
+                self.assertEqual(len(refused), 1)
+                self.assertIs(caught.exception, refused[0])
+                self.assertFalse(session.finished)
+                self.assertEqual(
+                    {
+                        path: path.read_bytes()
+                        for path in root.rglob("*")
+                        if path.is_file()
+                    },
+                    before,
+                )
+                self.assertEqual(selected.stat().st_mode, mode)
+                self.assertEqual(
+                    list(session.directory.iterdir()), [session.frames_directory]
+                )
+                result = session.finish()
+                self.assertTrue(session.finished)
+                self.assertEqual(
+                    result.frame_count, 2 if role == "observation-frame" else 1
+                )
+                self.assertEqual(
+                    len(load_live_replay_corpus(result.corpus).dialogue), 1
+                )
+                ledger_payload = result.observation_ledger.read_bytes()
+                document = json.loads(result.corpus.read_text())
+                self.assertEqual(
+                    document["capture"]["observation_ledger"]["sha256"],
+                    hashlib.sha256(ledger_payload).hexdigest(),
+                )
+                for path, content in before.items():
+                    self.assertEqual(path.read_bytes(), content)
+
     def test_invalid_capture_limits_fail_before_capturing(self):
         invalid = (
             *(
                 dict(interval_seconds=value)
-                for value in (float("nan"), float("inf"), -1)
+                for value in (float("nan"), float("inf"), -1, 10**400)
             ),
             *(
                 dict(duration_seconds=value)
-                for value in (float("nan"), float("inf"), 0, -1)
+                for value in (float("nan"), float("inf"), 0, -1, 10**400)
             ),
             *(dict(maximum_frames=value) for value in (True, 1.5, 0)),
         )
@@ -153,16 +399,118 @@ class LiveReplayCaptureTest(unittest.TestCase):
             with self.subTest(options=options), TemporaryDirectory() as directory:
                 session = LiveReplayCaptureSession(Path(directory) / "capture")
                 capture = Mock(side_effect=AssertionError("must not capture"))
+                clock = Mock(side_effect=AssertionError("must not start clock"))
                 with self.assertRaises(LiveReplayCaptureError):
                     capture_replay_session(
                         session,
                         capture_frame=capture,
                         recognize_frame=lambda _frame: ("Ada", "Line."),
+                        clock=clock,
                         **(dict(interval_seconds=0) | options),
                     )
                 capture.assert_not_called()
+                clock.assert_not_called()
                 self.assertEqual(session.frame_count, 0)
                 self.assertFalse((session.directory / "corpus.json").exists())
+
+    def test_capture_limits_keep_bool_zero_and_large_comparison_duration(self):
+        for interval, duration in (
+            (False, True),
+            (True, 10**300),
+            (np.float32(0.25), np.int64(2)),
+            (Decimal("0.25"), Decimal("2")),
+        ):
+            with self.subTest(interval=interval), TemporaryDirectory() as directory:
+                session = LiveReplayCaptureSession(Path(directory) / "capture")
+                frames = iter((frame("red"), frame("blue")))
+                sleeps = []
+                result = capture_replay_session(
+                    session,
+                    capture_frame=lambda: next(frames),
+                    recognize_frame=lambda _frame: ("Narrator", "A line."),
+                    fingerprint_frame=lambda value: value.image.getpixel((0, 0)),
+                    interval_seconds=interval,
+                    duration_seconds=duration,
+                    maximum_frames=2,
+                    clock=lambda: 0,
+                    sleep=sleeps.append,
+                )
+                self.assertEqual(sleeps, [float(interval)])
+                self.assertEqual(result.frame_count, 2)
+                self.assertEqual(result.dialogue_count, 1)
+
+    def test_capture_normalizes_each_numeric_scalar_once(self):
+        class Once(float):
+            calls = 0
+
+            def __float__(self):
+                self.calls += 1
+                if self.calls > 1:
+                    raise AssertionError("numeric scalar converted twice")
+                return super().__float__()
+
+        with TemporaryDirectory() as directory:
+            interval, duration = Once(0.25), Once(2)
+            session = LiveReplayCaptureSession(Path(directory) / "capture")
+            frames = iter((frame("red"), frame("blue")))
+            sleeps = []
+            result = capture_replay_session(
+                session,
+                capture_frame=lambda: next(frames),
+                recognize_frame=lambda _frame: ("Narrator", "A line."),
+                fingerprint_frame=lambda value: value.image.getpixel((0, 0)),
+                interval_seconds=interval,
+                duration_seconds=duration,
+                maximum_frames=2,
+                clock=lambda: 0,
+                sleep=sleeps.append,
+            )
+            self.assertEqual((interval.calls, duration.calls), (1, 1))
+            self.assertEqual(sleeps, [0.25])
+            self.assertEqual(result.frame_count, 2)
+
+    def test_canonical_ellipsis_precedes_punctuation_and_noise_keeps_groups(self):
+        with TemporaryDirectory() as directory:
+            resolver = FakeStoryResolver()
+            ellipsis = resolver._line("story:3", "1", "Narrator", "...")
+            resolver.known[("Narrator", "...")] = ellipsis
+            resolver.by_chapter["1"].append(ellipsis)
+            session = LiveReplayCaptureSession(
+                Path(directory) / "capture", story_resolver=resolver
+            )
+            for color, character, text in (
+                ("red", "Rhiannon", "Hello there."),
+                ("green", "Narrator", "..."),
+                ("blue", "Narrator", "Unresolved noise"),
+                ("yellow", "Narrator", ". . ."),
+                ("purple", "Narrator", ".  .  ."),
+            ):
+                session.observe(frame(color), character, text)
+            result = session.finish()
+            corpus = json.loads(result.corpus.read_bytes())
+            ledger = json.loads(result.observation_ledger.read_bytes())
+            report = json.loads(result.report.read_bytes())
+            self.assertEqual(
+                [entry["status"] for entry in ledger["observations"]],
+                [
+                    "canonical",
+                    "canonical",
+                    "unresolved",
+                    "punctuation-only",
+                    "punctuation-only",
+                ],
+            )
+            self.assertEqual(
+                [item["line_id"] for item in corpus["dialogue"]],
+                ["story:1", "story:3", "capture:3"],
+            )
+            self.assertEqual(
+                [len(item["frames"]) for item in corpus["dialogue"]], [1, 1, 2]
+            )
+            self.assertEqual(report["unresolved_observation_count"], 1)
+            self.assertEqual(result.boundary_review_count, 0)
+            self.assertEqual(session.recognized_observation_count, 5)
+            self.assertEqual(len(load_live_replay_corpus(result.corpus).dialogue), 3)
 
     def test_capture_groups_prefixes_and_publishes_loadable_exact_frames(self):
         with TemporaryDirectory() as directory:
@@ -337,6 +685,35 @@ class LiveReplayCaptureTest(unittest.TestCase):
             with self.assertRaisesRegex(LiveReplayCaptureError, "already exists"):
                 session.finish()
 
+    def test_capture_validates_dialogue_and_observation_frames_before_publication(self):
+        for observation_only in (False, True):
+            for failure in ("changed", "missing", "symlink"):
+                with self.subTest(observation=observation_only, failure=failure):
+                    with TemporaryDirectory() as directory:
+                        root = Path(directory) / "capture"
+                        session = LiveReplayCaptureSession(root)
+                        session.observe(frame("red"), "Narrator", "A line.")
+                        if observation_only:
+                            session.note_uncertain_observation(frame("blue"))
+                        captured = sorted((root / "frames").iterdir())[-1]
+                        if failure == "changed":
+                            captured.write_bytes(b"changed")
+                        else:
+                            captured.unlink()
+                            if failure == "symlink":
+                                outside = Path(directory) / "outside.png"
+                                outside.write_bytes(b"outside")
+                                symlink_or_skip(captured, outside)
+                        label = "observation" if observation_only else "replay"
+                        reason = "changed" if failure == "changed" else "is unavailable"
+                        with self.assertRaisesRegex(
+                            LiveReplayCaptureError, f"Captured {label} frame {reason}"
+                        ):
+                            session.finish()
+                        self.assertFalse((root / "corpus.json").exists())
+                        self.assertFalse((root / "capture-report.json").exists())
+                        self.assertFalse((root / "observation-ledger.json").exists())
+
     def test_capture_retries_after_frames_directory_creation_failure(self):
         with TemporaryDirectory() as directory:
             requested = Path(directory) / "capture"
@@ -401,6 +778,43 @@ class LiveReplayCaptureTest(unittest.TestCase):
                 [path.name for path in (root / "frames").iterdir()],
                 ["frame-000001.png"],
             )
+
+    def test_temporary_stream_close_keeps_original_publication_failure(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "output.json"
+            primary = OSError("publication fsync failed")
+            streams = []
+
+            def stream_factory(*args, **kwargs):
+                stream = NamedTemporaryFile(*args, **kwargs)
+                streams.append(stream)
+                original_close = stream.close
+
+                def close_then_fail():
+                    original_close()
+                    raise OSError("publication close failed")
+
+                stream.close = close_then_fail
+                return stream
+
+            with (
+                patch(
+                    "vntts.live_replay_capture.tempfile.NamedTemporaryFile",
+                    side_effect=stream_factory,
+                ),
+                patch("vntts.live_replay_capture.os.fsync", side_effect=primary),
+                self.assertRaises(LiveReplayCaptureError) as caught,
+            ):
+                live_replay_capture._write_payload_no_replace(output, b"{}")
+            self.assertIs(caught.exception.__cause__, primary)
+            self.assertEqual(
+                primary.__notes__,
+                [
+                    "Publication temporary stream cleanup failed: publication close failed"
+                ],
+            )
+            self.assertTrue(all(stream.file.closed for stream in streams))
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_capture_keeps_frame_when_temp_cleanup_fails(self):
         with TemporaryDirectory() as directory:

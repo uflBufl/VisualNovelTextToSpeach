@@ -6,8 +6,9 @@ voice manifest, source-reference decision, workspace, review or game pack.
 
 ## Pinned runtime
 
-The optional `speaker-identity` dependency installs SpeechBrain 1.0.3. The
-diagnostic model is
+The optional `speaker-identity` dependency installs SpeechBrain 1.1.1. Managed
+installation metadata retains the historical SpeechBrain 1.0.3 provenance for
+the pinned snapshot. The diagnostic model is
 [`speechbrain/spkrec-ecapa-voxceleb`](https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb)
 at immutable revision
 `0f99f2d0ebe89ac095bcc5903c4dd8f72b367286`. Both the model snapshot and

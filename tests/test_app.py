@@ -10,6 +10,7 @@ from unittest.mock import ANY, Mock, call, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from durable_file import atomic_write_bytes  # noqa: E402
 from PySide6.QtCore import (  # noqa: E402
     QCoreApplication,
     QEvent,
@@ -18,7 +19,7 @@ from PySide6.QtCore import (  # noqa: E402
     QThreadPool,
     QTimer,
 )
-from PySide6.QtGui import QFont  # noqa: E402
+from PySide6.QtGui import QAction, QFont  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
@@ -27,11 +28,14 @@ from PySide6.QtWidgets import (  # noqa: E402
     QMessageBox,
     QSizePolicy,
 )
+from shiboken6 import isValid  # noqa: E402
 
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.app import (  # noqa: E402
     SettingsDialog,
     TrayApplication,
     build_story_match_recovery_prompt,
+    build_unknown_speaker_prompt,
     create_application_icon,
     main,
 )
@@ -41,6 +45,7 @@ from vntts.controller import AppController, LiveSequenceStatus  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.generated_audio import AudioRouteTrace  # noqa: E402
 from vntts.ocr import DialogRegion  # noqa: E402
+from vntts.ocr_corrections import OCRCorrectionStore  # noqa: E402
 from vntts.onboarding import DiagnosticResult  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivationResult  # noqa: E402
 from vntts.pregeneration_pack import OfflinePackResult  # noqa: E402
@@ -301,6 +306,29 @@ class TrayApplicationTest(unittest.TestCase):
                 delete_dialog(tray_application.dashboard)
                 delete_dialog(tray_application.compact_controller)
 
+    def test_tray_menu_and_commands_follow_their_native_owner_lifetimes(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        menu = tray.menu
+        actions = [value for value in vars(tray).values() if isinstance(value, QAction)]
+        self.assertTrue(actions)
+
+        tray.shutdown()
+        tray.shutdown()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.assertFalse(isValid(tray.tray))
+        self.assertFalse(isValid(menu))
+        self.assertTrue(all(isValid(action) for action in actions))
+
+        tray.deleteLater()
+        QCoreApplication.sendPostedEvents(tray, QEvent.Type.DeferredDelete)
+        self.assertTrue(all(not isValid(action) for action in actions))
+        delete_dialog(tray.dashboard)
+        delete_dialog(tray.compact_controller)
+
     def test_tray_shell_exposes_runtime_controls(self):
         controller = Mock()
         controller_factory = Mock(return_value=controller)
@@ -543,6 +571,41 @@ class TrayApplicationTest(unittest.TestCase):
         notification.assert_called_once()
         full_controls.assert_called_once_with()
         tray_application.shutdown()
+
+    def test_external_worker_exit_codes_are_validated_before_qt_startup(self):
+        workers = (
+            ("bootstrap", ["--game-content-import-worker", "reverse1999"]),
+            ("source_audio_duration", ["--source-audio-publisher-worker", "duration"]),
+            (
+                "source_audio_semantics",
+                ["--source-audio-publisher-worker", "semantics"],
+            ),
+            ("live_sequence", ["--prepared-sequence-worker"]),
+        )
+        for module_name, arguments in workers:
+            package = ModuleType("r1999extractor")
+            package.__path__ = []
+            module = ModuleType(f"r1999extractor.{module_name}")
+            worker = Mock()
+            module.main = worker
+            with (
+                patch.dict(
+                    "sys.modules",
+                    {"r1999extractor": package, module.__name__: module},
+                ),
+                patch("vntts.app.QApplication") as qt_application,
+            ):
+                for value in (None, True, "0", object()):
+                    with self.subTest(module=module_name, value=value):
+                        worker.return_value = value
+                        with self.assertRaisesRegex(TypeError, "exit code"):
+                            main(arguments)
+                for code in (0, 1, 7, 127):
+                    with self.subTest(module=module_name, code=code):
+                        worker.return_value = code
+                        self.assertEqual(main(arguments), code)
+                worker.assert_called_with([])
+                qt_application.assert_not_called()
 
     def test_packaged_content_import_worker_runs_without_creating_qt(self):
         package = ModuleType("r1999extractor")
@@ -1855,6 +1918,43 @@ class TrayApplicationTest(unittest.TestCase):
         controller.toggle_live.assert_not_called()
         tray_application.shutdown()
 
+    def test_stop_submission_failure_keeps_completion_status_and_allows_retry(self):
+        controller = Mock(is_ready=True, is_live_running=True)
+        controller.live_reader.runtime_control_snapshot.return_value = {}
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        self.addCleanup(tray.shutdown)
+        tray.set_ready(True)
+        pool = ManualThreadPool()
+        tray.live_stop_runner.thread_pool = pool
+        controller.reset_mock()
+        with patch.object(pool, "start", side_effect=RuntimeError("pool unavailable")):
+            tray._request_stop_reading()
+        self.application.processEvents()
+
+        controller.live_reader.stop.assert_called_once_with()
+        controller.emergency_stop.assert_not_called()
+        self.assertFalse(tray.live_stop_runner.active)
+        self.assertIsNone(tray._live_stop_generation)
+        self.assertIsNone(tray._live_stop_continuation)
+        self.assertIn(
+            "Unable to stop live capture: pool unavailable",
+            tray.dashboard.status.text(),
+        )
+        self.assertTrue(tray.dashboard.live_button.isEnabled())
+
+        tray._request_stop_reading()
+        self.assertTrue(tray.live_stop_runner.active)
+        self.assertEqual(tray.dashboard.status.text(), "Stopping reading and speech...")
+        pool.run_next()
+        self.application.processEvents()
+        controller.emergency_stop.assert_called_once_with()
+        self.assertFalse(tray.live_stop_runner.active)
+        self.assertEqual(tray.dashboard.status.text(), "Reading and speech stopped")
+
     def test_stop_disables_all_start_stop_controls_until_reader_quiesces(self):
         release = Event()
         controller = Mock(is_ready=True, is_live_running=True)
@@ -2005,9 +2105,31 @@ class TrayApplicationTest(unittest.TestCase):
         controller.toggle_live.assert_not_called()
         prompt.assert_called_once_with("Hotelier")
         self.assertEqual(tray_application.pending_unknown_speaker, "Hotelier")
-        self.assertEqual(tray_application._queued_unknown_speakers, [])
+        self.assertFalse(tray_application._queued_unknown_speakers)
         self.assertTrue(tray_application.resume_live_after_unknown_mapping)
         tray_application.shutdown()
+
+    def test_queued_unknown_speaker_prompt_cannot_reopen_during_shutdown(self):
+        for resolved in (False, True):
+            with self.subTest(resolved=resolved):
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=Mock(is_live_running=False)),
+                )
+                if resolved:
+                    tray._queued_unknown_speakers.append("Hotelier")
+                tray._finish_unknown_speaker_mapping(
+                    "Selone", resolved=resolved, resume_live=False
+                )
+                tray.shutdown()
+                with patch(
+                    "vntts.app.build_unknown_speaker_prompt",
+                    wraps=build_unknown_speaker_prompt,
+                ) as build_prompt:
+                    self.application.processEvents()
+                build_prompt.assert_not_called()
+                self.assertIsNone(tray.unknown_speaker_prompt)
 
     def test_duplicate_unknown_speaker_is_ignored_while_mapping_is_open(self):
         controller = Mock(is_live_running=False)
@@ -3474,12 +3596,6 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
 
     def test_support_export_finishes_in_background_after_shutdown(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         pool = ManualThreadPool()
         tray_application = TrayApplication(
@@ -3571,6 +3687,54 @@ class TrayApplicationTest(unittest.TestCase):
                 Path(open_url.call_args.args[0].toLocalFile()), settings_path.parent
             )
             tray.shutdown()
+
+    def test_settings_shortcut_errors_identify_each_empty_recorder(self):
+        dialog = SettingsDialog(AppSettings())
+        dialog.live_hotkey.clear()
+
+        errors = dialog.validation_errors()
+        self.assertEqual(
+            [(widget, message) for _, widget, message in errors],
+            [
+                (
+                    dialog.live_hotkey,
+                    "Keyboard shortcuts: Live reading: press a shortcut.",
+                )
+            ],
+        )
+        dialog.read_hotkey.clear()
+        self.assertEqual(
+            [widget for _, widget, _ in dialog.validation_errors()],
+            [dialog.read_hotkey, dialog.live_hotkey],
+        )
+        delete_dialog(dialog)
+
+    def test_incomplete_shortcuts_do_not_block_settings_previews(self):
+        original = AppSettings()
+        dialog = SettingsDialog(original)
+        dialog.live_hotkey.clear()
+        dialog.output_volume.setValue(37)
+        errors = dialog.update_validation_summary()
+        self.assertEqual([widget for _, widget, _ in errors], [dialog.live_hotkey])
+        self.assertIn("Live reading", dialog.validation_summary.text())
+        with patch("vntts.app.GameNarratorDialog") as picker:
+            picker.return_value.exec.return_value = QDialog.DialogCode.Rejected
+            dialog.choose_narrator()
+            draft = picker.call_args.args[0]
+            self.assertEqual(draft.output_volume_percent, 37)
+            self.assertEqual(draft.live_hotkey, original.live_hotkey)
+        with self.assertRaisesRegex(ValueError, "press a shortcut"):
+            dialog.settings()
+        with TemporaryDirectory() as directory:
+            dialog.game_pack.setText(str(Path(directory) / "missing-pack.json"))
+            errors = dialog.update_validation_summary()
+            self.assertIn(dialog.game_pack, [widget for _, widget, _ in errors])
+        dialog.game_pack.clear()
+        dialog.read_hotkey.set_hotkey("<ctrl>+j")
+        dialog.live_hotkey.set_hotkey("<ctrl>+k")
+        self.assertEqual(dialog.settings().read_hotkey, "<ctrl>+j")
+        self.assertEqual(dialog.settings().live_hotkey, "<ctrl>+k")
+        delete_dialog(dialog)
 
     def test_settings_reject_duplicate_recorded_hotkeys(self):
         dialog = SettingsDialog(AppSettings())
@@ -3832,7 +3996,8 @@ class TrayApplicationTest(unittest.TestCase):
                 return_value={"screen_capture": True, "accessibility": True},
             ),
             patch(
-                "vntts.app.QTimer.singleShot", side_effect=lambda _delay, call: call()
+                "vntts.app.QTimer.singleShot",
+                side_effect=lambda _delay, *args: args[-1](),
             ),
         ):
             tray_application.refresh_diagnostics()
@@ -3869,7 +4034,8 @@ class TrayApplicationTest(unittest.TestCase):
                 return_value={"screen_capture": True, "accessibility": True},
             ),
             patch(
-                "vntts.app.QTimer.singleShot", side_effect=lambda _delay, call: call()
+                "vntts.app.QTimer.singleShot",
+                side_effect=lambda _delay, *args: args[-1](),
             ),
         ):
             tray_application.refresh_diagnostics()
@@ -3884,12 +4050,6 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
 
     def test_diagnostic_refresh_keeps_latest_result_and_drops_after_close(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         pool = ManualThreadPool()
         controller = Mock()
@@ -3938,12 +4098,6 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
 
     def test_closed_diagnostics_dialog_drops_its_pending_result(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         pool = ManualThreadPool()
         controller = AppController(AppSettings())
@@ -3969,7 +4123,8 @@ class TrayApplicationTest(unittest.TestCase):
                 return_value={"screen_capture": True, "accessibility": True},
             ),
             patch(
-                "vntts.app.QTimer.singleShot", side_effect=lambda _delay, call: call()
+                "vntts.app.QTimer.singleShot",
+                side_effect=lambda _delay, *args: args[-1](),
             ),
             patch.object(dialog, "set_snapshot") as set_snapshot,
         ):
@@ -3990,12 +4145,6 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
 
     def test_diagnostics_retry_invalidates_worker_before_deferred_launch(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         pool = ManualThreadPool()
         controller = Mock()
@@ -4026,7 +4175,7 @@ class TrayApplicationTest(unittest.TestCase):
                 ),
                 patch(
                     "vntts.app.QTimer.singleShot",
-                    side_effect=lambda _delay, callback: pending.append(callback),
+                    side_effect=lambda _delay, *args: pending.append(args[-1]),
                 ),
             ):
                 dialog.request_refresh()
@@ -4074,7 +4223,7 @@ class TrayApplicationTest(unittest.TestCase):
             ),
             patch(
                 "vntts.app.QTimer.singleShot",
-                side_effect=lambda _delay, callback: callbacks.append(callback),
+                side_effect=lambda _delay, *args: callbacks.append(args[-1]),
             ),
         ):
             tray_application.refresh_diagnostics()
@@ -4103,7 +4252,7 @@ class TrayApplicationTest(unittest.TestCase):
             ),
             patch(
                 "vntts.app.QTimer.singleShot",
-                side_effect=lambda _delay, callback: pending.append(callback),
+                side_effect=lambda _delay, *args: pending.append(args[-1]),
             ),
         ):
             dialog.request_refresh()
@@ -4201,7 +4350,8 @@ class TrayApplicationTest(unittest.TestCase):
                     return_value={"screen_capture": True, "accessibility": True},
                 ),
                 patch(
-                    "vntts.app.QTimer.singleShot", side_effect=lambda _ms, call: call()
+                    "vntts.app.QTimer.singleShot",
+                    side_effect=lambda _ms, *args: args[-1](),
                 ),
             ):
                 dialog.request_refresh()
@@ -4427,6 +4577,29 @@ class TrayApplicationTest(unittest.TestCase):
         finally:
             tray.shutdown()
 
+    def test_hotkey_start_preserves_fatal_start_error_when_cleanup_is_fatal(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        candidate = Mock()
+        start_error = KeyboardInterrupt()
+        candidate.start.side_effect = start_error
+        candidate.stop.side_effect = SystemExit("cleanup interrupted")
+        try:
+            with (
+                patch("vntts.app.sys.platform", "win32"),
+                patch("vntts.app.keyboard.GlobalHotKeys", return_value=candidate),
+                self.assertRaises(KeyboardInterrupt) as raised,
+            ):
+                tray.start_hotkeys()
+            self.assertIs(raised.exception, start_error)
+            self.assertIn("Hotkey listener cleanup failed", start_error.__notes__[0])
+            candidate.stop.assert_called_once_with()
+        finally:
+            tray.shutdown()
+
     def test_hotkey_registration_is_deferred_on_the_qt_thread(self):
         controller = Mock()
         controller.start.return_value = True
@@ -4444,6 +4617,7 @@ class TrayApplicationTest(unittest.TestCase):
 
         single_shot.assert_called_once_with(
             250,
+            tray_application,
             tray_application._start_hotkeys_safely,
         )
         tray_application.shutdown()
@@ -4587,7 +4761,7 @@ class TrayApplicationTest(unittest.TestCase):
             ),
             patch(
                 "vntts.app.QTimer.singleShot",
-                side_effect=lambda _delay, callback: callback(),
+                side_effect=lambda _delay, *args: args[-1](),
             ),
         ):
             tray_application.calibrate()
@@ -4628,7 +4802,7 @@ class TrayApplicationTest(unittest.TestCase):
 
                 tray.calibrate()
                 schedule_capture.assert_called_once_with(
-                    200, tray._start_calibration_capture
+                    200, tray, tray._start_calibration_capture
                 )
         finally:
             tray.shutdown()
@@ -4726,6 +4900,36 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(dialog.isVisible())
         tray.shutdown()
 
+    def test_diagnostics_region_submission_failure_restores_calibration_button(self):
+        controller = Mock(is_ready=True, is_live_running=True)
+        controller.get_latest_diagnostic.return_value = None
+        controller.toggle_live.side_effect = lambda: False
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        self.addCleanup(tray.shutdown)
+        tray.set_ready(True)
+        tray.open_diagnostics()
+        dialog = tray.diagnostics_dialog
+        pool = ManualThreadPool()
+        tray.live_stop_runner.thread_pool = pool
+        with (
+            patch.object(pool, "start", side_effect=RuntimeError("pool unavailable")),
+            patch.object(tray, "_capture_calibration_background") as capture,
+        ):
+            dialog.calibrate_button.click()
+            self.application.processEvents()
+        capture.assert_not_called()
+        controller.live_reader.wait.assert_not_called()
+        self.assertFalse(tray.live_stop_runner.active)
+        self.assertIsNone(tray._live_stop_generation)
+        self.assertTrue(dialog.calibrate_button.isEnabled())
+        self.assertEqual(dialog.calibrate_button.text(), "Change capture region...")
+        self.assertIn("pool unavailable", dialog.warning.text())
+        self.assertIn("pool unavailable", tray.dashboard.status.text())
+
     def test_diagnostics_region_stop_timeout_allows_retry(self):
         controller = Mock(is_live_running=True)
         controller.get_latest_diagnostic.return_value = None
@@ -4774,7 +4978,7 @@ class TrayApplicationTest(unittest.TestCase):
             ),
             patch(
                 "vntts.app.QTimer.singleShot",
-                side_effect=lambda _delay, callback: callback(),
+                side_effect=lambda _delay, *args: args[-1](),
             ),
             patch.object(dialog, "request_refresh") as refresh,
         ):
@@ -5464,6 +5668,76 @@ class TrayApplicationTest(unittest.TestCase):
                     )
             self.assertEqual(path.read_bytes(), original)
 
+    def test_settings_replacement_while_saving_requires_reload_and_preserves_foreign_preferences(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "settings.json"
+            original = AppSettings()
+            original.save(path)
+            foreign_settings = original.updated(
+                game_window_title="Foreign game", output_volume_percent=42
+            )
+            replacement = root / "external-settings.json"
+            foreign_settings.save(replacement)
+            foreign = replacement.read_bytes()
+            with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(path)}):
+                tray = TrayApplication(
+                    self.application,
+                    original,
+                    controller_factory=Mock(return_value=Mock()),
+                    profile_store=GameProfileStore(root / "profiles.json"),
+                    correction_store=OCRCorrectionStore(root / "ocr.json"),
+                )
+                self.addCleanup(tray.shutdown)
+                revision, last_saved = (
+                    tray._settings_revision,
+                    tray._last_saved_settings,
+                )
+
+                def replace_after_write(destination, payload):
+                    result = atomic_write_bytes(destination, payload)
+                    if Path(destination) == path:
+                        replacement.replace(path)
+                    return result
+
+                with (
+                    patch(
+                        "vntts.versioned_json.atomic_write_bytes",
+                        side_effect=replace_after_write,
+                    ) as write,
+                    self.assertRaisesRegex(OSError, "changed while saving"),
+                ):
+                    tray._save_settings_candidate(
+                        original.updated(compact_controls=True)
+                    )
+                write.assert_called_once()
+                self.assertEqual(tray.settings, original)
+                self.assertEqual(tray._settings_revision, revision)
+                self.assertIs(tray._last_saved_settings, last_saved)
+                self.assertEqual(path.read_bytes(), foreign)
+                with self.assertRaisesRegex(OSError, "changed on disk"):
+                    tray._save_settings_candidate(
+                        original.updated(compact_controls=True)
+                    )
+                self.assertEqual(path.read_bytes(), foreign)
+                tray.shutdown()
+
+                reloaded = TrayApplication(
+                    self.application,
+                    load_app_settings(path, environment={}),
+                    controller_factory=Mock(return_value=Mock()),
+                    profile_store=GameProfileStore(root / "profiles.json"),
+                    correction_store=OCRCorrectionStore(root / "ocr.json"),
+                )
+                self.addCleanup(reloaded.shutdown)
+                recovered = foreign_settings.updated(compact_controls=True)
+                reloaded._save_settings_candidate(recovered)
+                self.assertEqual(reloaded._last_saved_settings, recovered)
+                self.assertEqual(load_app_settings(path, environment={}), recovered)
+                reloaded.shutdown()
+
     def test_second_application_cannot_replace_newer_settings(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
@@ -5649,8 +5923,9 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(tray_application.dashboard.isVisible())
         self.assertFalse(tray_application.compact_controller.isVisible())
         self.assertEqual(single_shot.call_args.args[0], 0)
+        self.assertIs(single_shot.call_args.args[1], tray_application)
         self.assertEqual(
-            single_shot.call_args.args[1], tray_application._load_initial_library
+            single_shot.call_args.args[2], tray_application._load_initial_library
         )
         tray_application.shutdown()
 

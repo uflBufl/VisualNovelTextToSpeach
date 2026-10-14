@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from vntts.authoring.cli_workspace import print_workspace_result
@@ -25,6 +24,7 @@ from vntts.authoring.reviewed_waveform_publication import (
     create_reviewed_waveform_publication_workspace,
 )
 from vntts.authoring.workbench import default_workspaces_root
+from vntts.cli import print_json
 
 COMMANDS = frozenset(
     {
@@ -158,14 +158,7 @@ def handle(arguments: argparse.Namespace) -> int:
             arguments.voice_character,
             arguments.output_directory,
         )
-        print(
-            json.dumps(
-                composite_result.to_dict(),
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        print_json(composite_result.to_dict(), ensure_ascii=False)
         return 0
     if arguments.command == "carry-failed-controls":
         carry_result = carry_failed_controls(
@@ -173,12 +166,12 @@ def handle(arguments: argparse.Namespace) -> int:
             arguments.target_workspace,
             arguments.queue_ids,
         )
-        print(json.dumps(carry_result.to_dict(), indent=2, sort_keys=True))
+        print_json(carry_result.to_dict())
         return 0
     if arguments.command == "failed-prompt-hypothesis-selection":
         hypothesis_result = publish_failed_prompt_hypothesis_selection(
             arguments.plan, arguments.session, arguments.output
         )
-        print(json.dumps(hypothesis_result.to_dict(), indent=2, sort_keys=True))
+        print_json(hypothesis_result.to_dict())
         return 0
     raise AssertionError(f"Unhandled workspace-transition command: {arguments.command}")

@@ -1,15 +1,19 @@
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import unittest
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Timer
-from unittest.mock import Mock, call, patch
-from zipfile import ZipFile
+from unittest.mock import MagicMock, Mock, call, patch
+from zipfile import BadZipFile, ZipFile
 
+from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts import game_audio_decoder as decoder
 
@@ -26,6 +30,158 @@ class GameAudioDecoderTest(unittest.TestCase):
         self.directory = TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_runtime_and_licence_zip_refuse_fifo_and_recover(self):
+        for role in ("runtime", "licences"):
+            with self.subTest(role=role), TemporaryDirectory() as directory:
+                root = Path(directory)
+                destination = root / "managed"
+                source = root / "host-decoder"
+                source.write_bytes(b"host")
+                gate: RegularFileGate = {"path": None, "armed": False}
+                opened = decoder.open_regular_binary
+
+                @contextmanager
+                def admitted(path):
+                    if path == gate["path"] and gate["armed"]:
+                        with swap_at_acquisition(self, gate):
+                            with self.assertRaisesRegex(
+                                OSError, "not a regular file"
+                            ) as caught:
+                                with opened(path) as stream:
+                                    yield stream
+                        raise caught.exception
+                    with opened(path) as stream:
+                        yield stream
+
+                def download(_url, _digest, path, *_args):
+                    name = (
+                        "vgmstream-cli"
+                        if role == "runtime"
+                        else f"vgmstream-{decoder.VERSION}/COPYING"
+                    )
+                    path.write_bytes(archive_bytes(name, b"member"))
+                    gate["path"] = path
+                    gate["armed"] = True
+
+                def run():
+                    if role == "runtime":
+                        return decoder._install_managed_decoder(
+                            destination / "vgmstream-cli",
+                            "runtime.zip",
+                            "digest",
+                            lambda _message: None,
+                            None,
+                        )
+                    return decoder.stage_game_decoder(destination)
+
+                with (
+                    patch.object(decoder, "_download", side_effect=download),
+                    patch.object(decoder, "open_regular_binary", admitted),
+                    patch.object(decoder, "probe_game_decoder") as probe,
+                    patch.object(decoder, "ensure_game_decoder", return_value=source),
+                    patch.object(decoder.sys, "platform", "linux"),
+                ):
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    with self.assertRaisesRegex(OSError, "not a regular file"):
+                        run()
+                    probe.assert_not_called()
+                    self.assertFalse((destination / "verified.json").exists())
+                    self.assertFalse((destination / "licenses").exists())
+                    if role == "runtime":
+                        self.assertFalse(destination.exists())
+                    else:
+                        self.assertEqual(
+                            (destination / source.name).read_bytes(), b"host"
+                        )
+                    gate["armed"] = False
+
+                    def retry_download(*args):
+                        download(*args)
+                        gate["armed"] = False
+
+                    with patch.object(decoder, "_download", side_effect=retry_download):
+                        run()
+                    member = destination / (
+                        "vgmstream-cli" if role == "runtime" else "licenses/COPYING"
+                    )
+                    self.assertEqual(member.read_bytes(), b"member")
+
+    def test_zip_consumers_keep_source_owned_through_invalid_and_valid_decode(self):
+        for role in ("runtime", "licences"):
+            for valid in (False, True):
+                with (
+                    self.subTest(role=role, valid=valid),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    destination = root / "managed"
+                    source = root / "host-decoder"
+                    source.write_bytes(b"host")
+                    streams = []
+                    opened, zip_file = decoder.open_regular_binary, decoder.ZipFile
+
+                    @contextmanager
+                    def admitted(path):
+                        with opened(path) as stream:
+                            if path.name.endswith(".zip"):
+                                streams.append(stream)
+                            yield stream
+
+                    def decoded(stream):
+                        self.assertIs(stream, streams[-1])
+                        self.assertFalse(stream.closed)
+                        return zip_file(stream)
+
+                    def download(_url, _digest, path, *_args):
+                        name = (
+                            "vgmstream-cli"
+                            if role == "runtime"
+                            else f"vgmstream-{decoder.VERSION}/COPYING"
+                        )
+                        path.write_bytes(
+                            archive_bytes(name, b"member") if valid else b"invalid"
+                        )
+
+                    def run():
+                        if role == "runtime":
+                            return decoder._install_managed_decoder(
+                                destination / "vgmstream-cli",
+                                "runtime.zip",
+                                "digest",
+                                lambda _message: None,
+                                None,
+                            )
+                        return decoder.stage_game_decoder(destination)
+
+                    with (
+                        patch.object(decoder, "open_regular_binary", admitted),
+                        patch.object(decoder, "ZipFile", side_effect=decoded),
+                        patch.object(decoder, "_download", side_effect=download),
+                        patch.object(decoder, "probe_game_decoder"),
+                        patch.object(
+                            decoder, "ensure_game_decoder", return_value=source
+                        ),
+                        patch.object(decoder.sys, "platform", "linux"),
+                    ):
+                        if valid:
+                            run()
+                            member = destination / (
+                                "vgmstream-cli"
+                                if role == "runtime"
+                                else "licenses/COPYING"
+                            )
+                            self.assertEqual(member.read_bytes(), b"member")
+                        else:
+                            with self.assertRaises(BadZipFile):
+                                run()
+                            self.assertFalse((destination / "verified.json").exists())
+                            self.assertFalse((destination / "licenses").exists())
+                    self.assertEqual(len(streams), 1)
+                    self.assertTrue(streams[0].closed)
 
     def test_download_verified_cache_and_corruption_repair(self):
         payload = archive_bytes()
@@ -98,15 +254,284 @@ class GameAudioDecoderTest(unittest.TestCase):
         download.assert_not_called()
         run.assert_not_called()
 
+    def test_precancelled_download_does_not_open_or_truncate(self):
+        output = self.root / "archive.zip"
+        output.write_bytes(b"keep existing file")
+        cancellation = Event()
+        cancellation.set()
+        with patch.object(
+            decoder, "urlopen", return_value=io.BytesIO(b"archive")
+        ) as opener:
+            with self.assertRaises(decoder.DecoderSetupCancelled):
+                decoder._download(
+                    "https://example.invalid/decoder",
+                    "0" * 64,
+                    output,
+                    Mock(),
+                    cancellation,
+                )
+        opener.assert_not_called()
+        self.assertEqual(output.read_bytes(), b"keep existing file")
+
+    def test_cancellation_after_native_probe_does_not_publish(self):
+        payload = archive_bytes()
+        cancellation = Event()
+        with (
+            patch.object(decoder, "find_game_decoder", return_value=None),
+            patch.object(decoder, "get_bundle_root", return_value=None),
+            patch.object(decoder.sys, "platform", "linux"),
+            patch.object(decoder.platform, "machine", return_value="x86_64"),
+            patch.dict(
+                decoder.ARCHIVES,
+                linux=("fixture.zip", hashlib.sha256(payload).hexdigest()),
+            ),
+            patch.object(decoder, "urlopen", return_value=io.BytesIO(payload)),
+            patch.object(
+                decoder,
+                "probe_game_decoder",
+                side_effect=lambda *_args: cancellation.set(),
+            ),
+            self.assertRaises(decoder.DecoderSetupCancelled),
+        ):
+            decoder.ensure_game_decoder(
+                cancellation=cancellation, storage_root=self.root
+            )
+        self.assertFalse((self.root / "r2117-linux").exists())
+        self.assertFalse(list(self.root.glob("download-*")))
+
+    def test_native_probe_rejects_malformed_wav_through_domain_error(self):
+        for payload in (b"", b"not a WAV file"):
+            with self.subTest(payload=payload):
+
+                def write_invalid_output(arguments, *_args, **_kwargs):
+                    Path(arguments[3]).write_bytes(payload)
+
+                with patch.object(decoder, "_run", side_effect=write_invalid_output):
+                    with self.assertRaisesRegex(
+                        decoder.DecoderSetupError, "audio integrity"
+                    ):
+                        decoder.probe_game_decoder("decoder")
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_native_probe_refuses_output_swapped_to_fifo(self):
+        gate: RegularFileGate = {"path": self.root / "output.wav", "armed": False}
+
+        def write_output(arguments, *_args, **_kwargs):
+            path = Path(arguments[3])
+            path.write_bytes(b"decoder output")
+            gate.update(path=path, armed=True)
+
+        with (
+            patch.object(
+                decoder, "temporary_directory", return_value=nullcontext(str(self.root))
+            ),
+            patch.object(decoder, "_run", side_effect=write_output),
+            swap_at_acquisition(self, gate),
+            self.assertRaisesRegex(OSError, "regular file"),
+        ):
+            decoder.probe_game_decoder("decoder")
+
+    def test_native_probe_rejects_incomplete_declared_frame_count(self):
+        output = io.BytesIO()
+        pcm = b"\x34\x12" * 240
+        with decoder.wave.open(output, "wb") as wav:
+            wav.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
+            wav.writeframes(pcm)
+        for frames in (240, 241, 242, 2**30):
+            with self.subTest(declared_frames=frames):
+                payload = bytearray(output.getvalue())
+                payload[40:44] = (frames * 2).to_bytes(4, "little")
+
+                def write_output(arguments, *_args, **_kwargs):
+                    Path(arguments[3]).write_bytes(payload)
+
+                with patch.object(decoder, "_run", side_effect=write_output):
+                    if frames == 240:
+                        self.assertEqual(
+                            decoder.probe_game_decoder("decoder"), "decoder"
+                        )
+                    else:
+                        with self.assertRaisesRegex(
+                            decoder.DecoderSetupError, "audio integrity"
+                        ):
+                            decoder.probe_game_decoder("decoder")
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_cached_binary_fifo_swap_is_rejected_and_valid_cache_recovers(self):
+        executable = self.root / "vgmstream-cli"
+        payload = b"verified decoder"
+        executable.write_bytes(payload)
+        (self.root / "verified.json").write_text(
+            json.dumps({executable.name: hashlib.sha256(payload).hexdigest()})
+        )
+        native_open, native_path_open = os.open, Path.open
+        descriptors = []
+
+        def swap_and_open(candidate, flags, mode=0o777, *, dir_fd=None):
+            if Path(candidate) == executable:
+                self.assertTrue(flags & os.O_NONBLOCK)
+                executable.unlink()
+                os.mkfifo(executable)
+            descriptor = native_open(candidate, flags, mode, dir_fd=dir_fd)
+            if Path(candidate) == executable:
+                descriptors.append(descriptor)
+            return descriptor
+
+        def reject_plain_binary_open(candidate, *args, **kwargs):
+            if candidate == executable:
+                self.fail("cached decoder hashing must not use blocking Path.open")
+            return native_path_open(candidate, *args, **kwargs)
+
+        with (
+            patch("vntts.path_safety.os.open", side_effect=swap_and_open),
+            patch.object(Path, "open", reject_plain_binary_open),
+            patch.object(decoder, "probe_game_decoder") as probe,
+        ):
+            self.assertFalse(decoder._probe_cached_decoder(executable, None))
+        probe.assert_not_called()
+        self.assertEqual(len(descriptors), 1)
+        with self.assertRaises(OSError):
+            os.fstat(descriptors[0])
+        executable.unlink()
+        executable.write_bytes(payload)
+        with patch.object(decoder, "probe_game_decoder") as probe:
+            self.assertTrue(decoder._probe_cached_decoder(executable, None))
+        probe.assert_called_once_with(executable, None)
+
+    @unittest.skipIf(os.name == "nt", "POSIX process groups require POSIX")
+    def test_failed_parent_still_stops_its_real_child_group(self):
+        child_pid_path = self.root / "child.pid"
+        code = (
+            "import subprocess, sys; from pathlib import Path; "
+            "child=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+            f"Path({str(child_pid_path)!r}).write_text(str(child.pid)); sys.exit(1)"
+        )
+        started = []
+        native_start = decoder._start_decoder_process
+
+        def start(command, output):
+            process = native_start(command, output)
+            started.append(process)
+            return process
+
+        try:
+            with (
+                patch.object(decoder, "_start_decoder_process", side_effect=start),
+                patch.object(decoder.os, "killpg", wraps=os.killpg) as killpg,
+                self.assertRaises(decoder.DecoderSetupError),
+            ):
+                decoder._run([sys.executable, "-c", code], timeout=5)
+            self.assertEqual(len(started), 1)
+            self.assertEqual(started[0].returncode, 1)
+            self.assertEqual(
+                killpg.call_args_list,
+                [
+                    call(started[0].pid, decoder.signal.SIGTERM),
+                    call(started[0].pid, decoder.signal.SIGKILL),
+                ],
+            )
+        finally:
+            if child_pid_path.exists():
+                try:
+                    os.kill(int(child_pid_path.read_text()), decoder.signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def test_reaped_success_or_windows_process_does_not_signal_a_group(self):
+        for system, returncode in (("posix", 0), ("nt", 0), ("nt", 1)):
+            with self.subTest(system=system, returncode=returncode):
+                process = Mock()
+                process.poll.return_value = returncode
+                with (
+                    patch.object(decoder.os, "name", system),
+                    patch.object(decoder.os, "killpg", create=True) as killpg,
+                    patch.object(decoder, "terminate_process") as terminate,
+                ):
+                    decoder._stop_decoder_process(process)
+                killpg.assert_not_called()
+                terminate.assert_not_called()
+                process.wait.assert_not_called()
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_public_staging_refuses_fifo_preserves_destination_and_recovers(self):
+        for existing in (False, True):
+            with self.subTest(existing=existing), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                source = root / "system-tool"
+                source.write_bytes(b"tool")
+                source.chmod(0o555)
+                destination = root / "staging"
+                target = destination / source.name
+                if existing:
+                    destination.mkdir()
+                    target.write_bytes(b"previous tool")
+                before = tree_hashes(root)
+                original = decoder.copy_regular_file
+                refused = []
+
+                def copy(path, temporary):
+                    gate: RegularFileGate = {"path": source, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(path, temporary)
+                    self.assertFalse(Path(temporary).exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                def download(_url, _digest, path, *_args):
+                    path.write_bytes(
+                        archive_bytes(
+                            f"vgmstream-{decoder.VERSION}/COPYING", b"license"
+                        )
+                    )
+
+                with (
+                    patch.object(decoder, "ensure_game_decoder", return_value=source),
+                    patch.object(decoder.sys, "platform", "linux"),
+                    patch.object(decoder, "_download", side_effect=download) as fetch,
+                ):
+                    with (
+                        patch.object(decoder, "copy_regular_file", copy),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        decoder.stage_game_decoder(destination)
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(caught.exception, refused[0])
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertFalse(list(destination.glob("copy-*")))
+                    fetch.assert_not_called()
+                    self.assertEqual(
+                        decoder.stage_game_decoder(destination), destination
+                    )
+                self.assertEqual(target.read_bytes(), b"tool")
+                self.assertEqual(target.stat().st_mode & 0o777, 0o755)
+                self.assertEqual(source.stat().st_mode & 0o777, 0o555)
+                self.assertEqual(
+                    (destination / "licenses/COPYING").read_bytes(), b"license"
+                )
+
     def test_staging_readonly_system_files_is_repeatable(self):
         source = self.root / "system-tool"
         source.write_bytes(b"tool")
-        source.chmod(0o555)
         target = self.root / "staging" / "tool"
         try:
-            decoder._stage_file(source, target)
-            decoder._stage_file(source, target)
-            self.assertEqual(target.read_bytes(), b"tool")
+            for source_mode, target_mode in ((0o555, 0o755), (0o444, 0o644)):
+                with self.subTest(source_mode=source_mode):
+                    source.chmod(source_mode)
+                    decoder._stage_file(source, target)
+                    decoder._stage_file(source, target)
+                    self.assertEqual(target.read_bytes(), b"tool")
+                    if os.name != "nt":
+                        self.assertEqual(target.stat().st_mode & 0o777, target_mode)
+                        self.assertEqual(source.stat().st_mode & 0o777, source_mode)
         finally:
             source.chmod(0o755)
 
@@ -122,7 +547,71 @@ class GameAudioDecoderTest(unittest.TestCase):
         finally:
             timer.cancel()
 
+    def test_decoder_cleanup_failure_preserves_primary_startup_error(self):
+        process = Mock()
+        with (
+            patch.object(decoder, "_start_decoder_process", return_value=process),
+            patch.object(
+                decoder,
+                "_wait_for_decoder_process",
+                side_effect=decoder.DecoderSetupError("startup timed out"),
+            ),
+            patch.object(
+                decoder,
+                "_stop_decoder_process",
+                side_effect=OSError("process group unavailable"),
+            ),
+            self.assertRaisesRegex(
+                decoder.DecoderSetupError, "startup timed out"
+            ) as raised,
+        ):
+            decoder._run(["decoder"])
+
+        self.assertTrue(
+            any(
+                "Game-audio decoder process cleanup failed" in note
+                for note in raised.exception.__notes__
+            )
+        )
+
     @unittest.skipIf(sys.platform == "win32", "POSIX process groups require POSIX")
+    def test_decoder_failure_survives_process_log_and_directory_cleanup(self):
+        primary = decoder.DecoderSetupCancelled("cancelled operation")
+        log = MagicMock()
+        log.__enter__.return_value = log
+        log.__exit__.side_effect = lambda *_args: log.close()
+        log.close.side_effect = OSError("log close failed")
+        original_cleanup = TemporaryDirectory.cleanup
+
+        def remove_then_fail(directory):
+            original_cleanup(directory)
+            raise OSError("scratch removal failed")
+
+        with (
+            patch.object(decoder, "_start_decoder_process", return_value=Mock()),
+            patch.object(decoder, "_wait_for_decoder_process", side_effect=primary),
+            patch.object(
+                decoder,
+                "_stop_decoder_process",
+                side_effect=KeyboardInterrupt("process stop failed"),
+            ) as stop,
+            patch.object(Path, "open", return_value=log),
+            patch.object(TemporaryDirectory, "cleanup", remove_then_fail),
+            self.assertRaises(decoder.DecoderSetupCancelled) as raised,
+        ):
+            decoder._run(["decoder"])
+        self.assertIs(raised.exception, primary)
+        stop.assert_called_once()
+        log.close.assert_called_once_with()
+        self.assertEqual(
+            primary.__notes__,
+            [
+                "Game-audio decoder process cleanup failed: process stop failed",
+                "Game-audio decoder log cleanup failed: log close failed",
+                "Temporary directory cleanup failed: scratch removal failed",
+            ],
+        )
+
     def test_posix_cleanup_stays_bounded_after_sigkill(self):
         process = Mock(pid=42)
         process.poll.return_value = None

@@ -8,12 +8,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from vntts.authoring.audio_events import audio_event_plan_for_record
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    assert_authority_snapshot,
+    canonical_document_sha256,
+    capture_successor_base_authority,
+)
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
@@ -34,22 +37,21 @@ from vntts.authoring.publication import (
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     WorkspaceCreationResult,
-    contained_workspace_path,
     default_workspaces_root,
     load_workspace_authority,
     load_workspace_json,
     require_workspace_sha256,
-    safe_workspace_relative_path,
     validate_workspace_provenance_extensions,
 )
 from vntts.authoring.workspace_config import (
     workspace_id_for_config,
     workspace_successor_config_fingerprint,
 )
-from vntts.authoring.workspace_foundation import (
-    stage_single_base_successor,
-)
+from vntts.authoring.workspace_foundation import stage_single_base_successor
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.document_identity import sha256_file
+from vntts.json_types import has_schema_version
+from vntts.path_safety import contained_no_replace_destination
 
 SCHEMA = "vntts.authoring-audio-event-omission-batch"
 SCHEMA_VERSION = 1
@@ -60,13 +62,11 @@ class _OmissionSelection:
     base_directory: Path
     base_document: dict[str, object]
     base_workspace_sha256: str
-    queue: VoiceGenerationQueue
     state: dict[str, object]
     state_sha256: str
     queue_path: Path
     queue_sha256: str
     import_id: str
-    narrator_character: str
     items: list[dict[str, object]]
 
 
@@ -101,7 +101,16 @@ def create_audio_event_omission_workspace(
                 staging, output, selection, identity, target_state
             )
             _validate_staged_omission_workspace(staging, output, workspace)
-            _publish_staged_omission_workspace(staging, selection, identity, snapshots)
+            publish_single_base_successor(
+                staging,
+                identity.destination,
+                selection.base_directory,
+                selection.queue_sha256,
+                snapshots,
+                label="Audio-event omission",
+                publish_label="audio-event omission",
+                error_type=AuthoringWorkbenchError,
+            )
     except (BulkGenerationError, OSError, ValueError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
     return WorkspaceCreationResult(identity.destination, True)
@@ -175,13 +184,11 @@ def _select_omission_items(
         base_directory=base_directory,
         base_document=base_document,
         base_workspace_sha256=base_workspace_sha256,
-        queue=queue,
         state=state,
         state_sha256=state_sha256,
         queue_path=queue_path,
         queue_sha256=queue_sha256,
         import_id=import_id,
-        narrator_character=narrator_character,
         items=items,
     )
 
@@ -211,8 +218,11 @@ def _omission_identity(
     workspace_id = workspace_id_for_config(selection.import_id, config_fingerprint)
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    destination = contained_workspace_path(
-        root, Path(workspace_id), "Audio-event omission destination"
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Audio-event omission destination",
+        error_type=AuthoringWorkbenchError,
     )
     return _OmissionIdentity(batch, config_fingerprint, workspace_id, root, destination)
 
@@ -327,27 +337,6 @@ def _validate_staged_omission_workspace(
     load_generation_state(output / "generation-state.json", staging / "queue.jsonl")
 
 
-def _publish_staged_omission_workspace(
-    staging: Path,
-    selection: _OmissionSelection,
-    identity: _OmissionIdentity,
-    snapshots: list[tuple[Path, str]],
-) -> None:
-    try:
-        publish_single_base_successor(
-            staging,
-            identity.destination,
-            selection.base_directory,
-            selection.queue_sha256,
-            snapshots,
-            label="Audio-event omission",
-            publish_label="audio-event omission",
-            error_type=AuthoringWorkbenchError,
-        )
-    except BulkGenerationError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
-
-
 def validate_audio_event_omission_workspace(
     directory: str | Path, workspace: Mapping[str, object]
 ) -> None:
@@ -356,7 +345,9 @@ def validate_audio_event_omission_workspace(
     if batch is None:
         return
     root = Path(directory)
-    _validate_omission_authority_files(root, batch)
+    _base_state, snapshots = capture_successor_base_authority(
+        root, batch, "audio-event omission", error_type=AuthoringWorkbenchError
+    )
     queue, state, _payload, _state_sha256 = load_stable_workspace_generation_state(
         root,
         workspace,
@@ -366,6 +357,10 @@ def validate_audio_event_omission_workspace(
     if sha256_file(root / "queue.jsonl") != batch["queue_sha256"]:
         raise AuthoringWorkbenchError("Audio-event omission queue changed")
     _validate_omission_items(queue, state, batch)
+    for snapshot in snapshots:
+        assert_authority_snapshot(
+            snapshot, "audio-event omission base", error_type=AuthoringWorkbenchError
+        )
 
 
 def _validated_omission_batch(
@@ -387,18 +382,23 @@ def _validated_omission_batch(
         "queue_sha256",
         "items",
     }
-    if (
-        not isinstance(batch, dict)
-        or set(batch) != fields
-        or batch.get("schema") != SCHEMA
-        or batch.get("schema_version") != SCHEMA_VERSION
-        or batch.get("reason") != AUDIO_EVENT_OMISSION_REASON
-        or batch.get("batch_id")
-        != canonical_document_sha256(
-            {key: value for key, value in batch.items() if key != "batch_id"}
-        )
-    ):
-        raise AuthoringWorkbenchError("Audio-event omission batch is malformed")
+    try:
+        if (
+            not isinstance(batch, dict)
+            or set(batch) != fields
+            or batch.get("schema") != SCHEMA
+            or not has_schema_version(batch, SCHEMA_VERSION)
+            or batch.get("reason") != AUDIO_EVENT_OMISSION_REASON
+            or batch.get("batch_id")
+            != canonical_document_sha256(
+                {key: value for key, value in batch.items() if key != "batch_id"}
+            )
+        ):
+            raise AuthoringWorkbenchError("Audio-event omission batch is malformed")
+    except (TypeError, ValueError) as error:
+        raise AuthoringWorkbenchError(
+            "Audio-event omission batch is malformed"
+        ) from error
     for field in (
         "batch_id",
         "base_workspace_sha256",
@@ -407,23 +407,6 @@ def _validated_omission_batch(
     ):
         require_workspace_sha256(batch.get(field), f"Audio-event omission {field}")
     return batch
-
-
-def _validate_omission_authority_files(root: Path, batch: Mapping[str, object]) -> None:
-    for path_field, hash_field, label in (
-        ("base_workspace_path", "base_workspace_sha256", "base workspace"),
-        ("base_state_path", "base_state_sha256", "base state"),
-    ):
-        relative = safe_workspace_relative_path(
-            batch.get(path_field), f"Audio-event omission {label}"
-        )
-        source = contained_workspace_path(
-            root, relative, f"Audio-event omission {label}"
-        )
-        if not source.is_file() or sha256_file(source) != batch[hash_field]:
-            raise AuthoringWorkbenchError(
-                f"Audio-event omission {label} authority changed"
-            )
 
 
 def _validate_omission_items(

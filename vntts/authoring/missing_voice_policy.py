@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 from vntts_artifacts.voice_manifest import normalize_character_name
 
+from vntts.json_types import has_schema_version
+
 MISSING_VOICE_POLICY_VERSION = 1
 BLOCK_MISSING_VOICE = "block"
 NARRATOR_ROLES = "narrator_roles"
@@ -70,7 +72,7 @@ class MissingVoicePolicy:
             "roles",
         }:
             raise MissingVoicePolicyError("Missing-voice policy document is malformed")
-        if value.get("schema_version") != MISSING_VOICE_POLICY_VERSION:
+        if not has_schema_version(value, MISSING_VOICE_POLICY_VERSION):
             raise MissingVoicePolicyError(
                 f"Unsupported missing-voice policy version: {value.get('schema_version')!r}"
             )

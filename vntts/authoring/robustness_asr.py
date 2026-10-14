@@ -3,20 +3,18 @@
 from __future__ import annotations
 
 import copy
-import io
-import json
 import re
-import wave
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, TypeAlias, TypedDict, TypeGuard, runtime_checkable
+from statistics import median
+from typing import Literal, Protocol, TypeAlias, TypedDict, runtime_checkable
 
 import numpy as np
+from durable_file import atomic_write_json
 from numpy.typing import NDArray
 from scipy.signal import resample_poly
-from vntts_artifacts.atomic_io import atomic_write_json
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
@@ -25,11 +23,15 @@ from vntts.authoring.authority import (
     write_json_document_no_replace,
 )
 from vntts.authoring.bulk_generation import BulkGenerationError, sha256_control_path
-from vntts.authoring.publication import no_replace_destination
+from vntts.authoring.publication import no_replace_destination, publication_errors
 from vntts.authoring.robustness_corpus import (
     SpeechRobustnessCorpusError,
+    _read_pcm16,
     load_speech_robustness_corpus,
 )
+from vntts.json_types import decode_json, has_schema_version
+from vntts.json_types import is_json_object as _is_json_document
+from vntts.path_safety import read_regular_text
 
 SPEECH_ROBUSTNESS_ASR_SCHEMA = "vntts.speech-robustness-asr-report"
 SPEECH_ROBUSTNESS_ASR_VERSION = 2
@@ -103,6 +105,7 @@ class SpeechRobustnessAsrReport:
     report_id: str
     document: JsonDocument
     corpus_directory: Path
+    model_directory: Path
 
     def to_dict(self) -> JsonDocument:
         return copy.deepcopy(self.document)
@@ -116,24 +119,18 @@ def _words(text: str) -> tuple[str, ...]:
 
 
 def _edit_counts(expected: Sequence[str], observed: Sequence[str]) -> dict[str, int]:
-    rows = len(expected) + 1
-    columns = len(observed) + 1
-    table: list[list[_EditCounts]] = [
-        [(0, 0, 0, 0) for _ in range(columns)] for _ in range(rows)
+    previous: list[_EditCounts] = [
+        (column, 0, column, 0) for column in range(len(observed) + 1)
     ]
-    table[0][0] = (0, 0, 0, 0)
-    for row in range(1, rows):
-        table[row][0] = (row, 0, 0, row)
-    for column in range(1, columns):
-        table[0][column] = (column, 0, column, 0)
-    for row in range(1, rows):
-        for column in range(1, columns):
-            if expected[row - 1] == observed[column - 1]:
-                table[row][column] = table[row - 1][column - 1]
+    for row, expected_word in enumerate(expected, 1):
+        current: list[_EditCounts] = [(row, 0, 0, row)]
+        for column, observed_word in enumerate(observed, 1):
+            if expected_word == observed_word:
+                current.append(previous[column - 1])
                 continue
-            substitution = table[row - 1][column - 1]
-            insertion = table[row][column - 1]
-            deletion = table[row - 1][column]
+            substitution = previous[column - 1]
+            insertion = current[column - 1]
+            deletion = previous[column]
             candidates = (
                 (
                     substitution[0] + 1,
@@ -154,8 +151,9 @@ def _edit_counts(expected: Sequence[str], observed: Sequence[str]) -> dict[str, 
                     deletion[3] + 1,
                 ),
             )
-            table[row][column] = min(candidates)
-    distance, substitutions, insertions, deletions = table[-1][-1]
+            current.append(min(candidates))
+        previous = current
+    distance, substitutions, insertions, deletions = previous[-1]
     return {
         "distance": distance,
         "substitutions": substitutions,
@@ -218,17 +216,12 @@ class _WhisperTranscriber:
     @staticmethod
     def _input(payload: bytes) -> _AsrInput:
         try:
-            with wave.open(io.BytesIO(payload), "rb") as source:
-                if source.getnchannels() != 1 or source.getsampwidth() != 2:
-                    raise ValueError("ASR requires mono PCM16 WAV")
-                rate = source.getframerate()
-                samples: NDArray[np.float32] = np.frombuffer(
-                    source.readframes(source.getnframes()), dtype="<i2"
-                ).astype(np.float32)
-        except Exception as error:
+            pcm, rate = _read_pcm16(payload)
+        except SpeechRobustnessCorpusError as error:
             raise SpeechRobustnessAsrError(
                 f"Unable to decode robustness WAV for ASR: {error}"
             ) from error
+        samples = pcm.astype(np.float32)
         samples /= 32768.0
         # Transformers 4.57.6 passes the source rate twice to torchaudio,
         # leaving non-16k audio unresampled. Supply Whisper's native rate.
@@ -269,10 +262,6 @@ class _WhisperTranscriber:
                 f"Unable to transcribe robustness WAV batch: {error}"
             ) from error
         return [self._text(result) for result in results]
-
-
-def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
 def _text_field(document: JsonDocument, field: str, label: str) -> str:
@@ -344,52 +333,52 @@ def _distribution(records: Sequence[_AsrRecord], metric: _RateMetric) -> JsonDoc
     values = sorted(float(record["comparison"][metric]) for record in records)
     if not values:
         return {"count": 0, "mean": None, "median": None, "maximum": None}
-    midpoint = len(values) // 2
-    median = (
-        values[midpoint]
-        if len(values) % 2
-        else (values[midpoint - 1] + values[midpoint]) / 2
-    )
     return {
         "count": len(values),
         "mean": round(sum(values) / len(values), 6),
-        "median": round(median, 6),
+        "median": round(median(values), 6),
         "maximum": round(values[-1], 6),
     }
 
 
 def _summary(records: Sequence[_AsrRecord]) -> JsonDocument:
-    labels = sorted({record["human_label"] for record in records})
-    providers = sorted({record["provider"] for record in records})
-    groups: dict[str, JsonDocument] = {}
-    for label in labels:
-        selected = [record for record in records if record["human_label"] == label]
-        groups[f"label:{label}"] = {
+    labels: Counter[str] = Counter()
+    providers: Counter[str] = Counter()
+    by_label: dict[str, list[_AsrRecord]] = defaultdict(list)
+    by_provider: dict[tuple[str, str], list[_AsrRecord]] = defaultdict(list)
+    for record in records:
+        label = record["human_label"]
+        provider = record["provider"]
+        labels[label] += 1
+        providers[provider] += 1
+        by_label[label].append(record)
+        by_provider[(provider, label)].append(record)
+    grouped = [(f"label:{label}", by_label[label]) for label in sorted(by_label)] + [
+        (f"provider:{provider}:{label}", by_provider[(provider, label)])
+        for provider, label in sorted(by_provider)
+    ]
+    groups = {
+        key: {
             metric: _distribution(selected, metric)
             for metric in ("word_error_rate", "missing_word_rate", "inserted_word_rate")
         }
-    for provider in providers:
-        for label in labels:
-            selected = [
-                record
-                for record in records
-                if record["provider"] == provider and record["human_label"] == label
-            ]
-            if selected:
-                groups[f"provider:{provider}:{label}"] = {
-                    metric: _distribution(selected, metric)
-                    for metric in (
-                        "word_error_rate",
-                        "missing_word_rate",
-                        "inserted_word_rate",
-                    )
-                }
+        for key, selected in grouped
+    }
     return {
         "sample_count": len(records),
-        "human_labels": dict(Counter(record["human_label"] for record in records)),
-        "providers": dict(Counter(record["provider"] for record in records)),
+        "human_labels": dict(labels),
+        "providers": dict(providers),
         "groups": groups,
     }
+
+
+def _document_sha256(document: object) -> str:
+    try:
+        return canonical_document_sha256(document)
+    except (TypeError, ValueError) as error:
+        raise SpeechRobustnessAsrError(
+            f"ASR evidence cannot be canonically hashed: {error}"
+        ) from error
 
 
 def _validate_document(document: object) -> JsonDocument:
@@ -408,12 +397,20 @@ def _validate_document(document: object) -> JsonDocument:
         raise SpeechRobustnessAsrError("ASR robustness report shape is invalid")
     if (
         document.get("schema") != SPEECH_ROBUSTNESS_ASR_SCHEMA
-        or document.get("schema_version") != SPEECH_ROBUSTNESS_ASR_VERSION
-        or document.get("policy")
-        != {"diagnostic_only": True, "automatic_rejection": False}
+        or not has_schema_version(document, SPEECH_ROBUSTNESS_ASR_VERSION)
+        or type(document.get("corpus_schema_version")) is not int
+        or document["corpus_schema_version"] not in (2, 3)
     ):
         raise SpeechRobustnessAsrError("ASR robustness report policy is invalid")
-    expected_id = canonical_document_sha256(
+    policy = document["policy"]
+    if (
+        not _is_json_document(policy)
+        or set(policy) != {"diagnostic_only", "automatic_rejection"}
+        or policy["diagnostic_only"] is not True
+        or policy["automatic_rejection"] is not False
+    ):
+        raise SpeechRobustnessAsrError("ASR robustness report policy is invalid")
+    expected_id = _document_sha256(
         {key: value for key, value in document.items() if key != "report_id"}
     )
     if document.get("report_id") != expected_id:
@@ -438,7 +435,7 @@ def _progress_document(
         "device": device,
         "records": records,
     }
-    return {**body, "progress_id": canonical_document_sha256(body)}
+    return {**body, "progress_id": _document_sha256(body)}
 
 
 def _load_progress(
@@ -452,7 +449,7 @@ def _load_progress(
     if path is None or not path.exists():
         return []
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = decode_json(read_regular_text(path, encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise SpeechRobustnessAsrError(
             f"Unable to load ASR progress: {error}"
@@ -475,12 +472,12 @@ def _load_progress(
         not _is_json_document(document)
         or set(document) != expected
         or document.get("schema") != "vntts.speech-robustness-asr-progress"
-        or document.get("schema_version") != SPEECH_ROBUSTNESS_ASR_VERSION
+        or not has_schema_version(document, SPEECH_ROBUSTNESS_ASR_VERSION)
         or document.get("corpus_id") != corpus_id
         or document.get("model_sha256") != model_sha256
         or document.get("device") != device
         or document.get("progress_id")
-        != canonical_document_sha256(
+        != _document_sha256(
             {key: value for key, value in document.items() if key != "progress_id"}
         )
     ):
@@ -495,11 +492,66 @@ def _load_progress(
             or record["audio_sha256"] != sample["audio_sha256"]
             or record["text_sha256"] != sample["text_sha256"]
             or record["expected_text"] != sample["text"]
+            or record["human_label"] != sample["human_label"]
+            or record["provider"]
+            != str(sample["synthesis"].get("provider") or "unknown")
         ):
             raise SpeechRobustnessAsrError("ASR progress record authority is invalid")
     return records
 
 
+def _transcribe_batch(
+    corpus_directory: Path,
+    batch: Sequence[_RobustnessSample],
+    transcribe: _Transcriber | None,
+) -> list[_AsrRecord]:
+    payloads: list[bytes] = []
+    for sample in batch:
+        try:
+            audio = capture_authority_file(
+                corpus_directory / sample["audio"],
+                "robustness ASR audio",
+                root=corpus_directory,
+            )
+        except AuthoringAuthorityError as error:
+            raise SpeechRobustnessAsrError(str(error)) from error
+        if audio.sha256 != sample["audio_sha256"]:
+            raise SpeechRobustnessAsrError(
+                "Robustness ASR audio changed after corpus validation"
+            )
+        payloads.append(audio.payload)
+    if isinstance(transcribe, _BatchTranscriber):
+        observed_texts = transcribe.transcribe_many(payloads)
+    elif transcribe is not None:
+        observed_texts = [transcribe(payloads[0])]
+    else:
+        raise SpeechRobustnessAsrError("ASR transcriber is unavailable")
+    if (
+        not isinstance(observed_texts, Sequence)
+        or isinstance(observed_texts, (str, bytes))
+        or len(observed_texts) != len(batch)
+        or not all(isinstance(value, str) for value in observed_texts)
+    ):
+        raise SpeechRobustnessAsrError("ASR transcriber returned invalid batch text")
+    records: list[_AsrRecord] = []
+    for sample, observed in zip(batch, observed_texts, strict=True):
+        records.append(
+            {
+                "workspace_id": sample["workspace_id"],
+                "queue_id": sample["queue_id"],
+                "audio_sha256": sample["audio_sha256"],
+                "text_sha256": sample["text_sha256"],
+                "human_label": sample["human_label"],
+                "provider": str(sample["synthesis"].get("provider") or "unknown"),
+                "expected_text": sample["text"],
+                "observed_text": observed,
+                "comparison": compare_speech_transcript(sample["text"], observed),
+            }
+        )
+    return records
+
+
+@publication_errors(SpeechRobustnessAsrError)
 def build_speech_robustness_asr_report(
     corpus_directory: str | Path,
     model_directory: str | Path,
@@ -528,14 +580,11 @@ def build_speech_robustness_asr_report(
         None if progress_path is None else Path(progress_path).expanduser().resolve()
     )
     if progress is not None:
-        try:
-            progress.relative_to(corpus.directory)
-        except ValueError:
-            pass
-        else:
-            raise SpeechRobustnessAsrError(
-                "ASR progress must be outside the immutable corpus directory"
-            )
+        for directory, label in ((corpus.directory, "corpus"), (model, "model")):
+            if progress.is_relative_to(directory):
+                raise SpeechRobustnessAsrError(
+                    f"ASR progress must be outside the immutable {label} directory"
+                )
     records = _load_progress(
         progress,
         corpus_id=corpus.corpus_id,
@@ -550,47 +599,7 @@ def build_speech_robustness_asr_report(
     batch_size = 8 if isinstance(transcribe, _BatchTranscriber) else 1
     for offset in range(0, len(remaining), batch_size):
         batch = remaining[offset : offset + batch_size]
-        payloads: list[bytes] = []
-        for sample in batch:
-            try:
-                audio = capture_authority_file(
-                    corpus.directory / sample["audio"],
-                    "robustness ASR audio",
-                    root=corpus.directory,
-                )
-            except AuthoringAuthorityError as error:
-                raise SpeechRobustnessAsrError(str(error)) from error
-            if audio.sha256 != sample["audio_sha256"]:
-                raise SpeechRobustnessAsrError(
-                    "Robustness ASR audio changed after corpus validation"
-                )
-            payloads.append(audio.payload)
-        if isinstance(transcribe, _BatchTranscriber):
-            observed_texts = transcribe.transcribe_many(payloads)
-        elif transcribe is not None:
-            observed_texts = [transcribe(payloads[0])]
-        else:
-            raise SpeechRobustnessAsrError("ASR transcriber is unavailable")
-        if len(observed_texts) != len(batch) or not all(
-            isinstance(value, str) for value in observed_texts
-        ):
-            raise SpeechRobustnessAsrError(
-                "ASR transcriber returned invalid batch text"
-            )
-        for sample, observed in zip(batch, observed_texts, strict=True):
-            records.append(
-                {
-                    "workspace_id": sample["workspace_id"],
-                    "queue_id": sample["queue_id"],
-                    "audio_sha256": sample["audio_sha256"],
-                    "text_sha256": sample["text_sha256"],
-                    "human_label": sample["human_label"],
-                    "provider": str(sample["synthesis"].get("provider") or "unknown"),
-                    "expected_text": sample["text"],
-                    "observed_text": observed,
-                    "comparison": compare_speech_transcript(sample["text"], observed),
-                }
-            )
+        records.extend(_transcribe_batch(corpus.directory, batch, transcribe))
         if progress is not None:
             progress.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_json(
@@ -627,16 +636,18 @@ def build_speech_robustness_asr_report(
     }
     document: JsonDocument = {
         **body,
-        "report_id": canonical_document_sha256(body),
+        "report_id": _document_sha256(body),
     }
     validated = _validate_document(document)
     return SpeechRobustnessAsrReport(
         _text_field(validated, "report_id", "Report ID"),
         validated,
         corpus.directory,
+        model,
     )
 
 
+@publication_errors(SpeechRobustnessAsrError)
 def write_speech_robustness_asr_report(
     report: SpeechRobustnessAsrReport, output_path: str | Path
 ) -> Path:
@@ -646,14 +657,14 @@ def write_speech_robustness_asr_report(
             "ASR report publication requires validated corpus authority"
         )
     output = no_replace_destination(output_path)
-    try:
-        output.relative_to(report.corpus_directory)
-    except ValueError:
-        pass
-    else:
-        raise SpeechRobustnessAsrError(
-            "ASR report must be outside the immutable corpus directory"
-        )
+    for directory, label in (
+        (report.corpus_directory, "corpus"),
+        (report.model_directory, "model"),
+    ):
+        if output.is_relative_to(directory):
+            raise SpeechRobustnessAsrError(
+                f"ASR report must be outside the immutable {label} directory"
+            )
     document = report.document
     _validate_document(document)
     try:

@@ -13,7 +13,6 @@ from typing import Protocol, TypeAlias, TypedDict
 import numpy as np
 import soundfile as sf
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
@@ -42,7 +41,7 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     publish_generation_queue,
 )
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.pregeneration_setup import (
     PregenerationJob,
     PregenerationJobStore,
@@ -104,6 +103,10 @@ class PregenerationInput:
     audio_event_projection_queue_ids: tuple[str, ...] = ()
     audio_event_omission_queue_ids: tuple[str, ...] = ()
     source_audio_semantic_evidence: Path | None = None
+
+    @property
+    def output_directory(self) -> Path:
+        return Path(self.directory).parent / f"generation-output-{self.identity[:16]}"
 
 
 class PregenerationInputStore:
@@ -189,12 +192,8 @@ class PregenerationInputStore:
                 )
                 publish_generation_queue(queue_plan, queue_path)
                 queue = VoiceGenerationQueue.load(queue_path)
-                projection_ids, omission_ids = _audio_event_routes(queue)
-                ready_items = _runnable_generation_items(
-                    queue,
-                    effective,
-                    projection_ids=projection_ids,
-                    omission_ids=omission_ids,
+                projection_ids, omission_ids, ready_items = _generation_queue_routes(
+                    queue, effective
                 )
                 _record_input_phase(
                     "queue-build",
@@ -537,40 +536,27 @@ def _pocket_embedded_voice(group: VoiceGroup, plan: VoicePlan) -> str | None:
     )
 
 
-def _audio_event_routes(
-    queue: VoiceGenerationQueue,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _generation_queue_routes(
+    queue: VoiceGenerationQueue, effective: EffectiveVoiceRoutes
+) -> tuple[tuple[str, ...], tuple[str, ...], int]:
+    roles = set(effective["routes"]) | set(effective["narrator_roles"])
     projections: list[str] = []
     omissions: list[str] = []
+    ready_items = 0
     for item in queue.items:
         plan = audio_event_plan_for_record(item)
-        if not isinstance(plan, dict) or not plan.get("requires_composition"):
-            continue
-        (projections if plan.get("spoken_text") else omissions).append(item.queue_id)
-    return tuple(sorted(projections)), tuple(sorted(omissions))
-
-
-def _runnable_generation_items(
-    queue: VoiceGenerationQueue,
-    effective: EffectiveVoiceRoutes,
-    *,
-    projection_ids: Sequence[str],
-    omission_ids: Sequence[str],
-) -> int:
-    roles = set(effective["routes"]) | set(effective["narrator_roles"])
-    projection_id_set = set(projection_ids)
-    omission_id_set = set(omission_ids)
-    return sum(
-        1
-        for item in queue.items
-        if item.action == "generate"
-        and item.queue_id not in omission_id_set
-        and (
-            item.queue_id in projection_id_set
-            or not isinstance(audio_event_plan_for_record(item), dict)
-        )
-        and synthesis_character_for_line(item.speaker, item.voice_character) in roles
-    )
+        spoken = False
+        if isinstance(plan, dict) and plan.get("requires_composition"):
+            spoken = bool(plan.get("spoken_text"))
+            (projections if spoken else omissions).append(item.queue_id)
+        if (
+            item.action == "generate"
+            and (spoken or not isinstance(plan, dict))
+            and synthesis_character_for_line(item.speaker, item.voice_character)
+            in roles
+        ):
+            ready_items += 1
+    return tuple(sorted(projections)), tuple(sorted(omissions)), ready_items
 
 
 def _write_reference_wav(path: Path, payload: bytes, character: str) -> None:
@@ -619,10 +605,13 @@ def _load_existing(
             raise ValueError("narrator fallback roles are invalid")
         if set(roles) != set(effective["narrator_roles"]):
             raise ValueError("narrator fallback roles changed")
+        projection_ids, omission_ids, expected_ready = _generation_queue_routes(
+            queue, effective
+        )
         event_routes = {}
         for name, expected in zip(
             ("audio_event_projection_queue_ids", "audio_event_omission_queue_ids"),
-            _audio_event_routes(queue),
+            (projection_ids, omission_ids),
             strict=True,
         ):
             values = document.get(name)
@@ -637,12 +626,6 @@ def _load_existing(
             event_routes[name] = tuple(values)
         queue_items = _nonnegative_int(document.get("queue_items"), "queue items")
         ready_items = _nonnegative_int(document.get("ready_items"), "ready items")
-        expected_ready = _runnable_generation_items(
-            queue,
-            effective,
-            projection_ids=event_routes["audio_event_projection_queue_ids"],
-            omission_ids=event_routes["audio_event_omission_queue_ids"],
-        )
         if (queue_items, ready_items) != (len(queue.items), expected_ready):
             raise ValueError("queue item counts changed")
         semantic_sha256 = document.get("source_audio_semantic_evidence_sha256")

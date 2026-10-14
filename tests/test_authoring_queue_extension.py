@@ -1,8 +1,8 @@
-import hashlib
 import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import (
@@ -10,33 +10,286 @@ from vntts_artifacts.voice_generation_queue import (
     write_voice_generation_queue,
 )
 
+from tests.bulk_generation_fixtures import additive_queue_item as item
+from vntts.authoring import queue_extension
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.queue_extension import (
     FIELD,
     QueueExtensionError,
     publish_additive_generation_queue,
     validate_additive_generation_queue,
+    workspace_queue_extension,
 )
 
 
-def item(sequence, text=None):
-    text = text or f"Line {sequence}."
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return {
-        "record_type": "generation_item",
-        "queue_id": f"line:{sequence}:{digest[:16]}",
-        "line_id": f"line:{sequence}",
-        "text_sha256": digest,
-        "text": text,
-        "speaker": "Rhiannon",
-        "voice_character": "Rhiannon",
-        "action": "generate",
-        "sequence": sequence,
-        "story_order": 1000 + sequence,
-    }
-
-
 class QueueExtensionTest(unittest.TestCase):
+    def test_publication_rejects_surrogate_extensions_without_writes(self):
+        for phase in ("added-item", "base-item", "metadata"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                metadata = {"game": "Reverse: 1999", "language": "en"}
+                base = write_voice_generation_queue(
+                    root / "base.jsonl", metadata, [item(1)]
+                )
+                addition = write_voice_generation_queue(
+                    root / "addition.jsonl", metadata, [item(2)]
+                )
+                source = base if phase == "base-item" else addition
+                rows = [json.loads(row) for row in source.read_text().splitlines()]
+                rows[0 if phase == "metadata" else 1]["producer_extension"] = {
+                    "label": "\ud800"
+                }
+                source.write_text(
+                    "\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n",
+                    encoding="utf-8",
+                )
+                before = {path: path.read_bytes() for path in (base, addition)}
+                output = root / "combined.jsonl"
+
+                expected = (
+                    "invalid UTF-8 text"
+                    if phase == "added-item"
+                    else "Could not publish queue extension"
+                )
+                with self.assertRaisesRegex(QueueExtensionError, expected) as caught:
+                    publish_additive_generation_queue(base, addition, output)
+
+                self.assertIsInstance(caught.exception.__cause__, UnicodeEncodeError)
+                self.assertFalse(output.exists())
+                self.assertEqual(set(root.iterdir()), set(before))
+                self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+    def test_public_readers_reject_surrogate_item_and_ledger_metadata_without_writes(
+        self,
+    ):
+        for phase in ("item", "ledger"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                metadata = {"game": "Reverse: 1999", "language": "en"}
+                base = write_voice_generation_queue(
+                    root / "base.jsonl", metadata, [item(1)]
+                )
+                addition = write_voice_generation_queue(
+                    root / "addition.jsonl", metadata, [item(2)]
+                )
+                output = publish_additive_generation_queue(
+                    base, addition, root / "combined.jsonl"
+                )
+                rows = [json.loads(row) for row in output.read_text().splitlines()]
+                if phase == "ledger":
+                    rows[0][FIELD]["added_items"][0]["queue_id"] = "\ud800"
+                else:
+                    rows[-1]["producer_extension"] = {"label": "\ud800"}
+                output.write_text(
+                    "\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n",
+                    encoding="utf-8",
+                )
+                before = {path: path.read_bytes() for path in (base, addition, output)}
+
+                for reader in (
+                    validate_additive_generation_queue,
+                    workspace_queue_extension,
+                ):
+                    with (
+                        self.subTest(reader=reader.__name__),
+                        self.assertRaisesRegex(
+                            QueueExtensionError, "invalid UTF-8 text"
+                        ) as caught,
+                    ):
+                        reader(output, base_queue=base)
+                    self.assertIsInstance(
+                        caught.exception.__cause__, UnicodeEncodeError
+                    )
+                    self.assertEqual(
+                        {path: path.read_bytes() for path in before}, before
+                    )
+
+    def test_unicode_extensions_preserve_documents_and_canonical_hashes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            metadata = {
+                "game": "Reverse: 1999",
+                "language": "en",
+                "producer_extension": {"label": "источник 音声"},
+            }
+            base_item = {**item(1), "producer_extension": {"label": "основа 音声"}}
+            added_item = {**item(2), "producer_extension": {"label": "добавление 音声"}}
+            base = write_voice_generation_queue(
+                root / "base.jsonl", metadata, [base_item]
+            )
+            addition = write_voice_generation_queue(
+                root / "addition.jsonl", metadata, [added_item]
+            )
+            before = {path: path.read_bytes() for path in (base, addition)}
+
+            output = publish_additive_generation_queue(
+                base, addition, root / "combined.jsonl"
+            )
+            queue, ledger = validate_additive_generation_queue(output, base_queue=base)
+            binding = workspace_queue_extension(output, base_queue=base)
+
+            self.assertEqual(
+                [entry.document for entry in queue.items], [base_item, added_item]
+            )
+            self.assertEqual(
+                queue.metadata["producer_extension"], metadata["producer_extension"]
+            )
+            self.assertEqual(
+                ledger["added_items"][0]["item_sha256"],
+                canonical_document_sha256(added_item),
+            )
+            self.assertEqual(
+                ledger["extension_id"],
+                canonical_document_sha256(
+                    {
+                        key: value
+                        for key, value in ledger.items()
+                        if key != "extension_id"
+                    }
+                ),
+            )
+            self.assertEqual(binding["extension_id"], ledger["extension_id"])
+            self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+    def test_workspace_binding_matches_validated_queue_and_preserves_public_contract(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            metadata = {"game": "Reverse: 1999", "language": "en"}
+            base = write_voice_generation_queue(
+                root / "base.jsonl", metadata, [item(1)]
+            )
+            addition = write_voice_generation_queue(
+                root / "addition.jsonl", metadata, [item(2)]
+            )
+            output = publish_additive_generation_queue(
+                base, addition, root / "combined.jsonl"
+            )
+            queue, ledger = validate_additive_generation_queue(output, base_queue=base)
+            self.assertEqual(queue.path, output)
+            self.assertIs(ledger, queue.metadata[FIELD])
+            binding = workspace_queue_extension(output, base_queue=base)
+            self.assertEqual(binding["queue_sha256"], sha256_file(output))
+            self.assertEqual(binding["extension_id"], ledger["extension_id"])
+            self.assertEqual(binding["added_queue_ids"], [item(2)["queue_id"]])
+
+    def test_workspace_binding_rejects_target_replacement_after_validation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            metadata = {"game": "Reverse: 1999", "language": "en"}
+            base = write_voice_generation_queue(
+                root / "base.jsonl", metadata, [item(1)]
+            )
+            addition = write_voice_generation_queue(
+                root / "addition.jsonl", metadata, [item(2)]
+            )
+            alternate_addition = write_voice_generation_queue(
+                root / "alternate-addition.jsonl", metadata, [item(3)]
+            )
+            output = publish_additive_generation_queue(
+                base, addition, root / "combined.jsonl"
+            )
+            replacement = publish_additive_generation_queue(
+                base, alternate_addition, root / "replacement.jsonl"
+            ).read_bytes()
+            sources = {path: path.read_bytes() for path in (base, addition)}
+            validate = queue_extension._validate_extension_ledger
+
+            def replace_after_validation(ledger, queue, *, base_queue):
+                validated = validate(ledger, queue, base_queue=base_queue)
+                output.write_bytes(replacement)
+                return validated
+
+            with (
+                patch.object(
+                    queue_extension,
+                    "_validate_extension_ledger",
+                    side_effect=replace_after_validation,
+                ),
+                self.assertRaisesRegex(QueueExtensionError, "target changed"),
+            ):
+                workspace_queue_extension(output, base_queue=base)
+            self.assertEqual(output.read_bytes(), replacement)
+            for path, payload in sources.items():
+                self.assertEqual(path.read_bytes(), payload)
+
+    def test_source_replacement_after_capture_is_refused_before_publication(self):
+        for source_index, label in ((1, "base"), (2, "extension")):
+            with self.subTest(source=label), TemporaryDirectory() as directory:
+                root = Path(directory)
+                metadata = {"game": "Reverse: 1999", "language": "en"}
+                base = write_voice_generation_queue(
+                    root / "base.jsonl", metadata, [item(1)]
+                )
+                extension = write_voice_generation_queue(
+                    root / "extension.jsonl", metadata, [item(2)]
+                )
+                source = base if source_index == 1 else extension
+                load = VoiceGenerationQueue.load
+                loads = 0
+
+                def replace_after_parse(path):
+                    nonlocal loads
+                    queue = load(path)
+                    loads += 1
+                    if loads == source_index:
+                        write_voice_generation_queue(
+                            source,
+                            metadata,
+                            [item(source_index, "Changed after capture.")],
+                        )
+                    return queue
+
+                output = root / "combined.jsonl"
+                with (
+                    patch.object(
+                        VoiceGenerationQueue, "load", side_effect=replace_after_parse
+                    ),
+                    self.assertRaisesRegex(QueueExtensionError, f"{label} changed"),
+                ):
+                    publish_additive_generation_queue(base, extension, output)
+                self.assertFalse(output.exists())
+
+    def test_changed_malformed_base_is_refused_before_parsing(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = {"game": "Reverse: 1999", "language": "en"}
+            base = write_voice_generation_queue(
+                root / "base.jsonl", metadata, [item(1)]
+            )
+            extension = write_voice_generation_queue(
+                root / "extension.jsonl", metadata, [item(2)]
+            )
+            output = publish_additive_generation_queue(
+                base, extension, root / "combined.jsonl"
+            )
+            before = output.read_bytes()
+            base.write_bytes(b"invalid replacement")
+            with self.assertRaisesRegex(QueueExtensionError, "base changed"):
+                validate_additive_generation_queue(output, base_queue=base)
+            self.assertEqual(output.read_bytes(), before)
+
+    def test_missing_base_uses_domain_error_and_preserves_output(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = {"game": "Reverse: 1999", "language": "en"}
+            base = write_voice_generation_queue(
+                root / "base.jsonl", metadata, [item(1)]
+            )
+            extension = write_voice_generation_queue(
+                root / "extension.jsonl", metadata, [item(2)]
+            )
+            output = publish_additive_generation_queue(
+                base, extension, root / "combined.jsonl"
+            )
+            original = output.read_bytes()
+            base.unlink()
+            with self.assertRaises(QueueExtensionError) as caught:
+                validate_additive_generation_queue(output, base_queue=base)
+            self.assertIsInstance(caught.exception.__cause__, FileNotFoundError)
+            self.assertEqual(output.read_bytes(), original)
+
     def test_ledger_versions_and_counts_require_real_integers(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

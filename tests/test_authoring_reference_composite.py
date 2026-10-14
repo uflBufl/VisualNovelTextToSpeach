@@ -1,17 +1,23 @@
 import hashlib
 import json
-import math
-import struct
 import unittest
-import wave
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-import numpy as np
 from vntts_artifacts import VoiceGenerationQueue
 from vntts_artifacts.voice_manifest import load_voice_manifest
 
+from tests.source_reference_fixtures import (
+    CompositeRenderer,
+    write_exact_bank_composite_report,
+    write_reference_composite_wav,
+)
+from vntts.authoring import reference_composite
+from vntts.authoring import source_reference_quality_records as quality_records
 from vntts.authoring.bulk_generation import run_bulk_generation
+from vntts.authoring.publication import AtomicPublicationError
 from vntts.authoring.reference_composite import (
     COMPOSITE_SCHEMA,
     ReferenceCompositeError,
@@ -22,121 +28,115 @@ from vntts.authoring.source_reference_quality import (
     load_source_reference_quality_review,
 )
 from vntts.authoring.source_reference_quality_records import capture_quality_outcomes
-from vntts.synthesis import (
-    SynthesisChunk,
-    SynthesisChunkStream,
-    SynthesisCompletion,
-    SynthesisDiagnostics,
-    SynthesisLimits,
-    SynthesisResult,
-    SynthesisTiming,
-)
-
-
-class _Renderer:
-    name = "synthetic"
-    model_name = "synthetic-v1"
-
-    def render(self, request):
-        pcm = np.full(4_000, 0.1, dtype=np.float32)
-
-        def produce():
-            yield SynthesisChunk(pcm, 16_000, 0, 1.0)
-            return SynthesisResult(
-                pcm=pcm,
-                sample_rate=16_000,
-                completion=SynthesisCompletion.COMPLETE,
-                limits=SynthesisLimits(256, 180.0),
-                timing=SynthesisTiming(1.0, 2.0),
-                diagnostics=SynthesisDiagnostics(
-                    backend=self.name,
-                    cache_source="fresh-generation",
-                    generation_profile=request.generation_profile,
-                    seed=request.seed,
-                    chunk_count=1,
-                    sample_count=len(pcm),
-                ),
-            )
-
-        return SynthesisChunkStream(produce())
-
-    def stop(self):
-        pass
 
 
 class AuthoringReferenceCompositeTest(unittest.TestCase):
-    def write_wav(self, path, *, frequency, leading=0, trailing=0):
-        sample_rate = 8_000
-        tone = [
-            int(6_000 * math.sin(2 * math.pi * frequency * index / sample_rate))
-            for index in range(4_000)
-        ]
-        samples = [0] * leading + tone + [0] * trailing
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with wave.open(str(path), "wb") as output:
-            output.setnchannels(1)
-            output.setsampwidth(2)
-            output.setframerate(sample_rate)
-            output.writeframes(struct.pack(f"<{len(samples)}h", *samples))
-
-    def make_report(self, root, *, scope="complete_exact_bank"):
-        root = Path(root)
-        candidates = []
-        for index, media_id in enumerate((20, 10), start=1):
-            reference = root / "references" / f"{media_id}.wav"
-            self.write_wav(
-                reference,
-                frequency=200 + index * 50,
-                leading=800 if media_id == 10 else 0,
-                trailing=800 if media_id == 20 else 0,
-            )
-            candidates.append(
-                {
-                    "character": "Hotelier",
-                    "portrait": "505401.png",
-                    "source_bank": "hotelier.bnk",
-                    "source_bank_sha256": "a" * 64,
-                    "media_id": media_id,
-                    "source_sha256": hashlib.sha256(
-                        f"encoded-{media_id}".encode()
-                    ).hexdigest(),
-                    "candidate_origin": "exact_bank_unrouted_media",
-                    "source_event_ids": [1_000 + media_id],
-                    "reference": f"references/{media_id}.wav",
-                    "reference_sha256": hashlib.sha256(
-                        reference.read_bytes()
-                    ).hexdigest(),
-                    "source_lines": [],
-                }
-            )
-        report = root / "report.json"
-        report.write_text(
-            json.dumps(
-                {
-                    "schema": "r1999.story-voice-reference-candidates",
-                    "schema_version": 2,
-                    "bank_inventory_scope": scope,
-                    "groups": [
+    def test_invalid_silence_threshold_uses_domain_error_without_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = write_exact_bank_composite_report(root)
+            original = {
+                path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+            }
+            output = root / "composite"
+            for threshold in (
+                -(10**400),
+                10**400,
+                True,
+                1,
+                "-40",
+                float("inf"),
+                float("-inf"),
+                float("nan"),
+            ):
+                with self.subTest(threshold=threshold):
+                    with self.assertRaisesRegex(
+                        ReferenceCompositeError, "finite and non-positive"
+                    ):
+                        publish_exact_bank_reference_composite(
+                            report,
+                            "Hotelier",
+                            "505401.png",
+                            "hotelier.bnk",
+                            output,
+                            silence_dbfs=threshold,
+                        )
+                    self.assertFalse(output.exists())
+                    self.assertEqual(
                         {
-                            "character": "Hotelier",
-                            "portrait": "505401.png",
-                            "source_bank": "hotelier.bnk",
-                            "candidate_count": 2,
-                            "affected_portrait_line_count": 1,
-                        }
-                    ],
-                    "candidates": candidates,
-                },
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
-        return report
+                            path: path.read_bytes()
+                            for path in root.rglob("*")
+                            if path.is_file()
+                        },
+                        original,
+                    )
+
+    def test_composite_publishers_preserve_racing_outputs_and_cleanup(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            report = write_exact_bank_composite_report(root)
+            publish_composite = partial(
+                publish_exact_bank_reference_composite,
+                report,
+                "Hotelier",
+                "505401.png",
+                "hotelier.bnk",
+            )
+            composite = publish_composite(root / "composite")
+            generation = run_bulk_generation(
+                composite.directory / "queue.jsonl",
+                root / "generation",
+                CompositeRenderer(),
+                provider="synthetic",
+                model="synthetic-v1",
+                generation_profile="stable",
+            )
+            rename = reference_composite.rename_directory_no_replace
+            for name, publish in (
+                ("composite", publish_composite),
+                (
+                    "quality",
+                    partial(
+                        publish_composite_quality_review,
+                        composite.directory,
+                        generation.state,
+                    ),
+                ),
+            ):
+                with self.subTest(publisher=name):
+                    original_paths = set(root.iterdir())
+                    output = root / f"racing-{name}"
+
+                    def race(staging: Path, destination: Path) -> None:
+                        destination.mkdir()
+                        (destination / "sentinel").write_bytes(b"competitor output")
+                        rename(staging, destination)
+
+                    with (
+                        patch.object(
+                            reference_composite,
+                            "rename_directory_no_replace",
+                            side_effect=race,
+                        ),
+                        self.assertRaisesRegex(
+                            ReferenceCompositeError,
+                            "Publication destination already exists",
+                        ) as caught,
+                    ):
+                        publish(output)
+                    self.assertIsInstance(
+                        caught.exception.__cause__, AtomicPublicationError
+                    )
+                    self.assertEqual(set(output.iterdir()), {output / "sentinel"})
+                    self.assertEqual(
+                        (output / "sentinel").read_bytes(), b"competitor output"
+                    )
+                    self.assertEqual(set(root.iterdir()), original_paths | {output})
 
     def test_publishes_all_exact_clips_and_checksum_ledger(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report = self.make_report(root)
+            report = write_exact_bank_composite_report(root)
 
             result = publish_exact_bank_reference_composite(
                 report,
@@ -180,10 +180,40 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
             self.assertEqual(voices[0].references, ("composite.wav",))
             self.assertEqual(queue.items[0].voice_character, voices[0].character)
 
+    def test_publishing_keeps_the_analyzer_report_unchanged(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = write_exact_bank_composite_report(root)
+            analyzer = reference_composite.analyze_reference_bytes
+            reports = []
+
+            def capture_report(*args, **kwargs):
+                preflight = analyzer(*args, **kwargs)
+                reports.append((preflight, preflight.copy()))
+                return preflight
+
+            with patch.object(
+                reference_composite,
+                "analyze_reference_bytes",
+                side_effect=capture_report,
+            ):
+                result = publish_exact_bank_reference_composite(
+                    report, "Hotelier", "505401.png", "hotelier.bnk", root / "composite"
+                )
+
+            self.assertEqual(len(reports), 1)
+            preflight, original = reports[0]
+            self.assertEqual(preflight, original)
+            ledger = json.loads((result.directory / "composite.json").read_text())
+            self.assertEqual(
+                ledger["composite"]["objective_preflight"],
+                {**original, "path": "composite.wav"},
+            )
+
     def test_rejects_story_routed_only_report(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report = self.make_report(root, scope="story_routed_only")
+            report = write_exact_bank_composite_report(root, scope="story_routed_only")
 
             with self.assertRaisesRegex(ReferenceCompositeError, "complete exact-bank"):
                 publish_exact_bank_reference_composite(
@@ -197,7 +227,7 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
     def test_preserves_non_object_json_boundary_errors(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report = self.make_report(root)
+            report = write_exact_bank_composite_report(root)
             report.write_text("[]", encoding="utf-8")
 
             with self.assertRaisesRegex(ReferenceCompositeError, "complete exact-bank"):
@@ -208,7 +238,7 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
                     "hotelier.bnk",
                     root / "composite",
                 )
-            report = self.make_report(root)
+            report = write_exact_bank_composite_report(root)
             composite = publish_exact_bank_reference_composite(
                 report,
                 "Hotelier",
@@ -225,7 +255,7 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
     def test_publishes_composite_quality_card_without_binding_authority(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report = self.make_report(root)
+            report = write_exact_bank_composite_report(root)
             composite = publish_exact_bank_reference_composite(
                 report,
                 "Hotelier",
@@ -236,7 +266,7 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
             generation = run_bulk_generation(
                 composite.directory / "queue.jsonl",
                 root / "generation",
-                _Renderer(),
+                CompositeRenderer(),
                 provider="synthetic",
                 model="synthetic-v1",
                 generation_profile="stable",
@@ -269,14 +299,14 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
     def test_quality_review_rejects_bound_non_object_source_report(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report = self.make_report(root)
+            report = write_exact_bank_composite_report(root)
             composite = publish_exact_bank_reference_composite(
                 report, "Hotelier", "505401.png", "hotelier.bnk", root / "composite"
             )
             generation = run_bulk_generation(
                 composite.directory / "queue.jsonl",
                 root / "generation",
-                _Renderer(),
+                CompositeRenderer(),
                 provider="synthetic",
                 model="synthetic-v1",
                 generation_profile="stable",
@@ -306,7 +336,7 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "generation" / "sample.wav"
-            self.write_wav(source, frequency=250)
+            write_reference_composite_wav(source, frequency=250)
             digest = hashlib.sha256(source.read_bytes()).hexdigest()
             source.write_bytes(b"changed")
 
@@ -337,10 +367,51 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
                     generated_label="Generated composite sample",
                 )
 
+    def test_quality_audio_capture_preserves_the_composite_error_type(self):
+        for failure in ("probe", "copy", "checksum"):
+            with self.subTest(failure=failure), TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "generation" / "sample.wav"
+                write_reference_composite_wav(source, frequency=250)
+                if failure == "probe":
+                    source.write_bytes(b"invalid WAV")
+                digest = hashlib.sha256(source.read_bytes()).hexdigest()
+                copy_audio = quality_records.copy_regular_file
+
+                def copy_with_failure(src, dest):
+                    if failure == "copy":
+                        raise PermissionError("Destination became unwritable")
+                    result = copy_audio(src, dest)
+                    if failure == "checksum":
+                        Path(dest).write_bytes(b"changed after copy")
+                    return result
+
+                with patch.object(
+                    quality_records, "copy_regular_file", side_effect=copy_with_failure
+                ):
+                    with self.assertRaises(ReferenceCompositeError):
+                        capture_quality_outcomes(
+                            [
+                                (
+                                    {"queue_id": "sample"},
+                                    {
+                                        "status": "generated",
+                                        "path": "sample.wav",
+                                        "file_sha256": digest,
+                                    },
+                                    Path("audio/generated.wav"),
+                                )
+                            ],
+                            source.parent,
+                            root / "staging",
+                            [],
+                            error_type=ReferenceCompositeError,
+                        )
+
     def test_rejects_changed_reference_and_existing_output(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report = self.make_report(root)
+            report = write_exact_bank_composite_report(root)
             (root / "references" / "10.wav").write_bytes(b"changed")
 
             with self.assertRaisesRegex(ReferenceCompositeError, "checksum"):

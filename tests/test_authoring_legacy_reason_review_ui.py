@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtMultimedia import QMediaPlayer  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QScrollArea  # noqa: E402
 
-from tests.test_authoring_legacy_reason_review import (  # noqa: E402
+from tests.authoring_fixtures import (  # noqa: E402
     _legacy_bad_fixture,
 )
 from vntts.authoring.legacy_reason_review import (  # noqa: E402

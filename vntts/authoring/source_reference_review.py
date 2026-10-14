@@ -5,30 +5,27 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
-import tempfile
 from collections.abc import Iterable, Mapping, MutableSequence, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
+from durable_file import atomic_write_json
 from vntts_artifacts import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
     expected_voice_generation_queue_id,
     write_voice_generation_queue,
 )
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
-    load_story_index_document,
 )
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueueItem
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     normalize_character_name,
     write_voice_manifest,
 )
@@ -36,8 +33,8 @@ from vntts_artifacts.voice_manifest import (
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     JsonDocument,
-    load_generation_state,
 )
+from vntts.authoring.generation_state import load_generation_state_from_snapshot
 from vntts.authoring.listening import (
     ModelListeningError,
     create_listening_session_from_reports,
@@ -45,6 +42,7 @@ from vntts.authoring.listening import (
 )
 from vntts.authoring.publication import (
     no_replace_destination,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -65,7 +63,17 @@ from vntts.chapter_voice_preload import (
     _source_audio_covers_full_line,
     _validated_source_audio_line_ids,
 )
-from vntts.document_identity import is_lowercase_sha256
+from vntts.cleanup import temporary_directory as owned_temporary_directory
+from vntts.document_identity import (
+    canonical_document_sha256,
+    file_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
+from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import copy_regular_file, read_regular_bytes
+from vntts.story_index_snapshot import load_story_index_snapshot
+from vntts.voices import load_voice_manifest, voice_manifest_entries_at_path
 
 SOURCE_REPORT_SCHEMA = "r1999.story-voice-reference-candidates"
 SOURCE_REPORT_VERSIONS = frozenset({1, 2})
@@ -158,6 +166,10 @@ class SourceReferenceBindingsResult:
         }
 
 
+_file_sha256 = partial(file_sha256, error_type=SourceReferenceReviewError)
+
+
+@publication_errors(SourceReferenceReviewError)
 def import_source_reference_review(
     report_path: str | Path,
     review_path: str | Path,
@@ -201,16 +213,16 @@ def import_source_reference_review(
     candidates = _load_candidates(report_path, report)
     decisions, invalidated = _load_decisions(review, candidates)
     try:
-        story = load_story_index_document(story_index_path)
-    except StoryIndexError as error:
-        raise SourceReferenceReviewError(str(error)) from error
-    try:
-        story_payload = story_index_path.read_bytes()
+        story_payload = read_regular_bytes(story_index_path)
     except OSError as error:
         raise SourceReferenceReviewError(
             f"Unable to read story index {story_index_path}: {error}"
         ) from error
     story_sha256 = hashlib.sha256(story_payload).hexdigest()
+    try:
+        story = load_story_index_snapshot(story_index_path, story_payload)
+    except StoryIndexError as error:
+        raise SourceReferenceReviewError(str(error)) from error
 
     accepted = [
         candidate
@@ -282,7 +294,7 @@ def _publish_source_reference_plan(
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 payload = _candidate_bytes(candidate, "reference_payload")
                 destination.write_bytes(payload)
-                if sha256_file(destination) != candidate["reference_sha256"]:
+                if _file_sha256(destination) != candidate["reference_sha256"]:
                     raise SourceReferenceReviewError(
                         f"Copied reference checksum changed: {candidate['reference_relative']}"
                     )
@@ -385,16 +397,20 @@ def _publish_source_reference_plan(
 
 def load_source_reference_plan(directory: str | Path) -> JsonObject:
     """Validate a published plan and every copied reference checksum."""
+    return _load_source_reference_plan_snapshot(directory)[1]
+
+
+def _load_source_reference_plan_snapshot(
+    directory: str | Path,
+) -> tuple[bytes, JsonObject]:
     directory = Path(directory).expanduser().resolve()
-    plan_path, _payload, plan = _read_json(
+    plan_path, payload, plan = _read_json(
         directory / "plan.json", "source-reference plan"
     )
     if plan_path.parent != directory:
         raise SourceReferenceReviewError("Source-reference plan path is inconsistent")
-    if (
-        plan.get("schema") != REFERENCE_PLAN_SCHEMA
-        or type(plan.get("schema_version")) is not int
-        or plan.get("schema_version") != REFERENCE_PLAN_VERSION
+    if plan.get("schema") != REFERENCE_PLAN_SCHEMA or not has_schema_version(
+        plan, REFERENCE_PLAN_VERSION
     ):
         raise SourceReferenceReviewError("Unsupported source-reference plan schema")
     clusters = plan.get("clusters")
@@ -408,7 +424,7 @@ def load_source_reference_plan(directory: str | Path) -> JsonObject:
         _validate_plan_cluster(
             directory, cluster, cluster_index, seen_clusters, seen_queue_ids
         )
-    return plan
+    return payload, plan
 
 
 def _validate_plan_cluster(
@@ -437,7 +453,13 @@ def _validate_plan_cluster(
     source_bank = _text(
         cluster.get("source_bank"), f"cluster {cluster_index} source bank"
     )
-    if cluster_id != _cluster_id(character, portrait, source_bank):
+    try:
+        expected_cluster_id = _cluster_id(character, portrait, source_bank)
+    except ValueError as error:
+        raise SourceReferenceReviewError(
+            f"Plan cluster {cluster_index} identity is invalid"
+        ) from error
+    if cluster_id != expected_cluster_id:
         raise SourceReferenceReviewError(
             f"Plan cluster {cluster_index} ID does not match its identity"
         )
@@ -472,7 +494,7 @@ def _validate_plan_reference(
         reference.get("sha256"),
         f"reference {cluster_index}:{reference_index} hash",
     )
-    if sha256_file(path) != expected:
+    if _file_sha256(path) != expected:
         raise SourceReferenceReviewError(f"Plan reference changed: {relative}")
 
 
@@ -620,14 +642,21 @@ def _quality_review_selection(
     from vntts.authoring.source_reference_quality_records import (
         SourceReferenceQualityError,
         accepted_source_reference_variants,
-        load_source_reference_quality_review,
+        validate_source_reference_quality_review_document,
+    )
+    from vntts.authoring.source_reference_quality_records import (
+        _read_json as read_quality_review,
     )
 
     quality_review_path = Path(quality_review).expanduser().resolve()
     try:
-        payload = quality_review_path.read_bytes()
-        document = load_source_reference_quality_review(quality_review_path)
-        if quality_review_path.read_bytes() != payload:
+        payload, snapshot = read_quality_review(
+            quality_review_path, "source-reference quality review"
+        )
+        document = validate_source_reference_quality_review_document(
+            snapshot, quality_review_path.parent
+        )
+        if read_regular_bytes(quality_review_path) != payload:
             raise SourceReferenceReviewError(
                 "Source-reference quality review changed while it was loaded"
             )
@@ -656,9 +685,11 @@ def _load_binding_base(
 ) -> tuple[Path, JsonObject, str, VoiceManifestEntry, list[VoiceManifestEntry]]:
     base_voice_manifest = Path(base_voice_manifest).expanduser().resolve()
     try:
-        base_payload = base_voice_manifest.read_bytes()
-        base_document, base_voices = load_voice_manifest(
-            base_voice_manifest, allow_legacy=False
+        _path, base_payload, base_document = _read_json(
+            base_voice_manifest, "base voice manifest"
+        )
+        base_voices = voice_manifest_entries_at_path(
+            base_document, base_voice_manifest, allow_legacy=False
         )
     except (OSError, VoiceManifestError) as error:
         raise SourceReferenceReviewError(str(error)) from error
@@ -754,13 +785,13 @@ def _copy_binding_voice_references(
     digests: list[str] = []
     for index, relative in enumerate(voice.references, start=1):
         source = _contained_file(source_root, relative)
-        digest = sha256_file(source)
+        digest = _file_sha256(source)
         suffix = source.suffix.lower() or ".wav"
         target_relative = target_root / f"{index:02d}{suffix}"
         target = staging / target_relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
-        if sha256_file(target) != digest:
+        copy_regular_file(source, target)
+        if _file_sha256(target) != digest:
             raise SourceReferenceReviewError(error_message)
         copied.append(target_relative.as_posix())
         digests.append(digest)
@@ -781,7 +812,7 @@ def _copy_selected_binding_variant(
         plan_directory, _text(reference.get("path"), "Variant reference path")
     )
     digest = _sha256(reference.get("sha256"), f"variant {variant_id} reference hash")
-    if sha256_file(source) != digest:
+    if _file_sha256(source) != digest:
         raise SourceReferenceReviewError(
             f"Source-reference plan artifact changed: {variant_id}"
         )
@@ -789,8 +820,8 @@ def _copy_selected_binding_variant(
     target_relative = Path("references") / variant_id / f"source{suffix}"
     target = staging / target_relative
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, target)
-    if sha256_file(target) != digest:
+    copy_regular_file(source, target)
+    if _file_sha256(target) != digest:
         raise SourceReferenceReviewError(
             f"Source-reference variant changed while copied: {variant_id}"
         )
@@ -823,6 +854,7 @@ def _copy_selected_binding_variant(
     return voice, selected
 
 
+@publication_errors(SourceReferenceReviewError)
 def publish_source_reference_bindings(
     plan_directory: str | Path,
     base_voice_manifest: str | Path,
@@ -835,9 +867,9 @@ def publish_source_reference_bindings(
 ) -> SourceReferenceBindingsResult:
     """Publish a partial manifest with explicit queue-to-variant bindings."""
     plan_directory = Path(plan_directory).expanduser().resolve()
-    plan = load_source_reference_plan(plan_directory)
+    plan_payload, plan = _load_source_reference_plan_snapshot(plan_directory)
     plan_path = plan_directory / "plan.json"
-    plan_sha256 = sha256_file(plan_path)
+    plan_sha256 = hashlib.sha256(plan_payload).hexdigest()
     selected_variant_ids, quality_review_path, quality_review_sha256 = (
         _quality_review_selection(quality_review, selected_variant_ids, plan_sha256)
     )
@@ -940,11 +972,11 @@ def publish_source_reference_bindings(
         }
         manifest_path = staging / "voice-manifest.json"
         write_voice_manifest(manifest_path, manifest)
-        if sha256_file(plan_path) != plan_sha256:
+        if _file_sha256(plan_path) != plan_sha256:
             raise SourceReferenceReviewError(
                 "Source-reference plan changed during binding publication"
             )
-        if sha256_file(base_voice_manifest) != base_sha256:
+        if _file_sha256(base_voice_manifest) != base_sha256:
             raise SourceReferenceReviewError(
                 "Base voice manifest changed during binding publication"
             )
@@ -952,7 +984,7 @@ def publish_source_reference_bindings(
             _assert_source_unchanged(source, digest, f"voice reference {source.name}")
         if (
             quality_review_path is not None
-            and sha256_file(quality_review_path) != quality_review_sha256
+            and _file_sha256(quality_review_path) != quality_review_sha256
         ):
             raise SourceReferenceReviewError(
                 "Source-reference quality review changed during binding publication"
@@ -967,8 +999,8 @@ def _load_bound_manifest(
     path: Path,
 ) -> tuple[bytes, JsonObject, tuple[VoiceManifestEntry, ...], dict[str, str]]:
     try:
-        payload = path.read_bytes()
-        document, voices = load_voice_manifest(path, allow_legacy=False)
+        _path, payload, document = _read_json(path, "source-reference voice manifest")
+        voices = voice_manifest_entries_at_path(document, path, allow_legacy=False)
         overrides = queue_voice_overrides_from_manifest(document, voices=voices)
     except (OSError, VoiceManifestError, SourceReferenceBindingError) as error:
         raise SourceReferenceReviewError(str(error)) from error
@@ -1036,6 +1068,7 @@ def _copy_successor_voices(
     return voices
 
 
+@publication_errors(SourceReferenceReviewError)
 def publish_source_reference_binding_successor(
     base_binding_manifest: str | Path,
     plan_directory: str | Path,
@@ -1061,7 +1094,7 @@ def publish_source_reference_binding_successor(
             "Base voice manifest has no source-reference binding authority"
         )
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
+    with owned_temporary_directory(
         prefix=f".{output.name}.addition-", dir=output.parent
     ) as temporary_directory:
         addition_directory = Path(temporary_directory) / "binding"
@@ -1147,11 +1180,11 @@ def publish_source_reference_binding_successor(
                 raise SourceReferenceReviewError(
                     "Successor queue bindings changed during publication"
                 )
-            if base_binding_manifest.read_bytes() != base_payload:
+            if read_regular_bytes(base_binding_manifest) != base_payload:
                 raise SourceReferenceReviewError(
                     "Base source-reference manifest changed during publication"
                 )
-            if addition_manifest.read_bytes() != addition_payload:
+            if read_regular_bytes(addition_manifest) != addition_payload:
                 raise SourceReferenceReviewError(
                     "Added source-reference manifest changed during publication"
                 )
@@ -1203,7 +1236,7 @@ def _retirement_records(
                 f"Retired source-reference voice is missing or ambiguous: {voice_character}"
             )
         reference = _contained_file(base_binding_manifest.parent, voice.references[0])
-        reference_sha256 = sha256_file(reference)
+        reference_sha256 = _file_sha256(reference)
         if reference_sha256 != _sha256(
             variant.get("reference_sha256"),
             "retired source-reference variant SHA-256",
@@ -1273,6 +1306,7 @@ def _copy_retirement_voices(
     return voices
 
 
+@publication_errors(SourceReferenceReviewError)
 def publish_source_reference_binding_retirement(
     base_binding_manifest: str | Path,
     variant_ids: Iterable[str] | None,
@@ -1387,7 +1421,7 @@ def publish_source_reference_binding_retirement(
             raise SourceReferenceReviewError(
                 "Retired source-reference queue bindings changed during publication"
             )
-        if base_binding_manifest.read_bytes() != base_payload:
+        if read_regular_bytes(base_binding_manifest) != base_payload:
             raise SourceReferenceReviewError(
                 "Base source-reference manifest changed during retirement"
             )
@@ -1511,7 +1545,7 @@ def _stage_evaluation_variant(
     relative = Path("references") / variant_id / f"source-{media_id}.wav"
     destination = staging / relative
     destination.parent.mkdir(parents=True, exist_ok=True)
-    payload = source.read_bytes()
+    payload = read_regular_bytes(source)
     if hashlib.sha256(payload).hexdigest() != reference_sha256:
         raise SourceReferenceReviewError(
             f"Source-reference plan changed during evaluation: {reference['path']}"
@@ -1584,14 +1618,15 @@ def _stage_evaluation_variant(
     return voice, variant, items, (source, reference_sha256)
 
 
+@publication_errors(SourceReferenceReviewError)
 def publish_source_reference_evaluation(
     plan_directory: str | Path, output: str | Path
 ) -> SourceReferenceEvaluationResult:
     """Publish self-contained fixed-corpus inputs for every accepted anchor."""
     plan_directory = Path(plan_directory).expanduser().resolve()
-    plan = load_source_reference_plan(plan_directory)
+    plan_payload, plan = _load_source_reference_plan_snapshot(plan_directory)
     plan_path = plan_directory / "plan.json"
-    plan_sha256 = sha256_file(plan_path)
+    plan_sha256 = hashlib.sha256(plan_payload).hexdigest()
     output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise SourceReferenceReviewError(
@@ -1654,9 +1689,9 @@ def publish_source_reference_evaluation(
             "source_reference_plan": str(plan_directory),
             "source_reference_plan_sha256": plan_sha256,
             "voice_manifest": manifest_path.name,
-            "voice_manifest_sha256": sha256_file(manifest_path),
+            "voice_manifest_sha256": _file_sha256(manifest_path),
             "queue": queue_path.name,
-            "queue_sha256": sha256_file(queue_path),
+            "queue_sha256": _file_sha256(queue_path),
             "variants": variants,
             "review_policy": (
                 "Source-match trials compare original and generated audio blindly. "
@@ -1667,7 +1702,7 @@ def publish_source_reference_evaluation(
         atomic_write_json(staging / "comparison.json", comparison)
         load_voice_manifest(manifest_path)
         VoiceGenerationQueue.load(queue_path)
-        if sha256_file(plan_path) != plan_sha256:
+        if _file_sha256(plan_path) != plan_sha256:
             raise SourceReferenceReviewError(
                 "Source-reference plan changed during evaluation publication"
             )
@@ -1679,7 +1714,7 @@ def publish_source_reference_evaluation(
             )
         for variant in variants:
             source = staging / _text(variant.get("source_audio"), "Evaluation source")
-            if sha256_file(source) != _sha256(
+            if _file_sha256(source) != _sha256(
                 variant.get("source_audio_sha256"), "Evaluation source hash"
             ):
                 raise SourceReferenceReviewError(
@@ -1702,14 +1737,15 @@ def _load_evaluation_generation(
     VoiceGenerationQueue,
     tuple[VoiceManifestEntry, ...],
     JsonDocument,
+    str,
 ]:
     comparison_path, comparison_payload, comparison = _read_json(
         evaluation_directory / "comparison.json", "source-reference evaluation"
     )
-    if (
-        comparison.get("schema") != REFERENCE_EVALUATION_SCHEMA
-        or type(comparison.get("schema_version")) is not int
-        or comparison.get("schema_version") != REFERENCE_EVALUATION_VERSION
+    if comparison.get(
+        "schema"
+    ) != REFERENCE_EVALUATION_SCHEMA or not has_schema_version(
+        comparison, REFERENCE_EVALUATION_VERSION
     ):
         raise SourceReferenceReviewError(
             "Unsupported source-reference evaluation schema"
@@ -1726,14 +1762,19 @@ def _load_evaluation_generation(
     manifest_sha256 = _sha256(
         comparison.get("voice_manifest_sha256"), "Evaluation manifest hash"
     )
-    if sha256_file(queue_path) != queue_sha256:
+    if _file_sha256(queue_path) != queue_sha256:
         raise SourceReferenceReviewError("Evaluation queue changed")
-    if sha256_file(manifest_path) != manifest_sha256:
+    if _file_sha256(manifest_path) != manifest_sha256:
         raise SourceReferenceReviewError("Evaluation voice manifest changed")
     try:
         queue = VoiceGenerationQueue.load(queue_path)
         _manifest, voices = load_voice_manifest(manifest_path, allow_legacy=False)
-        state = load_generation_state(state_path, queue_path)
+        state_path, state_payload, state_document = _read_json(
+            state_path, "generation state"
+        )
+        state = load_generation_state_from_snapshot(
+            state_path, queue, queue_sha256, state_document=state_document
+        )
     except (
         BulkGenerationError,
         VoiceGenerationQueueError,
@@ -1751,6 +1792,7 @@ def _load_evaluation_generation(
         queue,
         voices,
         state,
+        hashlib.sha256(state_payload).hexdigest(),
     )
 
 
@@ -1807,7 +1849,7 @@ def _validate_listening_variant(
     source_sha256 = _sha256(
         variant.get("source_audio_sha256"), f"variant {variant_id} source hash"
     )
-    if sha256_file(source) != source_sha256:
+    if _file_sha256(source) != source_sha256:
         raise SourceReferenceReviewError(
             f"Evaluation source audio changed: {variant_id}"
         )
@@ -1883,7 +1925,7 @@ def _collect_generated_variant_samples(
         audio_sha256 = _sha256(
             result.get("file_sha256"), f"generated result {queue_id} hash"
         )
-        if sha256_file(audio) != audio_sha256:
+        if _file_sha256(audio) != audio_sha256:
             raise SourceReferenceReviewError(
                 f"Generated evaluation audio changed: {queue_id}"
             )
@@ -1999,6 +2041,7 @@ def _collect_listening_variants(
     return originals, generated_reports, checked_audio
 
 
+@publication_errors(SourceReferenceReviewError)
 def publish_source_reference_listening_reports(
     evaluation_directory: str | Path, state_path: str | Path, output: str | Path
 ) -> SourceReferenceListeningReportsResult:
@@ -2015,10 +2058,10 @@ def publish_source_reference_listening_reports(
         queue,
         voices,
         state,
+        state_sha256,
     ) = _load_evaluation_generation(evaluation_directory, state_path)
     comparison_sha256 = hashlib.sha256(comparison_payload).hexdigest()
     state_path = Path(state_path).expanduser().resolve()
-    state_sha256 = sha256_file(state_path)
     output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise SourceReferenceReviewError(
@@ -2081,19 +2124,19 @@ def publish_source_reference_listening_reports(
             "Listening trial count",
         )
         shutil.rmtree(validation)
-        if sha256_file(queue_path) != queue_sha256:
+        if _file_sha256(queue_path) != queue_sha256:
             raise SourceReferenceReviewError(
                 "Evaluation queue changed during report publication"
             )
-        if sha256_file(comparison_path) != comparison_sha256:
+        if _file_sha256(comparison_path) != comparison_sha256:
             raise SourceReferenceReviewError(
                 "Evaluation comparison changed during report publication"
             )
-        if sha256_file(manifest_path) != manifest_sha256:
+        if _file_sha256(manifest_path) != manifest_sha256:
             raise SourceReferenceReviewError(
                 "Evaluation voice manifest changed during report publication"
             )
-        if sha256_file(state_path) != state_sha256:
+        if _file_sha256(state_path) != state_sha256:
             raise SourceReferenceReviewError(
                 "Evaluation generation state changed during report publication"
             )
@@ -2204,7 +2247,7 @@ def _load_candidate(
         )
     relative = _text(value.get("reference"), f"candidate {index} reference")
     reference_path = _contained_file(root, relative)
-    payload = reference_path.read_bytes()
+    payload = read_regular_bytes(reference_path)
     reference_sha256 = _sha256(
         value.get("reference_sha256"), f"candidate {index} reference hash"
     )
@@ -2212,17 +2255,15 @@ def _load_candidate(
         raise SourceReferenceReviewError(
             f"Candidate {index} reference checksum changed"
         )
-    candidate_key = _candidate_key(
-        character, portrait, bank, media_id, reference_sha256
-    )
-    evidence_sha256 = hashlib.sha256(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()
+    try:
+        candidate_key = _candidate_key(
+            character, portrait, bank, media_id, reference_sha256
+        )
+        evidence_sha256 = canonical_document_sha256(value, allow_nan=True)
+    except ValueError as error:
+        raise SourceReferenceReviewError(
+            f"Candidate {index} evidence is invalid"
+        ) from error
     return {
         "candidate_key": candidate_key,
         "evidence_sha256": evidence_sha256,
@@ -2345,12 +2386,9 @@ def _candidate_key(
     media_id: int,
     reference_sha256: str,
 ) -> str:
-    identity = json.dumps(
-        [character, portrait, bank, media_id, reference_sha256],
-        ensure_ascii=False,
-        separators=(",", ":"),
+    return canonical_document_sha256(
+        [character, portrait, bank, media_id, reference_sha256], allow_nan=True
     )
-    return hashlib.sha256(identity.encode()).hexdigest()
 
 
 def _candidate_transcripts(
@@ -2376,17 +2414,17 @@ def _candidate_transcripts(
 
 
 def _cluster_id(character: str, portrait: str | None, bank: str) -> str:
-    identity = json.dumps(
-        [character, portrait, bank], ensure_ascii=False, separators=(",", ":")
+    return (
+        "cluster-"
+        + canonical_document_sha256([character, portrait, bank], allow_nan=True)[:24]
     )
-    return f"cluster-{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
 
 
 def _read_json(path: str | Path, label: str) -> tuple[Path, bytes, JsonObject]:
     path = Path(path).expanduser().resolve()
     try:
-        payload = path.read_bytes()
-        document = json.loads(payload.decode("utf-8"))
+        payload = read_regular_bytes(path)
+        document = decode_json(payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SourceReferenceReviewError(
             f"Unable to read {label} {path}: {error}"

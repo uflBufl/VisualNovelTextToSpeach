@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 from pathlib import Path
+
+from vntts.document_identity import canonical_document_sha256
 
 AUTHORING_COMMAND_ORDER = (
     "discover-legacy",
@@ -172,6 +172,7 @@ def parser_contract(parser: argparse.ArgumentParser) -> dict[str, object]:
                     "type": getattr(action.type, "__name__", None),
                     "help": action.help,
                     "action": type(action).__name__,
+                    "metavar": action.metavar,
                 }
                 for action in command_parser._actions
                 if action.dest != "help"
@@ -182,10 +183,6 @@ def parser_contract(parser: argparse.ArgumentParser) -> dict[str, object]:
 
 def parser_contract_sha256(parser: argparse.ArgumentParser) -> str:
     contract = parser_contract(parser)
-    payload = json.dumps(
-        {"command_order": list(contract), "commands": contract},
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return canonical_document_sha256(
+        {"command_order": list(contract), "commands": contract}, allow_nan=True
+    )

@@ -9,7 +9,11 @@ from unittest.mock import patch
 
 import numpy as np
 
-from vntts.authoring.publication import rename_directory_no_replace
+from tests.symlink_support import symlink_or_skip
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+)
 from vntts.authoring.sound_effect_benchmark import (
     SoundEffectBenchmarkError,
     benchmark_sound_effects,
@@ -95,6 +99,158 @@ def write_corpus(path, *, samples=None):
 
 
 class SoundEffectBenchmarkTest(unittest.TestCase):
+    def test_invalid_utf8_text_fails_before_cuda_or_pipeline(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            output = root / "output"
+            write_corpus(corpus)
+            original = json.loads(corpus.read_text(encoding="utf-8"))
+            for field in ("prompt", "kind", "name", "model"):
+                document = {**original, "samples": [dict(original["samples"][0])]}
+                controls = {}
+                if field == "model":
+                    controls["model"] = "fixture/\ud800"
+                elif field == "name":
+                    document[field] = "\ud800"
+                else:
+                    document["samples"][0][field] = "\ud800"
+                corpus.write_text(json.dumps(document), encoding="utf-8")
+                with (
+                    self.subTest(field=field),
+                    patch(
+                        "vntts.authoring.sound_effect_benchmark.inspect_cuda",
+                        side_effect=AssertionError("CUDA must not be inspected"),
+                    ),
+                    self.assertRaisesRegex(SoundEffectBenchmarkError, "UTF-8"),
+                ):
+                    benchmark_sound_effects(
+                        corpus,
+                        output,
+                        pipeline_factory=lambda *args, **kwargs: self.fail(
+                            "Pipeline must not load"
+                        ),
+                        **controls,
+                    )
+                self.assertFalse(output.exists())
+                self.assertEqual(list(root.glob(".output-*")), [])
+
+    def test_invalid_utf8_resolved_corpus_path_fails_before_read_or_cuda(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            invalid_path = root / "corpus-\udcff.json"
+            with (
+                patch.object(Path, "resolve", return_value=invalid_path),
+                patch(
+                    "vntts.authoring.sound_effect_benchmark.read_regular_bytes",
+                    side_effect=AssertionError("Corpus must not be read"),
+                ),
+                patch(
+                    "vntts.authoring.sound_effect_benchmark.inspect_cuda",
+                    side_effect=AssertionError("CUDA must not be inspected"),
+                ),
+                self.assertRaisesRegex(SoundEffectBenchmarkError, "corpus path.*UTF-8"),
+            ):
+                benchmark_sound_effects(root / "corpus.json", root / "output")
+            self.assertFalse((root / "output").exists())
+
+    def test_invalid_numeric_controls_and_revision_fail_before_cuda(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            output = root / "output"
+            write_corpus(corpus)
+            cases = [
+                (field, value)
+                for field in ("cfg_scale", "sigma_shift")
+                for value in (True, "4", None, [], 10**400, float("nan"))
+            ] + [
+                ("seeds", None),
+                ("seeds", 1),
+                ("model_revision", None),
+                ("model_revision", ["a" * 40]),
+            ]
+            for field, value in cases:
+                with (
+                    self.subTest(field=field, value=value),
+                    patch(
+                        "vntts.authoring.sound_effect_benchmark.inspect_cuda",
+                        side_effect=AssertionError("CUDA must not be inspected"),
+                    ),
+                    self.assertRaises(SoundEffectBenchmarkError),
+                ):
+                    benchmark_sound_effects(corpus, output, **{field: value})
+                self.assertFalse(output.exists())
+
+    def test_invalid_pipeline_sample_rates_fail_before_render(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            write_corpus(corpus)
+
+            class InvalidRatePipeline(FakePipeline):
+                def __call__(self, **values):
+                    self.calls.append(values)
+                    return np.full((1, 1, 8), 0.25, dtype=np.float32)
+
+            for index, rate in enumerate(
+                (True, "8000", 8000.5, None, 0, -1, 2**31, 2**32, float("inf"))
+            ):
+                with self.subTest(rate=rate):
+                    output = root / f"output-{index}"
+                    pipeline = InvalidRatePipeline()
+                    pipeline.sample_rate = rate
+                    with self.assertRaisesRegex(
+                        SoundEffectBenchmarkError, "invalid sample rate"
+                    ):
+                        benchmark_sound_effects(
+                            corpus,
+                            output,
+                            seeds=(0,),
+                            torch_module=FakeTorch(),
+                            pipeline_factory=lambda *args, **kwargs: pipeline,
+                        )
+                    self.assertEqual(pipeline.calls, [])
+                    self.assertFalse(output.exists())
+                    self.assertEqual(list(root.glob(f".{output.name}-*")), [])
+
+    def test_invalid_corpus_byte_encoding_raises_benchmark_error(self):
+        with TemporaryDirectory() as directory:
+            corpus = Path(directory) / "corpus.json"
+            for payload in (b"\xff", b'{"name": "\xff"}'):
+                with self.subTest(payload=payload):
+                    corpus.write_bytes(payload)
+                    with self.assertRaisesRegex(
+                        SoundEffectBenchmarkError, "Unable to read corpus"
+                    ):
+                        load_sound_effect_corpus(corpus)
+
+    def test_valid_integer_and_float_controls_reach_pipeline_unchanged(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            write_corpus(corpus)
+            for index, (cfg, sigma) in enumerate(((1, 0), (4.5, 5.5), (8, 10))):
+                with self.subTest(cfg=cfg, sigma=sigma):
+                    pipeline = FakePipeline()
+                    ticks = iter((10.0, 11.0))
+                    report = benchmark_sound_effects(
+                        corpus,
+                        root / str(index),
+                        seeds=[0],
+                        cfg_scale=cfg,
+                        sigma_shift=sigma,
+                        torch_module=FakeTorch(),
+                        pipeline_factory=lambda *args, **kwargs: pipeline,
+                        clock=lambda: next(ticks),
+                    )
+                    for field, value in (("cfg_scale", cfg), ("sigma_shift", sigma)):
+                        self.assertEqual(report["controls"][field], value)
+                        self.assertIs(type(report["controls"][field]), type(value))
+                        self.assertEqual(pipeline.calls[0][field], value)
+                    self.assertEqual(report["samples"][0]["peak"], 0.25)
+                    self.assertEqual(report["samples"][0]["near_silence_ratio"], 0.0)
+
     def test_corpus_rejects_non_integer_schema_version(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "corpus.json"
@@ -112,9 +268,12 @@ class SoundEffectBenchmarkTest(unittest.TestCase):
     def test_publishes_exact_multiseed_report_and_pcm(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            corpus = root / "corpus.json"
+            corpus = root / "корпус.json"
             output = root / "output"
             write_corpus(corpus)
+            document = json.loads(corpus.read_text(encoding="utf-8"))
+            document["name"] = "  Événements  "
+            corpus.write_text(json.dumps(document), encoding="utf-8")
             corpus_sha256 = hashlib.sha256(corpus.read_bytes()).hexdigest()
             torch = FakeTorch()
             pipeline = FakePipeline()
@@ -128,7 +287,7 @@ class SoundEffectBenchmarkTest(unittest.TestCase):
             report = benchmark_sound_effects(
                 corpus,
                 output,
-                model="fixture/model",
+                model="fixture/модель",
                 model_revision="a" * 40,
                 seeds=(3, 7),
                 torch_module=torch,
@@ -146,6 +305,8 @@ class SoundEffectBenchmarkTest(unittest.TestCase):
                 )
 
         self.assertEqual(report, saved)
+        self.assertEqual(report["model"], "fixture/модель")
+        self.assertEqual(report["corpus_name"], "  Événements  ")
         self.assertEqual(report["corpus_sha256"], corpus_sha256)
         self.assertEqual(report["controls"]["seeds"], [3, 7])
         self.assertEqual(report["cuda"]["device_name"], "Fixture CUDA")
@@ -170,7 +331,7 @@ class SoundEffectBenchmarkTest(unittest.TestCase):
             loader_calls,
             [
                 (
-                    ("fixture/model",),
+                    ("fixture/модель",),
                     {
                         "revision": "a" * 40,
                         "torch_dtype": "bfloat16",
@@ -259,6 +420,143 @@ class SoundEffectBenchmarkTest(unittest.TestCase):
 
             self.assertFalse(output.exists())
 
+    def test_output_symlinks_are_rejected_before_pipeline_load(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            write_corpus(corpus)
+            for kind in ("missing", "empty", "populated"):
+                with self.subTest(target=kind):
+                    target = root / kind
+                    if kind != "missing":
+                        target.mkdir()
+                    if kind == "populated":
+                        (target / "keep").write_text("unchanged")
+                    output = root / f"output-{kind}"
+                    symlink_or_skip(output, target, target_is_directory=True)
+                    with self.assertRaisesRegex(
+                        SoundEffectBenchmarkError, "refusing to overwrite"
+                    ):
+                        benchmark_sound_effects(
+                            corpus,
+                            output,
+                            torch_module=FakeTorch(),
+                            pipeline_factory=lambda *args, **kwargs: self.fail(
+                                "Pipeline must not load"
+                            ),
+                        )
+                    self.assertTrue(output.is_symlink())
+                    self.assertEqual(output.readlink(), target)
+                    self.assertEqual(target.exists(), kind != "missing")
+                    if target.exists():
+                        self.assertEqual(
+                            sorted(path.name for path in target.iterdir()),
+                            ["keep"] if kind == "populated" else [],
+                        )
+                    if kind == "populated":
+                        self.assertEqual((target / "keep").read_text(), "unchanged")
+                    self.assertEqual(list(root.glob(f".{output.name}-*")), [])
+
+    def test_cuda_metric_failures_preserve_context_and_allow_retry(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            write_corpus(corpus)
+            for metric in ("reset_peak_memory_stats", "max_memory_allocated"):
+                with self.subTest(metric=metric):
+                    output = root / metric
+                    torch = FakeTorch()
+                    pipeline = FakePipeline()
+                    failure = RuntimeError(f"{metric} failed")
+                    with (
+                        patch.object(torch.cuda, metric, side_effect=failure),
+                        self.assertRaisesRegex(
+                            SoundEffectBenchmarkError,
+                            "Sound-effect render failed for gasp seed 7: "
+                            f"{metric} failed",
+                        ) as caught,
+                    ):
+                        benchmark_sound_effects(
+                            corpus,
+                            output,
+                            seeds=(7,),
+                            torch_module=torch,
+                            pipeline_factory=lambda *args, **kwargs: pipeline,
+                        )
+                    self.assertIs(caught.exception.__cause__, failure)
+                    self.assertEqual(
+                        len(pipeline.calls),
+                        0 if metric == "reset_peak_memory_stats" else 1,
+                    )
+                    self.assertFalse(output.exists())
+                    self.assertEqual(list(root.glob(f".{output.name}-*")), [])
+                    report = benchmark_sound_effects(
+                        corpus,
+                        output,
+                        seeds=(7,),
+                        torch_module=torch,
+                        pipeline_factory=lambda *args, **kwargs: pipeline,
+                    )
+                    self.assertEqual(
+                        report["samples"][0]["peak_cuda_memory_bytes"], 4000
+                    )
+                    self.assertTrue((output / "audio/gasp-seed-7.wav").is_file())
+
+    def test_missing_optional_cuda_metrics_still_publish(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            write_corpus(corpus)
+            torch = FakeTorch()
+            torch.cuda.reset_peak_memory_stats = None
+            torch.cuda.max_memory_allocated = None
+            report = benchmark_sound_effects(
+                corpus,
+                root / "output",
+                seeds=(0,),
+                torch_module=torch,
+                pipeline_factory=lambda *args, **kwargs: FakePipeline(),
+            )
+            self.assertIsNone(report["samples"][0]["peak_cuda_memory_bytes"])
+
+    def test_unavailable_publication_preserves_cause_and_allows_retry(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            output = root / "output"
+            write_corpus(corpus)
+            failure = AtomicPublicationError(
+                "Atomic no-replace directory publication is unavailable"
+            )
+            with (
+                patch(
+                    "vntts.authoring.sound_effect_benchmark.rename_directory_no_replace",
+                    side_effect=failure,
+                ),
+                self.assertRaisesRegex(
+                    SoundEffectBenchmarkError,
+                    "Unable to publish sound-effect benchmark: .* unavailable",
+                ) as caught,
+            ):
+                benchmark_sound_effects(
+                    corpus,
+                    output,
+                    seeds=(0,),
+                    torch_module=FakeTorch(),
+                    pipeline_factory=lambda *args, **kwargs: FakePipeline(),
+                )
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(f".{output.name}-*")), [])
+            benchmark_sound_effects(
+                corpus,
+                output,
+                seeds=(0,),
+                torch_module=FakeTorch(),
+                pipeline_factory=lambda *args, **kwargs: FakePipeline(),
+            )
+            self.assertTrue((output / "report.json").is_file())
+
     def test_concurrent_publication_does_not_overwrite(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -277,7 +575,7 @@ class SoundEffectBenchmarkTest(unittest.TestCase):
                     side_effect=publish_first,
                 ),
                 self.assertRaisesRegex(
-                    SoundEffectBenchmarkError, "refusing to overwrite"
+                    SoundEffectBenchmarkError, "Publication destination already exists"
                 ),
             ):
                 benchmark_sound_effects(
@@ -309,6 +607,97 @@ class SoundEffectBenchmarkTest(unittest.TestCase):
                     write_corpus(path, samples=samples)
                     with self.assertRaisesRegex(SoundEffectBenchmarkError, message):
                         load_sound_effect_corpus(path)
+
+    def test_rejects_nonfinite_and_unrounded_duration_over_maximum(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "corpus.json"
+            for seconds in (
+                30.04,
+                30.049,
+                float("nan"),
+                float("inf"),
+                float("-inf"),
+                10**400,
+            ):
+                with self.subTest(seconds=seconds):
+                    write_corpus(
+                        path,
+                        samples=[
+                            {
+                                "id": "gasp",
+                                "kind": "human-gasp",
+                                "prompt": "One isolated gasp, no speech.",
+                                "seconds": seconds,
+                            }
+                        ],
+                    )
+                    with self.assertRaisesRegex(
+                        SoundEffectBenchmarkError, "duration is invalid"
+                    ):
+                        load_sound_effect_corpus(path)
+
+    def test_retains_valid_duration_rounding(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "corpus.json"
+            write_corpus(
+                path,
+                samples=[
+                    {
+                        "id": "rounded",
+                        "kind": "  événement  ",
+                        "prompt": "  Короткий звук.  ",
+                        "seconds": 1.56,
+                    },
+                    {
+                        "id": "maximum",
+                        "kind": "event",
+                        "prompt": "A maximum duration sound.",
+                        "seconds": 30,
+                    },
+                ],
+            )
+
+            corpus = load_sound_effect_corpus(path)
+
+        self.assertEqual(
+            [sample["seconds"] for sample in corpus["samples"]], [1.6, 30.0]
+        )
+        self.assertEqual(corpus["samples"][0]["kind"], "événement")
+        self.assertEqual(corpus["samples"][0]["prompt"], "Короткий звук.")
+
+    def test_invalid_duration_fails_before_cuda_or_pipeline(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            write_corpus(
+                corpus,
+                samples=[
+                    {
+                        "id": "too-long",
+                        "kind": "event",
+                        "prompt": "An invalid sound.",
+                        "seconds": 30.04,
+                    }
+                ],
+            )
+
+            def fail_pipeline_load(*args, **kwargs):
+                raise AssertionError("pipeline must not load")
+
+            with (
+                patch(
+                    "vntts.authoring.sound_effect_benchmark.inspect_cuda",
+                    side_effect=AssertionError("CUDA inspection must not run"),
+                ),
+                self.assertRaisesRegex(
+                    SoundEffectBenchmarkError, "duration is invalid"
+                ),
+            ):
+                benchmark_sound_effects(
+                    corpus,
+                    root / "output",
+                    pipeline_factory=fail_pipeline_load,
+                )
 
 
 if __name__ == "__main__":

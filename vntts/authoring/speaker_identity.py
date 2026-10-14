@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import io
-import json
 import math
 from collections.abc import Callable, Iterable, Mapping
 from importlib.metadata import version
@@ -15,18 +14,22 @@ from typing import TypeAlias, TypedDict
 
 import numpy as np
 import soundfile as sf
-from vntts_artifacts.file_integrity import sha256_file
+from numpy.typing import NDArray
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
+    assert_authority_snapshot,
     canonical_document_sha256,
     capture_authority_file,
     write_json_document_no_replace,
 )
 from vntts.authoring.speaker_identity_model import (
-    IMPLEMENTATION_VERSION,
+    RUNTIME_VERSION,
     managed_speaker_identity_status,
 )
+from vntts.json_types import decode_json, has_schema_version
+from vntts.numeric_values import optional_finite_number
+from vntts.path_safety import read_regular_text
 from vntts.voices import CharacterVoiceRegistry, read_voice_reference_bytes
 
 INVENTORY_SCHEMA = "vntts.speaker-reference-inventory"
@@ -51,13 +54,16 @@ class _Reference(TypedDict):
     duration_seconds: float
 
 
-class _Inventory(TypedDict):
+class _InventoryBody(TypedDict):
     schema: str
     schema_version: int
     voice_manifest: str
     voice_manifest_sha256: str
     reference_count: int
     references: list[_Reference]
+
+
+class _Inventory(_InventoryBody):
     inventory_id: str
 
 
@@ -68,12 +74,35 @@ class _Pair(TypedDict):
     relationship: str
 
 
-class _Labels(TypedDict):
+class _ScoredPair(_Pair):
+    cosine_distance: float
+
+
+class _LabelsBody(TypedDict):
     schema: str
     schema_version: int
     inventory_id: str
     pairs: list[_Pair]
+
+
+class _Labels(_LabelsBody):
     labels_id: str
+
+
+class _FitMetrics(TypedDict):
+    positive_count: int
+    negative_count: int
+    max_positive_distance: float | None
+    min_negative_distance: float | None
+    separated: bool
+
+
+class _HeldOutMetrics(TypedDict):
+    positive_count: int
+    negative_count: int
+    confusion: dict[str, int]
+    boundary_violation_count: int
+    boundary_violations: list[JsonDocument]
 
 
 PARTITIONS = frozenset({"fit", "held-out"})
@@ -85,10 +114,12 @@ class SpeakerIdentityError(RuntimeError):
 
 def build_reference_inventory(manifest_path: str | Path) -> _Inventory:
     """Capture every declared voice reference without changing its authority."""
-    manifest_path = Path(manifest_path).expanduser().resolve()
-    manifest_sha256 = sha256_file(manifest_path)
     try:
-        registry = CharacterVoiceRegistry.from_file(manifest_path)
+        manifest_path = Path(manifest_path).expanduser().resolve()
+        snapshot = capture_authority_file(manifest_path, "voice manifest")
+        registry = CharacterVoiceRegistry.from_document(
+            snapshot.json_document("voice manifest"), manifest_path
+        )
     except Exception as error:
         raise SpeakerIdentityError(f"Unable to load voice manifest: {error}") from error
     references: list[_Reference] = []
@@ -113,7 +144,7 @@ def build_reference_inventory(manifest_path: str | Path) -> _Inventory:
             }
             references.append(
                 {
-                    "reference_id": canonical_document_sha256(identity),
+                    "reference_id": _document_sha256(identity),
                     "character": voice.character,
                     "speaker": voice.speaker,
                     "path": relative,
@@ -128,24 +159,23 @@ def build_reference_inventory(manifest_path: str | Path) -> _Inventory:
         raise SpeakerIdentityError("Voice manifest has no references")
     if len({item["reference_id"] for item in references}) != len(references):
         raise SpeakerIdentityError("Voice manifest repeats a reference identity")
-    if sha256_file(manifest_path) != manifest_sha256:
-        raise SpeakerIdentityError("Voice manifest changed while inventory was built")
-    body: JsonDocument = {
+    try:
+        assert_authority_snapshot(snapshot, "voice manifest")
+    except AuthoringAuthorityError as error:
+        raise SpeakerIdentityError(
+            f"Voice manifest changed while inventory was built: {error}"
+        ) from error
+    body: _InventoryBody = {
         "schema": INVENTORY_SCHEMA,
         "schema_version": SCHEMA_VERSION,
         "voice_manifest": str(manifest_path),
-        "voice_manifest_sha256": manifest_sha256,
+        "voice_manifest_sha256": snapshot.sha256,
         "reference_count": len(references),
         "references": references,
     }
     return {
-        "schema": INVENTORY_SCHEMA,
-        "schema_version": SCHEMA_VERSION,
-        "voice_manifest": str(manifest_path),
-        "voice_manifest_sha256": manifest_sha256,
-        "reference_count": len(references),
-        "references": references,
-        "inventory_id": canonical_document_sha256(body),
+        **body,
+        "inventory_id": _document_sha256(body),
     }
 
 
@@ -171,7 +201,6 @@ def build_labelled_pairs(inventory: _Inventory, pairs: Iterable[object]) -> _Lab
     """Bind human labels to exact inventory references and non-overlapping splits."""
     _validate_inventory_shape(inventory)
     by_id = {item["reference_id"]: item for item in inventory["references"]}
-    known = set(by_id)
     normalized: list[_Pair] = []
     seen: set[tuple[str, str]] = set()
     checksum_partitions: dict[str, str] = {}
@@ -182,7 +211,7 @@ def build_labelled_pairs(inventory: _Inventory, pairs: Iterable[object]) -> _Lab
         right = _required_text(pair.get("right_reference_id"), f"pair {index} right")
         if left == right:
             raise SpeakerIdentityError(f"Labelled pair {index} repeats one reference")
-        if left not in known or right not in known:
+        if left not in by_id or right not in by_id:
             raise SpeakerIdentityError(
                 f"Labelled pair {index} uses an unknown reference"
             )
@@ -228,18 +257,15 @@ def build_labelled_pairs(inventory: _Inventory, pairs: Iterable[object]) -> _Lab
             item["right_reference_id"],
         )
     )
-    body: JsonDocument = {
+    body: _LabelsBody = {
         "schema": LABELS_SCHEMA,
         "schema_version": SCHEMA_VERSION,
         "inventory_id": inventory["inventory_id"],
         "pairs": normalized,
     }
     return {
-        "schema": LABELS_SCHEMA,
-        "schema_version": SCHEMA_VERSION,
-        "inventory_id": inventory["inventory_id"],
-        "pairs": normalized,
-        "labels_id": canonical_document_sha256(body),
+        **body,
+        "labels_id": _document_sha256(body),
     }
 
 
@@ -249,9 +275,14 @@ def write_labelled_pairs(document: _Labels, output: str | Path) -> Path:
 
 
 def load_labelled_pairs(path: str | Path, inventory: _Inventory) -> _Labels:
-    document = _load_json(path, "speaker-identity labels")
+    return _admit_labelled_pairs(_load_json(path, "speaker-identity labels"), inventory)
+
+
+def _admit_labelled_pairs(
+    document: Mapping[str, object], inventory: _Inventory
+) -> _Labels:
     _validate_labels_shape(document)
-    if document.get("inventory_id") != inventory["inventory_id"]:
+    if document.get("inventory_id") != inventory.get("inventory_id"):
         raise SpeakerIdentityError("Labels belong to a different reference inventory")
     rebuilt = build_labelled_pairs(inventory, _pairs(document.get("pairs")))
     if rebuilt != document:
@@ -266,10 +297,7 @@ def build_speaker_identity_report(
     model: Mapping[str, object],
 ) -> JsonDocument:
     """Fit one safe threshold and report held-out evidence without applying it."""
-    _validate_inventory_shape(inventory)
-    _validate_labels_shape(labels)
-    if labels["inventory_id"] != inventory["inventory_id"]:
-        raise SpeakerIdentityError("Labels belong to a different reference inventory")
+    labels = _admit_labelled_pairs(labels, inventory)
     by_id = {item["reference_id"]: item for item in inventory["references"]}
     required_ids = sorted(
         {
@@ -278,28 +306,37 @@ def build_speaker_identity_report(
             for field in ("left_reference_id", "right_reference_id")
         }
     )
-    vectors = {}
+    vectors: dict[str, NDArray[np.float64]] = {}
     for reference_id in required_ids:
         item = by_id[reference_id]
         path = Path(inventory["voice_manifest"]).parent / item["path"]
         try:
-            payload = capture_authority_file(
+            snapshot = capture_authority_file(
                 path,
                 f"speaker reference {item['path']}",
                 root=Path(inventory["voice_manifest"]).parent,
-            ).payload
+            )
         except AuthoringAuthorityError as error:
             raise SpeakerIdentityError(str(error)) from error
-        if _sha256_bytes(payload) != item["sha256"]:
+        if snapshot.sha256 != item["sha256"]:
             raise SpeakerIdentityError(f"Reference changed: {item['path']}")
-        vector = np.asarray(embed(payload), dtype=np.float64).reshape(-1)
+        try:
+            vector = np.asarray(embed(snapshot.payload), dtype=np.float64).reshape(-1)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise SpeakerIdentityError(
+                f"Invalid embedding for {item['path']}: {error}"
+            ) from error
         if not vector.size or not np.all(np.isfinite(vector)):
             raise SpeakerIdentityError(f"Invalid embedding for {item['path']}")
+        if vectors and vector.size != next(iter(vectors.values())).size:
+            raise SpeakerIdentityError(
+                f"Inconsistent embedding dimensions for {item['path']}"
+            )
         norm = float(np.linalg.norm(vector))
         if not math.isfinite(norm) or norm <= 0:
             raise SpeakerIdentityError(f"Zero embedding for {item['path']}")
         vectors[reference_id] = vector / norm
-    results = []
+    results: list[_ScoredPair] = []
     for pair in labels["pairs"]:
         distance = float(
             1.0
@@ -312,7 +349,7 @@ def build_speaker_identity_report(
                 1.0,
             )
         )
-        results.append({**copy.deepcopy(pair), "cosine_distance": distance})
+        results.append({**pair, "cosine_distance": distance})
     threshold, fit = _fit_threshold(results)
     held_out = _held_out_result(results, threshold)
     eligible = bool(
@@ -336,13 +373,21 @@ def build_speaker_identity_report(
         "authority": "diagnostic-only",
         "pairs": results,
     }
-    return {**body, "report_id": canonical_document_sha256(body)}
+    return {**body, "report_id": _document_sha256(body)}
 
 
 def write_speaker_identity_report(
     document: Mapping[str, object], output: str | Path
 ) -> Path:
-    if document.get("schema") != REPORT_SCHEMA:
+    if (
+        document.get("schema") != REPORT_SCHEMA
+        or not has_schema_version(document, SCHEMA_VERSION)
+        or document.get("authority") != "diagnostic-only"
+        or document.get("report_id")
+        != _document_sha256(
+            {key: value for key, value in document.items() if key != "report_id"}
+        )
+    ):
         raise SpeakerIdentityError("Unsupported speaker-identity report")
     return _write_no_replace(output, document, "speaker-identity report")
 
@@ -393,8 +438,8 @@ def require_speechbrain_runtime(*, device: str = "cpu") -> None:
             "Speaker-identity runtime is unavailable. Run "
             "'uv sync --extra speaker-identity'."
         )
-    if version("speechbrain") != IMPLEMENTATION_VERSION:
-        raise SpeakerIdentityError(f"SpeechBrain {IMPLEMENTATION_VERSION} is required")
+    if version("speechbrain") != RUNTIME_VERSION:
+        raise SpeakerIdentityError(f"SpeechBrain {RUNTIME_VERSION} is required")
 
 
 def installed_model_descriptor() -> JsonDocument:
@@ -408,36 +453,46 @@ def installed_model_descriptor() -> JsonDocument:
         "file_sha256s": status["actual_files"],
         "licenses": status["licenses"],
         "runtime": status["runtime"],
-        "implementation_version": IMPLEMENTATION_VERSION,
+        "implementation_version": RUNTIME_VERSION,
     }
 
 
-def _fit_threshold(results: list[JsonDocument]) -> tuple[float | None, JsonDocument]:
+def _fit_threshold(results: list[_ScoredPair]) -> tuple[float | None, _FitMetrics]:
     fit = [item for item in results if item["partition"] == "fit"]
     positives = [
-        _required_float(item.get("cosine_distance"), "cosine distance")
+        item["cosine_distance"]
         for item in fit
         if item["relationship"] == "same-speaker"
     ]
     negatives = [
-        _required_float(item.get("cosine_distance"), "cosine distance")
+        item["cosine_distance"]
         for item in fit
         if item["relationship"] != "same-speaker"
     ]
-    separated = bool(positives and negatives and max(positives) < min(negatives))
-    threshold = (max(positives) + min(negatives)) / 2 if separated else None
+    max_positive = max(positives, default=None)
+    min_negative = min(negatives, default=None)
+    threshold = (
+        min(
+            (max_positive + min_negative) / 2,
+            math.nextafter(min_negative, max_positive),
+        )
+        if max_positive is not None
+        and min_negative is not None
+        and max_positive < min_negative
+        else None
+    )
     return threshold, {
         "positive_count": len(positives),
         "negative_count": len(negatives),
-        "max_positive_distance": max(positives) if positives else None,
-        "min_negative_distance": min(negatives) if negatives else None,
-        "separated": separated,
+        "max_positive_distance": max_positive,
+        "min_negative_distance": min_negative,
+        "separated": threshold is not None,
     }
 
 
 def _held_out_result(
-    results: list[JsonDocument], threshold: float | None
-) -> JsonDocument:
+    results: list[_ScoredPair], threshold: float | None
+) -> _HeldOutMetrics:
     held_out = [item for item in results if item["partition"] == "held-out"]
     counts = {
         "true_positive": 0,
@@ -445,13 +500,11 @@ def _held_out_result(
         "false_positive": 0,
         "false_negative": 0,
     }
-    boundary_violations = []
+    boundary_violations: list[JsonDocument] = []
     for item in held_out:
         actual_positive = item["relationship"] == "same-speaker"
         predicted_positive = (
-            threshold is not None
-            and _required_float(item.get("cosine_distance"), "cosine distance")
-            <= threshold
+            threshold is not None and item["cosine_distance"] <= threshold
         )
         key = (
             "true_positive"
@@ -473,12 +526,8 @@ def _held_out_result(
                 }
             )
     return {
-        "positive_count": sum(
-            item["relationship"] == "same-speaker" for item in held_out
-        ),
-        "negative_count": sum(
-            item["relationship"] != "same-speaker" for item in held_out
-        ),
+        "positive_count": counts["true_positive"] + counts["false_negative"],
+        "negative_count": counts["true_negative"] + counts["false_positive"],
         "confusion": counts,
         "boundary_violation_count": len(boundary_violations),
         "boundary_violations": boundary_violations,
@@ -489,44 +538,46 @@ def _validate_inventory_shape(document: Mapping[str, object]) -> None:
     references = document.get("references")
     if (
         document.get("schema") != INVENTORY_SCHEMA
-        or document.get("schema_version") != SCHEMA_VERSION
-        or not isinstance(document.get("voice_manifest"), str)
+        or not has_schema_version(document, SCHEMA_VERSION)
         or not isinstance(references, list)
+        or type(document.get("reference_count")) is not int
         or document.get("reference_count") != len(references)
         or document.get("inventory_id")
-        != canonical_document_sha256(
+        != _document_sha256(
             {key: value for key, value in document.items() if key != "inventory_id"}
         )
     ):
         raise SpeakerIdentityError("Unsupported or inconsistent reference inventory")
-    required = {
-        "reference_id",
-        "character",
-        "speaker",
-        "path",
-        "sha256",
-        "sample_rate_hz",
-        "channels",
-        "frames",
-        "duration_seconds",
-    }
-    identities: list[str] = []
-    for item in references:
-        if not isinstance(item, dict) or not required <= item.keys():
-            raise SpeakerIdentityError("Reference inventory contains an invalid entry")
-        identities.append(_required_text(item.get("reference_id"), "reference ID"))
+    _required_text(document.get("voice_manifest"), "voice manifest")
+    _required_text(document.get("voice_manifest_sha256"), "voice manifest checksum")
+    identities = [_validate_reference_shape(item) for item in references]
     if len(set(identities)) != len(identities):
         raise SpeakerIdentityError("Reference inventory repeats an identity")
+
+
+def _validate_reference_shape(item: object) -> str:
+    if not isinstance(item, dict):
+        raise SpeakerIdentityError("Reference inventory contains an invalid entry")
+    for field in ("character", "speaker", "path", "sha256"):
+        _required_text(item.get(field), field)
+    for field, minimum in (("sample_rate_hz", 1), ("channels", 1), ("frames", 0)):
+        value = item.get(field)
+        if type(value) is not int or value < minimum:
+            raise SpeakerIdentityError(f"Reference inventory has invalid {field}")
+    duration = optional_finite_number(item.get("duration_seconds"))
+    if duration is None or duration < 0:
+        raise SpeakerIdentityError("Reference inventory has invalid duration_seconds")
+    return _required_text(item.get("reference_id"), "reference ID")
 
 
 def _validate_labels_shape(document: Mapping[str, object]) -> None:
     pairs = document.get("pairs")
     if (
         document.get("schema") != LABELS_SCHEMA
-        or document.get("schema_version") != SCHEMA_VERSION
+        or not has_schema_version(document, SCHEMA_VERSION)
         or not isinstance(pairs, list)
         or document.get("labels_id")
-        != canonical_document_sha256(
+        != _document_sha256(
             {key: value for key, value in document.items() if key != "labels_id"}
         )
     ):
@@ -543,7 +594,9 @@ def _validate_labels_shape(document: Mapping[str, object]) -> None:
 
 def _load_json(path: str | Path, label: str) -> JsonDocument:
     try:
-        document = json.loads(Path(path).expanduser().resolve().read_text("utf-8"))
+        document = decode_json(
+            read_regular_text(Path(path).expanduser().resolve(), "utf-8")
+        )
     except (OSError, ValueError) as error:
         raise SpeakerIdentityError(f"Unable to read {label}: {error}") from error
     if not isinstance(document, dict):
@@ -566,16 +619,19 @@ def _required_text(value: object, label: str) -> str:
     return value.strip()
 
 
-def _required_float(value: object, label: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise SpeakerIdentityError(f"{label.capitalize()} is invalid")
-    return float(value)
-
-
 def _pairs(value: object) -> list[object]:
     if not isinstance(value, list):
         raise SpeakerIdentityError("Speaker labels contain an invalid pair")
     return value
+
+
+def _document_sha256(document: object) -> str:
+    try:
+        return canonical_document_sha256(document)
+    except (TypeError, ValueError) as error:
+        raise SpeakerIdentityError(
+            f"Speaker evidence cannot be canonically hashed: {error}"
+        ) from error
 
 
 def _sha256_bytes(payload: bytes) -> str:

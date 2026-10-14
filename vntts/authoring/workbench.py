@@ -3,21 +3,18 @@
 from __future__ import annotations
 
 import importlib
-import re
 from pathlib import Path
 
-from vntts_artifacts.file_integrity import sha256_file as sha256_file
-
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.bulk_generation import (
-    BulkGenerationError,
-    ReviewCommit,
-    load_review_audio_bytes,
-    review_generation_item,
-)
+from vntts.authoring.bulk_generation import BulkGenerationError
 from vntts.authoring.failure_repair import (
     INLINE_PAUSE_MARKER,
     SENTENCE_BOUNDARY_SEGMENTATION,
+)
+from vntts.authoring.generation_review import (
+    ReviewCommit,
+    load_review_audio_bytes,
+    review_generation_item,
 )
 from vntts.authoring.terminal_conflict_records import is_terminal_review_outcome
 from vntts.authoring.workbench_contracts import (
@@ -58,6 +55,24 @@ from vntts.authoring.workspace_creation import (
     default_workspaces_root,
 )
 from vntts.authoring.workspace_inspection import (
+    PACE_MINIMUM_LENGTH_BUCKET_SAMPLES as PACE_MINIMUM_LENGTH_BUCKET_SAMPLES,
+)
+from vntts.authoring.workspace_inspection import (
+    PACE_MINIMUM_VOICE_SAMPLES as PACE_MINIMUM_VOICE_SAMPLES,
+)
+from vntts.authoring.workspace_inspection import (
+    PACE_MINIMUM_WORDS as PACE_MINIMUM_WORDS,
+)
+from vntts.authoring.workspace_inspection import (
+    PACE_SLOW_MINIMUM_DELTA_WPM as PACE_SLOW_MINIMUM_DELTA_WPM,
+)
+from vntts.authoring.workspace_inspection import (
+    PACE_SLOW_RELATIVE_RATIO as PACE_SLOW_RELATIVE_RATIO,
+)
+from vntts.authoring.workspace_inspection import (
+    REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS as REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS,
+)
+from vntts.authoring.workspace_inspection import (
     discover_imports,
     discover_workspaces,
     generation_command,
@@ -81,18 +96,12 @@ from vntts.authoring.workspace_outcome_merge import (
 from vntts.authoring.workspace_voice_runtime import (
     FailureReferenceRuntimeBinding,
 )
+from vntts.document_identity import sha256_file as sha256_file
 
 _canonical_sha256 = canonical_document_sha256
 
 REVIEW_ATTENTION_POLICY_VERSION = 3
 REVIEW_NOTABLE_SILENCE_RATIO = None
-REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS = 1.2
-PACE_MINIMUM_WORDS = 5
-PACE_MINIMUM_LENGTH_BUCKET_SAMPLES = 3
-PACE_MINIMUM_VOICE_SAMPLES = 5
-PACE_SLOW_RELATIVE_RATIO = 0.80
-PACE_SLOW_MINIMUM_DELTA_WPM = 20.0
-_IMPORT_ID_PATTERN = re.compile(r"legacy-[0-9a-f]{24}")
 
 
 def review_technical_summary(item: ReviewItem) -> str:

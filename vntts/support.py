@@ -10,11 +10,13 @@ import subprocess
 import sys
 import zipfile
 from collections import Counter, OrderedDict, deque
+from collections.abc import Sequence
 from contextvars import ContextVar
 from dataclasses import asdict, fields
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+from statistics import mean
 from threading import RLock
 from typing import Callable, Mapping, TypedDict
 from uuid import UUID
@@ -23,8 +25,12 @@ from vntts_artifacts.atomic_io import atomic_output_path
 
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.diagnostics import macos_permission_warnings
-from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION
+from vntts.document_identity import is_lowercase_sha256, sha256_file
+from vntts.json_types import decode_json, has_schema_version
+from vntts.numeric_values import optional_finite_number
+from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION, OCRReviewMetadata
 from vntts.onboarding import probe_audio_output, probe_tesseract
+from vntts.path_safety import open_regular_binary
 from vntts.settings import AppSettings
 from vntts.versioned_json import read_versioned_json
 from vntts.voice_library import VoiceLibrary
@@ -340,14 +346,13 @@ class GenerationTimelineLog:
             for timeline in self.timelines.values():
                 for event in timeline["events"].values():
                     for name, (stage, field) in fields.items():
-                        value = event.get(field)
+                        value = optional_finite_number(event.get(field))
                         if (
                             event.get("stage") == stage
-                            and isinstance(value, (int, float))
-                            and not isinstance(value, bool)
+                            and value is not None
                             and value >= 0
                         ):
-                            samples[name].append(float(value))
+                            samples[name].append(value)
         return {
             name: {
                 "samples": len(values),
@@ -362,7 +367,7 @@ class GenerationTimelineLog:
         if self.path is None:
             return
         try:
-            from vntts_artifacts.atomic_io import atomic_write_json
+            from durable_file import atomic_write_json
 
             self.path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_json(
@@ -405,9 +410,8 @@ class GenerationTimelineLog:
             serialized.append(
                 {key: value for key, value in event.items() if key != "occurred_at"}
                 | {
-                    "elapsed_ms": round(
-                        (_timeline_occurred_at(event) - started_at) * 1000,
-                        3,
+                    "elapsed_ms": _sanitize_event_value(
+                        round((_timeline_occurred_at(event) - started_at) * 1000, 3)
                     )
                 }
             )
@@ -516,7 +520,7 @@ def _read_bounded_json_lines(
     if path is None:
         return ()
     try:
-        with path.open("rb") as source:
+        with open_regular_binary(path) as source:
             source.seek(0, 2)
             offset = max(0, source.tell() - maximum_bytes)
             source.seek(offset)
@@ -528,7 +532,7 @@ def _read_bounded_json_lines(
     entries: SupportEntries = []
     for line in payload.splitlines():
         try:
-            entry = json.loads(line)
+            entry = decode_json(line)
         except TypeError, ValueError:
             continue
         if isinstance(entry, dict):
@@ -569,9 +573,10 @@ class PerformanceLog(RuntimeSupportLog):
     def record(
         self, operation: str, elapsed_ms: float, outcome: str, **details: object
     ) -> None:
-        if not math.isfinite(elapsed_ms):
+        number = optional_finite_number(elapsed_ms)
+        if number is None:
             return
-        if outcome == "complete" and elapsed_ms < 100:
+        if outcome == "complete" and number < 100:
             return
         self.add(
             "performance",
@@ -591,7 +596,7 @@ class PerformanceLog(RuntimeSupportLog):
             if (
                 not isinstance(operation, str)
                 or not isinstance(elapsed_ms, (int, float))
-                or isinstance(elapsed_ms, bool)
+                or optional_finite_number(elapsed_ms) is None
             ):
                 continue
             aggregate = summary.setdefault(
@@ -607,7 +612,17 @@ class PerformanceLog(RuntimeSupportLog):
                     aggregate[f"max_{name}"] = max(
                         aggregate.get(f"max_{name}", 0), value
                     )
-        return {"threshold_ms": 100, "summary": summary, "events": events}
+        return {
+            "threshold_ms": 100,
+            "summary": {
+                operation: {
+                    **aggregate,
+                    "total_ms": _sanitize_event_value(aggregate["total_ms"]),
+                }
+                for operation, aggregate in summary.items()
+            },
+            "events": events,
+        }
 
 
 performance_log = PerformanceLog()
@@ -876,7 +891,8 @@ class NativeSpeechLog(RuntimeSupportLog):
                 "dropped_events": max(0, self.total_events - len(events)),
                 "outcomes": dict(self.outcomes),
                 "request_seconds": {
-                    key: round(value, 3) for key, value in self.request_seconds.items()
+                    key: _sanitize_event_value(round(value, 3))
+                    for key, value in self.request_seconds.items()
                 },
                 "latest_runtime": self.latest_runtime,
                 "active_requests": list(self.active_requests.values()),
@@ -969,14 +985,14 @@ def _read_previous_generation_timelines(path: Path) -> dict[str, object] | None:
         return None
     limit = 2 * 1024 * 1024
     try:
-        with path.open("rb") as source:
+        with open_regular_binary(path) as source:
             payload = source.read(limit + 1)
     except OSError:
         return None
     if len(payload) > limit:
         return None
     try:
-        document = json.loads(payload)
+        document = decode_json(payload)
     except UnicodeError, json.JSONDecodeError:
         return None
     if not isinstance(document, dict) or not isinstance(
@@ -1179,14 +1195,14 @@ class PregenerationSupportState:
         if self.path.is_symlink():
             return None
         try:
-            with self.path.open("rb") as source:
+            with open_regular_binary(self.path) as source:
                 payload = source.read(_PERSISTED_SUPPORT_READ_LIMIT + 1)
         except OSError:
             return None
         if len(payload) > _PERSISTED_SUPPORT_READ_LIMIT:
             return None
         try:
-            document = json.loads(payload)
+            document = decode_json(payload)
         except UnicodeError, json.JSONDecodeError:
             return None
         return _loaded_pregeneration_support(document)
@@ -1305,7 +1321,7 @@ def _pregeneration_state_summary(path: str | Path | None) -> SupportDocument:
         return {"available": False, "reason": "state path is unsafe"}
     limit = 32 * 1024 * 1024
     try:
-        with path.open("rb") as source:
+        with open_regular_binary(path) as source:
             payload = source.read(limit + 1)
     except FileNotFoundError:
         return {"available": False, "reason": "state is not present"}
@@ -1314,31 +1330,40 @@ def _pregeneration_state_summary(path: str | Path | None) -> SupportDocument:
     if len(payload) > limit:
         return {"available": False, "reason": "state exceeds support read limit"}
     try:
-        document = json.loads(payload)
+        document = decode_json(payload)
     except UnicodeError, json.JSONDecodeError:
         return {"available": False, "reason": "state could not be read"}
-    items = document.get("items") if isinstance(document, dict) else None
+    if not isinstance(document, dict):
+        return {"available": False, "reason": "state items are invalid"}
+    items = document.get("items")
     if not isinstance(items, dict):
         return {"available": False, "reason": "state items are invalid"}
-    statuses = Counter(
-        item.get("status")
-        for item in items.values()
-        if isinstance(item, dict) and isinstance(item.get("status"), str)
-    )
-    failures = [
-        _pregeneration_failure_summary(queue_id, item)
-        for queue_id, item in sorted(items.items())
-        if isinstance(queue_id, str)
-        and isinstance(item, dict)
-        and item.get("status") == "failed"
-    ]
     return {
         "available": True,
         "state_sha256": hashlib.sha256(payload).hexdigest(),
         "queue_sha256": _sha256_support_value(document.get("queue_sha256")),
+        **_pregeneration_item_summary(items),
+    }
+
+
+def _pregeneration_item_summary(items: dict[str, object]) -> SupportDocument:
+    statuses: Counter[str] = Counter()
+    failures: list[SupportDocument] = []
+    failed_item_count = 0
+    for queue_id, item in sorted(items.items()):
+        if not isinstance(item, dict):
+            continue
+        status = item.get("status")
+        if isinstance(status, str):
+            statuses[status] += 1
+        if isinstance(queue_id, str) and status == "failed":
+            failed_item_count += 1
+            if len(failures) < 64:
+                failures.append(_pregeneration_failure_summary(queue_id, item))
+    return {
         "status_counts": dict(sorted(statuses.items())),
-        "failed_items": failures[:64],
-        "failed_items_truncated": max(0, len(failures) - 64),
+        "failed_items": failures,
+        "failed_items_truncated": max(0, failed_item_count - 64),
     }
 
 
@@ -1396,7 +1421,7 @@ def _plain_support_value(value: object) -> str | None:
 
 def _sha256_support_value(value: object) -> str | None:
     value = str(value or "")
-    return value if re.fullmatch(r"[0-9a-f]{64}", value) else None
+    return value if is_lowercase_sha256(value) else None
 
 
 def _nonnegative_support_int(value: object) -> int | None:
@@ -1415,10 +1440,7 @@ def _support_mapping(value: object) -> SupportDocument:
 
 def _loaded_pregeneration_support(document: object) -> SupportDocument | None:
     source = _support_mapping(document)
-    if (
-        type(source.get("schema_version")) is not int
-        or source.get("schema_version") != 1
-    ):
+    if not has_schema_version(source, 1):
         return None
     return {
         "schema_version": 1,
@@ -1553,7 +1575,7 @@ def collect_active_content_identity(settings: AppSettings) -> SupportDocument:
             path = Path(story_path).expanduser()
             return {
                 "available": True,
-                "active_story_index_sha256": _file_sha256(path),
+                "active_story_index_sha256": sha256_file(path),
             }
         except OSError:
             pass
@@ -1637,7 +1659,7 @@ def _active_pack_identity(path: str, _modified_ns: int, size: int) -> SupportDoc
             "reason": "pack manifest exceeds support read limit",
         }
     try:
-        with Path(path).open("rb") as source:
+        with open_regular_binary(path) as source:
             payload = source.read(_ACTIVE_CONTENT_READ_LIMIT + 1)
     except OSError, UnicodeError, json.JSONDecodeError:
         return {"available": False, "reason": "pack manifest could not be read"}
@@ -1647,7 +1669,7 @@ def _active_pack_identity(path: str, _modified_ns: int, size: int) -> SupportDoc
             "reason": "pack manifest exceeds support read limit",
         }
     try:
-        document = json.loads(payload)
+        document = decode_json(payload)
     except UnicodeError, json.JSONDecodeError:
         return {"available": False, "reason": "pack manifest could not be read"}
     if not isinstance(document, dict):
@@ -1692,13 +1714,13 @@ def _active_story_ids(root: Path, component: SupportDocument) -> SupportDocument
         path.relative_to(root)
         if path.stat().st_size > _ACTIVE_CONTENT_READ_LIMIT:
             raise ValueError("story index exceeds support read limit")
-        with path.open("rb") as source:
+        with open_regular_binary(path) as source:
             payload = source.read(_ACTIVE_CONTENT_READ_LIMIT + 1)
         if len(payload) > _ACTIVE_CONTENT_READ_LIMIT:
             raise ValueError("story index exceeds support read limit")
         story_ids: set[str] = set()
         for line in payload.splitlines():
-            record: object = json.loads(line)
+            record: object = decode_json(line)
             if not isinstance(record, dict):
                 continue
             collection_id = record.get("collection_id")
@@ -1716,14 +1738,6 @@ def _active_story_ids(root: Path, component: SupportDocument) -> SupportDocument
         "active_story_ids": values[:256],
         "active_story_ids_truncated": max(0, len(values) - 256),
     }
-
-
-def _file_sha256(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 class SupportBundleBuilder:
@@ -2015,11 +2029,18 @@ def _sanitize_native_details(details: object) -> SupportDocument:
         key: sanitized
         for key, value in details.items()
         if key in _native_fields
-        and (sanitized := _sanitize_native_value(value)) is not _NATIVE_DROP
+        and (
+            sanitized := _sanitize_native_value(
+                value, max_depth=4 if key == "resources" else 3
+            )
+        )
+        is not _NATIVE_DROP
     }
 
 
-def _sanitize_native_value(value: object, depth: int = 0) -> object:
+def _sanitize_native_value(
+    value: object, depth: int = 0, *, max_depth: int = 3
+) -> object:
     if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, float):
@@ -2028,19 +2049,26 @@ def _sanitize_native_value(value: object, depth: int = 0) -> object:
         if _looks_like_local_path(value):
             return "<path>"
         return _redact_game_import_text(value)[:1024]
-    if depth >= 3:
+    if depth >= max_depth:
         return _NATIVE_DROP
     if isinstance(value, (list, tuple)):
         return [
             item
-            for item in (_sanitize_native_value(item, depth + 1) for item in value[:32])
+            for item in (
+                _sanitize_native_value(item, depth + 1, max_depth=max_depth)
+                for item in value[:32]
+            )
             if item is not _NATIVE_DROP
         ]
     if isinstance(value, dict):
         return {
             str(key)[:80]: ("<redacted>" if _is_secret_name(key) else sanitized)
             for key, item in list(value.items())[:32]
-            if (sanitized := _sanitize_native_value(item, depth + 1))
+            if (
+                sanitized := _sanitize_native_value(
+                    item, depth + 1, max_depth=max_depth
+                )
+            )
             is not _NATIVE_DROP
         }
     return _NATIVE_DROP
@@ -2103,6 +2131,15 @@ def sanitize_diagnostic(snapshot: object) -> SupportDocument:
     return {key: _sanitize_event_value(value) for key, value in values.items()}
 
 
+def _ocr_metric_average(values: Sequence[int | float]) -> int | float | None:
+    if not values:
+        return None
+    try:
+        return round(mean(values), 2)
+    except OverflowError:
+        return None
+
+
 def collect_ocr_metrics(directory: str | Path) -> SupportDocument:
     directory = Path(directory).expanduser()
     confidences: list[float] = []
@@ -2119,19 +2156,10 @@ def collect_ocr_metrics(directory: str | Path) -> SupportDocument:
                     document_name="OCR review metadata",
                     allow_unversioned=True,
                 )
-                confidence = payload.get("confidence", 0)
-                attempt_count = payload.get("attempts", 0)
-                if not isinstance(confidence, (str, int, float)) or not isinstance(
-                    attempt_count, (str, int, float)
-                ):
-                    raise TypeError("OCR metrics must be numeric")
-                confidence = float(confidence)
-                attempt_count = int(attempt_count)
-                if not math.isfinite(confidence):
-                    raise ValueError("OCR confidence must be finite")
-                confidences.append(confidence)
-                attempts.append(attempt_count)
-                profiles[str(payload.get("preprocessing_profile") or "unknown")] += 1
+                metadata = OCRReviewMetadata.from_payload(payload)
+                confidences.append(metadata.confidence)
+                attempts.append(metadata.attempts)
+                profiles[metadata.preprocessing_profile] += 1
                 resolved += payload.get("resolved") is True
             except OSError, TypeError, ValueError, OverflowError:
                 invalid += 1
@@ -2140,12 +2168,8 @@ def collect_ocr_metrics(directory: str | Path) -> SupportDocument:
         "resolved_count": resolved,
         "pending_count": len(confidences) - resolved,
         "invalid_metadata_count": invalid,
-        "average_confidence": (
-            round(sum(confidences) / len(confidences), 2) if confidences else None
-        ),
-        "average_attempts": (
-            round(sum(attempts) / len(attempts), 2) if attempts else None
-        ),
+        "average_confidence": _ocr_metric_average(confidences),
+        "average_attempts": _ocr_metric_average(attempts),
         "preprocessing_profiles": dict(sorted(profiles.items())),
     }
 

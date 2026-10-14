@@ -19,10 +19,11 @@ from vntts_artifacts.voice_manifest import VoiceManifestError, write_voice_manif
 
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_inspection as workspace_inspection_module
+from tests.authoring_fixtures import create_test_workspace, tree_hashes
 from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_workbench import create_test_workspace
-from vntts.authoring.bulk_generation import ReviewCommit, process_started_at
+from vntts.authoring.bulk_generation import process_started_at
 from vntts.authoring.cohort_bundle import CohortReviewBundle
+from vntts.authoring.generation_review import ReviewCommit
 from vntts.authoring.workbench import (
     ReviewItem,
     load_workbench_projection_data,
@@ -33,7 +34,15 @@ from vntts.authoring.workbench import (
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QByteArray, QPoint, QProcess, QSettings, Qt, QTimer
+    from PySide6.QtCore import (
+        QByteArray,
+        QEvent,
+        QPoint,
+        QProcess,
+        QSettings,
+        Qt,
+        QTimer,
+    )
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
@@ -57,6 +66,7 @@ except ModuleNotFoundError as error:
         raise
     QApplication = None
     QProcess = None
+    QEvent = None
     QPoint = None
     QSettings = None
     Qt = None
@@ -589,6 +599,23 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             )
             self.assertIsNone(settings.value("review-exclude-narrator"))
             settings.endGroup()
+
+    def test_inspector_scroll_callback_does_not_outlive_dialog(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            dialog = AuthoringWorkbenchDialog(
+                self.create_workspace(root), settings=self.settings(root)
+            )
+            dialog.show()
+            self.application.processEvents()
+            dialog.generation_section.setChecked(False)
+            with patch("sys.excepthook") as exception_hook:
+                dialog.generation_section.setChecked(True)
+                dialog.close()
+                dialog.deleteLater()
+                self.application.sendPostedEvents(dialog, QEvent.Type.DeferredDelete)
+                self.application.processEvents()
+            exception_hook.assert_not_called()
 
     def test_scrollable_inspector_keeps_every_expanded_section_reachable(self):
         with TemporaryDirectory() as directory:
@@ -1787,8 +1814,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 ) as state_load,
                 patch.object(
                     workspace_inspection_module,
-                    "load_story_index_document",
-                    wraps=workspace_inspection_module.load_story_index_document,
+                    "load_story_index_snapshot",
+                    wraps=workspace_inspection_module.load_story_index_snapshot,
                 ) as story_load,
             ):
                 projection = _load_workbench_projection(
@@ -2025,6 +2052,46 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(
                 tuple(control.geometry().x() for control in controls), initial_positions
             )
+
+    def test_reference_playback_cannot_credit_interrupted_generated_review(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            self.mark_fixture_pending_review(workspace)
+            reviewer = Mock()
+            dialog = AuthoringWorkbenchDialog(
+                workspace, settings=self.settings(root), reviewer=reviewer
+            )
+            selected = dialog._selected_review_item()
+            before = tree_hashes(workspace)
+
+            dialog.play_selected_outcome()
+            self.wait_for(lambda: not dialog._playback_prepare_active)
+            self.assertIsNotNone(dialog._review_evidence.active)
+
+            dialog.play_reference()
+            self.assertIn("PLAYING REFERENCE", dialog.status.text())
+            self.assertIsNone(dialog._review_playback_buffer)
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+
+            self.assertFalse(dialog._review_evidence.allows(selected))
+            self.assertFalse(dialog.approve.isEnabled())
+            self.assertFalse(dialog.reject_button.isEnabled())
+            for decision in ("approved", "rejected"):
+                dialog.review_selected(decision)
+                self.assertFalse(dialog._review_save_active)
+            reviewer.assert_not_called()
+            self.assertEqual(tree_hashes(workspace), before)
+
+            dialog.play_selected_outcome()
+            self.wait_for(lambda: not dialog._playback_prepare_active)
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+
+            self.assertTrue(dialog._review_evidence.allows(selected))
+            self.assertTrue(dialog.approve.isEnabled())
+            self.assertTrue(dialog.reject_button.isEnabled())
+            reviewer.assert_not_called()
+            self.assertEqual(tree_hashes(workspace), before)
 
     def test_review_playback_uses_captured_bytes_after_source_replacement(self):
         with TemporaryDirectory() as directory:

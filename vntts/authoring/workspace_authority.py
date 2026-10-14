@@ -7,20 +7,18 @@ import hashlib
 import importlib
 import json
 import re
-import tempfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from re import Match
-from typing import Protocol, TypeAlias, TypeGuard
+from typing import Protocol, TypeAlias
 
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
 )
-from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
+from vntts_artifacts.voice_manifest import VoiceManifestError
 
 import vntts.authoring.legacy_import as legacy_import
 from vntts.authoring.audio_event_workspace import (
@@ -53,6 +51,7 @@ from vntts.authoring.offline_fallback_authority import (
     OfflineFallbackAuthorityError,
     validate_offline_fallback_authority_records,
 )
+from vntts.authoring.publication import publication_errors
 from vntts.authoring.queue_extension import (
     WORKSPACE_SCHEMA as QUEUE_EXTENSION_WORKSPACE_SCHEMA,
 )
@@ -91,6 +90,17 @@ from vntts.authoring.workspace_state import (
     share_workspace_generation_state,
     shared_workspace_state_reads,
 )
+from vntts.cleanup import temporary_directory
+from vntts.document_identity import sha256_file
+from vntts.json_types import decode_json
+from vntts.json_types import (
+    has_schema_version as _has_exact_schema_version,
+)
+from vntts.json_types import (
+    is_json_object as _is_json_document,
+)
+from vntts.path_safety import read_regular_bytes
+from vntts.voices import load_voice_manifest
 
 WorkspaceDocument: TypeAlias = JsonDocument
 ImportSnapshot: TypeAlias = JsonDocument
@@ -103,21 +113,10 @@ class _VoiceManifestEntry(Protocol):
     references: Sequence[str | Path]
 
 
-def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
-
-
 def _json_document(value: object, message: str) -> JsonDocument:
     if not _is_json_document(value):
         raise AuthoringWorkbenchError(message)
     return value
-
-
-def _has_exact_schema_version(document: Mapping[str, object], expected: int) -> bool:
-    return (
-        type(document.get("schema_version")) is int
-        and document.get("schema_version") == expected
-    )
 
 
 def _load_bound_workspace_queue(
@@ -129,7 +128,7 @@ def _load_bound_workspace_queue(
         queue_digest,
         "Workspace queue",
     )
-    with tempfile.TemporaryDirectory(prefix="vntts-queue-snapshot-") as temporary:
+    with temporary_directory(prefix="vntts-queue-snapshot-") as temporary:
         snapshot = Path(temporary) / "queue.jsonl"
         snapshot.write_bytes(payload)
         try:
@@ -360,7 +359,7 @@ def _load_workspace_validation_state(
         state_sha256 = hashlib.sha256(payload).hexdigest()
         try:
             queue = _load_bound_workspace_queue(directory, workspace)
-            state_document = json.loads(payload.decode("utf-8"))
+            state_document = decode_json(payload.decode("utf-8"))
             if not isinstance(state_document, dict):
                 raise BulkGenerationError("Generation state must be a JSON object")
             state = load_generation_state_from_snapshot(
@@ -626,7 +625,8 @@ def _validate_workspace_queue_extension(
         or target_path.is_symlink()
         or sha256_file(target_path)
         != _require_sha256(config["queue_sha256"], "Extended queue SHA-256")
-        or (directory / "queue.jsonl").read_bytes() != target_path.read_bytes()
+        or read_regular_bytes(directory / "queue.jsonl")
+        != read_regular_bytes(target_path)
     ):
         raise AuthoringWorkbenchError("Workspace queue extension snapshot changed")
     try:
@@ -635,14 +635,7 @@ def _validate_workspace_queue_extension(
         )
     except (OSError, QueueExtensionError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    added_items = ledger.get("added_items")
-    added_item_values = added_items if isinstance(added_items, list) else []
-    expected_ids = sorted(
-        queue_id
-        for record in added_item_values
-        if _is_json_document(record)
-        if isinstance((queue_id := record.get("queue_id")), str)
-    )
+    expected_ids = sorted(record["queue_id"] for record in ledger["added_items"])
     if (
         config.get("extension_queue_sha256") != ledger["extension_queue_sha256"]
         or config.get("extension_id") != ledger["extension_id"]
@@ -1357,7 +1350,7 @@ def _validate_voice_input(
 def _voice_control_inventory(
     directory: Path, entries: Sequence[_VoiceManifestEntry]
 ) -> list[JsonDocument]:
-    controls = []
+    controls: list[JsonDocument] = []
     seen = set()
     for entry in entries:
         for value in entry.references:
@@ -1531,6 +1524,7 @@ def _stable_workspace_state(
     return loaded
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _load_workspace_snapshot(
     workspace_directory: str | Path, label: str
 ) -> tuple[Path, WorkspaceDocument, str]:
@@ -2103,48 +2097,27 @@ def _workspace_failure_repair_policy(
 
 
 def _load_json(path: Path, description: str) -> JsonDocument:
-    value = load_json_object(path, description, error_type=AuthoringWorkbenchError)
-    if not isinstance(value, dict):
-        raise AuthoringWorkbenchError(f"{description} must be a JSON object")
-    return value
+    return load_json_object(path, description, error_type=AuthoringWorkbenchError)
 
 
 def _load_json_snapshot(
     path: Path, description: str
 ) -> tuple[JsonDocument, str, bytes]:
-    value = load_json_object_snapshot(
+    return load_json_object_snapshot(
         path, description, error_type=AuthoringWorkbenchError
     )
-    if (
-        not isinstance(value, tuple)
-        or len(value) != 3
-        or not isinstance(value[0], dict)
-        or not isinstance(value[1], str)
-        or not isinstance(value[2], bytes)
-    ):
-        raise AuthoringWorkbenchError(f"{description} snapshot is malformed")
-    return value
 
 
 def _safe_relative(value: object, label: str) -> Path:
-    path = safe_relative_path(value, label, error_type=AuthoringWorkbenchError)
-    if not isinstance(path, Path):
-        raise AuthoringWorkbenchError(f"{label} path is malformed")
-    return path
+    return safe_relative_path(value, label, error_type=AuthoringWorkbenchError)
 
 
 def _within(root: Path, relative: Path, label: str) -> Path:
-    path = contained_path(root, relative, label, error_type=AuthoringWorkbenchError)
-    if not isinstance(path, Path):
-        raise AuthoringWorkbenchError(f"{label} path is malformed")
-    return path
+    return contained_path(root, relative, label, error_type=AuthoringWorkbenchError)
 
 
 def _require_sha256(value: object, label: str) -> str:
-    digest = require_sha256(value, label, error_type=AuthoringWorkbenchError)
-    if not isinstance(digest, str):
-        raise AuthoringWorkbenchError(f"{label} is malformed")
-    return digest
+    return require_sha256(value, label, error_type=AuthoringWorkbenchError)
 
 
 def _required_text(value: object, label: str) -> str:

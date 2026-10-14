@@ -8,9 +8,11 @@ from hashlib import sha256
 from pathlib import Path
 from typing import TypeVar
 
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_bytes
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
+from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_binary
 
 Document = TypeVar("Document")
 _DOCUMENT_READ_LIMIT = 64 * 1024 * 1024
@@ -30,12 +32,12 @@ def read_versioned_json_snapshot(
 ) -> tuple[dict[str, object], bytes]:
     """Read one document, returning its payload and exact raw-byte digest."""
     path = Path(path)
-    with path.open("rb") as source:
+    with open_regular_binary(path) as source:
         raw = source.read(_DOCUMENT_READ_LIMIT + 1)
     if len(raw) > _DOCUMENT_READ_LIMIT:
         raise ValueError(f"{document_name} exceeds the size limit")
     revision = sha256(raw).digest()
-    payload = json.loads(raw)
+    payload = decode_json(raw)
     if not isinstance(payload, dict):
         raise ValueError(f"{document_name} root must be an object")
     if "schema_version" not in payload and allow_unversioned:
@@ -113,6 +115,10 @@ def write_versioned_json(
     fields: Mapping[str, object],
 ) -> Path:
     """Atomically publish a JSON object with one authoritative schema version."""
+    return atomic_write_bytes(path, _encode_versioned_json(schema_version, fields))
+
+
+def _encode_versioned_json(schema_version: int, fields: Mapping[str, object]) -> bytes:
     if (
         isinstance(schema_version, bool)
         or not isinstance(schema_version, int)
@@ -126,12 +132,12 @@ def write_versioned_json(
         raise ValueError("document schema version conflicts with its writer")
     payload = dict(fields)
     payload["schema_version"] = schema_version
-    return atomic_write_json(path, payload)
+    return (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
 
 def file_revision(path: Path) -> bytes | None:
     try:
-        with path.open("rb") as source:
+        with open_regular_binary(path) as source:
             raw = source.read(_DOCUMENT_READ_LIMIT + 1)
     except FileNotFoundError:
         return None
@@ -155,8 +161,14 @@ def write_versioned_json_if_unchanged(
             raise StaleDocumentError(
                 f"{document_name} changed on disk; reopen before saving"
             )
-        write_versioned_json(path, schema_version, fields)
+        raw = _encode_versioned_json(schema_version, fields)
+        published_revision = sha256(raw).digest()
+        atomic_write_bytes(path, raw)
         updated = file_revision(path)
         if updated is None:
             raise OSError(f"{document_name} disappeared after saving")
-        return updated
+        if updated != published_revision:
+            raise StaleDocumentError(
+                f"{document_name} changed while saving; reopen before saving"
+            )
+        return published_revision

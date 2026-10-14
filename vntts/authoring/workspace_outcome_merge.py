@@ -10,8 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict, TypeGuard
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
@@ -33,6 +32,7 @@ from vntts.authoring.generation_manifest import write_generated_manifest_from_st
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
+    publication_errors,
     staged_directory,
 )
 from vntts.authoring.publication import (
@@ -71,6 +71,8 @@ from vntts.authoring.workspace_creation import (
     default_workspaces_root,
 )
 from vntts.authoring.workspace_foundation import copy_generation_wavs
+from vntts.document_identity import sha256_file
+from vntts.path_safety import contained_no_replace_destination
 
 _terminal_review_outcome = is_terminal_review_outcome
 
@@ -239,17 +241,19 @@ def _load_outcome_merge_source(
 def _collect_outcome_merge_item(
     base: _OutcomeMergeBase,
     source: _OutcomeMergeSource,
+    base_items: dict[str, JsonDocument],
+    source_items: dict[str, JsonDocument],
     queue_id: str,
     merged_items: dict[str, tuple[JsonDocument, JsonDocument]],
 ) -> tuple[JsonDocument, JsonDocument, tuple[Path, bytes, Path]] | None:
-    result = _outcome_state_items(source.state).get(queue_id)
+    result = source_items.get(queue_id)
     if result is None or not _terminal_review_outcome(result):
         return None
     if queue_id in merged_items:
         raise AuthoringWorkbenchError(
             f"Outcome merge has conflicting sources for {queue_id!r}"
         )
-    base_result = _outcome_state_items(base.state).get(queue_id)
+    base_result = base_items.get(queue_id)
     if source.selected_records is None:
         repair = result.get("failure_repair")
         if not isinstance(repair, dict) or repair.get("strategy") not in {
@@ -341,10 +345,12 @@ def _collect_outcome_merge_sources(
     reconciliation_selection: _ReconciliationSelection | None,
 ) -> _OutcomeMergeSources:
     collected = _OutcomeMergeSources({}, [], [], {})
+    base_items = _outcome_state_items(base.state)
     for source_value in source_values:
         source = _load_outcome_merge_source(
             source_value, base, reconciliation_selection
         )
+        source_items = _outcome_state_items(source.state)
         source_record = {
             "workspace_id": source.document["workspace_id"],
             "config_fingerprint": _require_sha256(
@@ -355,7 +361,9 @@ def _collect_outcome_merge_sources(
         }
         terminal_count = 0
         for queue_id in source.selected_ids:
-            item = _collect_outcome_merge_item(base, source, queue_id, collected.items)
+            item = _collect_outcome_merge_item(
+                base, source, base_items, source_items, queue_id, collected.items
+            )
             if item is None:
                 continue
             result, ledger, audio = item
@@ -591,6 +599,7 @@ def _commit_staged_outcome_merge(
     return WorkspaceCreationResult(destination, True)
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _publish_staged_outcome_merge(
     base: _OutcomeMergeBase,
     source_values: Sequence[Path],
@@ -653,7 +662,12 @@ def _merge_workspace_outcomes(
     )
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    destination = _within(root, Path(workspace_id), "Outcome merge destination")
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Outcome merge destination",
+        error_type=AuthoringWorkbenchError,
+    )
     with staged_directory(root, prefix=".merge-staging-") as staging:
         output, target_state, path_owners, base_snapshots = _stage_outcome_merge_base(
             base, staging

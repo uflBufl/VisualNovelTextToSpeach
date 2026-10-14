@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TypeGuard
 
 import numpy as np
 
+from vntts.authoring.audio_frames import frame_rms
 from vntts.synthesis import (
     SynthesisChunkStream,
     SynthesisCompletion,
@@ -97,18 +99,13 @@ class FailureRepairPolicy:
         inline = _canonical_queue_ids(
             self.inline_pause_queue_ids, "Inline-pause queue IDs"
         )
-        overlap = (
-            (set(sentence) & set(edge))
-            | (set(sentence) & set(seed))
-            | (set(edge) & set(seed))
-            | (set(sentence) & set(fallback))
-            | (set(edge) & set(fallback))
-            | (set(seed) & set(fallback))
-            | (set(sentence) & set(inline))
-            | (set(edge) & set(inline))
-            | (set(seed) & set(inline))
-            | (set(fallback) & set(inline))
-        )
+        overlap = {
+            queue_id
+            for queue_id, count in Counter(
+                sentence + edge + seed + fallback + inline
+            ).items()
+            if count > 1
+        }
         if overlap:
             raise FailureRepairPolicyError(
                 "A queue ID cannot use two failure-repair strategies: "
@@ -258,18 +255,27 @@ class FailureRepairPolicy:
             raise FailureRepairPolicyError("Unsupported failure-repair policy version")
         sentence = document.get("sentence_segment_queue_ids")
         edge = document.get("edge_silence_queue_ids")
-        if not _queue_id_list(sentence) or not _queue_id_list(edge):
+        seed = document.get("bounded_seed_retry_queue_ids", [])
+        fallback = document.get("offline_fallback_queue_ids", [])
+        inline = document.get("inline_pause_queue_ids", [])
+        if (
+            not _queue_id_list(sentence)
+            or not _queue_id_list(edge)
+            or not _queue_id_list(seed)
+            or not _queue_id_list(fallback)
+            or not _queue_id_list(inline)
+        ):
             raise FailureRepairPolicyError(
                 "Failure-repair queue IDs must be JSON lists"
             )
         return cls(
-            tuple(sentence),
-            tuple(edge),
-            _policy_pause(document.get("segment_pause_ms")),
-            tuple(document.get("bounded_seed_retry_queue_ids") or ()),
-            tuple(document.get("offline_fallback_queue_ids") or ()),
-            tuple(document.get("inline_pause_queue_ids") or ()),
-            document.get("inline_pause_ms", DEFAULT_INLINE_PAUSE_MS),
+            sentence_segment_queue_ids=tuple(sentence),
+            edge_silence_queue_ids=tuple(edge),
+            segment_pause_ms=_policy_pause(document.get("segment_pause_ms")),
+            bounded_seed_retry_queue_ids=tuple(seed),
+            offline_fallback_queue_ids=tuple(fallback),
+            inline_pause_queue_ids=tuple(inline),
+            inline_pause_ms=document.get("inline_pause_ms", DEFAULT_INLINE_PAUSE_MS),
         )
 
 
@@ -365,10 +371,10 @@ def _safe_sentence_boundaries(text: str) -> tuple[re.Match[str], ...]:
 
 def _ends_with_nonterminal_abbreviation(prefix: str) -> bool:
     stripped = prefix.rstrip()
-    word = re.search(r"([A-Za-z]+)\.$", stripped)
+    word = re.search(r"(?<![A-Za-z])([A-Za-z]+)\.$", stripped)
     if word and word.group(1).casefold() in NONTERMINAL_ENGLISH_ABBREVIATIONS:
         return True
-    if re.search(r"(?:\b[A-Za-z]\.){2,}$", stripped):
+    if re.search(r"(?<!\b[A-Za-z]\.)(?:\b[A-Za-z]\.){2,}$", stripped):
         return True
     return re.search(r"\b[A-Z]\.$", stripped) is not None
 
@@ -408,19 +414,22 @@ def trim_excess_edge_silence(
     ):
         raise ValueError("Repair sample rate must be a positive integer")
     if (
-        trigger_seconds <= 0
+        not np.isfinite((trigger_seconds, padding_seconds)).all()
+        or trigger_seconds <= 0
         or padding_seconds < 0
         or padding_seconds >= trigger_seconds
     ):
         raise ValueError("Edge silence timing is invalid")
+    if not np.isfinite(silence_dbfs):
+        raise ValueError("Edge silence threshold must be finite")
     threshold = 10.0 ** (float(silence_dbfs) / 20.0)
     active = np.flatnonzero(np.abs(samples) > threshold)
     if not active.size:
         return EdgeSilenceTrim(samples.copy(), 0, 0)
     first = int(active[0])
     last = int(active[-1])
-    trigger = int(round(trigger_seconds * sample_rate))
-    padding = int(round(padding_seconds * sample_rate))
+    trigger = round(trigger_seconds * sample_rate)
+    padding = round(padding_seconds * sample_rate)
     leading = max(0, first - padding) if first > trigger else 0
     trailing_silence = len(samples) - last - 1
     trailing = max(0, trailing_silence - padding) if trailing_silence > trigger else 0
@@ -468,22 +477,22 @@ def compress_single_sentence_boundary_silence(
     ):
         raise ValueError("Silence frame size must be an integer from 10 to 200 ms")
     if (
-        trigger_seconds <= DEFAULT_NOTABLE_SILENCE_SECONDS
+        not np.isfinite((trigger_seconds, target_seconds)).all()
+        or trigger_seconds <= DEFAULT_NOTABLE_SILENCE_SECONDS
         or target_seconds <= 0
         or target_seconds >= trigger_seconds
     ):
         raise ValueError("Internal silence timing is invalid")
-    if removal_dbfs > silence_dbfs:
-        raise ValueError("Removal threshold must be no louder than silence threshold")
+    if (
+        not np.isfinite((silence_dbfs, removal_dbfs)).all()
+        or removal_dbfs > silence_dbfs
+    ):
+        raise ValueError(
+            "Removal threshold must be finite and no louder than silence threshold"
+        )
 
     frame_samples = max(1, round(sample_rate * frame_ms / 1000))
-    frame_rms = np.asarray(
-        [
-            np.sqrt(np.mean(samples[start : start + frame_samples] ** 2))
-            for start in range(0, len(samples), frame_samples)
-        ]
-    )
-    silent = frame_rms <= 10.0 ** (float(silence_dbfs) / 20.0)
+    silent = frame_rms(samples, frame_samples) <= 10.0 ** (float(silence_dbfs) / 20.0)
     active = np.flatnonzero(~silent)
     if not active.size:
         raise ValueError("Silence compression requires speech on both sides")
@@ -622,7 +631,7 @@ def _combined_segment_result(
         raise ValueError("Sentence-segment render results have incompatible channels")
     sample_rate = next(iter(sample_rates))
     parts = []
-    pause_samples = int(round(sample_rate * pause_ms / 1000.0))
+    pause_samples = round(sample_rate * pause_ms / 1000.0)
     for index, value in enumerate(results):
         parts.append(np.asarray(value.pcm))
         if index + 1 < len(results) and pause_samples:

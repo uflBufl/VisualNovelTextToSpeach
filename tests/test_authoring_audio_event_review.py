@@ -1,4 +1,3 @@
-import hashlib
 import io
 import json
 import unittest
@@ -9,8 +8,17 @@ from unittest.mock import patch
 
 import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
-from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
+import vntts.authoring.audio_event_review as review_module
+from tests.authoring_fixtures import (
+    publish_audio_event_review_fixture as publish,
+)
+from tests.authoring_fixtures import (
+    write_audio_event_queue as write_queue,
+)
+from tests.authoring_fixtures import (
+    write_audio_event_source_story as write_source_story,
+)
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.audio_event_review import (
     AudioEventReviewError,
@@ -21,77 +29,77 @@ from vntts.authoring.audio_event_review import (
 from vntts.authoring.cli import main as authoring_main
 
 
-def write_queue(path, text="Tsk!"):
-    digest = hashlib.sha256(text.encode()).hexdigest()
-    queue_id = f"line:tsk:{digest[:16]}"
-    write_voice_generation_queue(
-        path,
-        {"game": "Synthetic", "language": "en"},
-        [
-            {
-                "record_type": "generation_item",
-                "queue_id": queue_id,
-                "line_id": "line:tsk",
-                "text_sha256": digest,
-                "text": text,
-                "speaker": "Poacher I",
-                "voice_character": "Poacher I",
-                "action": "manual_review",
-                "state": "pending",
-            }
-        ],
-    )
-    return queue_id
-
-
-def write_source_story(path):
-    text = "Tsk!"
-    path.write_text(
-        json.dumps(
-            {
-                "record_type": "line",
-                "line_id": "reverse1999:200308:6",
-                "text": text,
-                "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
-                "speaker": "Kanjira",
-                "source_audio_id": "610008734",
-                "source_audio_status": "available",
-                "source_event": "play_activityvoc_hero3071_660",
-                "source_bank": "activityvoc_hero3071molu1_3_part02.bnk",
-                "source_media_ids": [410389900],
-            }
-        )
-        + "\n"
-    )
-    return path
-
-
-def publish(root, *, text="Tsk!", sample_count=1_200):
-    queue = root / "queue.jsonl"
-    queue_id = write_queue(queue, text)
-    audio = root / "source.wav"
-    samples = np.zeros(sample_count, dtype=np.float32)
-    samples[300:340] = 0.4
-    write_pcm16_wav(audio, samples, 24_000)
-    output = root / "review"
-    story = write_source_story(root / "story-index.jsonl")
-    result = publish_source_audio_event_review(
-        queue,
-        queue_id,
-        story,
-        audio,
-        output,
-        source_line_id="reverse1999:200308:6",
-        source_speaker="Kanjira",
-        source_event="play_activityvoc_hero3071_660",
-        source_bank="activityvoc_hero3071molu1_3_part02.bnk",
-        source_media_id=410389900,
-        source_audio_id="610008734",
-    )
-    return result, queue, audio
-
-
 class AudioEventReviewTest(unittest.TestCase):
+    def test_candidate_metadata_decodes_the_captured_audio(self):
+        with TemporaryDirectory() as directory:
+            result, _queue, _source = publish(Path(directory))
+            payload = result.audio.read_bytes()
+            probe = review_module.probe_pcm16_mono_wav
+
+            def replace_before_decode(source):
+                result.audio.write_bytes(b"RIFF")
+                try:
+                    return probe(source)
+                finally:
+                    result.audio.write_bytes(payload)
+
+            with patch.object(
+                review_module, "probe_pcm16_mono_wav", replace_before_decode
+            ):
+                loaded = load_audio_event_review(result.directory)
+            self.assertEqual(loaded.audio_sha256, result.audio_sha256)
+            self.assertEqual(loaded.review_id, result.review_id)
+
+    def test_loader_and_publisher_races_raise_review_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            result, _queue, _audio = publish(root)
+            original = review_module._validate_review_document
+
+            def validate_then_mutate(*args):
+                original(*args)
+                path = result.directory / "review.json"
+                path.write_bytes(path.read_bytes() + b" ")
+
+            with patch.object(
+                review_module, "_validate_review_document", validate_then_mutate
+            ):
+                with self.assertRaisesRegex(AudioEventReviewError, "changed"):
+                    load_audio_event_review(result.directory)
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = load_audio_event_review
+
+            def load_then_mutate(path):
+                loaded = original(path)
+                queue = root / "queue.jsonl"
+                queue.write_bytes(queue.read_bytes() + b"\n")
+                return loaded
+
+            with patch.object(
+                review_module, "load_audio_event_review", load_then_mutate
+            ):
+                with self.assertRaisesRegex(AudioEventReviewError, "changed"):
+                    publish(root)
+            self.assertFalse((root / "review").exists())
+            self.assertFalse(list(root.glob(".review.staging-*")))
+
+    def test_persisted_decision_rejects_non_strings_with_review_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            result, _queue, _audio = publish(root)
+            record_audio_event_review_decision(result.directory, "accept")
+            path = result.directory / "decision.json"
+            document = json.loads(path.read_text())
+            for decision in ([], {}, None, True, 1):
+                with self.subTest(decision=decision):
+                    document["decision"] = decision
+                    path.write_text(json.dumps(document, sort_keys=True))
+                    with self.assertRaisesRegex(
+                        AudioEventReviewError, "decision is invalid"
+                    ):
+                        load_audio_event_review(result.directory)
+
     def test_publication_rejects_symlinked_authority_inputs(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

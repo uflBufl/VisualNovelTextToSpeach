@@ -7,24 +7,24 @@ import hashlib
 import io
 import math
 import re
-import tempfile
 import wave
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import TypeAlias, TypedDict
+from typing import NamedTuple, TypeAlias, TypedDict
 
 import numpy as np
+from durable_file import atomic_write_json
 from numpy.typing import NDArray
 from vntts_artifacts import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.hashing import text_sha256
 
+from vntts.authoring.audio_frames import frame_rms
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
     AuthoritySnapshot,
@@ -35,12 +35,14 @@ from vntts.authoring.authority import (
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
-    normalized_failure_record,
 )
 from vntts.authoring.cohort_review import (
     COHORT_REVIEW_DEFECT_REASONS,
     CohortReviewError,
     load_cohort_review_decision,
+)
+from vntts.authoring.generation_failures import (
+    normalized_failure_record,
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
@@ -48,7 +50,10 @@ from vntts.authoring.publication import (
     rename_directory_no_replace,
     staged_directory,
 )
-from vntts.authoring.speech_quality import measure_generated_speech_bytes
+from vntts.authoring.speech_quality import (
+    SPEECH_QUALITY_ANALYSIS_VERSION,
+    measure_generated_speech_samples,
+)
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     contained_workspace_path,
@@ -56,6 +61,8 @@ from vntts.authoring.workbench import (
     safe_workspace_relative_path,
 )
 from vntts.authoring.workspace_foundation import require_sha256
+from vntts.cleanup import temporary_directory
+from vntts.json_types import has_schema_version, is_json_object
 
 SPEECH_ROBUSTNESS_CORPUS_SCHEMA = "vntts.speech-robustness-corpus"
 SPEECH_ROBUSTNESS_CORPUS_VERSION = 3
@@ -66,15 +73,16 @@ _HUMAN_LABELS = frozenset({"acceptable", "bad"})
 JsonDocument: TypeAlias = dict[str, object]
 SampleKey: TypeAlias = tuple[str, str, str]
 FailureKey: TypeAlias = tuple[str, str]
-WorkspaceSource: TypeAlias = tuple[
-    Path,
-    JsonDocument,
-    str,
-    AuthoritySnapshot,
-    JsonDocument,
-    AuthoritySnapshot,
-    dict[str, VoiceGenerationQueueItem],
-]
+
+
+class WorkspaceSource(NamedTuple):
+    directory: Path
+    workspace: JsonDocument
+    workspace_sha256: str
+    state_snapshot: AuthoritySnapshot
+    state: JsonDocument
+    queue_snapshot: AuthoritySnapshot
+    queue_items: dict[str, VoiceGenerationQueueItem]
 
 
 class _RepeatSignal(TypedDict):
@@ -200,7 +208,12 @@ def _required_text(value: object, label: str) -> str:
 
 
 def _relative(value: object, label: str) -> Path:
-    if not isinstance(value, str) or not value.strip() or "\\" in value:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or "\\" in value
+        or "\x00" in value
+    ):
         raise SpeechRobustnessCorpusError(f"{label} must be a POSIX-relative path")
     pure = PurePosixPath(value)
     if pure.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")):
@@ -237,7 +250,7 @@ def _document_rows(value: object, label: str) -> list[JsonDocument]:
         raise SpeechRobustnessCorpusError(f"{label} must be a list")
     rows: list[JsonDocument] = []
     for row in value:
-        if not isinstance(row, dict) or not all(isinstance(key, str) for key in row):
+        if not is_json_object(row):
             raise SpeechRobustnessCorpusError(f"{label} must contain objects")
         rows.append({key: item for key, item in row.items() if isinstance(key, str)})
     return rows
@@ -252,11 +265,11 @@ def _string_list(value: object, label: str) -> list[str]:
 
 
 def _document_map(value: object, label: str) -> dict[str, JsonDocument]:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise SpeechRobustnessCorpusError(f"{label} must be an object")
     result: dict[str, JsonDocument] = {}
     for key, row in value.items():
-        if not isinstance(row, dict) or not all(isinstance(name, str) for name in row):
+        if not is_json_object(row):
             raise SpeechRobustnessCorpusError(f"{label} entries must be objects")
         result[key] = {
             name: item for name, item in row.items() if isinstance(name, str)
@@ -266,7 +279,7 @@ def _document_map(value: object, label: str) -> dict[str, JsonDocument]:
 
 def _object_field(document: JsonDocument, field: str, label: str) -> JsonDocument:
     value = document.get(field)
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise SpeechRobustnessCorpusError(f"{label} must be an object")
     return {key: item for key, item in value.items() if isinstance(key, str)}
 
@@ -280,15 +293,7 @@ def _required_schema_version(document: JsonDocument) -> int:
 
 def _workspace_snapshot(
     workspace_directory: str | Path,
-) -> tuple[
-    Path,
-    JsonDocument,
-    str,
-    AuthoritySnapshot,
-    JsonDocument,
-    AuthoritySnapshot,
-    dict[str, VoiceGenerationQueueItem],
-]:
+) -> WorkspaceSource:
     try:
         directory, workspace, workspace_sha256 = load_workspace_authority(
             workspace_directory
@@ -301,7 +306,7 @@ def _workspace_snapshot(
         queue_snapshot = capture_authority_file(
             queue_path, "robustness source queue", root=directory
         )
-        with tempfile.TemporaryDirectory(prefix="vntts-robustness-queue-") as temporary:
+        with temporary_directory(prefix="vntts-robustness-queue-") as temporary:
             snapshot_path = Path(temporary) / "queue.jsonl"
             snapshot_path.write_bytes(queue_snapshot.payload)
             queue = VoiceGenerationQueue.load(snapshot_path)
@@ -331,14 +336,14 @@ def _workspace_snapshot(
         raise SpeechRobustnessCorpusError(
             "Robustness source state is bound to a different queue"
         )
-    return (
-        directory,
-        workspace,
-        workspace_sha256,
-        state_snapshot,
-        parsed,
-        queue_snapshot,
-        {item.queue_id: item for item in queue.items},
+    return WorkspaceSource(
+        directory=directory,
+        workspace=workspace,
+        workspace_sha256=workspace_sha256,
+        state_snapshot=state_snapshot,
+        state=parsed,
+        queue_snapshot=queue_snapshot,
+        queue_items={item.queue_id: item for item in queue.items},
     )
 
 
@@ -384,7 +389,7 @@ def _max_exact_active_repeat(
     for index, digest in enumerate(digests):
         if active[index]:
             for previous in positions.get(digest, ())[-16:]:
-                if previous == index:
+                if min(index - previous, block_count - index) <= best_blocks:
                     continue
                 length = 0
                 while (
@@ -412,11 +417,24 @@ def analyze_speech_robustness_bytes(payload: bytes) -> JsonDocument:
     if not isinstance(payload, bytes):
         raise SpeechRobustnessCorpusError("Robustness audio payload must be bytes")
     samples, sample_rate = _read_pcm16(payload)
+    return _analyze_speech_robustness_samples(samples, sample_rate)
+
+
+def _analyze_speech_robustness_samples(
+    samples: NDArray[np.int16], sample_rate: int
+) -> JsonDocument:
     normalized = samples.astype(np.float64) / 32768.0
     absolute = np.abs(normalized)
     differences = np.abs(np.diff(normalized))
     try:
-        speech_quality = asdict(measure_generated_speech_bytes(payload))
+        speech_quality = asdict(
+            measure_generated_speech_samples(
+                samples,
+                sample_rate=sample_rate,
+                duration_seconds=len(samples) / sample_rate,
+                analysis_version=SPEECH_QUALITY_ANALYSIS_VERSION,
+            )
+        )
     except BulkGenerationError as error:
         raise SpeechRobustnessCorpusError(str(error)) from error
     repeated = _max_exact_active_repeat(samples, sample_rate)
@@ -566,15 +584,15 @@ def analyze_text_timing_bytes(payload: bytes, text: str) -> JsonDocument:
     """Estimate pause placement against requested text without claiming ASR."""
     text = _required_text(text, "Requested speech text")
     samples, sample_rate = _read_pcm16(payload)
+    return _analyze_text_timing_samples(samples, sample_rate, text)
+
+
+def _analyze_text_timing_samples(
+    samples: NDArray[np.int16], sample_rate: int, text: str
+) -> JsonDocument:
     normalized = samples.astype(np.float64) / 32768.0
     frame_samples = max(1, round(sample_rate * 0.08))
-    frame_rms = np.asarray(
-        [
-            math.sqrt(float(np.mean(normalized[start : start + frame_samples] ** 2)))
-            for start in range(0, len(normalized), frame_samples)
-        ]
-    )
-    silent = frame_rms <= 10 ** (-45.0 / 20.0)
+    silent = frame_rms(normalized, frame_samples) <= 10 ** (-45.0 / 20.0)
     words, sentence_boundaries, clause_boundaries = _text_boundaries(text)
     pauses = _internal_pauses(
         silent,
@@ -667,7 +685,7 @@ class _SourceBuilder:
         if cached is None:
             cached = _workspace_snapshot(resolved)
             self.workspace_cache[resolved] = cached
-            self.snapshots.extend((cached[3], cached[5]))
+            self.snapshots.extend((cached.state_snapshot, cached.queue_snapshot))
         return cached
 
     def add_decision(self, decision_path: Path) -> None:
@@ -946,6 +964,7 @@ def _sample_record(
     audio_payload: bytes,
     assessment: _Assessment,
 ) -> _SampleRecord:
+    samples, sample_rate = _read_pcm16(audio_payload)
     return {
         "workspace_id": workspace_id,
         "workspace_sha256": workspace_sha256,
@@ -967,8 +986,10 @@ def _sample_record(
         ),
         "state_item_sha256": canonical_document_sha256(item),
         "synthesis": _sample_metadata(item),
-        "analysis": analyze_speech_robustness_bytes(audio_payload),
-        "text_timing": analyze_text_timing_bytes(audio_payload, queue_item.text),
+        "analysis": _analyze_speech_robustness_samples(samples, sample_rate),
+        "text_timing": _analyze_text_timing_samples(
+            samples, sample_rate, queue_item.text
+        ),
         "decision_ids": [],
     }
 
@@ -1006,72 +1027,54 @@ def _build_sources(
 
 
 def _counts(
-    samples: Sequence[JsonDocument], failures: Sequence[JsonDocument]
+    samples: Sequence[JsonDocument],
+    failures: Sequence[JsonDocument],
+    *,
+    version: int = SPEECH_ROBUSTNESS_CORPUS_VERSION,
 ) -> JsonDocument:
-    labels = Counter(
-        _required_text(row.get("human_label"), "Human label") for row in samples
-    )
-    providers = Counter(
-        str(
+    labels: Counter[str] = Counter()
+    providers: Counter[str] = Counter()
+    provider_labels: Counter[tuple[str, str]] = Counter()
+    signals: Counter[str] = Counter()
+    signal_labels: Counter[tuple[str, str]] = Counter()
+    timing_signals: Counter[str] = Counter()
+    timing_signal_labels: Counter[tuple[str, str]] = Counter()
+    defect_reasons: Counter[str] = Counter()
+    technical_flags: Counter[str] = Counter()
+    bad_without_signal = 0
+    has_timing = False
+    has_reasons = False
+    for row in samples:
+        label = _required_text(row.get("human_label"), "Human label")
+        provider = str(
             _object_field(row, "synthesis", "Sample synthesis").get("provider")
             or "unknown"
         )
-        for row in samples
-    )
-    provider_labels = Counter(
-        (
-            str(
-                _object_field(row, "synthesis", "Sample synthesis").get("provider")
-                or "unknown"
-            ),
-            _required_text(row.get("human_label"), "Human label"),
-        )
-        for row in samples
-    )
-    signals = Counter(
-        signal
-        for row in samples
-        for signal in _string_list(
+        row_signals = _string_list(
             _object_field(row, "analysis", "Sample analysis").get("signals"),
             "Analysis signals",
         )
-    )
-    signal_labels = Counter(
-        (signal, _required_text(row.get("human_label"), "Human label"))
-        for row in samples
-        for signal in _string_list(
-            _object_field(row, "analysis", "Sample analysis").get("signals"),
-            "Analysis signals",
+        labels[label] += 1
+        providers[provider] += 1
+        provider_labels[provider, label] += 1
+        signals.update(row_signals)
+        signal_labels.update((signal, label) for signal in row_signals)
+        bad_without_signal += label == "bad" and not row_signals
+        has_timing |= "text_timing" in row
+        has_reasons |= "human_defect_reasons" in row
+        if version >= 2:
+            row_timing = _string_list(
+                _object_field(row, "text_timing", "Sample text timing").get("signals"),
+                "Timing signals",
+            )
+            timing_signals.update(row_timing)
+            timing_signal_labels.update((signal, label) for signal in row_timing)
+        defect_reasons.update(
+            _string_list(row.get("human_defect_reasons", ()), "Human defect reasons")
         )
-    )
-    timing_signals = Counter(
-        signal
-        for row in samples
-        for signal in _string_list(
-            _object_field(row, "text_timing", "Sample text timing").get("signals"),
-            "Timing signals",
+        technical_flags.update(
+            _string_list(row.get("technical_flags"), "Technical flags")
         )
-    )
-    timing_signal_labels = Counter(
-        (signal, _required_text(row.get("human_label"), "Human label"))
-        for row in samples
-        for signal in _string_list(
-            _object_field(row, "text_timing", "Sample text timing").get("signals"),
-            "Timing signals",
-        )
-    )
-    defect_reasons = Counter(
-        reason
-        for row in samples
-        for reason in _string_list(
-            row.get("human_defect_reasons", ()), "Human defect reasons"
-        )
-    )
-    technical_flags = Counter(
-        flag
-        for row in samples
-        for flag in _string_list(row.get("technical_flags"), "Technical flags")
-    )
     failure_kinds = Counter(
         _required_text(
             _object_field(row, "failure", "Failure record").get("kind"), "Failure kind"
@@ -1094,22 +1097,15 @@ def _counts(
         },
         "technical_flags": dict(sorted(technical_flags.items())),
         "failure_kinds": dict(sorted(failure_kinds.items())),
-        "bad_without_diagnostic_signal": sum(
-            row.get("human_label") == "bad"
-            and not _string_list(
-                _object_field(row, "analysis", "Sample analysis").get("signals"),
-                "Analysis signals",
-            )
-            for row in samples
-        ),
+        "bad_without_diagnostic_signal": bad_without_signal,
     }
-    if any("text_timing" in row for row in samples):
+    if has_timing:
         summary["text_timing_signals"] = dict(sorted(timing_signals.items()))
         summary["text_timing_signal_human_labels"] = {
             f"{signal}:{label}": count
             for (signal, label), count in sorted(timing_signal_labels.items())
         }
-    if any("human_defect_reasons" in row for row in samples):
+    if has_reasons:
         summary["human_defect_reasons"] = dict(sorted(defect_reasons.items()))
     return summary
 
@@ -1209,19 +1205,20 @@ def _failure_keys(version: int) -> set[str]:
 
 
 def _validate_artifacts(artifacts: Sequence[JsonDocument]) -> None:
-    paths = [row.get("path") for row in artifacts]
-    if len(paths) != len(artifacts) or len(set(paths)) != len(paths):
-        raise SpeechRobustnessCorpusError(
-            "Robustness corpus artifact inventory is invalid"
-        )
+    paths: set[str] = set()
     for artifact in artifacts:
         if set(artifact) != {"path", "sha256", "size"}:
             raise SpeechRobustnessCorpusError(
                 "Robustness corpus artifact record is invalid"
             )
-        _relative(artifact["path"], "Robustness artifact path")
+        path = _relative(artifact["path"], "Robustness artifact path").as_posix()
+        if path in paths:
+            raise SpeechRobustnessCorpusError(
+                "Robustness corpus artifact inventory is invalid"
+            )
+        paths.add(path)
         _require_sha256(artifact["sha256"], "Artifact SHA-256")
-        if not isinstance(artifact["size"], int) or artifact["size"] < 1:
+        if type(artifact["size"]) is not int or artifact["size"] < 1:
             raise SpeechRobustnessCorpusError(
                 "Robustness artifact size must be positive"
             )
@@ -1236,11 +1233,19 @@ def _validate_sample_version(sample: JsonDocument, version: int) -> None:
         raise SpeechRobustnessCorpusError("Robustness sample text checksum is invalid")
     _required_text(sample["speaker"], "Sample speaker")
     _required_text(sample["voice_character"], "Sample voice character")
-    if _object_field(sample, "text_timing", "Sample text timing").get("policy") != {
-        "diagnostic_only": True,
-        "automatic_rejection": False,
-        "alignment": "proportional_word_position_without_asr",
-    }:
+    timing = _object_field(sample, "text_timing", "Sample text timing")
+    policy = _object_field(timing, "policy", "Sample text-timing policy")
+    if (
+        not has_schema_version(timing, 1)
+        or policy.get("diagnostic_only") is not True
+        or policy.get("automatic_rejection") is not False
+        or policy
+        != {
+            "diagnostic_only": True,
+            "automatic_rejection": False,
+            "alignment": "proportional_word_position_without_asr",
+        }
+    ):
         raise SpeechRobustnessCorpusError(
             "Robustness sample text-timing policy is invalid"
         )
@@ -1279,10 +1284,14 @@ def _validate_sample_evidence(sample: JsonDocument) -> None:
         )
     for decision_id in sample["decision_ids"]:
         _require_sha256(decision_id, "Sample decision ID")
-    if _object_field(sample, "analysis", "Sample analysis").get("policy") != {
-        "diagnostic_only": True,
-        "automatic_rejection": False,
-    }:
+    analysis = _object_field(sample, "analysis", "Sample analysis")
+    policy = _object_field(analysis, "policy", "Sample analysis policy")
+    if (
+        not has_schema_version(analysis, SPEECH_ROBUSTNESS_ANALYSIS_VERSION)
+        or policy.get("diagnostic_only") is not True
+        or policy.get("automatic_rejection") is not False
+        or policy != {"diagnostic_only": True, "automatic_rejection": False}
+    ):
         raise SpeechRobustnessCorpusError("Robustness sample policy is invalid")
 
 
@@ -1402,12 +1411,20 @@ def _validate_document(document: JsonDocument) -> JsonDocument:
     if not isinstance(document, dict) or set(document) != expected:
         raise SpeechRobustnessCorpusError("Robustness corpus document shape is invalid")
     version = _corpus_version(document)
-    if document.get("analysis_policy") != {
-        "schema_version": SPEECH_ROBUSTNESS_ANALYSIS_VERSION,
-        "diagnostic_only": True,
-        "automatic_rejection": False,
-        "human_labels_are_authoritative": True,
-    }:
+    policy = _object_field(document, "analysis_policy", "Robustness corpus policy")
+    if (
+        not has_schema_version(policy, SPEECH_ROBUSTNESS_ANALYSIS_VERSION)
+        or policy.get("diagnostic_only") is not True
+        or policy.get("automatic_rejection") is not False
+        or policy.get("human_labels_are_authoritative") is not True
+        or policy
+        != {
+            "schema_version": SPEECH_ROBUSTNESS_ANALYSIS_VERSION,
+            "diagnostic_only": True,
+            "automatic_rejection": False,
+            "human_labels_are_authoritative": True,
+        }
+    ):
         raise SpeechRobustnessCorpusError("Robustness corpus policy is invalid")
     samples = _document_rows(document.get("samples"), "Robustness corpus samples")
     failures = _document_rows(document.get("failures"), "Robustness corpus failures")
@@ -1417,7 +1434,7 @@ def _validate_document(document: JsonDocument) -> JsonDocument:
     )
     if document.get("corpus_id") != expected_id:
         raise SpeechRobustnessCorpusError("Robustness corpus identity is invalid")
-    if document.get("summary") != _counts(samples, failures):
+    if document.get("summary") != _counts(samples, failures, version=version):
         raise SpeechRobustnessCorpusError("Robustness corpus summary is invalid")
     _validate_artifacts(artifacts)
     _validate_samples(samples, version)
@@ -1503,10 +1520,15 @@ def _validate_sample_artifacts(
                 "Robustness sample audio is not inventoried"
             )
         payload = artifact_snapshots[audio].payload
-        if analyze_speech_robustness_bytes(payload) != sample.get("analysis"):
+        pcm, sample_rate = _read_pcm16(payload)
+        if _analyze_speech_robustness_samples(pcm, sample_rate) != sample.get(
+            "analysis"
+        ):
             raise SpeechRobustnessCorpusError("Robustness sample analysis is invalid")
-        if version >= 2 and analyze_text_timing_bytes(
-            payload, _required_text(sample.get("text"), "Sample requested text")
+        if version >= 2 and _analyze_text_timing_samples(
+            pcm,
+            sample_rate,
+            _required_text(sample.get("text"), "Sample requested text"),
         ) != sample.get("text_timing"):
             raise SpeechRobustnessCorpusError(
                 "Robustness sample text-timing analysis is invalid"
@@ -1554,11 +1576,7 @@ def _publication_output(
     output.parent.mkdir(parents=True, exist_ok=True)
     for decision_input in decision_inputs:
         source = Path(decision_input).expanduser().resolve()
-        if source.is_dir():
-            try:
-                output.relative_to(source)
-            except ValueError:
-                continue
+        if source.is_dir() and output.is_relative_to(source):
             raise SpeechRobustnessCorpusError(
                 "Robustness corpus output must be outside decision inputs"
             )

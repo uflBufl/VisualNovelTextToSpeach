@@ -40,6 +40,7 @@ dependencies = [
     # Needs eSpeak to run
     # "pyttsx3>=2.90",
     "vntts-artifacts[audio]",
+    "durable-file",
 ]
 
 [project.optional-dependencies]
@@ -77,6 +78,10 @@ vntts-reference-audit = "vntts.authoring.failure_reference_audit_ui:main"
 vntts-authoring-reconcile = "vntts.authoring.reconciliation_cli:main"
 vntts-conflict-review = "vntts.authoring.terminal_conflict_review_ui:main"
 
+[tool.uv]
+# The application owns the artifact release used by its pinned extractor too.
+override-dependencies = ["vntts-artifacts[audio]==0.7.4"]
+
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
@@ -90,8 +95,10 @@ torchcodec = [
     { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
     { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
 ]
-vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "19e6035986eedae6bbda966d7d5cff8307c9f574" }
-reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.git", rev = "3616439937b16a370503c5a0c3b494ecb79575ae" }
+vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "8a8a8d5c82b316aa8a313655b71ce1344ddf4af1" }
+reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.git", rev = "ef50c5df189b45ee376ab1d0a371eae5233ac241" }
+
+durable-file = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "0e22c629dde9de070eb7f13c87609e5905277ab9" }
 
 [dependency-groups]
 dev = [
@@ -127,15 +134,31 @@ extend-exclude = ["exps", "README.md"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
-extend-select = ["B004", "B007", "B905", "RUF012", "RUF059", "W605"]
+extend-select = [
+    "B004", "B006", "B007", "B008", "B012", "B014", "B015", "B018",
+    "B019", "B020", "B026", "B904", "B905", "RUF012", "RUF046", "RUF059", "TID251", "W605",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# These tests exercise dependency compatibility and raw-copy fixture/counterexamples.
+"tests/test_*.py" = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"durable_file.sha256_file" = { msg = "Use vntts.document_identity.sha256_file for regular-file admission." }
+"vntts_artifacts.file_integrity.sha256_file" = { msg = "Use vntts.document_identity.sha256_file for regular-file admission." }
+"shutil.copyfile" = { msg = "Use vntts.path_safety.copy_regular_file for regular-file source admission." }
+"shutil.copy2" = { msg = "Use vntts.path_safety.copy_regular_file with preserve_metadata=True." }
+"vntts_artifacts.voice_manifest.load_voice_manifest" = { msg = "Use vntts.voices.load_voice_manifest for regular-file admission." }
 
 [tool.mypy]
 python_version = "3.14"
-files = ["vntts"]
+files = ["vntts", "scripts", "tests/*_fixtures.py"]
+explicit_package_bases = true
 follow_imports = "normal"
 ignore_missing_imports = true
 disallow_untyped_defs = true
 no_implicit_optional = true
 warn_redundant_casts = true
+warn_return_any = true
 warn_unused_configs = true
 warn_unused_ignores = true

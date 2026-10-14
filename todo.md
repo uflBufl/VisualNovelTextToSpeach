@@ -1,19 +1,57 @@
 # TODO
 
+## Track transitive authoring publication inputs
+
+- [ ] Expose the consulted-file inventory from `audio_event_workspace.validate_audio_event_composition_state_item`, reached through `generation_state._validate_success_audio_event_composition`, and carry it through failure-corpus publication, so a replaceable corpus cannot overwrite nested workspace/composition/review/base authorities. Current collision guards protect explicitly captured queue/state/manifest and successful state WAV paths; custom state-loader callbacks retain opaque additional I/O. Reuse the validator's admitted inventory instead of maintaining a duplicate path table in the corpus writer.
+
+## Continue regular-file admission through remaining integrity owners
+
+- [ ] On Windows, qualify persistent NPY1/2/3 cache reads with the pinned NumPy internal header parser: malformed declared extents must miss before allocation, valid mono/stereo/Fortran/endian entries must retain conversion, and truncation must close the source without recency changes. Qualify candidate-directory replacement/alias refusal before cleanup, active claims and normal retry with native directory identities/locking/rmtree. Mac proofs do not establish Windows behavior.
+
+- [ ] Qualify admitted SHA readers and direct/recursive/runtime copy behavior on Windows, including native metadata/alternate streams, DLL/junction handling and executable behavior. Local Mac output identities, metadata, relocated interpreter provenance and warm-cache throughput passed; cold-disk/network throughput and native model generation remain unmeasured.
+
+- [ ] On Windows, validate admitted bounded WAV/PCM decoding, PNG/JPEG/TIFF screenshot decoding and RGB/crop after source closure, cancellable MOSS model hashing, optional reference duration and native log diagnostics. Exercise registered and legacy inline MOSS references, unchanged-reference cache reuse, cancellation/retry and decoder/source cleanup using real files; Mac descriptor and loopback tests do not certify Windows virtual I/O or actual model generation.
+
+- [ ] On Windows, qualify complete and streaming admitted text reads: UTF-8/BOM/ASCII/default locale, regular aliases, source closure and JSONL first-line/iteration behavior. Verify the dependency-audit script starts before project installation. Mac FIFO/descriptor proof does not qualify Windows filesystem behavior or non-UTF-8 locale execution.
+
+- [ ] On Windows, qualify admitted ZIP intake for MOSS runtime, managed game decoder and packaged licences, plus native-probe archive member sources. Verify valid/invalid archives, source closure, member bytes/metadata, refusal before publication and retry. Mac FIFO/byte-parity tests do not establish Windows filesystem or DLL behavior.
+
+## Coordinate source-audio producer numeric admission
+
+- [ ] In `reverse1999-extractor`, qualify and fix `SourceAudioDurationProbe.probe` optional decoder ratio overflow: positive unbounded `playSamples=10**400` and `sampleRate=1` raise outside its tolerant exception tuple. Add `OverflowError` to that boundary, test overflowing and finite huge ratios, and release/pin only through the separately authorized cross-repository workflow; the current VNTTS consumer repair does not fix the pinned producer.
+
 ## Qualify remaining model dependency risks
 
-- [ ] Trace whether root Coqui/XTTS, Chatterbox, MOSS SoundEffect and MOSS Delay
-      actually reach Transformers `load_custom_generate` with remote custom
-      generation. Their locks match GHSA-x9r9-c232-4q39/PYSEC-2026-4174;
-      the October 2 advisory lists no patched release. Distinguish that path
-      from deliberately trusted AutoModel loading and local-only ASR. Record
-      exact loader/model evidence; do not introduce an unproven ignore.
-- [ ] Once an upstream fix or compatible replacement is available, qualify it
-      within each model stack before changing its lock. Root Coqui 0.27.5
-      requires Transformers <5; retain loaded-module provenance and model
-      generation/voice checks. Qwen's remaining Accelerate, setuptools, Torch
-      and Transformers findings belong to the existing Qwen qualification
-      task below, including this newly reported custom-generation advisory.
+- [ ] Rerun `scripts/dependency_audit.py` after explicit permission to send
+      dependency versions and locked Git revisions to OSV (`api.osv.dev`).
+      The October 9 rerun was rejected before execution by automatic approval
+      review; local lock consistency checks do not replace this external audit.
+- [ ] Qualify the upstream Transformers custom-generation consent fix in each
+      affected model stack before changing locks. Commit
+      `cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55` is included in released 5.17.0,
+      but GHSA-x9r9-c232-4q39/PYSEC-2026-4174 still lack a fixed-release mapping;
+      do not equate source verification with runtime compatibility or add an
+      unproven ignore. Retain loaded-module provenance and actual model
+      generation/voice checks for any upgrade, backport or replacement.
+- [ ] Resolve compatibility before updating root Coqui 0.27.5 (Transformers <5
+      and private generation API) or Chatterbox Nano's pinned Git package
+      (requires Transformers ==5.2.0). The supported UI/profile/CLI paths do not
+      supply remote custom_generate, but root's public Python synthesis kwargs
+      can; preserve that API while qualifying a compatible fix.
+- [ ] Qualify the fixed candidate against MOSS Delay's trusted remote processor
+      and model loading, including AutoModel's injected GenerationMixin and
+      automatic custom-generation lookup. The captured default model snapshot
+      has no custom_generate files; mutable/default or custom repositories are
+      not a permanent reachability exemption. Preserve revision forwarding,
+      CUDA/BF16 refusal, dtype/attention options and actual generated audio.
+- [ ] Qualify MOSS SoundEffect's pinned pipeline and local text-encoder forward
+      path against a compatible fixed Transformers build. Its exact model
+      snapshot has no custom_generate files and the normal pipeline does not
+      call HF generate; retain pinned source/model provenance, CUDA/BF16 and
+      audio-quality checks rather than generalizing to arbitrary custom models.
+      Qwen's remaining Accelerate, setuptools, Torch and Transformers findings
+      belong to the existing Qwen qualification task below, including this
+      custom-generation advisory.
 
 ## Validate OpenMOSS progress on Windows
 
@@ -560,4 +598,18 @@ Planned implementation order after approval:
 
 ## Investigate intermittent macOS Qt test crash
 
+- [ ] Reproduce/bisect the October 8 remainder SIGSEGV at `tests.test_history.DialogueHistoryDialogTest.test_slow_replay_keeps_qt_responsive_and_reports_completion` after the preceding exact full-discovery prefix. The October 9 portrait audit selector (196modules) reproduced the same slow-history-replay SIGSEGV; preserve `.codex/investigations/portrait-oct09-local.log` with the prior prefix. Preserve the latest 3565-selected-test crash prefix in `.codex/investigations/model-quality-oct08-local-complete.log` and the prior `.codex/investigations/queue-oct08-local-verified.log`; identical branch selection and an earlier local selection passed, so causality is not established. Gate: narrowed repeatable Qt/pooled-thread owner sequence and a deterministic lifetime regression; a successful retry does not resolve it. The October 9 task/command full-run remainder twice crashed at tests.test_replay_shutdown.ReplayShutdownTest.test_failed_stop_retains_real_snapshots_until_workers_finish in Shiboken mainThreadDeletionHandler after all five Qt shards passed; preserve .codex/investigations/task-command-oct09-local.log and task-command-oct09-local-verified.log with their exact prefixes. Unchanged main passed full3853; isolated replay, readiness/replay and preceding Qt prefixes passed. Readiness fixture ownership is now separately qualified on successful and failing assertions, and final local/fresh-main branch full3863 pass, but SIGSEGV causality remains unestablished. Narrow the owner sequence if it recurs; passing retries do not close this gate.
+
+- [ ] Reproduce/bisect the October 7 qt-assets SIGSEGV at `test_model_verification_can_finish_after_close_without_updating_ui`: native stack enters QObjectWrapper disconnectNotify during QDialog child destruction. Compare the exact 21-test shard on main and the cancellation branch; four fresh main processes passed, so causality is not established. Keep `.codex/investigations/assets-native-oct07.log`; gate: a narrowed repeatable teardown sequence and an explicit owner-lifetime check, without treating a successful retry as a native crash fix.
+
+- [ ] Compare the October 6 qt-app-2 native GC SIGSEGV in `test_settings_and_assets_apply_without_blocking_qt_events` with the existing owner-deletion investigation. Stack enters QAction disconnectNotify/QMenu destruction while player-session configuration runs. Evidence: `.codex/investigations/hotkeys-qt-gc-oct06.log`; The exact original 43-test prefix passed in three fresh processes and under GC thresholds (50, 5, 5); the confirmed menu/action native ownership repair passes its separate lifetime regression, but is not a proven crash fix. Next gate: reproduce/bisect the preceding-owner sequence with faulthandler before further lifecycle changes.
+
 - [ ] A macOS changed-test run intermittently terminated with `shiboken6` `mainThreadDeletionHandler` SIGSEGV during pure-Python `test_player_session` after UI tests. The exact final 10-test sequence passed 10 times, the full onboarding/person/player sequence passed five times, and a later 2734-test selector passed. Reproduce and bisect an earlier Qt owner in the remainder shard with faulthandler before changing cleanup; retain the crash log in `.codex/investigations/` if it becomes repeatable. Gate: a narrowed failing sequence and a deterministic cleanup check.
+
+## Investigate calibration OCR test startup after full discovery
+
+- [ ] Reproduce/bisect the full remainder prefix preceding `tests.test_calibration.DialogRegionOverlayTest.test_cancelled_review_releases_stalled_ocr_subprocess`: one October 6 full run timed out before the fixture start marker, while the isolated case and all17 calibration tests passed. Preserve `.codex/investigations/backend-cleanup-calibration-oct06.log`; capture worker/Qt/subprocess state before changing timeout or cancellation.
+
+## Active - Continue cleanup ownership expansion
+
+- [ ] **Windows job acquisition next gate:** qualify actual native failures before assignment, before resume and after resume on Windows. Current `__init__` closes job through raw cleanup and allocates `_ExtendedLimits` after handle acquisition outside its guard; assign/resume finally blocks can replace primary errors. Stage the existing cleanup leaf only after native ownership checks; prepare limits before acquisition. Four CloseHandle results are ignored and close clears `_handle` on FALSE. Microsoft documents FALSE as failure, but it can mean INVALID_HANDLE rather than a leaked valid handle; preserve returned status/last error and prove valid-handle cleanup and no runnable child with real Windows failure injection. Keep the two-second process wait budget; successful host-crash test and mock cleanup order do not qualify these failures.

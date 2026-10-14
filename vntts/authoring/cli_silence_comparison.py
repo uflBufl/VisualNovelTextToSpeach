@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from vntts.authoring.failure_repair import DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS
@@ -16,6 +15,7 @@ from vntts.authoring.silence_comparison import (
     load_silence_comparison_input_plan,
     publish_silence_comparison,
 )
+from vntts.cli import print_json
 
 SilenceComparisonError = _SilenceComparisonError
 
@@ -101,5 +101,5 @@ def handle(arguments: argparse.Namespace) -> int:
         raise ValueError(
             f"Unsupported silence-comparison command: {arguments.command!r}"
         )
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    print_json(payload)
     return 0

@@ -1,3 +1,5 @@
+import os
+import stat
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -7,7 +9,10 @@ from unittest.mock import Mock, patch
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
-from tests.test_pregeneration_pack import fixture
+from tests.pregeneration_fixtures import fixture
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from vntts.authoring import generation_state
+from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationResult,
@@ -105,7 +110,7 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                 )
             self.assertEqual(events, ["a", "refresh", "b", "refresh"])
 
-    def test_recovery_order_ignores_queue_replacement_after_hash(self):
+    def test_recovery_order_ignores_queue_replacement_after_capture(self):
         with TemporaryDirectory() as directory:
             _job, generation_input, _result, items = fixture(Path(directory))
             generation_input = replace(
@@ -114,13 +119,15 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
             recovery_root = Path(directory) / "recovery-fixture"
             recovery_root.mkdir()
             _unused, _unused_result, voice_plan = inputs(recovery_root)
-            original_sha256 = sha256_file
+            original_read = generation_state.read_regular_bytes
+            replaced = []
 
-            def hash_then_replace(path):
-                digest = original_sha256(path)
-                if Path(path) == generation_input.queue:
+            def read_then_replace(path):
+                payload = original_read(path)
+                if path == generation_input.queue:
+                    replaced.append(path)
                     write_voice_generation_queue(
-                        generation_input.queue,
+                        path,
                         {"game": "Synthetic Game", "language": "en"},
                         [
                             {
@@ -131,17 +138,80 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                             items[1],
                         ],
                     )
-                return digest
+                return payload
 
-            with patch(
-                "vntts.pregeneration_recovery.sha256_file",
-                side_effect=hash_then_replace,
+            with patch.object(
+                generation_state, "read_regular_bytes", read_then_replace
             ):
                 queue_ids, _index = _ordered_generation_queue_ids(
                     generation_input, voice_plan
                 )
 
+            self.assertEqual(replaced, [generation_input.queue])
+            self.assertNotEqual(
+                sha256_file(generation_input.queue), generation_input.queue_sha256
+            )
             self.assertEqual(queue_ids, tuple(item["queue_id"] for item in items))
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_recovery_plan_queue_capture_refuses_fifo_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            _job, generation_input, result, _items = fixture(root)
+            recovery_root = root / "recovery-fixture"
+            recovery_root.mkdir()
+            _unused, _unused_result, voice_plan = inputs(recovery_root)
+            queue = generation_input.queue
+            queue.chmod(0o444)
+            mode = stat.S_IMODE(queue.stat().st_mode)
+            before_paths = set(root.rglob("*"))
+            before = {
+                path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+            }
+            expected = plan_automatic_recovery(generation_input, voice_plan, result)
+            original_read = generation_state.read_regular_bytes
+            refused = []
+
+            def refuse_at_capture(path):
+                self.assertEqual(path, queue)
+                gate: RegularFileGate = {"path": queue, "armed": True}
+                with (
+                    swap_at_acquisition(self, gate),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original_read(path)
+                refused.append(caught.exception)
+                raise caught.exception
+
+            with (
+                patch.object(generation_state, "read_regular_bytes", refuse_at_capture),
+                self.assertRaisesRegex(
+                    OfflineRecoveryError,
+                    "Unable to inspect offline generation failures",
+                ) as caught,
+            ):
+                plan_automatic_recovery(generation_input, voice_plan, result)
+
+            self.assertEqual(len(refused), 1)
+            self.assertIsInstance(caught.exception.__cause__, BulkGenerationError)
+            self.assertIs(caught.exception.__cause__.__cause__, refused[0])
+            self.assertEqual(str(caught.exception.__cause__), str(refused[0]))
+            self.assertEqual(stat.S_IMODE(queue.stat().st_mode), mode)
+            self.assertEqual(set(root.rglob("*")), before_paths)
+            self.assertEqual(
+                {path: path.read_bytes() for path in root.rglob("*") if path.is_file()},
+                before,
+            )
+            self.assertEqual(
+                plan_automatic_recovery(generation_input, voice_plan, result), expected
+            )
+            self.assertEqual(
+                {path: path.read_bytes() for path in root.rglob("*") if path.is_file()},
+                before,
+            )
+            self.assertEqual(set(root.rglob("*")), before_paths)
 
     def test_recovery_rejects_a_changed_voice_manifest_before_loading_the_queue(self):
         with TemporaryDirectory() as temporary_directory:
@@ -355,6 +425,46 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
         )
         self.assertEqual(result.recovered, 1)
         self.assertEqual(result.remaining_failed, 0)
+
+    def test_scoped_report_counts_only_remaining_failures_for_that_dialogue(self):
+        for queue_id, expected_failed, expected_counts in (
+            ("a", 0, ()),
+            ("b", 1, (("edge_silence_trim", 1),)),
+        ):
+            with self.subTest(queue_id=queue_id), TemporaryDirectory() as directory:
+                generation_input, first, voice_plan = inputs(Path(directory))
+                repaired = replace(first, generated=2, failed=1)
+                plans = iter(
+                    (
+                        OfflineRecoveryPlan(
+                            "1" * 64,
+                            "2" * 64,
+                            2,
+                            (OfflineRecoveryBatch("edge_silence_trim", ("a", "b")),),
+                            (),
+                        ),
+                        OfflineRecoveryPlan(
+                            "3" * 64,
+                            "2" * 64,
+                            1,
+                            (OfflineRecoveryBatch("edge_silence_trim", ("b",)),),
+                            (),
+                        ),
+                    )
+                )
+                generator = Mock()
+                generator.repair.return_value = repaired
+                result = OfflineRecoveryWorker(
+                    generator, planner=lambda *_arguments: next(plans)
+                ).recover(generation_input, voice_plan, first, queue_id=queue_id)
+
+            self.assertEqual(result.remaining_failed, expected_failed)
+            self.assertEqual(result.remaining_action_counts, expected_counts)
+            self.assertEqual(result.recovered, 1 - expected_failed)
+            generator.repair.assert_called_once()
+            self.assertEqual(
+                generator.repair.call_args.kwargs["queue_ids"], (queue_id,)
+            )
 
     def test_generation_and_recovery_alternate_in_queue_order(self):
         with TemporaryDirectory() as temporary_directory:

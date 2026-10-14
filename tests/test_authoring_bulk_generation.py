@@ -1,9 +1,9 @@
 import hashlib
 import json
-import math
 import os
 import socket
 import unittest
+import wave
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -16,29 +16,50 @@ from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import GeneratedAudioIndex
-from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
 import vntts.authoring.bulk_generation as bulk_module
+import vntts.authoring.generation_failures as failure_module
+import vntts.authoring.generation_fallback as fallback_module
 import vntts.authoring.generation_lease as generation_lease_module
+import vntts.authoring.generation_review as review_module
+import vntts.authoring.workspace_foundation as foundation_module
+from tests.authoring_fixtures import tree_hashes
+from tests.bulk_generation_fixtures import (
+    SyntheticRenderer,
+    audio_samples,
+    queue_item,
+    write_queue,
+)
+from tests.symlink_support import symlink_or_skip
 from vntts.audio_cache import PersistentAudioCache
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.bulk_generation import (
     LEGACY_STATE_SCHEMA,
     STATE_SCHEMA,
     BulkGenerationError,
-    authorize_live_fallback,
-    generation_failure_repair_plan,
-    generation_failure_report,
-    generation_review_authorities,
-    generation_review_authority,
     load_generation_state,
     publish_generated_manifest,
-    review_generation_item,
     run_bulk_generation,
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
+from vntts.authoring.generation_failures import (
+    generation_failure_repair_plan,
+    generation_failure_report,
+)
+from vntts.authoring.generation_fallback import (
+    authorize_live_fallback,
+)
 from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
+from vntts.authoring.generation_review import (
+    generation_review_authorities,
+    generation_review_authority,
+    review_generation_item,
+)
+from vntts.authoring.generation_state import (
+    control_directory_digest,
+    validate_synthesis_controls,
+)
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.silence_evidence import (
     SilenceFailureEvidenceError,
@@ -55,92 +76,6 @@ from vntts.synthesis import (
     SynthesisTiming,
 )
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
-
-
-def queue_item(name="one", *, action="generate", character="Hero", text=None):
-    text = text or f"Exact text for {name}."
-    text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return {
-        "record_type": "generation_item",
-        "queue_id": f"line:{name}:{text_hash[:16]}",
-        "line_id": f"line:{name}",
-        "text_sha256": text_hash,
-        "text": text,
-        "speaker": character,
-        "voice_character": character,
-        "action": action,
-        "prompt_adapters": {"generic": f"Delivery for {name}"},
-    }
-
-
-def write_queue(path, items):
-    return write_voice_generation_queue(
-        path,
-        {
-            "game": "Synthetic Game",
-            "language": "en",
-        },
-        items,
-    )
-
-
-def audio_samples(sample_rate=16_000):
-    indexes = np.arange(sample_rate // 4, dtype=np.float32)
-    return (0.25 * np.sin(2 * math.pi * 220 * indexes / sample_rate)).astype(np.float32)
-
-
-class SyntheticRenderer:
-    name = "synthetic"
-    model_name = "synthetic-v1"
-
-    def __init__(
-        self,
-        outcomes=None,
-        *,
-        inspect_state=None,
-        diagnostics_backend=None,
-        pcm=None,
-    ):
-        self.outcomes = list(outcomes or [SynthesisCompletion.COMPLETE])
-        self.requests = []
-        self.inspect_state = inspect_state
-        self.diagnostics_backend = diagnostics_backend
-        self.pcm = pcm
-        self.stop_calls = 0
-
-    def render(self, request):
-        self.requests.append(request)
-        if self.inspect_state is not None:
-            self.inspect_state(request)
-        outcome = (
-            self.outcomes.pop(0) if self.outcomes else SynthesisCompletion.COMPLETE
-        )
-        if isinstance(outcome, BaseException):
-            raise outcome
-        pcm = audio_samples() if self.pcm is None else self.pcm
-
-        def produce():
-            yield SynthesisChunk(pcm, 16_000, 0, 1.0)
-            return SynthesisResult(
-                pcm=pcm,
-                sample_rate=16_000,
-                completion=outcome,
-                limits=SynthesisLimits(256, 180.0),
-                timing=SynthesisTiming(1.0, 2.0),
-                diagnostics=SynthesisDiagnostics(
-                    backend=self.diagnostics_backend or self.name,
-                    cache_source="fresh-generation",
-                    generation_profile=request.generation_profile,
-                    seed=request.seed,
-                    chunk_count=1,
-                    sample_count=len(pcm),
-                ),
-            )
-
-        return SynthesisChunkStream(produce())
-
-    def stop(self):
-        self.stop_calls += 1
 
 
 class CacheAwareSyntheticRenderer:
@@ -275,14 +210,14 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 retries=0,
             )
             state_payload = result.state.read_bytes()
-            original_normalize = bulk_module.normalized_failure_record
+            original_normalize = failure_module.normalized_failure_record
 
             def replace_state_after_read(item, *, text):
                 result.state.write_bytes(state_payload + b" ")
                 return original_normalize(item, text=text)
 
             with patch.object(
-                bulk_module,
+                failure_module,
                 "normalized_failure_record",
                 side_effect=replace_state_after_read,
             ):
@@ -381,6 +316,33 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         )
         self.assertEqual(progress_manifest["entries"][0]["line_id"], item["line_id"])
 
+    def test_rendered_wav_decodes_once_before_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            with (
+                patch("wave.open", wraps=wave.open) as wav_open,
+                patch.object(
+                    bulk_module,
+                    "inspect_generated_wav_with_samples",
+                    wraps=bulk_module.inspect_generated_wav_with_samples,
+                ) as inspect_staged,
+            ):
+                result = self.run_generation(queue, output, SyntheticRenderer())
+            self.assertEqual(inspect_staged.call_count, 1)
+            staged_input = inspect_staged.call_args.args[0]
+            staged_reads = [
+                call
+                for call in wav_open.call_args_list
+                if call.args[1] == "rb" and call.args[0] is staged_input
+            ]
+            self.assertEqual(result.generated, 1)
+            self.assertEqual(len(staged_reads), 1)
+            self.assertTrue(result.manifest.is_file())
+            self.assertEqual(list(output.rglob("*.partial.wav")), [])
+
     def test_validated_player_audio_is_published_and_reused_without_review(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -446,14 +408,14 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     second_started.set()
 
             renderer.inspect_state = inspect_state
-            inspect_speech = bulk_module.inspect_generated_speech
+            inspect_speech = bulk_module.inspect_generated_speech_samples
 
-            def wait_for_next_render(path, **options):
+            def wait_for_next_render(samples, **options):
                 self.assertTrue(second_started.wait(2))
-                return inspect_speech(path, **options)
+                return inspect_speech(samples, **options)
 
             with patch(
-                "vntts.authoring.bulk_generation.inspect_generated_speech",
+                "vntts.authoring.bulk_generation.inspect_generated_speech_samples",
                 side_effect=wait_for_next_render,
             ):
                 result = run_bulk_generation(
@@ -614,6 +576,231 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(decision["evidence"]["base_result"]["provider"], "moss-tts")
         self.assertEqual(stored["status"], "live_fallback")
 
+    def test_interrupted_single_rejection_never_exposes_rejected_wav(self):
+        from vntts.generated_audio import GeneratedAudioLibrary
+
+        for exact in (False, True):
+            with self.subTest(exact=exact), TemporaryDirectory() as directory:
+                root = Path(directory)
+                item = queue_item()
+                queue = write_queue(root / "queue.jsonl", [item])
+                result = self.run_generation(
+                    queue, root / "output", SyntheticRenderer()
+                )
+                review_generation_item(result.state, item["queue_id"], "approved")
+                authority = generation_review_authority(result.state, item["queue_id"])
+                library = GeneratedAudioLibrary.load_optional(result.manifest)
+                self.assertIsNotNone(library.find(item["line_id"], item["text_sha256"]))
+                original = os.replace
+
+                def interrupt_after_commit(source, destination):
+                    original(source, destination)
+                    if Path(destination).resolve() == result.state.resolve():
+                        raise OSError("interrupted after rejection state commit")
+
+                with (
+                    patch.object(
+                        review_module.os, "replace", side_effect=interrupt_after_commit
+                    ),
+                    self.assertRaises(BulkGenerationError),
+                ):
+                    review_generation_item(
+                        result.state,
+                        item["queue_id"],
+                        "rejected",
+                        expected_authority=authority if exact else None,
+                        queue_path=queue if exact else None,
+                    )
+                state = load_generation_state(result.state, queue)
+                self.assertEqual(
+                    state["items"][item["queue_id"]]["review_status"], "rejected"
+                )
+                library = GeneratedAudioLibrary.load_optional(result.manifest)
+                self.assertIsNone(library.find(item["line_id"], item["text_sha256"]))
+                self.assertEqual(list(result.state.parent.glob(".*.tmp")), [])
+
+    def test_single_rejection_lease_takeover_keeps_manifest_revoked(self):
+        from vntts.generated_audio import GeneratedAudioLibrary
+
+        for exact in (False, True):
+            with self.subTest(exact=exact), TemporaryDirectory() as directory:
+                root = Path(directory)
+                item = queue_item()
+                queue = write_queue(root / "queue.jsonl", [item])
+                result = self.run_generation(
+                    queue, root / "output", SyntheticRenderer()
+                )
+                review_generation_item(result.state, item["queue_id"], "approved")
+                authority = generation_review_authority(result.state, item["queue_id"])
+                state_before = result.state.read_bytes()
+                lease_path = result.state.parent / ".generation-lease.json"
+                original = os.replace
+
+                def steal_after_manifest_replace(source, destination):
+                    original(source, destination)
+                    if Path(destination).resolve() == result.manifest.resolve():
+                        lease = json.loads(lease_path.read_text(encoding="utf-8"))
+                        lease["lease_id"] = "successor-after-rejection-manifest"
+                        atomic_write_json(lease_path, lease, sort_keys=True)
+
+                with (
+                    patch.object(
+                        review_module.os,
+                        "replace",
+                        side_effect=steal_after_manifest_replace,
+                    ),
+                    self.assertRaisesRegex(
+                        BulkGenerationError, "lease ownership changed"
+                    ),
+                ):
+                    review_generation_item(
+                        result.state,
+                        item["queue_id"],
+                        "rejected",
+                        expected_authority=authority if exact else None,
+                        queue_path=queue if exact else None,
+                    )
+                self.assertEqual(result.state.read_bytes(), state_before)
+                library = GeneratedAudioLibrary.load_optional(result.manifest)
+                self.assertIsNone(library.find(item["line_id"], item["text_sha256"]))
+                successor = json.loads(lease_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    successor["lease_id"], "successor-after-rejection-manifest"
+                )
+                self.assertEqual(list(result.state.parent.glob(".*.tmp")), [])
+
+    def test_review_authority_final_read_error_preserves_cause_and_sources(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            before = tree_hashes(root)
+            failure = PermissionError("Review state recheck was blocked")
+            checksum = review_module.sha256_file
+
+            def unreadable_state(path):
+                if Path(path) == result.state:
+                    raise failure
+                return checksum(path)
+
+            with (
+                patch.object(
+                    review_module, "sha256_file", side_effect=unreadable_state
+                ),
+                self.assertRaises(BulkGenerationError) as caught,
+            ):
+                generation_review_authority(result.state, item["queue_id"])
+
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertEqual(tree_hashes(root), before)
+
+    def test_cohort_final_read_errors_preserve_authority_and_clean_staging(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            items = [queue_item("first"), queue_item("second")]
+            queue = write_queue(root / "queue.jsonl", items)
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            authorities = generation_review_authorities(
+                result.state, [item["queue_id"] for item in items]
+            )
+            decisions = {
+                items[0]["queue_id"]: "rejected",
+                items[1]["queue_id"]: "approved",
+            }
+            before = tree_hashes(root)
+            for name, failed_read in (
+                ("_assert_cohort_review_snapshot_stable", 1),
+                ("_assert_cohort_commit_authority", 2),
+            ):
+                with self.subTest(recheck=name):
+                    check = getattr(review_module, name)
+                    checksum = review_module.sha256_file
+                    failure = PermissionError("Cohort state recheck was blocked")
+                    state_reads = 0
+
+                    def unreadable_state(path):
+                        nonlocal state_reads
+                        if Path(path) == result.state:
+                            state_reads += 1
+                            if state_reads == failed_read:
+                                raise failure
+                        return checksum(path)
+
+                    def fail_final_check(*args, **kwargs):
+                        with patch.object(
+                            review_module, "sha256_file", side_effect=unreadable_state
+                        ):
+                            return check(*args, **kwargs)
+
+                    with (
+                        patch.object(review_module, name, side_effect=fail_final_check),
+                        self.assertRaises(BulkGenerationError) as caught,
+                    ):
+                        review_module.review_generation_cohort(
+                            result.state,
+                            queue,
+                            authorities,
+                            decisions,
+                            provenance={"test": "unreadable-final-authority"},
+                        )
+
+                    self.assertIs(caught.exception.__cause__, failure)
+                    self.assertEqual(state_reads, failed_read)
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertFalse(list(result.state.parent.glob("*.tmp")))
+                    self.assertFalse(
+                        (result.state.parent / ".generation-lease.json").exists()
+                    )
+
+    def test_live_fallback_final_read_error_preserves_authority_and_cleans_staging(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            renderer = SyntheticRenderer([SynthesisCompletion.LIMITED])
+            renderer.name = "pocket-tts"
+            renderer.model_name = "pocket-tts"
+            result = run_bulk_generation(
+                queue,
+                root / "output",
+                renderer,
+                provider="pocket-tts",
+                model="pocket-tts",
+                generation_profile="default",
+                retries=0,
+            )
+            before = tree_hashes(root)
+            failure = PermissionError("Fallback authority recheck was blocked")
+            check = fallback_module._assert_live_fallback_commit_sources
+
+            def fail_final_check(*args, **kwargs):
+                with patch.object(fallback_module, "sha256_file", side_effect=failure):
+                    return check(*args, **kwargs)
+
+            with (
+                patch.object(
+                    fallback_module,
+                    "_assert_live_fallback_commit_sources",
+                    side_effect=fail_final_check,
+                ),
+                self.assertRaises(BulkGenerationError) as caught,
+            ):
+                authorize_live_fallback(
+                    result.state,
+                    queue,
+                    item["queue_id"],
+                    reason="automatic_recovery_exhausted",
+                    model="pocket-tts",
+                )
+
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertEqual(tree_hashes(root), before)
+            self.assertFalse(list(result.state.parent.glob("*.tmp")))
+            self.assertFalse((result.state.parent / ".generation-lease.json").exists())
+
     def test_batch_review_authorities_share_one_state_snapshot(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -635,6 +822,66 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             len({authority.state_sha256 for authority in authorities.values()}),
             1,
         )
+
+    def test_review_authorities_hash_the_state_used_for_items(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            original = result.state.read_bytes()
+            original_sha256 = hashlib.sha256(original).hexdigest()
+            baseline = generation_review_authority(result.state, item["queue_id"])
+            self.assertEqual(baseline.state_sha256, original_sha256)
+            self.assertEqual(
+                generation_review_authorities(result.state, [item["queue_id"]]),
+                {item["queue_id"]: baseline},
+            )
+            for queue_id in ("unknown-item", f" {item['queue_id']} "):
+                with (
+                    self.subTest(queue_id=queue_id),
+                    self.assertRaisesRegex(
+                        BulkGenerationError, "Generated queue item does not exist"
+                    ),
+                ):
+                    generation_review_authority(result.state, queue_id)
+            foreign_state = json.loads(original)
+            foreign_state["items"][item["queue_id"]]["model"] = "foreign-review-model"
+            foreign = json.dumps(foreign_state, sort_keys=True).encode("utf-8")
+            result.state.write_bytes(foreign)
+            load_generation_state(result.state, queue)
+            result.state.write_bytes(original)
+            original_read = foundation_module.read_regular_bytes
+            for capture, selection in (
+                (generation_review_authority, item["queue_id"]),
+                (generation_review_authorities, [item["queue_id"]]),
+            ):
+                captured = False
+
+                def read_replacement(path):
+                    nonlocal captured
+                    if Path(path) != result.state or captured:
+                        return original_read(path)
+                    captured = True
+                    result.state.write_bytes(foreign)
+                    try:
+                        return original_read(path)
+                    finally:
+                        result.state.write_bytes(original)
+
+                with (
+                    self.subTest(capture=capture.__name__),
+                    patch.object(
+                        foundation_module, "read_regular_bytes", read_replacement
+                    ),
+                    self.assertRaisesRegex(
+                        BulkGenerationError,
+                        "Generation state changed while review authorities were captured",
+                    ),
+                ):
+                    capture(result.state, selection)
+                self.assertTrue(captured)
+                self.assertEqual(result.state.read_bytes(), original)
 
     def test_explicit_regeneration_replaces_only_pending_review_audio(self):
         with TemporaryDirectory() as directory:
@@ -886,6 +1133,59 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(result.generated, 1)
         self.assertEqual(renderer.requests[0].voice, "Narrator")
 
+    def test_fallback_manifest_checks_reference_symlinks_at_source_root(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_root = root / "voices"
+            manifest_root.mkdir()
+            reference = root / "outside.wav"
+            reference.write_bytes(b"reference")
+            symlink_or_skip(manifest_root / "narrator.wav", reference)
+            manifest = manifest_root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Narrator",
+                                "speaker": "Narrator",
+                                "reference": "narrator.wav",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            control = {"path": manifest, "sha256": sha256_file(manifest)}
+            with self.assertRaisesRegex(BulkGenerationError, "symlinks"):
+                bulk_module._fallback_manifest_entries(control)
+
+    def test_fallback_manifest_preserves_legacy_and_missing_reference_policy(self):
+        with TemporaryDirectory() as directory:
+            manifest = Path(directory) / "manifest.json"
+            document = {
+                "voices": [
+                    {
+                        "character": "Narrator",
+                        "speaker": "Narrator",
+                        "aliases": ["Storyteller"],
+                        "reference": "missing.wav",
+                    }
+                ]
+            }
+            for version in (None, 2):
+                with self.subTest(version=version):
+                    if version is not None:
+                        document["version"] = version
+                    manifest.write_text(json.dumps(document), encoding="utf-8")
+                    control = {"path": manifest, "sha256": sha256_file(manifest)}
+                    entries = bulk_module._fallback_manifest_entries(control)
+                    self.assertEqual(len(entries), 1)
+                    self.assertEqual(entries[0].character, "Narrator")
+                    self.assertEqual(entries[0].aliases, ("Storyteller",))
+                    self.assertEqual(entries[0].references, ("missing.wav",))
+
     def test_fallback_refuses_a_role_that_still_has_manifest_references(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1064,6 +1364,29 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                             failed_state["items"][item["queue_id"]]["failure"]["kind"],
                             "cancelled",
                         )
+
+    def test_invalid_result_sample_rates_fail_before_the_wav_writer(self):
+        for rate in (True, 16000.5, "16000", None, 0, -1):
+            with self.subTest(rate=rate), TemporaryDirectory() as directory:
+                root = Path(directory)
+                item = queue_item()
+                queue = write_queue(root / "queue.jsonl", [item])
+                renderer = SyntheticRenderer(result_sample_rate=rate)
+                with patch.object(
+                    bulk_module, "write_pcm16_wav", wraps=write_pcm16_wav
+                ) as writer:
+                    result = self.run_generation(
+                        queue, root / "output", renderer, retries=0
+                    )
+                writer.assert_not_called()
+                self.assertEqual(result.generated, 0)
+                self.assertEqual(result.failed, 1)
+                state = load_generation_state(result.state, queue)
+                self.assertIn(
+                    "invalid sample rate",
+                    state["items"][item["queue_id"]]["last_error"],
+                )
+                self.assertEqual(list((root / "output/audio").rglob("*.wav")), [])
 
     def test_audio_limit_plan_retries_whole_multi_sentence_text(self):
         with TemporaryDirectory() as directory:
@@ -1408,7 +1731,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             authority = generation_review_authority(result.state, item["queue_id"])
             state_before = result.state.read_bytes()
             manifest_before = result.manifest.read_bytes()
-            original_writer = bulk_module._write_generated_manifest_from_state
+            original_writer = review_module._write_generated_manifest_from_state
 
             def steal_lease_during_staging(*arguments, **options):
                 written = original_writer(*arguments, **options)
@@ -1420,7 +1743,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module,
+                    review_module,
                     "_write_generated_manifest_from_state",
                     side_effect=steal_lease_during_staging,
                 ),
@@ -1448,7 +1771,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             audio = result.state.parent / state["items"][item["queue_id"]]["path"]
             state_before = result.state.read_bytes()
             manifest_before = result.manifest.read_bytes()
-            original_writer = bulk_module._write_generated_manifest_from_state
+            original_writer = review_module._write_generated_manifest_from_state
 
             def change_wav_during_staging(*arguments, **options):
                 written = original_writer(*arguments, **options)
@@ -1457,7 +1780,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module,
+                    review_module,
                     "_write_generated_manifest_from_state",
                     side_effect=change_wav_during_staging,
                 ),
@@ -1495,7 +1818,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module.os,
+                    review_module.os,
                     "replace",
                     side_effect=steal_after_state_replace,
                 ),
@@ -1539,23 +1862,23 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             )
             state_sha256 = sha256_file(state_path)
             authorities = {
-                queue_id: bulk_module.ReviewAuthority(
+                queue_id: review_module.ReviewAuthority(
                     queue_sha256=queue_sha256,
                     state_sha256=state_sha256,
-                    item_sha256=bulk_module._canonical_sha256(item),
+                    item_sha256=review_module._canonical_sha256(item),
                     audio_sha256=sha256_file(audio_paths[queue_id]),
                 )
                 for queue_id, item in items.items()
             }
             reads = []
-            real_read_bytes = Path.read_bytes
+            real_read_bytes = review_module.read_regular_bytes
 
             def tracked_read_bytes(path):
                 reads.append(Path(path).resolve())
                 return real_read_bytes(path)
 
-            with patch.object(Path, "read_bytes", tracked_read_bytes):
-                state, snapshots = bulk_module._assert_review_authorities(
+            with patch.object(review_module, "read_regular_bytes", tracked_read_bytes):
+                state, snapshots = review_module.assert_review_authorities(
                     state_path, authorities, queue
                 )
 
@@ -1565,7 +1888,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertEqual(reads.count(queue.resolve()), 1)
             audio_paths["queue-1"].write_bytes(b"changed audio")
             with self.assertRaisesRegex(BulkGenerationError, "authority changed"):
-                bulk_module._assert_review_authorities(state_path, authorities, queue)
+                review_module.assert_review_authorities(state_path, authorities, queue)
 
     def test_cohort_commit_validates_only_newly_approved_wavs(self):
         with TemporaryDirectory() as directory:
@@ -1591,18 +1914,18 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             first_wav = result.state.parent / state["items"][first["queue_id"]]["path"]
             write_pcm16_wav(first_wav, audio_samples() * 0.5, 16_000)
             checked = []
-            original_validate = bulk_module._validate_success_file
+            original_validate = review_module._validate_success_file
 
             def track_validation(queue_id, item, audio):
                 checked.append(queue_id)
                 return original_validate(queue_id, item, audio)
 
             with patch.object(
-                bulk_module,
+                review_module,
                 "_validate_success_file",
                 side_effect=track_validation,
             ):
-                bulk_module._review_generation_cohort(
+                review_module.review_generation_cohort(
                     result.state,
                     queue,
                     {second["queue_id"]: second_authority},
@@ -1636,7 +1959,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 for item in (first, second)
             }
 
-            commits = bulk_module._review_generation_cohort(
+            commits = review_module.review_generation_cohort(
                 result.state,
                 queue,
                 authorities,
@@ -1690,7 +2013,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 third["queue_id"]
             ]
 
-            commits = bulk_module._review_generation_cohort(
+            commits = review_module.review_generation_cohort(
                 result.state,
                 queue,
                 authorities,
@@ -1738,7 +2061,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             audio = result.state.parent / state["items"][first["queue_id"]]["path"]
             state_before = result.state.read_bytes()
             manifest_before = result.manifest.read_bytes()
-            original_writer = bulk_module._write_generated_manifest_from_state
+            original_writer = review_module._write_generated_manifest_from_state
             writes = 0
 
             def mutate_after_conservative_staging(*arguments, **options):
@@ -1751,13 +2074,13 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module,
+                    review_module,
                     "_write_generated_manifest_from_state",
                     side_effect=mutate_after_conservative_staging,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "authority changed"),
             ):
-                bulk_module._review_generation_cohort(
+                review_module.review_generation_cohort(
                     result.state,
                     queue,
                     authorities,
@@ -1797,13 +2120,13 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module.os,
+                    review_module.os,
                     "replace",
                     side_effect=steal_after_state_replace,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "lease ownership changed"),
             ):
-                bulk_module._review_generation_cohort(
+                review_module.review_generation_cohort(
                     result.state,
                     queue,
                     authorities,
@@ -1842,13 +2165,13 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module.os,
+                    review_module.os,
                     "replace",
                     side_effect=mutate_after_state_replace,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "decision was saved"),
             ):
-                bulk_module._review_generation_cohort(
+                review_module.review_generation_cohort(
                     result.state,
                     queue,
                     {item["queue_id"]: authority},
@@ -2253,6 +2576,31 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertIsNotNone(state["active"])
             self.assertFalse((root / "output/manifest.json").exists())
 
+    def test_synthesis_control_registry_rejects_embedded_nul_paths(self):
+        for path in ("nested/weights.bin", "\x00", "nested/weights\x00.bin"):
+            files = [{"path": path, "sha256": "a" * 64}]
+            state = {
+                "synthesis_controls": {
+                    "b" * 64: [
+                        {
+                            "role": "model_artifact",
+                            "kind": "directory",
+                            "path": "model",
+                            "sha256": control_directory_digest(files),
+                            "files": files,
+                        }
+                    ]
+                }
+            }
+            with self.subTest(path=path):
+                if "\x00" in path:
+                    with self.assertRaisesRegex(
+                        BulkGenerationError, "file path is invalid"
+                    ):
+                        validate_synthesis_controls(state)
+                else:
+                    validate_synthesis_controls(state)
+
     def test_directory_control_inventory_binds_every_tree_entry(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2318,7 +2666,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             item = queue_item()
             queue = write_queue(root / "queue.jsonl", [item])
             output = root / "output"
-            original_inspection = bulk_module.inspect_generated_speech
+            original_inspection = bulk_module.inspect_generated_speech_samples
 
             def lose_lease(*args, **kwargs):
                 inspected = original_inspection(*args, **kwargs)
@@ -2331,7 +2679,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             with (
                 patch.object(
                     bulk_module,
-                    "inspect_generated_speech",
+                    "inspect_generated_speech_samples",
                     side_effect=lose_lease,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "ownership"),
@@ -2381,7 +2729,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     "queue_sha256": sha256_file(queue),
                     "pid": os.getpid(),
                     "hostname": socket.gethostname(),
-                    "process_started_at": bulk_module._process_started_at(os.getpid()),
+                    "process_started_at": generation_lease_module.process_started_at(
+                        os.getpid()
+                    ),
                     "lease_id": "live",
                 },
             )
@@ -2481,6 +2831,15 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             state = load_generation_state(result.state, queue)
             state_sha256 = sha256_file(result.state)
             published_wavs = list((root / "output").rglob("*.wav"))
+            for version in (True, 1.0, [], {}):
+                with self.subTest(evidence_version=version):
+                    malformed = dict(document, schema_version=version)
+                    (evidence / "evidence.json").write_text(json.dumps(malformed))
+                    with self.assertRaisesRegex(
+                        SilenceFailureEvidenceError, "malformed"
+                    ):
+                        load_silence_failure_evidence(evidence)
+            (evidence / "evidence.json").write_text(json.dumps(document))
             tampered = json.loads((evidence / "evidence.json").read_text())
             tampered["metadata"]["state_item"]["seed"] = 999
             (evidence / "evidence.json").write_text(json.dumps(tampered))
@@ -2498,6 +2857,180 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             "speech_silence",
         )
         self.assertEqual(published_wavs, [])
+
+    def test_silence_evidence_publication_failure_preserves_checkpoint_and_recovers(
+        self,
+    ):
+        for failure, target in (
+            (
+                SilenceFailureEvidenceError("synthetic evidence publication failure"),
+                "vntts.authoring.bulk_generation.publish_silence_failure_evidence",
+            ),
+            (
+                PermissionError("synthetic evidence write failure"),
+                "vntts.authoring.silence_evidence.atomic_write_json",
+            ),
+        ):
+            with (
+                self.subTest(failure=type(failure).__name__),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                item = queue_item(
+                    text="The gate is already open. We should leave before dawn."
+                )
+                queue = write_queue(root / "queue.jsonl", [item])
+                source = queue.read_bytes()
+                output = root / "output"
+                evidence = root / "evidence"
+                tone = audio_samples()
+                pcm = np.concatenate(
+                    (tone, np.zeros(16_000 * 2, dtype=np.float32), tone)
+                )
+                saved = {}
+
+                def fail_publication(*arguments, **options):
+                    for name in ("generation-state.json", "manifest.json"):
+                        saved[name] = (output / name).read_bytes()
+                    raise failure
+
+                with patch(target, side_effect=fail_publication):
+                    with self.assertRaisesRegex(
+                        BulkGenerationError, str(failure)
+                    ) as caught:
+                        self.run_generation(
+                            queue,
+                            output,
+                            SyntheticRenderer(pcm=pcm),
+                            retries=0,
+                            include_queue_ids=(item["queue_id"],),
+                            silence_failure_evidence=evidence,
+                        )
+                self.assertIs(caught.exception.__cause__, failure)
+                for name, payload in saved.items():
+                    self.assertEqual((output / name).read_bytes(), payload)
+                state = load_generation_state(output / "generation-state.json", queue)
+                self.assertIsNone(state["active"])
+                stored = state["items"][item["queue_id"]]
+                self.assertEqual(stored["status"], "failed")
+                self.assertEqual(stored["failure"]["kind"], "speech_silence")
+                self.assertEqual(stored["attempts"], 1)
+                self.assertEqual(
+                    GeneratedAudioIndex.load(output / "manifest.json").entries, ()
+                )
+                self.assertEqual(queue.read_bytes(), source)
+                self.assertFalse(evidence.exists())
+                self.assertFalse(list(root.glob(".evidence.staging-*")))
+                self.assertFalse((output / ".generation-lease.json").exists())
+                self.assertFalse(list(output.rglob("*.wav")))
+
+                recovered = self.run_generation(
+                    queue,
+                    output,
+                    SyntheticRenderer(pcm=pcm),
+                    retries=0,
+                    include_queue_ids=(item["queue_id"],),
+                    silence_failure_evidence=evidence,
+                )
+                document = load_silence_failure_evidence(evidence)
+                self.assertEqual(recovered.generated, 0)
+                self.assertEqual(recovered.failed, 1)
+                self.assertEqual(document["metadata"]["state_item"]["attempts"], 2)
+                self.assertEqual(
+                    document["metadata"]["state_sha256"], sha256_file(recovered.state)
+                )
+                self.assertEqual(queue.read_bytes(), source)
+                self.assertFalse(list(output.rglob("*.wav")))
+
+    def test_cli_silence_evidence_write_failure_is_actionable_without_traceback(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(
+                text="The gate is already open. We should leave before dawn."
+            )
+            queue = write_queue(root / "queue.jsonl", [item])
+            voice_manifest = root / "voices.json"
+            voice_manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Hero",
+                                "speaker": "anna",
+                                "aliases": [],
+                                "references": [],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            sources = {path: path.read_bytes() for path in (queue, voice_manifest)}
+            tone = audio_samples()
+            pcm = np.concatenate((tone, np.zeros(16_000 * 2, dtype=np.float32), tone))
+            renderer = SyntheticRenderer(pcm=pcm)
+            renderer.shutdown = Mock()
+            output = root / "output"
+            evidence = root / "evidence"
+            errors = StringIO()
+
+            def create_renderer(name, _registry, _cache, **options):
+                renderer.name = name
+                renderer.model_name = name
+                return renderer
+
+            with (
+                patch(
+                    "vntts.authoring.cli_generation.create_backend",
+                    side_effect=create_renderer,
+                ),
+                patch(
+                    "vntts.authoring.silence_evidence.atomic_write_json",
+                    side_effect=PermissionError("synthetic evidence write failure"),
+                ),
+                redirect_stderr(errors),
+                redirect_stdout(StringIO()),
+                self.assertRaises(SystemExit) as caught,
+            ):
+                authoring_main(
+                    [
+                        "generate",
+                        "--queue",
+                        str(queue),
+                        "--output",
+                        str(output),
+                        "--voice-manifest",
+                        str(voice_manifest),
+                        "--backend",
+                        "pocket-tts",
+                        "--queue-id",
+                        item["queue_id"],
+                        "--retries",
+                        "0",
+                        "--capture-silence-failure",
+                        str(evidence),
+                    ]
+                )
+            self.assertEqual(caught.exception.code, 2)
+            self.assertIn("synthetic evidence write failure", errors.getvalue())
+            self.assertNotIn("Traceback", errors.getvalue())
+            renderer.shutdown.assert_called_once_with()
+            self.assertEqual(len(renderer.requests), 1)
+            state = load_generation_state(output / "generation-state.json", queue)
+            self.assertIsNone(state["active"])
+            self.assertEqual(
+                state["items"][item["queue_id"]]["failure"]["kind"], "speech_silence"
+            )
+            self.assertEqual(
+                GeneratedAudioIndex.load(output / "manifest.json").entries, ()
+            )
+            for path, payload in sources.items():
+                self.assertEqual(path.read_bytes(), payload)
+            self.assertFalse(evidence.exists())
+            self.assertFalse(list(root.glob(".evidence.staging-*")))
+            self.assertFalse((output / ".generation-lease.json").exists())
+            self.assertFalse(list(output.rglob("*.wav")))
 
     def test_silence_failure_capture_requires_exact_one_attempt_scope(self):
         with TemporaryDirectory() as directory:
@@ -2574,6 +3107,22 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     ),
                 ):
                     load_generation_state(result.state, queue)
+            for field in ("start_seconds", "end_seconds", "duration_seconds"):
+                for value in (10**400, float("inf"), float("nan"), True, -1, "bad"):
+                    malformed = json.loads(original)
+                    malformed["items"][item["queue_id"]]["failure"]["pause_diagnosis"][
+                        "spans"
+                    ][0][field] = value
+                    result.state.write_text(json.dumps(malformed), encoding="utf-8")
+                    before = result.state.read_bytes()
+                    with (
+                        self.subTest(field=field, value=value),
+                        self.assertRaisesRegex(
+                            BulkGenerationError, "pause span timing"
+                        ),
+                    ):
+                        load_generation_state(result.state, queue)
+                    self.assertEqual(result.state.read_bytes(), before)
             tampered = json.loads(original)
             tampered["items"][item["queue_id"]]["failure"]["pause_diagnosis"][
                 "attempt_binding"
@@ -2772,6 +3321,70 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(after, before)
         self.assertEqual(list((output / "audio").rglob("*.wav")), [])
 
+    def test_generated_quality_rejects_booleans_without_rewriting_authority(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            result = self.run_generation(
+                queue,
+                root / "output",
+                SyntheticRenderer(pcm=np.tile(audio_samples(), 4)),
+            )
+            original = json.loads(result.state.read_text(encoding="utf-8"))
+            manifest_before = result.manifest.read_bytes()
+            generated = original["items"][item["queue_id"]]
+            audio = result.state.parent / generated["path"]
+            for version in (1, 2):
+                measured = bulk_module.inspect_generated_speech(
+                    audio, analysis_version=version
+                )
+                generated["speech_quality"] = {
+                    "silence_ratio": int(measured.silence_ratio),
+                    "leading_silence_seconds": int(measured.leading_silence_seconds),
+                    "trailing_silence_seconds": int(measured.trailing_silence_seconds),
+                    "longest_internal_silence_seconds": int(
+                        measured.longest_internal_silence_seconds
+                    ),
+                }
+                if version == 2:
+                    generated["speech_quality"]["analysis_version"] = version
+                generated["quality"]["duration_seconds"] = 1
+                generated["quality"]["channels"] = 1.0
+                result.state.write_text(json.dumps(original), encoding="utf-8")
+                load_generation_state(result.state, queue)
+                cases = [
+                    ("quality", "duration_seconds", True),
+                    ("quality", "channels", True),
+                ]
+                cases.extend(
+                    ("speech_quality", field, False)
+                    for field in generated["speech_quality"]
+                    if field != "analysis_version"
+                )
+                for category, field, value in cases:
+                    with self.subTest(version=version, category=category, field=field):
+                        state = json.loads(json.dumps(original))
+                        state["items"][item["queue_id"]][category][field] = value
+                        result.state.write_text(json.dumps(state), encoding="utf-8")
+                        state_before = result.state.read_bytes()
+                        with self.assertRaisesRegex(
+                            BulkGenerationError, "quality.*mismatch"
+                        ):
+                            load_generation_state(result.state, queue)
+                        with self.assertRaisesRegex(
+                            BulkGenerationError, "quality.*mismatch"
+                        ):
+                            review_generation_item(
+                                result.state, item["queue_id"], "approved"
+                            )
+                        with self.assertRaisesRegex(
+                            BulkGenerationError, "quality.*mismatch"
+                        ):
+                            publish_generated_manifest(result.state)
+                        self.assertEqual(result.state.read_bytes(), state_before)
+                        self.assertEqual(result.manifest.read_bytes(), manifest_before)
+
     def test_current_state_records_v2_speech_quality_and_loads_legacy_metrics(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2822,6 +3435,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             renderer = SyntheticRenderer()
             policy = FailureRepairPolicy((item["queue_id"],))
 
+            def equivalent_text(text):
+                return " \n" + text.replace(". ", ".  \n ") + " \t"
+
             repaired = self.run_generation(
                 queue,
                 output,
@@ -2830,6 +3446,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 seed=0,
                 include_queue_ids=[item["queue_id"]],
                 failure_repair_policy=policy,
+                text_transform=equivalent_text,
+                text_transform_id="equivalent-sentence-whitespace-v1",
             )
             state = load_generation_state(repaired.state, queue)
             result = state["items"][item["queue_id"]]
@@ -2853,6 +3471,66 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(
             manifest["entries"][0]["failure_repair"], result["failure_repair"]
         )
+
+    def test_sentence_repair_rejects_transformed_segments_before_attempt_or_archive(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(
+                text="The gate is already open. We should leave before dawn."
+            )
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            failed = self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer([SynthesisCompletion.LIMITED]),
+                retries=0,
+                seed=0,
+            )
+            original_item = load_generation_state(failed.state, queue)["items"][
+                item["queue_id"]
+            ]
+            destination = output / bulk_module._audio_relative_path(
+                item["voice_character"], item["queue_id"]
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            write_pcm16_wav(destination, audio_samples(), 16_000)
+            original_wav = destination.read_bytes()
+            policy = FailureRepairPolicy((item["queue_id"],))
+
+            for transformed in (
+                item["text"] + " The guards will return soon.",
+                item["text"].replace("already open", "firmly closed"),
+            ):
+                with self.subTest(transformed=transformed):
+                    renderer = SyntheticRenderer()
+                    with (
+                        patch.object(
+                            bulk_module, "_archive_interrupted_artifact"
+                        ) as archive,
+                        self.assertRaisesRegex(
+                            BulkGenerationError, "changed authorized segments"
+                        ),
+                    ):
+                        self.run_generation(
+                            queue,
+                            output,
+                            renderer,
+                            retries=0,
+                            seed=0,
+                            include_queue_ids=[item["queue_id"]],
+                            failure_repair_policy=policy,
+                            text_transform=lambda _text: transformed,
+                            text_transform_id="changed-sentence-text-v1",
+                        )
+                    archive.assert_not_called()
+                    self.assertEqual(renderer.requests, [])
+                    state = load_generation_state(failed.state, queue)
+                    self.assertIsNone(state["active"])
+                    self.assertEqual(state["items"][item["queue_id"]], original_item)
+                    self.assertEqual(destination.read_bytes(), original_wav)
 
     def test_failed_sentence_repair_transitions_and_cannot_repeat(self):
         with TemporaryDirectory() as directory:
@@ -3088,7 +3766,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             ],
         }
         with patch.object(
-            bulk_module, "generation_failure_report", return_value=report
+            failure_module, "generation_failure_report", return_value=report
         ):
             plan = generation_failure_repair_plan("state.json", "queue.jsonl")
 
@@ -3112,6 +3790,64 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 }
             )
         )
+
+    def test_persisted_optional_silence_metrics_cannot_authorize_invalid_repairs(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(text="The first sentence is complete. So is the second.")
+            queue = write_queue(root / "queue.jsonl", [item])
+            generated = self.run_generation(
+                queue,
+                root / "output",
+                SyntheticRenderer([SynthesisCompletion.LIMITED]),
+                retries=0,
+            )
+            state = json.loads(generated.state.read_text(encoding="utf-8"))
+            failure = {
+                "schema_version": 1,
+                "kind": "speech_silence",
+                "error_type": "SpeechSilenceValidationError",
+                "text_features": bulk_module._text_failure_features(item["text"]),
+            }
+            state["items"][item["queue_id"]]["failure"] = failure
+            for longest_internal, expected in (
+                (2.0, "sentence_boundary_segmentation"),
+                (0.0, "edge_silence_trim"),
+            ):
+                quality = {
+                    "leading_silence_seconds": 0.0 if longest_internal else 1.0,
+                    "trailing_silence_seconds": 0.0,
+                    "longest_internal_silence_seconds": longest_internal,
+                }
+                failure["speech_quality"] = quality
+                generated.state.write_text(json.dumps(state), encoding="utf-8")
+                self.assertEqual(
+                    generation_failure_repair_plan(generated.state, queue)["records"][
+                        0
+                    ]["action"],
+                    expected,
+                )
+                for field in quality:
+                    for invalid in (10**400, True, -1, None):
+                        with self.subTest(
+                            field=field, invalid=invalid, repair=expected
+                        ):
+                            failure["speech_quality"] = quality | {field: invalid}
+                            generated.state.write_text(
+                                json.dumps(state), encoding="utf-8"
+                            )
+                            before = generated.state.read_bytes()
+                            self.assertIn(
+                                item["queue_id"],
+                                load_generation_state(generated.state, queue)["items"],
+                            )
+                            self.assertEqual(
+                                generation_failure_repair_plan(generated.state, queue)[
+                                    "records"
+                                ][0]["action"],
+                                "reference_comparison",
+                            )
+                            self.assertEqual(generated.state.read_bytes(), before)
 
     def test_internal_silence_failure_repairs_only_at_safe_sentence_boundaries(self):
         with TemporaryDirectory() as directory:

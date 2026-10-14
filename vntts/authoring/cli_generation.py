@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 from contextlib import nullcontext
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Callable
 
 from vntts_artifacts import (
@@ -15,19 +13,15 @@ from vntts_artifacts import (
     VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.voice_manifest import VoiceManifestEntry, load_voice_manifest
+from vntts_artifacts.voice_manifest import VoiceManifestEntry
 
 from vntts.authoring.bulk_generation import (
     BulkGenerationResult,
     audio_event_spoken_projection,
-    authorize_live_fallback,
-    generation_failure_repair_plan,
-    generation_failure_report,
     is_spoken_queue_item,
     load_generation_state,
     normalize_short_trailing_ellipsis,
     publish_generated_manifest,
-    review_generation_item,
     run_bulk_generation,
     sha256_control_path,
 )
@@ -38,19 +32,30 @@ from vntts.authoring.cli_generation_options import (
     missing_voice_policy,
 )
 from vntts.authoring.failure_repair import FailureRepairPolicy
+from vntts.authoring.generation_failures import (
+    generation_failure_repair_plan,
+    generation_failure_report,
+)
+from vntts.authoring.generation_fallback import (
+    authorize_live_fallback,
+)
 from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.authoring.generation_review import review_generation_item
 from vntts.authoring.generation_state import LIVE_FALLBACK_REASONS
 from vntts.authoring.missing_voice_policy import MissingVoicePolicy
 from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
 )
+from vntts.cleanup import temporary_directory
+from vntts.cli import print_json
+from vntts.path_safety import read_regular_bytes
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import SynthesisCancellation
 from vntts.tts_benchmark import create_backend
 from vntts.voices import (
-    CharacterVoice,
     CharacterVoiceRegistry,
+    load_voice_manifest,
     pocket_tts_preset_voices,
     synthesis_character_for_line,
 )
@@ -302,29 +307,18 @@ def _load_stable_voice_registry(
 ]:
     manifest_path = Path(manifest_path).expanduser().resolve()
     try:
-        payload = manifest_path.read_bytes()
+        payload = read_regular_bytes(manifest_path)
     except OSError as error:
         raise BulkGenerationError(
             f"Unable to read voice manifest {manifest_path}: {error}"
         ) from error
     digest = hashlib.sha256(payload).hexdigest()
-    with TemporaryDirectory() as directory:
+    with temporary_directory() as directory:
         snapshot = Path(directory) / "manifest.json"
         snapshot.write_bytes(payload)
         document, entries = load_voice_manifest(snapshot)
-    voices = [
-        CharacterVoice(
-            character=entry.character,
-            speaker=entry.speaker,
-            aliases=entry.aliases,
-            references=tuple(
-                (manifest_path.parent / reference).resolve()
-                for reference in entry.references
-            ),
-        )
-        for entry in entries
-    ]
-    return CharacterVoiceRegistry(voices), digest, document, entries
+    registry = CharacterVoiceRegistry.from_document(document, manifest_path)
+    return registry, digest, document, entries
 
 
 def _workspace_generation_controls(
@@ -425,8 +419,11 @@ def _synthesis_character_overrides(
     missing_policy: MissingVoicePolicy,
 ) -> dict[str, str]:
     overrides = {}
-    for item in policy_queue.items:
-        requested = synthesis_character_for_line(item.speaker, item.voice_character)
+    requested_characters = dict.fromkeys(
+        synthesis_character_for_line(item.speaker, item.voice_character)
+        for item in policy_queue.items
+    )
+    for requested in requested_characters:
         voice = registry.resolve(requested)
         if (
             requested != "Narrator"
@@ -566,7 +563,7 @@ def _ready_spoken_item(
     synthesis_overrides: dict[str, str],
     queue_overrides: dict[str, str],
 ) -> bool:
-    if not (is_spoken_queue_item(item) or item.queue_id in set(projection_ids)):
+    if not (is_spoken_queue_item(item) or item.queue_id in projection_ids):
         return False
     requested = synthesis_character_for_line(item.speaker, item.voice_character)
     character = queue_overrides.get(
@@ -613,7 +610,7 @@ def _run_bulk_generation(
     cache_context = (
         nullcontext(arguments.cache_directory.expanduser().resolve())
         if arguments.cache_directory is not None
-        else TemporaryDirectory()
+        else temporary_directory()
     )
     with cache_context as cache_directory:
         Path(cache_directory).mkdir(parents=True, exist_ok=True)
@@ -630,6 +627,7 @@ def _run_bulk_generation(
             startup_cancellation=cancellation,
             startup_progress=startup_progress,
         )
+        primary_error: BaseException | None = None
         try:
             profile = arguments.generation_profile or getattr(
                 backend, "generation_profile", "stable"
@@ -688,8 +686,11 @@ def _run_bulk_generation(
                 approve_validated_audio=arguments.approve_validated_audio,
                 progress_callback=progress_callback,
             )
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
-            shutdown_speech_backend(backend)
+            shutdown_speech_backend(backend, primary_error=primary_error)
 
 
 def run_generation(
@@ -751,22 +752,18 @@ def run_generation(
 
 def _generate(arguments: argparse.Namespace) -> int:
     result = run_generation(arguments)
-    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    print_json(result.to_dict())
     return 0
 
 
 def _handle_review(arguments: argparse.Namespace) -> int:
     review_generation_item(arguments.state, arguments.queue_id, arguments.decision)
-    print(
-        json.dumps(
-            {
-                "queue_id": arguments.queue_id,
-                "decision": arguments.decision,
-                "state": str(arguments.state.expanduser().resolve()),
-            },
-            indent=2,
-            sort_keys=True,
-        )
+    print_json(
+        {
+            "queue_id": arguments.queue_id,
+            "decision": arguments.decision,
+            "state": str(arguments.state.expanduser().resolve()),
+        }
     )
     return 0
 
@@ -783,13 +780,13 @@ def _handle_live_fallback(arguments: argparse.Namespace) -> int:
         evidence_workspaces=arguments.evidence_workspace,
         evidence_reviews=arguments.evidence_review,
     )
-    print(json.dumps(decision, indent=2, sort_keys=True))
+    print_json(decision)
     return 0
 
 
 def _handle_publish(arguments: argparse.Namespace) -> int:
     manifest = publish_generated_manifest(arguments.state)
-    print(json.dumps({"manifest": str(manifest)}, indent=2, sort_keys=True))
+    print_json({"manifest": str(manifest)})
     return 0
 
 
@@ -814,28 +811,22 @@ def _handle_status(arguments: argparse.Namespace) -> int:
     counts["live_fallback"] = sum(
         isinstance(item.get("live_fallback"), dict) for item in items.values()
     )
-    print(
-        json.dumps(
-            {
-                **counts,
-                "active": state.get("active"),
-                "queue_sha256": state["queue_sha256"],
-                "schema": state["schema"],
-                "state": str(arguments.state.expanduser().resolve()),
-            },
-            indent=2,
-            sort_keys=True,
-        )
+    print_json(
+        {
+            **counts,
+            "active": state.get("active"),
+            "queue_sha256": state["queue_sha256"],
+            "schema": state["schema"],
+            "state": str(arguments.state.expanduser().resolve()),
+        }
     )
     return 0
 
 
-def _print_document(value: object) -> None:
-    print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
-
-
 def _handle_failure_report(arguments: argparse.Namespace) -> int:
-    _print_document(generation_failure_report(arguments.state, arguments.queue))
+    print_json(
+        generation_failure_report(arguments.state, arguments.queue), ensure_ascii=False
+    )
     return 0
 
 
@@ -848,12 +839,15 @@ def _handle_specialist_failure_plan(arguments: argparse.Namespace) -> int:
     plan = build_specialist_failure_plan(arguments.workspace)
     if arguments.output is not None:
         write_specialist_failure_plan(plan, arguments.output)
-    _print_document(plan.to_dict())
+    print_json(plan.to_dict(), ensure_ascii=False)
     return 0
 
 
 def _handle_failure_repair_plan(arguments: argparse.Namespace) -> int:
-    _print_document(generation_failure_repair_plan(arguments.state, arguments.queue))
+    print_json(
+        generation_failure_repair_plan(arguments.state, arguments.queue),
+        ensure_ascii=False,
+    )
     return 0
 
 
@@ -866,7 +860,7 @@ def _handle_pending_resolution_plan(arguments: argparse.Namespace) -> int:
     plan = build_pending_resolution_plan(arguments.workspace)
     if arguments.output is not None:
         write_pending_resolution_plan(plan, arguments.output)
-    _print_document(plan.to_dict())
+    print_json(plan.to_dict(), ensure_ascii=False)
     return 0
 
 
@@ -882,7 +876,7 @@ def _handle_pending_regeneration_command(arguments: argparse.Namespace) -> int:
         batch_index=arguments.batch_index,
         batch_size=arguments.batch_size,
     )
-    _print_document(command.to_dict())
+    print_json(command.to_dict(), ensure_ascii=False)
     return 0
 
 
@@ -895,7 +889,7 @@ def _handle_failure_regeneration_plan(arguments: argparse.Namespace) -> int:
     plan = build_failure_regeneration_plan(arguments.workspace)
     if arguments.output is not None:
         write_failure_regeneration_plan(plan, arguments.output)
-    _print_document(plan.to_dict())
+    print_json(plan.to_dict(), ensure_ascii=False)
     return 0
 
 
@@ -911,7 +905,7 @@ def _handle_failure_regeneration_command(arguments: argparse.Namespace) -> int:
         batch_index=arguments.batch_index,
         batch_size=arguments.batch_size,
     )
-    _print_document(command.to_dict())
+    print_json(command.to_dict(), ensure_ascii=False)
     return 0
 
 

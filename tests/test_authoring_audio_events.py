@@ -1,6 +1,8 @@
 import hashlib
 import unittest
+from unittest.mock import patch
 
+import vntts.authoring.audio_events as audio_events_module
 from vntts.authoring.audio_events import (
     AUDIO_EVENT_PLAN_FIELD,
     STORY_AUDIO_CUES_FIELD,
@@ -8,6 +10,7 @@ from vntts.authoring.audio_events import (
     audio_event_plan_for_record,
     plan_inline_audio_events,
     requires_audio_event_composition,
+    validate_story_audio_cues,
 )
 
 
@@ -116,6 +119,46 @@ class AuthoringAudioEventTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "source_audio_id is invalid"):
             audio_event_plan_for_record(record)
+
+    def test_cues_are_validated_once_and_preserve_producer_extensions(self):
+        cue = {**story_audio_cue(), "producer_metadata": {"revision": 3}}
+        original = validate_story_audio_cues
+        for text in ("Tsk!", "Hello *gasp*", "Ordinary dialogue."):
+            with self.subTest(text=text):
+                with patch.object(
+                    audio_events_module, "validate_story_audio_cues", wraps=original
+                ) as validate:
+                    document = audio_event_plan_document(text, story_audio_cues=(cue,))
+                self.assertEqual(validate.call_count, 1)
+                if document is not None:
+                    self.assertEqual(
+                        document,
+                        plan_inline_audio_events(text).to_document(
+                            story_audio_cues=[cue]
+                        ),
+                    )
+        self.assertEqual(cue["producer_metadata"], {"revision": 3})
+        with self.assertRaisesRegex(ValueError, "source_audio_id is invalid"):
+            plan_inline_audio_events("Tsk!").to_document(
+                story_audio_cues=[{"cue_index": 1}]
+            )
+
+    def test_cue_indices_require_integers_and_scalars_have_domain_errors(self):
+        for value in (True, 1.0):
+            with self.subTest(index=value):
+                cue = {**story_audio_cue(), "cue_index": value}
+                with self.assertRaisesRegex(ValueError, "source-order indices"):
+                    validate_story_audio_cues([cue])
+        for field in (
+            "localized_parameter_2",
+            "scalar_parameter_4",
+            "localized_parameter_5",
+        ):
+            for value in (10**1000, float("inf"), float("nan"), True):
+                with self.subTest(field=field, value=str(value)[:20]):
+                    cue = {**story_audio_cue(), field: value}
+                    with self.assertRaisesRegex(ValueError, field):
+                        validate_story_audio_cues([cue])
 
     def test_legacy_plan_without_story_audio_field_remains_byte_compatible(self):
         text = "N-No! *gurgle*"

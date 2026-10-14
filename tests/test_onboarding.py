@@ -15,6 +15,7 @@ from PySide6.QtGui import QFont  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QSizePolicy  # noqa: E402
 
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.calibration import DialogRegionOverlay  # noqa: E402
 from vntts.game_pack import GamePackError  # noqa: E402
 from vntts.moss_cpp_installation import MossCppInstallRequired  # noqa: E402
@@ -696,6 +697,60 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertEqual(wizard.step_label.text(), "Step 2 of 5")
         wizard.deleteLater()
 
+    def test_configuration_shortcut_errors_identify_each_empty_recorder(self):
+        wizard = OnboardingWizard(AppSettings())
+        page = wizard.configuration_page
+        page.capture_mode.setCurrentIndex(page.capture_mode.findData("screen"))
+        page.live_hotkey.clear()
+
+        self.assertEqual(
+            page.validation_errors(),
+            (
+                (
+                    page.live_hotkey,
+                    "Keyboard shortcuts: Live reading: press a shortcut.",
+                ),
+            ),
+        )
+        page.read_hotkey.clear()
+        self.assertEqual(
+            [widget for widget, _ in page.validation_errors()],
+            [page.read_hotkey, page.live_hotkey],
+        )
+        wizard.deleteLater()
+
+    def test_incomplete_shortcuts_do_not_block_configuration_previews(self):
+        original = AppSettings()
+        wizard = OnboardingWizard(original)
+        page = wizard.configuration_page
+        page.capture_mode.setCurrentIndex(page.capture_mode.findData("screen"))
+        page.live_hotkey.clear()
+        self.assertEqual(
+            [widget for widget, _ in page.update_validation_summary()],
+            [page.live_hotkey],
+        )
+        with patch("vntts.onboarding_ui.GameNarratorDialog") as picker:
+            picker.return_value.exec.return_value = QDialog.DialogCode.Rejected
+            page.choose_narrator()
+            self.assertEqual(picker.call_args.args[0].live_hotkey, original.live_hotkey)
+        with patch("vntts.onboarding_ui.AssetManagerDialog") as assets:
+            assets.return_value.exec.return_value = QDialog.DialogCode.Rejected
+            page.manage_assets()
+            self.assertEqual(assets.call_args.args[0].live_hotkey, original.live_hotkey)
+        with self.assertRaisesRegex(ValueError, "press a shortcut"):
+            page.settings()
+        with TemporaryDirectory() as directory:
+            page.game_pack.setText(str(Path(directory) / "missing-pack.json"))
+            self.assertIn(
+                page.game_pack, [widget for widget, _ in page.validation_errors()]
+            )
+        page.game_pack.clear()
+        page.read_hotkey.set_hotkey("<ctrl>+j")
+        page.live_hotkey.set_hotkey("<ctrl>+k")
+        self.assertEqual(page.settings().read_hotkey, "<ctrl>+j")
+        self.assertEqual(page.settings().live_hotkey, "<ctrl>+k")
+        wizard.deleteLater()
+
     def test_configuration_validation_lists_all_errors_and_focuses_first(self):
         wizard = OnboardingWizard(AppSettings())
         page = wizard.configuration_page
@@ -894,12 +949,6 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.deleteLater()
 
     def test_diagnostics_page_is_async_cancellable_and_stale_safe(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         diagnostics = Mock()
         diagnostics.run.return_value = (DiagnosticResult("Capture", "ok", "Ready"),)
@@ -951,12 +1000,6 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.deleteLater()
 
     def test_runtime_preparation_has_progress_retry_and_cancellable_stale_results(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         diagnostics = OnboardingDiagnostics()
         diagnostics.prepare_and_run = Mock(
@@ -994,12 +1037,6 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.deleteLater()
 
     def test_first_moss_install_waits_for_explicit_action(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         diagnostics = OnboardingDiagnostics()
         diagnostics.moss_installation_space = Mock(
@@ -1105,12 +1142,6 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.deleteLater()
 
     def test_first_run_journey_needs_only_game_window_before_guided_test(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         diagnostics = Mock()
         diagnostics.run.return_value = (

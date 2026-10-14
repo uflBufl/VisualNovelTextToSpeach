@@ -12,7 +12,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
-from typing import Callable, Literal, SupportsInt, TypedDict
+from typing import Callable, Literal, SupportsInt, TypedDict, TypeGuard
 
 from vntts_artifacts.text_utils import slugify
 
@@ -22,6 +22,8 @@ from vntts.authoring.advisory_lock import (
 )
 from vntts.authoring.authority import write_json_document_no_replace
 from vntts.authoring.workspace_foundation import load_json_object
+from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_bytes
 
 LEASE_SCHEMA = "vntts.authoring-generation-lease"
 LEASE_VERSION = 1
@@ -42,12 +44,24 @@ class BulkGenerationError(RuntimeError):
     """A queue cannot be generated or resumed safely."""
 
 
+class BulkGenerationSourceChangedError(BulkGenerationError):
+    """A queue or synthesis control changed during a generation snapshot."""
+
+    __module__ = "vntts.authoring.bulk_generation"
+
+
+def is_process_id(value: object) -> TypeGuard[int]:
+    return type(value) is int and 0 < value <= 0xFFFFFFFF
+
+
+def is_native_process_id(value: object) -> TypeGuard[int]:
+    return is_process_id(value) and (sys.platform == "win32" or value <= 0x7FFFFFFF)
+
+
 def inspect_process_status(pid: object) -> Literal["live", "dead", "unknown"]:
     """Return ``live``, ``dead`` or ``unknown`` without changing the process."""
     process_id = _process_id(pid)
     if process_id is None:
-        return "unknown"
-    if process_id <= 0:
         return "unknown"
     if sys.platform == "win32":
         return _inspect_windows_process(process_id)
@@ -106,7 +120,7 @@ def _inspect_windows_process(pid: int) -> Literal["live", "dead", "unknown"]:
 def process_started_at(pid: object) -> str | None:
     """Return the operating-system process start identity when inspectable."""
     process_id = _process_id(pid)
-    if process_id is None or process_id <= 0:
+    if process_id is None:
         return None
     try:
         completed = subprocess.run(
@@ -140,7 +154,7 @@ def archive_interrupted_artifact(
     """Move one abandoned output artifact into its contained recovery archive."""
     output_directory = Path(output_directory).resolve()
     source = Path(source)
-    payload = source.read_bytes()
+    payload = read_regular_bytes(source)
     if expected_payload is not None and payload != expected_payload:
         raise BulkGenerationError(
             f"Interrupted artifact changed before recovery: {source}"
@@ -158,8 +172,11 @@ def archive_interrupted_artifact(
     candidate = archive_root / f"{stem}-{digest}{source.suffix}"
     suffix = 2
     while candidate.exists():
-        if candidate.read_bytes() == payload:
-            if expected_payload is not None and source.read_bytes() != expected_payload:
+        if read_regular_bytes(candidate) == payload:
+            if (
+                expected_payload is not None
+                and read_regular_bytes(source) != expected_payload
+            ):
                 raise BulkGenerationError(
                     f"Interrupted artifact changed before recovery: {source}"
                 )
@@ -167,7 +184,7 @@ def archive_interrupted_artifact(
             return candidate
         candidate = archive_root / f"{stem}-{digest}-{suffix}{source.suffix}"
         suffix += 1
-    if expected_payload is not None and source.read_bytes() != expected_payload:
+    if expected_payload is not None and read_regular_bytes(source) != expected_payload:
         raise BulkGenerationError(
             f"Interrupted artifact changed before recovery: {source}"
         )
@@ -198,17 +215,19 @@ class GenerationLease:
             with exclusive_advisory_lock(self.path.with_suffix(".guard")):
                 if self.path.exists():
                     try:
-                        lease_payload = self.path.read_bytes()
-                        parsed: object = json.loads(lease_payload.decode("utf-8"))
+                        lease_payload = read_regular_bytes(self.path)
+                        parsed: object = decode_json(lease_payload.decode("utf-8"))
                     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
                         raise BulkGenerationError(
                             f"Unable to read generation lease {self.path}: {error}"
                         ) from error
                     if (
                         not isinstance(parsed, dict)
+                        or type(parsed.get("schema_version")) is not int
                         or parsed.get("schema") != LEASE_SCHEMA
                         or parsed.get("schema_version") != LEASE_VERSION
                         or not isinstance(parsed.get("queue_sha256"), str)
+                        or not is_process_id(parsed.get("pid"))
                     ):
                         raise BulkGenerationError(
                             f"Unrecognized generation lease blocks output: {self.path}"
@@ -302,32 +321,37 @@ class GenerationLease:
 
 
 def _load_json(path: str | Path) -> dict[str, object]:
-    document = load_json_object(
+    return load_json_object(
         path,
         "generation lease",
         error_type=BulkGenerationError,
         object_label="Generation lease",
     )
-    return dict(document)
 
 
 def _process_id(value: object) -> int | None:
-    if not isinstance(value, (str, bytes, bytearray, SupportsInt)):
+    if isinstance(value, bool) or not isinstance(
+        value, (str, bytes, bytearray, SupportsInt)
+    ):
         return None
     try:
-        return int(value)
-    except TypeError, ValueError:
+        process_id = int(value)
+    except TypeError, ValueError, OverflowError:
         return None
+    return process_id if is_native_process_id(process_id) else None
 
 
 __all__ = [
     "LEASE_SCHEMA",
     "LEASE_VERSION",
     "BulkGenerationError",
+    "BulkGenerationSourceChangedError",
     "GenerationLeaseDocument",
     "GenerationLease",
     "archive_interrupted_artifact",
     "inspect_process_status",
+    "is_process_id",
+    "is_native_process_id",
     "process_is_alive",
     "process_started_at",
 ]

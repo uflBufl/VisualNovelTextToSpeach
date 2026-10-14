@@ -9,6 +9,8 @@ from collections.abc import Mapping, Set
 from pathlib import Path
 
 from vntts.authoring.authority import canonical_document_sha256
+from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import has_schema_version
 
 AUTHORING_RECONCILIATION_SCHEMA = "vntts.authoring-authority-reconciliation"
 AUTHORING_RECONCILIATION_VERSION = 1
@@ -50,13 +52,14 @@ def validate_authoring_reconciliation_document(report: object) -> dict[str, obje
             "Authoring reconciliation must be an object"
         )
     document: dict[str, object] = copy.deepcopy(report)
-    if (
-        document.get("schema") != AUTHORING_RECONCILIATION_SCHEMA
-        or document.get("schema_version") != AUTHORING_RECONCILIATION_VERSION
+    if document.get(
+        "schema"
+    ) != AUTHORING_RECONCILIATION_SCHEMA or not has_schema_version(
+        document, AUTHORING_RECONCILIATION_VERSION
     ):
         raise AuthoringReconciliationSchemaError("Unsupported authoring reconciliation")
     report_id = document.get("report_id")
-    if not isinstance(report_id, str) or not SHA256_PATTERN.fullmatch(report_id):
+    if not is_lowercase_sha256(report_id):
         raise AuthoringReconciliationSchemaError(
             "Authoring reconciliation ID is invalid"
         )
@@ -117,6 +120,7 @@ def validate_authoring_reconciliation_document(report: object) -> dict[str, obje
     bundles = _validated_report_bundles(document.get("review_bundles"))
     quality_reviews = _validated_report_quality_reviews(document.get("quality_reviews"))
     actions = _validated_report_actions(document.get("actions"), workspace_ids)
+    _validate_workspace_action_counts(workspaces, actions)
     conflicts = _validated_report_conflicts(
         document.get("terminal_conflicts"), workspace_ids
     )
@@ -157,6 +161,32 @@ def validate_authoring_reconciliation_document(report: object) -> dict[str, obje
             "Reconciliation summary action counts are inconsistent"
         )
     return document
+
+
+def _validate_workspace_action_counts(
+    workspaces: list[dict[str, object]], actions: list[dict[str, object]]
+) -> None:
+    expected: dict[str, Counter[str]] = {
+        _required_text(workspace.get("workspace_id"), "Workspace ID"): Counter()
+        for workspace in workspaces
+    }
+    for action in actions:
+        if action.get("action") == "human_source_quality_review":
+            continue
+        workspace_id = _required_text(action.get("workspace_id"), "Action workspace ID")
+        kind = _required_text(action.get("action"), "Action")
+        expected[workspace_id][kind] += 1
+    for workspace in workspaces:
+        workspace_id = _required_text(workspace.get("workspace_id"), "Workspace ID")
+        declared = _validated_count_map(
+            workspace.get("action_counts"),
+            "Workspace action counts",
+            RECONCILIATION_ACTIONS,
+        )
+        if Counter(declared) != expected[workspace_id]:
+            raise AuthoringReconciliationSchemaError(
+                "Workspace action counts are inconsistent"
+            )
 
 
 def _validated_report_workspaces(value: object) -> list[dict[str, object]]:
@@ -201,7 +231,11 @@ def _validated_report_workspaces(value: object) -> list[dict[str, object]]:
         _required_sha256(workspace.get("queue_sha256"), "Queue SHA-256")
         _optional_sha256(workspace.get("state_sha256"), "State SHA-256")
         _optional_sha256(workspace.get("manifest_sha256"), "Manifest SHA-256")
-        if workspace.get("runtime_status") not in _RUNTIME_STATUSES:
+        runtime_status = workspace.get("runtime_status")
+        if (
+            not isinstance(runtime_status, str)
+            or runtime_status not in _RUNTIME_STATUSES
+        ):
             raise AuthoringReconciliationSchemaError(
                 "Workspace runtime status is invalid"
             )
@@ -210,7 +244,7 @@ def _validated_report_workspaces(value: object) -> list[dict[str, object]]:
                 "Workspace active flag must be boolean"
             )
         scope = workspace.get("report_scope")
-        if scope not in {
+        if not isinstance(scope, str) or scope not in {
             "complete_primary_workspace",
             "current_bundle_items_only",
             "original_bundle_items_only",
@@ -383,119 +417,12 @@ def _validated_report_actions(
     for value in actions:
         action = _required_object(value, "Reconciliation action")
         kind = action.get("action")
-        if kind not in RECONCILIATION_ACTIONS:
+        if not isinstance(kind, str) or kind not in RECONCILIATION_ACTIONS:
             raise AuthoringReconciliationSchemaError("Reconciliation action is invalid")
         if kind == "human_source_quality_review":
-            required = {
-                "action",
-                "review",
-                "variant_id",
-                "character",
-                "reference_kind",
-                "generated_sample_count",
-                "excluded_result_count",
-            }
-            _require_fields(action, required, "Source quality action")
-            identity = (
-                kind,
-                _required_text(action.get("review"), "Quality action review"),
-                _required_text(action.get("variant_id"), "Quality variant ID"),
-            )
-            _required_text(action.get("character"), "Quality action character")
-            _required_text(action.get("reference_kind"), "Reference kind")
-            _nonnegative_integer(
-                action.get("generated_sample_count"), "Generated sample count"
-            )
-            _nonnegative_integer(
-                action.get("excluded_result_count"), "Excluded result count"
-            )
+            identity = _validate_source_quality_action(action, kind)
         else:
-            required = {
-                "action",
-                "workspace_id",
-                "queue_id",
-                "line_id",
-                "text_sha256",
-                "speaker",
-                "voice_character",
-                "status",
-                "review_status",
-                "reason",
-            }
-            _require_fields(action, required, "Workspace action")
-            workspace_id = _required_text(
-                action.get("workspace_id"), "Action workspace ID"
-            )
-            if workspace_id not in workspace_ids:
-                raise AuthoringReconciliationSchemaError(
-                    "Action references an unknown workspace"
-                )
-            queue_id = _required_text(action.get("queue_id"), "Action queue ID")
-            identity = (kind, workspace_id, queue_id)
-            _required_text(action.get("line_id"), "Action line ID")
-            _required_sha256(action.get("text_sha256"), "Action text SHA-256")
-            for field in ("speaker", "voice_character"):
-                _optional_text(action.get(field), f"Action {field}")
-            status = _optional_text(action.get("status"), "Action status")
-            review_status = _optional_text(
-                action.get("review_status"), "Action review status"
-            )
-            if status is not None and status not in _STATE_STATUSES:
-                raise AuthoringReconciliationSchemaError("Action status is invalid")
-            if review_status is not None and review_status not in _REVIEW_STATUSES:
-                raise AuthoringReconciliationSchemaError(
-                    "Action review status is invalid"
-                )
-            _required_text(action.get("reason"), "Action reason")
-            if kind in {"human_cohort_review", "review_plan_required"}:
-                _required_sha256(action.get("audio_sha256"), "Action audio SHA-256")
-            if kind == "terminal_merge_required":
-                source = _required_object(
-                    action.get("terminal_source"), "Terminal merge source"
-                )
-                _require_fields(
-                    source,
-                    {"workspace_id", "authority", "state_item_sha256"},
-                    "Terminal merge source",
-                )
-                source_workspace_id = _required_text(
-                    source.get("workspace_id"), "Terminal source workspace ID"
-                )
-                if source_workspace_id not in workspace_ids:
-                    raise AuthoringReconciliationSchemaError(
-                        "Terminal merge source references an unknown workspace"
-                    )
-                if source.get("authority") not in TERMINAL_AUTHORITIES:
-                    raise AuthoringReconciliationSchemaError(
-                        "Terminal merge source authority is invalid"
-                    )
-                _required_sha256(
-                    source.get("state_item_sha256"),
-                    "Terminal source state-item SHA-256",
-                )
-            if kind == "human_cohort_review":
-                cohort = _required_object(action.get("cohort"), "Action cohort")
-                _require_fields(
-                    cohort,
-                    {
-                        "publication",
-                        "root_bundle_id",
-                        "current_bundle_id",
-                        "cohort_id",
-                        "sampled",
-                        "audio_sha256",
-                    },
-                    "Action cohort",
-                )
-                _required_text(cohort.get("publication"), "Cohort publication")
-                _required_sha256(cohort.get("root_bundle_id"), "Root bundle ID")
-                _required_sha256(cohort.get("current_bundle_id"), "Current bundle ID")
-                _required_sha256(cohort.get("cohort_id"), "Cohort ID")
-                _required_sha256(cohort.get("audio_sha256"), "Cohort audio SHA-256")
-                if not isinstance(cohort.get("sampled"), bool):
-                    raise AuthoringReconciliationSchemaError(
-                        "Action cohort sampled flag must be boolean"
-                    )
+            identity = _validate_workspace_action(action, kind, workspace_ids)
         if identity in seen:
             raise AuthoringReconciliationSchemaError(
                 "Reconciliation action is duplicated"
@@ -503,6 +430,134 @@ def _validated_report_actions(
         seen.add(identity)
         validated.append(action)
     return validated
+
+
+def _validate_source_quality_action(
+    action: dict[str, object], kind: str
+) -> tuple[str, str, str]:
+    _require_fields(
+        action,
+        {
+            "action",
+            "review",
+            "variant_id",
+            "character",
+            "reference_kind",
+            "generated_sample_count",
+            "excluded_result_count",
+        },
+        "Source quality action",
+    )
+    identity = (
+        kind,
+        _required_text(action.get("review"), "Quality action review"),
+        _required_text(action.get("variant_id"), "Quality variant ID"),
+    )
+    _required_text(action.get("character"), "Quality action character")
+    _required_text(action.get("reference_kind"), "Reference kind")
+    _nonnegative_integer(action.get("generated_sample_count"), "Generated sample count")
+    _nonnegative_integer(action.get("excluded_result_count"), "Excluded result count")
+    return identity
+
+
+def _validate_workspace_action(
+    action: dict[str, object], kind: str, workspace_ids: set[str]
+) -> tuple[str, str, str]:
+    _require_fields(
+        action,
+        {
+            "action",
+            "workspace_id",
+            "queue_id",
+            "line_id",
+            "text_sha256",
+            "speaker",
+            "voice_character",
+            "status",
+            "review_status",
+            "reason",
+        },
+        "Workspace action",
+    )
+    workspace_id = _required_text(action.get("workspace_id"), "Action workspace ID")
+    if workspace_id not in workspace_ids:
+        raise AuthoringReconciliationSchemaError(
+            "Action references an unknown workspace"
+        )
+    queue_id = _required_text(action.get("queue_id"), "Action queue ID")
+    identity = (kind, workspace_id, queue_id)
+    _required_text(action.get("line_id"), "Action line ID")
+    _required_sha256(action.get("text_sha256"), "Action text SHA-256")
+    for field in ("speaker", "voice_character"):
+        _optional_text(action.get(field), f"Action {field}")
+    status = _optional_text(action.get("status"), "Action status")
+    review_status = _optional_text(action.get("review_status"), "Action review status")
+    if status is not None and status not in _STATE_STATUSES:
+        raise AuthoringReconciliationSchemaError("Action status is invalid")
+    if review_status is not None and review_status not in _REVIEW_STATUSES:
+        raise AuthoringReconciliationSchemaError("Action review status is invalid")
+    _required_text(action.get("reason"), "Action reason")
+    if kind in {"human_cohort_review", "review_plan_required"}:
+        _required_sha256(action.get("audio_sha256"), "Action audio SHA-256")
+    if kind == "terminal_merge_required":
+        _validate_terminal_source(action, workspace_ids)
+    if kind == "human_cohort_review":
+        _validate_action_cohort(action)
+    return identity
+
+
+def _validate_terminal_source(
+    action: dict[str, object], workspace_ids: set[str]
+) -> None:
+    source = _required_object(action.get("terminal_source"), "Terminal merge source")
+    _require_fields(
+        source,
+        {"workspace_id", "authority", "state_item_sha256"},
+        "Terminal merge source",
+    )
+    source_workspace_id = _required_text(
+        source.get("workspace_id"), "Terminal source workspace ID"
+    )
+    if source_workspace_id not in workspace_ids:
+        raise AuthoringReconciliationSchemaError(
+            "Terminal merge source references an unknown workspace"
+        )
+    source_authority = source.get("authority")
+    if (
+        not isinstance(source_authority, str)
+        or source_authority not in TERMINAL_AUTHORITIES
+    ):
+        raise AuthoringReconciliationSchemaError(
+            "Terminal merge source authority is invalid"
+        )
+    _required_sha256(
+        source.get("state_item_sha256"), "Terminal source state-item SHA-256"
+    )
+
+
+def _validate_action_cohort(action: dict[str, object]) -> None:
+    cohort = _required_object(action.get("cohort"), "Action cohort")
+    _require_fields(
+        cohort,
+        {
+            "publication",
+            "root_bundle_id",
+            "current_bundle_id",
+            "cohort_id",
+            "sampled",
+            "audio_sha256",
+        },
+        "Action cohort",
+    )
+    _required_text(cohort.get("publication"), "Cohort publication")
+    _required_sha256(cohort.get("root_bundle_id"), "Root bundle ID")
+    _required_sha256(cohort.get("current_bundle_id"), "Current bundle ID")
+    _required_sha256(cohort.get("cohort_id"), "Cohort ID")
+    _required_sha256(cohort.get("audio_sha256"), "Cohort audio SHA-256")
+    if not isinstance(cohort.get("sampled"), bool):
+        raise AuthoringReconciliationSchemaError(
+            "Action cohort sampled flag must be boolean"
+        )
 
 
 def _validated_report_conflicts(
@@ -608,7 +663,7 @@ def _optional_text(value: object, label: str) -> str | None:
 
 
 def _required_sha256(value: object, label: str) -> str:
-    if not isinstance(value, str) or not SHA256_PATTERN.fullmatch(value):
+    if not is_lowercase_sha256(value):
         raise AuthoringReconciliationSchemaError(f"{label} must be lowercase SHA-256")
     return value
 

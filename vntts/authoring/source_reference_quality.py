@@ -5,18 +5,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import tempfile
 from collections.abc import MutableSequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path, PurePosixPath
 
+from durable_file import atomic_write_json
 from vntts_artifacts import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
@@ -24,6 +23,7 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.generation_state import validate_generation_state_document
 from vntts.authoring.publication import (
     no_replace_destination,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -56,7 +56,11 @@ from vntts.authoring.source_reference_review import (
     _variant_evaluation_queue_ids,
     load_source_reference_plan,
 )
+from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_success
+from vntts.document_identity import file_sha256, sha256_file
+from vntts.json_types import has_schema_version
+from vntts.path_safety import read_regular_bytes
 
 
 @dataclass(frozen=True)
@@ -94,6 +98,10 @@ class _QualityReviewInputs:
     evaluation_variants: list[object]
 
 
+_file_sha256 = partial(file_sha256, error_type=SourceReferenceQualityError)
+
+
+@publication_errors(SourceReferenceQualityError)
 def publish_source_reference_quality_review(
     plan_directory: str | Path,
     evaluation_directory: str | Path,
@@ -128,7 +136,7 @@ def _load_quality_review_plan(directory: Path) -> _QualityReviewPlan:
     payload, snapshot = _read_json(path, "source-reference plan")
     digest = hashlib.sha256(payload).hexdigest()
     document = load_source_reference_plan(directory)
-    if document != snapshot or sha256_file(path) != digest:
+    if document != snapshot or _file_sha256(path) != digest:
         raise SourceReferenceQualityError(
             "Source-reference plan changed while it was loaded"
         )
@@ -141,9 +149,8 @@ def _load_quality_review_evaluation(
     path = directory / "comparison.json"
     payload, document = _read_json(path, "source-reference evaluation")
     digest = hashlib.sha256(payload).hexdigest()
-    if (
-        document.get("schema") != REFERENCE_EVALUATION_SCHEMA
-        or document.get("schema_version") != REFERENCE_EVALUATION_VERSION
+    if document.get("schema") != REFERENCE_EVALUATION_SCHEMA or not has_schema_version(
+        document, REFERENCE_EVALUATION_VERSION
     ):
         raise SourceReferenceQualityError(
             "Unsupported source-reference evaluation schema"
@@ -156,10 +163,10 @@ def _load_quality_review_evaluation(
     queue_sha256 = _required_sha256(
         document.get("queue_sha256"), "evaluation queue hash"
     )
-    if sha256_file(queue_path) != queue_sha256:
+    if _file_sha256(queue_path) != queue_sha256:
         raise SourceReferenceQualityError("Evaluation queue changed")
     try:
-        queue_payload = queue_path.read_bytes()
+        queue_payload = read_regular_bytes(queue_path)
     except OSError as error:
         raise SourceReferenceQualityError(
             f"Unable to read evaluation queue {queue_path}: {error}"
@@ -183,7 +190,7 @@ def _load_quality_review_generation(
     state_payload, state = _read_json(state_path, "generation state")
     state_sha256 = hashlib.sha256(state_payload).hexdigest()
     try:
-        with tempfile.TemporaryDirectory(prefix="vntts-quality-queue-") as directory:
+        with temporary_directory(prefix="vntts-quality-queue-") as directory:
             queue_snapshot = Path(directory) / "queue.jsonl"
             queue_snapshot.write_bytes(evaluation.queue_payload)
             queue = VoiceGenerationQueue.load(queue_snapshot)
@@ -354,7 +361,7 @@ def _stage_reference_audio(
         variant.get("source_audio_sha256"),
         f"variant {variant_id} source audio hash",
     )
-    if sha256_file(source) != source_sha256:
+    if _file_sha256(source) != source_sha256:
         raise SourceReferenceQualityError(
             f"Evaluation source audio changed: {variant_id}"
         )
@@ -446,7 +453,7 @@ def _verify_quality_review_snapshots(
     snapshots: MutableSequence[tuple[Path, str]],
 ) -> None:
     for source, digest in snapshots:
-        if sha256_file(source) != digest:
+        if _file_sha256(source) != digest:
             raise SourceReferenceQualityError(
                 f"Source changed during quality review publication: {source.name}"
             )
@@ -480,6 +487,8 @@ def create_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     options = create_parser().parse_args(argv)
+    from vntts.authoring.reference_composite import ReferenceCompositeError
+
     try:
         if options.command == "create-composite":
             from vntts.authoring.reference_composite import (
@@ -544,7 +553,12 @@ def main(argv: list[str] | None = None) -> int:
         if error.name and error.name.startswith("PySide6"):
             return _exit_code(cli_error("Qt UI is not installed"))
         raise
-    except (SourceReferenceQualityError, OSError, json.JSONDecodeError) as error:
+    except (
+        SourceReferenceQualityError,
+        ReferenceCompositeError,
+        OSError,
+        json.JSONDecodeError,
+    ) as error:
         return _exit_code(cli_error(error))
 
 
@@ -583,6 +597,10 @@ def _validate_variant_identity(
     reference: JsonObject,
     variant_id: str,
 ) -> None:
+    if type(variant.get("media_id")) is not int:
+        raise SourceReferenceQualityError(
+            f"Evaluation variant {variant_id} changed media_id"
+        )
     expected = {
         "character": cluster["character"],
         "portrait": cluster["portrait"],
@@ -607,7 +625,7 @@ def _copy_optional_portrait(
     if root is None or portrait is None:
         return None
     portrait_text = _required_text(portrait, f"variant {variant_id} portrait")
-    if "\\" in portrait_text:
+    if "\\" in portrait_text or "\x00" in portrait_text:
         raise SourceReferenceQualityError("Portrait identity must be a filename")
     identity = PurePosixPath(portrait_text)
     if len(identity.parts) != 1 or identity.name in {"", ".", ".."}:
@@ -625,7 +643,7 @@ def _copy_optional_portrait(
     if not source.is_file():
         raise SourceReferenceQualityError(f"Portrait image is not a file: {source}")
     try:
-        payload = source.read_bytes()
+        payload = read_regular_bytes(source)
     except OSError as error:
         raise SourceReferenceQualityError(
             f"Unable to read portrait image {source}: {error}"
@@ -636,7 +654,7 @@ def _copy_optional_portrait(
     destination = staging / relative
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(payload)
-    if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+    if sha256_file(destination) != digest:
         raise SourceReferenceQualityError(
             f"Portrait image changed while copied: {source}"
         )

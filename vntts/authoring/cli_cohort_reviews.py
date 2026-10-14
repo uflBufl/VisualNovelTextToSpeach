@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from vntts.authoring.cohort_bundle import (
@@ -27,6 +26,7 @@ from vntts.authoring.cohort_review import (
     write_cohort_review_plan,
 )
 from vntts.authoring.cohort_review import CohortReviewError as _CohortReviewError
+from vntts.cli import print_json
 
 CohortReviewError = _CohortReviewError
 
@@ -203,7 +203,7 @@ def _print_document(
     | CohortReviewDecision
     | CohortReviewProjection,
 ) -> None:
-    print(json.dumps(value.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+    print_json(value.to_dict(), ensure_ascii=False)
 
 
 def handle(arguments: argparse.Namespace) -> int:

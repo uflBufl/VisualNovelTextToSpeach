@@ -20,6 +20,13 @@ from vntts.playback import (
 AudioData: TypeAlias = NDArray[np.float32]
 
 
+def sanitize_playback_audio(samples: AudioData, volume: float) -> None:
+    """Sanitize, scale and clip an owned playback buffer in place."""
+    np.nan_to_num(samples, copy=False)
+    samples *= volume
+    np.clip(samples, -0.95, 0.95, out=samples)
+
+
 class StreamingAudioStream(Protocol):
     def write(self, audio: object) -> object: ...
 
@@ -354,7 +361,7 @@ def match_output_sample_rate(
         if not isinstance(device, Mapping):
             return audio, source_sample_rate
         default_samplerate = device["default_samplerate"]
-        target_sample_rate = int(round(float(default_samplerate)))
+        target_sample_rate = round(float(default_samplerate))
     except Exception:
         return audio, source_sample_rate
     if target_sample_rate <= 0 or target_sample_rate == source_sample_rate:
@@ -513,5 +520,6 @@ __all__ = [
     "SynchronousPcmPlaybackMixin",
     "match_output_sample_rate",
     "resolve_audio_output",
+    "sanitize_playback_audio",
     "write_pcm_chunks",
 ]

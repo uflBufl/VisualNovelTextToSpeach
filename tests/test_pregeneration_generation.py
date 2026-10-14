@@ -9,15 +9,21 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import Mock, patch
 
+from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import write_story_index_document
 
+from tests.story_fixtures import write_story_index
+from vntts import path_safety
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
     OfflineGenerationResult,
     OfflineGenerationWorker,
+    _cached_static_ready_line_ids,
+    _static_ready_line_ids,
 )
 from vntts.pregeneration_queue import PregenerationInput
+from vntts.pregeneration_setup import load_verified_story_index_document
 from vntts.pregeneration_voices import VoicePlan
 
 
@@ -181,6 +187,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     },
                 ],
             )
+            inputs = replace(inputs, story_index_sha256=sha256_file(inputs.story_index))
             output = inputs.directory.parent / (
                 f"generation-output-{inputs.identity[:16]}"
             )
@@ -233,7 +240,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 current = replace(
                     inputs,
                     identity=revision * 64,
-                    story_index_sha256=revision * 64,
+                    story_index_sha256=sha256_file(inputs.story_index),
                 )
                 output = current.directory.parent / (
                     f"generation-output-{current.identity[:16]}"
@@ -246,6 +253,107 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 self.assertEqual(
                     worker.inspect_progress(current).ready_line_ids, (line_id,)
                 )
+
+    def test_static_ready_lines_require_the_bound_story_snapshot(self):
+        with TemporaryDirectory() as directory:
+            story = Path(directory) / "story-index.jsonl"
+            metadata = {"game": "Synthetic", "language": "en"}
+            records = [
+                {
+                    "record_type": "line",
+                    "line_id": "silent",
+                    "chapter": "1",
+                    "sequence": 1,
+                    "speaker": "Ada",
+                    "text": "A silent cue.",
+                    "kind": "dialogue",
+                    "speakable": False,
+                }
+            ]
+            write_story_index_document(story, metadata, records)
+            expected_sha256 = sha256_file(story)
+            _cached_static_ready_line_ids.cache_clear()
+            self.addCleanup(_cached_static_ready_line_ids.cache_clear)
+            self.assertEqual(
+                _static_ready_line_ids(story, expected_sha256), ("silent",)
+            )
+
+            changed = [dict(records[0], text="Changed silent cue.")]
+            write_story_index_document(story, metadata, changed)
+            self.assertEqual(_static_ready_line_ids(story, expected_sha256), ())
+
+            write_story_index_document(story, metadata, records)
+            _cached_static_ready_line_ids.cache_clear()
+            with patch(
+                "vntts.pregeneration_generation.load_verified_story_index_document",
+                wraps=load_verified_story_index_document,
+            ) as load_verified:
+                self.assertEqual(
+                    _static_ready_line_ids(story, expected_sha256), ("silent",)
+                )
+                self.assertEqual(
+                    _static_ready_line_ids(story, expected_sha256), ("silent",)
+                )
+            self.assertEqual(load_verified.call_count, 1)
+
+    def test_static_ready_cache_rechecks_source_evidence_and_current_story(self):
+        with TemporaryDirectory() as directory:
+            story = write_story_index(Path(directory))
+            checksum = sha256_file(story)
+            evidence = story.parent / "source-audio-semantic-evidence.json"
+            payload = evidence.read_bytes()
+            story_payload = story.read_bytes()
+            _cached_static_ready_line_ids.cache_clear()
+            self.addCleanup(_cached_static_ready_line_ids.cache_clear)
+            self.assertEqual(
+                _static_ready_line_ids(story, checksum), ("reverse1999:1",)
+            )
+            evidence.unlink()
+            self.assertEqual(_static_ready_line_ids(story, checksum), ())
+            evidence.write_bytes(b"broken evidence")
+            self.assertEqual(_static_ready_line_ids(story, checksum), ())
+            evidence.write_bytes(payload)
+            self.assertEqual(
+                _static_ready_line_ids(story, checksum), ("reverse1999:1",)
+            )
+            story.write_bytes(story_payload + b"changed story")
+            self.assertEqual(_static_ready_line_ids(story, checksum), ())
+            story.unlink()
+            self.assertEqual(_static_ready_line_ids(story, checksum), ())
+            story.write_bytes(story_payload)
+            self.assertEqual(
+                _static_ready_line_ids(story, checksum), ("reverse1999:1",)
+            )
+
+    def test_evidence_change_during_readiness_does_not_poison_a_valid_cache_key(self):
+        with TemporaryDirectory() as directory:
+            story = write_story_index(Path(directory))
+            checksum = sha256_file(story)
+            evidence = story.parent / "source-audio-semantic-evidence.json"
+            payload = evidence.read_bytes()
+            from vntts.chapter_voice_preload import _source_audio_evidence_payload
+
+            captures = 0
+
+            def capture_then_remove(path):
+                nonlocal captures
+                captures += 1
+                captured = _source_audio_evidence_payload(path)
+                if captures == 1:
+                    evidence.unlink()
+                return captured
+
+            _cached_static_ready_line_ids.cache_clear()
+            self.addCleanup(_cached_static_ready_line_ids.cache_clear)
+            with patch(
+                "vntts.pregeneration_generation._source_audio_evidence_payload",
+                side_effect=capture_then_remove,
+            ):
+                self.assertEqual(_static_ready_line_ids(story, checksum), ())
+            evidence.write_bytes(payload)
+            self.assertEqual(
+                _static_ready_line_ids(story, checksum), ("reverse1999:1",)
+            )
 
     def test_missing_progress_is_not_a_report_of_zero_completed_work(self):
         with TemporaryDirectory() as directory:
@@ -446,12 +554,12 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             cancellation = Event()
             snapshots = []
             calls = 0
-            read_text = Path.read_text
+            open_text = path_safety.open_regular_text
 
             def reject_state_poll(path, *args, **kwargs):
-                if path.name == "generation-state.json":
+                if Path(path).name == "generation-state.json":
                     raise AssertionError("disk poll")
-                return read_text(path, *args, **kwargs)
+                return open_text(path, *args, **kwargs)
 
             def generate_with_progress(_parsed, **kwargs):
                 nonlocal calls
@@ -490,7 +598,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     "vntts.pregeneration_generation._static_ready_line_ids",
                     return_value=(),
                 ),
-                patch.object(Path, "read_text", reject_state_poll),
+                patch.object(path_safety, "open_regular_text", reject_state_poll),
             ):
                 result = worker.generate(
                     generation_input, plan, cancel_event=cancellation

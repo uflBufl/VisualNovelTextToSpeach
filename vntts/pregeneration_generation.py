@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -16,15 +17,20 @@ from pathlib import Path
 from threading import Lock
 from typing import Protocol
 
-from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
+from vntts_artifacts.story_index import StoryIndexError
 
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
 from vntts.authoring.generation_state import load_generation_state
 from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
+    _source_audio_evidence_payload,
     _validated_source_audio_line_ids,
 )
+from vntts.cleanup import cleanup_on_exit
+from vntts.document_identity import sha256_file
+from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_text
 from vntts.pregeneration_contract import (
     OfflineGenerationCancelled as OfflineGenerationCancelled,
 )
@@ -38,9 +44,10 @@ from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_setup import (
     PregenerationSetupError,
     estimate_generation_resources,
+    load_verified_story_index_document,
 )
 from vntts.pregeneration_voices import VoicePlan
-from vntts.subprocess_utils import last_output_line, terminate_process
+from vntts.subprocess_utils import last_output_line, terminate_running_process
 
 
 class _Cancellation(Protocol):
@@ -218,7 +225,7 @@ class OfflineGenerationWorker:
         if not state_path.is_file():
             return OfflineGenerationProgress(available=False)
         try:
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state = decode_json(read_regular_text(state_path, encoding="utf-8"))
         except (json.JSONDecodeError, OSError, UnicodeError) as error:
             raise OfflineGenerationError(
                 f"Unable to inspect offline generation progress: {error}"
@@ -417,18 +424,20 @@ class OfflineGenerationWorker:
 
         self._process = process
         try:
-            while True:
-                try:
-                    stdout, stderr = process.communicate(timeout=0.1)
-                    break
-                except subprocess.TimeoutExpired:
-                    if cancel_event is not None and cancel_event.is_set():
-                        raise OfflineGenerationCancelled(
-                            "Offline speech generation was cancelled"
-                        ) from None
+            with cleanup_on_exit(
+                lambda: terminate_running_process(process),
+                description="Offline generation process cleanup",
+            ):
+                while True:
+                    try:
+                        stdout, stderr = process.communicate(timeout=0.1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise OfflineGenerationCancelled(
+                                "Offline speech generation was cancelled"
+                            ) from None
         finally:
-            if process.poll() is None:
-                terminate_process(process)
             self._process = None
         if process.returncode:
             detail = last_output_line(stderr) or last_output_line(stdout)
@@ -443,7 +452,7 @@ class OfflineGenerationWorker:
                 self._startup_status = message.strip()[:2000]
 
     def _record_progress(
-        self, state: dict[str, object], generation_input: PregenerationInput
+        self, state: object, generation_input: PregenerationInput
     ) -> None:
         progress = self._progress_from_state(state, generation_input)
         with self._progress_lock:
@@ -456,7 +465,7 @@ class OfflineGenerationWorker:
                 return
         state_path = _generation_output(generation_input) / "generation-state.json"
         try:
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state = decode_json(read_regular_text(state_path, encoding="utf-8"))
             self._record_progress(state, generation_input)
         except OSError, UnicodeError, json.JSONDecodeError, OfflineGenerationError:
             pass
@@ -488,9 +497,7 @@ def _megabytes(value: int) -> int:
 def _generation_output(generation_input: PregenerationInput) -> Path:
     if not isinstance(generation_input, PregenerationInput):
         raise OfflineGenerationError("Offline generation input is invalid")
-    return Path(generation_input.directory).parent / (
-        f"generation-output-{generation_input.identity[:16]}"
-    )
+    return generation_input.output_directory
 
 
 def runtime_progress_manifest_path(generation_input: PregenerationInput) -> Path:
@@ -498,18 +505,36 @@ def runtime_progress_manifest_path(generation_input: PregenerationInput) -> Path
     return _generation_output(generation_input) / str(RUNTIME_PROGRESS_MANIFEST_NAME)
 
 
-@lru_cache(maxsize=16)
 def _static_ready_line_ids(
     story_index: Path, story_index_sha256: str
 ) -> tuple[str, ...]:
-    """Return immutable source/non-spoken routes that need no generated WAV."""
+    """Reuse readiness only while both story and optional evidence still match."""
     try:
-        story = load_story_index_document(story_index)
+        if sha256_file(story_index) != story_index_sha256:
+            return ()
+        evidence_sha256 = hashlib.sha256(
+            _source_audio_evidence_payload(story_index)
+        ).hexdigest()
+        return _cached_static_ready_line_ids(
+            story_index, story_index_sha256, evidence_sha256
+        )
     except OSError, StoryIndexError, TypeError, ValueError:
         return ()
+
+
+@lru_cache(maxsize=16)
+def _cached_static_ready_line_ids(
+    story_index: Path, story_index_sha256: str, evidence_sha256: str
+) -> tuple[str, ...]:
+    story = load_verified_story_index_document(story_index, story_index_sha256)
+    evidence_payload = _source_audio_evidence_payload(story_index)
+    if hashlib.sha256(evidence_payload).hexdigest() != evidence_sha256:
+        raise ValueError("Story audio evidence changed while it was being read")
     completion = story.metadata.get("source_audio_completion")
     completion_contract = completion if isinstance(completion, str) else None
-    authoritative_line_ids = _validated_source_audio_line_ids(story_index, story)
+    authoritative_line_ids = _validated_source_audio_line_ids(
+        story_index, story, evidence_payload=evidence_payload
+    )
     return tuple(
         record.line_id
         for record in story.records

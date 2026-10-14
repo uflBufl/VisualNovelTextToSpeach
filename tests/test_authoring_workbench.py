@@ -4,18 +4,16 @@ import os
 import shutil
 import subprocess
 import unittest
-from contextlib import redirect_stdout
-from dataclasses import asdict
+from contextlib import nullcontext, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.generated_audio import write_generated_audio_manifest
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.story_index import write_story_index_document
 from vntts_artifacts.voice_generation_queue import (
@@ -25,6 +23,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 import vntts.authoring.bulk_generation as bulk_generation_module
+import vntts.authoring.generation_review as review_module
 import vntts.authoring.reconciliation_merge as reconciliation_merge_module
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_authority as workspace_authority_module
@@ -32,19 +31,28 @@ import vntts.authoring.workspace_creation as workspace_creation_module
 import vntts.authoring.workspace_inspection as workspace_inspection_module
 import vntts.authoring.workspace_outcome_merge as workspace_outcome_merge_module
 import vntts.authoring.workspace_state as workspace_state_module
+from tests.authoring_fixtures import (
+    create_carry_source_workspace,
+    create_failed_reference_workspace,
+    create_test_workspace,
+    current_carry_fields,
+    tree_hashes,
+    write_authority,
+    write_carry_target_manifest,
+    write_legacy_fixture,
+)
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_legacy_import import write_legacy_fixture
-from tests.test_authoring_offline_fallback_authority import write_authority
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
+from vntts.authoring.generation_failures import generation_failure_repair_plan
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.publication import AtomicPublicationError
 from vntts.authoring.queue_extension import publish_additive_generation_queue
 from vntts.authoring.reconciliation_merge import merge_reconciled_terminal_outcomes
 from vntts.authoring.reference_selection import select_voice_reference
-from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.authoring.workbench import (
     AuthoringRuntimeStatus,
     AuthoringWorkbenchError,
@@ -64,206 +72,6 @@ from vntts.authoring.workbench import (
     review_selected_item,
     review_workspace_item,
 )
-
-
-def create_test_workspace(root, *, text=None):
-    fixture_options = {} if text is None else {"text": text}
-    fixture = write_legacy_fixture(root / "legacy", **fixture_options)
-    queue_item = VoiceGenerationQueue.load(fixture["queue"]).items[0]
-    side_text = "A source-audio line outside the generation queue."
-    write_story_index_document(
-        fixture["job"]["story_index"],
-        {
-            "game": "Reverse: 1999",
-            "language": "en",
-            "generated_at": "2026-08-16T15:00:00+00:00",
-            "collections": [
-                {
-                    "collection_id": "main",
-                    "title": "The Eaglet Takes Wing",
-                    "kind": "character-story",
-                    "order": 1,
-                },
-                {
-                    "collection_id": "source-only",
-                    "title": "Installed source audio",
-                    "kind": "reference",
-                    "order": 2,
-                },
-            ],
-        },
-        [
-            {
-                "record_type": "line",
-                "line_id": queue_item.line_id,
-                "text_sha256": queue_item.text_sha256,
-                "text": queue_item.text,
-                "speaker": queue_item.speaker,
-                "voice_character": queue_item.voice_character,
-                "kind": "dialogue",
-                "chapter": "315401",
-                "sequence": 7,
-                "collection_id": "main",
-                "source_audio_status": "absent",
-                "source_audio_reason": "fixture_absent",
-                "source_kind": "story",
-                "speakable": True,
-            },
-            {
-                "record_type": "line",
-                "line_id": "reverse1999:source:1",
-                "text_sha256": text_sha256(side_text),
-                "text": side_text,
-                "speaker": "Rhiannon",
-                "voice_character": "Rhiannon",
-                "kind": "dialogue",
-                "chapter": "source",
-                "sequence": 1,
-                "collection_id": "source-only",
-                "source_audio_status": "available",
-                "source_audio_reason": "fixture_available",
-                "source_kind": "story",
-                "speakable": True,
-            },
-        ],
-    )
-    voice_reference = root / "legacy" / "rhiannon.wav"
-    voice_reference.write_bytes(b"voice-reference")
-    second_voice_reference = root / "legacy" / "rhiannon-2.wav"
-    second_voice_reference.write_bytes(b"second-voice-reference")
-    Path(fixture["job"]["voice_manifest"]).write_text(
-        json.dumps(
-            {
-                "version": 2,
-                "voices": [
-                    {
-                        "character": "Rhiannon",
-                        "speaker": "Rhiannon",
-                        "references": ["rhiannon.wav", "rhiannon-2.wav"],
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    imported = import_legacy_job(fixture["job_directory"], root / "imports").destination
-    workspace = create_resume_workspace(
-        imported,
-        root / "workspaces",
-        story_index=fixture["job"]["story_index"],
-        voice_manifest=fixture["job"]["voice_manifest"],
-        backend="moss-tts",
-        model="model with spaces",
-        generation_profile="stable",
-        narrator_character="Rhiannon",
-    )
-    return fixture, imported, workspace
-
-
-def create_carry_source_workspace(root, *, text=None, queue_voice_override=None):
-    kwargs = {} if text is None else {"text": text}
-    fixture = write_legacy_fixture(root / "legacy", **kwargs)
-    queue_item = VoiceGenerationQueue.load(fixture["queue"]).items[0]
-    write_story_index_document(
-        fixture["job"]["story_index"],
-        {
-            "game": "Reverse: 1999",
-            "language": "en",
-            "generated_at": "2026-08-16T15:00:00+00:00",
-            "collections": [
-                {
-                    "collection_id": "main",
-                    "title": "Carry-forward fixture",
-                    "kind": "character-story",
-                    "order": 1,
-                }
-            ],
-        },
-        [
-            {
-                "record_type": "line",
-                "line_id": queue_item.line_id,
-                "text_sha256": queue_item.text_sha256,
-                "text": queue_item.text,
-                "speaker": queue_item.speaker,
-                "voice_character": queue_item.voice_character,
-                "kind": "dialogue",
-                "chapter": "315401",
-                "sequence": 7,
-                "collection_id": "main",
-                "source_audio_status": "absent",
-                "source_audio_reason": "fixture_absent",
-                "source_kind": "story",
-                "speakable": True,
-            }
-        ],
-    )
-    for name, payload in (
-        ("rhiannon.wav", b"rhiannon-reference-one"),
-        ("rhiannon-2.wav", b"rhiannon-reference-two"),
-    ):
-        (root / "legacy" / name).write_bytes(payload)
-    voice_manifest = Path(fixture["job"]["voice_manifest"])
-    voice_document = {
-        "version": 2,
-        "voices": [
-            {
-                "character": "Rhiannon",
-                "speaker": "Rhiannon",
-                "references": ["rhiannon.wav", "rhiannon-2.wav"],
-            }
-        ],
-    }
-    if queue_voice_override is not None:
-        voice_document["voices"].append(
-            {
-                "character": queue_voice_override,
-                "speaker": "bound-variant",
-                "reference": "rhiannon-2.wav",
-            }
-        )
-        overrides = {fixture["queue_id"]: queue_voice_override}
-        voice_document["vntts.authoring.source_reference_bindings"] = {
-            "schema": "vntts.authoring-source-reference-bindings",
-            "schema_version": 1,
-            "source_reference_plan_sha256": "a" * 64,
-            "selected_variants": [
-                {
-                    "variant_id": "bound-variant",
-                    "voice_character": queue_voice_override,
-                }
-            ],
-            "queue_voice_overrides": overrides,
-            "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
-        }
-    voice_manifest.write_text(json.dumps(voice_document), encoding="utf-8")
-    state = json.loads(fixture["state"].read_text(encoding="utf-8"))
-    state["active"] = None
-    state["items"][fixture["queue_id"]]["status"] = "generated"
-    state["items"][fixture["queue_id"]]["review_status"] = "pending_review"
-    fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-    write_generated_audio_manifest(
-        fixture["manifest"],
-        {
-            "game": "Reverse: 1999",
-            "language": "en",
-            "source_queue_sha256": sha256_file(fixture["queue"]),
-            "generated_at": "2026-08-16T17:06:00+00:00",
-        },
-        [],
-    )
-    imported = import_legacy_job(fixture["job_directory"], root / "imports").destination
-    source = create_resume_workspace(
-        imported,
-        root / "workspaces",
-        story_index=fixture["job"]["story_index"],
-        voice_manifest=voice_manifest,
-        backend="moss-tts",
-        model="model with spaces",
-        generation_profile="stable",
-        narrator_character="Rhiannon",
-    )
-    return fixture, imported, source
 
 
 def downgrade_workspace_run_config_to_legacy(directory):
@@ -290,40 +98,6 @@ def downgrade_workspace_run_config_to_legacy(directory):
     legacy_directory = directory.with_name(workspace["workspace_id"])
     directory.rename(legacy_directory)
     return legacy_directory
-
-
-def write_carry_target_manifest(root, *, rhiannon_payloads=None):
-    target = root / "target-voices"
-    target.mkdir()
-    payloads = rhiannon_payloads or (
-        b"rhiannon-reference-one",
-        b"rhiannon-reference-two",
-    )
-    (target / "rhiannon.wav").write_bytes(payloads[0])
-    (target / "rhiannon-2.wav").write_bytes(payloads[1])
-    (target / "paper-heron.wav").write_bytes(b"paper-heron-reference")
-    manifest = target / "manifest.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "version": 2,
-                "voices": [
-                    {
-                        "character": "Rhiannon",
-                        "speaker": "Rhiannon",
-                        "references": ["rhiannon.wav", "rhiannon-2.wav"],
-                    },
-                    {
-                        "character": "Paper Heron",
-                        "speaker": "Paper Heron",
-                        "reference": "paper-heron.wav",
-                    },
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    return manifest
 
 
 def write_terminal_merge_reconciliation(root, base, source, queue_id):
@@ -431,6 +205,85 @@ def write_terminal_merge_reconciliation(root, base, source, queue_id):
 
 
 class AuthoringWorkbenchTest(unittest.TestCase):
+    def test_workspace_final_read_errors_preserve_domain_cause_and_sources(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, _, workspace = create_test_workspace(root)
+            workspace_path = workspace.directory / "workspace.json"
+            state_path = workspace.directory / "generated-audio/generation-state.json"
+            before = tree_hashes(root)
+            for module, read, hook, target in (
+                (
+                    workspace_authority_module,
+                    workspace_authority_module.load_workspace_authority,
+                    "_load_workspace",
+                    workspace_path,
+                ),
+                (workspace_inspection_module, inspect_workspace, None, state_path),
+                (workspace_inspection_module, inspect_workspace, None, workspace_path),
+                (
+                    workspace_inspection_module,
+                    workspace_inspection_module.load_review_items_snapshot,
+                    "_list_review_items_from_read",
+                    state_path,
+                ),
+            ):
+                with self.subTest(read=read.__name__, target=target.name):
+                    failure = PermissionError("Workspace authority recheck was blocked")
+                    checksum = module.sha256_file
+                    final_read = hook is None
+                    original = getattr(module, hook) if hook is not None else None
+
+                    def unavailable(path):
+                        if final_read and Path(path) == target:
+                            raise failure
+                        return checksum(path)
+
+                    def block_after_read(*args, **kwargs):
+                        nonlocal final_read
+                        result = original(*args, **kwargs)
+                        final_read = True
+                        return result
+
+                    with (
+                        patch.object(module, "sha256_file", side_effect=unavailable),
+                        patch.object(module, hook, side_effect=block_after_read)
+                        if hook is not None
+                        else nullcontext(),
+                        self.assertRaises(AuthoringWorkbenchError) as caught,
+                    ):
+                        read(workspace.directory)
+
+                    self.assertIs(caught.exception.__cause__, failure)
+                    self.assertEqual(tree_hashes(root), before)
+
+    def test_stable_workspace_final_read_error_uses_the_callers_error_type(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, _, workspace = create_test_workspace(root)
+            document = json.loads(
+                (workspace.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            before = tree_hashes(root)
+            failure = PermissionError("Stable workspace state recheck was blocked")
+            for error_type in (ValueError, AuthoringWorkbenchError):
+                with (
+                    self.subTest(error_type=error_type.__name__),
+                    patch.object(
+                        workspace_state_module, "sha256_file", side_effect=failure
+                    ),
+                    self.assertRaises(error_type) as caught,
+                ):
+                    workspace_state_module.load_stable_workspace_generation_state(
+                        workspace.directory,
+                        document,
+                        "unreadable",
+                        error_type=error_type,
+                    )
+
+                self.assertIs(caught.exception.__cause__, failure)
+                self.assertEqual(tree_hashes(root), before)
+
     def test_workspace_state_rejects_non_object_generation_state(self):
         with TemporaryDirectory() as directory:
             _fixture, _imported, workspace = create_test_workspace(Path(directory))
@@ -472,6 +325,179 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     )
 
             validation.assert_called_once()
+
+    def test_review_projection_state_validation_grows_linearly(self):
+        visits_by_size = {}
+        for item_count in (1, 8):
+            with self.subTest(item_count=item_count), TemporaryDirectory() as directory:
+                _, _, source = create_carry_source_workspace(
+                    Path(directory), item_count=item_count
+                )
+                visited = []
+                state_items = workspace_inspection_module._inspection_state_items
+
+                def count_validation(state):
+                    items = state_items(state)
+                    visited.append(len(items))
+                    return items
+
+                with patch.object(
+                    workspace_inspection_module,
+                    "_inspection_state_items",
+                    side_effect=count_validation,
+                ):
+                    reviews = list_review_items(source.directory)
+                self.assertEqual(len(reviews), item_count)
+                self.assertEqual(
+                    {review.queue_id for review in reviews},
+                    {
+                        item.queue_id
+                        for item in VoiceGenerationQueue.load(
+                            source.directory / "queue.jsonl"
+                        ).items
+                    },
+                )
+                visits_by_size[item_count] = sum(visited)
+        self.assertGreater(visits_by_size[1], 0)
+        self.assertLessEqual(visits_by_size[8], 8 * visits_by_size[1])
+
+    def test_batch_review_state_validation_grows_linearly(self):
+        visits_by_size = {}
+        for item_count in (1, 8):
+            with self.subTest(item_count=item_count), TemporaryDirectory() as directory:
+                root = Path(directory)
+                _, _, source = create_carry_source_workspace(
+                    root, item_count=item_count
+                )
+                queue_path = source.directory / "queue.jsonl"
+                state_path = source.directory / "generated-audio/generation-state.json"
+                queue = VoiceGenerationQueue.load(queue_path)
+                visited = []
+                state_items = review_module._state_items
+
+                def count_validation(state):
+                    items = state_items(state)
+                    visited.append(len(items))
+                    return items
+
+                with patch.object(
+                    review_module, "_state_items", side_effect=count_validation
+                ):
+                    authorities = review_module.generation_review_authorities(
+                        state_path, [item.queue_id for item in queue.items]
+                    )
+                    commits = review_module.review_generation_cohort(
+                        state_path,
+                        queue_path,
+                        authorities,
+                        "approved",
+                        provenance={"test": "linear-batch-review"},
+                    )
+                self.assertEqual(len(commits), item_count)
+                self.assertTrue(all(commit.status == "approved" for commit in commits))
+                self.assertEqual(
+                    inspect_workspace(source.directory).approved, item_count
+                )
+                visits_by_size[item_count] = sum(visited)
+        self.assertLessEqual(visits_by_size[8], 8 * visits_by_size[1])
+
+    def test_carry_forward_state_validation_grows_linearly(self):
+        for item_count in (1, 8):
+            with self.subTest(item_count=item_count), TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture, imported, source = create_carry_source_workspace(
+                    root, item_count=item_count
+                )
+                queue = VoiceGenerationQueue.load(source.directory / "queue.jsonl")
+                for item in queue.items:
+                    review_workspace_item(source.directory, item.queue_id, "approved")
+                source_directory = downgrade_workspace_run_config_to_legacy(
+                    source.directory
+                )
+                source_hash = sha256_file(
+                    source_directory / "generated-audio/generation-state.json"
+                )
+                visited = []
+                validate_items = workspace_creation_module._is_generation_state_items
+
+                def count_validation(value):
+                    if isinstance(value, dict):
+                        visited.append(len(value))
+                    return validate_items(value)
+
+                with patch.object(
+                    workspace_creation_module,
+                    "_is_generation_state_items",
+                    side_effect=count_validation,
+                ):
+                    carried = create_resume_workspace(
+                        imported,
+                        root / "workspaces",
+                        story_index=fixture["job"]["story_index"],
+                        voice_manifest=write_carry_target_manifest(root),
+                        backend="moss-tts",
+                        model="model with spaces",
+                        generation_profile="stable",
+                        narrator_character="Paper Heron",
+                        carry_forward_from=source_directory,
+                        carry_forward_characters=("Rhiannon",),
+                    )
+                state = json.loads(
+                    (
+                        carried.directory / "generated-audio/generation-state.json"
+                    ).read_text()
+                )
+                self.assertEqual(len(state["items"]), item_count)
+                self.assertTrue(
+                    all(
+                        item["status"] == "approved"
+                        and item["carry_forward"]["mode"] == "review-only"
+                        for item in state["items"].values()
+                    )
+                )
+                self.assertLessEqual(sum(visited), 5 * item_count)
+                self.assertEqual(
+                    source_hash,
+                    sha256_file(
+                        source_directory / "generated-audio/generation-state.json"
+                    ),
+                )
+
+    def test_carry_forward_rejects_another_seed_items_wav_path(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(
+                root, item_count=2
+            )
+            queue = VoiceGenerationQueue.load(source.directory / "queue.jsonl")
+            first, second = queue.items
+            state_path = source.directory / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text())
+            first_result = state["items"][first.queue_id]
+            first_result["path"] = state["items"][second.queue_id]["path"]
+            audio = source.directory / "generated-audio" / first_result["path"]
+            first_result.update(current_carry_fields(source.directory, first, audio))
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            source_directory = downgrade_workspace_run_config_to_legacy(
+                source.directory
+            )
+            existing = set((root / "workspaces").iterdir())
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, f"WAV path collides with {second.queue_id!r}"
+            ):
+                create_resume_workspace(
+                    imported,
+                    root / "workspaces",
+                    story_index=fixture["job"]["story_index"],
+                    voice_manifest=write_carry_target_manifest(root),
+                    backend="moss-tts",
+                    model="model with spaces",
+                    generation_profile="stable",
+                    narrator_character="Paper Heron",
+                    carry_forward_from=source_directory,
+                    carry_forward_characters=("Rhiannon",),
+                )
+            self.assertEqual(existing, set((root / "workspaces").iterdir()))
 
     def test_carry_forward_projection_loads_generation_state_once(self):
         with TemporaryDirectory() as directory:
@@ -596,11 +622,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture, imported, first = self.create_workspace(root)
-            imported_hashes = {
-                path.relative_to(imported).as_posix(): sha256_file(path)
-                for path in imported.rglob("*")
-                if path.is_file()
-            }
+            imported_hashes = tree_hashes(imported)
             second = create_resume_workspace(
                 imported,
                 root / "workspaces",
@@ -614,11 +636,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             workspace = json.loads(
                 (first.directory / "workspace.json").read_text(encoding="utf-8")
             )
-            imported_hashes_after = {
-                path.relative_to(imported).as_posix(): sha256_file(path)
-                for path in imported.rglob("*")
-                if path.is_file()
-            }
+            imported_hashes_after = tree_hashes(imported)
             workspace_queue_hash = sha256_file(first.directory / "queue.jsonl")
             fixture_queue_hash = sha256_file(fixture["queue"])
 
@@ -629,6 +647,95 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(workspace["source"]["import_id"], imported.name)
         self.assertEqual(imported_hashes, imported_hashes_after)
         self.assertEqual(workspace_queue_hash, fixture_queue_hash)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_base_queue_snapshot_refuses_fifo_cleans_up_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            fixture = write_legacy_fixture(root / "legacy")
+            state = json.loads(fixture["state"].read_text())
+            state["active"] = None
+            fixture["state"].write_text(json.dumps(state, sort_keys=True))
+            imported = import_legacy_job(
+                fixture["job_directory"], root / "imports"
+            ).destination
+            added = dict(VoiceGenerationQueue.load(fixture["queue"]).items[0].document)
+            line_id = "reverse1999:315401:8"
+            added.update(
+                line_id=line_id,
+                queue_id=expected_voice_generation_queue_id(
+                    line_id, added["text_sha256"]
+                ),
+                sequence=8,
+                story_order=1008,
+            )
+            addition = write_voice_generation_queue(
+                root / "addition.jsonl",
+                {"game": "Reverse: 1999", "language": "en"},
+                [added],
+            )
+            combined = publish_additive_generation_queue(
+                fixture["queue"], addition, root / "combined.jsonl"
+            )
+            before = tree_hashes(root)
+            destination = root / "successors"
+            original = workspace_creation_module.copy_regular_file
+            refused = []
+
+            def copy(source, target, **options):
+                if Path(target).name != "seed-generation-queue.jsonl":
+                    return original(source, target, **options)
+                self.assertEqual(options, {})
+                self.assertEqual(Path(source).parent, Path(target).parents[1])
+                self.assertEqual(
+                    Path(source).read_bytes(), (imported / "queue.jsonl").read_bytes()
+                )
+                gate: RegularFileGate = {"path": Path(source), "armed": True}
+                with (
+                    swap_at_acquisition(self, gate),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original(source, target, **options)
+                self.assertFalse(Path(target).exists())
+                refused.append(caught.exception)
+                raise caught.exception
+
+            with (
+                patch.object(workspace_creation_module, "copy_regular_file", copy),
+                self.assertRaisesRegex(OSError, "regular file") as caught,
+            ):
+                create_resume_workspace(
+                    imported, destination, generation_queue=combined
+                )
+            self.assertEqual(len(refused), 1)
+            self.assertIs(caught.exception, refused[0])
+            self.assertEqual(list(destination.iterdir()), [])
+            self.assertEqual(tree_hashes(root), before)
+            recovered = create_resume_workspace(
+                imported, destination, generation_queue=combined
+            )
+            self.assertEqual(
+                (
+                    recovered.directory / "provenance/seed-generation-queue.jsonl"
+                ).read_bytes(),
+                (imported / "queue.jsonl").read_bytes(),
+            )
+            self.assertEqual(
+                (recovered.directory / "inputs/generation-queue.jsonl").read_bytes(),
+                combined.read_bytes(),
+            )
+            self.assertEqual(
+                (recovered.directory / "queue.jsonl").read_bytes(),
+                combined.read_bytes(),
+            )
+            self.assertEqual(inspect_workspace(recovered.directory).queue_items, 2)
+            self.assertFalse(
+                create_resume_workspace(
+                    imported, destination, generation_queue=combined
+                ).created
+            )
 
     def test_resume_workspace_accepts_only_a_bound_additive_queue(self):
         with TemporaryDirectory() as directory:
@@ -1013,6 +1120,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "queue.jsonl").write_text("queue", encoding="utf-8")
+            workspace = {"queue": "queue.jsonl", "output": "generated-audio"}
+            workspace_payload = json.dumps(workspace).encode("utf-8")
+            (root / "workspace.json").write_bytes(workspace_payload)
             output = root / "generated-audio"
             output.mkdir()
             state_path = output / "generation-state.json"
@@ -1036,10 +1146,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             with (
                 patch.object(
                     workspace_inspection_module,
-                    "_load_workspace",
+                    "load_workspace_authority",
                     return_value=(
                         root,
-                        {"queue": "queue.jsonl", "output": "generated-audio"},
+                        workspace,
+                        hashlib.sha256(workspace_payload).hexdigest(),
                     ),
                 ),
                 patch.object(
@@ -1055,7 +1166,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 patch.object(
                     workspace_inspection_module,
                     "workspace_queue_sha256",
-                    return_value="a" * 64,
+                    return_value=hashlib.sha256(b"queue").hexdigest(),
                 ),
                 patch.object(
                     workspace_inspection_module,
@@ -1078,7 +1189,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             )
 
     def test_offline_pocket_fallback_carries_exact_failure_with_fresh_seed_space(self):
-        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
             run_bulk_generation,
@@ -1252,7 +1363,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(source_state_after, source_state_before)
 
     def test_automatic_unresolved_authority_unlocks_exact_early_pocket_fallback(self):
-        from tests.test_authoring_bulk_generation import (
+        from tests.bulk_generation_fixtures import (
             SyntheticRenderer,
             audio_samples,
         )
@@ -1408,7 +1519,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertTrue(fallback_unchanged)
 
     def test_sentence_repair_carries_exact_current_failure_between_workspaces(self):
-        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
             run_bulk_generation,
@@ -1519,7 +1630,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
 
     def test_sentence_repair_carries_typed_internal_silence_failure(self):
-        from tests.test_authoring_bulk_generation import (
+        from tests.bulk_generation_fixtures import (
             SyntheticRenderer,
             audio_samples,
         )
@@ -1592,7 +1703,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(source_state_after, source_state_before)
 
     def test_inline_pause_repair_carries_exact_internal_silence_failure(self):
-        from tests.test_authoring_bulk_generation import (
+        from tests.bulk_generation_fixtures import (
             SyntheticRenderer,
             audio_samples,
         )
@@ -1714,12 +1825,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
 
     def test_exhausted_inline_pause_failure_moves_to_one_typed_pocket_attempt(self):
-        from tests.test_authoring_bulk_generation import (
+        from tests.bulk_generation_fixtures import (
             SyntheticRenderer,
             audio_samples,
         )
         from vntts.authoring.bulk_generation import (
-            generation_failure_repair_plan,
             load_generation_state,
             publish_generated_manifest,
             run_bulk_generation,
@@ -1922,12 +2032,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
 
     def test_exhausted_raw_inline_pause_failure_moves_to_pocket(self):
-        from tests.test_authoring_bulk_generation import (
+        from tests.bulk_generation_fixtures import (
             SyntheticRenderer,
             audio_samples,
         )
         from vntts.authoring.bulk_generation import (
-            generation_failure_repair_plan,
             load_generation_state,
             publish_generated_manifest,
             run_bulk_generation,
@@ -2034,7 +2143,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(source_state_after, source_state_before)
 
     def test_bounded_seed_repair_carries_provider_attempts_and_stops_at_three(self):
-        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
             publish_generated_manifest,
@@ -2196,7 +2305,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
 
     def test_bounded_successor_preserves_prior_sentence_repair_strategy(self):
-        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
             publish_generated_manifest,
@@ -2293,69 +2402,114 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             ["sentence_boundary_segmentation"],
         )
 
-    def test_outcome_merge_copies_only_exact_reviewed_repair_and_is_idempotent(self):
-        from tests.test_authoring_bulk_generation import SyntheticRenderer
+    def _create_outcome_merge_repair(self, root):
+        from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
-            load_generation_state,
             run_bulk_generation,
         )
         from vntts.synthesis import SynthesisCompletion
 
         text = "The first sentence is complete. The second sentence is also complete."
+        fixture, imported, source = create_carry_source_workspace(root, text=text)
+        queue_path = source.directory / "queue.jsonl"
+        source_state_path = source.directory / "generated-audio/generation-state.json"
+        failed_renderer = SyntheticRenderer(
+            [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
+        )
+        failed_renderer.name = "moss-tts"
+        failed_renderer.model_name = "model with spaces"
+        run_bulk_generation(
+            queue_path,
+            source.directory / "generated-audio",
+            failed_renderer,
+            provider="moss-tts",
+            model="model with spaces",
+            generation_profile="stable",
+            retries=0,
+            seed=0,
+            include_queue_ids=(fixture["queue_id"],),
+            regenerate_existing=True,
+        )
+        source_state_before = source_state_path.read_bytes()
+        policy = FailureRepairPolicy(sentence_segment_queue_ids=(fixture["queue_id"],))
+        repaired = create_resume_workspace(
+            imported,
+            root / "repairs",
+            story_index=fixture["job"]["story_index"],
+            voice_manifest=fixture["job"]["voice_manifest"],
+            backend="moss-tts",
+            model="model with spaces",
+            generation_profile="stable",
+            narrator_character="Rhiannon",
+            failure_repair_policy=policy,
+            carry_forward_from=source.directory,
+        )
+        success_renderer = SyntheticRenderer(diagnostics_backend="moss-tts")
+        success_renderer.name = "moss-tts"
+        success_renderer.model_name = "model with spaces"
+        run_bulk_generation(
+            repaired.directory / "queue.jsonl",
+            repaired.directory / "generated-audio",
+            success_renderer,
+            provider="moss-tts",
+            model="model with spaces",
+            generation_profile="stable",
+            retries=0,
+            seed=0,
+            include_queue_ids=(fixture["queue_id"],),
+            failure_repair_policy=policy,
+        )
+        return fixture, source, repaired, source_state_before
+
+    def test_outcome_merge_final_read_error_preserves_sources_and_cleans_up(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            fixture, imported, source = create_carry_source_workspace(root, text=text)
-            queue_path = source.directory / "queue.jsonl"
+            fixture, source, repaired, _ = self._create_outcome_merge_repair(root)
+            review_workspace_item(repaired.directory, fixture["queue_id"], "approved")
+            sources_before = (
+                tree_hashes(source.directory),
+                tree_hashes(repaired.directory),
+            )
+            publisher = workspace_outcome_merge_module._publish_staged_outcome_merge
+            failure = PermissionError("outcome merge authority is unreadable")
+
+            def fail_final_hash(*args, **kwargs):
+                with patch.object(
+                    workspace_outcome_merge_module, "sha256_file", side_effect=failure
+                ):
+                    return publisher(*args, **kwargs)
+
+            with (
+                patch.object(
+                    workspace_outcome_merge_module,
+                    "_publish_staged_outcome_merge",
+                    side_effect=fail_final_hash,
+                ),
+                self.assertRaisesRegex(
+                    AuthoringWorkbenchError, "outcome merge authority is unreadable"
+                ) as caught,
+            ):
+                merge_workspace_outcomes(
+                    source.directory, (repaired.directory,), root / "merged"
+                )
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertEqual(
+                (tree_hashes(source.directory), tree_hashes(repaired.directory)),
+                sources_before,
+            )
+            self.assertEqual(list((root / "merged").iterdir()), [])
+            self.assertFalse(list(root.rglob(".generation-lease.json")))
+
+    def test_outcome_merge_copies_only_exact_reviewed_repair_and_is_idempotent(self):
+        from vntts.authoring.bulk_generation import load_generation_state
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, source, repaired, source_state_before = (
+                self._create_outcome_merge_repair(root)
+            )
             source_state_path = (
                 source.directory / "generated-audio/generation-state.json"
-            )
-            failed_renderer = SyntheticRenderer(
-                [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
-            )
-            failed_renderer.name = "moss-tts"
-            failed_renderer.model_name = "model with spaces"
-            run_bulk_generation(
-                queue_path,
-                source.directory / "generated-audio",
-                failed_renderer,
-                provider="moss-tts",
-                model="model with spaces",
-                generation_profile="stable",
-                retries=0,
-                seed=0,
-                include_queue_ids=(fixture["queue_id"],),
-                regenerate_existing=True,
-            )
-            source_state_before = source_state_path.read_bytes()
-            policy = FailureRepairPolicy(
-                sentence_segment_queue_ids=(fixture["queue_id"],)
-            )
-            repaired = create_resume_workspace(
-                imported,
-                root / "repairs",
-                story_index=fixture["job"]["story_index"],
-                voice_manifest=fixture["job"]["voice_manifest"],
-                backend="moss-tts",
-                model="model with spaces",
-                generation_profile="stable",
-                narrator_character="Rhiannon",
-                failure_repair_policy=policy,
-                carry_forward_from=source.directory,
-            )
-            success_renderer = SyntheticRenderer(diagnostics_backend="moss-tts")
-            success_renderer.name = "moss-tts"
-            success_renderer.model_name = "model with spaces"
-            run_bulk_generation(
-                repaired.directory / "queue.jsonl",
-                repaired.directory / "generated-audio",
-                success_renderer,
-                provider="moss-tts",
-                model="model with spaces",
-                generation_profile="stable",
-                retries=0,
-                seed=0,
-                include_queue_ids=(fixture["queue_id"],),
-                failure_repair_policy=policy,
             )
             with self.assertRaisesRegex(
                 AuthoringWorkbenchError, "no reviewed repair outcomes"
@@ -2368,7 +2522,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 repaired.directory / "generated-audio/generation-state.json"
             )
             repair_state_before = repair_state_path.read_bytes()
-
             merged = merge_workspace_outcomes(
                 source.directory, (repaired.directory,), root / "merged"
             )
@@ -2479,7 +2632,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 )
 
     def test_outcome_merge_accepts_direct_reviewed_bounded_seed_repair(self):
-        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
             publish_generated_manifest,
@@ -2566,7 +2719,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual([request.seed for request in success.requests], [1])
 
     def test_reconciliation_merges_only_its_exact_terminal_source(self):
-        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
             run_bulk_generation,
@@ -2728,7 +2881,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 np.sin(np.linspace(0, 6 * np.pi, 6_000, dtype=np.float32)) * 0.2,
                 16_000,
             )
-            item.update(self._current_carry_fields(source.directory, queue_item, audio))
+            item.update(current_carry_fields(source.directory, queue_item, audio))
             source_state["active"] = None
             source_state_path.write_text(
                 json.dumps(source_state, sort_keys=True), encoding="utf-8"
@@ -2787,7 +2940,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 16_000,
             )
             item.update(
-                self._current_carry_fields(
+                current_carry_fields(
                     source.directory,
                     queue_item,
                     audio,
@@ -2832,7 +2985,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             ).items[0]
             item = state["items"][fixture["queue_id"]]
             audio = source.directory / "generated-audio" / item["path"]
-            item.update(self._current_carry_fields(source.directory, queue_item, audio))
+            item.update(current_carry_fields(source.directory, queue_item, audio))
             state["active"] = None
             state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
             target_manifest = write_carry_target_manifest(
@@ -2923,38 +3076,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
         self.assertEqual(remaining, [source.directory.resolve()])
 
-    def _current_carry_fields(
-        self, workspace_directory, queue_item, audio, *, voice_character="Rhiannon"
-    ):
-        workspace = json.loads(
-            (workspace_directory / "workspace.json").read_text(encoding="utf-8")
-        )
-        return {
-            "status": "approved",
-            "review_status": "approved",
-            "file_sha256": sha256_file(audio),
-            "provider": "moss-tts",
-            "model": "model with spaces",
-            "prompt_sha256": bulk_generation_module.NO_PROMPT_SHA256,
-            "prompt_applied": False,
-            "queue_annotations_sha256": bulk_generation_module._canonical_sha256(
-                queue_item.document.get("prompt_adapters") or {}
-            ),
-            "synthesis_text_sha256": hashlib.sha256(
-                queue_item.text.encode("utf-8")
-            ).hexdigest(),
-            "text_transform": "short-trailing-ellipsis-v1",
-            "synthesis_provenance_sha256": workspace_creation_module._workspace_generation_provenance(
-                workspace_directory, workspace
-            ),
-            "generation_profile": "stable",
-            "voice_character": voice_character,
-            "quality": asdict(bulk_generation_module.inspect_generated_wav(audio)),
-            "speech_quality": asdict(
-                bulk_generation_module.inspect_generated_speech(audio)
-            ),
-        }
-
     def test_idempotent_reopen_rejects_changed_voice_snapshot_bytes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2973,6 +3094,126 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     generation_profile="stable",
                     narrator_character="Rhiannon",
                 )
+
+    def test_resume_final_input_rechecks_translate_io_errors_and_clean_up(self):
+        for verifier_name, failing_hash in (
+            ("_verify_import_sources", 1),
+            ("_verify_import_sources", 2),
+            ("_verify_selected_sources", 1),
+        ):
+            with (
+                self.subTest(verifier=verifier_name, failing_hash=failing_hash),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                fixture, imported, _created = self.create_workspace(root)
+                before = tree_hashes(root)
+                verifier = getattr(workspace_creation_module, verifier_name)
+                hash_name = (
+                    "file_sha256"
+                    if verifier_name == "_verify_selected_sources"
+                    else "sha256_file"
+                )
+                original_hash = getattr(workspace_creation_module, hash_name)
+                failure = PermissionError("final input is unreadable")
+                hash_calls = 0
+
+                def fail_hash(path, **kwargs):
+                    nonlocal hash_calls
+                    hash_calls += 1
+                    if hash_calls == failing_hash:
+                        raise failure
+                    return original_hash(path, **kwargs)
+
+                def fail_final_hash(*args, **kwargs):
+                    with patch.object(
+                        workspace_creation_module, hash_name, side_effect=fail_hash
+                    ):
+                        return verifier(*args, **kwargs)
+
+                with (
+                    patch.object(
+                        workspace_creation_module,
+                        verifier_name,
+                        side_effect=fail_final_hash,
+                    ),
+                    self.assertRaisesRegex(
+                        AuthoringWorkbenchError, "final input is unreadable"
+                    ) as caught,
+                ):
+                    create_resume_workspace(
+                        imported,
+                        root / "successors",
+                        story_index=fixture["job"]["story_index"],
+                        voice_manifest=fixture["job"]["voice_manifest"],
+                        backend="moss-tts",
+                        model="model with spaces",
+                        generation_profile="stable",
+                        narrator_character="Rhiannon",
+                    )
+
+                self.assertIs(caught.exception.__cause__, failure)
+                self.assertEqual(tree_hashes(root), before)
+                self.assertEqual(list((root / "successors").iterdir()), [])
+                self.assertFalse(list(root.rglob(".generation-lease.json")))
+
+    def test_carry_forward_final_rechecks_translate_io_errors_and_clean_up(self):
+        for authority in ("state", "wav"):
+            with self.subTest(authority=authority), TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture, imported, source = create_carry_source_workspace(root)
+                review_workspace_item(source.directory, fixture["queue_id"], "approved")
+                target_manifest = write_carry_target_manifest(root)
+                before = tree_hashes(root)
+                publisher = workspace_creation_module._publish_carry_forward_staging
+                original_hash = workspace_creation_module.file_sha256
+                failure = PermissionError("carry-forward authority is unreadable")
+
+                def fail_final_hash(target_state_path, target_state, source, snapshots):
+                    snapshots = tuple(snapshots)
+                    failed_path = (
+                        source.state_path if authority == "state" else snapshots[0][0]
+                    )
+
+                    def fail_hash(path, **kwargs):
+                        if path == failed_path:
+                            raise failure
+                        return original_hash(path, **kwargs)
+
+                    with patch.object(
+                        workspace_creation_module, "file_sha256", side_effect=fail_hash
+                    ):
+                        return publisher(
+                            target_state_path, target_state, source, snapshots
+                        )
+
+                with (
+                    patch.object(
+                        workspace_creation_module,
+                        "_publish_carry_forward_staging",
+                        side_effect=fail_final_hash,
+                    ),
+                    self.assertRaisesRegex(
+                        AuthoringWorkbenchError, "carry-forward authority is unreadable"
+                    ) as caught,
+                ):
+                    create_resume_workspace(
+                        imported,
+                        root / "successors",
+                        story_index=fixture["job"]["story_index"],
+                        voice_manifest=target_manifest,
+                        backend="moss-tts",
+                        model="model with spaces",
+                        generation_profile="stable",
+                        narrator_character="Paper Heron",
+                        carry_forward_from=source.directory,
+                        carry_forward_characters=("Rhiannon",),
+                    )
+
+                self.assertIs(caught.exception.__cause__, failure)
+                self.assertEqual(tree_hashes(root), before)
+                self.assertEqual(list((root / "successors").iterdir()), [])
+                self.assertFalse(list(root.rglob(".generation-lease.json")))
 
     def test_import_manifest_mutation_during_creation_aborts_without_workspace(self):
         with TemporaryDirectory() as directory:
@@ -3121,6 +3362,27 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 create_resume_workspace(imported, root / "workspaces")
 
             self.assertFalse((root / "escaped").exists())
+
+    def test_import_discovery_reflects_creation_removal_and_manifest_changes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            import_root = root / "imports"
+            self.assertEqual(discover_imports(import_root), ())
+            fixture = write_legacy_fixture(root / "legacy")
+            imported = import_legacy_job(
+                fixture["job_directory"], import_root
+            ).destination
+            self.assertEqual(discover_imports(import_root), (imported,))
+            manifest_path = imported / "import.json"
+            original = manifest_path.read_bytes()
+            manifest = json.loads(original)
+            manifest["schema"] = "invalid"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertEqual(discover_imports(import_root), ())
+            manifest_path.write_bytes(original)
+            self.assertEqual(discover_imports(import_root), (imported,))
+            shutil.rmtree(imported)
+            self.assertEqual(discover_imports(import_root), ())
 
     def test_discovery_rejects_symlinked_imports_and_workspaces(self):
         with TemporaryDirectory() as directory:
@@ -3306,6 +3568,126 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertIsInstance(items[0].technical_flags, tuple)
         self.assertEqual(source_hash_after, source_hash)
 
+    def test_review_projection_rejects_unencodable_result_extensions_without_mutation(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+            state_path = created.directory / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            queue_id = next(iter(state["items"]))
+            result = state["items"][queue_id]
+            for status in ("generated", "approved"):
+                for extension in (
+                    json.loads(r'{"nested": ["\ud800"]}'),
+                    json.loads(r'{"\ud800": "label"}'),
+                ):
+                    with self.subTest(status=status, extension=extension):
+                        result["status"] = status
+                        result["review_status"] = (
+                            "pending_review" if status == "generated" else "approved"
+                        )
+                        result["provider_extension"] = extension
+                        state_path.write_text(json.dumps(state), encoding="utf-8")
+                        self.assertIn(b"\\ud800", state_path.read_bytes())
+                        before = tree_hashes(root)
+                        for read in (
+                            list_review_items,
+                            workspace_inspection_module.load_workbench_projection_data,
+                        ):
+                            with (
+                                self.subTest(read=read.__name__),
+                                self.assertRaisesRegex(
+                                    AuthoringWorkbenchError,
+                                    f"Review outcome authority is invalid: {queue_id}",
+                                ) as caught,
+                            ):
+                                read(created.directory)
+                            self.assertIsInstance(
+                                caught.exception.__cause__, UnicodeEncodeError
+                            )
+                            self.assertEqual(tree_hashes(root), before)
+
+    def test_review_projection_keeps_full_unicode_result_authority_hash(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+            state_path = created.directory / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            queue_id = next(iter(state["items"]))
+            result = state["items"][queue_id]
+            result["provider_extension"] = {"nested": ["证据 🦉", float("nan")]}
+            for status in ("generated", "approved"):
+                with self.subTest(status=status):
+                    result["status"] = status
+                    result["review_status"] = (
+                        "pending_review" if status == "generated" else "approved"
+                    )
+                    state_path.write_text(json.dumps(state), encoding="utf-8")
+                    expected = hashlib.sha256(
+                        json.dumps(
+                            result,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    before = tree_hashes(root)
+                    item = list_review_items(created.directory)[0]
+                    self.assertEqual(item.authority.item_sha256, expected)
+                    projection = (
+                        workspace_inspection_module.load_workbench_projection_data(
+                            created.directory
+                        )
+                    )
+                    self.assertEqual(
+                        projection.reviews[0].authority.item_sha256, expected
+                    )
+                    self.assertEqual(tree_hashes(root), before)
+
+    def test_failed_review_ignores_invalid_optional_metrics_without_rewriting_state(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            workspace, queue_id = create_failed_reference_workspace(Path(directory))
+            state_path = workspace / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            result = state["items"][queue_id]
+            for value in (10**400, True, -1, None):
+                with self.subTest(value=value):
+                    result["quality"] = {"duration_seconds": value, "peak": value}
+                    result["speech_quality"] = {
+                        "leading_silence_seconds": value,
+                        "trailing_silence_seconds": value,
+                        "longest_internal_silence_seconds": value,
+                    }
+                    result["failure"]["speech_quality"] = result["speech_quality"]
+                    state_path.write_text(json.dumps(state), encoding="utf-8")
+                    before = state_path.read_bytes()
+                    reviewed = list_review_items(workspace)[0]
+                    self.assertEqual(reviewed.queue_id, queue_id)
+                    self.assertIsNone(reviewed.duration_seconds)
+                    self.assertIsNone(reviewed.words_per_minute)
+                    self.assertIsNone(reviewed.internal_pause_seconds)
+                    self.assertEqual(reviewed.technical_flags, ())
+                    self.assertEqual(reviewed.peak, -1.0 if value == -1 else None)
+                    self.assertEqual(state_path.read_bytes(), before)
+
+            result["quality"] = {"duration_seconds": 5e-324, "peak": -0.2}
+            result["speech_quality"] = {
+                "leading_silence_seconds": 0,
+                "trailing_silence_seconds": 0,
+                "longest_internal_silence_seconds": 0,
+            }
+            result["failure"]["speech_quality"] = result["speech_quality"]
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            reviewed = list_review_items(workspace)[0]
+            self.assertEqual(reviewed.duration_seconds, 5e-324)
+            self.assertIsNone(reviewed.words_per_minute)
+            self.assertEqual(reviewed.peak, -0.2)
+            self.assertEqual(reviewed.internal_pause_seconds, 0)
+
     def test_review_technical_metrics_are_conservative_attention_aids(self):
         result = {
             "quality": {"duration_seconds": 6.0, "peak": 0.99},
@@ -3421,6 +3803,22 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(annotated["medium-a"].pace_advisories, ())
         self.assertIsNone(annotated["too-short"].pace_baseline_wpm)
         self.assertEqual(annotated["too-short"].pace_advisories, ())
+        for rates, expected_baseline in (
+            ((1e308,) * 4, None),
+            ((3e-306, 3e-306, 1e308), 3e-306),
+        ):
+            with self.subTest(rates=rates):
+                measured = tuple(
+                    review(str(index), "Rhiannon", "one two three four five", rate)
+                    for index, rate in enumerate(rates)
+                )
+                projected = workspace_inspection_module._annotate_pace_advisories(
+                    measured
+                )
+                self.assertEqual(projected[-1].words_per_minute, 1e308)
+                self.assertEqual(projected[-1].pace_baseline_wpm, expected_baseline)
+                self.assertIsNone(projected[-1].pace_ratio)
+                self.assertEqual(projected[-1].pace_advisories, ())
         long_pause_failure = {
             "failure": {
                 "schema_version": 1,
@@ -3555,11 +3953,16 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             wav = Path(directory) / "legacy.wav"
             write_pcm16_wav(wav, np.zeros(1_600, dtype=np.float32), 16_000)
 
+            digest = sha256_file(wav)
+            workspace_inspection_module._corrected_legacy_speech_quality(
+                str(wav), digest
+            )
+            write_pcm16_wav(wav, np.zeros(3_200, dtype=np.float32), 16_000)
             with self.assertRaisesRegex(
                 AuthoringWorkbenchError, "Generated WAV changed"
             ):
                 workspace_inspection_module._corrected_legacy_speech_quality(
-                    str(wav), "0" * 64
+                    str(wav), digest
                 )
 
     def test_review_decision_is_compare_and_swap_bound_to_displayed_state_and_wav(self):
@@ -3603,25 +4006,25 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
             displayed = list_review_items(created.directory)[0]
 
-            read_bytes = Path.read_bytes
+            original_open = open
             wav_reads = []
 
-            def track_audio_reads(path):
+            def track_audio_reads(path, *args, **kwargs):
                 if path.suffix == ".wav":
                     wav_reads.append(path)
-                return read_bytes(path)
+                return original_open(path, *args, **kwargs)
 
             with (
-                patch.object(
-                    Path, "read_bytes", autospec=True, side_effect=track_audio_reads
+                patch(
+                    "vntts.path_safety.open", side_effect=track_audio_reads, create=True
                 ),
                 patch.object(
-                    bulk_generation_module,
+                    review_module,
                     "load_generation_state",
                     side_effect=AssertionError("full state scan is forbidden"),
                 ),
                 patch.object(
-                    bulk_generation_module,
+                    review_module,
                     "_validate_success_file",
                     side_effect=AssertionError("unrelated WAV scan is forbidden"),
                 ),
@@ -3668,6 +4071,58 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
             self.assertEqual(state_path.read_bytes(), state_before)
             self.assertEqual(manifest.read_bytes(), manifest_before)
+
+    def test_runtime_malformed_pid_blocks_without_inspection_or_record_changes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+            output = created.directory / "generated-audio"
+            state = json.loads((output / "generation-state.json").read_bytes())
+            lease_path = output / ".generation-lease.json"
+            lease = {
+                "schema": "vntts.authoring-generation-lease",
+                "schema_version": 1,
+                "queue_sha256": state["queue_sha256"],
+                "hostname": None,
+                "process_started_at": "recorded-start",
+                "lease_id": "owner",
+            }
+            for pid in (True, False, 0, -1, 42.0, "42", None, 0x100000000, 10**100):
+                lease["pid"] = pid
+                lease_path.write_bytes(json.dumps(lease, indent=2).encode() + b"\n")
+                before = tree_hashes(created.directory)
+                checker, started = Mock(return_value=False), Mock(return_value=None)
+                with self.subTest(pid=pid):
+                    summary = inspect_workspace(
+                        created.directory,
+                        process_checker=checker,
+                        process_start_checker=started,
+                    )
+                    self.assertEqual(
+                        summary.runtime_status, AuthoringRuntimeStatus.BLOCKED
+                    )
+                    checker.assert_not_called()
+                    started.assert_not_called()
+                    self.assertEqual(tree_hashes(created.directory), before)
+
+            lease["pid"] = 0xFFFFFFFF
+            lease["hostname"] = (
+                "foreign-" + workspace_inspection_module.socket.gethostname()
+            )
+            lease_path.write_bytes(json.dumps(lease, indent=2).encode() + b"\n")
+            before = tree_hashes(created.directory)
+            with patch("sys.platform", "darwin"):
+                summary = inspect_workspace(
+                    created.directory,
+                    process_checker=checker,
+                    process_start_checker=started,
+                )
+            self.assertEqual(
+                summary.runtime_status, AuthoringRuntimeStatus.RUNNING_EXTERNAL
+            )
+            checker.assert_not_called()
+            started.assert_not_called()
+            self.assertEqual(tree_hashes(created.directory), before)
 
     def test_runtime_distinguishes_local_external_pid_reuse_and_interruption(self):
         with TemporaryDirectory() as directory:
@@ -3977,7 +4432,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 for item in list_review_items(created.directory)
                 if item.queue_id == rhiannon.queue_id
             )
-            from tests.test_authoring_bulk_generation import SyntheticRenderer
+            from tests.bulk_generation_fixtures import SyntheticRenderer
             from vntts.authoring.bulk_generation import (
                 load_generation_state,
                 run_bulk_generation,

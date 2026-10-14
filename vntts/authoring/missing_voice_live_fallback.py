@@ -10,12 +10,12 @@ import secrets
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import TypedDict
 
+from durable_file import atomic_write_json
 from vntts_artifacts import VoiceGenerationQueueItem
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
@@ -47,6 +47,9 @@ from vntts.authoring.missing_voice_reuse_binding import (
 )
 from vntts.authoring.workbench import inspect_workspace
 from vntts.authoring.workspace_foundation import load_json_object
+from vntts.document_identity import file_sha256
+from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import read_regular_bytes
 from vntts.voices import synthesis_character_for_line
 
 AUTOMATIC_UNRESOLVED_ORIGIN = "automatic_no_complete_candidate"
@@ -84,6 +87,9 @@ class MissingVoiceLiveFallbackResult:
         return {**asdict(self), "workspace": str(self.workspace)}
 
 
+_file_sha256 = partial(file_sha256, error_type=MissingVoiceLiveFallbackError)
+
+
 def authorize_missing_voice_live_fallback(
     workspace: str | Path,
     authority_directory: str | Path,
@@ -100,7 +106,7 @@ def authorize_missing_voice_live_fallback(
     workspace_path = workspace / "workspace.json"
     inspect_workspace(workspace)
     workspace_document = _read_json(workspace_path, "workspace")
-    workspace_sha256 = sha256_file(workspace_path)
+    workspace_sha256 = _file_sha256(workspace_path)
     narrator_character = _required_text(
         workspace_document.get("narrator_character"), "Configured narrator character"
     )
@@ -108,7 +114,7 @@ def authorize_missing_voice_live_fallback(
     queue_by_id: dict[str, VoiceGenerationQueueItem] = {
         item.queue_id: item for item in queue.items
     }
-    state_payload = state_path.read_bytes()
+    state_payload = read_regular_bytes(state_path)
     state_sha256 = hashlib.sha256(state_payload).hexdigest()
     state = _decode_state(state_payload)
     validate_generation_state_document(state, state_path.parent, queue, queue_sha256)
@@ -293,20 +299,20 @@ def authorize_missing_voice_live_fallback(
                 staged_manifest,
                 entries=entries,
             )
-            if sha256_file(queue_path) != queue_sha256:
+            if _file_sha256(queue_path) != queue_sha256:
                 raise BulkGenerationSourceChangedError(
                     "Generation queue changed before missing-voice fallback commit"
                 )
-            if sha256_file(state_path) != state_sha256:
+            if _file_sha256(state_path) != state_sha256:
                 raise BulkGenerationSourceChangedError(
                     "Generation state changed before missing-voice fallback commit"
                 )
             for path, digest in authority["snapshots"]:
-                if not path.is_file() or sha256_file(path) != digest:
+                if not path.is_file() or _file_sha256(path) != digest:
                     raise BulkGenerationSourceChangedError(
                         "Missing-voice fallback authority changed before commit"
                     )
-            if sha256_file(workspace_path) != workspace_sha256:
+            if _file_sha256(workspace_path) != workspace_sha256:
                 raise BulkGenerationSourceChangedError(
                     "Workspace changed before missing-voice fallback commit"
                 )
@@ -341,7 +347,7 @@ def authorize_missing_voice_live_fallback(
         batch_id,
         authority_decision_id,
         state_sha256,
-        sha256_file(state_path),
+        _file_sha256(state_path),
         applied=True,
         created=True,
     )
@@ -367,7 +373,7 @@ def _load_authority(directory: Path) -> MissingVoiceAuthority:
     if (
         set(decision) != expected_fields
         or decision.get("schema") != MISSING_VOICE_REUSE_DECISION_SCHEMA
-        or decision.get("schema_version") != 1
+        or not has_schema_version(decision, 1)
         or decision.get("decision_id")
         != canonical_document_sha256(
             {key: value for key, value in decision.items() if key != "decision_id"}
@@ -388,7 +394,7 @@ def _load_authority(directory: Path) -> MissingVoiceAuthority:
         .expanduser()
         .resolve()
     )
-    if not plan_path.is_file() or sha256_file(plan_path) != _text_field(
+    if not plan_path.is_file() or _file_sha256(plan_path) != _text_field(
         decision, "plan_sha256", "Missing-voice fallback plan checksum"
     ):
         raise MissingVoiceLiveFallbackError(
@@ -398,7 +404,7 @@ def _load_authority(directory: Path) -> MissingVoiceAuthority:
     if (
         not session_path.is_file()
         or not isinstance(binding, dict)
-        or sha256_file(session_path) != binding.get("review_session_sha256")
+        or _file_sha256(session_path) != binding.get("review_session_sha256")
     ):
         raise MissingVoiceLiveFallbackError(
             "Missing-voice fallback review session authority changed"
@@ -424,12 +430,12 @@ def _load_authority(directory: Path) -> MissingVoiceAuthority:
                 ),
             )
         )
-    snapshots.append((bundle_path, sha256_file(bundle_path)))
+    snapshots.append((bundle_path, _file_sha256(bundle_path)))
     return {
         "decision": decision,
-        "decision_sha256": sha256_file(decision_path),
+        "decision_sha256": _file_sha256(decision_path),
         "bundle": bundle,
-        "bundle_sha256": sha256_file(bundle_path),
+        "bundle_sha256": _file_sha256(bundle_path),
         "plan": plan,
         "snapshots": tuple(snapshots),
     }
@@ -621,7 +627,7 @@ def _existing_batch_id(
 
 def _decode_state(payload: bytes) -> dict[str, object]:
     try:
-        value = json.loads(payload.decode("utf-8"))
+        value = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise MissingVoiceLiveFallbackError(str(error)) from error
     if not isinstance(value, dict):

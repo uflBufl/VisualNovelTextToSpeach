@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections import deque
 from pathlib import Path
 from typing import Callable, Literal, TypeAlias, TypedDict
 
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.missing_voice_reuse_review import (
     AUTOMATIC_UNRESOLVED_ORIGIN,
+    HeardRecord,
     MissingVoiceReuseReviewError,
     load_missing_voice_reuse_review,
     missing_voice_reuse_review_progress,
@@ -120,12 +122,6 @@ class ReviewDecision(TypedDict):
     cohort_id: str
     decision: str | None
     decision_origin: str | None
-
-
-class HeardRecord(TypedDict):
-    cohort_id: str
-    queue_id: str
-    label: str
 
 
 class ReviewSession(TypedDict):
@@ -414,7 +410,7 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
         self.heard_runner.finished.connect(self._heard_saved)
         self.decision_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.decision_runner.finished.connect(self._decision_saved)
-        self._pending_heard: list[HeardKey] = []
+        self._pending_heard: deque[HeardKey] = deque()
         self._saving_heard: HeardKey | None = None
         self._playing_key: HeardKey | None = None
         self._cohort: ReviewCohort | None = None
@@ -938,7 +934,7 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
     def _start_next_heard_save(self) -> None:
         if self.heard_runner.active or not self._pending_heard:
             return
-        self._saving_heard = self._pending_heard.pop(0)
+        self._saving_heard = self._pending_heard.popleft()
         self.status.setText(
             "Saving heard evidence in background. Playback and replay remain available."
         )
@@ -963,9 +959,9 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
             except Exception as refresh_error:
                 self.status.setText(f"HEARD SAVED, REFRESH FAILED: {refresh_error}")
         if saved is not None and error is not None:
-            self._pending_heard = [
+            self._pending_heard = deque(
                 value for value in self._pending_heard if value != saved
-            ]
+            )
         self._start_next_heard_save()
         self._refresh_sample()
         if (

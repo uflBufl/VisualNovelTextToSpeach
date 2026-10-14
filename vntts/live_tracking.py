@@ -2,12 +2,29 @@
 
 import os
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from hashlib import sha256
 from time import monotonic
 from unicodedata import normalize
+
+
+def _punctuation_boundaries(text: str, punctuation: str) -> Iterator[int]:
+    for position, character in enumerate(text):
+        following = position + 1
+        if character in punctuation and (
+            following == len(text) or text[following].isspace()
+        ):
+            yield following
+
+
+def _related_ocr_text(previous: str, text: str, prefix_length: int) -> bool:
+    meaningful_prefix = min(8, max(1, len(previous) // 3))
+    return (
+        prefix_length >= meaningful_prefix
+        or SequenceMatcher(None, previous, text).ratio() >= 0.5
+    )
 
 
 @dataclass(frozen=True)
@@ -178,8 +195,6 @@ class IncrementalDialogTracker:
         self._start_dialog(character, text, now)
         self.committed_text = text
         self.stable_text = text
-        self.history.clear()
-        self.history.extend([text] * self.stability_frames)
         self.next_chunk_ordinal = 2
         self.canonical_line_id = line_id
         return [
@@ -230,13 +245,10 @@ class IncrementalDialogTracker:
         if text == self.latest_text or text.startswith(self.latest_text):
             return False
 
-        common_prefix = os.path.commonprefix([self.latest_text, text])
-        if len(text) < self.committed_position and len(common_prefix) < len(text):
+        prefix_length = len(os.path.commonprefix([self.latest_text, text]))
+        if len(text) < self.committed_position and prefix_length < len(text):
             return True
-
-        similarity = SequenceMatcher(None, self.latest_text, text).ratio()
-        meaningful_prefix = min(8, max(1, len(self.latest_text) // 3))
-        return len(common_prefix) < meaningful_prefix and similarity < 0.5
+        return not _related_ocr_text(self.latest_text, text, prefix_length)
 
     def _is_speaker_noise_over_committed_text(self, character: str, text: str) -> bool:
         """Ignore a speaker wobble that still contains the spoken dialogue.
@@ -271,8 +283,6 @@ class IncrementalDialogTracker:
         self.history.extend(candidate_history)
         stable_text = os.path.commonprefix(candidate_history)
         self.stable_text = stable_text
-        self.last_stable_change_at = now
-        self._clear_pending_dialog()
         return self._emit(stable_text, flush=False)
 
     def _matches_pending_dialog(self, character: str, text: str) -> bool:
@@ -281,10 +291,9 @@ class IncrementalDialogTracker:
         previous = self.pending_history[-1]
         if text == previous or text.startswith(previous) or previous.startswith(text):
             return True
-        common_prefix = os.path.commonprefix([previous, text])
-        meaningful_prefix = min(8, max(1, len(previous) // 3))
-        similarity = SequenceMatcher(None, previous, text).ratio()
-        return len(common_prefix) >= meaningful_prefix or similarity >= 0.5
+        return _related_ocr_text(
+            previous, text, len(os.path.commonprefix([previous, text]))
+        )
 
     def _clear_pending_dialog(self) -> None:
         self.pending_character = None
@@ -299,21 +308,12 @@ class IncrementalDialogTracker:
         )
 
     def _start_dialog(self, character: str, text: str, now: float) -> None:
-        self.generation += 1
+        self._clear_dialog()
         self.character = character
         self.latest_text = text
-        self.committed_text = ""
-        self.conflicting_observation = False
-        self.transition_expected = False
         self.last_change_at = now
-        self.stable_text = ""
         self.last_stable_change_at = now
-        self.history.clear()
         self.history.append(text)
-        self.next_chunk_ordinal = 1
-        self.silent_event_id = None
-        self.canonical_line_id = None
-        self._clear_pending_dialog()
 
     def _clear_dialog(self) -> None:
         self.generation += 1
@@ -376,12 +376,7 @@ class IncrementalDialogTracker:
     def _split_sentences(text: str) -> list[str]:
         sentences = []
         start = 0
-        for position, character in enumerate(text):
-            if character not in ".!?":
-                continue
-            next_position = position + 1
-            if next_position != len(text) and not text[next_position].isspace():
-                continue
+        for next_position in _punctuation_boundaries(text, ".!?"):
             sentence = text[start:next_position].strip()
             if sentence:
                 sentences.append(sentence)
@@ -410,11 +405,4 @@ class IncrementalDialogTracker:
 
     @staticmethod
     def _last_punctuation_boundary(text: str, punctuation: str) -> int:
-        boundary = 0
-        for position, character in enumerate(text):
-            if character not in punctuation:
-                continue
-            next_position = position + 1
-            if next_position == len(text) or text[next_position].isspace():
-                boundary = next_position
-        return boundary
+        return max(_punctuation_boundaries(text, punctuation), default=0)

@@ -1,6 +1,7 @@
 import os
 import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -8,7 +9,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt, QTimer  # noqa: E402
+from PySide6.QtCore import Qt, QThreadPool, QTimer  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -20,12 +21,14 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
+from vntts.asset_integrity import ModelIntegrityError  # noqa: E402
 from vntts.asset_ui import (  # noqa: E402
     AssetManagerDialog,
     VoiceImportDialog,
     default_model,
 )
-from vntts.assets import ModelDownloadCancelled  # noqa: E402
+from vntts.model_assets import ModelDownloadCancelled  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 
 
@@ -77,6 +80,46 @@ class AssetManagerDialogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def _owned_pool(self) -> QThreadPool:
+        pool = QThreadPool()
+        self.addCleanup(lambda: self.assertTrue(pool.waitForDone(3000)))
+        return pool
+
+    def test_failed_assertions_release_and_drain_asset_workers(self):
+        for method in (
+            "test_download_cancellation_waits_for_the_cooperative_worker",
+            "test_voice_pack_import_is_nonblocking_and_close_safe",
+            "test_save_waits_for_exact_manifest_validation_then_accepts",
+        ):
+            with self.subTest(method=method):
+                case = AssetManagerDialogTest(method)
+                wait_for = case.wait_for
+                owned_pool = case._owned_pool
+                pools = []
+
+                def record_pool():
+                    pool = owned_pool()
+                    pools.append(pool)
+                    return pool
+
+                def fail_after_worker_starts(predicate, *args, **kwargs):
+                    wait_for(predicate, *args, **kwargs)
+                    raise AssertionError(
+                        "injected failure after asset worker acquisition"
+                    )
+
+                case._owned_pool = record_pool
+                case.wait_for = fail_after_worker_starts
+                result = unittest.TestResult()
+                case.run(result)
+
+                self.assertEqual(len(result.failures), 1)
+                self.assertIn("injected failure", result.failures[0][1])
+                self.assertEqual(result.errors, [])
+                self.assertEqual(len(pools), 1)
+                self.assertEqual(pools[0].activeThreadCount(), 0)
+                self.assertTrue(pools[0].waitForDone(0))
+
     def wait_for(self, predicate, timeout=3.0):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -111,6 +154,28 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.assertIn("Model ready", dialog.model_status.text())
         self.assertEqual(dialog.settings().tts_model, default_model)
 
+    def test_editable_model_path_handles_invalid_names_and_recovers(self):
+        model_manager = Mock()
+
+        def model_path(name):
+            if name == "..":
+                raise ModelIntegrityError("Invalid model directory")
+            return Path("managed") / name
+
+        model_manager.model_path.side_effect = model_path
+        dialog = AssetManagerDialog(
+            AppSettings(speech_backend="coqui-xtts", tts_model=".."),
+            model_manager=model_manager,
+            voice_manager=Mock(),
+        )
+        self.assertIn("Invalid model directory", dialog.model_path.text())
+        dialog.model.setCurrentText("")
+        self.assertIn("Choose a model", dialog.model_path.text())
+        dialog.model.setCurrentText("valid")
+        self.assertEqual(dialog.model_path.text(), str(Path("managed") / "valid"))
+        self.assertFalse(dialog.operation_running)
+        dialog.reject()
+
     def test_empty_model_selection_does_not_start_verification(self):
         model_manager = Mock()
         model_manager.model_path.return_value = Path("managed/model")
@@ -130,12 +195,6 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.assertFalse(dialog.model_runner.active)
 
     def test_model_verification_discards_stale_completion(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         pool = ManualThreadPool()
         model_manager = Mock()
@@ -188,6 +247,8 @@ class AssetManagerDialogTest(unittest.TestCase):
     def test_model_verification_can_finish_after_close_without_updating_ui(self):
         started = Event()
         release = Event()
+        pool = self._owned_pool()
+        self.addCleanup(release.set)
         model_manager = Mock()
         model_manager.model_path.return_value = Path("managed/model")
 
@@ -201,6 +262,7 @@ class AssetManagerDialogTest(unittest.TestCase):
             AppSettings(speech_backend="coqui-xtts"),
             model_manager=model_manager,
             voice_manager=Mock(),
+            thread_pool=pool,
         )
         dialog.verify_model()
         self.wait_for(started.is_set)
@@ -210,7 +272,8 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.assertTrue(close_event.isAccepted())
         self.assertFalse(dialog.model_runner.active)
         release.set()
-        self.wait_for(lambda: not dialog.model_runner.active)
+        self.assertTrue(pool.waitForDone(3000))
+        self.application.processEvents()
         self.assertEqual(dialog.model_status.text(), "Verifying model checksums...")
 
     def test_default_pocket_backend_offers_only_character_voice_assets(self):
@@ -306,6 +369,7 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.assertTrue(dialog.cancel_event.is_set())
 
     def test_download_cancellation_waits_for_the_cooperative_worker(self):
+        pool = self._owned_pool()
         started = Event()
         model_manager = Mock()
         model_manager.model_path.return_value = Path("managed/model")
@@ -321,7 +385,9 @@ class AssetManagerDialogTest(unittest.TestCase):
             AppSettings(speech_backend="coqui-xtts", xtts_terms_accepted=True),
             model_manager=model_manager,
             voice_manager=Mock(),
+            thread_pool=pool,
         )
+        self.addCleanup(dialog.cancel_download)
         dialog.download_model()
         self.wait_for(started.is_set)
         self.assertFalse(dialog.download_button.isEnabled())
@@ -342,8 +408,10 @@ class AssetManagerDialogTest(unittest.TestCase):
             source = root / "voices.json"
             source.write_text("{}", encoding="utf-8")
             manifest = root / "managed" / "manifest.json"
+            pool = self._owned_pool()
             started = Event()
             release = Event()
+            self.addCleanup(release.set)
             voice_manager = Mock()
 
             def import_pack(path):
@@ -359,6 +427,7 @@ class AssetManagerDialogTest(unittest.TestCase):
                 AppSettings(),
                 model_manager=model_manager,
                 voice_manager=voice_manager,
+                thread_pool=pool,
             )
             heartbeat = []
             QTimer.singleShot(0, lambda: heartbeat.append("painted"))
@@ -475,6 +544,62 @@ class AssetManagerDialogTest(unittest.TestCase):
             self.assertEqual(dialog.voice_manifest.selectedText(), str(manifest))
             self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
 
+    def test_save_rejects_initial_unavailable_manifest_and_recovers(self):
+        scenarios = ("missing",)
+        if hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"):
+            scenarios += ("fifo",)
+        for unavailable in scenarios:
+            with (
+                self.subTest(unavailable=unavailable),
+                TemporaryDirectory() as directory,
+            ):
+                manifest = Path(directory).resolve() / "manifest.json"
+                if unavailable == "fifo":
+                    os.mkfifo(manifest)
+                model_manager = Mock()
+                model_manager.model_path.return_value = Path("managed/model")
+                voice_manager = Mock()
+                voice_manager.validate.return_value = manifest
+                settings = AppSettings(voice_manifest=str(manifest))
+                pool = ManualThreadPool()
+                dialog = AssetManagerDialog(
+                    settings,
+                    model_manager=model_manager,
+                    voice_manager=voice_manager,
+                    thread_pool=pool,
+                )
+                native_path_open = Path.open
+
+                def reject_plain_open(path, *args, **kwargs):
+                    mode = args[0] if args else kwargs.get("mode", "r")
+                    if Path(path) == manifest and "b" in mode:
+                        self.fail("manifest hashing must not use blocking Path.open")
+                    return native_path_open(path, *args, **kwargs)
+
+                with patch.object(Path, "open", reject_plain_open):
+                    dialog.accept_settings()
+                    self.assertTrue(dialog.manifest_runner.active)
+                    self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                    self.assertIs(dialog.settings(), settings)
+                    pool.run_next()
+                self.assertIn("invalid", dialog.voice_status.text())
+                self.assertFalse(dialog.manifest_runner.active)
+                self.assertFalse(dialog._accept_after_manifest_validation)
+                self.assertIsNone(dialog._validated_manifest_identity)
+                self.assertIs(dialog.settings(), settings)
+                self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                voice_manager.validate.assert_not_called()
+
+                manifest.unlink(missing_ok=True)
+                manifest.write_text("{}", encoding="utf-8")
+                dialog.accept_settings()
+                self.assertTrue(dialog.manifest_runner.active)
+                self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                pool.run_next()
+                self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                self.assertEqual(dialog.settings().voice_manifest, str(manifest))
+                voice_manager.validate.assert_called_once_with(manifest.resolve())
+
     def test_selected_manifest_starts_unchecked_and_controls_scale_together(self):
         model_manager = Mock()
         model_manager.model_path.return_value = Path("managed/model")
@@ -543,6 +668,8 @@ class AssetManagerDialogTest(unittest.TestCase):
             second.write_text("{}", encoding="utf-8")
             started = Event()
             release = Event()
+            pool = self._owned_pool()
+            self.addCleanup(release.set)
             voice_manager = Mock()
 
             def validate(path):
@@ -559,6 +686,7 @@ class AssetManagerDialogTest(unittest.TestCase):
                 AppSettings(),
                 model_manager=model_manager,
                 voice_manager=voice_manager,
+                thread_pool=pool,
             )
             heartbeat = []
             dialog.voice_manifest.setText(str(first))
@@ -579,7 +707,8 @@ class AssetManagerDialogTest(unittest.TestCase):
             dialog.voice_manifest.setText(str(second))
             dialog.validate_voice_manifest()
             release.set()
-            self.wait_for(lambda: not dialog.manifest_runner.active)
+            self.assertTrue(pool.waitForDone(3000))
+            self.application.processEvents()
 
             self.assertEqual(
                 dialog._validated_manifest_identity,
@@ -592,8 +721,10 @@ class AssetManagerDialogTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             manifest = Path(directory) / "manifest.json"
             manifest.write_text("{}", encoding="utf-8")
+            pool = self._owned_pool()
             started = Event()
             release = Event()
+            self.addCleanup(release.set)
             voice_manager = Mock()
 
             def validate(path):
@@ -608,6 +739,7 @@ class AssetManagerDialogTest(unittest.TestCase):
                 AppSettings(voice_manifest=str(manifest)),
                 model_manager=model_manager,
                 voice_manager=voice_manager,
+                thread_pool=pool,
             )
 
             dialog.accept_settings()
@@ -617,6 +749,113 @@ class AssetManagerDialogTest(unittest.TestCase):
             self.wait_for(lambda: dialog.result() == QDialog.DialogCode.Accepted)
 
             self.assertEqual(dialog.settings().voice_manifest, str(manifest))
+
+    @contextmanager
+    def _manifest_fifo_swap(self, manifest, swap_at, expected_opens):
+        native_open, native_path_open = os.open, Path.open
+        descriptors = []
+        hash_opens = 0
+
+        def swap_and_open(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal hash_opens
+            if Path(path) == manifest:
+                hash_opens += 1
+                if hash_opens == swap_at:
+                    self.assertTrue(flags & os.O_NONBLOCK)
+                    manifest.unlink()
+                    os.mkfifo(manifest)
+            descriptor = native_open(path, flags, mode, dir_fd=dir_fd)
+            if Path(path) == manifest:
+                descriptors.append(descriptor)
+            return descriptor
+
+        def reject_plain_open(path, *args, **kwargs):
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if Path(path) == manifest and "b" in mode:
+                self.fail("manifest hashing must not use blocking Path.open")
+            return native_path_open(path, *args, **kwargs)
+
+        with (
+            patch("vntts.path_safety.os.open", side_effect=swap_and_open),
+            patch.object(Path, "open", reject_plain_open),
+        ):
+            yield
+        self.assertEqual(hash_opens, expected_opens)
+        for descriptor in descriptors:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_manifest_hash_phases_reject_fifo_swap_and_recover(self):
+        for phase in ("before validation", "after validation", "completion", "save"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                manifest = Path(directory).resolve() / "manifest.json"
+                manifest.write_text("{}", encoding="utf-8")
+                model_manager = Mock()
+                model_manager.model_path.return_value = Path("managed/model")
+                voice_manager = Mock()
+                voice_manager.validate.return_value = manifest
+                pool = ManualThreadPool()
+                dialog = AssetManagerDialog(
+                    AppSettings(voice_manifest=str(manifest)),
+                    model_manager=model_manager,
+                    voice_manager=voice_manager,
+                    thread_pool=pool,
+                )
+                result = dialog._validate_manifest_snapshot(str(manifest))
+                dialog._validated_manifest_identity = result[:2]
+                voice_manager.validate.reset_mock()
+                swap_at = 2 if phase == "after validation" else 1
+                with self._manifest_fifo_swap(
+                    manifest, swap_at, swap_at + (phase == "save")
+                ):
+                    if phase == "save":
+                        dialog.accept_settings()
+                        self.assertTrue(dialog.manifest_runner.active)
+                        self.assertNotEqual(
+                            dialog.result(), QDialog.DialogCode.Accepted
+                        )
+                        pool.run_next()
+                    else:
+                        dialog._set_manifest_validation_pending(True)
+                        dialog._accept_after_manifest_validation = True
+                        if phase == "completion":
+                            dialog._manifest_validation_finished(result, None)
+                        else:
+                            with self.assertRaisesRegex(
+                                OSError, "regular file"
+                            ) as raised:
+                                dialog._validate_manifest_snapshot(str(manifest))
+                            self.assertIsInstance(raised.exception.__cause__, OSError)
+                            dialog._manifest_validation_finished(None, raised.exception)
+
+                if phase == "after validation":
+                    voice_manager.validate.assert_called_once_with(manifest)
+                else:
+                    voice_manager.validate.assert_not_called()
+                expected_status = "unavailable" if phase == "completion" else "invalid"
+                self.assertIn(expected_status, dialog.voice_status.text())
+                self.assertIsNone(dialog._validated_manifest_identity)
+                self.assertFalse(dialog._accept_after_manifest_validation)
+                self.assertFalse(dialog.manifest_runner.active)
+                self.assertEqual(dialog.validate_manifest_button.text(), "Verify files")
+                self.assertTrue(dialog.validate_manifest_button.isEnabled())
+                self.assertTrue(
+                    dialog.buttons.button(
+                        QDialogButtonBox.StandardButton.Save
+                    ).isEnabled()
+                )
+                self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+
+                manifest.unlink()
+                manifest.write_text("{}", encoding="utf-8")
+                dialog.accept_settings()
+                pool.run_next()
+                self.assertEqual(dialog._validated_manifest_identity, result[:2])
+                self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                self.assertEqual(dialog.settings().voice_manifest, str(manifest))
 
     def test_manifest_stale_after_validation_requires_explicit_reverify(self):
         scenarios = (

@@ -9,8 +9,10 @@ import sys
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
+
+from vntts.cleanup import temporary_directory
+from vntts.path_safety import no_replace_destination as no_replace_destination
 
 if TYPE_CHECKING:
     from vntts.authoring.generation_lease import GenerationLease
@@ -20,16 +22,21 @@ class AtomicPublicationError(RuntimeError):
     """Raised when the platform cannot provide no-replace publication."""
 
 
-def no_replace_destination(value: str | Path) -> Path:
-    """Canonicalize the parent while preserving the leaf for atomic no-replace."""
-    requested = Path(value).expanduser()
-    return requested.parent.resolve() / requested.name
+@contextmanager
+def publication_errors(error_type: type[Exception]) -> Iterator[None]:
+    """Translate publication failures without changing staging or cleanup."""
+    try:
+        yield
+    except (OSError, AtomicPublicationError) as error:
+        raise error_type(str(error)) from error
 
 
 @contextmanager
 def staged_directory(parent: str | Path, *, prefix: str) -> Iterator[Path]:
     """Yield a temporary publication directory and always clean leftovers."""
-    with TemporaryDirectory(prefix=prefix, dir=parent) as directory:
+    with temporary_directory(
+        prefix=prefix, dir=parent, description="Publication staging cleanup"
+    ) as directory:
         yield Path(directory).resolve()
 
 
@@ -72,27 +79,32 @@ def publish_single_base_successor(
     error_type: type[Exception],
 ) -> None:
     """Publish one immutable successor while its source authority is stable."""
-    from vntts_artifacts.file_integrity import sha256_file
-
-    from vntts.authoring.generation_lease import process_is_alive
+    from vntts.authoring.generation_lease import BulkGenerationError, process_is_alive
+    from vntts.document_identity import file_sha256
 
     output = base_directory / "generated-audio"
-    with generation_publication_leases(
-        ((output, queue_sha256),), process_checker=process_is_alive
-    ) as leases:
-        if any(output.rglob("*.partial.wav")):
-            raise error_type(f"{label} base became active")
-        for path, digest in snapshots:
-            if not path.is_file() or sha256_file(path) != digest:
-                raise error_type(f"{label} authority changed before publication")
-        leases[0].assert_owned()
-        try:
-            rename_directory_no_replace(staging, destination)
-        except (AtomicPublicationError, OSError) as error:
-            raise error_type(
-                f"Unable to publish {publish_label} workspace: {error}"
-            ) from error
-        leases[0].mark_committed()
+    try:
+        with generation_publication_leases(
+            ((output, queue_sha256),), process_checker=process_is_alive
+        ) as leases:
+            if any(output.rglob("*.partial.wav")):
+                raise error_type(f"{label} base became active")
+            for path, digest in snapshots:
+                if (
+                    not path.is_file()
+                    or file_sha256(path, error_type=OSError) != digest
+                ):
+                    raise error_type(f"{label} authority changed before publication")
+            leases[0].assert_owned()
+            try:
+                rename_directory_no_replace(staging, destination)
+            except (AtomicPublicationError, OSError) as error:
+                raise error_type(
+                    f"Unable to publish {publish_label} workspace: {error}"
+                ) from error
+            leases[0].mark_committed()
+    except BulkGenerationError as error:
+        raise error_type(str(error)) from error
 
 
 def rename_directory_no_replace(source: str | Path, destination: str | Path) -> None:
@@ -153,6 +165,7 @@ __all__ = [
     "AtomicPublicationError",
     "generation_publication_leases",
     "no_replace_destination",
+    "publication_errors",
     "publish_single_base_successor",
     "rename_directory_no_replace",
     "staged_directory",

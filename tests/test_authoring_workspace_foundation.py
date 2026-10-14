@@ -77,6 +77,25 @@ class AuthoringWorkspaceFoundationTest(unittest.TestCase):
         with self.assertRaisesRegex(FoundationError, "hexadecimal"):
             require_sha256("z" * 64, "Digest", error_type=FoundationError)
 
+    def test_sha256_validation_rejects_integer_syntax_and_unicode_digits(self):
+        for digest in ("a" * 64, "A" * 64, "0123456789abcdef" * 4):
+            self.assertEqual(
+                require_sha256(digest, "Digest", error_type=FoundationError), digest
+            )
+        for digest in (
+            "+" + "a" * 63,
+            "-" + "a" * 63,
+            "0x" + "a" * 62,
+            "a_" + "b" * 62,
+            "a" * 63 + " ",
+            "０" * 64,
+        ):
+            with (
+                self.subTest(digest=digest),
+                self.assertRaisesRegex(FoundationError, "hexadecimal"),
+            ):
+                require_sha256(digest, "Digest", error_type=FoundationError)
+
     def test_json_object_label_preserves_domain_error_wording(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
@@ -91,6 +110,43 @@ class AuthoringWorkspaceFoundationTest(unittest.TestCase):
                     error_type=FoundationError,
                     object_label="Generation state",
                 )
+
+    def test_json_decode_failures_use_the_supplied_error_type(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "document.json"
+            cases = (
+                (b"\xff", "Unable to read document"),
+                (b"{", "Unable to read document"),
+                (b"[]", "Document must be a JSON object"),
+            )
+            for payload, message in cases:
+                with self.subTest(payload=payload):
+                    path.write_bytes(payload)
+                    with self.assertRaisesRegex(FoundationError, f"^{message}"):
+                        load_json_object(
+                            path,
+                            "document",
+                            error_type=FoundationError,
+                            object_label="Document",
+                        )
+
+    def test_deep_json_uses_domain_errors_without_changing_snapshots(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "document.json"
+            payload = b'{"value":' + b"[" * 100000 + b"0" + b"]" * 100000 + b"}"
+            path.write_bytes(payload)
+            for reader in (load_json_object, load_json_object_snapshot):
+                with (
+                    self.subTest(reader=reader.__name__),
+                    self.assertRaisesRegex(
+                        FoundationError, "^Unable to read document .*nesting"
+                    ) as caught,
+                ):
+                    reader(path, "document", error_type=FoundationError)
+                cause = caught.exception.__cause__
+                self.assertIsInstance(cause, json.JSONDecodeError)
+                self.assertIsInstance(cause.__cause__, RecursionError)
+                self.assertEqual(path.read_bytes(), payload)
 
     def test_generation_wav_copy_is_checksum_and_collision_bound(self):
         with TemporaryDirectory() as directory:

@@ -1,93 +1,25 @@
 import io
 import json
+import os
 import unittest
 import wave
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from typing import ClassVar
-
-import numpy as np
+from unittest.mock import patch
 
 from scripts import moss_native_pause_probe as probe
-from tests.test_pregeneration_audition import clean_wav_bytes
+from tests.native_moss_fixtures import FakeNativeBackend as _FakeBackend
+from tests.native_moss_fixtures import OwnedServer as _OwnedServer
+from tests.pregeneration_fixtures import clean_wav_bytes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from vntts.authoring.speech_quality import SpeechSilenceSpan
 from vntts.settings import AppSettings
-from vntts.synthesis import (
-    SynthesisCompletion,
-    SynthesisDiagnostics,
-    SynthesisLimits,
-    SynthesisResult,
-    SynthesisTiming,
-)
+from vntts.synthesis import SynthesisCompletion
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry, VoiceManifestError
-
-
-def _stereo_wav():
-    output = io.BytesIO()
-    with wave.open(output, "wb") as wav:
-        wav.setnchannels(2)
-        wav.setsampwidth(2)
-        wav.setframerate(48000)
-        wav.writeframes(
-            (np.array([[1000, -1000]], dtype="<i2").repeat(480, 0)).tobytes()
-        )
-    return output.getvalue()
-
-
-class _Stream:
-    def __init__(self, result):
-        self.result = result
-
-    def collect(self):
-        return self.result
-
-
-class _FakeBackend:
-    instances: ClassVar[list["_FakeBackend"]] = []
-
-    def __init__(self, _registry, **options):
-        self.registry = _registry
-        self.options = options
-        self.requests = []
-        self.shutdown_called = False
-        type(self).instances.append(self)
-
-    def _http(self, method, path, body=None, *, timeout=None):
-        assert timeout is None
-        if path == "/tts":
-            return 200, {"X-MOSS-Audio-Frames": "2"}, _stereo_wav()
-        raise AssertionError(path)
-
-    def render(self, request):
-        self.requests.append(request)
-        self._http("POST", "/tts", {"text": request.text})
-        return self._result(request, SynthesisCompletion.COMPLETE)
-
-    @staticmethod
-    def _result(request, completion):
-        pcm = np.tile(np.array([[0.1, -0.1]], dtype=np.float32), (480, 1))
-        return _Stream(
-            SynthesisResult(
-                pcm=pcm,
-                sample_rate=48000,
-                completion=completion,
-                limits=SynthesisLimits(*probe.moss_generation_limits(request.text)),
-                timing=SynthesisTiming(1.0, 2.0),
-                diagnostics=SynthesisDiagnostics(
-                    "moss-cpp",
-                    "fresh-generation",
-                    request.generation_profile,
-                    request.seed,
-                    1,
-                    len(pcm),
-                ),
-            )
-        )
-
-    def shutdown(self):
-        self.shutdown_called = True
 
 
 class _LimitedThenInterruptedBackend(_FakeBackend):
@@ -103,15 +35,6 @@ class _NoRawBackend(_FakeBackend):
     def render(self, request):
         self.requests.append(request)
         return self._result(request, SynthesisCompletion.COMPLETE)
-
-
-class _OwnedServer:
-    def __init__(self, pid):
-        self.pid = pid
-        self.returncode = None
-
-    def poll(self):
-        return self.returncode
 
 
 class _LimitedThenReplacementBackend(_FakeBackend):
@@ -145,6 +68,246 @@ def _options(root):
 
 
 class MossNativePauseProbeTest(unittest.TestCase):
+    def test_raw_channel_metrics_skip_unused_silence_spans(self):
+        output = io.BytesIO()
+        with wave.open(output, "wb") as writer:
+            writer.setnchannels(2)
+            writer.setsampwidth(2)
+            writer.setframerate(48000)
+            writer.writeframes(b"\0\0\xe8\x03" * 48000)
+        with patch(
+            "vntts.authoring.speech_quality.SpeechSilenceSpan",
+            wraps=SpeechSilenceSpan,
+        ) as create_span:
+            report = probe._raw_measurements(output.getvalue())
+        self.assertEqual(report["sample_rate"], 48000)
+        self.assertEqual(report["wav_frames"], 48000)
+        self.assertEqual(report["seconds"], 1.0)
+        for channel in ("left", "right", "mono"):
+            silent = channel == "left"
+            self.assertEqual(
+                report[channel],
+                {
+                    "silence_ratio": 1.0 if silent else 0.0,
+                    "leading_silence_seconds": 1.0 if silent else 0.0,
+                    "trailing_silence_seconds": 1.0 if silent else 0.0,
+                    "longest_internal_silence_seconds": 0.0,
+                    "analysis_version": 2,
+                },
+            )
+        create_span.assert_not_called()
+
+    def test_failed_archive_preserves_existing_destination_and_primary_error(self):
+        for stage in ("close", "write", "replace"):
+            for fail_cleanup in (False, True):
+                with (
+                    self.subTest(stage=stage, fail_cleanup=fail_cleanup),
+                    TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    output = root / "probe"
+                    output.mkdir()
+                    (output / "report.json").write_text("{}")
+                    archive = root / "probe.zip"
+                    archive.write_bytes(b"existing archive")
+                    primary = KeyboardInterrupt(stage)
+                    cleanup_error = OSError("unlink failed")
+                    cleanup_error.add_note("unlink detail")
+                    failure_target = {
+                        "close": "os.close",
+                        "write": "scripts.moss_native_pause_probe.shutil.copyfileobj",
+                        "replace": "pathlib.Path.replace",
+                    }[stage]
+                    original_close = probe.os.close
+                    original_unlink = Path.unlink
+                    staging_path = None
+
+                    def fail(*args, **kwargs):
+                        nonlocal staging_path
+                        staging_path = next(root.glob(".probe.zip-*"))
+                        if stage == "close":
+                            original_close(args[0])
+                        raise primary
+
+                    def unlink(path, *, missing_ok=False):
+                        if fail_cleanup:
+                            raise cleanup_error
+                        original_unlink(path, missing_ok=missing_ok)
+
+                    with (
+                        patch(failure_target, side_effect=fail),
+                        patch.object(
+                            Path, "unlink", autospec=True, side_effect=unlink
+                        ) as cleanup,
+                        self.assertRaises(KeyboardInterrupt) as caught,
+                    ):
+                        probe._write_archive(output, archive)
+
+                    self.assertIs(caught.exception, primary)
+                    cleanup.assert_called_once_with(staging_path, missing_ok=True)
+                    self.assertEqual(archive.read_bytes(), b"existing archive")
+                    self.assertEqual(
+                        getattr(primary, "__notes__", []),
+                        [
+                            "Probe archive temporary file cleanup failed: unlink failed",
+                            "unlink detail",
+                        ]
+                        if fail_cleanup
+                        else [],
+                    )
+                    self.assertEqual(
+                        len(list(root.glob(".probe.zip-*"))), int(fail_cleanup)
+                    )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_archive_source_refuses_fifo_before_member_metadata_and_recovers(self):
+        for recursive in (False, True):
+            with self.subTest(recursive=recursive), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                output = root / "probe"
+                source = (
+                    output / "nested" / "report.json"
+                    if recursive
+                    else output / "report.json"
+                )
+                source.parent.mkdir(parents=True)
+                source.write_bytes(b'{"report": "unchanged"}')
+                archive = root / "probe.zip"
+                archive.write_bytes(b"existing archive")
+                gate: RegularFileGate = {"path": source, "armed": True}
+                with (
+                    swap_at_acquisition(self, gate),
+                    patch.object(zipfile.ZipInfo, "from_file") as metadata,
+                    self.assertRaisesRegex(OSError, "regular file"),
+                ):
+                    probe._write_archive(output, archive, recursive=recursive)
+                metadata.assert_not_called()
+                self.assertEqual(archive.read_bytes(), b"existing archive")
+                self.assertEqual(list(root.glob(".probe.zip-*")), [])
+                probe._write_archive(output, archive, recursive=recursive)
+                with zipfile.ZipFile(archive) as bundle:
+                    self.assertEqual(
+                        bundle.read(source.relative_to(output).as_posix()),
+                        b'{"report": "unchanged"}',
+                    )
+
+    def test_archive_matches_stdlib_bytes_metadata_and_closes_sources(self):
+        for recursive, failure in (
+            (False, False),
+            (False, True),
+            (True, False),
+            (True, True),
+        ):
+            with (
+                self.subTest(recursive=recursive, failure=failure),
+                TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                output = root / "probe"
+                output.mkdir()
+                payloads = {
+                    "z-report.json": b'{"report": 1}',
+                    "a-raw.wav": clean_wav_bytes(),
+                    "b-output-mono.wav": clean_wav_bytes(amplitude=0.11),
+                }
+                if recursive:
+                    payloads["nested/report.json"] = b'{"nested": true}'
+                for name, payload in payloads.items():
+                    path = output / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(payload)
+                    path.chmod(0o640)
+                    os.utime(path, (1700000000, 1700000000))
+                (output / "ignored.txt").write_bytes(b"excluded")
+                expected = root / "stdlib.zip"
+                with zipfile.ZipFile(
+                    expected, "w", compression=zipfile.ZIP_STORED
+                ) as bundle:
+                    for name in sorted(payloads):
+                        bundle.write(output / name, name)
+                archive = root / "probe.zip"
+                archive.write_bytes(b"existing archive")
+                sources = []
+                acquire = probe.open_regular_binary
+                capture_metadata = zipfile.ZipInfo.from_file
+                copy = probe.shutil.copyfileobj
+                error = OSError("copy failed")
+
+                @contextmanager
+                def admitted(path):
+                    with acquire(path) as source:
+                        sources.append(source)
+                        yield source
+
+                def metadata(*args, **kwargs):
+                    self.assertFalse(sources[-1].closed)
+                    return capture_metadata(*args, **kwargs)
+
+                def copied(source, member):
+                    self.assertIs(source, sources[-1])
+                    self.assertFalse(source.closed)
+                    if failure:
+                        member.write(source.read(7))
+                        raise error
+                    copy(source, member)
+
+                with (
+                    patch.object(probe, "open_regular_binary", admitted),
+                    patch.object(zipfile.ZipInfo, "from_file", side_effect=metadata),
+                    patch.object(probe.shutil, "copyfileobj", side_effect=copied),
+                ):
+                    if failure:
+                        with self.assertRaises(OSError) as caught:
+                            probe._write_archive(output, archive, recursive=recursive)
+                        self.assertIs(caught.exception, error)
+                        self.assertEqual(archive.read_bytes(), b"existing archive")
+                    else:
+                        probe._write_archive(output, archive, recursive=recursive)
+                        self.assertEqual(archive.read_bytes(), expected.read_bytes())
+                self.assertEqual(len(sources), 1 if failure else len(payloads))
+                self.assertTrue(all(source.closed for source in sources))
+                self.assertEqual(list(root.glob(".probe.zip-*")), [])
+
+    def test_unrelated_log_events_do_not_disrupt_native_evidence(self):
+        class LoggedBackend(_FakeBackend):
+            def render(self, request):
+                probe.support.record_native_speech(
+                    operation="fresh-generation", outcome="complete"
+                )
+                return super().render(request)
+
+        log = probe.support.NativeSpeechLog()
+        log.add("info", "An unrelated log event has no native details")
+        with TemporaryDirectory() as temporary:
+            options = _options(Path(temporary))
+            with patch.object(probe.support, "native_speech_log", log):
+                self.assertEqual(
+                    probe.run(
+                        options,
+                        backend_factory=LoggedBackend,
+                        path_check=lambda _model: (
+                            Path("server"),
+                            Path("model.gguf"),
+                            Path("codec.gguf"),
+                        ),
+                        settings_loader=AppSettings,
+                    ),
+                    0,
+                )
+            report = json.loads((options.output / "report.json").read_text())
+            self.assertTrue(report["all_requests_complete"])
+            self.assertEqual(len(report["attempts"]), 6)
+            self.assertTrue(
+                all(
+                    attempt["native"]["outcome"] == "complete"
+                    for attempt in report["attempts"]
+                )
+            )
+            original = LoggedBackend.instances[-1]
+            self.assertEqual(original._http.__func__, _FakeBackend._http)
+
     def test_missing_raw_responses_never_count_as_complete_evidence(self):
         with TemporaryDirectory() as temporary:
             options = _options(Path(temporary))
@@ -181,7 +344,7 @@ class MossNativePauseProbeTest(unittest.TestCase):
                 )
             )
 
-            voice, reference, selected_registry = probe._qualification_alternate(
+            qualification, selected_registry = probe._qualification_alternate(
                 SimpleNamespace(
                     alternate_reference=None,
                     require_changing_voice=True,
@@ -190,7 +353,7 @@ class MossNativePauseProbeTest(unittest.TestCase):
                 narrator,
             )
 
-            self.assertEqual((voice, reference), ("Centurion", alternate.resolve()))
+            self.assertEqual(qualification, ("Centurion", alternate.resolve()))
             self.assertIs(selected_registry, registry)
 
     def test_replacement_servers_all_receive_shutdown_receipts(self):
@@ -418,12 +581,8 @@ class MossNativePauseProbeTest(unittest.TestCase):
                 model=Path("model.gguf"),
                 executable=None,
             )
-            registry = SimpleNamespace(
-                resolve=lambda name: (
-                    SimpleNamespace(references=(reference,))
-                    if name == "Narrator"
-                    else None
-                )
+            registry = CharacterVoiceRegistry(
+                (CharacterVoice("Narrator", "narrator", reference),)
             )
             _FakeBackend.instances.clear()
 
@@ -436,7 +595,7 @@ class MossNativePauseProbeTest(unittest.TestCase):
                         Path("model.gguf"),
                         Path("codec.gguf"),
                     ),
-                    settings_loader=lambda: SimpleNamespace(tts_model="saved-model"),
+                    settings_loader=lambda: AppSettings(tts_model="saved-model"),
                     registry_initializer=lambda _settings, **_kwargs: registry,
                     voice_library=VoiceLibrary(root / "library"),
                 ),
@@ -463,7 +622,7 @@ class MossNativePauseProbeTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "pass --reference PATH"):
                 probe.run(
                     options,
-                    settings_loader=lambda: SimpleNamespace(tts_model="saved-model"),
+                    settings_loader=lambda: AppSettings(tts_model="saved-model"),
                     registry_initializer=lambda _settings, **_kwargs: registry,
                 )
 

@@ -10,11 +10,13 @@ from hashlib import blake2b
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeAlias
 
-from vntts_artifacts.file_integrity import sha256_file
-
+from vntts.cleanup import attempt_cleanup
+from vntts.document_identity import file_sha256
 from vntts.path_safety import contained_path
 from vntts.runtime_paths import resolve_speech_runtime_root
 from vntts.services.tts_engine import TTSConfigurationError
+from vntts.services.tts_engine import validate_speed as validate_speed
+from vntts.services.tts_engine import validate_volume as validate_volume
 
 if TYPE_CHECKING:
     from vntts.runtime_ownership import RuntimeUse
@@ -23,16 +25,25 @@ PathInput: TypeAlias = str | Path
 _managed_runtime_uses: dict[str, RuntimeUse] = {}
 
 
-def shutdown_speech_backend(backend: object) -> None:
-    """Shut down a backend if present and return the cleared slot value."""
-    shutdown = getattr(backend, "shutdown", None)
-    if callable(shutdown):
-        shutdown()
-    else:
-        stop = getattr(backend, "stop", None)
-        if callable(stop):
-            stop()
-    return None
+def shutdown_speech_backend(
+    backend: object, *, primary_error: BaseException | None = None
+) -> None:
+    """Release a backend without replacing an earlier operation failure."""
+
+    def release() -> None:
+        shutdown = getattr(backend, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+        else:
+            stop = getattr(backend, "stop", None)
+            if callable(stop):
+                stop()
+
+    attempt_cleanup(
+        release,
+        description="Speech backend shutdown",
+        primary_error=primary_error,
+    )
 
 
 def activate_backend_runtime(
@@ -83,25 +94,9 @@ def activate_backend_runtime(
     return site_packages
 
 
-def validate_volume(volume: object) -> float:
-    if isinstance(volume, bool) or not isinstance(volume, (int, float)):
-        raise TTSConfigurationError("Volume must be a number from 0 to 1")
-    if not 0 <= volume <= 1:
-        raise TTSConfigurationError("Volume must be between 0 and 1")
-    return float(volume)
-
-
-def validate_speed(speed: object) -> float:
-    if isinstance(speed, bool) or not isinstance(speed, (int, float)):
-        raise TTSConfigurationError("Speech speed must be a number")
-    if not 0.5 <= speed <= 1.5:
-        raise TTSConfigurationError("Speech speed must be between 0.5 and 1.5")
-    return float(speed)
-
-
 @lru_cache(maxsize=1024)
 def _file_content_identity(path: str, size: int, _modified_ns: int) -> str:
-    return f"sha256:{sha256_file(path)}:{size}"
+    return f"sha256:{file_sha256(path, error_type=OSError)}:{size}"
 
 
 def _source_identity(source: object) -> str:

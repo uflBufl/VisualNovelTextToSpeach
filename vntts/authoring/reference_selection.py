@@ -15,9 +15,11 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.authoring.authority import write_json_document_no_replace
-from vntts.authoring.publication import no_replace_destination
+from vntts.authoring.publication import no_replace_destination, publication_errors
 from vntts.authoring.workspace_foundation import contained_regular_file
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import is_lowercase_sha256, sha256_file
+from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import read_regular_bytes
 from vntts.reference_quality import (
     ReferenceQualityReport,
     analyze_reference_bytes,
@@ -29,6 +31,21 @@ REFERENCE_SELECTION_EXTENSION = "vntts.authoring.reference_selection"
 
 PathInput: TypeAlias = str | Path
 JsonDocument: TypeAlias = dict[str, object]
+
+
+class ReferenceCandidateReport(ReferenceQualityReport):
+    reference_number: int
+
+
+class ReferenceCandidatesReport(TypedDict):
+    schema: str
+    schema_version: int
+    manifest: str
+    manifest_sha256: str
+    character: str
+    references: list[ReferenceCandidateReport]
+    objective_ranking: list[int]
+    manual_review_required: list[str]
 
 
 class _ReferenceCandidate(TypedDict):
@@ -45,7 +62,6 @@ class _ManifestSnapshot(TypedDict):
     entry_index: int
     character: str
     candidates: list[_ReferenceCandidate]
-    report: JsonDocument
 
 
 class ReferenceSelectionError(ValueError):
@@ -72,10 +88,34 @@ class ReferenceSelectionResult:
 
 def inspect_voice_reference_candidates(
     manifest_path: PathInput, character: str
-) -> JsonDocument:
+) -> ReferenceCandidatesReport:
     """Return objective metrics over one read-once manifest/reference snapshot."""
     snapshot = _capture_manifest(manifest_path, character)
-    return snapshot["report"]
+    candidates = snapshot["candidates"]
+    ranking = rank_reference_quality(
+        [candidate["analysis"] for candidate in candidates]
+    )
+    return {
+        "schema": "vntts.authoring-reference-candidates",
+        "schema_version": 1,
+        "manifest": str(snapshot["manifest_path"]),
+        "manifest_sha256": snapshot["manifest_sha256"],
+        "character": snapshot["character"],
+        "references": [
+            {
+                **value["analysis"],
+                "reference_number": candidate_index + 1,
+                "path": value["relative"],
+            }
+            for candidate_index, value in enumerate(candidates)
+        ],
+        "objective_ranking": [value + 1 for value in ranking],
+        "manual_review_required": [
+            "speaker similarity",
+            "music or background contamination",
+            "spoken content and pronunciation",
+        ],
+    }
 
 
 def select_voice_reference(
@@ -142,6 +182,8 @@ def select_voice_reference(
     except VoiceManifestError as error:
         raise ReferenceSelectionError(str(error)) from error
     _assert_snapshot_unchanged(snapshot)
+    if output.parent != source_path.parent:
+        validate_reference_selection_provenance(output, document)
     write_json_document_no_replace(
         output, document, "reference-selection", error_type=ReferenceSelectionError
     )
@@ -154,6 +196,7 @@ def select_voice_reference(
     )
 
 
+@publication_errors(ReferenceSelectionError)
 def validate_reference_selection_provenance(
     manifest_path: PathInput, document: JsonDocument
 ) -> None:
@@ -173,8 +216,7 @@ def validate_reference_selection_provenance(
     if (
         not isinstance(provenance, dict)
         or set(provenance) != expected_fields
-        or type(provenance.get("schema_version")) is not int
-        or provenance.get("schema_version") != REFERENCE_SELECTION_SCHEMA_VERSION
+        or not has_schema_version(provenance, REFERENCE_SELECTION_SCHEMA_VERSION)
         or provenance.get("manual_review_required") is not True
     ):
         raise ReferenceSelectionError(
@@ -218,7 +260,7 @@ def validate_reference_selection_provenance(
         raise ReferenceSelectionError(
             "Voice reference-selection candidate inventory is malformed"
         )
-    candidate_paths: list[str] = []
+    reference_root = Path(manifest_path).resolve().parent
     hashes: dict[str, str] = {}
     for candidate in candidates:
         if not isinstance(candidate, dict) or set(candidate) != {"path", "sha256"}:
@@ -230,16 +272,17 @@ def validate_reference_selection_provenance(
             raise ReferenceSelectionError(
                 "Voice reference-selection candidate path is malformed"
             )
-        path = _contained_reference(Path(manifest_path).resolve().parent, relative)
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        path = _contained_reference(reference_root, relative)
+        digest = sha256_file(path)
         if digest != candidate.get("sha256"):
             raise ReferenceSelectionError(
                 f"Voice reference-selection candidate changed: {relative}"
             )
-        candidate_paths.append(relative)
         hashes[relative] = digest
-    if len(candidate_paths) != len(set(candidate_paths)) or set(candidate_paths) != set(
-        entry.references
+    if (
+        len(candidates) != len(hashes)
+        or len(entry.references) != len(hashes)
+        or set(hashes) != set(entry.references)
     ):
         raise ReferenceSelectionError(
             "Voice reference-selection candidate inventory conflicts with the manifest"
@@ -253,9 +296,10 @@ def validate_reference_selection_provenance(
 def _capture_manifest(manifest_path: PathInput, character: str) -> _ManifestSnapshot:
     manifest_path = Path(manifest_path).expanduser().resolve()
     try:
-        payload = manifest_path.read_bytes()
-        document = json.loads(payload.decode("utf-8"))
+        payload = read_regular_bytes(manifest_path)
+        document = decode_json(payload.decode("utf-8"))
         entries = validate_voice_manifest(document)
+        assert isinstance(document, dict)
     except (
         OSError,
         UnicodeDecodeError,
@@ -295,7 +339,7 @@ def _capture_manifest(manifest_path: PathInput, character: str) -> _ManifestSnap
         seen.add(relative)
         path = _contained_reference(manifest_path.parent, relative)
         try:
-            reference_payload = path.read_bytes()
+            reference_payload = read_regular_bytes(path)
             analysis = analyze_reference_bytes(reference_payload, path=path)
         except (OSError, ValueError) as error:
             raise ReferenceSelectionError(str(error)) from error
@@ -307,42 +351,13 @@ def _capture_manifest(manifest_path: PathInput, character: str) -> _ManifestSnap
                 "analysis": analysis,
             }
         )
-    ranking = rank_reference_quality(
-        [candidate["analysis"] for candidate in candidates]
-    )
-    report = {
-        "schema": "vntts.authoring-reference-candidates",
-        "schema_version": 1,
-        "manifest": str(manifest_path),
-        "manifest_sha256": hashlib.sha256(payload).hexdigest(),
-        "character": entry.character,
-        "references": [
-            {
-                "reference_number": candidate_index + 1,
-                "path": value["relative"],
-                **{
-                    key: item
-                    for key, item in value["analysis"].items()
-                    if key != "path"
-                },
-            }
-            for candidate_index, value in enumerate(candidates)
-        ],
-        "objective_ranking": [value + 1 for value in ranking],
-        "manual_review_required": [
-            "speaker similarity",
-            "music or background contamination",
-            "spoken content and pronunciation",
-        ],
-    }
     return {
         "manifest_path": manifest_path,
-        "manifest_sha256": report["manifest_sha256"],
+        "manifest_sha256": hashlib.sha256(payload).hexdigest(),
         "document": document,
         "entry_index": index,
         "character": entry.character,
         "candidates": candidates,
-        "report": report,
     }
 
 
@@ -355,14 +370,13 @@ def _contained_reference(root: Path, relative: object) -> Path:
 def _assert_snapshot_unchanged(snapshot: _ManifestSnapshot) -> None:
     path = snapshot["manifest_path"]
     try:
-        if hashlib.sha256(path.read_bytes()).hexdigest() != snapshot["manifest_sha256"]:
+        if sha256_file(path) != snapshot["manifest_sha256"]:
             raise ReferenceSelectionError("Voice manifest changed during selection")
         for candidate in snapshot["candidates"]:
             current = _contained_reference(path.parent, candidate["relative"])
             if (
                 current != candidate["path"]
-                or hashlib.sha256(current.read_bytes()).hexdigest()
-                != candidate["sha256"]
+                or sha256_file(current) != candidate["sha256"]
             ):
                 raise ReferenceSelectionError(
                     f"Voice reference changed during selection: {candidate['relative']}"

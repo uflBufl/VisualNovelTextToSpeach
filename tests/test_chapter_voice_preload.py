@@ -1,27 +1,27 @@
 import hashlib
 import json
+import os
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
     load_story_index_document,
-    write_story_index_document,
 )
 
+import vntts.chapter_voice_preload as preload_module
+import vntts.path_safety as path_safety
+from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from tests.story_fixtures import write_verified_source_story
 from vntts.chapter_voice_preload import (
     ChapterDialogue,
     ChapterMatch,
     ChapterVoicePreloader,
-)
-from vntts.document_identity import canonical_document_sha256
-from vntts.source_audio_semantics import (
-    SEMANTIC_EVIDENCE_METHOD,
-    semantic_text_sha256,
+    _normalize,
 )
 
 
@@ -86,83 +86,36 @@ def story_index_document():
     return "\n".join(json.dumps(record) for record in records) + "\n"
 
 
-def write_verified_source_story(path):
-    line_id = "test:0"
-    text = "These old ones are enough to carry everyone."
-    text_hash = hashlib.sha256(text.encode()).hexdigest()
-    media_hash = "a" * 64
-    entry = {
-        "locale": "en",
-        "media_id": 70,
-        "media_sha256": media_hash,
-        "displayed_text_sha256": text_hash,
-        "normalized_displayed_text_sha256": semantic_text_sha256(text),
-        "observed_transcript": text,
-        "normalized_observed_text_sha256": semantic_text_sha256(text),
-        "verdict": "full",
-        "reason": "exact-normalized-asr-transcript",
-        "method": SEMANTIC_EVIDENCE_METHOD,
-        "model_sha256": "b" * 64,
-        "source_line_ids": [line_id],
-    }
-    entry["entry_id"] = canonical_document_sha256(
-        {key: value for key, value in entry.items() if key != "source_line_ids"}
-    )
-    evidence = {
-        "schema": "r1999.source-audio-semantic-evidence",
-        "schema_version": 1,
-        "locale": "en",
-        "source_story_index_sha256": "c" * 64,
-        "model": {
-            "kind": "whisper",
-            "snapshot": "synthetic",
-            "sha256": "b" * 64,
-            "device": "cpu",
-            "decoding": "deterministic_greedy_default",
-        },
-        "entries": [entry],
-    }
-    evidence["evidence_id"] = canonical_document_sha256(evidence)
-    evidence["generated_at"] = "2026-09-14T00:00:00+00:00"
-    evidence_path = path.parent / "source-audio-semantic-evidence.json"
-    atomic_write_json(evidence_path, evidence, sort_keys=True)
-    metadata = {
-        "game": "Synthetic",
-        "language": "en",
-        "source_audio_completion": "verified-media-duration-seconds",
-        "source_audio_semantics": {
-            "evidence_id": evidence["evidence_id"],
-            "evidence_sha256": sha256_file(evidence_path),
-            "method": SEMANTIC_EVIDENCE_METHOD,
-            "selected_chapters": ["24006"],
-            "applied_count": 1,
-        },
-    }
-    record = {
-        "record_type": "line",
-        "line_id": line_id,
-        "chapter": "24006",
-        "sequence": 10,
-        "speaker": "Kamuta",
-        "text": text,
-        "text_sha256": text_hash,
-        "kind": "dialogue",
-        "source_audio_status": "available",
-        "source_audio_id": "voice-7",
-        "source_audio_duration_seconds": 1.25,
-        "source_audio_duration_media_id": 70,
-        "source_audio_duration_media_sha256": media_hash,
-        "source_audio_duration_sample_rate": 24000,
-        "source_audio_duration_sample_count": 30000,
-        "source_audio_duration_decoder": "synthetic",
-        "source_media_ids": [70],
-        "available_media_ids": [70],
-        "source_audio_completeness": "full",
-        "source_audio_completeness_reason": "exact-normalized-asr-transcript",
-        "source_audio_semantic_evidence_id": evidence["evidence_id"],
-        "source_audio_semantic_evidence_entry_id": entry["entry_id"],
-    }
-    write_story_index_document(path, metadata, [record])
+class _EvidenceReadFailure:
+    def __init__(self, test, evidence):
+        self.test = test
+        self.evidence = evidence
+        self.payload = evidence.read_bytes()
+        self.original_open = path_safety.open_regular_binary
+        self.streams = []
+        self.reads = []
+        self.error = OSError("evidence read failed after valid bytes")
+
+    @contextmanager
+    def admitted(self, candidate):
+        if Path(candidate) != self.evidence:
+            with self.original_open(candidate) as source:
+                yield source
+            return
+        with self.original_open(candidate) as original:
+            self.streams.append(original)
+
+            def read(size=-1):
+                if self.reads:
+                    raise self.error
+                captured = original.read(size)
+                self.test.assertEqual(captured, self.payload)
+                self.reads.append(captured)
+                if size < 0:
+                    raise self.error
+                return captured
+
+            yield SimpleNamespace(read=read)
 
 
 class ChapterVoicePreloaderTest(unittest.TestCase):
@@ -188,6 +141,25 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         preloader = ChapterVoicePreloader.from_document(dialogue_document())
 
         self.assertEqual(preloader.recommend("Fatutu", "Hi"), ())
+
+    def test_matching_reuses_indexed_text_normalization(self):
+        first = ChapterDialogue("first", "1", 1, "Ada", "It's time to go.", "a" * 64)
+        second = ChapterDialogue("second", "1", 2, "Bea", "We should hurry.", "b" * 64)
+        with patch(
+            "vntts.chapter_voice_preload._normalize", wraps=_normalize
+        ) as normalize:
+            preloader = ChapterVoicePreloader((first, second))
+            line, result = preloader.resolve_exact_among(
+                "Ada", "It’s time to go", ("first", "second")
+            )
+            recommendations = preloader.recommend("Ada", "It's time to")
+
+        self.assertEqual((line, result), (first, "expected-normalized-exact"))
+        self.assertEqual(recommendations, ("Bea",))
+        for row in preloader.dialogue:
+            self.assertEqual(
+                [call.args for call in normalize.call_args_list].count((row.text,)), 1
+            )
 
     def test_optional_loader_tolerates_missing_and_invalid_index(self):
         with TemporaryDirectory() as temporary_directory:
@@ -887,6 +859,236 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         self.assertEqual(line.source_audio_duration_seconds, 1.25)
         self.assertEqual(line.source_audio_completeness, "full")
         self.assertTrue(line.source_audio_authoritative)
+
+    def test_document_and_index_project_complete_source_audio_without_evidence(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "story-index.jsonl"
+            write_verified_source_story(path)
+            path.with_name("source-audio-semantic-evidence.json").unlink()
+            story = load_story_index_document(path)
+            document = story.metadata | {
+                "dialogue": [
+                    record.document | {"speaker_name": record.speaker}
+                    for record in story.records
+                ]
+            }
+            indexed = ChapterVoicePreloader.load_optional(path)
+            projected = ChapterVoicePreloader.from_document(document)
+
+        self.assertEqual(projected.dialogue, indexed.dialogue)
+        self.assertEqual(
+            projected.dialogue,
+            (
+                ChapterDialogue(
+                    "test:0",
+                    "24006",
+                    10,
+                    "Kamuta",
+                    "These old ones are enough to carry everyone.",
+                    hashlib.sha256(
+                        b"These old ones are enough to carry everyone."
+                    ).hexdigest(),
+                    "available",
+                    "voice-7",
+                    1.25,
+                    "unknown",
+                ),
+            ),
+        )
+
+    def test_source_audio_numeric_overflow_is_ignored_without_rejecting_huge_ratios(
+        self,
+    ):
+        for label, fields, expected_duration in (
+            ("duration overflow", {"source_audio_duration_seconds": 10**400}, None),
+            (
+                "sample count overflow",
+                {"source_audio_duration_sample_count": 10**400},
+                None,
+            ),
+            (
+                "finite huge ratio",
+                {
+                    "source_audio_duration_sample_count": 30000 * 10**400,
+                    "source_audio_duration_sample_rate": 24000 * 10**400,
+                },
+                1.25,
+            ),
+        ):
+            with self.subTest(label=label), TemporaryDirectory() as directory:
+                path = Path(directory) / "story-index.jsonl"
+                write_verified_source_story(path)
+                records = [json.loads(row) for row in path.read_text().splitlines()]
+                records[1].update(fields)
+                path.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+                document = records[0] | {
+                    "dialogue": [records[1] | {"speaker_name": records[1]["speaker"]}]
+                }
+                indexed = ChapterVoicePreloader.load_optional(path).dialogue[0]
+                projected = ChapterVoicePreloader.from_document(document).dialogue[0]
+
+                self.assertEqual(
+                    indexed.source_audio_duration_seconds, expected_duration
+                )
+                self.assertEqual(
+                    projected.source_audio_duration_seconds, expected_duration
+                )
+                self.assertEqual(projected.source_audio_completeness, "unknown")
+                self.assertFalse(projected.source_audio_authoritative)
+                self.assertEqual(
+                    indexed.source_audio_completeness,
+                    "unknown" if expected_duration is None else "full",
+                )
+                self.assertEqual(
+                    indexed.source_audio_authoritative, expected_duration is not None
+                )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_snapshot_evidence_refuses_fifo_falls_back_cleans_up_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            path = root / "story-index.jsonl"
+            write_verified_source_story(path)
+            payload = path.read_bytes()
+            evidence = path.with_name("source-audio-semantic-evidence.json")
+            path.write_bytes(b"unbound replacement")
+            before = tree_hashes(root)
+            expected = ChapterVoicePreloader.load_snapshot(path, payload).dialogue
+            original_copy = preload_module.copy_regular_file
+            original_temporary = preload_module.temporary_directory
+            original_load = ChapterVoicePreloader.load_optional
+            directories, refused = [], []
+
+            @contextmanager
+            def temporary(**kwargs):
+                with original_temporary(dir=root, **kwargs) as name:
+                    directories.append(Path(name))
+                    yield name
+
+            def copy(original, target):
+                self.assertEqual(Path(original), evidence)
+                self.assertFalse(Path(target).with_name(evidence.name).exists())
+                gate: RegularFileGate = {"path": evidence, "armed": True}
+                with (
+                    swap_at_acquisition(self, gate),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original_copy(original, target)
+                self.assertEqual(Path(target).read_bytes(), b"")
+                refused.append(Path(target))
+                raise caught.exception
+
+            def load(snapshot, **kwargs):
+                self.assertEqual(
+                    {member.name for member in Path(snapshot).parent.iterdir()},
+                    {"story-index.jsonl"},
+                )
+                return original_load(snapshot, **kwargs)
+
+            with patch.object(preload_module, "temporary_directory", temporary):
+                with (
+                    patch.object(preload_module, "copy_regular_file", copy),
+                    patch.object(
+                        ChapterVoicePreloader, "load_optional", side_effect=load
+                    ),
+                ):
+                    fallback = ChapterVoicePreloader.load_snapshot(
+                        path, payload
+                    ).dialogue
+                self.assertEqual(len(refused), 1)
+                self.assertFalse(fallback[0].source_audio_authoritative)
+                self.assertEqual(fallback[0].source_audio_completeness, "unknown")
+                self.assertEqual(fallback[0].text, expected[0].text)
+                self.assertFalse(refused[0].exists())
+                self.assertFalse(directories[-1].exists())
+                self.assertEqual(tree_hashes(root), before)
+                recovered = ChapterVoicePreloader.load_snapshot(path, payload).dialogue
+            self.assertEqual(recovered, expected)
+            self.assertEqual(len(directories), 2)
+            self.assertTrue(all(not temporary.exists() for temporary in directories))
+            self.assertEqual(tree_hashes(root), before)
+
+    def test_snapshot_late_evidence_read_failure_cannot_authorize_valid_prefix(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            path = root / "story-index.jsonl"
+            write_verified_source_story(path)
+            payload = path.read_bytes()
+            evidence = path.with_name("source-audio-semantic-evidence.json")
+            evidence_payload = evidence.read_bytes()
+            expected = ChapterVoicePreloader.load_snapshot(path, payload).dialogue
+            before = tree_hashes(root)
+            original_copy = preload_module.copy_regular_file
+            original_temporary = preload_module.temporary_directory
+            original_load = ChapterVoicePreloader.load_optional
+            directories = []
+
+            @contextmanager
+            def temporary(**kwargs):
+                with original_temporary(dir=root, **kwargs) as name:
+                    directories.append(Path(name))
+                    yield name
+
+            with patch.object(preload_module, "temporary_directory", temporary):
+                for mode in ("streamed", "buffered-control"):
+                    with self.subTest(mode=mode):
+                        failure = _EvidenceReadFailure(self, evidence)
+                        staged = []
+
+                        def copy(original, target):
+                            staged.append(Path(target))
+                            try:
+                                if mode == "streamed":
+                                    original_copy(original, target)
+                                else:
+                                    with path_safety.open_regular_binary(
+                                        original
+                                    ) as source:
+                                        captured = source.read()
+                                    Path(target).write_bytes(captured)
+                            finally:
+                                self.assertEqual(
+                                    Path(target).read_bytes(),
+                                    evidence_payload if mode == "streamed" else b"",
+                                )
+
+                        def load(snapshot, **kwargs):
+                            self.assertFalse(
+                                Path(snapshot).with_name(evidence.name).exists()
+                            )
+                            self.assertTrue(
+                                all(not temporary.exists() for temporary in staged)
+                            )
+                            return original_load(snapshot, **kwargs)
+
+                        with (
+                            patch.object(
+                                path_safety, "open_regular_binary", failure.admitted
+                            ),
+                            patch.object(preload_module, "copy_regular_file", copy),
+                            patch.object(
+                                ChapterVoicePreloader, "load_optional", side_effect=load
+                            ),
+                        ):
+                            fallback = ChapterVoicePreloader.load_snapshot(
+                                path, payload
+                            ).dialogue
+                        self.assertEqual(len(failure.streams), 1)
+                        self.assertEqual(failure.reads, [evidence_payload])
+                        self.assertTrue(failure.streams[0].closed)
+                        self.assertFalse(fallback[0].source_audio_authoritative)
+                        self.assertEqual(
+                            fallback[0].source_audio_completeness, "unknown"
+                        )
+                        self.assertFalse(directories[-1].exists())
+                        self.assertEqual(tree_hashes(root), before)
+                recovered = ChapterVoicePreloader.load_snapshot(path, payload).dialogue
+            self.assertEqual(recovered, expected)
+            self.assertEqual(len(directories), 3)
+            self.assertTrue(all(not temporary.exists() for temporary in directories))
+            self.assertEqual(tree_hashes(root), before)
 
     def test_snapshot_preserves_verified_audio_and_rejects_changed_evidence(self):
         with TemporaryDirectory() as directory:

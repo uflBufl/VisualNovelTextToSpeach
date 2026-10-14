@@ -84,7 +84,10 @@ class LatestTaskRunner(QObject):
         self._serial += 1
         serial = self._serial
         self._set_active(True)
-        self.thread_pool.start(_Task(serial, task_function, self._signals))
+        try:
+            self.thread_pool.start(_Task(serial, task_function, self._signals))
+        except Exception as error:
+            self._task_finished(serial, None, error)
         return serial
 
     def cancel(self) -> bool:

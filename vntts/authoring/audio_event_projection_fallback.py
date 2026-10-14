@@ -8,12 +8,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
+from durable_file import atomic_write_json
+from vntts_artifacts.voice_generation_queue import (
+    VoiceGenerationQueue,
+    VoiceGenerationQueueItem,
+)
 
 from vntts.authoring.audio_events import audio_event_plan_for_record
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    assert_authority_snapshot,
+    canonical_document_sha256,
+    capture_successor_base_authority,
+)
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
@@ -34,12 +40,10 @@ from vntts.authoring.publication import (
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     WorkspaceCreationResult,
-    contained_workspace_path,
     default_workspaces_root,
     load_workspace_authority,
     load_workspace_json,
     require_workspace_sha256,
-    safe_workspace_relative_path,
     validate_workspace_provenance_extensions,
 )
 from vntts.authoring.workspace_config import (
@@ -47,10 +51,11 @@ from vntts.authoring.workspace_config import (
     workspace_missing_voice_policy,
     workspace_successor_config_fingerprint,
 )
-from vntts.authoring.workspace_foundation import (
-    stage_single_base_successor,
-)
+from vntts.authoring.workspace_foundation import stage_single_base_successor
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.document_identity import sha256_file
+from vntts.json_types import has_schema_version
+from vntts.path_safety import contained_no_replace_destination
 
 SCHEMA = "vntts.authoring-audio-event-projection-fallback-batch"
 SCHEMA_VERSION = 1
@@ -69,7 +74,6 @@ class _ProjectionSelection:
     queue_path: Path
     queue_sha256: str
     import_id: str
-    narrator_character: str
     ledgers: list[dict[str, object]]
 
 
@@ -107,7 +111,16 @@ def create_audio_event_projection_fallback_workspace(
             staged = _stage_projection(selection, staging)
             workspace = _mutate_projection_state(selection, identity, staged)
             _validate_staged_projection(staging, staged, workspace)
-            _publish_projection(selection, identity, staging, staged.snapshots)
+            publish_single_base_successor(
+                staging,
+                identity.destination,
+                selection.base_directory,
+                selection.queue_sha256,
+                staged.snapshots,
+                label="Audio-event projection",
+                publish_label="audio-event projection",
+                error_type=AuthoringWorkbenchError,
+            )
     except (BulkGenerationError, OSError, ValueError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
     return WorkspaceCreationResult(identity.destination, True)
@@ -215,7 +228,6 @@ def _select_projection(
         queue_path,
         queue_sha256,
         import_id,
-        narrator_character,
         ledgers,
     )
 
@@ -249,8 +261,11 @@ def _projection_identity(
     workspace_id = workspace_id_for_config(selection.import_id, config_fingerprint)
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    destination = contained_workspace_path(
-        root, Path(workspace_id), "Audio-event projection fallback destination"
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Audio-event projection fallback destination",
+        error_type=AuthoringWorkbenchError,
     )
     return _ProjectionIdentity(
         batch, config_fingerprint, root, destination, workspace_id
@@ -377,27 +392,6 @@ def _validate_staged_projection(
     )
 
 
-def _publish_projection(
-    selection: _ProjectionSelection,
-    identity: _ProjectionIdentity,
-    staging: Path,
-    snapshots: list[tuple[Path, str]],
-) -> None:
-    try:
-        publish_single_base_successor(
-            staging,
-            identity.destination,
-            selection.base_directory,
-            selection.queue_sha256,
-            snapshots,
-            label="Audio-event projection",
-            publish_label="audio-event projection",
-            error_type=AuthoringWorkbenchError,
-        )
-    except BulkGenerationError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
-
-
 def validate_audio_event_projection_fallback_workspace(
     directory: str | Path, workspace: Mapping[str, object]
 ) -> None:
@@ -407,9 +401,8 @@ def validate_audio_event_projection_fallback_workspace(
         return
     batch = _validated_projection_batch(batch)
     root = Path(directory)
-    snapshots = _projection_authority_snapshots(root, batch)
-    base_state = load_workspace_json(
-        snapshots["base_state_path"], "audio-event projection base state"
+    base_state, snapshots = capture_successor_base_authority(
+        root, batch, "audio-event projection", error_type=AuthoringWorkbenchError
     )
     base_state_items = base_state.get("items")
     queue, state, _payload, _state_sha256 = load_stable_workspace_generation_state(
@@ -433,6 +426,10 @@ def validate_audio_event_projection_fallback_workspace(
     ]
     if observed != sorted(set(observed)):
         raise AuthoringWorkbenchError("Audio-event projection items are not canonical")
+    for snapshot in snapshots:
+        assert_authority_snapshot(
+            snapshot, "audio-event projection base", error_type=AuthoringWorkbenchError
+        )
 
 
 def _validated_projection_batch(value: object) -> dict[str, object]:
@@ -453,23 +450,28 @@ def _validated_projection_batch(value: object) -> dict[str, object]:
         "synthesis_character",
         "items",
     }
-    if (
-        not isinstance(batch, dict)
-        or set(batch) != fields
-        or batch.get("schema") != SCHEMA
-        or batch.get("schema_version") != SCHEMA_VERSION
-        or batch.get("provider") != "pocket-tts"
-        or batch.get("model") != "pocket-tts"
-        or batch.get("generation_profile") != "default"
-        or batch.get("synthesis_character") != SYNTHESIS_CHARACTER
-        or batch.get("batch_id")
-        != canonical_document_sha256(
-            {key: value for key, value in batch.items() if key != "batch_id"}
-        )
-    ):
+    try:
+        if (
+            not isinstance(batch, dict)
+            or set(batch) != fields
+            or batch.get("schema") != SCHEMA
+            or not has_schema_version(batch, SCHEMA_VERSION)
+            or batch.get("provider") != "pocket-tts"
+            or batch.get("model") != "pocket-tts"
+            or batch.get("generation_profile") != "default"
+            or batch.get("synthesis_character") != SYNTHESIS_CHARACTER
+            or batch.get("batch_id")
+            != canonical_document_sha256(
+                {key: value for key, value in batch.items() if key != "batch_id"}
+            )
+        ):
+            raise AuthoringWorkbenchError(
+                "Audio-event projection fallback batch is malformed"
+            )
+    except (TypeError, ValueError) as error:
         raise AuthoringWorkbenchError(
             "Audio-event projection fallback batch is malformed"
-        )
+        ) from error
     for field in (
         "batch_id",
         "base_workspace_sha256",
@@ -482,32 +484,10 @@ def _validated_projection_batch(value: object) -> dict[str, object]:
     return batch
 
 
-def _projection_authority_snapshots(
-    root: Path, batch: dict[str, object]
-) -> dict[str, Path]:
-    snapshots = {}
-    for path_field, hash_field, label in (
-        ("base_workspace_path", "base_workspace_sha256", "base workspace"),
-        ("base_state_path", "base_state_sha256", "base state"),
-    ):
-        relative = safe_workspace_relative_path(
-            batch.get(path_field), f"Audio-event projection {label}"
-        )
-        source = contained_workspace_path(
-            root, relative, f"Audio-event projection {label}"
-        )
-        if not source.is_file() or sha256_file(source) != batch[hash_field]:
-            raise AuthoringWorkbenchError(
-                f"Audio-event projection {label} authority changed"
-            )
-        snapshots[path_field] = source
-    return snapshots
-
-
 def _validate_projection_ledger(
     ledger: object,
     batch: dict[str, object],
-    queue_by_id: Mapping[str, object],
+    queue_by_id: Mapping[str, VoiceGenerationQueueItem],
     base_state_items: object,
     state_items: Mapping[str, dict[str, object]],
 ) -> str:
@@ -536,6 +516,8 @@ def _validate_projection_ledger(
     if (
         not isinstance(queue_id, str)
         or queue_item is None
+        or (ledger["line_id"], ledger["text_sha256"], ledger["speaker"])
+        != (queue_item.line_id, queue_item.text_sha256, queue_item.speaker)
         or not isinstance(base_result, dict)
         or canonical_document_sha256(base_result) != ledger["base_result_sha256"]
         or not isinstance(decision, dict)

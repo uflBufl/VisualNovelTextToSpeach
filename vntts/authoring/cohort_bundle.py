@@ -11,20 +11,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NotRequired, TypeAlias, TypedDict, TypeIs
 
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json
 
-from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.bulk_generation import ReviewAuthority
+from vntts.authoring.authority import (
+    canonical_document_sha256,
+    write_json_document_no_replace,
+)
 from vntts.authoring.cohort_review import (
     COHORT_REVIEW_DEFECT_REASONS,
     DEFAULT_CLEAN_SAMPLES_PER_BUCKET,
     CohortReviewError,
     CohortReviewProjection,
+    _bound_workspace_paths,
     _load_document,
     _required_sha256,
     _required_text,
+    _sample_cohort_queue_ids,
+    _validate_bound_workspace_fingerprint,
+    _validate_bound_workspace_identity,
     _validate_decision_against_plan,
-    _write_document_no_replace,
+    _validate_plan_source_workspace,
     build_cohort_review_decision,
     build_cohort_review_plan,
     execute_cohort_review_decision,
@@ -35,7 +41,11 @@ from vntts.authoring.cohort_review import (
 from vntts.authoring.cohort_review import (
     _validated_plan_document as _validate_plan_document,
 )
+from vntts.authoring.generation_review import ReviewAuthority
 from vntts.authoring.workbench import ReviewItem
+from vntts.json_types import decode_json, has_schema_version, is_json_object
+from vntts.numeric_values import optional_finite_number
+from vntts.path_safety import read_regular_bytes
 
 _canonical_sha256 = canonical_document_sha256
 
@@ -83,6 +93,12 @@ class _PlanPolicy(TypedDict):
     selected_queue_ids: NotRequired[list[str]]
 
 
+class _BlockedPlanItem(TypedDict):
+    queue_id: str
+    line_id: str
+    reason: str
+
+
 class _PlanDocument(TypedDict):
     plan_id: str
     workspace_id: str
@@ -96,7 +112,7 @@ class _PlanDocument(TypedDict):
     pending_item_count: int
     sample_item_count: int
     blocked_item_count: int
-    blocked_items: list[_PlanItem]
+    blocked_items: list[_BlockedPlanItem]
     cohorts: list[_PlanCohort]
 
 
@@ -121,7 +137,7 @@ class _BundleSample(TypedDict):
     pace_advisories: NotRequired[list[str]]
 
 
-class _BundleCohort(TypedDict):
+class CohortBundleCohort(TypedDict):
     workspace: str
     workspace_id: str
     plan_id: str
@@ -132,11 +148,10 @@ class _BundleCohort(TypedDict):
     samples: list[_BundleSample]
 
 
-class _BundleDocument(TypedDict):
+class _BundleBody(TypedDict):
     schema: str
     schema_version: int
     policy: dict[str, str]
-    bundle_id: str
     workspace_count: int
     cohort_count: int
     pending_item_count: int
@@ -144,7 +159,11 @@ class _BundleDocument(TypedDict):
     blocked_item_count: int
     blocked_source_occurrence_count: int
     sources: list[_SourceDocument]
-    cohorts: list[_BundleCohort]
+    cohorts: list[CohortBundleCohort]
+
+
+class _BundleDocument(_BundleBody):
+    bundle_id: str
 
 
 class _CurrentSourceSnapshot(TypedDict):
@@ -168,17 +187,17 @@ class _DecisionItem(TypedDict):
     technical_flags: list[str]
 
 
-class _DecisionDocument(TypedDict, total=False):
+class _DecisionDocument(TypedDict):
     decision_id: str
     plan_id: str
     decision: str
     cohort_id: str
-    next_clean_samples_per_bucket: int | None
     target_items: list[_DecisionItem]
-    projection_review_status: str | None
-    item_review_statuses: list[dict[str, str]]
-    sample_assessments: list[dict[str, object]]
-    reviewed_samples: list[dict[str, object]]
+    reviewed_samples: list[_DecisionItem]
+    next_clean_samples_per_bucket: NotRequired[int | None]
+    projection_review_status: NotRequired[str | None]
+    item_review_statuses: NotRequired[list[dict[str, str]] | None]
+    sample_assessments: NotRequired[list[dict[str, object]]]
 
 
 def _is_text_list(value: object) -> TypeIs[list[str]]:
@@ -186,14 +205,11 @@ def _is_text_list(value: object) -> TypeIs[list[str]]:
 
 
 def _is_json_object(value: object) -> TypeIs[dict[str, object]]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_object_list(value: object) -> TypeIs[list[dict[str, object]]]:
-    return isinstance(value, list) and all(
-        isinstance(item, dict) and all(isinstance(key, str) for key in item)
-        for item in value
-    )
+    return isinstance(value, list) and all(is_json_object(item) for item in value)
 
 
 def _is_plan_item(value: object) -> TypeIs[_PlanItem]:
@@ -263,6 +279,12 @@ def _is_plan_policy(value: object) -> TypeIs[_PlanPolicy]:
     )
 
 
+def _is_blocked_plan_item(value: object) -> TypeIs[_BlockedPlanItem]:
+    return isinstance(value, dict) and all(
+        isinstance(value.get(field), str) for field in ("queue_id", "line_id", "reason")
+    )
+
+
 def _is_plan_document(value: object) -> TypeIs[_PlanDocument]:
     if not isinstance(value, dict):
         return False
@@ -286,7 +308,7 @@ def _is_plan_document(value: object) -> TypeIs[_PlanDocument]:
         and all(type(value.get(field)) is int for field in counts)
         and _is_plan_policy(value.get("policy"))
         and isinstance(value.get("blocked_items"), list)
-        and all(_is_plan_item(item) for item in value["blocked_items"])
+        and all(_is_blocked_plan_item(item) for item in value["blocked_items"])
         and isinstance(value.get("cohorts"), list)
         and all(_is_plan_cohort(cohort) for cohort in value["cohorts"])
     )
@@ -304,27 +326,29 @@ def _is_decision_document(value: object) -> TypeIs[_DecisionDocument]:
         return False
     text_fields = ("decision_id", "plan_id", "decision", "cohort_id")
     return (
-        all(
-            field not in value or isinstance(value.get(field), str)
-            for field in text_fields
-        )
+        all(isinstance(value.get(field), str) for field in text_fields)
         and (
             "next_clean_samples_per_bucket" not in value
             or value.get("next_clean_samples_per_bucket") is None
             or type(value.get("next_clean_samples_per_bucket")) is int
         )
-        and (
-            "target_items" not in value
-            or isinstance(value.get("target_items"), list)
-            and all(_is_decision_item(item) for item in value["target_items"])
-        )
         and all(
-            field not in value or _is_object_list(value.get(field))
-            for field in (
-                "item_review_statuses",
-                "sample_assessments",
-                "reviewed_samples",
+            isinstance(value.get(field), list)
+            and all(_is_decision_item(item) for item in value[field])
+            for field in ("target_items", "reviewed_samples")
+        )
+        and (
+            "item_review_statuses" not in value
+            or value.get("item_review_statuses") is None
+            or _is_object_list(value.get("item_review_statuses"))
+            and all(
+                all(isinstance(field, str) for field in item.values())
+                for item in value["item_review_statuses"]
             )
+        )
+        and (
+            "sample_assessments" not in value
+            or _is_object_list(value.get("sample_assessments"))
         )
         and (
             "projection_review_status" not in value
@@ -495,7 +519,7 @@ def _assemble_bundle(
     source_plans: Sequence[tuple[PathLike, _PlanDocument]],
 ) -> CohortReviewBundle:
     sources: list[_SourceDocument] = []
-    flattened: list[_BundleCohort] = []
+    flattened: list[CohortBundleCohort] = []
     workspace_ids: set[str] = set()
     for path, plan in source_plans:
         path = Path(path).resolve()
@@ -521,7 +545,7 @@ def _assemble_bundle(
             )
         )
 
-    body = {
+    body: _BundleBody = {
         "schema": COHORT_REVIEW_BUNDLE_SCHEMA,
         "schema_version": COHORT_REVIEW_BUNDLE_VERSION,
         "policy": {
@@ -557,40 +581,7 @@ def _assemble_bundle(
         ),
     }
     bundle_id = canonical_document_sha256(body)
-    bundle_document: _BundleDocument = {
-        "schema": COHORT_REVIEW_BUNDLE_SCHEMA,
-        "schema_version": COHORT_REVIEW_BUNDLE_VERSION,
-        "policy": {
-            "attention_rule": "all technical flags",
-            "projection_scope": "source workspace only",
-            "sample_policy": "retained by each exact source plan",
-        },
-        "workspace_count": len(sources),
-        "cohort_count": len(flattened),
-        "pending_item_count": sum(
-            source["plan"]["pending_item_count"] for source in sources
-        ),
-        "sample_item_count": sum(
-            source["plan"]["sample_item_count"] for source in sources
-        ),
-        "blocked_item_count": len(
-            {
-                item["queue_id"]
-                for source in sources
-                for item in source["plan"]["blocked_items"]
-            }
-        ),
-        "blocked_source_occurrence_count": sum(
-            source["plan"]["blocked_item_count"] for source in sources
-        ),
-        "sources": sources,
-        "cohorts": sorted(
-            flattened,
-            key=lambda value: (value["workspace_id"], value["cohort_id"]),
-        ),
-        "bundle_id": bundle_id,
-    }
-    return CohortReviewBundle(bundle_id, bundle_document)
+    return CohortReviewBundle(bundle_id, {**body, "bundle_id": bundle_id})
 
 
 def write_cohort_review_bundle(
@@ -598,8 +589,11 @@ def write_cohort_review_bundle(
 ) -> Path:
     """Publish a validated bundle without replacing an existing file."""
     document = _validated_bundle_document(bundle)
-    return Path(
-        _write_document_no_replace(output_path, document, "cohort review bundle")
+    return write_json_document_no_replace(
+        output_path,
+        document,
+        "cohort review bundle",
+        error_type=CohortReviewError,
     )
 
 
@@ -882,7 +876,11 @@ def _validated_observation_entry(
         entry.get("audio_sha256"), "Cohort observation audio sha256"
     )
     assessment = entry.get("assessment")
-    if key in seen or assessment not in {"heard", "bad"}:
+    if (
+        key in seen
+        or not isinstance(assessment, str)
+        or assessment not in {"heard", "bad"}
+    ):
         raise CohortReviewError("Cohort review observation authority is invalid")
     reasons = entry.get("defect_reasons", [])
     if (
@@ -909,13 +907,7 @@ def write_cohort_review_observations(
     """Atomically save exact listening progress, never terminal authority."""
     root = _validated_bundle_document(original)
     active = _validated_bundle_document(current)
-    allowed = {
-        (cohort["workspace_id"], cohort["cohort_id"], sample["queue_id"]): sample[
-            "audio_sha256"
-        ]
-        for cohort in active["cohorts"]
-        for sample in cohort["samples"]
-    }
+    allowed = _bundle_sample_audio_by_key(active)
     heard_keys = {
         (workspace_id, cohort_id, queue_id)
         for (workspace_id, cohort_id), queue_ids in heard.items()
@@ -989,10 +981,8 @@ def write_cohort_review_progress(
         if isinstance(original, CohortReviewBundle)
         else load_cohort_review_bundle(path)
     )
-    candidate = CohortReviewBundle(
-        _validated_bundle_document(current)["bundle_id"],
-        _validated_bundle_document(current),
-    )
+    candidate_document = _validated_bundle_document(current)
+    candidate = CohortReviewBundle(candidate_document["bundle_id"], candidate_document)
     expected = reconcile_cohort_review_bundle(root)
     if candidate.bundle_id != expected.bundle_id:
         raise CohortReviewError(
@@ -1105,43 +1095,12 @@ def load_cohort_review_bundle_samples(
 
 
 def _current_source_snapshot(source: _SourceDocument) -> _CurrentSourceSnapshot:
-    workspace = Path(source["workspace"])
-    configuration_path = workspace / "workspace.json"
-    if configuration_path.is_symlink():
-        raise CohortReviewError("Bundle workspace configuration cannot be a symlink")
-    configuration_payload = _read_bytes(
-        configuration_path, "bundle workspace configuration"
-    )
-    configuration = _decode_json(
-        configuration_payload,
-        "bundle workspace configuration",
-    )
-    if (
-        not isinstance(configuration, dict)
-        or configuration.get("workspace_id") != source["workspace_id"]
-        or configuration.get("config_fingerprint")
-        != source["plan"]["workspace_config_fingerprint"]
-    ):
-        raise CohortReviewError("Bundle workspace configuration identity changed")
-    queue_path = _contained_source_path(
-        workspace, configuration.get("queue"), "bundle queue"
-    )
-    output = _contained_source_path(
-        workspace, configuration.get("output"), "bundle output"
-    )
-    state_path = output / "generation-state.json"
-    if (
-        queue_path.is_symlink()
-        or state_path.is_symlink()
-        or output.is_symlink()
-        or not output.is_dir()
-    ):
-        raise CohortReviewError("Bundle queue, state and output must be safe")
-    queue_payload = _read_bytes(queue_path, "bundle queue")
+    paths = _sample_source_paths(source)
+    queue_payload = _read_bytes(paths.queue_path, "bundle queue")
     queue_sha256 = hashlib.sha256(queue_payload).hexdigest()
     if queue_sha256 != source["plan"]["queue_sha256"]:
         raise CohortReviewError("Bundle source queue changed")
-    state_payload = _read_bytes(state_path, "bundle state")
+    state_payload = _read_bytes(paths.state_path, "bundle state")
     state = _decode_json(state_payload, "bundle state")
     if not isinstance(state, dict):
         raise CohortReviewError("Bundle source state identity changed")
@@ -1149,12 +1108,12 @@ def _current_source_snapshot(source: _SourceDocument) -> _CurrentSourceSnapshot:
     if state.get("queue_sha256") != queue_sha256 or not _is_json_object(state_items):
         raise CohortReviewError("Bundle source state identity changed")
     return {
-        "output": output,
-        "configuration_path": configuration_path,
-        "configuration_sha256": hashlib.sha256(configuration_payload).hexdigest(),
-        "queue_path": queue_path,
+        "output": paths.output,
+        "configuration_path": paths.configuration_path,
+        "configuration_sha256": paths.configuration_sha256,
+        "queue_path": paths.queue_path,
         "queue_sha256": queue_sha256,
-        "state_path": state_path,
+        "state_path": paths.state_path,
         "queue": _decode_queue_records(queue_payload),
         "items": state_items,
         "state_sha256": hashlib.sha256(state_payload).hexdigest(),
@@ -1187,6 +1146,7 @@ def _source_cohort_decisions(workspace: Path) -> tuple[_DecisionDocument, ...]:
         if plan_path.is_symlink() or not plan_path.is_file():
             raise CohortReviewError("Cohort review decision plan is unavailable")
         plan = _validated_plan_document(_load_document(plan_path, "cohort review plan"))
+        _validate_plan_source_workspace(plan, workspace.name)
         _validate_decision_against_plan(plan, decision)
         decisions.append(decision)
     return tuple(decisions)
@@ -1212,7 +1172,7 @@ def _recovered_expansion_assessments(
             ]
             for decision in expansions:
                 assessed: dict[str, tuple[str, tuple[str, ...]]] = {}
-                for value in decision["sample_assessments"]:
+                for value in decision.get("sample_assessments", []):
                     queue_id = value.get("queue_id")
                     assessment = value.get("assessment")
                     reasons = value.get("defect_reasons", ())
@@ -1287,9 +1247,7 @@ def _reconciled_successors(
     expected_by_id: dict[str, tuple[str, str]] = {}
     clean_samples = 1
     used_terminal = False
-    seen_target_identities: set[tuple[tuple[object, object, object, object], ...]] = (
-        set()
-    )
+    seen_target_identities: set[tuple[tuple[str, str, str, str], ...]] = set()
     while remaining:
         target_identity = _cohort_target_identity(remaining)
         if target_identity in seen_target_identities:
@@ -1445,14 +1403,14 @@ def _assert_current_source_snapshot(current: _CurrentSourceSnapshot) -> None:
 
 def _cohort_target_identity(
     items: Sequence[_PlanItem | _DecisionItem],
-) -> tuple[tuple[object, object, object, object], ...]:
+) -> tuple[tuple[str, str, str, str], ...]:
     return tuple(
         sorted(
             (
-                value.get("queue_id"),
-                value.get("line_id"),
-                value.get("text_sha256"),
-                value.get("audio_sha256"),
+                value["queue_id"],
+                value["line_id"],
+                value["text_sha256"],
+                value["audio_sha256"],
             )
             for value in items
         )
@@ -1507,25 +1465,10 @@ def _reconciled_plan_document(
     cohorts: list[_PlanCohort] = []
     selected: list[str] = []
     for old in remaining:
-        items: list[_PlanItem] = [{**value, "sampled": False} for value in old["items"]]
-        sampled = {value["queue_id"] for value in items if value["technical_flags"]}
-        for bucket in ("short", "medium", "long"):
-            eligible = [
-                value
-                for value in items
-                if not value["technical_flags"] and value["length_bucket"] == bucket
-            ]
-            eligible.sort(
-                key=lambda value: (
-                    hashlib.sha256(
-                        f"{old['cohort_id']}\0{value['queue_id']}".encode("utf-8")
-                    ).hexdigest(),
-                    value["queue_id"],
-                )
-            )
-            sampled.update(
-                value["queue_id"] for value in eligible[:clean_samples_per_bucket]
-            )
+        items = old["items"]
+        sampled = _sample_cohort_queue_ids(
+            old["cohort_id"], items, clean_samples_per_bucket
+        )
         selected.extend(value["queue_id"] for value in items)
         cohorts.append(
             {
@@ -1576,8 +1519,7 @@ def _validated_progress_document(
             "progress_id",
         }
         or document.get("schema") != COHORT_REVIEW_PROGRESS_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != COHORT_REVIEW_PROGRESS_VERSION
+        or not has_schema_version(document, COHORT_REVIEW_PROGRESS_VERSION)
         or document.get("root_bundle_id") != original.bundle_id
     ):
         raise CohortReviewError("Cohort review progress is malformed")
@@ -1598,7 +1540,7 @@ def _validated_progress_document(
 
 
 def _load_source_sample_records(
-    source: _SourceDocument, source_cohorts: Sequence[_BundleCohort]
+    source: _SourceDocument, source_cohorts: Sequence[CohortBundleCohort]
 ) -> tuple[Path, dict[str, ReviewItem]]:
     loaded = _load_sample_source(source)
     sample_by_id = _source_samples_by_id(source_cohorts)
@@ -1645,24 +1587,12 @@ def _sample_source_paths(source: _SourceDocument) -> _SampleSourcePaths:
         raise CohortReviewError("Bundle workspace configuration cannot be a symlink")
     payload = _read_bytes(configuration_path, "bundle workspace configuration")
     configuration = _decode_json(payload, "bundle workspace configuration")
-    if (
-        not isinstance(configuration, dict)
-        or configuration.get("workspace_id") != source["workspace_id"]
-        or configuration.get("config_fingerprint")
-        != source["plan"]["workspace_config_fingerprint"]
-    ):
-        raise CohortReviewError("Bundle workspace configuration identity changed")
-    queue_path = _contained_source_path(
-        workspace, configuration.get("queue"), "bundle queue"
-    )
-    output = _contained_source_path(
-        workspace, configuration.get("output"), "bundle output"
-    )
-    if not output.is_dir() or output.is_symlink():
-        raise CohortReviewError("Bundle output directory is unavailable or unsafe")
-    state_path = output / "generation-state.json"
-    if queue_path.is_symlink() or state_path.is_symlink():
-        raise CohortReviewError("Bundle queue and state must not be symlinks")
+    if not isinstance(configuration, dict):
+        raise CohortReviewError("Bundle workspace configuration must be an object")
+    _validate_bound_workspace_identity(workspace, configuration, source["plan"])
+    _validate_bound_workspace_fingerprint(configuration, source["plan"])
+    queue_path, state_path = _bound_workspace_paths(workspace)
+    output = state_path.parent
     return _SampleSourcePaths(
         workspace=workspace,
         configuration_path=configuration_path,
@@ -1674,8 +1604,8 @@ def _sample_source_paths(source: _SourceDocument) -> _SampleSourcePaths:
 
 
 def _source_samples_by_id(
-    source_cohorts: Sequence[_BundleCohort],
-) -> dict[str, tuple[_BundleCohort, _BundleSample]]:
+    source_cohorts: Sequence[CohortBundleCohort],
+) -> dict[str, tuple[CohortBundleCohort, _BundleSample]]:
     sample_by_id = {
         sample["queue_id"]: (cohort, sample)
         for cohort in source_cohorts
@@ -1689,7 +1619,7 @@ def _source_samples_by_id(
 def _review_item_from_sample(
     loaded: _LoadedSampleSource,
     queue_id: str,
-    cohort: _BundleCohort,
+    cohort: CohortBundleCohort,
     sample: _BundleSample,
 ) -> ReviewItem:
     queue_item = loaded.queue_records.get(queue_id)
@@ -1718,24 +1648,28 @@ def _review_item_from_sample(
 def _bound_sample_review_item(
     loaded: _LoadedSampleSource,
     queue_id: str,
-    cohort: _BundleCohort,
+    cohort: CohortBundleCohort,
     sample: _BundleSample,
     queue_item: dict[str, object],
     result: dict[str, object],
     text: str,
     audio: Path,
 ) -> ReviewItem:
+    try:
+        item_sha256 = canonical_document_sha256(result)
+    except ValueError as error:
+        raise CohortReviewError(
+            f"Bundle sample authority is invalid: {queue_id}"
+        ) from error
     quality = result.get("quality")
     quality = quality if isinstance(quality, dict) else {}
-    duration = quality.get("duration_seconds")
-    duration = (
-        float(duration) if isinstance(duration, (int, float)) and duration > 0 else None
-    )
-    peak = quality.get("peak")
-    peak = float(peak) if isinstance(peak, (int, float)) else None
+    duration = optional_finite_number(quality.get("duration_seconds"))
+    if duration is not None and duration <= 0:
+        duration = None
+    peak = optional_finite_number(quality.get("peak"))
     words = len(re.findall(r"[\w’'-]+", text, flags=re.UNICODE))
-    baseline_wpm = sample.get("pace_baseline_wpm")
-    pace_ratio = sample.get("pace_ratio")
+    baseline_wpm = optional_finite_number(sample.get("pace_baseline_wpm"))
+    pace_ratio = optional_finite_number(sample.get("pace_ratio"))
     seed = result.get("seed")
     if seed is not None and type(seed) is not int:
         raise CohortReviewError(f"Bundle sample seed is invalid: {queue_id}")
@@ -1757,25 +1691,23 @@ def _bound_sample_review_item(
         authority=ReviewAuthority(
             queue_sha256=loaded.queue_sha256,
             state_sha256=loaded.state_sha256,
-            item_sha256=canonical_document_sha256(result),
+            item_sha256=item_sha256,
             audio_sha256=sample["audio_sha256"],
         ),
         state=loaded.paths.state_path,
         queue=loaded.paths.queue_path,
         duration_seconds=duration,
         words_per_minute=(
-            sample.get("words_per_minute")
+            optional_finite_number(sample.get("words_per_minute"))
             if isinstance(sample.get("words_per_minute"), (int, float))
             else None
             if duration is None
-            else float(words * 60 / duration)
+            else optional_finite_number(words * 60 / duration)
         ),
         peak=peak,
         technical_flags=tuple(sample["technical_flags"]),
-        pace_baseline_wpm=(
-            float(baseline_wpm) if isinstance(baseline_wpm, (int, float)) else None
-        ),
-        pace_ratio=float(pace_ratio) if isinstance(pace_ratio, (int, float)) else None,
+        pace_baseline_wpm=baseline_wpm,
+        pace_ratio=pace_ratio,
         pace_baseline_scope=(
             sample.get("pace_baseline_scope")
             if isinstance(sample.get("pace_baseline_scope"), str)
@@ -1810,6 +1742,7 @@ def _contained_source_path(root: PathLike, relative: object, label: str) -> Path
     if (
         not isinstance(relative, str)
         or not relative
+        or "\x00" in relative
         or Path(relative).is_absolute()
         or "\\" in relative
         or any(part in {"", ".", ".."} for part in Path(relative).parts)
@@ -1826,14 +1759,14 @@ def _contained_source_path(root: PathLike, relative: object, label: str) -> Path
 
 def _read_bytes(path: PathLike, label: str) -> bytes:
     try:
-        return Path(path).read_bytes()
+        return read_regular_bytes(path)
     except OSError as error:
         raise CohortReviewError(f"Unable to read {label} {path}: {error}") from error
 
 
 def _decode_json(payload: bytes, label: str) -> object:
     try:
-        return json.loads(payload.decode("utf-8"))
+        return decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CohortReviewError(f"Unable to decode {label}: {error}") from error
 
@@ -1841,7 +1774,7 @@ def _decode_json(payload: bytes, label: str) -> object:
 def _decode_queue_records(payload: bytes) -> dict[str, dict[str, object]]:
     try:
         rows = payload.decode("utf-8").splitlines()
-        records = [json.loads(row) for row in rows]
+        records = [decode_json(row) for row in rows]
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CohortReviewError(f"Unable to decode bundle queue: {error}") from error
     if not records or not isinstance(records[0], dict):
@@ -1906,43 +1839,33 @@ def execute_cohort_bundle_decision(
     projection = execute_cohort_review_decision(
         source["workspace"], source_plan, cohort_decision
     )
-    if isinstance(projection, CohortReviewProjection):
-        next_sources: list[tuple[PathLike, _PlanDocument]] = []
-        for value in document["sources"]:
-            if value["workspace_id"] != workspace_id:
-                next_sources.append((value["workspace"], value["plan"]))
-                continue
-            reconciled = _reconcile_cohort_source(value)
-            if reconciled is not None:
-                next_sources.append(reconciled)
-        next_bundle = _assemble_bundle(next_sources)
-        return CohortBundleProjection(
-            bundle_id=current.bundle_id,
-            workspace_id=workspace_id,
-            cohort_id=cohort_id,
-            queue_ids=projection.queue_ids,
-            review_status=projection.review_status,
-            next_bundle=next_bundle,
-        )
-    next_sources = []
+    next_sources: list[tuple[PathLike, _PlanDocument]] = []
     for value in document["sources"]:
         if value["workspace_id"] != workspace_id:
             next_sources.append((value["workspace"], value["plan"]))
-            continue
-        next_sources.append(
-            (
-                value["workspace"],
-                _validated_plan_document(projection.document),
+        elif isinstance(projection, CohortReviewProjection):
+            reconciled = _reconcile_cohort_source(value)
+            if reconciled is not None:
+                next_sources.append(reconciled)
+        else:
+            next_sources.append(
+                (value["workspace"], _validated_plan_document(projection.document))
             )
-        )
-    next_bundle = _assemble_bundle(next_sources)
     return CohortBundleProjection(
         bundle_id=current.bundle_id,
         workspace_id=workspace_id,
         cohort_id=cohort_id,
-        queue_ids=(),
-        review_status=None,
-        next_bundle=next_bundle,
+        queue_ids=(
+            projection.queue_ids
+            if isinstance(projection, CohortReviewProjection)
+            else ()
+        ),
+        review_status=(
+            projection.review_status
+            if isinstance(projection, CohortReviewProjection)
+            else None
+        ),
+        next_bundle=_assemble_bundle(next_sources),
     )
 
 
@@ -2000,10 +1923,7 @@ def _validate_bundle_document_header(document: dict[str, object]) -> None:
         raise CohortReviewError("Cohort review bundle fields are invalid")
     if document.get("schema") != COHORT_REVIEW_BUNDLE_SCHEMA:
         raise CohortReviewError("Unsupported cohort review bundle schema")
-    if (
-        type(document.get("schema_version")) is not int
-        or document.get("schema_version") != COHORT_REVIEW_BUNDLE_VERSION
-    ):
+    if not has_schema_version(document, COHORT_REVIEW_BUNDLE_VERSION):
         raise CohortReviewError("Unsupported cohort review bundle version")
 
 
@@ -2125,8 +2045,8 @@ def _validated_bundle_cohorts(values: Sequence[object]) -> list[dict[str, object
 
 def _flatten_validated_sources(
     expected_cohorts: Sequence[tuple[str, str, str, _PlanCohort]],
-) -> list[_BundleCohort]:
-    flattened: list[_BundleCohort] = []
+) -> list[CohortBundleCohort]:
+    flattened: list[CohortBundleCohort] = []
     for path, workspace_id, plan_id, cohort in expected_cohorts:
         sampled = set(cohort["sample_queue_ids"])
         samples: list[_BundleSample] = []

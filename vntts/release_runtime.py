@@ -9,10 +9,12 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
-from vntts_artifacts.file_integrity import sha256_file
+from vntts.cleanup import temporary_directory
+from vntts.document_identity import sha256_file
+from vntts.path_safety import copy_regular_file
 
 BACKEND = "pocket-tts"
 PYTHON_VERSION = "3.14"
@@ -115,16 +117,38 @@ def _promote_windows_runtime(
     distribution_root = managed_interpreter.parent
     if not distribution_root.resolve().is_relative_to(managed_root.resolve()):
         raise RuntimeError("Managed Python distribution escaped its staging root")
-    shutil.move(distribution_root, runtime_root)
+    shutil.move(
+        distribution_root,
+        runtime_root,
+        copy_function=partial(copy_regular_file, preserve_metadata=True),
+    )
     shutil.rmtree(managed_root)
     return _runtime_interpreter(runtime_root, "win32")
 
 
 def _remove_runtime_entrypoint(path: Path) -> None:
-    if path.is_dir() and not path.is_symlink():
+    if path.is_junction():
+        path.rmdir()
+    elif path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
     else:
         path.unlink()
+
+
+def _prune_runtime_scripts(runtime_root: Path, platform_name: str) -> None:
+    scripts = runtime_root / ("Scripts" if platform_name == "win32" else "bin")
+    if scripts.is_symlink() or scripts.is_junction():
+        _remove_runtime_entrypoint(scripts)
+        return
+    if not scripts.is_dir():
+        return
+    if platform_name == "win32":
+        _remove_runtime_entrypoint(scripts)
+        return
+    runtime_interpreter = _runtime_interpreter(runtime_root, platform_name)
+    for candidate in scripts.iterdir():
+        if candidate != runtime_interpreter:
+            _remove_runtime_entrypoint(candidate)
 
 
 def _prune_runtime_entrypoints(
@@ -139,15 +163,8 @@ def _prune_runtime_entrypoints(
         for candidate in root.iterdir():
             if candidate.name.startswith("."):
                 _remove_runtime_entrypoint(candidate)
-    runtime_interpreter = _runtime_interpreter(runtime_root, platform_name)
-    scripts = runtime_root / ("Scripts" if platform_name == "win32" else "bin")
-    if scripts.is_dir():
-        for candidate in scripts.iterdir():
-            if platform_name == "win32" or candidate != runtime_interpreter:
-                _remove_runtime_entrypoint(candidate)
+    _prune_runtime_scripts(runtime_root, platform_name)
     if platform_name == "win32":
-        if scripts.is_dir():
-            scripts.rmdir()
         return
     for candidate in managed_interpreter.parent.iterdir():
         if candidate != managed_interpreter:
@@ -237,9 +254,14 @@ def _probe_relocated_runtime(
     backend: str = BACKEND,
     probe_modules: tuple[str, ...] = PROBE_MODULES,
 ) -> dict[str, object]:
-    with TemporaryDirectory(prefix="vntts-runtime-relocation-") as directory:
+    with temporary_directory(prefix="vntts-runtime-relocation-") as directory:
         relocated = Path(directory) / "speech-runtimes"
-        shutil.copytree(speech_runtimes, relocated, symlinks=True)
+        shutil.copytree(
+            speech_runtimes,
+            relocated,
+            symlinks=True,
+            copy_function=partial(copy_regular_file, preserve_metadata=True),
+        )
         runtime_root = relocated / backend
         interpreter = _runtime_interpreter(runtime_root, platform_name)
         completed = _run_checked(
@@ -263,7 +285,36 @@ def _probe_relocated_runtime(
         return report
 
 
-def stage_pocket_runtime(
+def _prepare_runtime_destination(
+    destination: Path, backend_project: Path, *, append: bool
+) -> Path:
+    if destination.is_symlink() or destination.is_junction():
+        raise RuntimeError("Speech runtime staging destination must not be an alias")
+    destination = destination.resolve()
+    lockfile = backend_project / "uv.lock"
+    if not lockfile.is_file():
+        raise FileNotFoundError(f"Speech runtime lockfile is missing: {lockfile}")
+    if backend_project.is_relative_to(destination):
+        raise RuntimeError(
+            "Speech runtime staging destination contains the source project"
+        )
+    if append:
+        for name in ("_python", backend_project.name):
+            path = destination / name
+            if path.is_symlink() or path.is_junction():
+                raise RuntimeError(
+                    f"Speech runtime staging directory must not be an alias: {path}"
+                )
+    if destination.exists() and not append:
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    runtime_root = destination / backend_project.name
+    if runtime_root.exists():
+        shutil.rmtree(runtime_root)
+    return destination
+
+
+def stage_speech_runtime(
     project_root: str | os.PathLike[str],
     destination: str | os.PathLike[str],
     *,
@@ -279,26 +330,13 @@ def stage_pocket_runtime(
     if backend == "qwen-tts" and platform_name != "win32":
         raise ValueError("The Qwen release runtime currently supports Windows only")
     project_root = Path(project_root).resolve()
-    destination = Path(destination)
-    if destination.is_symlink() or destination.is_junction():
-        raise RuntimeError("Pocket runtime staging destination must not be an alias")
-    destination = destination.resolve()
     backend_project = project_root / "backends" / backend
     lockfile = backend_project / "uv.lock"
-    if not lockfile.is_file():
-        raise FileNotFoundError(f"Pocket runtime lockfile is missing: {lockfile}")
-    if backend_project.is_relative_to(destination):
-        raise RuntimeError(
-            "Pocket runtime staging destination contains the source project"
-        )
-    if destination.exists() and not append:
-        shutil.rmtree(destination)
-    destination.mkdir(parents=True, exist_ok=True)
-
+    destination = _prepare_runtime_destination(
+        Path(destination), backend_project, append=append
+    )
     managed_root = destination / "_python"
     runtime_root = destination / backend
-    if runtime_root.exists():
-        shutil.rmtree(runtime_root)
     _run_checked(
         run,
         (
@@ -323,7 +361,7 @@ def stage_pocket_runtime(
             managed_interpreter,
             runtime_root,
         )
-        with TemporaryDirectory(prefix=f"vntts-{backend}-lock-") as directory:
+        with temporary_directory(prefix=f"vntts-{backend}-lock-") as directory:
             requirements = Path(directory) / "requirements.txt"
             _run_checked(
                 run,
@@ -435,6 +473,10 @@ def stage_pocket_runtime(
     return manifest_path
 
 
+# Preserve the public name used before Qwen release runtimes were supported.
+stage_pocket_runtime = stage_speech_runtime
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Stage a locked speech runtime for a release bundle."
@@ -446,7 +488,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--backend", choices=(BACKEND, "qwen-tts"), default=BACKEND)
     parser.add_argument("--append", action="store_true")
     arguments = parser.parse_args(argv)
-    manifest = stage_pocket_runtime(
+    manifest = stage_speech_runtime(
         arguments.project_root,
         arguments.destination,
         uv_executable=arguments.uv,

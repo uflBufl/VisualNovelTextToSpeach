@@ -1,8 +1,10 @@
 import hashlib
 import json
+import os
 import unittest
 import wave
-from contextlib import redirect_stderr
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,9 +17,11 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import text_sha256, write_generated_audio_manifest
 from vntts_artifacts.live_sequence import write_live_sequence_plan
 
+from tests.replay_fixtures import write_sequence_replay_corpus
+from tests.story_fixtures import write_verified_source_story
 from tests.symlink_support import symlink_or_skip
-from tests.test_chapter_voice_preload import write_verified_source_story
 from vntts.dialog_capture import CapturedDialogFrame
+from vntts.live import LiveDialogReader
 from vntts.live_replay import (
     LiveReplayRunner,
     LiveReplaySequenceBinding,
@@ -183,166 +187,6 @@ class LiveReplayTest(unittest.TestCase):
         )
         return path
 
-    def create_sequence_corpus(
-        self,
-        directory,
-        *,
-        mode,
-        story_lines,
-        events,
-        dialogue_line_ids,
-        observations=None,
-        expected_counts,
-        focus_probes=(),
-        generated_line_id=None,
-    ):
-        root = Path(directory)
-        story = root / "story.jsonl"
-        story_records = [
-            {
-                "record_type": "metadata",
-                "schema": "vntts.story-index",
-                "schema_version": 1,
-                "line_count": len(story_lines),
-                "source_audio_completion": "duration-seconds",
-            }
-        ]
-        story_records.extend(
-            {
-                "record_type": "line",
-                "kind": "dialogue",
-                **line,
-            }
-            for line in story_lines
-        )
-        story.write_text(
-            "\n".join(json.dumps(record) for record in story_records) + "\n",
-            encoding="utf-8",
-        )
-        plan = root / "live-sequence.json"
-        write_live_sequence_plan(
-            plan,
-            {
-                "game_id": "replay-test",
-                "producer": {"name": "tests", "version": "1"},
-                "source_extract_sha256": hashlib.sha256(b"fixture").hexdigest(),
-                "chapters": [
-                    {
-                        "chapter": "1",
-                        "entry_event_ids": [events[0]["event_id"]],
-                        "events": events,
-                    }
-                ],
-            },
-            story,
-        )
-        by_id = {line["line_id"]: line for line in story_lines}
-        observation_values = observations or {
-            line_id: [(by_id[line_id]["speaker"], by_id[line_id]["text"])]
-            for line_id in dialogue_line_ids
-        }
-        dialogue = []
-        for dialogue_index, line_id in enumerate(dialogue_line_ids):
-            line = by_id[line_id]
-            event_id = next(
-                event["event_id"] for event in events if event.get("line_id") == line_id
-            )
-            frames = []
-            for frame_index, (speaker, text) in enumerate(observation_values[line_id]):
-                image = Image.new("RGB", (80, 40), "black")
-                ImageDraw.Draw(image).rectangle(
-                    (8 + frame_index, 16, 28 + frame_index, 24),
-                    fill="white",
-                )
-                frame = root / f"sequence-{dialogue_index}-{frame_index}.png"
-                image.save(frame)
-                frames.append(
-                    {
-                        "path": frame.name,
-                        "sha256": sha256_file(frame),
-                        "observed_character": speaker,
-                        "observed_text": text,
-                    }
-                )
-            dialogue.append(
-                {
-                    "frames": frames,
-                    "character": line["speaker"],
-                    "text": line["text"],
-                    "event_id": event_id,
-                    "line_id": line_id,
-                    "expect_playback": line.get("expect_playback", True),
-                    "source_audio_status": line.get("source_audio_status", "absent"),
-                    "source_audio_duration_seconds": line.get(
-                        "source_audio_duration_seconds"
-                    ),
-                    "expected_source": None
-                    if not line.get("expect_playback", True)
-                    else (
-                        "generated"
-                        if line_id == generated_line_id
-                        else "live:replay-live-tts"
-                    ),
-                }
-            )
-        corpus = {
-            "schema_version": 2,
-            "name": f"Sequence {mode} fixture",
-            "dialogue": dialogue,
-            "live_sequence": {
-                "mode": mode,
-                "story_index": {
-                    "path": story.name,
-                    "sha256": sha256_file(story),
-                },
-                "plan": {"path": plan.name, "sha256": sha256_file(plan)},
-                "focus_probes": list(focus_probes),
-                "expected": {
-                    "event_ids": [
-                        next(
-                            event["event_id"]
-                            for event in events
-                            if event.get("line_id") == line_id
-                        )
-                        for line_id in dialogue_line_ids
-                    ],
-                    "line_ids": list(dialogue_line_ids),
-                    **expected_counts,
-                },
-            },
-        }
-        if generated_line_id is not None:
-            generated = root / "sequence-generated.wav"
-            with wave.open(str(generated), "wb") as output:
-                output.setnchannels(1)
-                output.setsampwidth(2)
-                output.setframerate(24_000)
-                output.writeframes(b"\0\0\1\0\0\0")
-            generated_manifest = root / "sequence-generated.json"
-            generated_line = by_id[generated_line_id]
-            write_generated_audio_manifest(
-                generated_manifest,
-                {"fixture": "sequence-replay"},
-                [
-                    {
-                        "line_id": generated_line_id,
-                        "text_sha256": text_sha256(generated_line["text"]),
-                        "audio": generated.name,
-                        "audio_format": "wav-pcm16-mono",
-                        "audio_sha256": sha256_file(generated),
-                        "sample_rate": 24_000,
-                        "sample_count": 3,
-                    }
-                ],
-            )
-            corpus["generated_audio_manifest"] = {
-                "path": generated_manifest.name,
-                "sha256": sha256_file(generated_manifest),
-            }
-        path = root / f"sequence-{mode}.json"
-        path.write_text(json.dumps(corpus), encoding="utf-8")
-        return path
-
     @staticmethod
     def recognize(frame):
         marker = frame.image.getpixel((0, 0))
@@ -441,7 +285,7 @@ class LiveReplayTest(unittest.TestCase):
                     "line_id": "story:shadow:3",
                 },
             ]
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 temporary_directory,
                 mode="shadow",
                 story_lines=story_lines,
@@ -467,11 +311,22 @@ class LiveReplayTest(unittest.TestCase):
                 generated_line_id="story:shadow:2",
             )
 
+            corpus = load_live_replay_corpus(path)
             report = LiveReplayRunner(
-                load_live_replay_corpus(path),
+                corpus,
                 interval_seconds=0.002,
                 timeout_seconds=4,
             ).run()
+
+            self.assertEqual(report["provenance"]["corpus_sha256"], sha256_file(path))
+            self.assertEqual(
+                report["provenance"]["story_index_sha256"],
+                sha256_file(corpus.live_sequence.story_index.path),
+            )
+            self.assertEqual(
+                report["provenance"]["live_sequence_plan_sha256"],
+                sha256_file(corpus.live_sequence.plan.path),
+            )
 
         self.assertTrue(report["successful"], report)
         self.assertTrue(report["sequence"]["successful"])
@@ -526,7 +381,7 @@ class LiveReplayTest(unittest.TestCase):
                     "line_id": "story:repeat:2",
                 },
             ]
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 temporary_directory,
                 mode="audio-manual",
                 story_lines=story_lines,
@@ -617,7 +472,7 @@ class LiveReplayTest(unittest.TestCase):
                     "line_id": "story:prefix:3",
                 },
             ]
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 temporary_directory,
                 mode="audio-auto",
                 story_lines=story_lines,
@@ -783,7 +638,7 @@ class LiveReplayTest(unittest.TestCase):
                     "line_id": "story:branch:5",
                 },
             ]
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 temporary_directory,
                 mode="audio-manual",
                 story_lines=story_lines,
@@ -1003,7 +858,7 @@ class LiveReplayTest(unittest.TestCase):
                     "line_id": "story:contract:1",
                 }
             ]
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 temporary_directory,
                 mode="shadow",
                 story_lines=story_lines,
@@ -1081,7 +936,7 @@ class LiveReplayTest(unittest.TestCase):
                     "line_id": "story:ordered:2",
                 },
             ]
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 temporary_directory,
                 mode="shadow",
                 story_lines=story_lines,
@@ -1124,7 +979,7 @@ class LiveReplayTest(unittest.TestCase):
                     "line_id": "story:bound:1",
                 }
             ]
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 temporary_directory,
                 mode="shadow",
                 story_lines=story_lines,
@@ -1196,7 +1051,7 @@ class LiveReplayTest(unittest.TestCase):
 
     def test_sequence_validation_uses_captured_plan_bytes(self):
         with TemporaryDirectory() as directory:
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 directory,
                 mode="shadow",
                 story_lines=[
@@ -1414,6 +1269,265 @@ class LiveReplayTest(unittest.TestCase):
             )
         )
 
+    def test_sequence_frame_failure_still_shuts_down_controller_once(self):
+        with TemporaryDirectory() as directory:
+            line = {
+                "line_id": "story:cleanup:1",
+                "chapter": "1",
+                "sequence": 1,
+                "speaker": "Rhiannon",
+                "text": "Hello.",
+                "source_audio_status": "absent",
+            }
+            path = write_sequence_replay_corpus(
+                directory,
+                mode="shadow",
+                story_lines=[line],
+                events=[
+                    {
+                        "event_id": "cleanup-1",
+                        "sequence": 1,
+                        "kind": "speech",
+                        "control": "terminal",
+                        "successors": [],
+                        "line_id": line["line_id"],
+                    }
+                ],
+                dialogue_line_ids=(line["line_id"],),
+                expected_counts={
+                    "ocr_calls": 1,
+                    "bounded_recoveries": 0,
+                    "key_dispatch_attempts": 0,
+                    "confirmed_key_dispatches": 0,
+                },
+            )
+            corpus = load_live_replay_corpus(path)
+            primary = OSError("frame stop failed")
+            released = []
+
+            def stop_frames(_source):
+                released.append("frames")
+                raise primary
+
+            def shutdown(_controller):
+                released.append("controller")
+                raise KeyboardInterrupt("controller cleanup failed")
+
+            with (
+                patch("vntts.live_replay.ReplayFrameSource.stop", stop_frames),
+                patch("vntts.live_replay.ReplayAppController.shutdown", shutdown),
+                patch("vntts.live_replay.LiveDialogReader", return_value=Mock()),
+                patch(
+                    "vntts.live_replay.ThreadPoolExecutor",
+                    side_effect=lambda **_kwargs: Mock(),
+                ),
+                patch("vntts.live_replay.Event.wait", return_value=True),
+                # This ordering test submits no work: explicitly release its
+                # snapshots rather than leave a fake controller's gate pending.
+                patch(
+                    "vntts.live_replay._ReplaySnapshots.close",
+                    lambda owner: owner._remove_directories(),
+                ),
+                self.assertRaises(OSError) as caught,
+            ):
+                LiveReplayRunner(corpus).run()
+            self.assertIs(caught.exception, primary)
+            self.assertEqual(released, ["frames", "controller"])
+            self.assertEqual(
+                primary.__notes__,
+                ["Replay controller cleanup failed: controller cleanup failed"],
+            )
+
+    def test_legacy_timeout_drains_pending_ocr_before_executor_cancellation(self):
+        release = Event()
+        entered = Event()
+        normal_wait = LiveDialogReader.wait
+        with ThreadPoolExecutor(max_workers=1) as ocr_executor:
+
+            def occupy_worker():
+                entered.set()
+                release.wait()
+
+            ocr_executor.submit(occupy_worker)
+            normal_shutdown = ocr_executor.shutdown
+
+            def shutdown(*, wait=True, cancel_futures=False):
+                normal_shutdown(wait=False, cancel_futures=cancel_futures)
+                release.set()
+                normal_shutdown(wait=wait)
+
+            def executor_factory(*args, **kwargs):
+                if kwargs.get("thread_name_prefix") == "replay-ocr":
+                    return ocr_executor
+                return ThreadPoolExecutor(*args, **kwargs)
+
+            def wait_for_reader(reader, **kwargs):
+                release.set()
+                return normal_wait(reader, **kwargs)
+
+            try:
+                self.assertTrue(entered.wait(timeout=2))
+                with (
+                    TemporaryDirectory() as temporary_directory,
+                    patch(
+                        "vntts.live_replay.ThreadPoolExecutor",
+                        side_effect=executor_factory,
+                    ),
+                    patch.object(ocr_executor, "shutdown", side_effect=shutdown),
+                    patch.object(LiveDialogReader, "wait", wait_for_reader),
+                ):
+                    path = self.create_corpus(temporary_directory)
+                    report = LiveReplayRunner(
+                        load_live_replay_corpus(path),
+                        interval_seconds=0.002,
+                        timeout_seconds=0.01,
+                    ).run()
+                self.assertFalse(report["successful"])
+                self.assertTrue(any("timed out" in error for error in report["errors"]))
+            finally:
+                release.set()
+
+    def test_cli_refuses_reports_over_loaded_inputs_before_replay(self):
+        with TemporaryDirectory() as directory:
+            path = write_sequence_replay_corpus(
+                directory,
+                mode="shadow",
+                story_lines=[
+                    {
+                        "line_id": "story:1",
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker": "Rhiannon",
+                        "text": "A generated line.",
+                    }
+                ],
+                events=[
+                    {
+                        "event_id": "event-1",
+                        "sequence": 1,
+                        "kind": "speech",
+                        "control": "terminal",
+                        "successors": [],
+                        "line_id": "story:1",
+                    }
+                ],
+                dialogue_line_ids=("story:1",),
+                expected_counts={
+                    "ocr_calls": 1,
+                    "bounded_recoveries": 0,
+                    "key_dispatch_attempts": 0,
+                    "confirmed_key_dispatches": 0,
+                },
+                generated_line_id="story:1",
+            )
+            root = path.parent
+            sources = [
+                path,
+                root / "sequence-0-0.png",
+                root / "sequence-generated.json",
+                root / "sequence-generated.wav",
+                root / "story.jsonl",
+                root / "live-sequence.json",
+            ]
+            original = {source: source.read_bytes() for source in sources}
+            for source in sources:
+                for alias in ("direct", "hardlink", "symlink"):
+                    with self.subTest(input=source.name, alias=alias):
+                        output = source if alias == "direct" else root / "report.json"
+                        if alias == "hardlink":
+                            os.link(source, output)
+                        elif alias == "symlink":
+                            symlink_or_skip(output, source)
+                        errors = StringIO()
+                        with (
+                            patch("vntts.live_replay.LiveReplayRunner") as runner,
+                            redirect_stderr(errors),
+                        ):
+                            self.assertEqual(
+                                main([str(path), "--output", str(output)]), 1
+                            )
+                        self.assertIn(
+                            "Output must differ from input files", errors.getvalue()
+                        )
+                        runner.assert_not_called()
+                        self.assertEqual(
+                            {item: item.read_bytes() for item in sources}, original
+                        )
+                        self.assertEqual(output.read_bytes(), original[source])
+                        if alias != "direct":
+                            output.unlink()
+
+    def test_cli_refuses_default_report_alias_of_loaded_frame(self):
+        with TemporaryDirectory() as directory:
+            path = self.create_corpus(directory)
+            image = path.parent / "first.png"
+            original = image.read_bytes()
+            output = path.with_suffix(".report.json")
+            os.link(image, output)
+            with (
+                patch("vntts.live_replay.LiveReplayRunner") as runner,
+                redirect_stderr(StringIO()),
+            ):
+                self.assertEqual(main([str(path)]), 1)
+            runner.assert_not_called()
+            self.assertEqual(image.read_bytes(), original)
+            self.assertEqual(output.read_bytes(), original)
+
+    def test_cli_replaces_an_existing_report(self):
+        with TemporaryDirectory() as directory:
+            path = self.create_corpus(directory)
+            original = path.read_bytes()
+            output = path.parent / "report.json"
+            output.write_text("old report", encoding="utf-8")
+            with (
+                patch(
+                    "vntts.live_replay.LiveReplayRunner.run",
+                    return_value={"successful": True},
+                ) as run,
+                redirect_stdout(StringIO()),
+            ):
+                self.assertEqual(main([str(path), "--output", str(output)]), 0)
+            run.assert_called_once()
+            self.assertEqual(
+                json.loads(output.read_text(encoding="utf-8")), {"successful": True}
+            )
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_cli_reports_output_publication_failure(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = self.create_corpus(temporary_directory)
+            output = Path(temporary_directory) / "report.json"
+            output.write_text("old report", encoding="utf-8")
+            errors = StringIO()
+            with (
+                patch(
+                    "vntts.live_replay.LiveReplayRunner.run",
+                    return_value={"successful": True},
+                ),
+                patch(
+                    "vntts.live_replay.atomic_write_json",
+                    side_effect=PermissionError("output is read-only"),
+                ),
+                redirect_stderr(errors),
+            ):
+                result = main([str(path), "--output", str(output)])
+            self.assertEqual(result, 1)
+            self.assertIn("output is read-only", errors.getvalue())
+            self.assertEqual(output.read_text(encoding="utf-8"), "old report")
+
+    def test_corpus_rejects_noninteger_schema_versions_as_format_errors(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = self.create_corpus(temporary_directory)
+            document = json.loads(path.read_text(encoding="utf-8"))
+            for version in (True, 1.0, [], {}, None, "1"):
+                with self.subTest(version=version):
+                    document["schema_version"] = version
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        ValueError, "schema version|schema_version"
+                    ):
+                        load_live_replay_corpus(path)
+
     def test_cli_rejects_an_empty_corpus(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "empty.json"
@@ -1580,6 +1694,35 @@ class LiveReplayTest(unittest.TestCase):
                 interval_seconds=0.002,
                 timeout_seconds=3,
             ).run()
+            document = json.loads(path.read_text(encoding="utf-8"))
+            for item in document["dialogue"]:
+                item.pop("expected_source")
+            for expected_source, expected_success in (
+                ("generated", True),
+                ("live:replay-live-tts", False),
+            ):
+                with self.subTest(expected_source=expected_source):
+                    document["dialogue"][2]["expected_source"] = expected_source
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    optional_report = LiveReplayRunner(
+                        load_live_replay_corpus(path),
+                        interval_seconds=0.002,
+                        timeout_seconds=3,
+                    ).run()
+                    self.assertEqual(
+                        optional_report["observed_dialogue"],
+                        report["observed_dialogue"],
+                    )
+                    self.assertEqual(
+                        optional_report["route_sources"], report["route_sources"]
+                    )
+                    self.assertEqual(
+                        optional_report["successful"], expected_success, optional_report
+                    )
+                    self.assertEqual(
+                        optional_report["provenance"],
+                        report["provenance"] | {"corpus_sha256": sha256_file(path)},
+                    )
 
         self.assertTrue(report["successful"], report)
         self.assertEqual(
@@ -1652,7 +1795,7 @@ class LiveReplayTest(unittest.TestCase):
             frame = root / "frame.png"
             Image.new("RGB", (20, 20), "black").save(frame)
             expected_sha256 = sha256_file(frame)
-            original_open = Path.open
+            original_open = open
             swapped = False
 
             class SwapAfterRead:
@@ -1677,11 +1820,11 @@ class LiveReplayTest(unittest.TestCase):
 
             def open_with_swap(path, *args, **kwargs):
                 source = original_open(path, *args, **kwargs)
-                if path.resolve() == frame.resolve() and "r" in args[0]:
+                if Path(path).resolve() == frame.resolve() and "r" in args[0]:
                     return SwapAfterRead(source)
                 return source
 
-            with patch.object(Path, "open", open_with_swap):
+            with patch("vntts.live_replay.open", open_with_swap, create=True):
                 captured, relative_path, digest, source = _load_frame(
                     root,
                     {

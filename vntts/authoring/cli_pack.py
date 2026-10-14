@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import json
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from vntts.authoring.game_pack import publish_final_game_pack
+from vntts.cli import print_json
 
 COMMANDS = frozenset({"publish-pack"})
 
@@ -79,5 +79,5 @@ def handle(arguments: argparse.Namespace) -> int:
         game_version=arguments.game_version,
         producers=producers,
     )
-    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    print_json(result.to_dict())
     return 0

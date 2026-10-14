@@ -14,15 +14,25 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from threading import Lock, RLock
 from typing import Literal, TypedDict, TypeGuard, TypeVar
 
-from vntts_artifacts.atomic_io import atomic_output_path, atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
+from vntts_artifacts.atomic_io import atomic_output_path
 from vntts_artifacts.voice_manifest import normalize_character_name
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
+from vntts.cleanup import cleanup_on_exit
+from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
+from vntts.path_safety import (
+    copy_regular_file,
+    open_regular_candidate,
+    read_regular_bytes,
+    read_regular_text,
+)
 
 VOICE_LIBRARY_VERSION = 3
 _VOICE_LIBRARY_VERSIONS = frozenset({1, 2, VOICE_LIBRARY_VERSION})
@@ -262,7 +272,7 @@ class VoiceLibrary:
             document = self._load()
             results: list[VoiceBinding] = []
             changed = False
-            changed_identities: list[str] = []
+            changed_identities: set[str] = set()
             for selection in selections:
                 identity, display_role, display_variant = self._role_identity(
                     selection.role, selection.variant_key, document
@@ -271,7 +281,8 @@ class VoiceLibrary:
                 if selection.only_if_unbound and current is not None:
                     results.append(_to_binding(current))
                     continue
-                self._rollback_before(rollback, document, (identity,))
+                if identity not in changed_identities:
+                    self._rollback_before(rollback, document, (identity,))
                 selected_checksums = tuple(selection.source_sha256s)
                 _validate_route_source(
                     selection.route, selected_checksums, selection.source_id
@@ -299,7 +310,7 @@ class VoiceLibrary:
                     ),
                 )
                 document["bindings"][identity] = binding
-                changed_identities.append(identity)
+                changed_identities.add(identity)
                 results.append(_to_binding(binding))
                 changed = True
             if changed:
@@ -450,12 +461,13 @@ class VoiceLibrary:
     def validate(self) -> None:
         """Check every recorded blob and every binding reference."""
         document = self._load()
-        for group in document["alternatives"].values():
-            for item in group["items"]:
-                self._validate_blob(item["sha256"])
-        for binding in document["bindings"].values():
-            for checksum in binding["source_sha256s"]:
-                self._validate_blob(checksum)
+        checksums = dict.fromkeys(
+            item["sha256"]
+            for group in document["alternatives"].values()
+            for item in group["items"]
+        )
+        for checksum in checksums:
+            self._validate_blob(checksum)
 
     def link_person(self, canonical_role: str, alias: str) -> None:
         """Link story names without merging their existing voice routes."""
@@ -543,7 +555,11 @@ class VoiceLibrary:
         if self.path.exists():
             with self._write_transaction():
                 self.validate()
-                shutil.copytree(self.root, target.root)
+                shutil.copytree(
+                    self.root,
+                    target.root,
+                    copy_function=partial(copy_regular_file, preserve_metadata=True),
+                )
                 if self.path.name != target.path.name:
                     (target.root / self.path.name).replace(target.path)
         return target
@@ -560,8 +576,8 @@ class VoiceLibrary:
         if self.path.is_symlink():
             raise VoiceLibraryError("Voice library index must not be a symlink")
         try:
-            document = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
+            document = decode_json(read_regular_text(self.path, encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise VoiceLibraryError(f"Unable to read voice library: {error}") from error
         if _validate_document(document):
             if document["version"] != VOICE_LIBRARY_VERSION:
@@ -624,15 +640,16 @@ class VoiceLibrary:
             pass
 
     def _validate_blob(self, checksum: str) -> Path:
-        if not _is_sha256(checksum):
+        if not is_lowercase_sha256(checksum):
             raise VoiceLibraryError("Voice blob checksum must be lowercase SHA-256")
         path = self._blob_path(checksum)
         if path.is_symlink() or not path.is_file():
             raise VoiceLibraryError(f"Voice blob is missing or unsafe: {checksum}")
-        if sha256_file(path) != checksum:
+        payload = read_regular_bytes(path)
+        if hashlib.sha256(payload).hexdigest() != checksum:
             raise VoiceLibraryError(f"Voice blob checksum failed: {checksum}")
         try:
-            with wave.open(str(path), "rb"):
+            with wave.open(io.BytesIO(payload), "rb"):
                 pass
         except (OSError, EOFError, wave.Error) as error:
             raise VoiceLibraryError(
@@ -767,13 +784,15 @@ def _read_wav(reference: str | Path) -> bytes:
         raise VoiceLibraryError("Voice reference must not be a symlink")
     try:
         before = path.stat(follow_symlinks=False)
-        descriptor = os.open(
+        descriptor = open_regular_candidate(
             path,
             os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
         )
     except OSError as error:
         raise VoiceLibraryError(f"Unable to open voice reference: {path}") from error
-    try:
+    with cleanup_on_exit(
+        lambda: os.close(descriptor), description="Voice reference descriptor cleanup"
+    ):
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode):
             raise VoiceLibraryError("Voice reference must be a regular file")
@@ -790,8 +809,6 @@ def _read_wav(reference: str | Path) -> bytes:
             raise VoiceLibraryError("Voice reference path and descriptor disagree")
         if len(payload) != opened.st_size:
             raise VoiceLibraryError("Voice reference read was incomplete")
-    finally:
-        os.close(descriptor)
     try:
         with wave.open(io.BytesIO(payload), "rb"):
             pass
@@ -895,21 +912,13 @@ def _selected_checksums(
     values = (
         (source_sha256,) if source_sha256 is not None else tuple(source_sha256s or ())
     )
-    if not values or any(not _is_sha256(value) for value in values):
+    if not values or any(not is_lowercase_sha256(value) for value in values):
         if values:
             raise VoiceLibraryError("Voice source checksum must be lowercase SHA-256")
         return ()
     if len(set(values)) != len(values):
         raise VoiceLibraryError("Voice source checksums must be unique")
     return values
-
-
-def _is_sha256(value: object) -> TypeGuard[str]:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(char in "0123456789abcdef" for char in value)
-    )
 
 
 def _validate_document(document: object) -> TypeGuard[_VoiceLibraryDocument]:
@@ -942,9 +951,11 @@ def _validate_person_aliases(document: dict[object, object]) -> dict[object, obj
     for alias, canonical in aliases.items():
         if (
             not isinstance(alias, str)
+            or not alias
             or normalize_character_name(alias) != alias
             or not isinstance(canonical, str)
             or not canonical.strip()
+            or not normalize_character_name(canonical)
             or normalize_character_name(canonical) == alias
         ):
             raise VoiceLibraryError("Voice library person alias is invalid")
@@ -989,10 +1000,15 @@ def _validate_person_link_migrations(
                     raise VoiceLibraryError(
                         "Voice library person link migration is invalid"
                     )
+                _role_identity(role, variant_key)
 
 
 def _validate_alternative_group(identity: object, group: object) -> None:
-    if not isinstance(group, dict) or not isinstance(group.get("items"), list):
+    if (
+        not isinstance(group, dict)
+        or not {"role", "variant_key", "items"} <= group.keys()
+        or not isinstance(group.get("items"), list)
+    ):
         raise VoiceLibraryError("Invalid voice alternative inventory")
     expected, _role, _variant = _role_identity(
         group.get("role"), group.get("variant_key")
@@ -1004,7 +1020,7 @@ def _validate_alternative_group(identity: object, group: object) -> None:
     ]
     if len(checksums) != len(group["items"]):
         raise VoiceLibraryError("Voice alternatives must have unique checksums")
-    if any(not _is_sha256(checksum) for checksum in checksums):
+    if any(not is_lowercase_sha256(checksum) for checksum in checksums):
         raise VoiceLibraryError("Voice alternative checksum is invalid")
     if len(set(checksums)) != len(checksums):
         raise VoiceLibraryError("Voice alternatives must have unique checksums")
@@ -1015,7 +1031,18 @@ def _validate_alternative_group(identity: object, group: object) -> None:
 def _validate_binding(
     identity: object, binding: object, alternatives: dict[object, object]
 ) -> None:
-    if not isinstance(binding, dict):
+    if (
+        not isinstance(binding, dict)
+        or not {
+            "role",
+            "variant_key",
+            "route",
+            "source_sha256s",
+            "source_id",
+            "provenance",
+        }
+        <= binding.keys()
+    ):
         raise VoiceLibraryError("Invalid voice binding")
     expected, _role, _variant = _role_identity(
         binding.get("role"), binding.get("variant_key")
@@ -1025,7 +1052,7 @@ def _validate_binding(
     raw_checksums = binding.get("source_sha256s")
     if (
         not isinstance(raw_checksums, list)
-        or any(not _is_sha256(checksum) for checksum in raw_checksums)
+        or any(not is_lowercase_sha256(checksum) for checksum in raw_checksums)
         or len(set(raw_checksums)) != len(raw_checksums)
     ):
         raise VoiceLibraryError("Voice binding checksums are invalid")

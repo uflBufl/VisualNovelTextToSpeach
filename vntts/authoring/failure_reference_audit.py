@@ -5,35 +5,37 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypeAlias, TypedDict
 
+from durable_file import atomic_write_json
 from vntts_artifacts import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     normalize_character_name,
 )
 
+from vntts.authoring.advisory_lock import (
+    AdvisoryLockBusyError,
+    exclusive_advisory_lock,
+)
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.bulk_generation import (
+from vntts.authoring.generation_failures import (
     generation_failure_repair_plan,
     normalized_failure_record,
 )
 from vntts.authoring.private_files import private_file_is_restricted
 from vntts.authoring.publication import (
     no_replace_destination,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -42,7 +44,11 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.document_identity import file_sha256, is_lowercase_sha256
+from vntts.json_types import decode_json, has_schema_version, is_json_object
+from vntts.path_safety import copy_regular_file, read_regular_bytes, read_regular_text
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
+from vntts.voices import load_voice_manifest
 
 JsonDocument: TypeAlias = dict[str, object]
 
@@ -120,7 +126,7 @@ class _StagedAuditGroups:
 
 
 def _document(value: object, message: str) -> JsonDocument:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise FailureReferenceAuditError(message)
     return {key: item for key, item in value.items()}
 
@@ -209,6 +215,15 @@ class FailureReferenceAuditError(RuntimeError):
     """Reference audit authority is unsafe or has changed."""
 
 
+def _audit_document_sha256(document: object) -> str:
+    try:
+        return canonical_document_sha256(document)
+    except (TypeError, ValueError) as error:
+        raise FailureReferenceAuditError(
+            f"Reference audit document cannot be canonically hashed: {error}"
+        ) from error
+
+
 @dataclass(frozen=True)
 class FailureReferenceAudit:
     directory: Path
@@ -237,6 +252,7 @@ class FailureReferenceAudio:
     payload: bytes
 
 
+@publication_errors(FailureReferenceAuditError)
 def publish_failure_reference_audit(
     workspace_directory: str | Path,
     output_directory: str | Path,
@@ -288,12 +304,14 @@ def _load_audit_publication_source(workspace: Path) -> _AuditPublicationSource:
     manifest_path = directory / _text(
         voice_manifest.get("path"), "Workspace voice manifest path is invalid"
     )
-    snapshots = {
-        "workspace": (directory / "workspace.json").read_bytes(),
-        "queue": queue_path.read_bytes(),
-        "state": state_path.read_bytes(),
-        "voice_manifest": manifest_path.read_bytes(),
-    }
+    snapshots = {}
+    for label, path in (
+        ("workspace", directory / "workspace.json"),
+        ("queue", queue_path),
+        ("state", state_path),
+        ("voice_manifest", manifest_path),
+    ):
+        snapshots[label] = read_regular_bytes(path)
     try:
         queue = VoiceGenerationQueue.load(queue_path)
         _manifest, voices = load_voice_manifest(manifest_path, allow_legacy=False)
@@ -358,7 +376,7 @@ def _group_audit_cases(
 ) -> dict[str, _GeneratedGroup]:
     queue_by_id = {item.queue_id: item for item in source.queue.items}
     state = _document(
-        json.loads(source.snapshots["state"].decode("utf-8")),
+        decode_json(source.snapshots["state"].decode("utf-8")),
         "Generation state is invalid",
     )
     state_items = _document(state.get("items"), "Generation state items are invalid")
@@ -410,7 +428,7 @@ def _add_audit_case(
         "references": list(entry.references),
         "synthesis_provenance_sha256": result.get("synthesis_provenance_sha256"),
     }
-    group_id = canonical_document_sha256(identity)
+    group_id = _audit_document_sha256(identity)
     group = grouped.get(group_id)
     if group is None:
         group = _GeneratedGroup(group_id=group_id, identity=identity, cases=[])
@@ -422,7 +440,7 @@ def _add_audit_case(
             "text": item.text,
             "text_sha256": item.text_sha256,
             "speaker": item.speaker,
-            "failure_sha256": canonical_document_sha256(result),
+            "failure_sha256": _audit_document_sha256(result),
             "failure": normalized_failure_record(result, text=item.text),
         }
     )
@@ -506,7 +524,7 @@ def _reference_candidate(manifest_path: Path, reference: Path) -> _ReferenceCand
         ) from error
     if not source.is_file() or source.is_symlink():
         raise FailureReferenceAuditError(f"Reference is missing or unsafe: {reference}")
-    payload = source.read_bytes()
+    payload = read_regular_bytes(source)
     analysis: ReferenceQualityReport | None
     try:
         analysis = analyze_reference_bytes(payload, path=source)
@@ -562,8 +580,8 @@ def _copy_audit_candidate(
     relative = Path("audio") / group_id / f"candidate-{position:02d}{suffix}"
     target = staging / relative
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(candidate["source"], target)
-    if sha256_file(target) != candidate["sha256"]:
+    copy_regular_file(candidate["source"], target, preserve_metadata=True)
+    if file_sha256(target, error_type=OSError) != candidate["sha256"]:
         raise FailureReferenceAuditError("Copied reference checksum changed")
     return relative
 
@@ -575,7 +593,7 @@ def _write_staged_audit(
     staged: _StagedAuditGroups,
 ) -> str:
     body = _audit_document(source, selected, staged)
-    audit_id = canonical_document_sha256(body)
+    audit_id = _audit_document_sha256(body)
     document = {**body, "audit_id": audit_id}
     key = {
         "schema": FAILURE_REFERENCE_AUDIT_KEY_SCHEMA,
@@ -615,7 +633,7 @@ def _audit_document(
         "case_count": len(selected),
         "group_count": len(staged.public_groups),
         "blinded_trial_count": staged.blinded_trial_count,
-        "blind_key_groups_sha256": canonical_document_sha256(staged.private_groups),
+        "blind_key_groups_sha256": _audit_document_sha256(staged.private_groups),
         "groups": staged.public_groups,
         "authority": (
             "A candidate decision audits exact reference bytes only. It does not "
@@ -634,12 +652,13 @@ def _assert_audit_publication_sources_unchanged(
         ("state", source.state_path),
         ("voice_manifest", source.manifest_path),
     ):
-        if path.read_bytes() != source.snapshots[label]:
+        payload = read_regular_bytes(path)
+        if payload != source.snapshots[label]:
             raise FailureReferenceAuditError(
                 f"Reference audit {label} changed during publication"
             )
     for path, digest in source_files:
-        if sha256_file(path) != digest:
+        if file_sha256(path, error_type=OSError) != digest:
             raise FailureReferenceAuditError(
                 f"Reference changed during publication: {path}"
             )
@@ -647,19 +666,30 @@ def _assert_audit_publication_sources_unchanged(
 
 def load_failure_reference_audit(directory: str | Path) -> FailureReferenceAudit:
     """Validate one self-contained audit and its exact source authority."""
+    return _load_validated_audit(directory)[0]
+
+
+def _load_validated_audit(
+    directory: str | Path,
+) -> tuple[FailureReferenceAudit, JsonDocument]:
     directory, document, key = _read_failure_reference_audit(directory)
     claimed, groups, private_groups = _validate_audit_documents(document, key)
     private_by_group = _index_blind_key_groups(private_groups)
     _validate_audit_inventory(directory, document, groups, private_by_group)
     _validate_audit_source_authority(document, groups)
     case_count, group_count, blinded_trial_count = _validated_audit_counts(document)
-    return FailureReferenceAudit(
+    audit = FailureReferenceAudit(
         directory,
         claimed,
         case_count,
         group_count,
         blinded_trial_count,
     )
+    return audit, document
+
+
+def _read_json(path: Path, *, encoding: str | None = None) -> object:
+    return decode_json(read_regular_text(path, encoding=encoding))
 
 
 def _read_failure_reference_audit(
@@ -671,9 +701,9 @@ def _read_failure_reference_audit(
     if not private_file_is_restricted(key_path):
         raise FailureReferenceAuditError("Reference audit blind key mode must be 0600")
     try:
-        document: object = json.loads(audit_path.read_text(encoding="utf-8"))
-        key: object = json.loads(key_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        document: object = _read_json(audit_path, encoding="utf-8")
+        key: object = _read_json(key_path, encoding="utf-8")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise FailureReferenceAuditError(str(error)) from error
     return (
         resolved,
@@ -687,17 +717,15 @@ def _validate_audit_documents(
 ) -> tuple[str, list[object], list[object]]:
     if (
         document.get("schema") != FAILURE_REFERENCE_AUDIT_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != FAILURE_REFERENCE_AUDIT_VERSION
+        or not has_schema_version(document, FAILURE_REFERENCE_AUDIT_VERSION)
         or key.get("schema") != FAILURE_REFERENCE_AUDIT_KEY_SCHEMA
-        or type(key.get("schema_version")) is not int
-        or key.get("schema_version") != FAILURE_REFERENCE_AUDIT_VERSION
+        or not has_schema_version(key, FAILURE_REFERENCE_AUDIT_VERSION)
     ):
         raise FailureReferenceAuditError("Unsupported reference audit schema")
     claimed = document.get("audit_id")
     if (
         claimed
-        != canonical_document_sha256(
+        != _audit_document_sha256(
             {name: value for name, value in document.items() if name != "audit_id"}
         )
         or key.get("audit_id") != claimed
@@ -707,7 +735,7 @@ def _validate_audit_documents(
     if not isinstance(groups, list) or document.get("group_count") != len(groups):
         raise FailureReferenceAuditError("Reference audit groups are malformed")
     private_groups = key.get("groups")
-    if not isinstance(private_groups, list) or canonical_document_sha256(
+    if not isinstance(private_groups, list) or _audit_document_sha256(
         private_groups
     ) != document.get("blind_key_groups_sha256"):
         raise FailureReferenceAuditError("Reference audit blind key changed")
@@ -833,7 +861,7 @@ def _validate_audit_candidate_files(
 ) -> None:
     for candidate in candidates:
         path = _contained_regular_file(directory, candidate.get("audio"))
-        if sha256_file(path) != candidate.get("sha256"):
+        if file_sha256(path, error_type=OSError) != candidate.get("sha256"):
             raise FailureReferenceAuditError("Reference audit audio changed")
 
 
@@ -846,15 +874,17 @@ def _validate_audit_source_authority(
         ("queue_sha256", workspace / "queue.jsonl"),
         ("voice_manifest_sha256", workspace / "inputs/voice/manifest.json"),
     ):
-        if not path.is_file() or sha256_file(path) != document.get(field):
+        if not path.is_file() or file_sha256(path, error_type=OSError) != document.get(
+            field
+        ):
             raise FailureReferenceAuditError(
                 f"Reference audit source authority changed: {field}"
             )
     try:
-        raw_state: object = json.loads(
-            (workspace / "generated-audio/generation-state.json").read_text()
+        raw_state: object = _read_json(
+            workspace / "generated-audio/generation-state.json"
         )
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise FailureReferenceAuditError(str(error)) from error
     state = _document(raw_state, "Reference audit source state is malformed")
     items = _document(state.get("items"), "Reference audit source items are malformed")
@@ -864,7 +894,7 @@ def _validate_audit_source_authority(
                 case.get("queue_id"), "Reference audit case queue ID is malformed"
             )
             result = items.get(queue_id)
-            if not isinstance(result, dict) or canonical_document_sha256(
+            if not isinstance(result, dict) or _audit_document_sha256(
                 result
             ) != case.get("failure_sha256"):
                 raise FailureReferenceAuditError(
@@ -875,8 +905,13 @@ def _validate_audit_source_authority(
 def _audit_workspace_path(document: JsonDocument) -> Path:
     workspace = document.get("workspace", "")
     if not isinstance(workspace, str):
-        raise TypeError("Reference audit workspace path must be text")
-    return Path(workspace).expanduser().resolve()
+        raise FailureReferenceAuditError("Reference audit workspace path must be text")
+    try:
+        return Path(workspace).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError) as error:
+        raise FailureReferenceAuditError(
+            f"Reference audit workspace path is invalid: {error}"
+        ) from error
 
 
 def load_failure_reference_decisions(directory: str | Path) -> JsonDocument:
@@ -893,8 +928,8 @@ def load_failure_reference_decisions(directory: str | Path) -> JsonDocument:
             "updated_at": None,
         }
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        document = _read_json(path, encoding="utf-8")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise FailureReferenceAuditError(str(error)) from error
     if not isinstance(document, dict):
         raise FailureReferenceAuditError("Reference audit decisions are malformed")
@@ -923,7 +958,7 @@ def load_failure_reference_decisions(directory: str | Path) -> JsonDocument:
             "Reference audit decision timestamp must include a timezone"
         )
     claimed = document.get("decision_set_id")
-    actual = canonical_document_sha256(
+    actual = _audit_document_sha256(
         {name: value for name, value in document.items() if name != "decision_set_id"}
     )
     if claimed != actual:
@@ -942,13 +977,35 @@ def record_failure_reference_decision(
     decision: str,
     *,
     selection_authority: JsonDocument | None = None,
+    expected_decisions: JsonDocument | None = None,
 ) -> JsonDocument:
-    """Atomically record one exact candidate or neither-acceptable decision."""
-    audit = load_failure_reference_audit(directory)
-    audit_document = _document(
-        json.loads((audit.directory / "audit.json").read_text()),
-        "Reference audit group is malformed",
-    )
+    """Record one decision; imports may require an unchanged decision set."""
+    audit, audit_document = _load_validated_audit(directory)
+    try:
+        with exclusive_advisory_lock(
+            audit.directory / "decisions.json.lock", blocking=True
+        ):
+            return _record_failure_reference_decision(
+                audit,
+                audit_document,
+                group_id,
+                decision,
+                selection_authority=selection_authority,
+                expected_decisions=expected_decisions,
+            )
+    except (OSError, AdvisoryLockBusyError) as error:
+        raise FailureReferenceAuditError(str(error)) from error
+
+
+def _record_failure_reference_decision(
+    audit: FailureReferenceAudit,
+    audit_document: JsonDocument,
+    group_id: str,
+    decision: str,
+    *,
+    selection_authority: JsonDocument | None,
+    expected_decisions: JsonDocument | None,
+) -> JsonDocument:
     groups = _audit_groups(audit_document.get("groups"))
     group = next(
         (value for value in groups if value["group_id"] == group_id),
@@ -965,6 +1022,10 @@ def record_failure_reference_decision(
         None,
     )
     current = load_failure_reference_decisions(audit.directory)
+    if expected_decisions is not None and current != expected_decisions:
+        raise FailureReferenceAuditError(
+            "Reference audit decisions changed before decision save"
+        )
     decisions = {
         _text(value.get("group_id"), "Reference audit decision is malformed"): value
         for value in _documents(
@@ -994,7 +1055,7 @@ def record_failure_reference_decision(
         "decisions": [decisions[key] for key in sorted(decisions)],
         "updated_at": updated_at,
     }
-    document = {**body, "decision_set_id": canonical_document_sha256(body)}
+    document = {**body, "decision_set_id": _audit_document_sha256(body)}
     _validate_decision_inventory(
         audit.directory,
         _documents(document["decisions"], "Reference audit decision is malformed"),
@@ -1007,15 +1068,36 @@ def record_failure_reference_decision(
     return document
 
 
+def _source_reference_character_family(
+    value: str, *, label: str, error_type: type[Exception]
+) -> str:
+    prefix = "Source reference "
+    marker = " cluster-"
+    if not value.startswith(prefix) or marker not in value:
+        raise error_type(
+            f"{label} is restricted to source-reference character families"
+        )
+    character = value[len(prefix) :].partition(marker)[0]
+    if not character:
+        raise error_type(f"{label} source-reference identity is malformed")
+    return character
+
+
 def prepare_failure_reference_audio(
     directory: str | Path, group_id: str, candidate_id: str
 ) -> FailureReferenceAudio:
     """Read and checksum one copied candidate once for immutable Qt playback."""
-    audit = load_failure_reference_audit(directory)
-    document = _document(
-        json.loads((audit.directory / "audit.json").read_text()),
-        "Reference audit group is malformed",
-    )
+    audit, document = _load_validated_audit(directory)
+    return _prepare_failure_reference_audio(audit, document, group_id, candidate_id)
+
+
+def _prepare_failure_reference_audio(
+    audit: FailureReferenceAudit,
+    document: JsonDocument,
+    group_id: str,
+    candidate_id: str,
+) -> FailureReferenceAudio:
+    """Bind candidate bytes using the full validator's actual document."""
     groups = _audit_groups(document.get("groups"))
     group = next(
         (value for value in groups if value["group_id"] == group_id),
@@ -1038,7 +1120,7 @@ def prepare_failure_reference_audio(
             f"Reference audit candidate is unknown: {candidate_id}"
         )
     path = _contained_regular_file(audit.directory, candidate["audio"])
-    payload = path.read_bytes()
+    payload = read_regular_bytes(path)
     digest = hashlib.sha256(payload).hexdigest()
     if digest != candidate["sha256"]:
         raise FailureReferenceAuditError("Reference audit audio changed")
@@ -1049,7 +1131,7 @@ def _validate_decision_inventory(
     directory: str | Path, decisions: Sequence[JsonDocument], *, schema_version: int
 ) -> None:
     audit = _document(
-        json.loads((Path(directory) / "audit.json").read_text()),
+        _read_json(Path(directory) / "audit.json"),
         "Reference audit group is malformed",
     )
     groups = {value["group_id"]: value for value in _audit_groups(audit.get("groups"))}
@@ -1165,11 +1247,7 @@ def _selection_authority_shape(
         "queue_id",
         "text_sha256",
     }
-    if (
-        not isinstance(value, dict)
-        or type(value.get("schema_version")) is not int
-        or value.get("schema_version") != 1
-    ):
+    if not isinstance(value, dict) or not has_schema_version(value, 1):
         raise FailureReferenceAuditError(
             "Reference audit selection authority is malformed"
         )
@@ -1236,11 +1314,7 @@ def _validate_selection_authority_fields(
 ) -> None:
     for field in hash_fields:
         digest = value[field]
-        if (
-            not isinstance(digest, str)
-            or len(digest) != 64
-            or any(character not in "0123456789abcdef" for character in digest)
-        ):
+        if not is_lowercase_sha256(digest):
             raise FailureReferenceAuditError(
                 "Reference audit selection authority hash is malformed"
             )

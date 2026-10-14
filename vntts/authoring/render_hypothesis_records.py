@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
@@ -14,6 +15,7 @@ from vntts.authoring.authority import (
     canonical_document_sha256,
     capture_authority_file,
 )
+from vntts.json_types import has_schema_version
 from vntts.path_safety import contained_regular_file
 
 JsonObject: TypeAlias = dict[str, object]
@@ -163,8 +165,7 @@ def _validate_review(
         not isinstance(review, dict)
         or set(review) != required
         or review.get("schema") != RENDER_HYPOTHESIS_REVIEW_SCHEMA
-        or type(review.get("schema_version")) is not int
-        or review.get("schema_version") != RENDER_HYPOTHESIS_REVIEW_VERSION
+        or not has_schema_version(review, RENDER_HYPOTHESIS_REVIEW_VERSION)
     ):
         raise RenderHypothesisRecordError("Render hypothesis review is malformed")
     identity = {
@@ -180,7 +181,13 @@ def _validate_review(
             "result",
         }
     }
-    if review["review_id"] != canonical_document_sha256(identity):
+    try:
+        review_id = canonical_document_sha256(identity)
+    except (TypeError, ValueError) as error:
+        raise RenderHypothesisRecordError(
+            f"Render hypothesis review identity is invalid: {error}"
+        ) from error
+    if review["review_id"] != review_id:
         raise RenderHypothesisRecordError("Render hypothesis review ID changed")
     if (
         comparison.sha256 != review["comparison_sha256"]
@@ -192,7 +199,7 @@ def _validate_review(
     try:
         comparison_document = comparison.json_document("copied comparison")
         report_document = report.json_document("copied report")
-        result_info = probe_pcm16_mono_wav(result.path)
+        result_info = probe_pcm16_mono_wav(io.BytesIO(result.payload))
     except (AuthoringAuthorityError, OSError, Pcm16MonoWavError) as error:
         raise RenderHypothesisRecordError(str(error)) from error
     arm = next(
@@ -268,13 +275,13 @@ def _validate_decision(
             "reviewed_at",
         }
         or decision.get("schema") != RENDER_HYPOTHESIS_DECISION_SCHEMA
-        or type(decision.get("schema_version")) is not int
-        or decision.get("schema_version") != RENDER_HYPOTHESIS_DECISION_VERSION
+        or not has_schema_version(decision, RENDER_HYPOTHESIS_DECISION_VERSION)
         or decision.get("review_id") != review["review_id"]
         or decision.get("review_sha256") != review_sha256
         or decision.get("reference_sha256") != review["reference_sha256"]
         or decision.get("result_sha256") != review["result_sha256"]
-        or decision.get("decision") not in RENDER_HYPOTHESIS_DECISIONS
+        or not isinstance(decision.get("decision"), str)
+        or decision["decision"] not in RENDER_HYPOTHESIS_DECISIONS
     ):
         raise RenderHypothesisRecordError(
             "Render hypothesis decision is malformed or stale"

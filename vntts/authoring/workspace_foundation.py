@@ -7,7 +7,15 @@ import json
 from collections.abc import Mapping, MutableSequence
 from pathlib import Path
 
-from vntts.path_safety import contained_path, contained_regular_file, safe_relative_path
+from vntts.document_identity import is_sha256
+from vntts.json_types import decode_json
+from vntts.path_safety import (
+    contained_path,
+    contained_regular_file,
+    read_regular_bytes,
+    read_regular_text,
+    safe_relative_path,
+)
 
 
 def read_regular_file(
@@ -21,7 +29,7 @@ def read_regular_file(
     if path.is_symlink() or not path.is_file():
         raise error_type(f"{label.capitalize()} is missing or unsafe")
     try:
-        return path.read_bytes()
+        return read_regular_bytes(path)
     except OSError as error:
         raise error_type(f"Unable to read {label}: {error}") from error
 
@@ -35,8 +43,8 @@ def load_json_object(
 ) -> dict[str, object]:
     """Load one JSON object from a filesystem path."""
     try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        value = decode_json(read_regular_text(Path(path), encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise error_type(f"Unable to read {description} {path}: {error}") from error
     if not isinstance(value, dict):
         raise error_type(f"{object_label or description.title()} must be a JSON object")
@@ -51,12 +59,12 @@ def load_json_object_snapshot(
 ) -> tuple[dict[str, object], str, bytes]:
     """Read and decode one JSON object while retaining exact payload identity."""
     try:
-        payload = Path(path).read_bytes()
+        payload = read_regular_bytes(Path(path))
     except OSError as error:
         raise error_type(f"Unable to read {description} {path}: {error}") from error
     digest = hashlib.sha256(payload).hexdigest()
     try:
-        value = json.loads(payload.decode("utf-8"))
+        value = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise error_type(f"Unable to read {description} {path}: {error}") from error
     if not isinstance(value, dict):
@@ -70,10 +78,8 @@ def require_sha256(
     """Return one full hexadecimal SHA-256 value or fail with a typed error."""
     if not isinstance(value, str) or len(value) != 64:
         raise error_type(f"{label} must be a full SHA-256")
-    try:
-        int(value, 16)
-    except ValueError as error:
-        raise error_type(f"{label} must be hexadecimal") from error
+    if not is_sha256(value):
+        raise error_type(f"{label} must be hexadecimal")
     return value
 
 

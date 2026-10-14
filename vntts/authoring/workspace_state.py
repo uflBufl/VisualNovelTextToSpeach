@@ -9,7 +9,6 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from vntts.authoring.generation_lease import BulkGenerationError
@@ -17,8 +16,11 @@ from vntts.authoring.generation_state import (
     load_stable_generation_queue,
     validate_generation_state_document,
 )
+from vntts.authoring.publication import publication_errors
 from vntts.authoring.workspace_config import workspace_queue_sha256
 from vntts.authoring.workspace_foundation import read_regular_file
+from vntts.document_identity import sha256_file
+from vntts.json_types import decode_json
 
 WorkspaceState = tuple[VoiceGenerationQueue, dict[str, object], bytes, str]
 WorkspaceStateCache = dict[tuple[str, object], WorkspaceState]
@@ -107,7 +109,9 @@ def _load_stable_workspace_generation_state(
     )
     digest = hashlib.sha256(payload).hexdigest()
     try:
-        parsed: object = json.loads(payload.decode("utf-8"))
+        parsed = decode_json(payload.decode("utf-8"))
+        if not isinstance(parsed, dict):
+            raise BulkGenerationError("Generation state must be a JSON object")
         validated = validate_generation_state_document(
             parsed,
             output,
@@ -116,8 +120,9 @@ def _load_stable_workspace_generation_state(
         )
     except (UnicodeDecodeError, json.JSONDecodeError, BulkGenerationError) as error:
         raise error_type(f"Outcome merge {label} state is invalid: {error}") from error
-    if parsed != validated or sha256_file(state_path) != digest:
-        raise error_type(f"Outcome merge {label} state changed while it was loaded")
+    with publication_errors(error_type):
+        if parsed != validated or sha256_file(state_path) != digest:
+            raise error_type(f"Outcome merge {label} state changed while it was loaded")
     if parsed.get("active") is not None:
         raise error_type(f"Outcome merge {label} has an active generation attempt")
     if (output / ".generation-lease.json").exists():

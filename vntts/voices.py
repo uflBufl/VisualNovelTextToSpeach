@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import stat
 from collections.abc import Callable, Iterator, Sequence
@@ -6,20 +7,23 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path, PurePosixPath
-from tempfile import TemporaryDirectory
 from typing import Literal, Protocol
 
 from vntts_artifacts.voice_manifest import (
-    VoiceManifestError as VoiceManifestError,
+    VoiceManifestEntry,
+    validate_voice_manifest,
 )
 from vntts_artifacts.voice_manifest import (
-    load_voice_manifest,
+    VoiceManifestError as VoiceManifestError,
 )
 from vntts_artifacts.voice_manifest import (
     normalize_character_name as normalize_character_name,
 )
 
 from vntts.application_directories import get_local_data_directory
+from vntts.cleanup import cleanup_on_exit, temporary_directory
+from vntts.json_types import is_json_object
+from vntts.path_safety import open_regular_candidate, read_regular_text
 from vntts.voice_library import VoiceBinding, VoiceBindingRollback, VoiceLibrary
 
 default_voice_choice_id = "default"
@@ -95,6 +99,26 @@ class CharacterVoiceRegistry:
     def from_file(cls, manifest_path: str | os.PathLike[str]) -> CharacterVoiceRegistry:
         manifest_path = Path(manifest_path).expanduser().resolve()
         manifest, entries = load_voice_manifest(manifest_path)
+        return cls._from_validated_manifest(manifest, entries, manifest_path)
+
+    @classmethod
+    def from_document(
+        cls, manifest: object, manifest_path: str | os.PathLike[str]
+    ) -> CharacterVoiceRegistry:
+        """Project captured data using the original manifest's reference root."""
+        manifest_path = Path(manifest_path).expanduser().resolve()
+        entries = voice_manifest_entries_at_path(manifest, manifest_path)
+        return cls._from_validated_manifest(manifest, entries, manifest_path)
+
+    @classmethod
+    def _from_validated_manifest(
+        cls,
+        manifest: object,
+        entries: Sequence[VoiceManifestEntry],
+        manifest_path: Path,
+    ) -> CharacterVoiceRegistry:
+        if not isinstance(manifest, dict):
+            raise VoiceManifestError("Voice manifest must be a JSON object")
         source_characters: list[str | None] = []
         for raw in manifest["voices"]:
             source = raw.get("vntts.source_character")
@@ -481,29 +505,85 @@ def _project_binding(
     projected.set_assignment(role, source_id)
 
 
+def load_voice_manifest(
+    path: str | os.PathLike[str], *, allow_legacy: bool = True
+) -> tuple[dict[str, object], tuple[VoiceManifestEntry, ...]]:
+    """Load a regular manifest while retaining its reference-root validation."""
+    requested = Path(path).expanduser()
+    if requested.is_symlink():
+        raise VoiceManifestError("Voice manifest cannot be a symlink")
+    manifest_path = requested.resolve()
+    try:
+        manifest: object = json.loads(
+            read_regular_text(manifest_path, encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as error:
+        raise VoiceManifestError(
+            f"Unable to read voice manifest {manifest_path}: {error}"
+        ) from error
+    if not is_json_object(manifest):
+        raise VoiceManifestError("Voice manifest must be a JSON object")
+    entries: tuple[VoiceManifestEntry, ...] = validate_voice_manifest(
+        manifest, allow_legacy=allow_legacy
+    )
+    for index, entry in enumerate(entries):
+        for reference in entry.references:
+            _contained_manifest_reference(manifest_path, reference, entry_index=index)
+    return manifest, entries
+
+
+def voice_manifest_entries_at_path(
+    document: object,
+    manifest_path: str | os.PathLike[str],
+    *,
+    allow_legacy: bool = True,
+) -> tuple[VoiceManifestEntry, ...]:
+    """Validate captured manifest data and its original reference containment."""
+    entries: tuple[VoiceManifestEntry, ...] = validate_voice_manifest(
+        document, allow_legacy=allow_legacy
+    )
+    for entry in entries:
+        for reference in entry.references:
+            _contained_manifest_reference(manifest_path, reference)
+    return entries
+
+
 def _contained_manifest_reference(
-    manifest_path: str | os.PathLike[str], reference: object
+    manifest_path: str | os.PathLike[str],
+    reference: object,
+    *,
+    entry_index: int | None = None,
 ) -> Path:
-    if not isinstance(reference, str) or not reference.strip() or "\\" in reference:
-        raise VoiceManifestError("Voice reference must be a safe POSIX-relative path")
+    label = (
+        f"Voice entry {entry_index} reference"
+        if entry_index is not None
+        else "Voice reference"
+    )
+    if (
+        not isinstance(reference, str)
+        or not reference.strip()
+        or "\\" in reference
+        or ("\x00" in reference and entry_index is None)
+    ):
+        raise VoiceManifestError(f"{label} must be a safe POSIX-relative path")
     relative = PurePosixPath(reference.strip())
     if relative.is_absolute() or any(
         part in {"", ".", ".."} for part in relative.parts
     ):
-        raise VoiceManifestError("Voice reference must be a safe POSIX-relative path")
+        raise VoiceManifestError(f"{label} must be a safe POSIX-relative path")
     root = Path(manifest_path).parent.resolve()
     unresolved = root.joinpath(*relative.parts)
     current = root
     for part in relative.parts:
         current /= part
         if current.is_symlink():
-            raise VoiceManifestError("Voice reference must not use symlinks")
-    resolved = unresolved.resolve()
+            raise VoiceManifestError(f"{label} must not use symlinks")
     try:
+        resolved = unresolved.resolve()
         resolved.relative_to(root)
     except ValueError as error:
         raise VoiceManifestError(
-            "Voice reference must stay within the manifest directory"
+            f"{label} must stay within the manifest directory"
         ) from error
     return resolved
 
@@ -704,7 +784,7 @@ def _immutable_voice_reference_snapshots(
         yield voice.references
         return
 
-    with TemporaryDirectory(prefix="vntts-voice-reference-") as directory:
+    with temporary_directory(prefix="vntts-voice-reference-") as directory:
         snapshots: list[Path] = []
         for index, reference in enumerate(voice.references):
             payload = _read_owned_voice_reference(voice.reference_root, reference)
@@ -730,7 +810,7 @@ def _read_owned_voice_reference(
     # Windows text descriptors treat Ctrl-Z as EOF and translate CRLF in PCM.
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     try:
-        descriptor = os.open(reference, flags)
+        descriptor = open_regular_candidate(reference, flags)
     except FileNotFoundError as error:
         raise VoiceManifestError(
             f"Voice reference does not exist: {reference}"
@@ -739,7 +819,9 @@ def _read_owned_voice_reference(
         raise VoiceManifestError(
             f"Voice reference could not be opened without following links: {reference}"
         ) from error
-    try:
+    with cleanup_on_exit(
+        lambda: os.close(descriptor), description="Voice reference descriptor cleanup"
+    ):
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode):
             raise VoiceManifestError("Voice reference must be a regular file")
@@ -787,8 +869,6 @@ def _read_owned_voice_reference(
         if len(payload) != opened.st_size:
             raise VoiceManifestError("Voice reference read returned incomplete bytes")
         return payload
-    finally:
-        os.close(descriptor)
 
 
 def read_voice_reference_bytes(

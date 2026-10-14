@@ -17,12 +17,12 @@ import socket
 import subprocess
 import sys
 import wave
-from collections.abc import Callable, Generator, Mapping
-from contextlib import ExitStack
+from collections.abc import Callable, Generator, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from tempfile import SpooledTemporaryFile, TemporaryDirectory
-from threading import Event, Lock, Thread
+from threading import TIMEOUT_MAX, Event, Lock, Thread
 from time import monotonic
 from types import SimpleNamespace
 from typing import BinaryIO, ClassVar, Protocol, TypeAlias, TypedDict, TypeGuard
@@ -31,13 +31,21 @@ import numpy as np
 import soundfile as sf
 
 from vntts.audio_output import AudioOutput
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.native_resources import NativeResourceSampler, NativeResourceSnapshot
+from vntts.numeric_values import optional_finite_number
+from vntts.path_safety import open_regular_binary
 from vntts.playback import PreparedPlayback
-from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
+from vntts.services.tts_engine import (
+    TTSConfigurationError,
+    TTSSynthesisError,
+    validate_volume,
+)
 from vntts.speech_backend import (
     MossTTSPreparedSpeech,
     MossTTSVoiceRouterBackend,
     SpeechBackendCapabilities,
+    get_moss_tts_generation_profile,
     moss_tts_generation_profiles,
 )
 from vntts.speech_backend_runtime import _source_identity
@@ -50,6 +58,7 @@ from vntts.synthesis import (
 )
 from vntts.voices import CharacterVoiceRegistry
 
+_NATIVE_SAMPLE_RATE = 48000
 NATIVE_GENERATION_CONTRACT = "nonzero-seed-stable-1.7-v2"
 _MANAGED_STARTUP_FAILURE_PREFIX = "VNTTS_STARTUP_FAILURE_JSON="
 _CREATE_SUSPENDED = 0x00000004
@@ -267,16 +276,17 @@ def _launch_owned_process(
     )
     try:
         return process, _WindowsKillOnCloseJob(process)
-    except BaseException:
-        try:
-            process.kill()
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            # ponytail: the process already received the strongest local signal.
-            pass
+    except BaseException as error:
+        attempt_cleanup(
+            process.kill,
+            description="Native speech process kill",
+            primary_error=error,
+        )
+        attempt_cleanup(
+            lambda: process.wait(timeout=2),
+            description="Native speech process wait",
+            primary_error=error,
+        )
         raise
 
 
@@ -360,7 +370,10 @@ def _option_path(value: object, name: str) -> str | Path | None:
 def _option_number(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TTSConfigurationError(f"MOSS C++ {name} must be numeric")
-    return float(value)
+    try:
+        return float(value)
+    except OverflowError as error:
+        raise TTSConfigurationError(f"MOSS C++ {name} must be finite") from error
 
 
 def _option_integer(value: object, name: str) -> int | None:
@@ -487,7 +500,7 @@ def _base_options(options: dict[str, object]) -> MossCppBaseOptions:
             options.pop("narrator_reference", None), "narrator_reference"
         ),
         "language": options.pop("language", "English"),
-        "volume": _option_number(options.pop("volume", 1.0), "volume"),
+        "volume": validate_volume(_option_number(options.pop("volume", 1.0), "volume")),
         "audio_output": _option_audio_output(options.pop("audio_output", None)),
         "clock": clock,
         "audio_cache_size": _required_option_integer(
@@ -528,6 +541,27 @@ def _base_options(options: dict[str, object]) -> MossCppBaseOptions:
             "playback_consumer_join_timeout",
         ),
     }
+    for name, value in result.items():
+        if (
+            name
+            in (
+                "cached_stream_chunk_seconds",
+                "streaming_interval",
+                "playback_consumer_join_timeout",
+            )
+            and optional_finite_number(value) is None
+        ):
+            raise TTSConfigurationError(f"MOSS C++ {name} must be finite")
+    try:
+        round(_NATIVE_SAMPLE_RATE * result["cached_stream_chunk_seconds"])
+    except OverflowError as error:
+        raise TTSConfigurationError(
+            "MOSS C++ cached_stream_chunk_seconds exceeds the sample count range"
+        ) from error
+    if result["playback_consumer_join_timeout"] > TIMEOUT_MAX:
+        raise TTSConfigurationError(
+            "MOSS C++ playback_consumer_join_timeout exceeds the thread timeout range"
+        )
     if options:
         raise TypeError(f"Unexpected MOSS C++ option: {next(iter(options))}")
     return result
@@ -562,15 +596,20 @@ def _managed_runtime(model_name: object | None) -> bool:
     )
 
 
+def _read_native_log_tail(path: str | Path, offset: int = 0) -> tuple[str, bool]:
+    with open_regular_binary(path) as log:
+        log.seek(0, os.SEEK_END)
+        complete_log = log.tell() - offset <= 64 * 1024
+        log.seek(max(offset, log.tell() - 64 * 1024))
+        return log.read(64 * 1024).decode("utf-8", errors="replace"), complete_log
+
+
 def _startup_failure_category(path: str | Path | None) -> str | None:
     """Read the native machine-readable startup category, never free-form logs."""
     if path is None:
         return None
     try:
-        with open(path, "rb") as log:
-            log.seek(0, os.SEEK_END)
-            log.seek(max(0, log.tell() - 64 * 1024))
-            output = log.read(64 * 1024).decode("utf-8", errors="replace")
+        output, _ = _read_native_log_tail(path)
     except OSError:
         return None
     for line in reversed(output.splitlines()):
@@ -593,10 +632,28 @@ def _diagnostic_file_size(path: Path) -> int | None:
         return None
 
 
+@contextmanager
+def _open_reference_source(path: str | Path) -> Iterator[BinaryIO]:
+    owner = ExitStack()
+    source = owner.enter_context(open_regular_binary(path))
+    with cleanup_on_exit(
+        owner.close, description="Native speech reference source cleanup"
+    ):
+        yield source
+
+
 def _normalize_reference_audio(
     path: str | Path | BinaryIO | SpooledTemporaryFile[bytes],
 ) -> tuple[bytes, float, int, int]:
-    with sf.SoundFile(path) as reference:
+    with ExitStack() as reference_stack:
+        if isinstance(path, (str, Path)):
+            path = reference_stack.enter_context(_open_reference_source(path))
+        reference = sf.SoundFile(path)
+        reference_stack.enter_context(
+            cleanup_on_exit(
+                reference.close, description="Native speech reference decoder cleanup"
+            )
+        )
         duration = round(reference.frames / reference.samplerate, 6)
         sample_rate = reference.samplerate
         channels = reference.channels
@@ -627,11 +684,7 @@ def _native_stage_timings(
     complete_log = False
     if path is not None:
         try:
-            with open(path, "rb") as log:
-                log.seek(0, os.SEEK_END)
-                complete_log = log.tell() - offset <= 64 * 1024
-                log.seek(max(offset, log.tell() - 64 * 1024))
-                output = log.read(64 * 1024).decode("utf-8", errors="replace")
+            output, complete_log = _read_native_log_tail(path, offset)
         except OSError:
             pass
 
@@ -739,6 +792,25 @@ def _integer_setting(name: str, default: int, minimum: int, maximum: int) -> int
     )
 
 
+def _decode_response_audio(data: bytes) -> np.ndarray:
+    with wave.open(io.BytesIO(data), "rb") as output:
+        if (
+            output.getframerate() != _NATIVE_SAMPLE_RATE
+            or output.getnchannels() != 2
+            or output.getsampwidth() != 2
+            or output.getcomptype() != "NONE"
+        ):
+            raise TTSSynthesisError("MOSS C++ returned an unexpected audio format")
+        samples = output.getnframes()
+        raw = output.readframes(samples)
+        if len(raw) != samples * 4:
+            raise TTSSynthesisError("MOSS C++ returned a truncated WAV")
+        pcm = np.frombuffer(raw, dtype="<i2").reshape(-1, 2).astype(np.float32) / 32768
+    if not pcm.size or not np.isfinite(pcm).all():
+        raise TTSSynthesisError("MOSS C++ returned empty or invalid audio")
+    return pcm
+
+
 class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
     # Qualified with the Windows native Centurion probe and listening approval.
     # Keep Delay defaults independent; its shared stable profile remains 0.8.
@@ -830,6 +902,16 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             request_timeout,
             allow_download,
         )
+        base_options = _base_options(options)
+        get_moss_tts_generation_profile(
+            base_options["generation_profile"], profiles=self._generation_profiles
+        )
+        self.gpu_layers = _integer_setting("VNTTS_MOSS_GPU_LAYERS", -1, -1, 1000)
+        self.aux_cpu = _integer_setting("VNTTS_MOSS_AUX_CPU", 1, 0, 1)
+        self.context_size = _integer_setting("VNTTS_MOSS_CONTEXT", 4096, 512, 131072)
+        self.startup_timeout, self.request_timeout = _positive_timeouts(
+            startup_timeout, request_timeout
+        )
         ensure_moss_cpp(
             model_name,
             cancellation=startup_cancellation,
@@ -837,17 +919,12 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             allow_download=allow_download,
         )
         (
-            base_options,
             (self.executable, self.gguf, self.sidecar),
             self._managed_runtime,
         ) = (
-            _base_options(options),
             moss_cpp_paths(model_name),
             _managed_runtime(model_name),
         )
-        self.gpu_layers = _integer_setting("VNTTS_MOSS_GPU_LAYERS", -1, -1, 1000)
-        self.aux_cpu = _integer_setting("VNTTS_MOSS_AUX_CPU", 1, 0, 1)
-        self.context_size = _integer_setting("VNTTS_MOSS_CONTEXT", 4096, 512, 131072)
         self.local_gpu = False
         self.aux_cpu_threads: int | None = None
         self._managed_local_gpu = False
@@ -856,9 +933,6 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         self._fallback_category: str | None = None
         self._fallback_used = False
         self._effective_controls: NativeControls | None = None
-        self.startup_timeout, self.request_timeout = _positive_timeouts(
-            startup_timeout, request_timeout
-        )
         self.server_lock = Lock()
         self.server: subprocess.Popen[bytes] | None = None
         self.server_job: _WindowsKillOnCloseJob | None = None
@@ -887,9 +961,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             self._source_identity.encode()
         ).hexdigest()[:24]
         try:
-            from vntts.runtime_installation import _run
+            from vntts.runtime_preparation import run_runtime_command
 
-            help_output = _run(
+            help_output = run_runtime_command(
                 [str(self.executable), "--help"],
                 cancellation=self._startup_cancelled,
                 timeout=min(30, self.startup_timeout),
@@ -902,7 +976,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 re.search(rb"(?:^|\s)--voice-cache-key(?:\s|$)", help_output)
             )
             if self._managed_runtime:
-                capabilities = self._managed_capabilities(_run, help_output)
+                capabilities = self._managed_capabilities(
+                    run_runtime_command, help_output
+                )
                 self._native_capabilities = capabilities
                 self._adaptive_managed_runtime = capabilities is not None
                 self._managed_local_gpu = bool(
@@ -915,12 +991,16 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 registry,
                 model_name=self._native_identity(),
                 model_factory=lambda *_args, **_kwargs: SimpleNamespace(
-                    sample_rate=48000
+                    sample_rate=_NATIVE_SAMPLE_RATE
                 ),
                 **base_options,
             )
-        except BaseException:
-            self._stop_server("initialization-failed")
+        except BaseException as error:
+            attempt_cleanup(
+                lambda: self._stop_server("initialization-failed"),
+                description="Native speech server initialization cleanup",
+                primary_error=error,
+            )
             raise
 
     def _startup_cancelled(self) -> bool:
@@ -1107,10 +1187,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if self.server_log is None:
                 output = ""
             else:
-                with open(self.server_log.name, "rb") as log:
-                    log.seek(0, os.SEEK_END)
-                    log.seek(max(0, log.tell() - 64 * 1024))
-                    output = log.read(64 * 1024).decode("utf-8", errors="replace")
+                output, _ = _read_native_log_tail(self.server_log.name)
         offload = re.search(r"offloaded (\d+)/(\d+) layers to GPU", output)
         device = re.search(r"using device (\S+) \(([^\r\n]+?)\)", output)
         if device:
@@ -1182,8 +1259,12 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                         "files; automatic hardware fallback was not applicable."
                     )
                 controls = fallback
-        except BaseException:
-            self._stop_server("startup-failed")
+        except BaseException as error:
+            attempt_cleanup(
+                lambda: self._stop_server("startup-failed"),
+                description="Native speech server startup cleanup",
+                primary_error=error,
+            )
             raise
 
     def _startup_fallback(self, category: str | None) -> NativeControls | None:
@@ -1288,7 +1369,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if not isinstance(info, dict) or any(
                 (
                     info.get("architecture") != "moss_tts_local",
-                    info.get("sampling_rate") != 48000,
+                    info.get("sampling_rate") != _NATIVE_SAMPLE_RATE,
                     info.get("n_channels") != 2,
                     info.get("n_vq") != 12,
                     info.get("codec_loaded") is not True,
@@ -1389,7 +1470,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             self.port,
             timeout=timeout or self.request_timeout,
         )
-        try:
+        with cleanup_on_exit(
+            connection.close, description="Native speech HTTP connection cleanup"
+        ):
             connection.request(
                 method,
                 path,
@@ -1403,8 +1486,6 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if len(data) > 16 * 1024 * 1024:
                 raise TTSSynthesisError("MOSS C++ response exceeds the audio limit")
             return response.status, dict(response.getheaders()), data
-        finally:
-            connection.close()
 
     def _resolve_prompt_codes(self, character: str) -> tuple[str, str]:
         # Keep reference resolution/content checking in the existing voice route.
@@ -1438,6 +1519,85 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 decode_s=None,
             )
 
+    def _registered_reference(
+        self, identity: str | None, server_directory: Path
+    ) -> tuple[str, float, int, int] | None:
+        if identity is None:
+            return None
+        cached = self._registered_references.get(identity)
+        if cached is None:
+            return None
+        return (
+            cached
+            if self._voice_directory(server_directory)
+            .joinpath(f"{cached[0]}.wav")
+            .is_file()
+            else None
+        )
+
+    def _prepare_reference(
+        self, prompt_audio_path: Path, server_directory: Path, *, registered: bool
+    ) -> tuple[str | None, str, bytes | None, float, int, int]:
+        with ExitStack() as reference_stack:
+            reference_identity = None
+            reference: Path | BinaryIO | SpooledTemporaryFile[bytes] = prompt_audio_path
+            if registered:
+                digest = hashlib.sha256()
+                with _open_reference_source(prompt_audio_path) as source:
+                    while chunk := source.read(1024 * 1024):
+                        digest.update(chunk)
+                reference_identity = digest.hexdigest()
+            cached_reference = self._registered_reference(
+                reference_identity, server_directory
+            )
+            if registered and cached_reference is None:
+                source = reference_stack.enter_context(
+                    _open_reference_source(prompt_audio_path)
+                )
+                # Keep a cache miss's identity and decoded audio on one
+                # immutable snapshot in case the source changes mid-read.
+                snapshot = SpooledTemporaryFile(max_size=8 * 1024 * 1024)
+                reference_stack.enter_context(
+                    cleanup_on_exit(
+                        snapshot.close,
+                        description="Native speech reference snapshot cleanup",
+                    )
+                )
+                digest = hashlib.sha256()
+                while chunk := source.read(1024 * 1024):
+                    digest.update(chunk)
+                    snapshot.write(chunk)
+                snapshot.seek(0)
+                reference = snapshot
+                reference_identity = digest.hexdigest()
+                cached_reference = self._registered_reference(
+                    reference_identity, server_directory
+                )
+            if cached_reference is None:
+                (
+                    reference_wav,
+                    reference_s,
+                    reference_sample_rate,
+                    reference_channels,
+                ) = _normalize_reference_audio(reference)
+                voice_id = hashlib.sha256(reference_wav).hexdigest()
+            else:
+                (
+                    voice_id,
+                    reference_s,
+                    reference_sample_rate,
+                    reference_channels,
+                ) = cached_reference
+                reference_wav = None
+        return (
+            reference_identity,
+            voice_id,
+            reference_wav,
+            reference_s,
+            reference_sample_rate,
+            reference_channels,
+        )
+
     def _generate(
         self, prepared: MossTTSPreparedSpeech, request: SynthesisRequest
     ) -> Generator[SimpleNamespace, None, None]:
@@ -1449,6 +1609,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         offset = 0
         headers: NativeHeaders = {}
         worker: Thread | None = None
+        primary_error: BaseException | None = None
         server_pid = None
         request_s = None
         reference_prepare_s = http_round_trip_s = response_pcm_decode_s = None
@@ -1495,67 +1656,18 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 self.voice_registry_supported
                 and server_info.get("voice_registry") is True
             )
-            with ExitStack() as reference_stack:
-                reference_identity = None
-                prompt_audio_path = _reference_audio_path(prepared.prompt_audio_codes)
-                reference: Path | BinaryIO | SpooledTemporaryFile[bytes] = (
-                    prompt_audio_path
-                )
-
-                def registered_reference(
-                    identity: str | None,
-                ) -> tuple[str, float, int, int] | None:
-                    if identity is None:
-                        return None
-                    cached = self._registered_references.get(identity)
-                    if cached is None:
-                        return None
-                    return (
-                        cached
-                        if self._voice_directory(server_directory)
-                        .joinpath(f"{cached[0]}.wav")
-                        .is_file()
-                        else None
-                    )
-
-                if registered:
-                    digest = hashlib.sha256()
-                    with prompt_audio_path.open("rb") as source:
-                        while chunk := source.read(1024 * 1024):
-                            digest.update(chunk)
-                    reference_identity = digest.hexdigest()
-                cached_reference = registered_reference(reference_identity)
-                if registered and cached_reference is None:
-                    source = reference_stack.enter_context(prompt_audio_path.open("rb"))
-                    # Keep a cache miss's identity and decoded audio on one
-                    # immutable snapshot in case the source changes mid-read.
-                    snapshot = reference_stack.enter_context(
-                        SpooledTemporaryFile(max_size=8 * 1024 * 1024)
-                    )
-                    digest = hashlib.sha256()
-                    while chunk := source.read(1024 * 1024):
-                        digest.update(chunk)
-                        snapshot.write(chunk)
-                    snapshot.seek(0)
-                    reference = snapshot
-                    reference_identity = digest.hexdigest()
-                    cached_reference = registered_reference(reference_identity)
-                if cached_reference is None:
-                    (
-                        reference_wav,
-                        reference_s,
-                        reference_sample_rate,
-                        reference_channels,
-                    ) = _normalize_reference_audio(reference)
-                    voice_id = hashlib.sha256(reference_wav).hexdigest()
-                else:
-                    (
-                        voice_id,
-                        reference_s,
-                        reference_sample_rate,
-                        reference_channels,
-                    ) = cached_reference
-                    reference_wav = None
+            (
+                reference_identity,
+                voice_id,
+                reference_wav,
+                reference_s,
+                reference_sample_rate,
+                reference_channels,
+            ) = self._prepare_reference(
+                _reference_audio_path(prepared.prompt_audio_codes),
+                server_directory,
+                registered=registered,
+            )
             seed = prepared.seed
             if seed is not None and (type(seed) is not int or not 0 <= seed < 2**64):
                 raise TTSConfigurationError(
@@ -1660,26 +1772,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 raise TTSSynthesisError(
                     "MOSS C++ response is missing its audio-frame count"
                 )
-            with wave.open(io.BytesIO(data), "rb") as output:
-                if (
-                    output.getframerate() != 48000
-                    or output.getnchannels() != 2
-                    or output.getsampwidth() != 2
-                    or output.getcomptype() != "NONE"
-                ):
-                    raise TTSSynthesisError(
-                        "MOSS C++ returned an unexpected audio format"
-                    )
-                samples = output.getnframes()
-                raw = output.readframes(samples)
-                if len(raw) != samples * 4:
-                    raise TTSSynthesisError("MOSS C++ returned a truncated WAV")
-                pcm = (
-                    np.frombuffer(raw, dtype="<i2").reshape(-1, 2).astype(np.float32)
-                    / 32768
-                )
-            if not pcm.size or not np.isfinite(pcm).all():
-                raise TTSSynthesisError("MOSS C++ returned empty or invalid audio")
+            pcm = _decode_response_audio(data)
             response_pcm_decode_s = round(monotonic() - response_started, 6)
             outcome = "limited" if frames >= frame_limit else "complete"
             reason = "frame-limit" if frames >= frame_limit else None
@@ -1687,10 +1780,14 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             audio_s = round(len(pcm) / self.sample_rate, 6)
             request_s = round(monotonic() - started, 3)
             yield SimpleNamespace(audio=pcm, generation_limited=frames >= frame_limit)
-        except Exception:
+        except Exception as error:
             reason = reason or f"{stage}-failed"
             if cancelled():
                 return
+            primary_error = error
+            raise
+        except BaseException as error:
+            primary_error = error
             raise
         finally:
             if cancelled():
@@ -1744,9 +1841,22 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 **stages,
             )
             if outcome in {"failed", "cancelled"}:
-                self._stop_server(f"generation-{outcome}")
-                if worker is not None:
-                    worker.join(timeout=2)
+                attempt_cleanup(
+                    lambda: self._stop_generation(f"generation-{outcome}", worker),
+                    description="Native speech generation cleanup",
+                    primary_error=primary_error,
+                )
+
+    def _stop_generation(self, reason: str, worker: Thread | None) -> None:
+        with ExitStack() as resources:
+            if worker is not None:
+                resources.enter_context(
+                    cleanup_on_exit(
+                        lambda: worker.join(timeout=2),
+                        description="Native speech request thread cleanup",
+                    )
+                )
+            self._stop_server(reason)
 
     def _stop_server(self, reason: str = "shutdown") -> None:
         with self.server_lock:
@@ -1757,7 +1867,28 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             self.server_info = None
             self._runtime_status = None
             self._registered_references.clear()
-            try:
+            with ExitStack() as resources:
+                if directory is not None:
+                    resources.enter_context(
+                        cleanup_on_exit(
+                            directory.cleanup,
+                            description="Native speech server directory cleanup",
+                        )
+                    )
+                if log is not None:
+                    resources.enter_context(
+                        cleanup_on_exit(
+                            log.close,
+                            description="Native speech server log cleanup",
+                        )
+                    )
+                if job is not None:
+                    resources.enter_context(
+                        cleanup_on_exit(
+                            job.close,
+                            description="Native speech server job cleanup",
+                        )
+                    )
                 if server is not None:
                     exit_code = server.poll()
                     record_native_speech(
@@ -1777,18 +1908,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                             server.wait(timeout=2)
                         except subprocess.TimeoutExpired:
                             pass  # Kill is final; do not turn shutdown into another hang.
-            finally:
-                if job is not None:
-                    job.close()
-                if log is not None:
-                    log.close()
-                if directory is not None:
-                    # Windows scanners and log viewers may briefly retain the
-                    # closed log. Temporary cleanup must not replace speech.
-                    directory.cleanup()
 
     def shutdown(self) -> None:
-        try:
+        with cleanup_on_exit(
+            self._stop_server, description="Native speech server cleanup"
+        ):
             self.stop()
-        finally:
-            self._stop_server()

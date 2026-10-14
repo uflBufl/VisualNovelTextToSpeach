@@ -6,17 +6,24 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import re
 import subprocess
 from collections import Counter
 from pathlib import Path
+from typing import NamedTuple
+
+from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import read_regular_text
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_BASELINE = REPOSITORY_ROOT / "tests" / "fixtures" / "ruff-complexity-v1.json"
+DEFAULT_BASELINE = REPOSITORY_ROOT / "tests" / "fixtures" / "ruff-complexity-v2.json"
 RULES = ("C901", "PLR0912", "PLR0915")
 
 
 def scope_at_line(source_path: Path, line: int) -> str | None:
-    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=source_path)
+    tree = ast.parse(
+        read_regular_text(source_path, encoding="utf-8"), filename=source_path
+    )
     return _scope_at_line(tree, line)
 
 
@@ -34,8 +41,8 @@ def _scope_at_line(tree: ast.AST, line: int) -> str | None:
             for child in node.body:
                 visit(child, (*parents, node.name))
             return
-        for child in ast.iter_child_nodes(node):
-            visit(child, parents)
+        for descendant in ast.iter_child_nodes(node):
+            visit(descendant, parents)
 
     visit(tree)
     matches = [scope for start, end, scope in scopes if start <= line <= end]
@@ -68,7 +75,7 @@ def _finding_identity(
     cache_key = path.resolve()
     if cache_key not in source_trees:
         source_trees[cache_key] = ast.parse(
-            path.read_text(encoding="utf-8"), filename=path
+            read_regular_text(path, encoding="utf-8"), filename=path
         )
     scope = _scope_at_line(source_trees[cache_key], location["row"])
     if scope is None:
@@ -78,58 +85,99 @@ def _finding_identity(
     return code, relative_path, scope
 
 
-def baseline_counts(baseline: object) -> Counter[tuple[str, str, str]]:
-    if not isinstance(baseline, dict) or baseline.get("schema_version") != 1:
+class _Allowance(NamedTuple):
+    occurrences: int
+    maximum: int
+
+
+def baseline_allowances(baseline: object) -> dict[tuple[str, str, str], _Allowance]:
+    if not isinstance(baseline, dict) or not has_schema_version(baseline, 2):
         raise ValueError("Ruff complexity baseline schema is unsupported")
     findings = baseline.get("findings")
     if not isinstance(findings, list):
         raise ValueError("Ruff complexity baseline inventory is malformed")
-    counts: Counter[tuple[str, str, str]] = Counter()
+    allowances: dict[tuple[str, str, str], _Allowance] = {}
     for finding in findings:
         if (
             not isinstance(finding, dict)
+            or set(finding) != {"code", "path", "scope", "count", "maximum"}
             or finding.get("code") not in RULES
             or not isinstance(finding.get("path"), str)
             or not isinstance(finding.get("scope"), str)
-            or not isinstance(finding.get("count"), int)
-            or isinstance(finding.get("count"), bool)
+            or type(finding.get("count")) is not int
             or finding["count"] < 1
+            or type(finding.get("maximum")) is not int
+            or finding["maximum"] < 1
         ):
             raise ValueError("Ruff complexity baseline inventory is malformed")
         identity = (finding["code"], finding["path"], finding["scope"])
-        if identity in counts:
+        if identity in allowances:
             raise ValueError("Ruff complexity baseline inventory is malformed")
-        counts[identity] = finding["count"]
-    if not counts and findings:
-        raise ValueError("Ruff complexity baseline inventory is malformed")
-    return counts
+        allowances[identity] = _Allowance(finding["count"], finding["maximum"])
+    return allowances
+
+
+def finding_metric(finding: dict[str, object]) -> int:
+    """Read the numeric measurement from the three pinned Ruff diagnostics."""
+    message = finding.get("message")
+    match = (
+        re.search(r"\(([0-9]+) > ([0-9]+)\)$", message)
+        if isinstance(message, str) and finding.get("code") in RULES
+        else None
+    )
+    if match is None:
+        raise ValueError("Ruff complexity finding is missing its numeric measurement")
+    metric, threshold = map(int, match.groups())
+    if metric <= threshold:
+        raise ValueError("Ruff complexity finding has an invalid numeric measurement")
+    return metric
 
 
 def check_findings(
     root: Path, baseline: object, findings: list[dict[str, object]]
 ) -> list[str]:
-    allowed = baseline_counts(baseline)
+    allowed = baseline_allowances(baseline)
     source_trees: dict[Path, ast.AST] = {}
-    current = Counter(
-        _finding_identity(root, finding, source_trees) for finding in findings
-    )
+    current: Counter[tuple[str, str, str]] = Counter()
+    metrics: dict[tuple[str, str, str], int] = {}
+    for finding in findings:
+        identity = _finding_identity(root, finding, source_trees)
+        metric = finding_metric(finding)
+        current[identity] += 1
+        metrics[identity] = max(metric, metrics.get(identity, 0))
     unexpected = sorted(
-        (identity, count, allowed[identity])
+        (identity, count, allowed.get(identity, _Allowance(0, 0)).occurrences)
         for identity, count in current.items()
-        if count > allowed[identity]
+        if count > allowed.get(identity, _Allowance(0, 0)).occurrences
     )
     stale = sorted(
-        (identity, count, current[identity])
-        for identity, count in allowed.items()
-        if current[identity] < count
+        (identity, allowance.occurrences, current[identity])
+        for identity, allowance in allowed.items()
+        if current[identity] < allowance.occurrences
     )
-    return [
+    failures = [
         f"new Ruff complexity finding: {code} {path} {scope} ({count} > {allowed})"
         for (code, path, scope), count, allowed in unexpected
     ] + [
         f"stale Ruff complexity allowance: {code} {path} {scope} ({count} > {actual})"
         for (code, path, scope), count, actual in stale
     ]
+    for identity, metric in sorted(metrics.items()):
+        allowance = allowed.get(identity)
+        if allowance is None or metric == allowance.maximum:
+            continue
+        code, path, scope = identity
+        if metric > allowance.maximum:
+            failures.append(
+                f"Ruff complexity increased: {code} {path} {scope} "
+                f"({metric} > {allowance.maximum})"
+            )
+        else:
+            failures.append(
+                f"stale Ruff complexity metric allowance: {code} {path} {scope} "
+                f"({allowance.maximum} > {metric})"
+            )
+    return failures
 
 
 def ruff_findings(root: Path) -> list[dict[str, object]]:
@@ -163,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=REPOSITORY_ROOT)
     arguments = parser.parse_args(argv)
     try:
-        baseline = json.loads(arguments.baseline.read_text(encoding="utf-8"))
+        baseline = decode_json(read_regular_text(arguments.baseline, encoding="utf-8"))
         failures = check_findings(
             arguments.root, baseline, ruff_findings(arguments.root)
         )

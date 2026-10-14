@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TypeAlias, TypedDict, TypeGuard
 
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
@@ -43,6 +43,7 @@ from vntts.authoring.terminal_conflict_resolution import (
     assert_terminal_conflict_resolution_source_authorities,
     validate_terminal_conflict_resolution_document,
 )
+from vntts.json_types import has_schema_version, is_json_object
 
 TERMINAL_CONFLICT_SUCCESSOR_SCHEMA = (
     "vntts.authoring-terminal-conflict-successor-reconciliation"
@@ -118,15 +119,15 @@ class _SuccessorInputs:
 def _is_successor_document(
     value: object,
 ) -> TypeGuard[TerminalConflictSuccessorDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_successor_record(value: object) -> TypeGuard[_SuccessorRecord]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_resolution_projection(value: object) -> TypeGuard[_ResolutionProjection]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 APPLY_APPROVED_OUTCOME = "apply_selected_approved_outcome"
@@ -456,7 +457,7 @@ def _validate_successor_document_header(
         not _is_successor_document(value)
         or set(value) != fields
         or value.get("schema") != TERMINAL_CONFLICT_SUCCESSOR_SCHEMA
-        or value.get("schema_version") != TERMINAL_CONFLICT_SUCCESSOR_VERSION
+        or not has_schema_version(value, TERMINAL_CONFLICT_SUCCESSOR_VERSION)
     ):
         raise TerminalConflictSuccessorError("Unsupported terminal conflict successor")
     _validate_successor_document_identity(value)
@@ -528,7 +529,7 @@ def _validate_successor_record(
         )
     seen.add(queue_id)
     action = record["next_action"]
-    if action not in SUCCESSOR_ACTIONS:
+    if not isinstance(action, str) or action not in SUCCESSOR_ACTIONS:
         raise TerminalConflictSuccessorError(
             "Terminal conflict successor action is invalid"
         )
@@ -569,7 +570,18 @@ def _validate_successor_document_completion(
         "unresolved_conflict_count": 0,
         "action_counts": dict(sorted(counts.items())),
     }
-    if summary != expected_summary:
+    if (
+        summary != expected_summary
+        or any(
+            type(amount) is not int
+            for amount in (
+                summary["historical_conflict_count"],
+                summary["resolved_conflict_count"],
+                summary["unresolved_conflict_count"],
+            )
+        )
+        or any(type(amount) is not int for amount in summary["action_counts"].values())
+    ):
         raise TerminalConflictSuccessorError(
             "Terminal conflict successor summary changed"
         )
@@ -623,7 +635,10 @@ def _validate_historical_conflict(
                 "Terminal conflict successor workspace identity is invalid"
             )
         authority = occurrence["authority"]
-        if authority not in RECONCILIATION_ACTIONS | TERMINAL_AUTHORITIES:
+        if (
+            not isinstance(authority, str)
+            or authority not in RECONCILIATION_ACTIONS | TERMINAL_AUTHORITIES
+        ):
             raise TerminalConflictSuccessorError(
                 "Terminal conflict successor historical authority is invalid"
             )
@@ -685,6 +700,7 @@ def _validate_resolution_projection_identity(
     if (
         not isinstance(candidate_ids, list)
         or len(candidate_ids) < 2
+        or any(not isinstance(candidate_id, str) for candidate_id in candidate_ids)
         or len(candidate_ids) != len(set(candidate_ids))
     ):
         raise TerminalConflictSuccessorError(
@@ -737,14 +753,16 @@ def _validate_resolution_projection_selection(
             "Selected successor candidate is unavailable"
         )
     authority = value["selected_authority"]
-    if authority not in {"approved", "rejected"}:
+    if not isinstance(authority, str) or authority not in {"approved", "rejected"}:
         raise TerminalConflictSuccessorError("Selected successor authority is invalid")
     digest = _sha256(value["selected_audio_sha256"], "Selected audio hash")
     selected_audio = PurePosixPath(
         _text(value["selected_audio"], "Selected audio path")
     )
-    if selected_audio.is_absolute() or any(
-        part in {"", ".", ".."} for part in selected_audio.parts
+    if (
+        "\x00" in selected_audio.as_posix()
+        or selected_audio.is_absolute()
+        or any(part in {"", ".", ".."} for part in selected_audio.parts)
     ):
         raise TerminalConflictSuccessorError("Selected successor audio path is invalid")
     for field, amount in (

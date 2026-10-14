@@ -1,0 +1,408 @@
+import hashlib
+import io
+import json
+import os
+import unittest
+from contextlib import redirect_stderr
+from functools import partial
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from vntts_artifacts.audio import write_pcm16_wav
+
+from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from tests.source_reference_fixtures import (
+    CompositeRenderer,
+    publish_source_reference_quality_fixture,
+    write_exact_bank_composite_report,
+    write_test_png,
+)
+from vntts.authoring import (
+    reference_composite,
+    source_reference_quality,
+    source_reference_quality_records,
+)
+from vntts.authoring.bulk_generation import run_bulk_generation
+from vntts.authoring.publication import AtomicPublicationError
+from vntts.authoring.reference_composite import (
+    ReferenceCompositeError,
+    publish_composite_quality_review,
+    publish_exact_bank_reference_composite,
+)
+from vntts.authoring.source_reference_quality import (
+    SourceReferenceQualityError,
+    load_source_reference_quality_review,
+    publish_source_reference_quality_review,
+)
+
+
+class SourceReferenceQualityBoundariesTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_staged_portrait_and_clip_hashes_refuse_fifo_clean_up_and_recover(self):
+        for role in ("portraits", "clips"):
+            with self.subTest(role=role), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                if role == "portraits":
+                    portraits = root / "portrait-inputs"
+                    portraits.mkdir()
+                    for name in ("adult.png", "young.png", "other.png"):
+                        write_test_png(portraits / name, red=127)
+                    plan, evaluation, generation, _expected = (
+                        publish_source_reference_quality_fixture(
+                            root, portrait_directory=portraits
+                        )
+                    )
+                    publish = partial(
+                        publish_source_reference_quality_review,
+                        plan.directory,
+                        evaluation.directory,
+                        generation.state,
+                        portrait_directory=portraits,
+                    )
+                    module, error_type = (
+                        source_reference_quality,
+                        SourceReferenceQualityError,
+                    )
+                else:
+                    report = write_exact_bank_composite_report(root)
+                    publish = partial(
+                        publish_exact_bank_reference_composite,
+                        report,
+                        "Hotelier",
+                        "505401.png",
+                        "hotelier.bnk",
+                    )
+                    module, error_type = reference_composite, ReferenceCompositeError
+                output = root / "refused"
+                before = tree_hashes(root)
+                original = module.sha256_file
+                refused = []
+
+                def checksum(candidate):
+                    path = Path(candidate)
+                    self.assertEqual(path.parent.name, role)
+                    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                    gate: RegularFileGate = {"path": path, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(path)
+                    refused.append((caught.exception, path.name, digest))
+                    raise caught.exception
+
+                with (
+                    patch.object(module, "sha256_file", checksum),
+                    self.assertRaisesRegex(error_type, "regular file") as caught,
+                ):
+                    publish(output)
+                self.assertEqual(len(refused), 1)
+                self.assertIs(caught.exception.__cause__, refused[0][0])
+                self.assertEqual(tree_hashes(root), before)
+                self.assertFalse(output.exists())
+                self.assertFalse(list(root.glob(f".{output.name}.staging-*")))
+                recovered = publish(output)
+                copied = recovered.directory / role / refused[0][1]
+                self.assertEqual(
+                    hashlib.sha256(copied.read_bytes()).hexdigest(), refused[0][2]
+                )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_quality_copy_phases_refuse_fifo_clean_up_and_recover(self):
+        for publisher in ("source", "composite"):
+            with self.subTest(publisher=publisher), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                if publisher == "source":
+                    plan, evaluation, generation, expected = (
+                        publish_source_reference_quality_fixture(root)
+                    )
+                    publish = partial(
+                        publish_source_reference_quality_review,
+                        plan.directory,
+                        evaluation.directory,
+                        generation.state,
+                    )
+                    error_type = SourceReferenceQualityError
+                else:
+                    report = write_exact_bank_composite_report(root)
+                    composite = publish_exact_bank_reference_composite(
+                        report,
+                        "Hotelier",
+                        "505401.png",
+                        "hotelier.bnk",
+                        root / "composite",
+                    )
+                    generation = run_bulk_generation(
+                        composite.directory / "queue.jsonl",
+                        root / "generation",
+                        CompositeRenderer(),
+                        provider="synthetic",
+                        model="synthetic-v1",
+                        generation_profile="stable",
+                    )
+                    publish = partial(
+                        publish_composite_quality_review,
+                        composite.directory,
+                        generation.state,
+                    )
+                    expected = publish(root / "expected")
+                    error_type = ReferenceCompositeError
+                expected_session = load_source_reference_quality_review(
+                    expected.session
+                )
+                expected_audio = {
+                    path: digest
+                    for path, digest in tree_hashes(expected.directory).items()
+                    if path != "review.json"
+                }
+                original = source_reference_quality_records.copy_regular_file
+                for phase in ("reference", "generated"):
+                    with self.subTest(phase=phase):
+                        output = root / f"refused-{phase}"
+                        before = tree_hashes(root)
+                        refused = []
+
+                        def copy(source, target):
+                            if not Path(target).name.startswith(phase):
+                                return original(source, target)
+                            gate: RegularFileGate = {
+                                "path": Path(source),
+                                "armed": True,
+                            }
+                            with (
+                                swap_at_acquisition(self, gate),
+                                self.assertRaisesRegex(
+                                    OSError, "regular file"
+                                ) as caught,
+                            ):
+                                original(source, target)
+                            self.assertFalse(Path(target).exists())
+                            refused.append(caught.exception)
+                            raise caught.exception
+
+                        with (
+                            patch.object(
+                                source_reference_quality_records,
+                                "copy_regular_file",
+                                copy,
+                            ),
+                            self.assertRaisesRegex(
+                                error_type, "regular file"
+                            ) as caught,
+                        ):
+                            publish(output)
+                        self.assertEqual(len(refused), 1)
+                        self.assertIs(caught.exception.__cause__, refused[0])
+                        self.assertEqual(tree_hashes(root), before)
+                        self.assertFalse(output.exists())
+                        self.assertFalse(list(root.glob(f".{output.name}.staging-*")))
+                        recovered = publish(output)
+                        session = load_source_reference_quality_review(
+                            recovered.session
+                        )
+                        self.assertEqual(
+                            {
+                                key: value
+                                for key, value in session.items()
+                                if key not in {"created_at", "updated_at"}
+                            },
+                            {
+                                key: value
+                                for key, value in expected_session.items()
+                                if key not in {"created_at", "updated_at"}
+                            },
+                        )
+                        self.assertEqual(
+                            {
+                                path: digest
+                                for path, digest in tree_hashes(output).items()
+                                if path != "review.json"
+                            },
+                            expected_audio,
+                        )
+
+    def test_composite_quality_cli_reports_its_domain_error(self):
+        errors = io.StringIO()
+        with (
+            patch(
+                "vntts.authoring.reference_composite.publish_composite_quality_review",
+                side_effect=ReferenceCompositeError("Composite publication failed"),
+            ),
+            redirect_stderr(errors),
+        ):
+            result = source_reference_quality.main(
+                [
+                    "create-composite",
+                    "--composite",
+                    "composite",
+                    "--state",
+                    "state.json",
+                    "--output",
+                    "output",
+                ]
+            )
+        self.assertEqual(result, 1)
+        self.assertEqual(errors.getvalue(), "Composite publication failed\n")
+
+    def test_quality_publication_requires_exact_integer_media_identity(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, evaluation, generation, quality = (
+                publish_source_reference_quality_fixture(root)
+            )
+            session = load_source_reference_quality_review(quality.session)
+            self.assertTrue(
+                all(type(card["media_id"]) is int for card in session["variants"])
+            )
+            comparison_path = evaluation.directory / "comparison.json"
+            original = json.loads(comparison_path.read_text(encoding="utf-8"))
+            integer_one_index = next(
+                index
+                for index, variant in enumerate(original["variants"])
+                if variant["media_id"] == 1
+            )
+            for index, media_id in (
+                (0, float(original["variants"][0]["media_id"])),
+                (integer_one_index, True),
+            ):
+                with self.subTest(media_id=media_id):
+                    document = json.loads(json.dumps(original))
+                    document["variants"][index]["media_id"] = media_id
+                    comparison_path.write_text(json.dumps(document), encoding="utf-8")
+                    output = root / "invalid-quality"
+                    with self.assertRaisesRegex(
+                        SourceReferenceQualityError, "changed media_id"
+                    ):
+                        publish_source_reference_quality_review(
+                            plan.directory,
+                            evaluation.directory,
+                            generation.state,
+                            output,
+                        )
+                    self.assertFalse(output.exists())
+                    self.assertEqual(list(root.glob(".invalid-quality.staging-*")), [])
+
+    def test_quality_publication_preserves_racing_destination_and_cleans_staging(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan, evaluation, generation, _quality = (
+                publish_source_reference_quality_fixture(root)
+            )
+            original_paths = set(root.iterdir())
+            output = root / "racing-quality"
+            rename = source_reference_quality.rename_directory_no_replace
+
+            def race(staging: Path, destination: Path) -> None:
+                destination.mkdir()
+                (destination / "sentinel").write_bytes(b"competitor output")
+                rename(staging, destination)
+
+            with (
+                patch.object(
+                    source_reference_quality,
+                    "rename_directory_no_replace",
+                    side_effect=race,
+                ),
+                self.assertRaisesRegex(
+                    SourceReferenceQualityError,
+                    "Publication destination already exists",
+                ) as caught,
+            ):
+                publish_source_reference_quality_review(
+                    plan.directory,
+                    evaluation.directory,
+                    generation.state,
+                    output,
+                )
+            self.assertIsInstance(caught.exception.__cause__, AtomicPublicationError)
+            self.assertEqual(set(output.iterdir()), {output / "sentinel"})
+            self.assertEqual((output / "sentinel").read_bytes(), b"competitor output")
+            self.assertEqual(set(root.iterdir()), original_paths | {output})
+
+    def test_quality_copy_metadata_comes_from_checked_destination_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_pcm16_wav(root / "source.wav", [0.1, -0.1], 16_000)
+            original = source.read_bytes()
+            digest = hashlib.sha256(original).hexdigest()
+            write_pcm16_wav(source, [0.2] * 4, 24_000)
+            destination = root / "copied.wav"
+            copyfile = source_reference_quality_records.copy_regular_file
+
+            def restore_before_copy(source_path, destination_path):
+                source_path.write_bytes(original)
+                return copyfile(source_path, destination_path)
+
+            with patch.object(
+                source_reference_quality_records,
+                "copy_regular_file",
+                side_effect=restore_before_copy,
+            ):
+                audio = source_reference_quality_records._copy_audio(
+                    source, digest, destination
+                )
+            self.assertEqual(destination.read_bytes(), original)
+            self.assertEqual(audio["audio_sha256"], digest)
+            self.assertEqual(audio["sample_rate"], 16_000)
+            self.assertEqual(audio["sample_count"], 2)
+
+    def test_quality_copy_rejects_corrupted_destination(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_pcm16_wav(root / "source.wav", [0.1, -0.1], 16_000)
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+
+            def corrupt_copy(_source, destination):
+                destination.write_bytes(b"corrupt copied audio")
+
+            with (
+                patch.object(
+                    source_reference_quality_records,
+                    "copy_regular_file",
+                    side_effect=corrupt_copy,
+                ),
+                self.assertRaisesRegex(
+                    SourceReferenceQualityError, "changed while copied"
+                ),
+            ):
+                source_reference_quality_records._copy_audio(
+                    source, digest, root / "copied.wav"
+                )
+
+    def test_quality_audio_metadata_uses_checksum_bound_payload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = write_pcm16_wav(root / "audio.wav", [0.1, -0.1], 16_000)
+            record = {
+                "audio": audio.name,
+                "audio_sha256": hashlib.sha256(audio.read_bytes()).hexdigest(),
+                "sample_rate": 16_000,
+                "sample_count": 2,
+                "duration_seconds": round(2 / 16_000, 6),
+            }
+            probe = source_reference_quality_records.probe_pcm16_mono_wav
+
+            def replace_before_decode(source):
+                audio.write_bytes(b"replaced after checksum")
+                return probe(source)
+
+            with patch.object(
+                source_reference_quality_records,
+                "probe_pcm16_mono_wav",
+                side_effect=replace_before_decode,
+            ):
+                validated = source_reference_quality_records._validate_audio_record(
+                    root, record, "captured sample"
+                )
+            self.assertEqual(validated, audio.resolve())
+            self.assertEqual(audio.read_bytes(), b"replaced after checksum")
+
+
+if __name__ == "__main__":
+    unittest.main()

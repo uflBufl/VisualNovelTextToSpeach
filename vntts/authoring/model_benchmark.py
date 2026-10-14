@@ -4,34 +4,58 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
-import os
 import platform
 import re
 import sys
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from typing import TypeAlias, TypeGuard
+from typing import TypeAlias
 
 import numpy as np
+from durable_file import atomic_write_bytes, atomic_write_json
 from numpy.typing import NDArray
-from vntts_artifacts.atomic_io import atomic_write_bytes, atomic_write_json
-from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.audio import read_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
-from vntts.authoring.bulk_generation import (
+from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.authoring.generation_state import (
     load_generation_state,
+    load_generation_state_from_snapshot,
+    load_stable_generation_queue,
 )
-from vntts.authoring.speech_quality import measure_generated_speech_bytes
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    no_replace_destination,
+    rename_directory_no_replace,
+    staged_directory,
+)
+from vntts.authoring.speech_quality import (
+    SPEECH_QUALITY_ANALYSIS_VERSION,
+    measure_generated_speech_samples,
+)
+from vntts.authoring.workspace_foundation import load_json_object_snapshot
+from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_messages
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import (
+    canonical_document_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
+from vntts.json_types import decode_json, has_schema_version, is_utf8_text
+from vntts.json_types import is_json_object as _is_json_document
+from vntts.path_safety import (
+    ensure_separate_output,
+    read_regular_bytes,
+    read_regular_text,
+)
 from vntts.settings import get_local_data_directory
+from vntts.speech_backend_contract import RenderableBackend, is_renderable_backend
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -40,7 +64,6 @@ from vntts.synthesis import (
 )
 from vntts.tts_benchmark import create_backend
 from vntts.voices import (
-    CharacterVoice,
     CharacterVoiceRegistry,
     find_default_voice_manifest,
     is_narrator,
@@ -72,6 +95,19 @@ class ModelVariant:
     terms_accepted: bool = False
     require_cuda: bool = False
 
+    def __post_init__(self) -> None:
+        for field in (
+            "model_id",
+            "backend",
+            "model",
+            "model_revision",
+            "generation_profile",
+            "voice",
+        ):
+            value = getattr(self, field)
+            if value is not None and not is_utf8_text(value):
+                raise ModelBenchmarkError(f"Model variant {field} must be UTF-8 text")
+
 
 @dataclass(frozen=True)
 class _ComparisonVoiceContext:
@@ -90,10 +126,6 @@ class _FailureCorpusCapture:
     state_sha256: str
     state: JsonDocument
     queue_by_id: dict[str, JsonDocument]
-
-
-def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
 def _json_document(value: object, label: str) -> JsonDocument:
@@ -133,14 +165,24 @@ def select_representative_items(
         else:
             label = str(emotion or "neutral")
         buckets[label].append(document)
-    selected: list[JsonDocument] = []
-    while len(selected) < sample_size and buckets:
-        for label in sorted(tuple(buckets)):
-            if len(selected) >= sample_size:
-                break
-            selected.append(buckets[label].pop(0))
-            if not buckets[label]:
-                del buckets[label]
+    return _round_robin_buckets(buckets, sample_size)
+
+
+def _round_robin_buckets[T](
+    buckets: Mapping[str, Iterable[T]],
+    limit: int,
+    *,
+    sort_key: Callable[[str], str] | None = None,
+) -> list[T]:
+    pending = deque(iter(buckets[key]) for key in sorted(buckets, key=sort_key))
+    selected: list[T] = []
+    while pending and len(selected) < limit:
+        bucket = pending.popleft()
+        try:
+            selected.append(next(bucket))
+        except StopIteration:
+            continue
+        pending.append(bucket)
     return selected
 
 
@@ -178,6 +220,7 @@ def build_benchmark_corpus(
         "samples": samples,
     }
     output_path = Path(output_path)
+    ensure_separate_output(output_path, [queue.path], error_type=ModelBenchmarkError)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(output_path, document, sort_keys=True)
     return document
@@ -221,6 +264,20 @@ def build_failure_comparison_corpus(
     )
     _verify_failure_corpus_sources(capture, voice_context)
     output_path = Path(output_path).expanduser().resolve()
+    inputs = [capture.queue_path, capture.state_path]
+    if voice_context is not None:
+        inputs.append(voice_context.path)
+    for result in _json_document(
+        capture.state.get("items"), "Generation state items"
+    ).values():
+        if _is_json_document(result) and result.get("status") in (
+            "generated",
+            "approved",
+        ):
+            audio = result.get("path")
+            if isinstance(audio, str):
+                inputs.append(capture.state_path.parent / audio)
+    ensure_separate_output(output_path, inputs, error_type=ModelBenchmarkError)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(output_path, document, sort_keys=True)
     return document
@@ -234,21 +291,33 @@ def _capture_failure_corpus_inputs(
     queue_path = Path(queue_path).expanduser().resolve()
     state_path = Path(state_path).expanduser().resolve()
     try:
-        queue_payload = queue_path.read_bytes()
-        state_payload = state_path.read_bytes()
-        state_snapshot = json.loads(state_payload)
-    except (OSError, json.JSONDecodeError) as error:
+        queue, queue_sha256 = load_stable_generation_queue(queue_path)
+    except BulkGenerationError as error:
         raise ModelBenchmarkError(
             f"Unable to capture comparison inputs: {error}"
         ) from error
-    queue_sha256 = hashlib.sha256(queue_payload).hexdigest()
-    state_sha256 = hashlib.sha256(state_payload).hexdigest()
-    queue = VoiceGenerationQueue.load(queue_path)
-    state = state_loader(state_path, queue_path)
-    if state != state_snapshot:
-        raise ModelBenchmarkError(
-            "Validated generation state does not match its captured bytes"
+    if state_loader is load_generation_state:
+        state, state_sha256, _payload = load_json_object_snapshot(
+            state_path, "comparison generation state", error_type=ModelBenchmarkError
         )
+        state = load_generation_state_from_snapshot(
+            state_path, queue, queue_sha256, state_document=state
+        )
+    else:
+        # Custom loaders retain their path-based and byte-decoder contracts.
+        try:
+            state_payload = read_regular_bytes(state_path)
+            state_snapshot = decode_json(state_payload)
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise ModelBenchmarkError(
+                f"Unable to capture comparison inputs: {error}"
+            ) from error
+        state_sha256 = hashlib.sha256(state_payload).hexdigest()
+        state = state_loader(state_path, queue_path)
+        if state != state_snapshot:
+            raise ModelBenchmarkError(
+                "Validated generation state does not match its captured bytes"
+            )
     return _FailureCorpusCapture(
         queue_path,
         state_path,
@@ -372,14 +441,9 @@ def _failure_comparison_samples(
                     if isinstance(failure, dict) and failure.get("kind")
                     else None
                 ),
-                "source_state_item_sha256": hashlib.sha256(
-                    json.dumps(
-                        result,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ).encode("utf-8")
-                ).hexdigest(),
+                "source_state_item_sha256": canonical_document_sha256(
+                    result, allow_nan=True
+                ),
             }
         )
     return samples
@@ -448,10 +512,15 @@ def _comparison_voice_context(
 ) -> _ComparisonVoiceContext:
     manifest_path = Path(manifest_path).expanduser().resolve()
     try:
-        payload = manifest_path.read_bytes()
-        document = json.loads(payload)
-        registry = CharacterVoiceRegistry.from_file(manifest_path)
-    except (OSError, json.JSONDecodeError, VoiceManifestError) as error:
+        payload = read_regular_bytes(manifest_path)
+        document = decode_json(payload.decode("utf-8"))
+        registry = CharacterVoiceRegistry.from_document(document, manifest_path)
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        VoiceManifestError,
+    ) as error:
         raise ModelBenchmarkError(
             f"Unable to capture comparison voice manifest: {error}"
         ) from error
@@ -485,11 +554,15 @@ def _comparison_queue_overrides(
     document: Mapping[str, object], registry: CharacterVoiceRegistry
 ) -> dict[str, str]:
     bindings = document.get("vntts.authoring.source_reference_bindings")
+    if bindings is not None and not isinstance(bindings, dict):
+        raise ModelBenchmarkError(
+            "Comparison voice manifest source reference bindings are invalid"
+        )
     selected_variants = (
-        bindings.get("selected_variants") if isinstance(bindings, dict) else ()
+        bindings.get("selected_variants", []) if isinstance(bindings, dict) else []
     )
     if selected_variants is None:
-        selected_variants = ()
+        selected_variants = []
     if not isinstance(selected_variants, list):
         raise ModelBenchmarkError(
             "Comparison voice manifest source reference bindings are invalid"
@@ -580,29 +653,21 @@ def _round_robin_state_items(
         item = queue_by_id[queue_id]
         key = str(item.get("voice_character") or item.get("speaker") or "Narrator")
         buckets[key].append((queue_id, result))
-    selected: list[StateItem] = []
-    while len(selected) < limit and buckets:
-        for key in sorted(tuple(buckets), key=str.casefold):
-            if len(selected) >= limit:
-                break
-            selected.append(buckets[key].pop(0))
-            if not buckets[key]:
-                del buckets[key]
-    return selected
+    return _round_robin_buckets(buckets, limit, sort_key=str.casefold)
 
 
 def load_benchmark_corpus(path: str | Path) -> JsonDocument:
     """Load the authoring corpus without normalizing exact identity or text."""
     path = Path(path).expanduser().resolve()
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        document = decode_json(read_regular_text(path, encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ModelBenchmarkError(
             f"Unable to read benchmark corpus {path}: {error}"
         ) from error
     if not isinstance(document, dict) or (
         document.get("schema") != CORPUS_SCHEMA
-        or document.get("schema_version") != SCHEMA_VERSION
+        or not has_schema_version(document, SCHEMA_VERSION)
     ):
         raise ModelBenchmarkError("Unsupported authoring benchmark corpus schema")
     raw_samples = document.get("samples")
@@ -619,7 +684,7 @@ def load_benchmark_corpus(path: str | Path) -> JsonDocument:
         line_id = _required_text(sample.get("line_id"), f"sample {index} line_id")
         character = _required_text(sample.get("character"), f"sample {index} character")
         text = sample.get("text")
-        if not isinstance(text, str) or not text:
+        if not is_utf8_text(text) or not text:
             raise ModelBenchmarkError(
                 f"Benchmark corpus sample {index} text is invalid"
             )
@@ -660,21 +725,14 @@ def benchmark_renderer(
     voice_controls_content_sha256: str | None = None,
 ) -> JsonDocument:
     """Render a common corpus through one typed backend without playback."""
-    output_directory = Path(output_directory).expanduser().resolve()
+    output_directory = _benchmark_output_directory(output_directory, label="Model")
     reported_output_directory = (
         Path(reported_output_directory or output_directory).expanduser().resolve()
     )
-    if output_directory.exists() and (
-        not output_directory.is_dir() or any(output_directory.iterdir())
-    ):
-        raise ModelBenchmarkError(
-            f"Model output already exists; refusing to overwrite: {output_directory}"
-        )
     output_directory.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(
-        prefix=f".{output_directory.name}-", dir=output_directory.parent
-    ) as temporary_directory:
-        staging = Path(temporary_directory) / output_directory.name
+    with staged_directory(
+        output_directory.parent, prefix=f".{output_directory.name}-"
+    ) as staging:
         report = _benchmark_renderer_staged(
             variant,
             backend,
@@ -685,14 +743,7 @@ def benchmark_renderer(
             voice_controls_sha256=voice_controls_sha256,
             voice_controls_content_sha256=voice_controls_content_sha256,
         )
-        try:
-            if output_directory.exists():
-                output_directory.rmdir()
-            os.rename(staging, output_directory)
-        except OSError as error:
-            raise ModelBenchmarkError(
-                f"Unable to publish model output {output_directory}: {error}"
-            ) from error
+        _publish_benchmark_staging(staging, output_directory, label="model output")
     return report
 
 
@@ -707,8 +758,7 @@ def _benchmark_renderer_staged(
     voice_controls_sha256: str | None,
     voice_controls_content_sha256: str | None,
 ) -> JsonDocument:
-    render = getattr(backend, "render", None)
-    if not callable(render):
+    if not is_renderable_backend(backend):
         raise ModelBenchmarkError(
             f"Model {variant.model_id!r} does not implement the typed render API"
         )
@@ -716,98 +766,13 @@ def _benchmark_renderer_staged(
     reported_output_directory = Path(reported_output_directory).resolve()
     audio_root = output_directory / "audio"
     audio_root.mkdir(parents=True, exist_ok=True)
-    rendered_samples: list[JsonDocument] = []
-    for index, sample in enumerate(samples, start=1):
-        synthesis_voice = variant.voice or _required_text(
-            sample.get("character"), "sample character"
+    rendered_samples = [
+        _render_benchmark_sample(
+            backend, variant, sample, index, audio_root, reported_output_directory, seed
         )
-        text = _required_exact_text(sample.get("text"), "sample text")
-        request_seed = None if variant.backend in UNSEEDED_BACKENDS else seed
-        request = SynthesisRequest(
-            voice=synthesis_voice,
-            text=text,
-            seed=request_seed,
-            generation_profile=variant.generation_profile,
-            cache_policy=SynthesisCachePolicy.BYPASS,
-        )
-        base_record = {
-            **sample,
-            "synthesis_voice": synthesis_voice,
-            "requested_shared_seed": seed,
-            "seed_policy": (
-                "unsupported" if variant.backend in UNSEEDED_BACKENDS else "shared"
-            ),
-        }
-        try:
-            result = render(request).collect()
-        except Exception as error:
-            rendered_samples.append(
-                {
-                    **base_record,
-                    "outcome": "error",
-                    "error_type": type(error).__name__,
-                    "error": str(error),
-                }
-            )
-            continue
-        if (
-            result.diagnostics.seed != request.seed
-            or result.diagnostics.generation_profile != request.generation_profile
-            or result.diagnostics.backend != variant.backend
-        ):
-            raise ModelBenchmarkError(
-                f"Model {variant.model_id!r} returned diagnostics for a different request"
-            )
-        if result.completion is not SynthesisCompletion.COMPLETE:
-            rendered_samples.append(
-                {
-                    **base_record,
-                    "outcome": result.completion.value,
-                    "seed": result.diagnostics.seed,
-                    "generation_profile": result.diagnostics.generation_profile,
-                    "sample_rate": result.sample_rate,
-                    "sample_count": result.diagnostics.sample_count,
-                    "first_pcm_ms": result.timing.first_chunk_ms,
-                    "wall_ms": result.timing.total_ms,
-                    "limits": asdict(result.limits),
-                }
-            )
-            continue
-        safe_id = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(sample["id"])).strip("-")
-        staged_audio_path = write_pcm16_wav(
-            audio_root / f"{index:04d}-{safe_id or 'sample'}.wav",
-            _mono_pcm(result.pcm),
-            result.sample_rate,
-        )
-        info = probe_pcm16_mono_wav(staged_audio_path)
-        speech_quality = measure_generated_speech_bytes(staged_audio_path.read_bytes())
-        reported_audio_path = (
-            reported_output_directory / "audio" / staged_audio_path.name
-        )
-        rendered_samples.append(
-            {
-                **base_record,
-                "outcome": "complete",
-                "audio": str(reported_audio_path),
-                "audio_sha256": sha256_file(staged_audio_path),
-                "sample_rate": info.sample_rate,
-                "sample_count": info.sample_count,
-                "duration_seconds": round(info.duration_seconds, 6),
-                "peak": round(info.peak, 6),
-                "speech_quality": asdict(speech_quality),
-                "first_pcm_ms": result.timing.first_chunk_ms,
-                "wall_ms": result.timing.total_ms,
-                "real_time_factor": round(
-                    result.timing.total_ms / (info.duration_seconds * 1000), 6
-                ),
-                "seed": result.diagnostics.seed,
-                "generation_profile": result.diagnostics.generation_profile,
-            }
-        )
-    outcomes = {
-        value: sum(sample["outcome"] == value for sample in rendered_samples)
-        for value in ("complete", "limited", "cancelled", "error")
-    }
+        for index, sample in enumerate(samples, start=1)
+    ]
+    outcomes = dict.fromkeys(("complete", "limited", "cancelled", "error"), 0)
     group_summary: dict[str, dict[str, int]] = {}
     for sample in rendered_samples:
         group = str(sample.get("comparison_group") or "all")
@@ -822,10 +787,11 @@ def _benchmark_renderer_staged(
             },
         )
         outcome = _required_text(sample.get("outcome"), "render outcome")
-        if outcome not in summary:
+        if outcome not in outcomes:
             raise ModelBenchmarkError(f"Unsupported render outcome: {outcome}")
         summary["total"] += 1
         summary[outcome] += 1
+        outcomes[outcome] += 1
     report = {
         "schema": MODEL_REPORT_SCHEMA,
         "schema_version": SCHEMA_VERSION,
@@ -853,6 +819,99 @@ def _benchmark_renderer_staged(
     return report
 
 
+def _render_benchmark_sample(
+    renderer: RenderableBackend,
+    variant: ModelVariant,
+    sample: JsonDocument,
+    index: int,
+    audio_root: Path,
+    reported_output_directory: Path,
+    seed: int,
+) -> JsonDocument:
+    synthesis_voice = variant.voice or _required_text(
+        sample.get("character"), "sample character"
+    )
+    text = _required_exact_text(sample.get("text"), "sample text")
+    request_seed = None if variant.backend in UNSEEDED_BACKENDS else seed
+    request = SynthesisRequest(
+        voice=synthesis_voice,
+        text=text,
+        seed=request_seed,
+        generation_profile=variant.generation_profile,
+        cache_policy=SynthesisCachePolicy.BYPASS,
+    )
+    base_record = {
+        **sample,
+        "synthesis_voice": synthesis_voice,
+        "requested_shared_seed": seed,
+        "seed_policy": "unsupported"
+        if variant.backend in UNSEEDED_BACKENDS
+        else "shared",
+    }
+    try:
+        result = renderer.render(request).collect()
+    except Exception as error:
+        return {
+            **base_record,
+            "outcome": "error",
+            "error_type": type(error).__name__,
+            "error": str(error),
+        }
+    if (
+        result.diagnostics.seed != request.seed
+        or result.diagnostics.generation_profile != request.generation_profile
+        or result.diagnostics.backend != variant.backend
+    ):
+        raise ModelBenchmarkError(
+            f"Model {variant.model_id!r} returned diagnostics for a different request"
+        )
+    if result.completion is not SynthesisCompletion.COMPLETE:
+        return {
+            **base_record,
+            "outcome": result.completion.value,
+            "seed": result.diagnostics.seed,
+            "generation_profile": result.diagnostics.generation_profile,
+            "sample_rate": result.sample_rate,
+            "sample_count": result.diagnostics.sample_count,
+            "first_pcm_ms": result.timing.first_chunk_ms,
+            "wall_ms": result.timing.total_ms,
+            "limits": asdict(result.limits),
+        }
+    safe_id = re.sub("[^a-zA-Z0-9._-]+", "-", str(sample["id"])).strip("-")
+    staged_audio_path = write_pcm16_wav(
+        audio_root / f"{index:04d}-{safe_id or 'sample'}.wav",
+        _mono_pcm(result.pcm),
+        result.sample_rate,
+    )
+    payload = read_regular_bytes(staged_audio_path)
+    samples, info = read_pcm16_mono_wav(io.BytesIO(payload))
+    speech_quality = measure_generated_speech_samples(
+        samples,
+        sample_rate=info.sample_rate,
+        duration_seconds=info.duration_seconds,
+        analysis_version=SPEECH_QUALITY_ANALYSIS_VERSION,
+    )
+    reported_audio_path = reported_output_directory / "audio" / staged_audio_path.name
+    return {
+        **base_record,
+        "outcome": "complete",
+        "audio": str(reported_audio_path),
+        "audio_sha256": hashlib.sha256(payload).hexdigest(),
+        "sample_rate": info.sample_rate,
+        "sample_count": info.sample_count,
+        "duration_seconds": round(info.duration_seconds, 6),
+        "peak": round(info.peak, 6),
+        "speech_quality": asdict(speech_quality),
+        "first_pcm_ms": result.timing.first_chunk_ms,
+        "wall_ms": result.timing.total_ms,
+        "real_time_factor": round(
+            result.timing.total_ms / (info.duration_seconds * 1000), 6
+        ),
+        "seed": result.diagnostics.seed,
+        "generation_profile": result.diagnostics.generation_profile,
+    }
+
+
 def benchmark_model_variants(
     corpus_path: str | Path,
     variants: Iterable[ModelVariant],
@@ -865,24 +924,22 @@ def benchmark_model_variants(
     """Benchmark multiple model variants over one exact corpus."""
     corpus = load_benchmark_corpus(corpus_path)
     samples = _documents(corpus.get("samples"), "Benchmark samples")
-    variants = tuple(variants)
-    safe_model_ids = _validated_benchmark_variants(variants, samples, registry)
+    prepared_variants = _validated_benchmark_variants(
+        tuple(variants), samples, registry
+    )
     output_directory = _benchmark_output_directory(output_directory)
     output_directory.parent.mkdir(parents=True, exist_ok=True)
     with (
-        TemporaryDirectory() as cache,
-        TemporaryDirectory(
-            prefix=f".{output_directory.name}-", dir=output_directory.parent
-        ) as temporary_output,
+        temporary_directory(description="Model benchmark cache cleanup") as cache,
+        staged_directory(
+            output_directory.parent, prefix=f".{output_directory.name}-"
+        ) as staging_root,
     ):
         cache_root = Path(cache).resolve()
-        staging_root = Path(temporary_output).resolve() / output_directory.name
-        staging_root.mkdir(parents=True)
         aggregate = _write_benchmark_staging(
             corpus,
             samples,
-            variants,
-            safe_model_ids,
+            prepared_variants,
             registry,
             cache_root,
             staging_root,
@@ -898,18 +955,18 @@ def _validated_benchmark_variants(
     variants: tuple[ModelVariant, ...],
     samples: Sequence[JsonDocument],
     registry: CharacterVoiceRegistry,
-) -> list[str]:
+) -> list[tuple[ModelVariant, str]]:
     if not variants:
         raise ModelBenchmarkError("At least one model variant is required")
     model_ids = [variant.model_id for variant in variants]
     if len(model_ids) != len(set(model_ids)):
         raise ModelBenchmarkError("Model variant IDs must be unique")
-    safe_model_ids = [_safe_name(model_id) for model_id in model_ids]
-    if len(safe_model_ids) != len({value.casefold() for value in safe_model_ids}):
+    prepared = [(variant, _safe_name(variant.model_id)) for variant in variants]
+    if len(prepared) != len({name.casefold() for _, name in prepared}):
         raise ModelBenchmarkError("Model variant IDs collide as output directory names")
-    for variant in variants:
+    for variant, _ in prepared:
         _validate_benchmark_variant(variant, samples, registry)
-    return safe_model_ids
+    return prepared
 
 
 def _validate_benchmark_variant(
@@ -924,15 +981,11 @@ def _validate_benchmark_variant(
     if variant.backend not in {"moss-tts", "moss-tts-delay", "coqui-xtts"}:
         return
     unresolved = sorted(
-        {
-            variant.voice or _required_text(sample.get("character"), "sample character")
-            for sample in samples
-            if registry.resolve(
-                variant.voice
-                or _required_text(sample.get("character"), "sample character")
-            )
-            is None
-        },
+        (
+            character
+            for character in _benchmark_voice_characters(variant, samples)
+            if registry.resolve(character) is None
+        ),
         key=str.casefold,
     )
     if unresolved:
@@ -941,13 +994,16 @@ def _validate_benchmark_variant(
         )
 
 
-def _benchmark_output_directory(output_directory: str | Path) -> Path:
-    output_directory = Path(output_directory).expanduser().resolve()
-    if output_directory.exists() and (
-        not output_directory.is_dir() or any(output_directory.iterdir())
+def _benchmark_output_directory(
+    output_directory: str | Path, *, label: str = "Benchmark"
+) -> Path:
+    output_directory = no_replace_destination(output_directory)
+    if output_directory.is_symlink() or (
+        output_directory.exists()
+        and (not output_directory.is_dir() or any(output_directory.iterdir()))
     ):
         raise ModelBenchmarkError(
-            f"Benchmark output already exists; refusing to overwrite: {output_directory}"
+            f"{label} output already exists; refusing to overwrite: {output_directory}"
         )
     return output_directory
 
@@ -955,8 +1011,7 @@ def _benchmark_output_directory(output_directory: str | Path) -> Path:
 def _write_benchmark_staging(
     corpus: JsonDocument,
     samples: Sequence[JsonDocument],
-    variants: tuple[ModelVariant, ...],
-    safe_model_ids: Sequence[str],
+    prepared_variants: Sequence[tuple[ModelVariant, str]],
     registry: CharacterVoiceRegistry,
     cache_root: Path,
     staging_root: Path,
@@ -967,15 +1022,18 @@ def _write_benchmark_staging(
     published_corpus = staging_root / "benchmark-corpus.json"
     atomic_write_json(published_corpus, corpus, sort_keys=True)
     snapshot_registry, voice_controls = _benchmark_voice_controls(
-        variants, samples, registry, staging_root, output_directory
+        (variant for variant, _ in prepared_variants),
+        samples,
+        registry,
+        staging_root,
+        output_directory,
     )
     voice_controls_sha256 = canonical_document_sha256(voice_controls)
     voice_controls_content_sha256 = canonical_document_sha256(
         [_voice_control_content(control) for control in voice_controls]
     )
     reports, model_summaries = _render_benchmark_variants(
-        variants,
-        safe_model_ids,
+        prepared_variants,
         snapshot_registry,
         samples,
         cache_root,
@@ -997,7 +1055,7 @@ def _write_benchmark_staging(
         "voice_controls_content_sha256": voice_controls_content_sha256,
         "sample_count": len(samples),
         "manual_review_required": True,
-        "comparison_ready": len(variants) >= 2,
+        "comparison_ready": len(prepared_variants) >= 2,
         "models": model_summaries,
         "reports": reports,
     }
@@ -1006,7 +1064,7 @@ def _write_benchmark_staging(
 
 
 def _benchmark_voice_controls(
-    variants: Sequence[ModelVariant],
+    variants: Iterable[ModelVariant],
     samples: Sequence[JsonDocument],
     registry: CharacterVoiceRegistry,
     staging_root: Path,
@@ -1020,9 +1078,9 @@ def _benchmark_voice_controls(
     if not voice_variants:
         return registry, []
     used_characters = {
-        variant.voice or _required_text(sample.get("character"), "sample character")
+        character
         for variant in voice_variants
-        for sample in samples
+        for character in _benchmark_voice_characters(variant, samples)
     }
     return _snapshot_voice_registry(
         registry,
@@ -1030,6 +1088,15 @@ def _benchmark_voice_controls(
         staging_root / "voice-controls",
         output_directory / "voice-controls",
     )
+
+
+def _benchmark_voice_characters(
+    variant: ModelVariant, samples: Sequence[JsonDocument]
+) -> set[str]:
+    return {
+        variant.voice or _required_text(sample.get("character"), "sample character")
+        for sample in samples
+    }
 
 
 def _voice_control_content(control: JsonDocument) -> JsonDocument:
@@ -1040,8 +1107,7 @@ def _voice_control_content(control: JsonDocument) -> JsonDocument:
 
 
 def _render_benchmark_variants(
-    variants: Sequence[ModelVariant],
-    safe_model_ids: Sequence[str],
+    prepared_variants: Sequence[tuple[ModelVariant, str]],
     registry: CharacterVoiceRegistry,
     samples: Sequence[JsonDocument],
     cache_root: Path,
@@ -1054,7 +1120,7 @@ def _render_benchmark_variants(
 ) -> tuple[list[str], list[JsonDocument]]:
     reports: list[str] = []
     model_summaries: list[JsonDocument] = []
-    for variant, safe_model_id in zip(variants, safe_model_ids, strict=True):
+    for variant, safe_model_id in prepared_variants:
         reported_model_output = _contained_child(
             output_directory, safe_model_id, "reported model output"
         )
@@ -1114,8 +1180,9 @@ def _render_benchmark_variant(
         )
     except (TypeError, ValueError) as error:
         raise ModelBenchmarkError(str(error)) from error
+    primary_error: BaseException | None = None
     try:
-        report = benchmark_renderer(
+        report = _benchmark_renderer_staged(
             variant,
             backend,
             samples,
@@ -1125,24 +1192,24 @@ def _render_benchmark_variant(
             voice_controls_sha256=voice_controls_sha256,
             voice_controls_content_sha256=voice_controls_content_sha256,
         )
-    except BaseException:
-        try:
-            shutdown_speech_backend(backend)
-        except BaseException:
-            pass
+    except BaseException as error:
+        primary_error = error
         raise
-    shutdown_speech_backend(backend)
+    finally:
+        shutdown_speech_backend(backend, primary_error=primary_error)
     return report
 
 
-def _publish_benchmark_staging(staging_root: Path, output_directory: Path) -> None:
+def _publish_benchmark_staging(
+    staging_root: Path, output_directory: Path, *, label: str = "benchmark output"
+) -> None:
     try:
         if output_directory.exists():
             output_directory.rmdir()
-        os.rename(staging_root, output_directory)
-    except OSError as error:
+        rename_directory_no_replace(staging_root, output_directory)
+    except (AtomicPublicationError, OSError) as error:
         raise ModelBenchmarkError(
-            f"Unable to publish benchmark output {output_directory}: {error}"
+            f"Unable to publish {label} {output_directory}: {error}"
         ) from error
 
 
@@ -1210,11 +1277,11 @@ def _snapshot_voice_registry(
                 }
             )
         snapshot_voices.append(
-            CharacterVoice(
-                character=voice.character,
-                speaker=voice.speaker,
-                aliases=voice.aliases,
+            replace(
+                voice,
+                reference=references[0],
                 references=tuple(references),
+                reference_root=staging_root,
             )
         )
     return CharacterVoiceRegistry(snapshot_voices), inventory
@@ -1222,8 +1289,8 @@ def _snapshot_voice_registry(
 
 def load_model_variants(path: str | Path) -> list[ModelVariant]:
     try:
-        document = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        document = decode_json(read_regular_text(Path(path), encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ModelBenchmarkError(
             f"Unable to read model variants {path}: {error}"
         ) from error
@@ -1242,12 +1309,17 @@ def _model_variant(value: object, index: int) -> ModelVariant:
     _validate_model_terms_backend(backend, terms_accepted, index)
     require_cuda = _model_variant_flag(item, "require_cuda", index)
     _validate_model_cuda_backend(backend, require_cuda, index)
+    profile = item.get("generation_profile")
+    if profile is not None and not isinstance(profile, str):
+        raise ModelBenchmarkError(
+            f"Model variant {index} generation_profile must be text"
+        )
     return ModelVariant(
         model_id=model_id,
         backend=backend,
         model=model,
         model_revision=model_revision,
-        generation_profile=str(item.get("generation_profile") or "stable"),
+        generation_profile=profile or "stable",
         voice=voice,
         terms_accepted=terms_accepted,
         require_cuda=require_cuda,
@@ -1350,19 +1422,19 @@ def _contained_child(root: str | Path, name: str | Path, label: str) -> Path:
 
 
 def _required_text(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value.strip():
+    if not is_utf8_text(value) or not value.strip():
         raise ModelBenchmarkError(f"Benchmark corpus {label} must be non-empty text")
     return value.strip()
 
 
 def _required_exact_text(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value:
+    if not is_utf8_text(value) or not value:
         raise ModelBenchmarkError(f"Benchmark corpus {label} must be non-empty text")
     return value
 
 
 def _required_sha256(value: object, label: str) -> str:
-    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+    if not is_lowercase_sha256(value):
         raise ModelBenchmarkError(f"Benchmark corpus {label} must be lowercase SHA-256")
     return value
 
@@ -1429,7 +1501,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if manifest is None:
         return cli_error("No complete voice manifest is available")
     try:
-        with TemporaryDirectory(prefix="vntts-model-corpus-") as temporary_corpus:
+        with temporary_directory(prefix="vntts-model-corpus-") as temporary_corpus:
             corpus = arguments.corpus
             if corpus is None:
                 corpus = Path(temporary_corpus) / "benchmark-corpus.json"

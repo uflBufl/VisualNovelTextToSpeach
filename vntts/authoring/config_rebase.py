@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from durable_file import atomic_write_json
 from vntts_artifacts import VoiceGenerationQueue, VoiceGenerationQueueItem
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
+from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
@@ -23,10 +23,15 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.generation_lease import GenerationLease
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_state import (
+    load_stable_generation_queue,
+    validate_generation_state_document,
+)
 from vntts.authoring.missing_voice_policy import MissingVoicePolicy
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -63,7 +68,10 @@ from vntts.authoring.workspace_voice_runtime import (
     load_workspace_queue_voice_overrides,
     load_workspace_voice_registry,
 )
-from vntts.voices import CharacterVoiceRegistry
+from vntts.document_identity import sha256_file
+from vntts.json_types import decode_json, has_schema_version, is_json_object
+from vntts.path_safety import contained_no_replace_destination
+from vntts.voices import CharacterVoiceRegistry, load_voice_manifest
 
 CONFIG_REBASE_SCHEMA = "vntts.authoring-workspace-config-rebase"
 CONFIG_REBASE_VERSION = 4
@@ -129,7 +137,7 @@ class _RebaseRouteSelection:
     source_policy: MissingVoicePolicy
     target_policy: MissingVoicePolicy
     target_reference_sha256s: set[str]
-    target_voice: Path | None
+    target_voice: Path
     retired_variants: Sequence[JsonObject]
     known_role_reuse: object
 
@@ -260,8 +268,11 @@ def _publish_rebase_workspace(
     rebase = _rebase_ledger(selection, state, routes.target_voice, records)
     fingerprint = _rebase_config_fingerprint(selection, rebase, composition)
     workspace_id = workspace_id_for_config(selection.target_import_id, fingerprint)
-    destination = contained_workspace_path(
-        root, Path(workspace_id), "Config rebase destination"
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Config rebase destination",
+        error_type=AuthoringWorkbenchError,
     )
     with staged_directory(root, prefix=".config-rebase-staging-") as staging:
         workspace, snapshots = _stage_rebase_workspace(
@@ -279,6 +290,7 @@ def _publish_rebase_workspace(
         return _publish_staged_rebase(staging, destination, rebase, leases)
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _assert_workspace_authority_snapshots(selection: _RebaseSelection) -> None:
     for directory, digest, label in (
         (selection.source_directory, selection.source_workspace_sha256, "source"),
@@ -299,8 +311,18 @@ def _load_rebase_state(selection: _RebaseSelection) -> _RebaseState:
     target_payload = read_workspace_file_bytes(
         target_path, "config rebase target state"
     )
-    source = load_generation_state(source_path, selection.source_queue)
-    target = load_generation_state(target_path, selection.target_queue)
+    source = _load_captured_rebase_state(
+        source_path,
+        source_payload,
+        selection.source_queue,
+        selection.source_queue_sha256,
+    )
+    target = _load_captured_rebase_state(
+        target_path,
+        target_payload,
+        selection.target_queue,
+        selection.target_queue_sha256,
+    )
     if source.get("active") is not None or target.get("active") is not None:
         raise AuthoringWorkbenchError("Config rebase authority has an active attempt")
     if any(selection.source_output.rglob("*.partial.wav")) or any(
@@ -316,6 +338,23 @@ def _load_rebase_state(selection: _RebaseSelection) -> _RebaseState:
         target_payload,
         hashlib.sha256(target_payload).hexdigest(),
         target,
+    )
+
+
+def _load_captured_rebase_state(
+    path: Path, payload: bytes, queue_path: Path, expected_queue_sha256: str
+) -> JsonObject:
+    queue, queue_sha256 = load_stable_generation_queue(queue_path)
+    if queue_sha256 != expected_queue_sha256:
+        raise AuthoringWorkbenchError("Config rebase queue changed during capture")
+    try:
+        document = decode_json(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BulkGenerationError(
+            f"Unable to read generation state {path}: {error}"
+        ) from error
+    return validate_generation_state_document(
+        document, path.parent, queue, queue_sha256
     )
 
 
@@ -365,10 +404,8 @@ def _select_rebase_routes(
     target_policy = workspace_missing_voice_policy(
         selection.target_document, error_type=AuthoringWorkbenchError
     )
-    target_voice = selected_voice_manifest_path(
-        selection.target_directory,
-        selection.target_document,
-        error_type=AuthoringWorkbenchError,
+    target_voice = _rebase_voice_manifest_path(
+        selection.target_directory, selection.target_document
     )
     retired_variants, known_role_reuse = _target_voice_rebase_controls(target_voice)
     return _RebaseRouteSelection(
@@ -386,8 +423,19 @@ def _select_rebase_routes(
     )
 
 
+def _rebase_voice_manifest_path(
+    directory: Path, workspace: Mapping[str, object]
+) -> Path:
+    path = selected_voice_manifest_path(
+        directory, workspace, error_type=AuthoringWorkbenchError
+    )
+    if path is None:
+        raise AuthoringWorkbenchError("Config rebase requires a bound voice manifest")
+    return path
+
+
 def _target_voice_rebase_controls(
-    path: Path | None,
+    path: Path,
 ) -> tuple[Sequence[JsonObject], object]:
     try:
         document, _entries = load_voice_manifest(path, allow_legacy=False)
@@ -600,13 +648,11 @@ def _apply_projected_terminal(
 def _rebase_ledger(
     selection: _RebaseSelection,
     state: _RebaseState,
-    target_voice: Path | None,
+    target_voice: Path,
     records: list[JsonObject],
 ) -> JsonObject:
-    source_voice = selected_voice_manifest_path(
-        selection.source_directory,
-        selection.source_document,
-        error_type=AuthoringWorkbenchError,
+    source_voice = _rebase_voice_manifest_path(
+        selection.source_directory, selection.source_document
     )
     return {
         "schema": CONFIG_REBASE_SCHEMA,
@@ -896,6 +942,7 @@ def _validate_staged_rebase(
         lease.assert_owned()
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _assert_rebase_snapshots(snapshots: Sequence[tuple[Path, str]]) -> None:
     for path, digest in snapshots:
         if not path.is_file() or sha256_file(path) != digest:
@@ -1163,12 +1210,8 @@ def _validate_rebase_voice_authority(
     source_document: Mapping[str, object],
     rebase: Mapping[str, object],
 ) -> tuple[set[str], Sequence[JsonObject], object]:
-    source_voice = selected_voice_manifest_path(
-        source_root, source_document, error_type=AuthoringWorkbenchError
-    )
-    selected_voice = selected_voice_manifest_path(
-        directory, workspace, error_type=AuthoringWorkbenchError
-    )
+    source_voice = _rebase_voice_manifest_path(source_root, source_document)
+    selected_voice = _rebase_voice_manifest_path(directory, workspace)
     if (
         sha256_file(source_voice) != rebase["source_voice_manifest_sha256"]
         or sha256_file(selected_voice) != rebase["target_voice_manifest_sha256"]
@@ -1894,7 +1937,7 @@ def _failure_reference_route(
         return None
     if (
         set(source_binding) != required
-        or source_binding.get("schema_version") != 1
+        or not has_schema_version(source_binding, 1)
         or source_binding.get("queue_id") != queue_id
         or not isinstance(synthetic_character, str)
         or not synthetic_character.strip()
@@ -2127,7 +2170,7 @@ def _write_audio_event_composition_input(
             raise AuthoringWorkbenchError(
                 "Config rebase audio-event composition target is unsafe"
             )
-        if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+        if sha256_file(destination) != digest:
             raise AuthoringWorkbenchError(
                 "Config rebase audio-event composition input conflicts"
             )
@@ -2157,7 +2200,7 @@ def _copy_tree(source: Path, destination: Path, snapshots: Snapshots) -> None:
 
 
 def _object(value: object, label: str) -> JsonObject:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise AuthoringWorkbenchError(f"{label} is malformed")
     return {key: item for key, item in value.items()}
 

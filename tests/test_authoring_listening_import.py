@@ -4,157 +4,496 @@ import json
 import os
 import shutil
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import numpy as np
-from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
+from tests.authoring_fixtures import tree_hashes
+from tests.listening_fixtures import write_listening_fixture
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from vntts.authoring import listening_import as listening_import_module
 from vntts.authoring.cli import main
+from vntts.authoring.legacy_import import discover_legacy_jobs
 from vntts.authoring.listening_import import (
     IMPORT_SCHEMA,
     ListeningImportError,
     import_listening_session,
     inspect_listening_session,
 )
-from vntts.authoring.publication import rename_directory_no_replace
-
-
-def write_listening_fixture(root):
-    session_root = root / "listening-session"
-    audio_root = session_root / "audio"
-    audio_root.mkdir(parents=True)
-    source_audio = {}
-    for side, frequency in (("a", 3), ("b", 5)):
-        samples = np.sin(np.linspace(0, frequency * np.pi, 800, dtype=np.float32)) * 0.1
-        source_audio[side] = root / f"source-{side}.wav"
-        write_pcm16_wav(source_audio[side], samples, 16_000)
-        write_pcm16_wav(audio_root / f"trial-0001-{side}.wav", samples, 16_000)
-    source_report = root / "source-report.json"
-    source_report.write_text('{"synthetic": true}\n', encoding="utf-8")
-    sources = [
-        {"path": str(source_report.resolve()), "sha256": sha256_file(source_report)}
-    ]
-    source_hash = hashlib.sha256(
-        json.dumps(sources, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
-    key = {
-        "schema": "r1999.model-listening-key",
-        "schema_version": 1,
-        "created_at": "2026-08-15T09:00:00+00:00",
-        "source_kind": "model-reports",
-        "source_sha256": source_hash,
-        "sources": sources,
-        "models": [
-            {
-                "model_id": "provider/model-one",
-                "provider": "provider",
-                "model": "model-one",
-                "reports": ["/legacy/one.json"],
-            },
-            {
-                "model_id": "provider/model-two",
-                "provider": "provider",
-                "model": "model-two",
-                "reports": ["/legacy/two.json"],
-            },
-        ],
-        "assignments": [
-            {
-                "trial_id": "trial-0001",
-                "a": {
-                    "model_id": "provider/model-one",
-                    "source": str(source_audio["a"].resolve()),
-                },
-                "b": {
-                    "model_id": "provider/model-two",
-                    "source": str(source_audio["b"].resolve()),
-                },
-            }
-        ],
-    }
-    key_path = session_root / ".blind-key.json"
-    key_path.write_text(json.dumps(key, sort_keys=True), encoding="utf-8")
-    key_path.chmod(0o600)
-    session = {
-        "schema": "r1999.model-listening-session",
-        "schema_version": 1,
-        "created_at": "2026-08-15T09:00:00+00:00",
-        "updated_at": "2026-08-15T09:01:00+00:00",
-        "source_kind": "model-reports",
-        "source_sha256": source_hash,
-        "blind_key_sha256": sha256_file(key_path),
-        "seed": 42,
-        "decision_mode": "preference-only",
-        "trial_count": 1,
-        "completed_count": 1,
-        "trials": [
-            {
-                "trial_id": "trial-0001",
-                "queue_id": "legacy:line",
-                "line_id": None,
-                "text_sha256": "3" * 64,
-                "text": "Synthetic line",
-                "audio": {
-                    "a": "audio/trial-0001-a.wav",
-                    "b": "audio/trial-0001-b.wav",
-                },
-                "rating": {
-                    "preference": "a",
-                    "reviewed_at": "2026-08-15T09:01:00+00:00",
-                },
-            }
-        ],
-    }
-    session_path = session_root / "session.json"
-    session_path.write_text(json.dumps(session, sort_keys=True), encoding="utf-8")
-    report = {
-        "schema": "r1999.model-listening-report",
-        "schema_version": 1,
-        "generated_at": "2026-08-15T09:02:00+00:00",
-        "session": str(session_path.resolve()),
-        "complete": True,
-        "completed_trials": 1,
-        "pending_trials": 0,
-        "manual_selection_required": True,
-        "models": [
-            {
-                "model_id": "provider/model-one",
-                "provider": "provider",
-                "model": "model-one",
-                "reviewed_trials": 1,
-                "preference": {"wins": 1, "losses": 0, "ties": 0, "rate": 1.0},
-                "rank": 1,
-            },
-            {
-                "model_id": "provider/model-two",
-                "provider": "provider",
-                "model": "model-two",
-                "reviewed_trials": 1,
-                "preference": {"wins": 0, "losses": 1, "ties": 0, "rate": 0.0},
-                "rank": 2,
-            },
-        ],
-        "pairwise": [
-            {
-                "left_model": "provider/model-one",
-                "right_model": "provider/model-two",
-                "trials": 1,
-                "left_wins": 1,
-                "right_wins": 0,
-                "ties": 0,
-            }
-        ],
-    }
-    report_path = session_root / "report.json"
-    report_path.write_text(json.dumps(report, sort_keys=True), encoding="utf-8")
-    return session_root
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+)
 
 
 class ListeningImportTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_public_hash_acquisitions_refuse_fifo_clean_up_and_recover(self):
+        for phase in ("initial", "prepublication"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                source = write_listening_fixture(root)
+                inspection = inspect_listening_session(source)
+                selected = source / "audio/trial-0001-a.wav"
+                destination = root / "app-data"
+                before = tree_hashes(root)
+                original = listening_import_module.sha256_file
+                refused = []
+
+                def checksum(path):
+                    staged_manifest = any(destination.glob(".*/import.json"))
+                    if Path(path) != selected or (
+                        phase == "prepublication" and not staged_manifest
+                    ):
+                        return original(path)
+                    self.assertEqual(staged_manifest, phase == "prepublication")
+                    gate: RegularFileGate = {"path": selected, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(path)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                with (
+                    patch.object(listening_import_module, "sha256_file", checksum),
+                    self.assertRaisesRegex(
+                        ListeningImportError, "regular file"
+                    ) as caught,
+                ):
+                    import_listening_session(source, destination)
+                self.assertEqual(len(refused), 1)
+                self.assertIs(caught.exception.__cause__, refused[0])
+                self.assertEqual(tree_hashes(root), before)
+                if destination.exists():
+                    self.assertEqual(list(destination.iterdir()), [])
+                recovered = import_listening_session(source, destination)
+                self.assertTrue(recovered.created)
+                self.assertEqual(
+                    recovered.manifest["source"]["logical_identity"],
+                    inspection.logical_identity,
+                )
+                for _role, original_source, relative, digest in inspection.artifacts:
+                    copied = recovered.destination / relative
+                    self.assertEqual(copied.read_bytes(), original_source.read_bytes())
+                    self.assertEqual(sha256_file(copied), digest)
+                recovered_tree = tree_hashes(root)
+                repeated = import_listening_session(source, destination)
+                self.assertFalse(repeated.created)
+                self.assertEqual(repeated.destination, recovered.destination)
+                self.assertEqual(repeated.manifest, recovered.manifest)
+                self.assertEqual(tree_hashes(root), recovered_tree)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_copy_sources_refuse_swapped_acquisition_and_recover(self):
+        for relative in (".blind-key.json", "audio/trial-0001-a.wav"):
+            with self.subTest(source=relative), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                source = write_listening_fixture(root)
+                inspection = inspect_listening_session(source)
+                selected = source / relative
+                mode, mtime = (
+                    selected.stat().st_mode & 0o777,
+                    selected.stat().st_mtime_ns,
+                )
+                before = tree_hashes(root)
+                original = listening_import_module.copy_regular_file
+                refused = []
+
+                def copy(path, target, **kwargs):
+                    if Path(path) != selected:
+                        return original(path, target, **kwargs)
+                    self.assertEqual(kwargs, {"preserve_metadata": True})
+                    gate: RegularFileGate = {"path": selected, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(path, target, **kwargs)
+                    self.assertFalse(Path(target).exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                with (
+                    patch.object(listening_import_module, "copy_regular_file", copy),
+                    self.assertRaisesRegex(
+                        ListeningImportError, "regular file"
+                    ) as caught,
+                ):
+                    import_listening_session(source, root / "app-data")
+                self.assertEqual(len(refused), 1)
+                self.assertIs(caught.exception.__cause__, refused[0])
+                self.assertEqual(tree_hashes(root), before)
+                self.assertEqual(list((root / "app-data").iterdir()), [])
+                # The acquisition fixture restores bytes/mode; restore original copy mtime.
+                os.utime(selected, ns=(mtime, mtime))
+                recovered = import_listening_session(source, root / "app-data")
+                repeated = import_listening_session(source, root / "app-data")
+                self.assertTrue(recovered.created)
+                self.assertFalse(repeated.created)
+                self.assertEqual(recovered.destination, repeated.destination)
+                self.assertEqual(
+                    recovered.manifest["source"]["logical_identity"],
+                    inspection.logical_identity,
+                )
+                artifacts = {
+                    path: digest
+                    for _role, _source, path, digest in inspection.artifacts
+                }
+                self.assertEqual(
+                    {
+                        str(path): sha256_file(recovered.destination / path)
+                        for path in artifacts
+                    },
+                    {str(path): digest for path, digest in artifacts.items()},
+                )
+                copied = recovered.destination / relative
+                self.assertEqual(copied.stat().st_mode & 0o777, mode)
+                self.assertEqual(copied.stat().st_mtime_ns, mtime)
+
+    def test_final_inspection_read_failure_preserves_cause_and_cli_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            before = tree_hashes(root)
+            failure = PermissionError("Final listening source read was blocked")
+            original_check = listening_import_module._verify_controls_unchanged
+
+            def fail_final_read(inspection):
+                with patch.object(
+                    listening_import_module, "sha256_file", side_effect=failure
+                ):
+                    return original_check(inspection)
+
+            with patch.object(
+                listening_import_module,
+                "_verify_controls_unchanged",
+                side_effect=fail_final_read,
+            ):
+                with self.assertRaises(ListeningImportError) as caught:
+                    inspect_listening_session(source)
+                self.assertIs(caught.exception.__cause__, failure)
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with (
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as exited,
+                ):
+                    main(["inspect-listening", str(source)])
+                self.assertEqual(exited.exception.code, 2)
+                self.assertIn(str(failure), stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(tree_hashes(root), before)
+
+    def test_initial_inspection_read_failure_preserves_cause_and_user_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            jobs_root = root / "jobs"
+            jobs_root.mkdir()
+            before = tree_hashes(root)
+            failure = PermissionError("Initial listening audio read was blocked")
+            with patch.object(
+                listening_import_module, "sha256_file", side_effect=failure
+            ):
+                with self.assertRaises(ListeningImportError) as caught:
+                    inspect_listening_session(source)
+                self.assertIs(caught.exception.__cause__, failure)
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with (
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as exited,
+                ):
+                    main(["inspect-listening", str(source)])
+                self.assertEqual(exited.exception.code, 2)
+                self.assertIn(str(failure), stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
+                candidates = discover_legacy_jobs(jobs_root)
+                listening = [
+                    candidate
+                    for candidate in candidates
+                    if candidate.kind == "model-listening-session"
+                ]
+                self.assertEqual(len(listening), 1)
+                self.assertEqual(listening[0].status, "incompatible")
+                self.assertIn(str(failure), listening[0].compatibility_error)
+            self.assertEqual(tree_hashes(root), before)
+
+    def test_admitted_report_disappearance_aborts_before_publish(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            report_path = source / "report.json"
+            report_bytes = report_path.read_bytes()
+            original_validate = listening_import_module._validate_report
+
+            def remove_validated_report(*args):
+                original_validate(*args)
+                report_path.unlink()
+
+            with (
+                patch.object(
+                    listening_import_module,
+                    "_validate_report",
+                    side_effect=remove_validated_report,
+                ),
+                self.assertRaisesRegex(ListeningImportError, "presence changed"),
+            ):
+                import_listening_session(source, root / "app-data")
+            self.assertFalse((root / "app-data").exists())
+            report_path.write_bytes(report_bytes)
+            self.assertTrue(import_listening_session(source, root / "app-data").created)
+
+    def test_late_report_appearance_cleans_staging_and_reportless_import_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            report_path = source / "report.json"
+            report_bytes = report_path.read_bytes()
+            report_path.unlink()
+            inspection = inspect_listening_session(source)
+            self.assertFalse(inspection.report_present)
+            self.assertNotIn(
+                "listening_report", [role for role, *_ in inspection.artifacts]
+            )
+            original_copy = listening_import_module.copy_regular_file
+
+            def create_report_during_copy(source_path, destination, **kwargs):
+                original_copy(source_path, destination, **kwargs)
+                if Path(source_path).name == "session.json":
+                    report_path.write_bytes(report_bytes)
+
+            with (
+                patch.object(
+                    listening_import_module,
+                    "copy_regular_file",
+                    side_effect=create_report_during_copy,
+                ),
+                self.assertRaisesRegex(ListeningImportError, "presence changed"),
+            ):
+                import_listening_session(source, root / "app-data")
+            self.assertEqual(list((root / "app-data").iterdir()), [])
+            report_path.unlink()
+            recovered = import_listening_session(source, root / "app-data")
+            self.assertTrue(recovered.created)
+            self.assertFalse(recovered.manifest["summary"]["report_present"])
+            self.assertFalse((recovered.destination / "report.json").exists())
+            self.assertFalse(
+                import_listening_session(source, root / "app-data").created
+            )
+
+    def test_reimport_rejects_report_appearance_after_inspection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            report_path = source / "report.json"
+            report_bytes = report_path.read_bytes()
+            report_path.unlink()
+            destination = import_listening_session(
+                source, root / "app-data"
+            ).destination
+            before = tree_hashes(destination)
+
+            def create_report_after_inspection(session_directory):
+                inspection = inspect_listening_session(session_directory)
+                report_path.write_bytes(report_bytes)
+                return inspection
+
+            with (
+                patch.object(
+                    listening_import_module,
+                    "inspect_listening_session",
+                    side_effect=create_report_after_inspection,
+                ),
+                self.assertRaisesRegex(ListeningImportError, "presence changed"),
+            ):
+                import_listening_session(source, root / "app-data")
+            self.assertEqual(tree_hashes(destination), before)
+
+    def test_atomic_publication_failure_is_translated_and_cleans_staging(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            failure = AtomicPublicationError("Atomic publication unavailable")
+            with (
+                patch(
+                    "vntts.authoring.listening_import.rename_directory_no_replace",
+                    side_effect=failure,
+                ),
+                self.assertRaisesRegex(
+                    ListeningImportError, "Atomic publication unavailable"
+                ) as caught,
+            ):
+                import_listening_session(source, root / "app-data")
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertEqual(list((root / "app-data").iterdir()), [])
+
+    def test_rejects_unhashable_assignment_ids_and_rating_preferences(self):
+        mutations = (
+            ("assignment", "trial_id", []),
+            ("rating", "preference", {}),
+        )
+        for kind, field, value in mutations:
+            with (
+                self.subTest(kind=kind, field=field),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                source = write_listening_fixture(root)
+                session_path = source / "session.json"
+                key_path = source / ".blind-key.json"
+                session = json.loads(session_path.read_text(encoding="utf-8"))
+                key = json.loads(key_path.read_text(encoding="utf-8"))
+                if kind == "assignment":
+                    key["assignments"][0][field] = value
+                else:
+                    session["trials"][0]["rating"][field] = value
+                key_path.write_text(json.dumps(key, sort_keys=True), encoding="utf-8")
+                session["blind_key_sha256"] = sha256_file(key_path)
+                session_path.write_text(
+                    json.dumps(session, sort_keys=True), encoding="utf-8"
+                )
+                source_hashes = tree_hashes(source)
+
+                with self.assertRaises(ListeningImportError):
+                    inspect_listening_session(source)
+                with self.assertRaises(ListeningImportError):
+                    import_listening_session(source, root / "app-data")
+
+                self.assertFalse((root / "app-data").exists())
+                self.assertEqual(
+                    source_hashes,
+                    tree_hashes(source),
+                )
+
+    def test_rejects_surrogate_text_through_public_inspection_and_import(self):
+        mutations = (
+            ("session.json", ("source_kind",)),
+            ("session.json", ("trials", 0, "trial_id")),
+            ("session.json", ("trials", 0, "audio", "a")),
+            ("session.json", ("trials", 0, "rating", "preference")),
+            (".blind-key.json", ("models", 0, "provider")),
+            (".blind-key.json", ("sources", 0, "path")),
+            (".blind-key.json", ("sources", 0, "metadata")),
+            (".blind-key.json", ("assignments", 0, "a", "source")),
+            ("report.json", ("session",)),
+            ("report.json", ("models", 0, "provider")),
+        )
+        for filename, fields in mutations:
+            with (
+                self.subTest(filename=filename, fields=fields),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                source = write_listening_fixture(root)
+                path = source / filename
+                document = json.loads(path.read_text(encoding="utf-8"))
+                target = document
+                for field in fields[:-1]:
+                    target = target[field]
+                target[fields[-1]] = (
+                    {"label": "\ud800"} if fields[-1] == "metadata" else "\ud800"
+                )
+                path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+                if filename == ".blind-key.json":
+                    session_path = source / "session.json"
+                    session = json.loads(session_path.read_text(encoding="utf-8"))
+                    session["blind_key_sha256"] = sha256_file(path)
+                    session_path.write_text(json.dumps(session), encoding="utf-8")
+                source_hashes = tree_hashes(root)
+
+                with self.assertRaises(ListeningImportError):
+                    inspect_listening_session(source)
+                with self.assertRaises(ListeningImportError):
+                    import_listening_session(source, root / "app-data")
+
+                self.assertFalse((root / "app-data").exists())
+                self.assertEqual(tree_hashes(root), source_hashes)
+
+    def test_reimport_reports_surrogate_manifest_metadata_as_domain_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            destination = import_listening_session(
+                source, root / "app-data"
+            ).destination
+            manifest_path = destination / "import.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["source"]["metadata"] = {"label": "\ud800"}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            before = tree_hashes(root)
+
+            with self.assertRaisesRegex(ListeningImportError, "manifest was modified"):
+                import_listening_session(source, root / "app-data")
+
+            self.assertEqual(tree_hashes(root), before)
+
+    def test_unicode_fields_and_extension_metadata_preserve_original_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            key_path = source / ".blind-key.json"
+            key = json.loads(key_path.read_text(encoding="utf-8"))
+            key["source_kind"] = "модели 音声"
+            key["sources"][0]["metadata"] = {"label": "источник 音声"}
+            key["source_sha256"] = hashlib.sha256(
+                json.dumps(key["sources"], ensure_ascii=False, sort_keys=True).encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            for model in key["models"]:
+                model["provider"] = "провайдер 音声"
+            key_path.write_text(
+                json.dumps(key, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+            )
+            session_path = source / "session.json"
+            session = json.loads(session_path.read_text(encoding="utf-8"))
+            session["source_kind"] = key["source_kind"]
+            session["source_sha256"] = key["source_sha256"]
+            session["blind_key_sha256"] = sha256_file(key_path)
+            session["metadata"] = {"label": "сессия 音声"}
+            session_path.write_text(
+                json.dumps(session, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            report_path = source / "report.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            for model in report["models"]:
+                model["provider"] = "провайдер 音声"
+            report["metadata"] = {"label": "отчёт 音声"}
+            report_path.write_text(
+                json.dumps(report, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+            )
+            before = tree_hashes(root)
+
+            inspection = inspect_listening_session(source)
+            imported = import_listening_session(source, root / "app-data")
+            repeated = import_listening_session(source, root / "app-data")
+
+            self.assertTrue(imported.created)
+            self.assertFalse(repeated.created)
+            for _role, original, relative, digest in inspection.artifacts:
+                preserved = imported.destination / relative
+                self.assertEqual(preserved.read_bytes(), original.read_bytes())
+                self.assertEqual(sha256_file(preserved), digest)
+            self.assertEqual(
+                {
+                    path: digest
+                    for path, digest in tree_hashes(root).items()
+                    if not path.startswith("app-data/")
+                },
+                before,
+            )
+
     def test_rejects_non_integer_schema_versions_and_session_counts(self):
         mutations = (
             ("session.json", "schema_version", True),
@@ -248,12 +587,12 @@ class ListeningImportTest(unittest.TestCase):
             root = Path(directory)
             source = write_listening_fixture(root)
             session_path = source / "session.json"
-            original_copy = __import__("shutil").copy2
+            original_copy = listening_import_module.copy_regular_file
             mutated = False
 
-            def mutate_after_report_copy(source_path, destination):
+            def mutate_after_report_copy(source_path, destination, **kwargs):
                 nonlocal mutated
-                result = original_copy(source_path, destination)
+                result = original_copy(source_path, destination, **kwargs)
                 if Path(source_path).name == "report.json" and not mutated:
                     session = json.loads(session_path.read_text(encoding="utf-8"))
                     session["updated_at"] = "2026-08-15T10:00:00+00:00"
@@ -265,7 +604,7 @@ class ListeningImportTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.listening_import.shutil.copy2",
+                    "vntts.authoring.listening_import.copy_regular_file",
                     side_effect=mutate_after_report_copy,
                 ),
                 self.assertRaisesRegex(ListeningImportError, "retry when idle"),
@@ -278,14 +617,14 @@ class ListeningImportTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             source = write_listening_fixture(root)
-            original_copy = __import__("shutil").copy2
+            original_copy = listening_import_module.copy_regular_file
 
-            def copy_and_interrupt(source_path, destination):
-                original_copy(source_path, destination)
+            def copy_and_interrupt(source_path, destination, **kwargs):
+                original_copy(source_path, destination, **kwargs)
                 raise KeyboardInterrupt
 
             with patch(
-                "vntts.authoring.listening_import.shutil.copy2",
+                "vntts.authoring.listening_import.copy_regular_file",
                 side_effect=copy_and_interrupt,
             ):
                 with self.assertRaises(KeyboardInterrupt):
@@ -298,12 +637,12 @@ class ListeningImportTest(unittest.TestCase):
             root = Path(directory)
             source = write_listening_fixture(root)
             audio_path = source / "audio/trial-0001-a.wav"
-            original_copy = __import__("shutil").copy2
+            original_copy = listening_import_module.copy_regular_file
             mutated = False
 
-            def mutate_after_audio_copy(source_path, destination):
+            def mutate_after_audio_copy(source_path, destination, **kwargs):
                 nonlocal mutated
-                result = original_copy(source_path, destination)
+                result = original_copy(source_path, destination, **kwargs)
                 if Path(source_path).resolve() == audio_path.resolve() and not mutated:
                     audio_path.write_bytes(b"changed after copy")
                     mutated = True
@@ -311,7 +650,7 @@ class ListeningImportTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.listening_import.shutil.copy2",
+                    "vntts.authoring.listening_import.copy_regular_file",
                     side_effect=mutate_after_audio_copy,
                 ),
                 self.assertRaisesRegex(ListeningImportError, "retry when idle"),
@@ -352,11 +691,7 @@ class ListeningImportTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             source = write_listening_fixture(root)
-            source_hashes = {
-                path.relative_to(source).as_posix(): sha256_file(path)
-                for path in source.rglob("*")
-                if path.is_file()
-            }
+            source_hashes = tree_hashes(source)
 
             inspection = inspect_listening_session(source)
             first = import_listening_session(source, root / "app-data")
@@ -371,11 +706,7 @@ class ListeningImportTest(unittest.TestCase):
             self.assertTrue((first.destination / ".blind-key.json").is_file())
             self.assertEqual(
                 source_hashes,
-                {
-                    path.relative_to(source).as_posix(): sha256_file(path)
-                    for path in source.rglob("*")
-                    if path.is_file()
-                },
+                tree_hashes(source),
             )
 
     def test_concurrent_import_does_not_overwrite_existing_destination(self):

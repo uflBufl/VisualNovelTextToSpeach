@@ -10,10 +10,12 @@ import wave
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import TypeAlias
 
 import numpy as np
+from durable_file import atomic_write_json
 from numpy.typing import NDArray
 from vntts_artifacts import (
     VoiceGenerationQueue,
@@ -21,14 +23,17 @@ from vntts_artifacts import (
     expected_voice_generation_queue_id,
     write_voice_generation_queue,
 )
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
+from vntts_artifacts.voice_manifest import write_voice_manifest
 
-from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
+from vntts.authoring.bulk_generation import BulkGenerationError
+from vntts.authoring.generation_state import (
+    load_generation_state_from_snapshot,
+    load_stable_generation_queue,
+)
 from vntts.authoring.publication import (
     no_replace_destination,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -41,10 +46,17 @@ from vntts.authoring.source_reference_quality_records import (
     load_source_reference_quality_review,
 )
 from vntts.authoring.source_reference_review import FIXED_EVALUATION_CORPUS
-from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.authoring.workspace_foundation import (
+    contained_regular_file,
+    load_json_object_snapshot,
+)
 from vntts.cli import cli_error, cli_success
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import file_sha256, is_lowercase_sha256, sha256_file
+from vntts.json_types import decode_json, has_schema_version
+from vntts.numeric_values import optional_finite_number
+from vntts.path_safety import read_regular_bytes
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
+from vntts.voices import load_voice_manifest
 
 COMPOSITE_SCHEMA = "vntts.authoring-exact-bank-reference-composite"
 COMPOSITE_VERSION = 1
@@ -88,6 +100,7 @@ class _CompositeReviewInputs:
     evaluation: JsonObject
     evaluation_sha256: str
     queue_path: Path
+    queue_sha256: str
 
 
 @dataclass(frozen=True)
@@ -101,7 +114,6 @@ class _CompositeReviewSources:
 
 @dataclass(frozen=True)
 class _CompositeSelection:
-    report_payload: bytes
     report_sha256: str
     source_bank_sha256: str
     candidates: list[JsonObject]
@@ -127,6 +139,10 @@ class _CompositeClipInput:
     samples: NDArray[np.float32]
 
 
+_file_sha256 = partial(file_sha256, error_type=ReferenceCompositeError)
+
+
+@publication_errors(ReferenceCompositeError)
 def publish_composite_quality_review(
     composite_directory: PathInput,
     state_path: PathInput,
@@ -140,11 +156,17 @@ def publish_composite_quality_review(
         raise ReferenceCompositeError(f"Composite quality output exists: {output}")
     inputs = _load_composite_review_inputs(composite_directory)
     try:
-        queue = VoiceGenerationQueue.load(inputs.queue_path)
-        state = load_generation_state(state_path, inputs.queue_path)
+        queue, queue_sha256 = load_stable_generation_queue(inputs.queue_path)
+        if queue_sha256 != inputs.queue_sha256:
+            raise ReferenceCompositeError("Composite evaluation queue changed")
+        state_document, state_sha256, _state_payload = load_json_object_snapshot(
+            state_path, "composite generation state", error_type=ReferenceCompositeError
+        )
+        state = load_generation_state_from_snapshot(
+            state_path, queue, queue_sha256, state_document=state_document
+        )
     except (BulkGenerationError, OSError, ValueError) as error:
         raise ReferenceCompositeError(str(error)) from error
-    state_sha256 = sha256_file(state_path)
     state_items = state.get("items")
     if not isinstance(state_items, dict):
         raise ReferenceCompositeError("Composite generation state is malformed")
@@ -156,7 +178,7 @@ def publish_composite_quality_review(
     snapshots = [
         (inputs.ledger_path, inputs.ledger_sha256),
         (inputs.evaluation_path, inputs.evaluation_sha256),
-        (inputs.queue_path, sha256_file(inputs.queue_path)),
+        (inputs.queue_path, queue_sha256),
         (state_path, state_sha256),
         *sources.snapshots,
     ]
@@ -166,6 +188,7 @@ def publish_composite_quality_review(
             sources.composite_source,
             sources.composite_sha256,
             staging / reference_relative,
+            error_type=ReferenceCompositeError,
         )
         reference["audio"] = reference_relative.as_posix()
         generated, excluded = capture_quality_outcomes(
@@ -222,12 +245,12 @@ def _load_composite_review_inputs(directory: Path) -> _CompositeReviewInputs:
     if (
         not isinstance(ledger, dict)
         or ledger.get("schema") != COMPOSITE_SCHEMA
-        or ledger.get("schema_version") != COMPOSITE_VERSION
+        or not has_schema_version(ledger, COMPOSITE_VERSION)
         or not isinstance(evaluation, dict)
         or evaluation.get("schema") != COMPOSITE_EVALUATION_SCHEMA
-        or evaluation.get("schema_version") != COMPOSITE_EVALUATION_VERSION
+        or not has_schema_version(evaluation, COMPOSITE_EVALUATION_VERSION)
         or evaluation.get("source_composite_sha256") != ledger_sha256
-        or evaluation.get("queue_sha256") != sha256_file(queue_path)
+        or evaluation.get("queue_sha256") != _file_sha256(queue_path)
     ):
         raise ReferenceCompositeError("Composite evaluation identity is invalid")
     return _CompositeReviewInputs(
@@ -238,6 +261,7 @@ def _load_composite_review_inputs(directory: Path) -> _CompositeReviewInputs:
         evaluation,
         evaluation_sha256,
         queue_path,
+        _sha256(evaluation.get("queue_sha256"), "Composite queue hash"),
     )
 
 
@@ -268,7 +292,7 @@ def _load_composite_review_sources(
         raise ReferenceCompositeError("Composite ledger inventory is invalid")
     composite_source = _contained_file(directory, composite_record.get("path"))
     composite_sha256 = _sha256(composite_record.get("sha256"), "Composite WAV hash")
-    if sha256_file(composite_source) != composite_sha256:
+    if _file_sha256(composite_source) != composite_sha256:
         raise ReferenceCompositeError("Composite WAV changed")
     report_path = (
         Path(
@@ -290,7 +314,7 @@ def _load_composite_review_sources(
         ) from error
     if hashlib.sha256(report_payload).hexdigest() != report_sha256:
         raise ReferenceCompositeError("Source candidate report changed")
-    group = _matching_group(report, _ledger_identity(inputs.ledger))
+    group = _matching_group(report, _composite_identity(inputs.ledger))
     affected = group.get("affected_portrait_line_count") if group else None
     if isinstance(affected, bool) or not isinstance(affected, int) or affected <= 0:
         raise ReferenceCompositeError("Composite affected story-line count is invalid")
@@ -332,7 +356,9 @@ def _composite_quality_session(
                 "portrait_image": None,
                 "source_bank": inputs.ledger["source_bank"],
                 "reference_kind": "exact_bank_composite",
-                "media_ids": [clip["media_id"] for clip in sources.clips],
+                "media_ids": [
+                    _media_id(clip.get("media_id")) for clip in sources.clips
+                ],
                 "affected_queue_item_count": sources.affected,
                 "reference": reference,
                 "generated_samples": generated,
@@ -348,16 +374,16 @@ def _composite_quality_session(
 
 
 def _read_json(path: Path) -> tuple[bytes, object]:
-    payload = path.read_bytes()
-    value = json.loads(payload.decode("utf-8"))
+    payload = read_regular_bytes(path)
+    value = decode_json(payload.decode("utf-8"))
     return payload, value
 
 
-def _ledger_identity(ledger: JsonObject) -> tuple[object, object, object]:
+def _composite_identity(record: JsonObject) -> tuple[object, object, object]:
     return (
-        ledger.get("character"),
-        ledger.get("portrait"),
-        ledger.get("source_bank"),
+        record.get("character"),
+        record.get("portrait"),
+        record.get("source_bank"),
     )
 
 
@@ -373,13 +399,7 @@ def _matching_group(
         (
             value
             for value in groups
-            if isinstance(value, dict)
-            and (
-                value.get("character"),
-                value.get("portrait"),
-                value.get("source_bank"),
-            )
-            == identity
+            if isinstance(value, dict) and _composite_identity(value) == identity
         ),
         None,
     )
@@ -387,10 +407,15 @@ def _matching_group(
 
 def _verify_snapshots(snapshots: list[Snapshot], error_prefix: str) -> None:
     for source, digest in snapshots:
-        if sha256_file(source) != digest:
+        if (
+            source.is_symlink()
+            or not source.is_file()
+            or _file_sha256(source) != digest
+        ):
             raise ReferenceCompositeError(f"{error_prefix}: {source.name}")
 
 
+@publication_errors(ReferenceCompositeError)
 def publish_exact_bank_reference_composite(
     report_path: PathInput,
     character: object,
@@ -417,8 +442,16 @@ def publish_exact_bank_reference_composite(
         or not 0 <= gap_ms <= 500
     ):
         raise ReferenceCompositeError("Composite gap must be 0..500 ms")
-    if not 0 <= trim_padding_ms < trim_trigger_ms <= 500:
+    if (
+        type(trim_padding_ms) is not int
+        or type(trim_trigger_ms) is not int
+        or not 0 <= trim_padding_ms < trim_trigger_ms <= 500
+    ):
         raise ReferenceCompositeError("Composite edge-trim timing is invalid")
+    if optional_finite_number(silence_dbfs) is None or silence_dbfs > 0:
+        raise ReferenceCompositeError(
+            "Composite silence threshold must be finite and non-positive"
+        )
     selection = _load_composite_selection(
         report_path, (character, portrait, source_bank)
     )
@@ -445,13 +478,10 @@ def publish_exact_bank_reference_composite(
             trim_padding_ms,
             staged,
         )
-        if (
-            hashlib.sha256(report_path.read_bytes()).hexdigest()
-            != selection.report_sha256
-        ):
-            raise ReferenceCompositeError(
-                "Candidate report changed during composite publication"
-            )
+        _verify_snapshots(
+            [(report_path, selection.report_sha256)],
+            "Candidate report changed during composite publication",
+        )
         _verify_snapshots(
             staged.snapshots, "Candidate reference changed during publication"
         )
@@ -473,7 +503,7 @@ def _load_composite_selection(
     if (
         not isinstance(report, dict)
         or report.get("schema") != SOURCE_REPORT_SCHEMA
-        or report.get("schema_version") != SOURCE_REPORT_VERSION
+        or not has_schema_version(report, SOURCE_REPORT_VERSION)
         or report.get("bank_inventory_scope") != COMPLETE_BANK_SCOPE
     ):
         raise ReferenceCompositeError(
@@ -486,20 +516,12 @@ def _load_composite_selection(
     selected = [
         candidate
         for candidate in candidates
-        if isinstance(candidate, dict)
-        and (
-            candidate.get("character"),
-            candidate.get("portrait"),
-            candidate.get("source_bank"),
-        )
-        == identity
+        if isinstance(candidate, dict) and _composite_identity(candidate) == identity
     ]
     matching_groups = [
         group
         for group in groups
-        if isinstance(group, dict)
-        and (group.get("character"), group.get("portrait"), group.get("source_bank"))
-        == identity
+        if isinstance(group, dict) and _composite_identity(group) == identity
     ]
     if len(matching_groups) != 1 or len(selected) < 2:
         raise ReferenceCompositeError(
@@ -524,7 +546,6 @@ def _load_composite_selection(
     if len(source_bank_sha256s) != 1:
         raise ReferenceCompositeError("Composite clips disagree on source bank bytes")
     return _CompositeSelection(
-        report_payload,
         report_sha256,
         next(iter(source_bank_sha256s)),
         selected,
@@ -585,7 +606,7 @@ def _read_composite_clip(
     source = _contained_file(
         report_directory, _text(candidate.get("reference"), "Candidate reference")
     )
-    payload = source.read_bytes()
+    payload = read_regular_bytes(source)
     expected_sha256 = _sha256(
         candidate.get("reference_sha256"), "Candidate reference hash"
     )
@@ -629,7 +650,7 @@ def _stage_composite_clip(
     copied = staging / copied_relative
     copied.parent.mkdir(parents=True, exist_ok=True)
     copied.write_bytes(clip.payload)
-    if hashlib.sha256(copied.read_bytes()).hexdigest() != clip.expected_sha256:
+    if sha256_file(copied) != clip.expected_sha256:
         raise ReferenceCompositeError(f"Composite clip copy changed: {clip.media_id}")
     return (
         {
@@ -641,8 +662,8 @@ def _stage_composite_clip(
             ),
             "reference": copied_relative.as_posix(),
             "reference_sha256": clip.expected_sha256,
-            "input_frames": int(len(clip.samples)),
-            "composite_frames": int(len(trimmed)),
+            "input_frames": len(clip.samples),
+            "composite_frames": len(trimmed),
             "trimmed_leading_frames": removed_start,
             "trimmed_trailing_frames": removed_end,
         },
@@ -666,7 +687,7 @@ def _write_composite_artifacts(
 ) -> ReferenceCompositeResult:
     composite, composite_path = _write_composite_wav(staging, staged, gap_ms)
     preflight = analyze_reference_bytes(
-        composite_path.read_bytes(), path=composite_path
+        read_regular_bytes(composite_path), path=composite_path
     )
     composite_sha256 = preflight["sha256"]
     ledger_path = staging / "composite.json"
@@ -729,7 +750,6 @@ def _composite_ledger(
     composite_path: Path,
     preflight: ReferenceQualityReport,
 ) -> JsonObject:
-    preflight["path"] = composite_path.name
     return {
         "schema": COMPOSITE_SCHEMA,
         "schema_version": COMPOSITE_VERSION,
@@ -753,9 +773,9 @@ def _composite_ledger(
             "path": composite_path.name,
             "sha256": preflight["sha256"],
             "sample_rate": staged.sample_rate,
-            "frame_count": int(len(composite)),
+            "frame_count": len(composite),
             "duration_seconds": len(composite) / staged.sample_rate,
-            "objective_preflight": preflight,
+            "objective_preflight": {**preflight, "path": composite_path.name},
         },
         "authority": (
             "Experimental same-bank synthesis reference only. Exact bank identity "
@@ -771,7 +791,7 @@ def _write_composite_evaluation_inputs(
     character: str,
     composite_sha256: str,
 ) -> None:
-    ledger_sha256 = sha256_file(ledger_path)
+    ledger_sha256 = _file_sha256(ledger_path)
     voice_character = f"Exact bank composite {character} {composite_sha256[:12]}"
     manifest_path = staging / "voice-manifest.json"
     write_voice_manifest(
@@ -802,9 +822,9 @@ def _write_composite_evaluation_inputs(
             "source_composite": ledger_path.name,
             "source_composite_sha256": ledger_sha256,
             "voice_manifest": manifest_path.name,
-            "voice_manifest_sha256": sha256_file(manifest_path),
+            "voice_manifest_sha256": _file_sha256(manifest_path),
             "queue": queue_path.name,
-            "queue_sha256": sha256_file(queue_path),
+            "queue_sha256": _file_sha256(queue_path),
             "voice_character": voice_character,
             "fixed_queue_ids": queue_ids,
             "authority": (
@@ -879,6 +899,10 @@ def _read_pcm16_mono(
     if channels != 1 or width != 2 or rate <= 0 or frames <= 0:
         raise ReferenceCompositeError(
             f"Composite media {media_id} must be non-empty PCM16 mono"
+        )
+    if len(raw) != frames * width:
+        raise ReferenceCompositeError(
+            f"Composite media {media_id} WAV data is incomplete"
         )
     return rate, np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
 

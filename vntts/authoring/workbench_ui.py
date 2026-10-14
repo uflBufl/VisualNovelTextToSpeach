@@ -60,13 +60,13 @@ from PySide6.QtWidgets import (
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
 from vntts.async_ui import LatestTaskRunner
-from vntts.authoring.bulk_generation import ReviewAuthority, ReviewCommit
 from vntts.authoring.cohort_bundle import (
     CohortReviewBundle,
     build_cohort_review_bundle,
 )
 from vntts.authoring.cohort_bundle_ui import CohortReviewBundleDialog
 from vntts.authoring.generation_lease import process_started_at
+from vntts.authoring.generation_review import ReviewAuthority, ReviewCommit
 from vntts.authoring.review_playback_evidence import ReviewPlaybackEvidence
 from vntts.authoring.workbench import (
     AuthoringRuntimeStatus,
@@ -87,6 +87,7 @@ from vntts.authoring.workbench import (
     review_technical_summary,
     workspace_voice_snapshot,
 )
+from vntts.json_types import decode_json
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
@@ -1133,13 +1134,13 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
             self._fail_closed("Authority worker returned no validated projection")
         elif self._projection_selection_version != self._collection_selection_version:
             self._projection_pending = False
-            QTimer.singleShot(0, self.refresh)
+            QTimer.singleShot(0, self, self.refresh)
             return
         else:
             self._apply_projection(projection)
         if self._projection_pending:
             self._projection_pending = False
-            QTimer.singleShot(0, self.refresh)
+            QTimer.singleShot(0, self, self.refresh)
 
     def _default_poll_paths(self) -> tuple[Path, ...]:
         output = self.workspace_directory / "generated-audio"
@@ -1571,7 +1572,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         if self._selection_refresh_pending:
             return
         self._selection_refresh_pending = True
-        QTimer.singleShot(0, self._refresh_collection_selection)
+        QTimer.singleShot(0, self, self._refresh_collection_selection)
 
     def _refresh_collection_selection(self) -> None:
         self._selection_refresh_pending = False
@@ -1641,7 +1642,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
                     stored = [stored]
                 for encoded in cast(Iterable[object], stored):
                     try:
-                        value = json.loads(str(encoded))
+                        value = decode_json(str(encoded))
                     except TypeError, ValueError:
                         continue
                     if not isinstance(value, dict) or set(value) != {
@@ -1819,6 +1820,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
             self.status.setText("BLOCKED: voice manifest selection changed")
             return
         self.voice_controller = trusted
+        self._discard_review_playback_copy()
         self.player.setSource(QUrl.fromLocalFile(str(reference.path)))
         self.player.play()
         self._preview_active = True
@@ -2567,7 +2569,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         self.status.setText(self._status_text())
         self.review_action_reason.setText(f"Saved {decision} for {queue_id}")
         if refresh_terminal_projection:
-            QTimer.singleShot(0, self.refresh)
+            QTimer.singleShot(0, self, self.refresh)
 
     def start_generation(self) -> None:
         failed_queue_ids = {
@@ -2645,7 +2647,9 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         self._stop_generation_token = token
         self._stop_requested = True
         self.process.terminate()
-        QTimer.singleShot(self.stop_timeout_ms, lambda: self._kill_if_running(token))
+        QTimer.singleShot(
+            self.stop_timeout_ms, self, lambda: self._kill_if_running(token)
+        )
 
     def _kill_if_running(self, token: int) -> None:
         if (
@@ -2762,7 +2766,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         if not checked:
             return
         QTimer.singleShot(
-            0, lambda: self._reveal_inspector_control(section.first_control())
+            0, self, lambda: self._reveal_inspector_control(section.first_control())
         )
 
     def _reveal_inspector_control(self, control: QWidget) -> None:
@@ -2773,7 +2777,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         self.generation_section.setChecked(True)
         self.collection_tree.setFocus()
         QTimer.singleShot(
-            0, lambda: self._reveal_inspector_control(self.collection_tree)
+            0, self, lambda: self._reveal_inspector_control(self.collection_tree)
         )
 
     def _restore_settings(self) -> None:

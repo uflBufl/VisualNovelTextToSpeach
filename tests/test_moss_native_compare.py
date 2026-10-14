@@ -11,13 +11,19 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import ClassVar
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from scripts import moss_native_compare as compare
 from scripts import moss_native_pause_probe as probe
-from tests.test_moss_native_pause_probe import _FakeBackend, clean_wav_bytes
+from tests.authoring_fixtures import tree_hashes
+from tests.native_moss_fixtures import FakeNativeBackend as _FakeBackend
+from tests.pregeneration_fixtures import clean_wav_bytes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.services.tts_engine import TTSConfigurationError
+from vntts.settings import AppSettings
 from vntts.synthesis import SynthesisCachePolicy, SynthesisCompletion
+from vntts.voice_library import VoiceLibrary
+from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class _FailedBackend(_FakeBackend):
@@ -157,8 +163,86 @@ class MossNativeCompareTest(unittest.TestCase):
         self.assertTrue(compare.summarize(runs)["owned_servers_confirmed_stopped"])
         runs[0]["report"]["server_shutdown"]["confirmed_exited"] = False
         self.assertFalse(compare.summarize(runs)["owned_servers_confirmed_stopped"])
+        for value in ("stopped", 1, [], {}):
+            with self.subTest(value=value):
+                runs[0]["report"]["server_shutdown"]["confirmed_exited"] = value
+                self.assertIsNone(
+                    compare.summarize(runs)["owned_servers_confirmed_stopped"]
+                )
         runs[0]["report"].clear()
         self.assertIsNone(compare.summarize(runs)["owned_servers_confirmed_stopped"])
+
+    def test_summary_keeps_unrepresentable_seconds_unavailable(self):
+        for seconds in (10**400, -(10**400)):
+            runs = [
+                {
+                    "variant": variant,
+                    "report": {
+                        "startup_seconds": seconds,
+                        "attempts": [
+                            {
+                                "text": text,
+                                "elapsed_seconds": seconds,
+                                "completion": "complete",
+                                "result": {"cache_source": "fresh-generation"},
+                                "raw_response": {"http_status": 200},
+                            }
+                            for _, text in probe.TEXTS
+                        ],
+                    },
+                }
+                for variant in compare.ORDER
+            ]
+            with self.subTest(negative=seconds < 0):
+                summary = compare.summarize(runs)
+                for startup in summary["startup"].values():
+                    self.assertIsNone(startup["startup_seconds_median"])
+                for case in summary["cases"]:
+                    self.assertIsNone(case["candidate_over_baseline"])
+                    for variant in compare.ORDER:
+                        self.assertTrue(case[variant]["complete_fresh_attempts"])
+                        self.assertIsNone(case[variant]["elapsed_seconds_median"])
+
+    def test_summary_keeps_invalid_observations_unavailable(self):
+        for peak in ("4096", True, float("nan"), 1.5, -1):
+            with self.subTest(peak=peak):
+                runs = [
+                    {
+                        "variant": variant,
+                        "report": {
+                            "compute": 7,
+                            "startup_seconds": float("nan"),
+                            "attempts": [
+                                {
+                                    "text": text,
+                                    "completion": "complete",
+                                    "elapsed_seconds": True,
+                                    "result": {"cache_source": "fresh-generation"},
+                                    "raw_response": {"http_status": 200, "sha256": 17},
+                                    "native": {
+                                        "resources": {
+                                            "native_process": {"rss_bytes_peak": peak}
+                                        }
+                                    },
+                                }
+                                for _, text in probe.TEXTS
+                            ],
+                        },
+                    }
+                    for variant in compare.ORDER
+                ]
+                summary = compare.summarize(runs)
+                self.assertIsNone(summary["same_reported_compute"])
+                for startup in summary["startup"].values():
+                    self.assertIsNone(startup["startup_seconds_median"])
+                for case in summary["cases"]:
+                    self.assertIsNone(case["candidate_over_baseline"])
+                    self.assertIsNone(case["raw_wav_identity"])
+                    for variant in ("baseline", "candidate"):
+                        self.assertIsNone(case[variant]["elapsed_seconds_median"])
+                        self.assertIsNone(
+                            case[variant]["observed_native_rss_peak_bytes"]
+                        )
 
     def test_codec_threads_rejects_wrong_worker_count_before_startup(self):
         with TemporaryDirectory() as temporary:
@@ -292,6 +376,93 @@ class MossNativeCompareTest(unittest.TestCase):
         )
         return compare.run(options, probe_runner=runner, path_check=self._path_check)
 
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_snapshot_refusal_retains_failure_report_and_recovers(self):
+        for saved in (False, True):
+            with self.subTest(saved=saved), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                options = self._options(root)
+                reference = options.reference
+                registry = CharacterVoiceRegistry(
+                    [CharacterVoice("Narrator", "saved", reference)]
+                )
+                settings = AppSettings(tts_model=str(options.model))
+                if saved:
+                    options.reference = None
+                library = VoiceLibrary(root / "library")
+                before = tree_hashes(root)
+                original = compare.copy_regular_file
+                refused = []
+
+                def copy(source, snapshot):
+                    gate: RegularFileGate = {"path": reference, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(source, snapshot)
+                    self.assertFalse(Path(snapshot).exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                runner, paths = Mock(), Mock()
+                with (
+                    patch.object(
+                        probe, "application_voice_library", return_value=library
+                    ),
+                    patch.object(compare, "copy_regular_file", copy),
+                ):
+                    code = compare.run(
+                        options,
+                        probe_runner=runner,
+                        path_check=paths,
+                        settings_loader=lambda: settings,
+                        registry_initializer=lambda *_a, **_k: registry,
+                    )
+                self.assertEqual(code, 1)
+                report = json.loads((options.output / "report.json").read_text())
+                self.assertRegex(report["error"], r"^OSError: .*regular file")
+                self.assertEqual(len(refused), 1)
+                self.assertIn(str(refused[0]), report["error"])
+                self.assertFalse(report["complete"])
+                self.assertFalse(report["all_requests_complete"])
+                self.assertEqual(report["runs"], [])
+                runner.assert_not_called()
+                paths.assert_not_called()
+                self.assertEqual(
+                    {key: tree_hashes(root)[key] for key in before}, before
+                )
+                failed_archive = options.output.with_suffix(".zip")
+                failed_payload = failed_archive.read_bytes()
+                with zipfile.ZipFile(failed_archive) as archive:
+                    self.assertEqual(json.loads(archive.read("report.json")), report)
+                    self.assertNotIn("reference-input.wav", archive.namelist())
+                options.output = root / "recovered"
+                _FakeBackend.instances.clear()
+                with patch.object(
+                    probe, "application_voice_library", return_value=library
+                ):
+                    recovered = compare.run(
+                        options,
+                        probe_runner=partial(
+                            probe.run,
+                            backend_factory=_FakeBackend,
+                            path_check=self._path_check,
+                        ),
+                        path_check=self._path_check,
+                        settings_loader=lambda: settings,
+                        registry_initializer=lambda *_a, **_k: registry,
+                    )
+                self.assertEqual(recovered, 0)
+                self.assertEqual(len(_FakeBackend.instances), 4)
+                self.assertEqual(
+                    (options.output / "reference-input.wav").read_bytes(),
+                    reference.read_bytes(),
+                )
+                self.assertEqual(failed_archive.read_bytes(), failed_payload)
+
     def test_abba_uses_four_fresh_cacheless_stable_runs_and_archives_wavs(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -363,6 +534,51 @@ class MossNativeCompareTest(unittest.TestCase):
                         names,
                     )
 
+    def test_omitted_reference_uses_saved_narrator_for_all_four_runs(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            options = self._options(root)
+            reference = options.reference
+            options.reference = None
+            registry = CharacterVoiceRegistry(
+                [CharacterVoice("Narrator", "saved-narrator", reference)]
+            )
+            settings = AppSettings(tts_model=str(options.model))
+            library = VoiceLibrary(root / "library")
+            runner = partial(
+                probe.run, backend_factory=_FakeBackend, path_check=self._path_check
+            )
+            _FakeBackend.instances.clear()
+            with (
+                patch.object(
+                    probe, "application_voice_library", return_value=library
+                ) as lookup,
+                patch.object(
+                    compare, "initialize_voice_registry", return_value=registry
+                ) as initialize,
+            ):
+                code = compare.run(
+                    options,
+                    probe_runner=runner,
+                    path_check=self._path_check,
+                    settings_loader=lambda: settings,
+                    registry_initializer=initialize,
+                )
+            self.assertEqual(code, 0)
+            lookup.assert_called_once_with()
+            initialize.assert_called_once_with(settings, voice_library=library)
+            report = json.loads((options.output / "report.json").read_text())
+            self.assertTrue(report["all_requests_complete"])
+            self.assertEqual(len(_FakeBackend.instances), 4)
+            self.assertEqual(
+                (options.output / "reference-input.wav").read_bytes(),
+                reference.read_bytes(),
+            )
+            self.assertEqual(
+                {run["report"]["reference_sha256"] for run in report["runs"]},
+                {hashlib.sha256(reference.read_bytes()).hexdigest()},
+            )
+
     def test_mismatched_build_manifests_stop_before_generation(self):
         for key in ("vntts", "local_gpu_patch_sha256"):
             with self.subTest(key=key), TemporaryDirectory() as temporary:
@@ -422,6 +638,60 @@ class MossNativeCompareTest(unittest.TestCase):
                     self.assertIn(
                         f"{report['runs'][0]['directory']}/{attempt['files']['raw_wav']['path']}",
                         names,
+                    )
+
+    def test_malformed_probe_evidence_retains_failure_report_and_raw_archive(self):
+        for field, malformed in (("attempts", {"malformed": True}), ("result", True)):
+            with self.subTest(field=field), TemporaryDirectory() as temporary:
+                options = self._options(Path(temporary))
+
+                def malformed_runner(probe_options, **kwargs):
+                    code = probe.run(
+                        probe_options,
+                        backend_factory=_FakeBackend,
+                        path_check=self._path_check,
+                        **kwargs,
+                    )
+                    path = probe_options.output / "report.json"
+                    report = json.loads(path.read_text())
+                    if field == "attempts":
+                        report[field] = malformed
+                    else:
+                        report["attempts"][0][field] = malformed
+                    path.write_text(json.dumps(report), encoding="utf-8")
+                    return code
+
+                self.assertEqual(
+                    compare.run(
+                        options,
+                        probe_runner=malformed_runner,
+                        path_check=self._path_check,
+                    ),
+                    1,
+                )
+                report = json.loads((options.output / "report.json").read_text())
+                self.assertFalse(report["complete"])
+                self.assertFalse(report["all_requests_complete"])
+                self.assertEqual(report["runs"], [])
+                self.assertIn("ValueError: Native comparison", report["error"])
+                with zipfile.ZipFile(options.output.with_suffix(".zip")) as archive:
+                    names = set(archive.namelist())
+                    self.assertIn("report.json", names)
+                    self.assertIn("build.json", names)
+                    child = json.loads(archive.read("run-1-baseline/report.json"))
+                    self.assertEqual(
+                        child["attempts"]
+                        if field == "attempts"
+                        else child["attempts"][0][field],
+                        malformed,
+                    )
+                    self.assertEqual(
+                        sum(
+                            name.startswith("run-1-baseline/")
+                            and name.endswith("-raw.wav")
+                            for name in names
+                        ),
+                        3,
                     )
 
     def test_limited_runs_finish_orchestration_but_fail_qualification_without_ratio(

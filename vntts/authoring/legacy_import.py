@@ -5,23 +5,21 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
-import tempfile
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import TypeAlias
 
+from durable_file import atomic_write_json
 from platformdirs import user_data_path
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import (
     Pcm16MonoWavError,
     Pcm16MonoWavInfo,
     probe_pcm16_mono_wav,
 )
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import (
     GeneratedAudioEntry,
     GeneratedAudioIndex,
@@ -37,10 +35,20 @@ from vntts.authoring.generation_lease import inspect_process_status
 from vntts.authoring.import_paths import default_import_root
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import load_json_object
+from vntts.cleanup import temporary_directory
+from vntts.document_identity import canonical_document_sha256, sha256_file
+from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import (
+    copy_regular_file,
+    open_regular_text,
+    read_regular_bytes,
+    read_regular_text,
+)
 
 LEGACY_JOB_SCHEMA = "r1999.pregeneration-job"
 LEGACY_JOB_SCHEMA_VERSION = 1
@@ -198,41 +206,14 @@ def discover_legacy_jobs(
     return tuple(candidates)
 
 
+@publication_errors(LegacyAuthoringImportError)
 def import_legacy_job(
     job_directory: str | Path,
     destination_root: str | Path | None = None,
 ) -> LegacyImportResult:
     """Validate and copy one legacy job without changing either source or prior imports."""
     plan = _build_import_plan(job_directory)
-    destination_root = (
-        Path(destination_root or default_import_root()).expanduser().resolve()
-    )
-    destination_root.mkdir(parents=True, exist_ok=True)
-    import_id = _import_id(plan)
-    destination = destination_root / import_id
-    if destination.exists():
-        return _validate_existing_import(destination, plan)
-    _validate_import_root_collisions(destination_root, plan)
-
-    with staged_directory(destination_root, prefix=f".{import_id}-") as staging:
-        for artifact in plan.artifacts:
-            target = staging / artifact.destination
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(artifact.source, target)
-            if sha256_file(target) != artifact.sha256:
-                raise LegacyAuthoringImportError(
-                    f"Copied artifact changed during import: {artifact.source}"
-                )
-        manifest = _import_manifest(plan, import_id)
-        atomic_write_json(staging / "import.json", manifest, sort_keys=True)
-        _verify_source_controls_unchanged(plan)
-        try:
-            rename_directory_no_replace(staging, destination)
-        except AtomicPublicationError, OSError:
-            if destination.exists():
-                return _validate_existing_import(destination, plan)
-            raise
-    return LegacyImportResult(destination, manifest, True)
+    return _publish_import_plan(plan, destination_root)
 
 
 def inspect_standalone_generation(
@@ -253,6 +234,7 @@ def inspect_standalone_generation(
     )
 
 
+@publication_errors(LegacyAuthoringImportError)
 def import_standalone_generation(
     queue_path: str | Path,
     output_directory: str | Path,
@@ -260,6 +242,12 @@ def import_standalone_generation(
 ) -> LegacyImportResult:
     """Import one explicitly selected standalone queue/output pair."""
     plan = _build_standalone_import_plan(queue_path, output_directory)
+    return _publish_import_plan(plan, destination_root)
+
+
+def _publish_import_plan(
+    plan: _ImportPlan, destination_root: str | Path | None
+) -> LegacyImportResult:
     destination_root = (
         Path(destination_root or default_import_root()).expanduser().resolve()
     )
@@ -274,7 +262,7 @@ def import_standalone_generation(
         for artifact in plan.artifacts:
             target = staging / artifact.destination
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(artifact.source, target)
+            copy_regular_file(artifact.source, target, preserve_metadata=True)
             if sha256_file(target) != artifact.sha256:
                 raise LegacyAuthoringImportError(
                     f"Copied artifact changed during import: {artifact.source}"
@@ -291,6 +279,7 @@ def import_standalone_generation(
     return LegacyImportResult(destination, manifest, True)
 
 
+@publication_errors(LegacyAuthoringImportError)
 def _build_standalone_import_plan(
     queue_path: str | Path, output_directory: str | Path
 ) -> _ImportPlan:
@@ -413,14 +402,13 @@ def _build_standalone_import_plan(
     return plan
 
 
+@publication_errors(LegacyAuthoringImportError)
 def _build_import_plan(job_directory: str | Path) -> _ImportPlan:
     job_directory = Path(job_directory).expanduser().resolve()
     job_path = job_directory / "job.json"
     job, job_sha256 = _load_json_snapshot(job_path, "pregeneration job")
-    if (
-        job.get("schema") != LEGACY_JOB_SCHEMA
-        or type(job.get("schema_version")) is not int
-        or job.get("schema_version") != LEGACY_JOB_SCHEMA_VERSION
+    if job.get("schema") != LEGACY_JOB_SCHEMA or not has_schema_version(
+        job, LEGACY_JOB_SCHEMA_VERSION
     ):
         raise LegacyAuthoringImportError(
             "Unsupported pregeneration job schema; expected "
@@ -560,16 +548,12 @@ def _generation_summary(
     generated_index: GeneratedAudioIndex | None,
     diagnostics: tuple[str, ...],
 ) -> JsonDocument:
-    statuses = Counter(
-        str(value.get("status") or "unknown")
-        for value in state_items.values()
-        if isinstance(value, dict)
-    )
-    reviews = Counter(
-        str(value.get("review_status") or "unreviewed")
-        for value in state_items.values()
-        if isinstance(value, dict)
-    )
+    statuses: Counter[str] = Counter()
+    reviews: Counter[str] = Counter()
+    for value in state_items.values():
+        if isinstance(value, dict):
+            statuses[str(value.get("status") or "unknown")] += 1
+            reviews[str(value.get("review_status") or "unreviewed")] += 1
     return {
         "queue_items": len(queue.items),
         "state_items": len(state_items),
@@ -786,10 +770,8 @@ def _validate_state(
     queue: VoiceGenerationQueue,
     queue_sha256: str,
 ) -> tuple[StateItems, GeneratedFiles]:
-    if (
-        state.get("schema") != LEGACY_STATE_SCHEMA
-        or type(state.get("schema_version")) is not int
-        or state.get("schema_version") != LEGACY_STATE_SCHEMA_VERSION
+    if state.get("schema") != LEGACY_STATE_SCHEMA or not has_schema_version(
+        state, LEGACY_STATE_SCHEMA_VERSION
     ):
         raise LegacyAuthoringImportError(
             f"Unsupported generation state {state_path}; expected "
@@ -1015,13 +997,14 @@ def _validate_generated_wav(
         raise LegacyAuthoringImportError(
             f"Generated WAV for {queue_id!r} does not exist: {path}"
         )
-    actual_hash = sha256_file(path)
+    payload = read_regular_bytes(path)
+    actual_hash = hashlib.sha256(payload).hexdigest()
     if expected_hash != actual_hash:
         raise LegacyAuthoringImportError(
             f"Generated WAV checksum mismatch for {queue_id!r}: {path}"
         )
     try:
-        return probe_pcm16_mono_wav(path)
+        return probe_pcm16_mono_wav(BytesIO(payload))
     except Pcm16MonoWavError as error:
         raise LegacyAuthoringImportError(
             f"Generated WAV for {queue_id!r} is invalid: {error}"
@@ -1137,19 +1120,20 @@ def _import_identities(plan: _ImportPlan) -> list[JsonDocument]:
     identities: list[JsonDocument] = []
     for queue_item in plan.queue.items:
         state = state_items.get(queue_item.queue_id, {})
+        try:
+            queue_item_sha256 = canonical_document_sha256(
+                queue_item.document, allow_nan=True
+            )
+        except UnicodeEncodeError as error:
+            raise LegacyAuthoringImportError(
+                f"Queue item {queue_item.queue_id!r} contains invalid UTF-8 text"
+            ) from error
         identities.append(
             {
                 "queue_id": queue_item.queue_id,
                 "line_id": queue_item.line_id,
                 "text_sha256": queue_item.text_sha256,
-                "queue_item_sha256": hashlib.sha256(
-                    json.dumps(
-                        queue_item.document,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ).encode("utf-8")
-                ).hexdigest(),
+                "queue_item_sha256": queue_item_sha256,
                 "attempts": state.get("attempts"),
                 "seed": state.get("seed"),
                 "status": state.get("status", "pending"),
@@ -1337,6 +1321,7 @@ def _validate_existing_artifacts(
             )
 
 
+@publication_errors(LegacyAuthoringImportError)
 def _verify_source_controls_unchanged(plan: _ImportPlan) -> None:
     for artifact in plan.artifacts:
         if (
@@ -1428,7 +1413,7 @@ def _resolve_path(root: Path, value: str) -> Path:
 
 
 def _safe_relative(value: object, label: str) -> Path:
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
         raise LegacyAuthoringImportError(f"{label} must be a non-empty relative path")
     if "\\" in value:
         raise LegacyAuthoringImportError(f"{label} must use POSIX separators")
@@ -1464,16 +1449,13 @@ def _relative_within(root: str | Path, path: str | Path, label: str) -> Path:
 
 
 def _load_json(path: str | Path, description: str) -> JsonDocument:
-    value = load_json_object(path, description, error_type=LegacyAuthoringImportError)
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
-        raise LegacyAuthoringImportError(f"{description} must be a JSON object: {path}")
-    return {key: item for key, item in value.items() if isinstance(key, str)}
+    return load_json_object(path, description, error_type=LegacyAuthoringImportError)
 
 
 def _load_json_snapshot(path: str | Path, description: str) -> tuple[JsonDocument, str]:
     payload, digest = _read_snapshot(path, description)
     try:
-        value = json.loads(payload.decode("utf-8"))
+        value = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise LegacyAuthoringImportError(
             f"Unable to read {description} {path}: {error}"
@@ -1486,7 +1468,7 @@ def _load_json_snapshot(path: str | Path, description: str) -> tuple[JsonDocumen
 def _load_queue_snapshot(path: str | Path) -> tuple[VoiceGenerationQueue, str]:
     path = Path(path).expanduser().resolve()
     payload, digest = _read_snapshot(path, "generation queue")
-    with tempfile.TemporaryDirectory(prefix="vntts-legacy-queue-") as directory:
+    with temporary_directory(prefix="vntts-legacy-queue-") as directory:
         snapshot = Path(directory) / "queue.jsonl"
         snapshot.write_bytes(payload)
         try:
@@ -1505,12 +1487,12 @@ def _load_generated_index_snapshot(
     path = Path(path).expanduser().resolve()
     payload, digest = _read_snapshot(path, "generated-audio manifest")
     try:
-        raw = json.loads(payload.decode("utf-8"))
+        raw = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise LegacyAuthoringImportError(
             f"Unable to read generated-audio manifest {path}: {error}"
         ) from error
-    with tempfile.TemporaryDirectory(prefix="vntts-legacy-manifest-") as directory:
+    with temporary_directory(prefix="vntts-legacy-manifest-") as directory:
         snapshot = Path(directory) / "manifest.json"
         snapshot.write_bytes(payload)
         try:
@@ -1519,7 +1501,11 @@ def _load_generated_index_snapshot(
             raise LegacyAuthoringImportError(
                 f"Incompatible generated-audio manifest {path}: {error}"
             ) from error
-    raw_entries = raw.get("entries", []) if isinstance(raw, dict) else []
+    if not isinstance(raw, dict):
+        raise LegacyAuthoringImportError(
+            "Generated-audio manifest must be a JSON object"
+        )
+    raw_entries = raw.get("entries", [])
     entries = []
     for entry, record in zip(parsed.entries, raw_entries, strict=True):
         relative = _safe_relative(record.get("audio"), "generated WAV path")
@@ -1540,7 +1526,7 @@ def _load_generated_index_snapshot(
 def _read_snapshot(path: str | Path, description: str) -> tuple[bytes, str]:
     path = Path(path)
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
     except OSError as error:
         raise LegacyAuthoringImportError(
             f"Unable to read {description} {path}: {error}"
@@ -1550,17 +1536,17 @@ def _read_snapshot(path: str | Path, description: str) -> tuple[bytes, str]:
 
 def _load_json_optional(path: str | Path) -> JsonDocument:
     try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError:
+        value = decode_json(read_regular_text(Path(path), encoding="utf-8"))
+    except OSError, UnicodeError, json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
 
 
 def _load_jsonl_metadata_optional(path: str | Path) -> JsonDocument:
     try:
-        with Path(path).open(encoding="utf-8") as stream:
-            value = json.loads(next(stream))
-    except OSError, StopIteration, json.JSONDecodeError:
+        with open_regular_text(Path(path), encoding="utf-8") as stream:
+            value = decode_json(next(stream))
+    except OSError, UnicodeError, StopIteration, json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
 

@@ -13,12 +13,16 @@ from unittest.mock import ANY, Mock, call, patch
 import numpy as np
 import soundfile as sf
 
-from tests.test_pregeneration_voices import write_content, write_manifest
+import vntts.pregeneration_audition as audition_module
+from tests.pregeneration_fixtures import FakeBackend, ambiguous_fixture, clean_wav_bytes
+from tests.story_fixtures import write_content
+from tests.voice_manifest_fixtures import write_manifest
 from vntts.pregeneration_audition import (
     VoiceAuditionCancelled,
     VoiceAuditionError,
     VoiceAuditionIncomplete,
     VoiceAuditionPreviewService,
+    _staging_path,
     _validate_request,
 )
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
@@ -27,104 +31,7 @@ from vntts.settings import AppSettings
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisCompletion,
-    SynthesisDiagnostics,
-    SynthesisLimits,
-    SynthesisResult,
-    SynthesisTiming,
 )
-
-
-class CollectedResult:
-    def __init__(self, result):
-        self.result = result
-
-    def collect(self):
-        return self.result
-
-
-class FakeBackend:
-    def __init__(
-        self,
-        name,
-        *,
-        completion=SynthesisCompletion.COMPLETE,
-        on_render=None,
-        pcm=None,
-    ):
-        self.name = name
-        self.completion = completion
-        self.on_render = on_render
-        self.pcm = pcm
-        self.registry = None
-        self.requests = []
-        self.shutdown_count = 0
-
-    def render(self, request):
-        self.requests.append(request)
-        if self.on_render is not None:
-            self.on_render()
-        return CollectedResult(
-            SynthesisResult(
-                pcm=(
-                    np.full(1_600, 0.1, dtype=np.float32)
-                    if self.pcm is None
-                    else self.pcm
-                ),
-                sample_rate=16_000,
-                completion=self.completion,
-                limits=SynthesisLimits(None, None),
-                timing=SynthesisTiming(10.0, 100.0),
-                diagnostics=SynthesisDiagnostics(
-                    backend=self.name,
-                    cache_source="generated",
-                    generation_profile=request.generation_profile,
-                    seed=request.seed,
-                    chunk_count=1,
-                    sample_count=1_600,
-                ),
-            )
-        )
-
-    def shutdown(self):
-        self.shutdown_count += 1
-
-
-def clean_wav_bytes(*, amplitude=0.1, seconds=1.2, sample_rate=16_000):
-    samples = np.full(round(seconds * sample_rate), amplitude, dtype=np.float32)
-    samples[1::2] *= -1
-    pcm = np.round(samples * 32767).astype("<i2")
-    output = io.BytesIO()
-    with wave.open(output, "wb") as target:
-        target.setnchannels(1)
-        target.setsampwidth(2)
-        target.setframerate(sample_rate)
-        target.writeframes(pcm.tobytes())
-    return output.getvalue()
-
-
-def ambiguous_fixture(root):
-    content = inspect_story_index(write_content(root / "content"))
-    jobs = PregenerationJobStore(root / "jobs")
-    job = jobs.create_or_resume(content, ("story",))
-    manifest = write_manifest(root / "voices", rhiannon=clean_wav_bytes())
-    plan = VoicePlanStore(jobs).create(
-        job,
-        AppSettings(speech_backend="moss-tts", tts_profile="stable"),
-        manifest_path=manifest,
-    )
-    selected = next(group for group in plan.groups if group.character == "Rhiannon")
-    ambiguous = replace(
-        selected,
-        route="needs-audition",
-        resolution="ambiguous-voice-evidence",
-    )
-    plan = replace(
-        plan,
-        groups=tuple(
-            ambiguous if group is selected else group for group in plan.groups
-        ),
-    )
-    return plan, ambiguous, manifest
 
 
 class VoiceAuditionPreviewServiceTest(unittest.TestCase):
@@ -152,6 +59,50 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                     ):
                         _validate_request(plan, group, source_id)
 
+    def test_each_preview_validation_phase_decodes_its_wav_once(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan, group, _manifest = ambiguous_fixture(root)
+            backend = FakeBackend("moss-tts")
+            service = VoiceAuditionPreviewService(
+                root / "auditions",
+                backend_factory=lambda *_args, **_kwargs: backend,
+            )
+            self.addCleanup(service.close)
+            phases = []
+            original_inspect = audition_module._inspect_preview
+
+            def inspect_once(source, text):
+                with patch.object(wave, "open", wraps=wave.open) as open_wav:
+                    quality = original_inspect(source, text)
+                decoded = [
+                    call for call in open_wav.call_args_list if call.args[1] == "rb"
+                ]
+                self.assertEqual(len(decoded), 1)
+                phases.append(source)
+                return quality
+
+            with patch.object(
+                audition_module, "_inspect_preview", side_effect=inspect_once
+            ):
+                preview = service.generate(plan, group, group.candidates[0].source_id)
+            self.assertEqual(len(phases), 2)
+            self.assertIsInstance(phases[0], Path)
+            self.assertTrue(phases[0].name.startswith("."))
+            self.assertIsInstance(phases[1], io.BytesIO)
+            self.assertEqual(phases[1].getvalue(), preview.path.read_bytes())
+            phases.clear()
+            with patch.object(
+                audition_module, "_inspect_preview", side_effect=inspect_once
+            ):
+                cached = service.generate(plan, group, group.candidates[0].source_id)
+            self.assertEqual(len(phases), 1)
+            self.assertIsInstance(phases[0], io.BytesIO)
+            self.assertEqual(phases[0].getvalue(), cached.path.read_bytes())
+            self.assertTrue(cached.reused)
+            self.assertEqual(cached.audio_sha256, preview.audio_sha256)
+            self.assertEqual(len(backend.requests), 1)
+
     def test_rejects_changed_audio_between_preview_validation_phases(self):
         for cached in (False, True):
             with self.subTest(cached=cached), TemporaryDirectory() as directory:
@@ -169,10 +120,15 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
 
                 original_inspect = audition._inspect_preview
 
-                def replace_before_inspection(path, text):
-                    if not path.name.startswith("."):
-                        path.write_bytes(clean_wav_bytes(amplitude=0.2, seconds=0.2))
-                    return original_inspect(path, text)
+                def replace_before_inspection(source, text):
+                    if isinstance(source, io.BytesIO):
+                        target = next(
+                            path
+                            for path in service.root.glob("*.wav")
+                            if not path.name.startswith(".")
+                        )
+                        target.write_bytes(clean_wav_bytes(amplitude=0.2, seconds=0.2))
+                    return original_inspect(source, text)
 
                 with patch.object(
                     audition, "_inspect_preview", side_effect=replace_before_inspection
@@ -181,6 +137,113 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                         service.generate(plan, group, group.candidates[0].source_id)
                 self.assertEqual(len(backend.requests), 1)
                 self.assertEqual(len(tuple(service.root.glob("*.wav"))), 1)
+
+    def test_transient_cached_replacement_cannot_mix_metadata_and_hash(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            backend = FakeBackend("moss-tts")
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=lambda *_args, **_kwargs: backend
+            )
+            self.addCleanup(service.close)
+            first = service.generate(plan, group, group.candidates[0].source_id)
+            payload = first.path.read_bytes()
+            original_inspect = audition_module._inspect_preview
+
+            def temporary_replacement(source, text):
+                first.path.write_bytes(clean_wav_bytes(amplitude=0.2, seconds=0.2))
+                try:
+                    return original_inspect(source, text)
+                finally:
+                    first.path.write_bytes(payload)
+
+            with patch.object(
+                audition_module, "_inspect_preview", side_effect=temporary_replacement
+            ):
+                cached = service.generate(plan, group, group.candidates[0].source_id)
+            self.assertTrue(cached.reused)
+            self.assertEqual(cached.audio_sha256, first.audio_sha256)
+            self.assertEqual(cached.sample_rate, first.sample_rate)
+            self.assertEqual(cached.duration_seconds, first.duration_seconds)
+            self.assertEqual(first.path.read_bytes(), payload)
+            self.assertEqual(len(backend.requests), 1)
+
+    def test_legacy_preview_rejects_replacement_after_inspection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            backend = FakeBackend("moss-tts")
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=lambda *_args, **_kwargs: backend
+            )
+            self.addCleanup(service.close)
+            first = service.generate(plan, group, group.candidates[0].source_id)
+            sidecar = first.path.with_suffix(".json")
+            sidecar.unlink()
+            original_inspect = audition_module._inspect_preview
+
+            def replace_after_decode(source, text):
+                quality = original_inspect(source, text)
+                first.path.write_bytes(clean_wav_bytes(amplitude=0.2, seconds=0.2))
+                return quality
+
+            with patch.object(
+                audition_module, "_inspect_preview", side_effect=replace_after_decode
+            ):
+                with self.assertRaisesRegex(VoiceAuditionError, "changed while"):
+                    service.generate(plan, group, group.candidates[0].source_id)
+            self.assertEqual(len(backend.requests), 1)
+            self.assertEqual(tuple(service.root.glob("*.wav")), (first.path,))
+            self.assertFalse(sidecar.exists())
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_preview_target_hashes_reject_fifo_swaps_and_cache_recovers(self):
+        for phase in ("metadata", "post-inspection"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory)
+                plan, group, _manifest = ambiguous_fixture(root)
+                backend = FakeBackend("moss-tts")
+                service = VoiceAuditionPreviewService(
+                    root / "auditions",
+                    backend_factory=lambda *_args, **_kwargs: backend,
+                )
+                self.addCleanup(service.close)
+                first = service.generate(plan, group, group.candidates[0].source_id)
+                payload = first.path.read_bytes()
+                native_open = os.open
+                descriptors = []
+                target_opens = 0
+
+                def swap_on_target_hash(candidate, flags, mode=0o777, *, dir_fd=None):
+                    nonlocal target_opens
+                    if Path(candidate) == first.path:
+                        target_opens += 1
+                        if target_opens == (1 if phase == "metadata" else 3):
+                            self.assertTrue(flags & os.O_NONBLOCK)
+                            first.path.unlink()
+                            os.mkfifo(first.path)
+                    descriptor = native_open(candidate, flags, mode, dir_fd=dir_fd)
+                    descriptors.append(descriptor)
+                    return descriptor
+
+                with patch(
+                    "vntts.path_safety.os.open", side_effect=swap_on_target_hash
+                ):
+                    with self.assertRaisesRegex(VoiceAuditionError, "regular file"):
+                        service.generate(plan, group, group.candidates[0].source_id)
+                self.assertEqual(target_opens, 1 if phase == "metadata" else 3)
+                for descriptor in descriptors:
+                    with self.assertRaises(OSError):
+                        os.fstat(descriptor)
+                first.path.unlink()
+                first.path.write_bytes(payload)
+                cached = service.generate(plan, group, group.candidates[0].source_id)
+                self.assertTrue(cached.reused)
+                self.assertEqual(cached.audio_sha256, first.audio_sha256)
+                self.assertEqual(len(backend.requests), 1)
 
     def test_reuses_legacy_preview_without_a_manifest(self):
         for backend_name, expected_seed in (("moss-tts", 0), ("pocket-tts", None)):
@@ -578,20 +641,14 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             self.addCleanup(service.close)
             source_id = group.candidates[0].source_id
             preview = service.generate(plan, group, source_id)
-            manifest = preview.path.with_suffix(".json")
-            original_open = Path.open
             source = io.BytesIO(b"{}" + b" " * 4096)
             read = Mock(wraps=source.read)
             source.read = read
 
-            def open_growing_manifest(path, *args, **kwargs):
-                if path == manifest:
-                    return source
-                return original_open(path, *args, **kwargs)
-
             with (
-                patch.object(
-                    Path, "open", autospec=True, side_effect=open_growing_manifest
+                patch(
+                    "vntts.pregeneration_audition.open_regular_binary",
+                    return_value=source,
                 ),
                 self.assertRaisesRegex(VoiceAuditionError, "manifest is too large"),
             ):
@@ -618,6 +675,98 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                     service.generate(plan, group, group.candidates[0].source_id)
 
             self.assertFalse(tuple((root / "auditions").glob("*.wav")))
+
+    def test_preview_stage_close_failure_cleans_up_before_handoff(self):
+        for fail_cleanup in (False, True):
+            with (
+                self.subTest(fail_cleanup=fail_cleanup),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory).resolve()
+                target = root / "preview.wav"
+                target.write_bytes(b"existing preview")
+                primary = OSError("stage descriptor close failed")
+                cleanup_error = OSError("stage unlink failed")
+                cleanup_error.add_note("nested unlink note")
+                original_close, original_unlink = os.close, Path.unlink
+                cleanup_paths = []
+
+                def close(descriptor):
+                    original_close(descriptor)
+                    raise primary
+
+                def unlink(path, *, missing_ok=False):
+                    cleanup_paths.append(path)
+                    self.assertTrue(missing_ok)
+                    if fail_cleanup:
+                        raise cleanup_error
+                    original_unlink(path, missing_ok=missing_ok)
+
+                with (
+                    patch(
+                        "vntts.pregeneration_audition.os.close", side_effect=close
+                    ) as close_mock,
+                    patch.object(Path, "unlink", autospec=True, side_effect=unlink),
+                    self.assertRaises(OSError) as raised,
+                ):
+                    _staging_path(target)
+
+                self.assertIs(raised.exception, primary)
+                close_mock.assert_called_once()
+                self.assertEqual(len(cleanup_paths), 1)
+                self.assertEqual(cleanup_paths[0].parent, root)
+                self.assertTrue(cleanup_paths[0].name.startswith(".preview-"))
+                self.assertEqual(
+                    getattr(primary, "__notes__", []),
+                    [
+                        "Voice preview stage acquisition cleanup failed: stage unlink failed",
+                        "nested unlink note",
+                    ]
+                    if fail_cleanup
+                    else [],
+                )
+                self.assertEqual(
+                    len(list(root.glob(".preview-*.wav"))), int(fail_cleanup)
+                )
+                self.assertEqual(target.read_bytes(), b"existing preview")
+
+    def test_preview_cleanup_failures_keep_publish_error_and_attempt_all_owners(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            plan, group, _manifest = ambiguous_fixture(root)
+            service = VoiceAuditionPreviewService(
+                root / "auditions",
+                backend_factory=lambda *_args, **_kwargs: FakeBackend("moss-tts"),
+            )
+            self.addCleanup(service.close)
+            original_unlink = type(root).unlink
+            cleanup_attempts = []
+
+            def fail_audition_cleanup(path, *args, **kwargs):
+                if path.parent == root / "auditions":
+                    cleanup_attempts.append(path)
+                    raise OSError(f"cleanup failed for {path.name}")
+                return original_unlink(path, *args, **kwargs)
+
+            with (
+                patch(
+                    "vntts.pregeneration_audition._write_preview_manifest",
+                    side_effect=OSError("manifest failed"),
+                ),
+                patch.object(
+                    type(root / "auditions"),
+                    "unlink",
+                    autospec=True,
+                    side_effect=fail_audition_cleanup,
+                ),
+            ):
+                with self.assertRaisesRegex(OSError, "manifest failed") as raised:
+                    service.generate(plan, group, group.candidates[0].source_id)
+
+            self.assertEqual(len(cleanup_attempts), 3)
+            self.assertGreaterEqual(
+                sum("cleanup failed" in note for note in raised.exception.__notes__), 3
+            )
 
     def test_competing_service_cannot_publish_the_same_preview(self):
         with TemporaryDirectory() as temporary_directory:
@@ -663,11 +812,10 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             plan, group, _manifest = ambiguous_fixture(root)
-            backend = FakeBackend(
-                "moss-tts",
-                pcm=np.concatenate(
-                    (np.full(1_600, 0.1, dtype=np.float32), np.zeros(19_200))
-                ),
+            backend = FakeBackend("moss-tts")
+            # Deliberately return float64 PCM from a normally float32 provider.
+            backend.pcm = np.concatenate(
+                (np.full(1_600, 0.1, dtype=np.float32), np.zeros(19_200))
             )
             service = VoiceAuditionPreviewService(
                 root / "auditions", backend_factory=lambda *_args, **_kwargs: backend
@@ -867,6 +1015,49 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
 
             self.assertFalse(tuple((root / "auditions").glob("*.wav")))
 
+    def test_close_releases_backend_state_when_shutdown_fails(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            backend = FakeBackend("moss-tts")
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=lambda *_args, **_kwargs: backend
+            )
+            preview = service.generate(plan, group, group.candidates[0].source_id)
+            with patch.object(
+                backend, "shutdown", side_effect=RuntimeError("shutdown failed")
+            ) as shutdown:
+                with self.assertRaisesRegex(RuntimeError, "shutdown failed"):
+                    service.close()
+                self.assertIsNone(service._backend)
+                self.assertIsNone(service._backend_config)
+                self.assertTrue(preview.path.exists())
+                service.close()
+                shutdown.assert_called_once()
+            with self.assertRaisesRegex(VoiceAuditionError, "closed"):
+                service.generate(plan, group, group.candidates[0].source_id)
+
+    def test_invalid_provider_sample_rates_never_publish_preview(self):
+        for rate in (True, 16000.5, "16000", None, 0, -1, float("nan"), float("inf")):
+            with self.subTest(rate=rate), TemporaryDirectory() as directory:
+                root = Path(directory)
+                plan, group, _manifest = ambiguous_fixture(root)
+                backend = FakeBackend("moss-tts")
+                backend.result_sample_rate = (
+                    rate  # Deliberately violate the provider contract.
+                )
+                service = VoiceAuditionPreviewService(
+                    root / "auditions",
+                    backend_factory=lambda *_args, **_kwargs: backend,
+                )
+                try:
+                    with self.assertRaisesRegex(VoiceAuditionError, "sample rate"):
+                        service.generate(plan, group, group.candidates[0].source_id)
+                    self.assertEqual(len(backend.requests), 1)
+                    self.assertFalse(tuple((root / "auditions").glob("*.wav")))
+                finally:
+                    service.close()
+
     def test_cooperative_cancellation_does_not_publish_preview(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -896,6 +1087,37 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             self.assertEqual(len(tuple((root / "auditions").glob("*.wav"))), 1)
             self.assertEqual([request.seed for request in backend.requests], [0, 0])
             self.assertEqual(preview.seed, 0)
+
+    def test_reference_audio_uses_checksum_bound_payload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan, group, manifest = ambiguous_fixture(root)
+            candidate = group.candidates[0]
+            reference = manifest.parent / "references" / "rhiannon.wav"
+            service = VoiceAuditionPreviewService(root / "auditions")
+            probe = audition_module.probe_pcm16_mono_wav
+
+            def replace_before_decode(source):
+                reference.write_bytes(b"replaced after checksum")
+                return probe(source)
+
+            try:
+                with patch.object(
+                    audition_module,
+                    "probe_pcm16_mono_wav",
+                    side_effect=replace_before_decode,
+                ):
+                    self.assertEqual(
+                        service.reference_audio(plan, group, candidate.source_id),
+                        reference,
+                    )
+                self.assertEqual(reference.read_bytes(), b"replaced after checksum")
+                with self.assertRaisesRegex(
+                    VoiceAuditionError, "changed after planning"
+                ):
+                    service.reference_audio(plan, group, candidate.source_id)
+            finally:
+                service.close()
 
 
 if __name__ == "__main__":

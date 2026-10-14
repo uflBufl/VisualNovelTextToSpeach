@@ -4,27 +4,29 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 import sys
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypedDict, TypeGuard
+from typing import TypedDict
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
 
 from vntts.authoring.import_paths import default_import_root
 from vntts.authoring.private_files import private_file_is_restricted
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import load_json_object, require_sha256
-from vntts.path_safety import safe_relative_path
+from vntts.document_identity import canonical_document_sha256, sha256_file
+from vntts.json_types import decode_json, has_schema_version, is_utf8_text
+from vntts.json_types import is_json_object as _is_json_object
+from vntts.path_safety import copy_regular_file, read_regular_bytes, safe_relative_path
 
 SESSION_SCHEMA = "r1999.model-listening-session"
 KEY_SCHEMA = "r1999.model-listening-key"
@@ -82,6 +84,7 @@ class ListeningImportResult:
     created: bool
 
 
+@publication_errors(ListeningImportError)
 def inspect_listening_session(
     session_directory: PathInput,
 ) -> ListeningImportInspection:
@@ -104,8 +107,9 @@ def inspect_listening_session(
     source_controls = _validate_key(
         session, key, key_path, key_sha256, trials, audio_sha256
     )
+    report_present = report_path.is_file()
     report_sha256 = None
-    if report_path.is_file():
+    if report_present:
         report, report_sha256 = _load_schema_snapshot(
             report_path, REPORT_SCHEMA, "listening report"
         )
@@ -125,9 +129,7 @@ def inspect_listening_session(
             key_sha256,
         ),
     ]
-    if report_path.is_file():
-        if report_sha256 is None:
-            raise ListeningImportError("Listening report checksum is unavailable")
+    if report_sha256 is not None:
         artifacts.append(
             (
                 "listening_report",
@@ -143,20 +145,19 @@ def inspect_listening_session(
         "source_sha256": session.get("source_sha256"),
         "blind_key_sha256": session.get("blind_key_sha256"),
     }
-    logical_identity = hashlib.sha256(_canonical(logical_payload)).hexdigest()
-    fingerprint = hashlib.sha256(
-        _canonical(
-            [
-                (
-                    role,
-                    destination.as_posix(),
-                    digest,
-                    key_mode if role == "blind_listening_key" else None,
-                )
-                for role, source, destination, digest in artifacts
-            ]
-        )
-    ).hexdigest()
+    logical_identity = canonical_document_sha256(logical_payload, allow_nan=True)
+    fingerprint = canonical_document_sha256(
+        [
+            (
+                role,
+                destination.as_posix(),
+                digest,
+                key_mode if role == "blind_listening_key" else None,
+            )
+            for role, source, destination, digest in artifacts
+        ],
+        allow_nan=True,
+    )
     inspection = ListeningImportInspection(
         session_directory=root,
         logical_identity=logical_identity,
@@ -164,7 +165,7 @@ def inspect_listening_session(
         trial_count=len(trials),
         completed_count=_int_field(session, "completed_count"),
         audio_count=len(audio),
-        report_present=report_path.is_file(),
+        report_present=report_present,
         artifacts=tuple(artifacts),
         source_controls=source_controls,
         key_mode=key_mode,
@@ -173,6 +174,7 @@ def inspect_listening_session(
     return inspection
 
 
+@publication_errors(ListeningImportError)
 def import_listening_session(
     session_directory: PathInput, destination_root: PathInput | None = None
 ) -> ListeningImportResult:
@@ -192,7 +194,7 @@ def import_listening_session(
         for role, source, relative, digest in inspection.artifacts:
             target = staging / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
+            copy_regular_file(source, target, preserve_metadata=True)
             if sha256_file(target) != digest:
                 raise ListeningImportError(
                     f"Listening artifact changed during import: {source}"
@@ -236,7 +238,7 @@ def _validate_session(
 
 def _validate_session_header(session: JsonObject) -> list[object]:
     source_kind = session.get("source_kind")
-    if not isinstance(source_kind, str) or not source_kind.strip():
+    if not is_utf8_text(source_kind) or not source_kind.strip():
         raise ListeningImportError(
             "Listening session source_kind must be non-empty text"
         )
@@ -261,7 +263,7 @@ def _validate_session_trial(
     audio: dict[Path, Path],
 ) -> int:
     trial_id = trial.get("trial_id")
-    if not isinstance(trial_id, str) or not trial_id or trial_id in trial_ids:
+    if not is_utf8_text(trial_id) or not trial_id or trial_id in trial_ids:
         raise ListeningImportError("Listening session trial IDs are invalid")
     trial_ids.add(trial_id)
     _validate_trial_rating(trial, trial_id)
@@ -271,10 +273,12 @@ def _validate_session_trial(
 
 def _validate_trial_rating(trial: JsonObject, trial_id: str) -> None:
     rating = trial.get("rating")
-    if rating is not None and (
-        not isinstance(rating, dict)
-        or rating.get("preference") not in {"a", "b", "tie"}
-    ):
+    if rating is None:
+        return
+    if not isinstance(rating, dict):
+        raise ListeningImportError(f"Listening trial {trial_id!r} rating is invalid")
+    preference = _text_field(rating, "preference")
+    if preference not in {"a", "b", "tie"}:
         raise ListeningImportError(f"Listening trial {trial_id!r} rating is invalid")
 
 
@@ -369,9 +373,14 @@ def _validate_source_inventory(sources: Sequence[object]) -> dict[Path, str]:
 
 
 def _validate_source_digest(sources: Sequence[object], session: JsonObject) -> None:
-    source_digest = hashlib.sha256(
-        json.dumps(sources, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
+    try:
+        source_digest = hashlib.sha256(
+            json.dumps(sources, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+    except UnicodeEncodeError as error:
+        raise ListeningImportError(
+            "Blind-listening source inventory contains invalid UTF-8 text"
+        ) from error
     if source_digest != session.get("source_sha256"):
         raise ListeningImportError(
             "Blind-listening source inventory digest is inconsistent"
@@ -414,16 +423,12 @@ def _validate_key_assignments(
     audio_sha256: Mapping[Path, str],
     source_controls: dict[Path, str],
 ) -> None:
-    expected_ids = {
-        trial_id
-        for trial in trials
-        if isinstance(trial_id := trial.get("trial_id"), str)
-    }
     trial_by_id = {
         trial_id: trial
         for trial in trials
         if isinstance(trial_id := trial.get("trial_id"), str)
     }
+    expected_ids = set(trial_by_id)
     seen: set[str] = set()
     for assignment in assignments:
         trial_id = _validate_assignment_header(assignment, expected_ids, seen)
@@ -449,7 +454,7 @@ def _validate_assignment_header(
 ) -> str:
     if not _is_json_object(assignment) or set(assignment) != {"trial_id", "a", "b"}:
         raise ListeningImportError("Blind-listening assignment is invalid")
-    trial_id = assignment["trial_id"]
+    trial_id = _text_field(assignment, "trial_id")
     if trial_id not in expected_ids:
         raise ListeningImportError(
             f"Blind assignment references unknown trial {trial_id!r}"
@@ -476,7 +481,7 @@ def _validate_assignment_sides(
             raise ListeningImportError(
                 f"Blind assignment {trial_id!r} side {side} has an unknown model"
             )
-        if not isinstance(value.get("source"), str) or not value["source"].strip():
+        if not is_utf8_text(value.get("source")) or not value["source"].strip():
             raise ListeningImportError(
                 f"Blind assignment {trial_id!r} side {side} has no source provenance"
             )
@@ -504,7 +509,7 @@ def _validate_report(
 ) -> None:
     configured_session = report.get("session")
     if (
-        not isinstance(configured_session, str)
+        not is_utf8_text(configured_session)
         or Path(configured_session).expanduser().resolve() != session_path
     ):
         raise ListeningImportError("Listening report points to a different session")
@@ -672,8 +677,6 @@ def _validate_existing(
             f"Existing listening import manifest was modified: {manifest_path}"
         )
     for artifact in _object_list(manifest.get("artifacts"), "imported artifacts"):
-        if not _is_json_object(artifact):
-            raise ListeningImportError(f"Malformed listening import: {manifest_path}")
         relative = _safe_relative(artifact.get("path"), "imported listening artifact")
         path = _within(destination, relative, "imported listening artifact")
         if not path.is_file() or sha256_file(path) != artifact.get("sha256"):
@@ -686,7 +689,14 @@ def _validate_existing(
     return ListeningImportResult(destination, manifest, False)
 
 
+@publication_errors(ListeningImportError)
 def _verify_controls_unchanged(inspection: ListeningImportInspection) -> None:
+    report_path = inspection.session_directory / "report.json"
+    if report_path.is_file() != inspection.report_present:
+        raise ListeningImportError(
+            "Listening report presence changed during import; retry when idle. "
+            "No application data was published."
+        )
     for role, source, _relative, digest in inspection.artifacts:
         if not source.is_file() or sha256_file(source) != digest:
             raise ListeningImportError(
@@ -715,25 +725,21 @@ def _load_schema_snapshot(
 ) -> tuple[JsonObject, str]:
     path = Path(path)
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
     except OSError as error:
         raise ListeningImportError(
             f"Unable to read {description} {path}: {error}"
         ) from error
     digest = hashlib.sha256(payload).hexdigest()
     try:
-        value = json.loads(payload.decode("utf-8"))
+        value = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ListeningImportError(
             f"Unable to read {description} {path}: {error}"
         ) from error
     if not _is_json_object(value):
         raise ListeningImportError(f"{description.title()} must be a JSON object")
-    if (
-        value.get("schema") != schema
-        or type(value.get("schema_version")) is not int
-        or value["schema_version"] != SCHEMA_VERSION
-    ):
+    if value.get("schema") != schema or not has_schema_version(value, SCHEMA_VERSION):
         raise ListeningImportError(
             f"Unsupported {description} schema; expected {schema!r} version {SCHEMA_VERSION}"
         )
@@ -741,13 +747,12 @@ def _load_schema_snapshot(
 
 
 def _load_json(path: PathInput, description: str) -> JsonObject:
-    value: object = load_json_object(path, description, error_type=ListeningImportError)
-    if not _is_json_object(value):
-        raise ListeningImportError(f"{description.title()} must be a JSON object")
-    return value
+    return load_json_object(path, description, error_type=ListeningImportError)
 
 
 def _safe_relative(value: object, label: str) -> Path:
+    if not is_utf8_text(value):
+        raise ListeningImportError(f"{label} must be a UTF-8 POSIX-relative path")
     return safe_relative_path(value, label, error_type=ListeningImportError)
 
 
@@ -762,20 +767,11 @@ def _within(root: PathInput, relative: Path, label: str) -> Path:
 
 
 def _require_sha256(value: object, label: str) -> str:
-    result: object = require_sha256(value, label, error_type=ListeningImportError)
-    if not isinstance(result, str):
-        raise ListeningImportError(f"{label} must be a full SHA-256")
-    return result
+    return require_sha256(value, label, error_type=ListeningImportError)
 
 
-def _canonical(value: object) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
-
-
-def _is_json_object(value: object) -> TypeGuard[JsonObject]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+def _canonical(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
 def _object_list(value: object, label: str) -> list[JsonObject]:
@@ -793,7 +789,7 @@ def _object_field(document: JsonObject, field: str) -> JsonObject:
 
 def _text_field(document: JsonObject, field: str) -> str:
     value = document.get(field)
-    if not isinstance(value, str):
+    if not is_utf8_text(value):
         raise ListeningImportError(f"Listening {field} is invalid")
     return value
 

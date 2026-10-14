@@ -55,8 +55,8 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.voices.TemporaryDirectory",
-                    side_effect=lambda *, prefix: TemporaryDirectory(
+                    "vntts.cleanup.TemporaryDirectory",
+                    side_effect=lambda *, prefix, dir=None: TemporaryDirectory(
                         prefix=prefix, dir=staging_root
                     ),
                 ),
@@ -158,6 +158,52 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
 
             self.assertEqual(projected.resolve("Aderyn").speaker, "adult")
 
+    def test_reference_descriptor_cleanup_preserves_read_error(self):
+        native_close, native_fstat = os.close, os.fstat
+        for primary_type in (OSError, KeyboardInterrupt, None):
+            with self.subTest(primary=primary_type), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                reference = root / "voice.wav"
+                reference.write_bytes(b"\x00\x00")
+                voice = CharacterVoice(
+                    "Role", "role", references=(reference,), reference_root=root
+                )
+                primary = (
+                    primary_type("reference read failed") if primary_type else None
+                )
+                if primary is not None:
+                    primary.add_note("original read note")
+                cleanup_error = OSError("descriptor close failed")
+                cleanup_error.add_note("nested close note")
+
+                def fail_close(descriptor):
+                    native_close(descriptor)
+                    raise cleanup_error
+
+                with (
+                    patch("vntts.voices.os.close", side_effect=fail_close) as close,
+                    patch(
+                        "vntts.voices.os.fstat",
+                        wraps=native_fstat,
+                        side_effect=primary,
+                    ),
+                    self.assertRaises(primary_type or OSError) as raised,
+                ):
+                    read_voice_reference_bytes(voice, reference)
+
+                self.assertIs(raised.exception, primary or cleanup_error)
+                close.assert_called_once()
+                if primary is not None:
+                    self.assertEqual(
+                        primary.__notes__,
+                        [
+                            "original read note",
+                            "Voice reference descriptor cleanup failed: "
+                            "descriptor close failed",
+                            "nested close note",
+                        ],
+                    )
+
     def test_reference_snapshot_preserves_windows_control_bytes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -212,6 +258,42 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
             synthesis_character_for_line('"Mrs. Owen"', '"Mrs. Owen"'),
             "Mrs. Owen",
         )
+
+    def test_captured_document_registry_preserves_legacy_metadata_and_root(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy), TemporaryDirectory() as directory:
+                root = Path(directory)
+                path = root / "manifest.json"
+                document = {
+                    "voices": [
+                        {
+                            "character": "Voice",
+                            "speaker": "original",
+                            "aliases": ["Alias"],
+                            "reference": "references/source.wav",
+                            "vntts.source_character": " Display identity ",
+                            "vntts.reference_transcript": " Exact original line. ",
+                        }
+                    ]
+                }
+                if not legacy:
+                    document["version"] = 2
+                path.write_text(json.dumps(document), encoding="utf-8")
+                expected = CharacterVoiceRegistry.from_file(path)
+                path.write_text("{}", encoding="utf-8")
+                captured = CharacterVoiceRegistry.from_document(document, path)
+                self.assertEqual(captured.unique_voices(), expected.unique_voices())
+                voice = captured.resolve("Alias")
+                self.assertEqual(voice.speaker, "original")
+                self.assertEqual(voice.reference_root, root.resolve())
+                self.assertEqual(voice.source_character, "Display identity")
+                self.assertEqual(voice.reference_transcript, "Exact original line.")
+                outside = root / "outside.wav"
+                outside.write_bytes(b"reference")
+                (root / "references").mkdir()
+                symlink_or_skip(root / "references/source.wav", outside)
+                with self.assertRaisesRegex(VoiceManifestError, "symlink"):
+                    CharacterVoiceRegistry.from_document(document, path)
 
     def test_manifest_must_be_an_object(self):
         with TemporaryDirectory() as temporary_directory:

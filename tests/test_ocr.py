@@ -4,6 +4,7 @@ import shutil
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import MappingProxyType
 from unittest.mock import Mock, patch
 
 from PIL import Image
@@ -31,6 +32,37 @@ from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class DialogRegionTest(unittest.TestCase):
+    def test_mapping_uses_domain_coordinate_validation(self):
+        values = {"left": 0, "top": 0.1, "width": 0.5, "height": 0.5}
+        self.assertEqual(
+            DialogRegion.from_mapping(MappingProxyType(values)),
+            DialogRegion(0, 0.1, 0.5, 0.5),
+        )
+        for invalid, message in (
+            ([], "dialog_region must be an object"),
+            ({}, "dialog_region left must be a number"),
+            ({**values, "left": False}, "numbers"),
+            ({**values, "width": float("nan")}, "finite numbers"),
+            ({**values, "width": 2}, "fit inside"),
+        ):
+            with (
+                self.subTest(value=invalid),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                DialogRegion.from_mapping(invalid)
+
+    def test_deep_region_json_reports_load_error_without_rewriting(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "region.json"
+            payload = b"[" * 100000 + b"0" + b"]" * 100000
+            path.write_bytes(payload)
+            with self.assertRaisesRegex(
+                ValueError, "Unable to load dialog region"
+            ) as caught:
+                load_dialog_region(path)
+            self.assertIsInstance(caught.exception.__cause__, json.JSONDecodeError)
+            self.assertEqual(path.read_bytes(), payload)
+
     def test_non_finite_coordinates_are_rejected_before_cropping(self):
         for values in (
             (float("nan"), 0.1, 0.5, 0.5),
@@ -557,6 +589,7 @@ class RecognizedDialogTest(unittest.TestCase):
 
         self.assertEqual(result.character, "Fatutu")
         self.assertEqual(result.text, "Kamuta ...")
+        self.assertIs(result.speaker_image, recognize_data.call_args_list[0].args[0])
         self.assertIs(result.processed_image, recognize_text.call_args.args[0])
         self.assertIs(result.processed_image, recognize_data.call_args.args[0])
         self.assertLess(
@@ -685,6 +718,113 @@ class RecognizedDialogTest(unittest.TestCase):
         )
 
         self.assertAlmostEqual(confidence, (20 + 90 * 8) / 9)
+
+    def test_invalid_confidence_words_do_not_poison_valid_evidence(self):
+        for value in (
+            True,
+            False,
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            "nan",
+            "inf",
+            "-inf",
+            "1e999",
+            10**400,
+            -(10**400),
+            100.01,
+            1e308,
+            "1e308",
+            -1,
+        ):
+            with self.subTest(value=value):
+                confidence = calculate_ocr_confidence(
+                    {"text": ["noise", "reliable"], "conf": [value, "90"]}
+                )
+                self.assertEqual(confidence, 90)
+
+        for value in (0, 100, 89.5, "90"):
+            with self.subTest(valid=value):
+                self.assertEqual(
+                    calculate_ocr_confidence({"text": ["word"], "conf": [value]}),
+                    float(value),
+                )
+
+    def test_non_finite_confidence_cannot_finish_a_retry_early(self):
+        recognize_text = Mock(side_effect=["Bad result", "Reliable dialogue."])
+        recognize_data = Mock(
+            side_effect=[
+                {"text": ["Bad", "result"], "conf": [float("inf"), float("inf")]},
+                {"text": ["Reliable", "dialogue"], "conf": [90, 90]},
+            ]
+        )
+        result = recognize_dialog_image_result(
+            Image.new("RGB", (320, 120)),
+            recognize_text=recognize_text,
+            recognize_data=recognize_data,
+            profiles=(
+                OCRPreprocessingProfile("first", 1.0, 170),
+                OCRPreprocessingProfile("second", 2.0, 200),
+            ),
+        )
+        self.assertEqual(result.text, "Reliable dialogue.")
+        self.assertEqual(result.attempts, 2)
+        self.assertEqual(result.confidence, 90)
+
+    def test_invalid_timeout_is_rejected_before_preprocessing(self):
+        for value in (float("nan"), float("inf"), float("-inf"), 10**400):
+            with self.subTest(value=value):
+                recognize_text = Mock()
+                recognize_data = Mock()
+                with (
+                    patch("vntts.ocr.preprocess_dialog_image") as preprocess,
+                    self.assertRaisesRegex(ValueError, "positive.*finite"),
+                ):
+                    recognize_dialog_image_result(
+                        Image.new("RGB", (32, 16)),
+                        recognize_text=recognize_text,
+                        recognize_data=recognize_data,
+                        timeout=value,
+                    )
+                preprocess.assert_not_called()
+                recognize_text.assert_not_called()
+                recognize_data.assert_not_called()
+
+    def test_positive_finite_timeout_reaches_both_recognizers(self):
+        recognize_text = Mock(return_value="Reliable dialogue.")
+        recognize_data = Mock(return_value={"text": ["Reliable"], "conf": [90]})
+        with patch("vntts.ocr.monotonic", return_value=1000):
+            result = recognize_dialog_image_result(
+                Image.new("RGB", (32, 16)),
+                recognize_text=recognize_text,
+                recognize_data=recognize_data,
+                timeout=2,
+            )
+        self.assertEqual(result.text, "Reliable dialogue.")
+        self.assertEqual(recognize_text.call_args.kwargs["timeout"], 2)
+        self.assertEqual(recognize_data.call_args.kwargs["timeout"], 2)
+
+    def test_malformed_group_ids_do_not_hide_later_string_id_lines(self):
+        for field in ("block_num", "par_num", "line_num"):
+            for invalid in ([], {}, ([1],)):
+                with self.subTest(field=field, invalid=invalid):
+                    data = {
+                        "text": ["bad", "Marcus", "Hello there."],
+                        "block_num": ["block"] * 3,
+                        "par_num": ["paragraph"] * 3,
+                        "line_num": ["noise", "name", "dialog"],
+                        "left": [40] * 3,
+                        "top": [0, 40, 180],
+                        "width": [120] * 3,
+                        "height": [45] * 3,
+                    }
+                    data[field][0] = invalid
+                    speaker = recognize_speaker_from_data(
+                        data, self.registry, image_width=1000, image_height=400
+                    )
+                    self.assertIsNotNone(speaker)
+                    self.assertEqual(speaker[0], "Marcus")
+                    self.assertEqual(speaker[1].text, "Marcus")
 
     def test_low_confidence_result_retries_with_alternate_preprocessing(self):
         profiles = (

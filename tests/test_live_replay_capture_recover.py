@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,6 +10,8 @@ from PIL import Image, ImageDraw
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.live_sequence import write_live_sequence_plan
 
+import vntts.live_replay_capture_recover as recovery
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring.publication import AtomicPublicationError
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.dialog_capture import (
@@ -104,6 +107,98 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
             return character, text
 
         return result, recognize
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_recovery_ledger_hash_refuses_fifo_cleans_staging_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            story = self.write_story(
+                root,
+                [
+                    {
+                        "line_id": "story:1",
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker": "Ada",
+                        "text": "Captured speech.",
+                    }
+                ],
+            )
+            plan = self.write_plan(
+                root,
+                story,
+                [
+                    {
+                        "event_id": "first",
+                        "sequence": 1,
+                        "kind": "speech",
+                        "control": "terminal",
+                        "successors": [],
+                        "line_id": "story:1",
+                    }
+                ],
+            )
+            captured, _recognize = self.capture(
+                root, story, (((255, 0, 0), "Ada", "Captured speech."),)
+            )
+            before = {
+                path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+            }
+            output = root / "recovered"
+            original_hash = recovery.sha256_file
+            refused = []
+
+            def checksum(candidate):
+                selected = Path(candidate)
+                self.assertEqual(selected.name, "observation-ledger.json")
+                self.assertNotEqual(selected.parent, captured.directory)
+                gate: RegularFileGate = {"path": selected, "armed": True}
+                with (
+                    swap_at_acquisition(self, gate),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original_hash(candidate)
+                refused.append(caught.exception)
+                raise caught.exception
+
+            def recover():
+                return recover_live_replay_capture(
+                    captured.corpus,
+                    output,
+                    story_index=story,
+                    sequence_plan=plan,
+                    minimum_events=1,
+                    require_silent=False,
+                )
+
+            with (
+                mock.patch.object(recovery, "sha256_file", checksum),
+                self.assertRaisesRegex(OSError, "regular file") as caught,
+            ):
+                recover()
+            self.assertEqual(len(refused), 1)
+            self.assertIs(caught.exception, refused[0])
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(".recovered.*")), [])
+            self.assertEqual(
+                {path: path.read_bytes() for path in root.rglob("*") if path.is_file()},
+                before,
+            )
+            result = recover()
+            self.assertTrue(result.sufficient)
+            self.assertEqual(result.event_count, 1)
+            document = json.loads(result.corpus.read_text())
+            binding = document["capture"]["observation_ledger"]
+            self.assertEqual(
+                binding["sha256"],
+                hashlib.sha256((output / binding["path"]).read_bytes()).hexdigest(),
+            )
+            self.assertEqual(document["dialogue"][0]["line_id"], "story:1")
+            self.assertEqual(list(root.glob(".recovered.*")), [])
+            for path, payload in before.items():
+                self.assertEqual(path.read_bytes(), payload)
 
     def test_rejects_noninteger_minimum_events_before_reading_inputs(self):
         for value in (True, 1.5):

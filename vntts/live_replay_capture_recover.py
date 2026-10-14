@@ -29,21 +29,28 @@ from vntts.dialog_capture import (
     ellipsis_speaker_hint,
     is_standalone_ellipsis_text,
 )
-from vntts.live_replay_sequence_seal import (
-    _CAPTURE_OBSERVATION_STATUSES,
+from vntts.document_identity import sha256_file
+from vntts.json_types import has_schema_version
+from vntts.live_replay_evidence import (
     SequenceReplaySealError,
     _decode_json,
-    _next_visible_events,
-    _ordered_visible_events,
-    _read_contained,
     _read_regular_file,
+)
+from vntts.live_replay_sequence_seal import (
+    _CAPTURE_OBSERVATION_STATUSES,
+    _read_contained,
     _required_sha256,
     _validate_capture_report,
     _validate_recovery_plan_binding,
     _write_bytes,
     _write_json,
 )
-from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan
+from vntts.live_sequence import (
+    LiveSequenceEvent,
+    LiveSequencePlan,
+    _next_visible_events,
+    _ordered_visible_events,
+)
 from vntts.settings import load_app_settings
 
 CAPTURE_RECOVERY_VERSION = 1
@@ -119,8 +126,7 @@ def recover_live_replay_capture(
     capture: JSONDocument = _decode_json(capture_payload, "Raw replay corpus")
     capture_binding = capture.get("capture")
     if (
-        type(capture.get("schema_version")) is not int
-        or capture.get("schema_version") != 1
+        not has_schema_version(capture, 1)
         or capture.get("fixture_kind") != "saved-frame-ocr-replay-capture"
         or not isinstance(capture_binding, dict)
     ):
@@ -443,8 +449,7 @@ def _load_ledger_observations(
     entries = document.get("observations")
     if (
         document.get("schema") != "vntts.live-replay-capture-observations"
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != 1
+        or not has_schema_version(document, 1)
         or document.get("story_index_sha256")
         != capture_binding.get("story_index_sha256")
         or not isinstance(entries, list)
@@ -539,10 +544,6 @@ def _validated_frame_payload(root: Path, frame: object) -> bytes:
     if hashlib.sha256(payload).hexdigest() != digest:
         raise LiveReplayCaptureRecoveryError(
             "Capture observation frame checksum changed"
-        )
-    if not isinstance(payload, bytes):
-        raise LiveReplayCaptureRecoveryError(
-            "Capture observation frame payload is invalid"
         )
     return payload
 
@@ -751,8 +752,6 @@ def _frontier_bounded_match(
     tokens = observed.split()
     for dropped in range(min(8, len(tokens))):
         candidate = " ".join(tokens[dropped:])
-        if not candidate:
-            continue
         if canonical in candidate:
             return "expected-frontier-speaker-text"
         prefix_length = len(commonprefix((candidate, canonical)))
@@ -987,7 +986,7 @@ def _publish_recovered_corpus(
     _write_json(observation_path, observation_document)
     observation_binding: JSONDocument = {
         "path": observation_path.name,
-        "sha256": hashlib.sha256(observation_path.read_bytes()).hexdigest(),
+        "sha256": sha256_file(observation_path),
         "observation_count": len(ledger),
     }
     capture_authority: JSONDocument = {
@@ -1016,12 +1015,9 @@ def _publish_recovered_corpus(
     }
     report_document: JSONDocument = {
         "schema": "vntts.live-replay-capture-report",
-        "schema_version": 1,
         **capture_authority,
         "duplicate_fingerprints_skipped": 0,
         "uncertain_observations_skipped": 0,
-        "unresolved_observation_count": 0,
-        "observation_ledger": observation_binding,
         "boundaries": [],
         "dialogue": [
             {
@@ -1142,9 +1138,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     story_index = arguments.story_index or settings.story_index
     sequence_plan = arguments.sequence_plan or settings.live_sequence_plan
     if not story_index:
-        return int(cli_error("Configure or pass --story-index"))
+        return cli_error("Configure or pass --story-index")
     if not sequence_plan:
-        return int(cli_error("Configure or pass --sequence-plan"))
+        return cli_error("Configure or pass --sequence-plan")
     try:
         result = recover_live_replay_capture(
             arguments.capture_corpus,
@@ -1158,7 +1154,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             complete_visible_chapter=arguments.complete_visible_chapter,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as error:
-        return int(cli_error(error))
+        return cli_error(error)
     messages: list[str | Path] = [
         f"Longest explicit recovered run: {result.event_count} events",
         (

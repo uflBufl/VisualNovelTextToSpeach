@@ -20,6 +20,7 @@ from vntts.ocr import (
     OCRResult,
     combine_ocr_regions,
     default_dialog_region,
+    get_ocr_regions,
     load_dialog_region,
     load_ocr_regions,
     recognize_dialog_image_result,
@@ -64,6 +65,42 @@ class SplitOCRTest(unittest.TestCase):
             self.assertEqual(load_dialog_region(path), DialogRegion(0, 0.6, 1, 0.4))
             save_dialog_region(DialogRegion(0, 0.5, 1, 0.5), path)
             self.assertIsNone(load_ocr_regions(path))
+
+    def test_layout_resolution_uses_only_the_matching_profile_or_global_capture(self):
+        region = DialogRegion(0, 0.6, 1, 0.4)
+        override = DialogRegion(0, 0.5, 1, 0.5)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "dialog-region.json"
+            with patch.dict("os.environ", {"VNTTS_DIALOG_REGION_FILE": str(path)}):
+                self.assertIsNone(get_ocr_regions(region))
+                save_dialog_region(region, path, ocr_regions=self.regions)
+                self.assertEqual(get_ocr_regions(region), self.regions)
+                self.assertIsNone(get_ocr_regions(override))
+                self.assertIsNone(get_ocr_regions(region, region))
+                self.assertEqual(
+                    get_ocr_regions(region, region, self.regions), self.regions
+                )
+                self.assertIsNone(get_ocr_regions(override, region, self.regions))
+                path.write_text('{"ocr_regions": false}', encoding="utf-8")
+                self.assertIsNone(get_ocr_regions(region))
+
+    def test_ui_ellipsis_outside_dialogue_cannot_override_split_ocr(self):
+        image = Image.new("RGB", (200, 100), "black")
+        draw = ImageDraw.Draw(image)
+        for left in (8, 14, 20):
+            draw.rectangle((left, 60, left + 1, 61), fill="white")
+        regions = OCRRegions(
+            DialogRegion(0.4, 0.1, 0.3, 0.2),
+            DialogRegion(0.4, 0.4, 0.5, 0.4),
+        )
+        result = OCRResult("Marcus", "Hello there", 95, "balanced", 1)
+        with patch(
+            "vntts.dialog_capture.recognize_screenshot_result", return_value=result
+        ):
+            self.assertEqual(
+                recognize_live_frame(CapturedDialogFrame(image, 0, regions)),
+                ("Marcus", "Hello there"),
+            )
 
     def test_short_dialogue_never_parses_name_or_needs_nameplate_geometry(self):
         registry = CharacterVoiceRegistry([CharacterVoice("Marcus", "marcus")])

@@ -6,20 +6,25 @@ import re
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from time import perf_counter, process_time
 from typing import NotRequired, Protocol, TypeAlias, TypedDict, TypeGuard, overload
 
 import numpy as np
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
 
+from vntts.authoring.publication import no_replace_destination, staged_directory
+from vntts.cleanup import attempt_cleanup, temporary_directory
 from vntts.cli import cli_error, cli_messages
+from vntts.document_identity import sha256_file
+from vntts.json_types import is_utf8_text
+from vntts.path_safety import ensure_separate_output
 from vntts.services.tts_engine import TTSEngine
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend import XTTSVoiceRouterBackend
+from vntts.speech_backend_contract import RenderableBackend, is_renderable_backend
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.speech_worker import (
     create_chatterbox_worker_backend,
@@ -30,7 +35,6 @@ from vntts.speech_worker import (
 )
 from vntts.synthesis import (
     SynthesisCachePolicy,
-    SynthesisChunkStream,
     SynthesisCompletion,
     SynthesisRequest,
     SynthesisResult,
@@ -123,11 +127,7 @@ class BenchmarkReport(TypedDict):
     samples: list[BenchmarkSampleReport]
 
 
-class _RenderableBackend(Protocol):
-    def render(self, request: SynthesisRequest) -> SynthesisChunkStream: ...
-
-
-class BenchmarkBackend(_RenderableBackend, Protocol):
+class BenchmarkBackend(RenderableBackend, Protocol):
     registry: CharacterVoiceRegistry
 
 
@@ -135,17 +135,13 @@ class _ClearableCache(Protocol):
     def clear(self) -> None: ...
 
 
-class _PersistentCacheBackend(_RenderableBackend, Protocol):
+class _PersistentCacheBackend(RenderableBackend, Protocol):
     persistent_audio_cache: object
     audio_cache: _ClearableCache
 
 
-def _is_renderable_backend(value: object) -> TypeGuard[_RenderableBackend]:
-    return callable(getattr(value, "render", None))
-
-
-def _require_renderable_backend(value: object, name: str) -> _RenderableBackend:
-    if not _is_renderable_backend(value):
+def _require_renderable_backend(value: object, name: str) -> RenderableBackend:
+    if not is_renderable_backend(value):
         raise RuntimeError(f"Benchmark backend {name!r} has no typed renderer")
     return value
 
@@ -153,7 +149,7 @@ def _require_renderable_backend(value: object, name: str) -> _RenderableBackend:
 def _is_benchmark_backend(value: object) -> TypeGuard[BenchmarkBackend]:
     return isinstance(
         getattr(value, "registry", None), CharacterVoiceRegistry
-    ) and _is_renderable_backend(value)
+    ) and is_renderable_backend(value)
 
 
 def _require_benchmark_backend(value: object, name: str) -> BenchmarkBackend:
@@ -431,12 +427,14 @@ def load_tts_benchmark_corpus(path: PathInput) -> BenchmarkCorpus:
             raise ValueError(f"Duplicate TTS benchmark sample ID: {sample_id!r}")
         seen_ids.add(sample_id)
         line_id = str(sample["line_id"]) if strict else sample_id
+        _validate_benchmark_text_fields(
+            {"id": sample_id, "line_id": line_id, "character": character, "text": text}
+        )
         text_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        if strict:
-            if sample.get("text_sha256") != text_digest:
-                raise ValueError(
-                    f"TTS benchmark sample {index} text_sha256 does not match exact text"
-                )
+        if strict and sample.get("text_sha256") != text_digest:
+            raise ValueError(
+                f"TTS benchmark sample {index} text_sha256 does not match exact text"
+            )
         samples.append(
             {
                 "id": sample_id,
@@ -448,10 +446,15 @@ def load_tts_benchmark_corpus(path: PathInput) -> BenchmarkCorpus:
         )
     if not samples:
         raise ValueError("TTS benchmark corpus has no samples")
-    return {
-        "name": str(document.get("name") or Path(path).stem),
-        "samples": samples,
-    }
+    name = str(document.get("name") or Path(path).stem)
+    _validate_benchmark_text_fields({"corpus name": name})
+    return {"name": name, "samples": samples}
+
+
+def _validate_benchmark_text_fields(fields: Mapping[str, str]) -> None:
+    for field, value in fields.items():
+        if not is_utf8_text(value):
+            raise ValueError(f"Benchmark {field} must be UTF-8 text")
 
 
 def _safe_component(value: object, label: str) -> str:
@@ -501,7 +504,7 @@ def _validate_render_result(
 
 
 def _benchmark_render(
-    backend: _RenderableBackend,
+    backend: RenderableBackend,
     request: SynthesisRequest,
     stage: str,
     cache_source: str,
@@ -556,31 +559,34 @@ def benchmark_backend(
         created_backend = backend_factory(name, registry, cache)
         return created_backend
 
-    with TemporaryDirectory(
-        prefix=".tts-benchmark-", dir=output_directory.parent
+    with staged_directory(
+        output_directory.parent, prefix=".tts-benchmark-"
     ) as staging_directory:
-        try:
-            report = _benchmark_backend_staged(
-                backend_name,
-                registry,
-                characters,
-                text,
-                staging_directory,
-                benchmark_samples=benchmark_samples,
-                corpus_name=corpus_name,
-                model_id=model_id,
-                seed=seed,
-                backend_factory=tracked_backend_factory,
-                clock=clock,
-                cpu_clock=cpu_clock,
-            )
-        finally:
-            failed = sys.exc_info()[0] is not None
+        with temporary_directory(
+            description="TTS benchmark cache cleanup"
+        ) as cache_directory:
+            primary_error: BaseException | None = None
             try:
-                shutdown_speech_backend(created_backend)
-            except Exception:
-                if not failed:
-                    raise
+                report = _benchmark_backend_staged(
+                    backend_name,
+                    registry,
+                    characters,
+                    text,
+                    staging_directory,
+                    benchmark_samples=benchmark_samples,
+                    corpus_name=corpus_name,
+                    model_id=model_id,
+                    seed=seed,
+                    cache_directory=cache_directory,
+                    backend_factory=tracked_backend_factory,
+                    clock=clock,
+                    cpu_clock=cpu_clock,
+                )
+            except BaseException as error:
+                primary_error = error
+                raise
+            finally:
+                shutdown_speech_backend(created_backend, primary_error=primary_error)
 
         staging_root = Path(staging_directory).resolve()
         publications: list[tuple[BenchmarkSampleReport, Path, Path]] = []
@@ -588,10 +594,8 @@ def benchmark_backend(
             staged = Path(sample["audio"]).resolve()
             if staged.parent != staging_root or not staged.is_file():
                 raise RuntimeError("Benchmark staging produced an unsafe WAV path")
-            destination = _contained_child(
-                output_directory, staged.name, "Benchmark WAV"
-            )
-            if destination.exists():
+            destination = no_replace_destination(output_directory / staged.name)
+            if destination.exists() or destination.is_symlink():
                 raise FileExistsError(
                     f"Benchmark WAV already exists; refusing to overwrite: {destination}"
                 )
@@ -610,9 +614,13 @@ def benchmark_backend(
                 published.append(destination)
                 staged.unlink()
                 sample["audio"] = str(destination)
-        except Exception:
+        except BaseException as error:
             for destination in published:
-                destination.unlink(missing_ok=True)
+                attempt_cleanup(
+                    partial(destination.unlink, missing_ok=True),
+                    description="benchmark WAV rollback",
+                    primary_error=error,
+                )
             raise
     return report
 
@@ -631,8 +639,7 @@ def _prepare_benchmark_samples(
             for character in characters
         )
     )
-    work_items: list[BenchmarkCorpusSample] = []
-    output_names: list[str] = []
+    work_items: list[tuple[BenchmarkCorpusSample, str]] = []
     seen_ids: set[str] = set()
     for index, item in enumerate(requested_samples, start=1):
         sample_id = str(item.get("id") or item.get("character") or f"sample-{index}")
@@ -640,6 +647,15 @@ def _prepare_benchmark_samples(
             raise ValueError(f"Duplicate benchmark sample ID: {sample_id!r}")
         seen_ids.add(sample_id)
         sample_text = item["text"]
+        line_id = str(item.get("line_id") or sample_id)
+        _validate_benchmark_text_fields(
+            {
+                "id": sample_id,
+                "line_id": line_id,
+                "character": item["character"],
+                "text": sample_text,
+            }
+        )
         if not sample_text.strip():
             raise ValueError(f"Benchmark sample {sample_id!r} has no text")
         text_digest = hashlib.sha256(sample_text.encode("utf-8")).hexdigest()
@@ -648,23 +664,22 @@ def _prepare_benchmark_samples(
             raise ValueError(
                 f"Benchmark sample {sample_id!r} text_sha256 does not match exact text"
             )
-        work_items.append(
-            {
-                "id": sample_id,
-                "line_id": str(item.get("line_id") or sample_id),
-                "character": item["character"],
-                "text": sample_text,
-                "text_sha256": text_digest,
-            }
-        )
+        sample: BenchmarkCorpusSample = {
+            "id": sample_id,
+            "line_id": line_id,
+            "character": item["character"],
+            "text": sample_text,
+            "text_sha256": text_digest,
+        }
         character_component = _safe_component(item.get("character"), "Character")
         sample_component = _safe_component(sample_id, "Sample ID")
-        output_names.append(
+        output_name = (
             f"{backend_component}-{character_component}-{sample_component}.wav"
         )
-    if len(output_names) != len({name.casefold() for name in output_names}):
+        work_items.append((sample, output_name))
+    if len(work_items) != len({name.casefold() for _, name in work_items}):
         raise ValueError("Benchmark samples collide as output WAV names")
-    return list(zip(work_items, output_names, strict=True))
+    return work_items
 
 
 def _benchmark_backend_staged(
@@ -674,6 +689,7 @@ def _benchmark_backend_staged(
     text: str,
     output_directory: PathInput,
     *,
+    cache_directory: PathInput,
     benchmark_samples: Sequence[BenchmarkCorpusSample | BenchmarkSampleInput]
     | None = None,
     corpus_name: str | None = None,
@@ -687,118 +703,121 @@ def _benchmark_backend_staged(
     work_items = _prepare_benchmark_samples(
         backend_name, characters, text, benchmark_samples
     )
-    with TemporaryDirectory() as temporary_directory:
-        wall_started = clock()
+    reported_model_id = str(model_id or backend_name)
+    _validate_benchmark_text_fields(
+        {
+            "backend": backend_name,
+            "model_id": reported_model_id,
+            "corpus": corpus_name or "",
+        }
+    )
+    wall_started = clock()
+    cpu_started = cpu_clock()
+    raw_backend = backend_factory(backend_name, registry, cache_directory)
+    backend = _require_renderable_backend(raw_backend, backend_name)
+    generation_profile = getattr(backend, "generation_profile", "stable")
+    if not isinstance(generation_profile, str):
+        generation_profile = "stable"
+    startup_wall_ms = (clock() - wall_started) * 1000
+    startup_cpu_ms = (cpu_clock() - cpu_started) * 1000
+    samples: list[BenchmarkSampleReport] = []
+    for item, output_name in work_items:
+        sample_id = item["id"]
+        character = item["character"]
+        sample_text = item["text"]
+        conditioning_started = clock()
+        prime = getattr(backend, "prime", None)
+        if callable(prime):
+            prime(character)
+        conditioning_ms = (clock() - conditioning_started) * 1000
+        fresh_request = SynthesisRequest(
+            voice=character,
+            text=sample_text,
+            seed=seed,
+            generation_profile=generation_profile,
+            cache_policy=SynthesisCachePolicy.REFRESH,
+        )
         cpu_started = cpu_clock()
-        raw_backend = backend_factory(backend_name, registry, temporary_directory)
-        backend = _require_renderable_backend(raw_backend, backend_name)
-        generation_profile = getattr(backend, "generation_profile", "stable")
-        if not isinstance(generation_profile, str):
-            generation_profile = "stable"
-        startup_wall_ms = (clock() - wall_started) * 1000
-        startup_cpu_ms = (cpu_clock() - cpu_started) * 1000
-        samples: list[BenchmarkSampleReport] = []
-        for item, output_name in work_items:
-            sample_id = item["id"]
-            character = item["character"]
-            sample_text = item["text"]
-            conditioning_started = clock()
-            prime = getattr(backend, "prime", None)
-            if callable(prime):
-                prime(character)
-            conditioning_ms = (clock() - conditioning_started) * 1000
-            fresh_request = SynthesisRequest(
-                voice=character,
-                text=sample_text,
-                seed=seed,
-                generation_profile=generation_profile,
-                cache_policy=SynthesisCachePolicy.REFRESH,
-            )
-            cpu_started = cpu_clock()
-            rendered, generation_wall_ms, fresh = _benchmark_render(
-                backend,
-                fresh_request,
-                "Fresh",
-                "fresh-generation",
-                clock,
-            )
-            generation_cpu_ms = (cpu_clock() - cpu_started) * 1000
-            audio = rendered.pcm
-            audio_sample_rate = rendered.sample_rate
-            first_audio_ms = rendered.timing.first_chunk_ms
-            duration_seconds = len(audio) / audio_sample_rate
-            realtime_factor = generation_wall_ms / (duration_seconds * 1000)
-            fresh["realtime_factor"] = realtime_factor
+        rendered, generation_wall_ms, fresh = _benchmark_render(
+            backend,
+            fresh_request,
+            "Fresh",
+            "fresh-generation",
+            clock,
+        )
+        generation_cpu_ms = (cpu_clock() - cpu_started) * 1000
+        audio = rendered.pcm
+        audio_sample_rate = rendered.sample_rate
+        first_audio_ms = rendered.timing.first_chunk_ms
+        duration_seconds = len(audio) / audio_sample_rate
+        realtime_factor = generation_wall_ms / (duration_seconds * 1000)
+        fresh["realtime_factor"] = realtime_factor
 
-            cache_request = replace(
-                fresh_request, cache_policy=SynthesisCachePolicy.USE
-            )
-            _memory_rendered, cached_replay_ms, memory_cache = _benchmark_render(
+        cache_request = replace(fresh_request, cache_policy=SynthesisCachePolicy.USE)
+        _memory_rendered, cached_replay_ms, memory_cache = _benchmark_render(
+            backend,
+            cache_request,
+            "Memory-cache",
+            "memory-cache",
+            clock,
+        )
+
+        persistent_cache: CacheStageReport = {
+            "cache_source": None,
+            "first_pcm_ms": None,
+            "wall_ms": None,
+            "underrun": None,
+            "generation_limited": None,
+        }
+        if hasattr(backend, "persistent_audio_cache"):
+            if not _is_persistent_cache_backend(backend):
+                raise RuntimeError("Persistent backend has no memory cache")
+            backend.audio_cache.clear()
+            _persistent_rendered, _persistent_ms, persistent_cache = _benchmark_render(
                 backend,
                 cache_request,
-                "Memory-cache",
-                "memory-cache",
+                "Persistent-cache",
+                "persistent-cache",
                 clock,
             )
-
-            persistent_cache: CacheStageReport = {
-                "cache_source": None,
-                "first_pcm_ms": None,
-                "wall_ms": None,
-                "underrun": None,
-                "generation_limited": None,
+        audio_path = write_wav(
+            _contained_child(output_directory, output_name, "Benchmark WAV"),
+            audio,
+            audio_sample_rate,
+        )
+        samples.append(
+            {
+                "id": sample_id,
+                "line_id": item["line_id"],
+                "character": character,
+                "text": sample_text,
+                "text_sha256": item["text_sha256"],
+                "audio": str(audio_path),
+                "audio_sha256": sha256_file(audio_path),
+                "duration_seconds": duration_seconds,
+                "conditioning_ms": conditioning_ms,
+                "first_audio_ms": first_audio_ms,
+                "generation_wall_ms": generation_wall_ms,
+                "generation_cpu_ms": generation_cpu_ms,
+                "realtime_factor": realtime_factor,
+                "cached_replay_ms": cached_replay_ms,
+                "fresh": fresh,
+                "memory_cache": memory_cache,
+                "persistent_cache": persistent_cache,
+                "dialogue_to_first_pcm_ms": (
+                    conditioning_ms + first_audio_ms
+                    if first_audio_ms is not None
+                    else None
+                ),
+                "speaker_similarity_rating": None,
+                "artifact_rating": None,
             }
-            if hasattr(backend, "persistent_audio_cache"):
-                if not _is_persistent_cache_backend(backend):
-                    raise RuntimeError("Persistent backend has no memory cache")
-                backend.audio_cache.clear()
-                _persistent_rendered, _persistent_ms, persistent_cache = (
-                    _benchmark_render(
-                        backend,
-                        cache_request,
-                        "Persistent-cache",
-                        "persistent-cache",
-                        clock,
-                    )
-                )
-            audio_path = write_wav(
-                _contained_child(output_directory, output_name, "Benchmark WAV"),
-                audio,
-                audio_sample_rate,
-            )
-            samples.append(
-                {
-                    "id": sample_id,
-                    "line_id": item["line_id"],
-                    "character": character,
-                    "text": sample_text,
-                    "text_sha256": item["text_sha256"],
-                    "audio": str(audio_path),
-                    "audio_sha256": sha256_file(audio_path),
-                    "duration_seconds": duration_seconds,
-                    "conditioning_ms": conditioning_ms,
-                    "first_audio_ms": first_audio_ms,
-                    "generation_wall_ms": generation_wall_ms,
-                    "generation_cpu_ms": generation_cpu_ms,
-                    "realtime_factor": realtime_factor,
-                    "cached_replay_ms": cached_replay_ms,
-                    "fresh": fresh,
-                    "memory_cache": memory_cache,
-                    "persistent_cache": persistent_cache,
-                    "dialogue_to_first_pcm_ms": (
-                        conditioning_ms + first_audio_ms
-                        if first_audio_ms is not None
-                        else None
-                    ),
-                    "speaker_similarity_rating": None,
-                    "artifact_rating": None,
-                }
-            )
+        )
     return {
         "schema": TTS_BENCHMARK_REPORT_SCHEMA,
         "schema_version": TTS_BENCHMARK_REPORT_VERSION,
         "version": 1,
-        "model_id": str(model_id or backend_name),
+        "model_id": reported_model_id,
         "seed": seed,
         "backend": backend_name,
         "platform": platform.platform(),
@@ -811,13 +830,16 @@ def _benchmark_backend_staged(
     }
 
 
-def write_report(report: Mapping[str, object], output_directory: PathInput) -> Path:
-    output_directory = Path(output_directory).expanduser().resolve()
-    output_directory.mkdir(parents=True, exist_ok=True)
-    backend_component = _safe_component(report["backend"], "Backend")
-    path = _contained_child(
+def _report_path(backend: object, output_directory: PathInput) -> Path:
+    backend_component = _safe_component(backend, "Backend")
+    return _contained_child(
         output_directory, f"{backend_component}.json", "Benchmark report"
     )
+
+
+def write_report(report: Mapping[str, object], output_directory: PathInput) -> Path:
+    path = _report_path(report["backend"], output_directory)
+    path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(path, report)
     return path
 
@@ -874,6 +896,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             load_tts_benchmark_corpus(arguments.corpus)
             if arguments.corpus is not None
             else None
+        )
+        input_paths = [
+            path
+            for path in (
+                Path(manifest).expanduser() if manifest is not None else None,
+                arguments.corpus,
+                narrator_reference,
+            )
+            if path is not None
+        ]
+        input_paths.extend(
+            reference
+            for voice in registry.unique_voices()
+            for reference in voice.references
+        )
+        ensure_separate_output(
+            _report_path(arguments.backend, arguments.output), input_paths
         )
         characters = (
             sorted({sample["character"] for sample in corpus["samples"]})
@@ -934,6 +973,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             seed=arguments.seed,
             backend_factory=backend_factory,
         )
+        ensure_separate_output(
+            _report_path(report["backend"], arguments.output), input_paths
+        )
         report_path = write_report(report, arguments.output)
         messages: list[str | Path] = [report_path]
         for sample in report["samples"]:
@@ -950,7 +992,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         return cli_messages(messages)
     except (OSError, RuntimeError, TypeError, ValueError) as error:
-        return int(cli_error(error))
+        return cli_error(error)
 
 
 if __name__ == "__main__":

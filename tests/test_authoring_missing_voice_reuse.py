@@ -1,22 +1,22 @@
 import json
+import os
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.generated_audio import write_generated_audio_manifest
-from vntts_artifacts.story_index import write_story_index_document
-from vntts_artifacts.voice_generation_queue import (
-    VoiceGenerationQueue,
-    write_voice_generation_queue,
+import vntts.story_index_snapshot as story_snapshot_module
+from tests.authoring_fixtures import tree_hashes
+from tests.missing_voice_reuse_fixtures import (
+    build_failed_missing_voice_reuse_plan_fixture,
+    build_missing_voice_reuse_plan_fixture,
+    create_missing_voice_reuse_workspace,
 )
-
-from tests.test_authoring_legacy_import import write_legacy_fixture
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from vntts.authoring import missing_voice_reuse as reuse_module
 from vntts.authoring.cli import main as authoring_main
-from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_reuse import (
     MissingVoiceReuseError,
     _inline_pause_candidates,
@@ -29,160 +29,194 @@ from vntts.authoring.missing_voice_reuse import (
     write_missing_voice_reuse_plan,
 )
 from vntts.authoring.workbench import (
-    create_resume_workspace,
     inspect_generation_readiness,
 )
 
 
-def create_missing_voice_reuse_workspace(root):
-    return AuthoringMissingVoiceReuseTest().create_workspace(root)
-
-
-def build_missing_voice_reuse_plan_fixture(workspace):
-    return AuthoringMissingVoiceReuseTest().build_plan(workspace)
-
-
-def build_failed_missing_voice_reuse_plan_fixture(fixture, workspace):
-    return AuthoringMissingVoiceReuseTest().build_failed_plan(fixture, workspace)
-
-
 class AuthoringMissingVoiceReuseTest(unittest.TestCase):
+    def test_candidate_manifest_change_before_publication_cleans_staging(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, workspace = self.create_workspace(root)
+            plan = self.build_plan(workspace)
+            candidate = plan.document["candidates"][0]
+            source = (
+                Path(plan.document["source"]["workspace"])
+                / "inputs/voice/manifest.json"
+            )
+            original_copy = reuse_module._copy_candidate_references
+
+            def change_source_after_copy(*arguments):
+                inventory = original_copy(*arguments)
+                document = json.loads(source.read_text(encoding="utf-8"))
+                document["unreviewed_metadata"] = True
+                source.write_text(json.dumps(document), encoding="utf-8")
+                return inventory
+
+            with (
+                patch.object(
+                    reuse_module,
+                    "_copy_candidate_references",
+                    side_effect=change_source_after_copy,
+                ),
+                self.assertRaisesRegex(MissingVoiceReuseError, "manifest changed"),
+            ):
+                reuse_module._publish_candidate_input(
+                    plan.document,
+                    candidate,
+                    source.parents[2],
+                    root / "candidate-inputs",
+                )
+            self.assertEqual(list((root / "candidate-inputs").iterdir()), [])
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_candidate_copy_refuses_fifo_acquisition_cleans_up_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            _fixture, imported, workspace = self.create_workspace(root)
+            plan = self.build_plan(workspace)
+            candidate = plan.document["candidates"][0]
+            source = (
+                workspace / "inputs/voice" / candidate["ordered_references"][0]["path"]
+            )
+            input_root = root / "candidate-inputs"
+            workspaces_root = root / "candidate-workspaces"
+            gate: RegularFileGate = {"path": source, "armed": False}
+            failures = []
+            original_copy = reuse_module.copy_regular_file
+
+            def copy_after_swap(original, target):
+                if original != source:
+                    return original_copy(original, target)
+                gate["armed"] = True
+                with swap_at_acquisition(self, gate):
+                    try:
+                        original_copy(original, target)
+                    except OSError as error:
+                        failures.append(error)
+                self.assertEqual(len(failures), 1)
+                raise failures[0]
+
+            def prepare():
+                return prepare_missing_voice_reuse_candidate_workspace(
+                    plan,
+                    candidate["candidate_id"],
+                    imported,
+                    input_root,
+                    workspaces_root,
+                )
+
+            before = tree_hashes(root)
+            with (
+                patch.object(
+                    reuse_module, "copy_regular_file", side_effect=copy_after_swap
+                ),
+                self.assertRaisesRegex(
+                    MissingVoiceReuseError, "regular file"
+                ) as caught,
+            ):
+                prepare()
+            self.assertIs(caught.exception.__cause__, failures[0])
+            self.assertEqual(tree_hashes(root), before)
+            self.assertEqual(list(input_root.iterdir()), [])
+            self.assertFalse(workspaces_root.exists())
+            self.assertFalse(list(root.rglob(".generation-lease.json")))
+
+            recovered = prepare()
+            recovered_tree = tree_hashes(root)
+            repeated = prepare()
+            self.assertTrue(recovered.input_created)
+            self.assertTrue(recovered.workspace_created)
+            self.assertFalse(repeated.input_created)
+            self.assertFalse(repeated.workspace_created)
+            self.assertEqual(repeated.input_directory, recovered.input_directory)
+            self.assertEqual(
+                repeated.workspace_directory, recovered.workspace_directory
+            )
+            self.assertEqual(tree_hashes(root), recovered_tree)
+            self.assertEqual(
+                (
+                    recovered.input_directory
+                    / candidate["ordered_references"][0]["path"]
+                ).read_bytes(),
+                source.read_bytes(),
+            )
+
     def create_workspace(self, root, *, text=None, missing_voice_policy=None):
-        fixture = write_legacy_fixture(root / "legacy")
-        queue = VoiceGenerationQueue.load(fixture["queue"])
-        item = queue.items[0]
-        record = item.to_record()
-        record["speaker"] = "Aderyn"
-        record["voice_character"] = "Aderyn"
-        if text is not None:
-            import hashlib
-
-            record["text"] = text
-            record["text_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
-            record["queue_id"] = f"{record['line_id']}:{record['text_sha256'][:16]}"
-            fixture["queue_id"] = record["queue_id"]
-        write_voice_generation_queue(fixture["queue"], queue.metadata, [record])
-        queue_sha256 = sha256_file(fixture["queue"])
-
-        state = json.loads(fixture["state"].read_text(encoding="utf-8"))
-        state["queue_sha256"] = queue_sha256
-        state["active"] = None
-        state["items"] = {}
-        fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-        write_generated_audio_manifest(
-            fixture["manifest"],
-            {
-                "game": "Reverse: 1999",
-                "language": "en",
-                "source_queue_sha256": queue_sha256,
-                "generated_at": "2026-08-16T17:06:00+00:00",
-            },
-            [],
+        return create_missing_voice_reuse_workspace(
+            root, text=text, missing_voice_policy=missing_voice_policy
         )
-        write_story_index_document(
-            fixture["job"]["story_index"],
-            {
-                "game": "Reverse: 1999",
-                "language": "en",
-                "generated_at": "2026-08-16T15:00:00+00:00",
-                "collections": [
-                    {
-                        "collection_id": "story",
-                        "title": "Aderyn story",
-                        "kind": "character-story",
-                        "order": 1,
-                    }
-                ],
-            },
-            [
-                {
-                    "record_type": "line",
-                    "line_id": item.line_id,
-                    "text_sha256": record["text_sha256"],
-                    "text": record["text"],
-                    "speaker": "Aderyn",
-                    "voice_character": "Aderyn",
-                    "kind": "dialogue",
-                    "chapter": "315401",
-                    "sequence": 7,
-                    "collection_id": "story",
-                    "source_audio_status": "absent",
-                    "source_audio_reason": "fixture_absent",
-                    "source_kind": "story",
-                    "speakable": True,
-                    "portrait": "314601.png",
-                }
-            ],
-        )
-        voice_manifest = Path(fixture["job"]["voice_manifest"])
-        (voice_manifest.parent / "adult.wav").write_bytes(b"adult-reference")
-        (voice_manifest.parent / "rhiannon.wav").write_bytes(b"rhiannon-reference")
-        (voice_manifest.parent / "narrator.wav").write_bytes(b"narrator-reference")
-        voice_manifest.write_text(
-            json.dumps(
-                {
-                    "version": 2,
-                    "voices": [
-                        {
-                            "character": "Adult Aderyn",
-                            "speaker": "adult-aderyn",
-                            "references": ["adult.wav"],
-                        },
-                        {
-                            "character": "Rhiannon",
-                            "speaker": "rhiannon",
-                            "references": ["rhiannon.wav"],
-                        },
-                        {
-                            "character": "Centurion",
-                            "speaker": "centurion",
-                            "references": ["narrator.wav"],
-                        },
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        imported = import_legacy_job(
-            fixture["job_directory"], root / "imports"
-        ).destination
-        workspace = create_resume_workspace(
-            imported,
-            root / "workspaces",
-            story_index=fixture["job"]["story_index"],
-            voice_manifest=voice_manifest,
-            backend="moss-tts",
-            model="model",
-            generation_profile="stable",
-            narrator_character="Centurion",
-            missing_voice_policy=missing_voice_policy,
-        )
-        return fixture, imported, workspace.directory
 
     def build_plan(self, workspace):
-        return build_missing_voice_reuse_plan(
-            workspace,
-            "Aderyn",
-            cohorts={"adult family": ("314601.png",)},
-            candidate_voice_characters=("Adult Aderyn", "Centurion"),
-        )
+        return build_missing_voice_reuse_plan_fixture(workspace)
 
     def build_failed_plan(self, fixture, workspace):
-        state_path = workspace / "generated-audio/generation-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        state["items"][fixture["queue_id"]] = {
-            "status": "failed",
-            "attempts": 3,
-            "last_error": "Generated WAV failed speech-silence validation",
-        }
-        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-        return build_missing_voice_reuse_plan(
-            workspace,
-            "Aderyn",
-            cohorts={"failed family": ("314601.png",)},
-            candidate_voice_characters=("Centurion",),
-            failed_queue_ids=(fixture["queue_id"],),
-        )
+        return build_failed_missing_voice_reuse_plan_fixture(fixture, workspace)
+
+    def test_final_source_read_failure_preserves_cause_and_prevents_plan_output(self):
+        for kind in ("document", "reference"):
+            with self.subTest(kind=kind), TemporaryDirectory() as directory:
+                root = Path(directory)
+                _, _, workspace = self.create_workspace(root)
+                before = tree_hashes(root)
+                output = root / "plan.json"
+                failure = PermissionError("Final reuse source read was blocked")
+                original_check = reuse_module._assert_sources_unchanged
+                original_hash = reuse_module.sha256_file
+
+                def fail_final_read(*arguments):
+                    target = arguments[0] / "workspace.json"
+                    if kind == "reference":
+                        target = (
+                            arguments[0]
+                            / "inputs/voice"
+                            / arguments[-1][0]["ordered_references"][0]["path"]
+                        )
+
+                    def rehash(path):
+                        if path == target:
+                            raise failure
+                        return original_hash(path)
+
+                    with patch.object(reuse_module, "sha256_file", side_effect=rehash):
+                        return original_check(*arguments)
+
+                with patch.object(
+                    reuse_module,
+                    "_assert_sources_unchanged",
+                    side_effect=fail_final_read,
+                ):
+                    with self.assertRaises(MissingVoiceReuseError) as caught:
+                        self.build_plan(workspace)
+                    self.assertIs(caught.exception.__cause__, failure)
+                    stdout, stderr = StringIO(), StringIO()
+                    with (
+                        redirect_stdout(stdout),
+                        redirect_stderr(stderr),
+                        self.assertRaises(SystemExit) as exited,
+                    ):
+                        authoring_main(
+                            [
+                                "missing-voice-reuse-plan",
+                                str(workspace),
+                                "Aderyn",
+                                "--cohort",
+                                "adult family=314601.png",
+                                "--candidate-voice",
+                                "Adult Aderyn",
+                                "--candidate-voice",
+                                "Centurion",
+                                "--output",
+                                str(output),
+                            ]
+                        )
+                    self.assertEqual(exited.exception.code, 2)
+                    self.assertIn(str(failure), stderr.getvalue())
+                    self.assertEqual(stdout.getvalue(), "")
+                self.assertFalse(output.exists())
+                self.assertEqual(tree_hashes(root), before)
 
     def test_plan_is_exact_small_and_does_not_mutate_workspace(self):
         with TemporaryDirectory() as directory:
@@ -209,6 +243,51 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
             ],
             ["Adult Aderyn", "Centurion"],
         )
+
+    def test_plan_uses_captured_story_bytes_during_parser_replacement(self):
+        import hashlib
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, workspace = self.create_workspace(root)
+            story = workspace / "inputs/story-index.jsonl"
+            original = story.read_bytes()
+            records = [json.loads(line) for line in original.decode().splitlines()]
+            records[1]["text"] = "Transient replacement."
+            records[1]["text_sha256"] = hashlib.sha256(
+                records[1]["text"].encode("utf-8")
+            ).hexdigest()
+            replacement = "\n".join(json.dumps(record) for record in records).encode()
+            original_parser = story_snapshot_module.load_story_index_document
+
+            def parse_during_replacement(path):
+                story.write_bytes(replacement)
+                try:
+                    return original_parser(path)
+                finally:
+                    story.write_bytes(original)
+
+            with (
+                patch.object(
+                    reuse_module,
+                    "load_story_index_document",
+                    side_effect=parse_during_replacement,
+                    create=True,
+                ),
+                patch.object(
+                    story_snapshot_module,
+                    "load_story_index_document",
+                    side_effect=parse_during_replacement,
+                ),
+            ):
+                snapshot = reuse_module._load_plan_source(workspace)
+
+            self.assertEqual(story.read_bytes(), original)
+            self.assertEqual(snapshot.story, original_parser(story))
+            self.assertEqual(snapshot.story.path, story.resolve())
+            self.assertEqual(
+                snapshot.story_sha256, hashlib.sha256(original).hexdigest()
+            )
 
     def test_publication_is_no_replace_and_tamper_evident(self):
         with TemporaryDirectory() as directory:
@@ -524,6 +603,62 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(target_mode, "failed")
+
+    def test_candidate_bundle_schema_version_requires_exact_integer(self):
+        body = {
+            "schema": reuse_module.MISSING_VOICE_REUSE_CANDIDATE_BUNDLE_SCHEMA,
+            "schema_version": 1,
+            "plan_id": "plan",
+            "candidate_id": "candidate",
+            "inventory": [],
+        }
+        valid = {**body, "bundle_id": reuse_module.canonical_document_sha256(body)}
+        reuse_module._validate_candidate_bundle_identity(
+            valid, {"plan_id": "plan"}, {"candidate_id": "candidate"}
+        )
+        for version in (True, 1.0):
+            invalid_body = {**body, "schema_version": version}
+            invalid = {
+                **invalid_body,
+                "bundle_id": reuse_module.canonical_document_sha256(invalid_body),
+            }
+            with (
+                self.subTest(version=version),
+                self.assertRaisesRegex(
+                    MissingVoiceReuseError, "candidate bundle identity is invalid"
+                ),
+            ):
+                reuse_module._validate_candidate_bundle_identity(
+                    invalid, {"plan_id": "plan"}, {"candidate_id": "candidate"}
+                )
+
+    def test_candidate_reuse_rejects_unlisted_nested_bundle_document(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, imported, workspace = self.create_workspace(root)
+            plan = self.build_plan(workspace)
+            candidate = plan.document["candidates"][0]
+            prepared = prepare_missing_voice_reuse_candidate_workspace(
+                plan,
+                candidate["candidate_id"],
+                imported,
+                root / "candidate-inputs",
+                root / "candidate-workspaces",
+            )
+            nested = prepared.input_directory / "unlisted/bundle.json"
+            nested.parent.mkdir()
+            nested.write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                MissingVoiceReuseError, "inventory is incomplete"
+            ):
+                prepare_missing_voice_reuse_candidate_workspace(
+                    plan,
+                    candidate["candidate_id"],
+                    imported,
+                    root / "candidate-inputs",
+                    root / "candidate-workspaces",
+                )
 
 
 if __name__ == "__main__":

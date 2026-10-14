@@ -1,4 +1,6 @@
+import math
 from collections.abc import Iterable, Sequence
+from numbers import Real
 from typing import Protocol, TypeAlias
 
 import numpy as np
@@ -9,6 +11,7 @@ from vntts.ocr import (
     OCRRegions,
     OCRResult,
     VoiceRegistry,
+    default_minimum_ocr_confidence,
     normalize_recognized_speaker,
     parse_recognized_dialog,
     recognize_dialog_image_result,
@@ -24,7 +27,7 @@ class OCRRecognizer(Protocol):
         image: Image.Image,
         voice_registry: VoiceRegistry | None = None,
         *,
-        minimum_confidence: float = 60.0,
+        minimum_confidence: float = default_minimum_ocr_confidence,
         language: str = "eng",
         ocr_regions: OCRRegions | None = None,
     ) -> OCRResult: ...
@@ -42,7 +45,7 @@ class OCRBackend(Protocol):
         image: Image.Image,
         voice_registry: VoiceRegistry | None = None,
         *,
-        minimum_confidence: float = 60.0,
+        minimum_confidence: float = default_minimum_ocr_confidence,
         language: str = "eng",
         ocr_regions: OCRRegions | None = None,
     ) -> OCRResult: ...
@@ -60,7 +63,7 @@ class TesseractOCRBackend:
         image: Image.Image,
         voice_registry: VoiceRegistry | None = None,
         *,
-        minimum_confidence: float = 60.0,
+        minimum_confidence: float = default_minimum_ocr_confidence,
         language: str = "eng",
         ocr_regions: OCRRegions | None = None,
     ) -> OCRResult:
@@ -100,7 +103,7 @@ class RapidOCRBackend:
         image: Image.Image,
         voice_registry: VoiceRegistry | None = None,
         *,
-        minimum_confidence: float = 60.0,
+        minimum_confidence: float = default_minimum_ocr_confidence,
         language: str = "eng",
         ocr_regions: OCRRegions | None = None,
     ) -> OCRResult:
@@ -151,6 +154,8 @@ class RapidOCRBackend:
             if total_characters
             else 0.0
         )
+        if not math.isfinite(confidence):
+            raise ValueError("RapidOCR confidence aggregate is non-finite")
         return processed_image, lines, confidence
 
     @staticmethod
@@ -160,7 +165,19 @@ class RapidOCRBackend:
         scores = getattr(output, "scores", None)
         if boxes is None or texts is None or scores is None:
             return []
-        lines = list(zip(boxes, texts, scores, strict=True))
+        lines: list[RapidOCRLine] = []
+        for box, text, raw_score in zip(boxes, texts, scores, strict=True):
+            if isinstance(raw_score, bool) or not isinstance(raw_score, Real):
+                raise ValueError("RapidOCR score must be a finite real number")
+            try:
+                score = float(raw_score)
+            except (OverflowError, TypeError, ValueError) as error:
+                raise ValueError(
+                    "RapidOCR score must be a finite real number"
+                ) from error
+            if not math.isfinite(score):
+                raise ValueError("RapidOCR score must be a finite real number")
+            lines.append((box, text, score))
         lines.sort(
             key=lambda item: (
                 min(float(point[1]) for point in item[0]),

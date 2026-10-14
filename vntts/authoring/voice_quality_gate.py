@@ -5,26 +5,28 @@ from __future__ import annotations
 import copy
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TypeAlias, TypedDict, TypeIs
 
-from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.voice_manifest import (
-    VoiceManifestError,
-    load_voice_manifest,
-    normalize_character_name,
-)
+from vntts_artifacts.voice_manifest import VoiceManifestError, normalize_character_name
 
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    canonical_document_sha256,
+    write_json_document_no_replace,
+)
 from vntts.authoring.bulk_generation import BulkGenerationError, sha256_control_path
 from vntts.authoring.cohort_review import (
     CohortReviewDecision,
     CohortReviewError,
+    _decision_document_evidence,
     _load_document,
     _validate_decision_against_plan,
+    _validate_document_review_requirements,
+    _validate_reviewed_target_identities,
     _validated_decision_document,
+    _validated_document_assessments,
     _validated_plan_document,
-    _write_document_no_replace,
     build_cohort_review_plan,
     load_cohort_review_decision,
     load_cohort_review_plan,
@@ -33,7 +35,9 @@ from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     load_workspace_authority,
 )
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import file_sha256, is_lowercase_sha256
+from vntts.json_types import has_schema_version, is_json_object
+from vntts.voices import load_voice_manifest
 
 VOICE_QUALITY_GATE_SCHEMA = "vntts.authoring-voice-quality-gate"
 VOICE_QUALITY_GATE_VERSION = 1
@@ -119,6 +123,9 @@ class VoiceQualityCohortCompatibility:
         }
 
 
+_file_sha256 = partial(file_sha256, error_type=VoiceQualityGateError)
+
+
 def build_voice_quality_gate(
     workspace_directory: str | Path, plan: object, decision: object
 ) -> VoiceQualityGate:
@@ -195,12 +202,12 @@ def write_voice_quality_gate(
 ) -> Path:
     """Publish a validated gate without replacing existing evidence."""
     document = _validated_gate_document(gate)
-    try:
-        return Path(
-            _write_document_no_replace(output_path, document, "voice-quality gate")
-        )
-    except CohortReviewError as error:
-        raise VoiceQualityGateError(str(error)) from error
+    return write_json_document_no_replace(
+        output_path,
+        document,
+        "voice-quality gate",
+        error_type=VoiceQualityGateError,
+    )
 
 
 def load_voice_quality_gate(path: str | Path) -> VoiceQualityGate:
@@ -409,7 +416,7 @@ def _voice_references(
             ) from error
         if not path.is_file():
             raise VoiceQualityGateError("Voice reference is missing or unsafe")
-        reference_hashes.append(sha256_file(path))
+        reference_hashes.append(_file_sha256(path))
     return matches[0].speaker, reference_hashes
 
 
@@ -440,16 +447,13 @@ def _manifest_voice_character(
 
 
 def _object(value: object, label: str) -> JsonObject:
-    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise VoiceQualityGateError(f"{label} must be an object")
     return {key: item for key, item in value.items() if isinstance(key, str)}
 
 
 def _is_object_list(value: object) -> TypeIs[list[JsonObject]]:
-    return isinstance(value, list) and all(
-        isinstance(item, dict) and all(isinstance(key, str) for key in item)
-        for item in value
-    )
+    return isinstance(value, list) and all(is_json_object(item) for item in value)
 
 
 def _is_text_list(value: object) -> TypeIs[list[str]]:
@@ -504,8 +508,7 @@ def _validated_gate_document(
     if (
         not isinstance(document, dict)
         or document.get("schema") != VOICE_QUALITY_GATE_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != VOICE_QUALITY_GATE_VERSION
+        or not has_schema_version(document, VOICE_QUALITY_GATE_VERSION)
     ):
         raise VoiceQualityGateError("Voice-quality gate schema is unsupported")
     claimed = _required_sha256(document.get("gate_id"), "Voice-quality gate ID")
@@ -553,6 +556,7 @@ def _validate_gate_identity(identity: object) -> None:
     if (
         not isinstance(model_control, dict)
         or set(model_control) != {"kind", "sha256"}
+        or not isinstance(model_control.get("kind"), str)
         or model_control.get("kind") not in {"path", "identifier"}
     ):
         raise VoiceQualityGateError("Voice-quality model control is malformed")
@@ -575,17 +579,28 @@ def _validate_gate_source(source: object) -> None:
         "source_synthesis_provenance_sha256",
     ):
         _required_sha256(source.get(field), field)
-    if not isinstance(source.get("reviewed_samples"), list) or not source.get(
-        "reviewed_samples"
-    ):
-        raise VoiceQualityGateError("Voice-quality source samples are missing")
     assessments = source.get("sample_assessments")
     if not isinstance(assessments, list) or any(
-        not isinstance(value, dict)
-        or value.get("assessment") not in {"heard", "acceptable"}
+        not isinstance(value, dict) or not isinstance(value.get("assessment"), str)
         for value in assessments
     ):
         raise VoiceQualityGateError("Voice-quality source assessments are unsafe")
+    # Version 1 decisions have no defect_reasons (and may have no assessments).
+    # A mixed array fails the shared versioned validator's exact field check.
+    version = 2 if any("defect_reasons" in value for value in assessments) else 1
+    try:
+        evidence = _decision_document_evidence(source)
+        _validate_reviewed_target_identities(
+            source.get("reviewed_samples"), source.get("target_items")
+        )
+        normalized, assessment_ids = _validated_document_assessments(
+            assessments, version
+        )
+        _validate_document_review_requirements(
+            "accepted", evidence, normalized, assessment_ids
+        )
+    except CohortReviewError as error:
+        raise VoiceQualityGateError(str(error)) from error
 
 
 def _plan_document(plan: object) -> _PlanDocument:

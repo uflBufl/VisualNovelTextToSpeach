@@ -8,15 +8,20 @@ import json
 import wave
 from pathlib import Path
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
 
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    no_replace_destination,
     rename_directory_no_replace,
     staged_directory,
 )
-from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.document_identity import (
+    canonical_document_sha256,
+    is_lowercase_sha256,
+)
+from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import read_regular_bytes, read_regular_text
 
 SILENCE_FAILURE_EVIDENCE_SCHEMA = "vntts.authoring-silence-failure-evidence"
 SILENCE_FAILURE_EVIDENCE_VERSION = 1
@@ -40,15 +45,12 @@ def publish_silence_failure_evidence(
     _probe_pcm16_mono_bytes(wav_payload)
     if not isinstance(metadata, dict):
         raise SilenceFailureEvidenceError("Silence-failure metadata is invalid")
+    _validate_evidence_metadata(metadata)
     output.parent.mkdir(parents=True, exist_ok=True)
     with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         wav = staging / "rejected.wav"
         wav.write_bytes(wav_payload)
         wav_sha256 = hashlib.sha256(wav_payload).hexdigest()
-        if sha256_file(wav) != wav_sha256:
-            raise SilenceFailureEvidenceError(
-                "Copied silence-failure WAV checksum changed"
-            )
         document = {
             "schema": SILENCE_FAILURE_EVIDENCE_SCHEMA,
             "schema_version": SILENCE_FAILURE_EVIDENCE_VERSION,
@@ -68,11 +70,20 @@ def load_silence_failure_evidence(directory: str | Path) -> dict[str, object]:
     """Validate one rejected-WAV evidence directory without making it reviewable."""
     root = Path(directory).expanduser().resolve()
     try:
-        document = json.loads((root / "evidence.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        document = decode_json(
+            read_regular_text(root / "evidence.json", encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SilenceFailureEvidenceError(
             f"Unable to read silence-failure evidence: {error}"
         ) from error
+    document = _validated_evidence_document(document)
+    _validate_evidence_metadata(document["metadata"])
+    _validate_evidence_wav(root / "rejected.wav", document.get("audio_sha256"))
+    return document
+
+
+def _validated_evidence_document(document: object) -> dict[str, object]:
     if (
         not isinstance(document, dict)
         or set(document)
@@ -86,14 +97,21 @@ def load_silence_failure_evidence(directory: str | Path) -> dict[str, object]:
             "metadata",
         }
         or document.get("schema") != SILENCE_FAILURE_EVIDENCE_SCHEMA
-        or document.get("schema_version") != SILENCE_FAILURE_EVIDENCE_VERSION
+        or not has_schema_version(document, SILENCE_FAILURE_EVIDENCE_VERSION)
         or document.get("reviewable") is not False
         or document.get("generated_outcome") is not False
         or document.get("audio") != "rejected.wav"
         or not isinstance(document.get("metadata"), dict)
     ):
         raise SilenceFailureEvidenceError("Silence-failure evidence is malformed")
-    metadata = document["metadata"]
+    return document
+
+
+def _validate_evidence_metadata(metadata: object) -> None:
+    if not isinstance(metadata, dict):
+        raise SilenceFailureEvidenceError(
+            "Silence-failure evidence metadata is malformed"
+        )
     required_metadata = {
         "queue",
         "queue_sha256",
@@ -116,6 +134,12 @@ def load_silence_failure_evidence(directory: str | Path) -> dict[str, object]:
             raise SilenceFailureEvidenceError(
                 "Silence-failure evidence identity is malformed"
             )
+        try:
+            metadata[field].encode("utf-8")
+        except UnicodeError as error:
+            raise SilenceFailureEvidenceError(
+                "Silence-failure evidence identity is malformed"
+            ) from error
     if (
         not is_lowercase_sha256(metadata["queue_sha256"])
         or not is_lowercase_sha256(metadata["state_sha256"])
@@ -138,26 +162,36 @@ def load_silence_failure_evidence(directory: str | Path) -> dict[str, object]:
         )
         or not isinstance(state_item.get("failure"), dict)
         or state_item["failure"].get("kind") != "speech_silence"
-        or canonical_document_sha256(state_item) != metadata["state_item_sha256"]
     ):
         raise SilenceFailureEvidenceError(
             "Silence-failure evidence state item is malformed"
         )
-    wav = root / "rejected.wav"
+    try:
+        state_item_sha256 = canonical_document_sha256(state_item)
+    except (TypeError, ValueError) as error:
+        raise SilenceFailureEvidenceError(
+            "Silence-failure evidence state item is malformed"
+        ) from error
+    if state_item_sha256 != metadata["state_item_sha256"]:
+        raise SilenceFailureEvidenceError(
+            "Silence-failure evidence state item is malformed"
+        )
+
+
+def _validate_evidence_wav(wav: Path, expected_sha256: object) -> None:
     if wav.is_symlink() or not wav.is_file():
         raise SilenceFailureEvidenceError("Silence-failure evidence WAV is missing")
     try:
-        payload = wav.read_bytes()
+        payload = read_regular_bytes(wav)
         _probe_pcm16_mono_bytes(payload)
     except OSError as error:
         raise SilenceFailureEvidenceError(
             f"Unable to read silence-failure evidence WAV: {error}"
         ) from error
-    if hashlib.sha256(payload).hexdigest() != document.get("audio_sha256"):
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
         raise SilenceFailureEvidenceError(
             "Silence-failure evidence WAV checksum changed"
         )
-    return document
 
 
 def _probe_pcm16_mono_bytes(payload: bytes) -> None:
@@ -186,9 +220,7 @@ def _new_directory(value: str | Path) -> Path:
         raise SilenceFailureEvidenceError(
             "Silence-failure evidence requires a directory name"
         )
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    return path.parent.resolve() / path.name
+    return no_replace_destination(path)
 
 
 def _rename_no_replace(source: Path, destination: Path) -> None:

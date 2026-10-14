@@ -64,6 +64,8 @@ class DialogueAdvancerTest(unittest.TestCase):
                         release_error = (
                             ValueError("release failed") if release_fails else None
                         )
+                        if release_fails and error_type is KeyboardInterrupt:
+                            release_error = SystemExit("release interrupted")
                         controller = Mock()
                         controller.press.side_effect = error
                         controller.release.side_effect = release_error

@@ -1,5 +1,7 @@
 import io
 import json
+import os
+import stat
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -11,10 +13,17 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
+import vntts.authoring.audio_event_workspace as audio_event_workspace_module
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_creation as workspace_creation_module
-from tests.test_authoring_audio_event_review import write_source_story
-from tests.test_authoring_workbench import create_test_workspace
+from tests.authoring_fixtures import (
+    create_test_workspace,
+    tree_hashes,
+)
+from tests.authoring_fixtures import (
+    write_audio_event_source_story as write_source_story,
+)
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring.audio_event_composition import (
     publish_audio_event_composition,
     record_audio_event_composition_decision,
@@ -23,15 +32,20 @@ from vntts.authoring.audio_event_review import (
     publish_source_audio_event_review,
     record_audio_event_review_decision,
 )
+from vntts.authoring.audio_event_workspace import (
+    AudioEventWorkspaceError,
+    validate_audio_event_composition_state_item,
+    validate_audio_event_composition_workspace,
+)
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
     publish_generated_manifest,
-    review_generation_item,
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.config_rebase import rebase_workspace_config
+from vntts.authoring.generation_review import review_generation_item
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     create_audio_event_composition_workspace,
@@ -42,6 +56,107 @@ from vntts.authoring.workbench import (
 
 
 class AudioEventWorkspaceTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_successor_audio_copy_refuses_fifo_cleans_up_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            base, queue_item, composition = self._base_and_composition(root)
+            composition.audio.chmod(0o444)
+            before = tree_hashes(root)
+            destination = root / "successors"
+            original = workspace_creation_module.copy_regular_file
+            refused = []
+
+            def copy(source, target, **options):
+                if Path(source) != composition.audio:
+                    return original(source, target, **options)
+                self.assertEqual(options, {})
+                gate: RegularFileGate = {"path": composition.audio, "armed": True}
+                with (
+                    swap_at_acquisition(self, gate),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original(source, target, **options)
+                self.assertFalse(Path(target).exists())
+                refused.append(caught.exception)
+                raise caught.exception
+
+            with (
+                patch.object(workspace_creation_module, "copy_regular_file", copy),
+                self.assertRaisesRegex(OSError, "regular file") as caught,
+            ):
+                create_audio_event_composition_workspace(
+                    base, composition.directory, destination
+                )
+            self.assertEqual(len(refused), 1)
+            self.assertIs(caught.exception, refused[0])
+            self.assertEqual(list(destination.iterdir()), [])
+            self.assertEqual(tree_hashes(root), before)
+            recovered = create_audio_event_composition_workspace(
+                base, composition.directory, destination
+            )
+            state = load_generation_state(
+                recovered.directory / "generated-audio/generation-state.json",
+                recovered.directory / "queue.jsonl",
+            )
+            rendition = state["items"][queue_item.queue_id]
+            audio = recovered.directory / "generated-audio" / rendition["path"]
+            self.assertEqual(audio.read_bytes(), composition.audio.read_bytes())
+            self.assertEqual(rendition["file_sha256"], composition.audio_sha256)
+            self.assertTrue(stat.S_IMODE(audio.stat().st_mode) & stat.S_IWUSR)
+            self.assertEqual(rendition["review_status"], "pending_review")
+            self.assertFalse(
+                create_audio_event_composition_workspace(
+                    base, composition.directory, destination
+                ).created
+            )
+
+    def test_final_source_recheck_translates_io_error_and_cleans_up(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, _queue_item, composition = self._base_and_composition(root)
+            before = {
+                path: digest
+                for path, digest in tree_hashes(root).items()
+                if not path.endswith(".guard")
+            }
+            verifier = workspace_creation_module._verify_audio_event_publication_sources
+            failure = PermissionError("final source is unreadable")
+
+            def fail_final_hash(*args, **kwargs):
+                with patch.object(
+                    workspace_creation_module, "sha256_file", side_effect=failure
+                ):
+                    return verifier(*args, **kwargs)
+
+            with (
+                patch.object(
+                    workspace_creation_module,
+                    "_verify_audio_event_publication_sources",
+                    side_effect=fail_final_hash,
+                ),
+                self.assertRaisesRegex(
+                    AuthoringWorkbenchError, "final source is unreadable"
+                ) as caught,
+            ):
+                create_audio_event_composition_workspace(
+                    base, composition.directory, root / "successors"
+                )
+
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertEqual(
+                {
+                    path: digest
+                    for path, digest in tree_hashes(root).items()
+                    if not path.endswith(".guard")
+                },
+                before,
+            )
+            self.assertEqual(list((root / "successors").iterdir()), [])
+            self.assertFalse(list(root.rglob(".generation-lease.json")))
+
     def _base_and_composition(self, root, *, approve=True, outcome_merge=False):
         _fixture, _imported, created = create_test_workspace(root, text="Tsk!")
         base = created.directory
@@ -348,6 +463,163 @@ class AudioEventWorkspaceTest(unittest.TestCase):
                         base, composition.directory, root / "successors"
                     )
             self.assertFalse(any((root / "successors").glob("resume-*")))
+
+    def test_workspace_rechecks_every_captured_authority(self):
+        paths = (
+            "inputs/audio-event-composition/composition.json",
+            "inputs/audio-event-composition/composition-decision.json",
+            "inputs/audio-event-base/workspace.json",
+            "inputs/audio-event-base/generation-state.json",
+            "inputs/audio-event-base/rejected.wav",
+        )
+        for relative in paths:
+            with self.subTest(path=relative), TemporaryDirectory() as directory:
+                root = Path(directory)
+                base, _queue_item, composition = self._base_and_composition(root)
+                created = create_audio_event_composition_workspace(
+                    base, composition.directory, root / "successors"
+                )
+                workspace = json.loads(
+                    (created.directory / "workspace.json").read_text()
+                )
+                original = audio_event_workspace_module.load_audio_event_composition
+
+                def load_then_mutate(path):
+                    loaded = original(path)
+                    target = created.directory / relative
+                    target.write_bytes(target.read_bytes() + b" ")
+                    return loaded
+
+                with patch.object(
+                    audio_event_workspace_module,
+                    "load_audio_event_composition",
+                    load_then_mutate,
+                ):
+                    with self.assertRaisesRegex(AudioEventWorkspaceError, "changed"):
+                        validate_audio_event_composition_workspace(
+                            created.directory, workspace
+                        )
+
+    def test_state_item_rechecks_workspace_document(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, queue_item, composition = self._base_and_composition(root)
+            created = create_audio_event_composition_workspace(
+                base, composition.directory, root / "successors"
+            )
+            state = json.loads(
+                (
+                    created.directory / "generated-audio/generation-state.json"
+                ).read_text()
+            )
+            original = validate_audio_event_composition_workspace
+
+            def validate_then_mutate(directory, workspace):
+                config = original(directory, workspace)
+                path = Path(directory) / "workspace.json"
+                path.write_bytes(path.read_bytes() + b" ")
+                return config
+
+            with patch.object(
+                audio_event_workspace_module,
+                "validate_audio_event_composition_workspace",
+                validate_then_mutate,
+            ):
+                with self.assertRaisesRegex(AudioEventWorkspaceError, "changed"):
+                    validate_audio_event_composition_state_item(
+                        created.directory,
+                        queue_item.queue_id,
+                        state["items"][queue_item.queue_id],
+                    )
+
+    def test_workspace_and_item_versions_have_exact_types(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, queue_item, composition = self._base_and_composition(root)
+            created = create_audio_event_composition_workspace(
+                base, composition.directory, root / "successors"
+            )
+            workspace = json.loads((created.directory / "workspace.json").read_text())
+            config = workspace["audio_event_composition"]
+            config["schema_version"] = 2.0
+            with self.assertRaisesRegex(AudioEventWorkspaceError, "malformed"):
+                validate_audio_event_composition_workspace(created.directory, workspace)
+            config["schema_version"] = 2
+            base_path = created.directory / config["base_workspace_path"]
+            document = json.loads(base_path.read_text())
+            for version in (True, 1.0):
+                with self.subTest(base_version=version):
+                    document["schema_version"] = version
+                    base_path.write_text(json.dumps(document, sort_keys=True))
+                    config["base_workspace_sha256"] = sha256_file(base_path)
+                    with self.assertRaisesRegex(
+                        AudioEventWorkspaceError, "base authority changed"
+                    ):
+                        validate_audio_event_composition_workspace(
+                            created.directory, workspace
+                        )
+            document["schema_version"] = 1
+            base_path.write_text(json.dumps(document, sort_keys=True))
+            # Restore the original copied workspace bytes and its config hash.
+            base_path.write_bytes((base / "workspace.json").read_bytes())
+            state = json.loads(
+                (
+                    created.directory / "generated-audio/generation-state.json"
+                ).read_text()
+            )
+            result = state["items"][queue_item.queue_id]
+            for field, value in (
+                ("schema_version", True),
+                ("schema_version", 1.0),
+                ("speaker_identity_claim", 0),
+            ):
+                with self.subTest(field=field, value=value):
+                    tampered = {
+                        **result,
+                        "audio_event_composition": {
+                            **result["audio_event_composition"],
+                            field: value,
+                        },
+                    }
+                    with self.assertRaisesRegex(
+                        AudioEventWorkspaceError, "ledger changed"
+                    ):
+                        validate_audio_event_composition_state_item(
+                            created.directory, queue_item.queue_id, tampered
+                        )
+
+    def test_direct_state_validation_rejects_malformed_optional_merge_items(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, queue_item, composition = self._base_and_composition(root)
+            created = create_audio_event_composition_workspace(
+                base, composition.directory, root / "successors"
+            )
+            path = created.directory / "workspace.json"
+            workspace = json.loads(path.read_text())
+            state = json.loads(
+                (
+                    created.directory / "generated-audio/generation-state.json"
+                ).read_text()
+            )
+            result = state["items"][queue_item.queue_id]
+            for items in (None, {}, "", 1):
+                with self.subTest(items=items):
+                    workspace["outcome_merge"] = {"items": items}
+                    path.write_text(json.dumps(workspace, sort_keys=True))
+                    with self.assertRaisesRegex(AudioEventWorkspaceError, "outcome"):
+                        validate_audio_event_composition_state_item(
+                            created.directory, queue_item.queue_id, result
+                        )
+            for merge in ({}, {"items": []}, {"items": [{"queue_id": "another"}]}):
+                workspace["outcome_merge"] = merge
+                path.write_text(json.dumps(workspace, sort_keys=True))
+                self.assertEqual(
+                    validate_audio_event_composition_state_item(
+                        created.directory, queue_item.queue_id, result
+                    ),
+                    result["audio_event_composition"],
+                )
 
     def test_cli_creates_successor(self):
         with TemporaryDirectory() as directory:

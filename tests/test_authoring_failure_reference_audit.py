@@ -5,10 +5,18 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-import numpy as np
-
-from tests.test_authoring_workbench import create_test_workspace
+from tests.authoring_fixtures import create_failed_reference_workspace
+from tests.source_reference_fixtures import (
+    PreviewBackendFactory as _PreviewBackendFactory,
+)
+from vntts.authoring import failure_reference_audit as audit_module
+from vntts.authoring import reference_render_comparison
+from vntts.authoring.advisory_lock import (
+    AdvisoryLockBusyError,
+    exclusive_advisory_lock,
+)
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_reference_audit import (
     FailureReferenceAuditError,
@@ -38,13 +46,6 @@ from vntts.authoring.reference_render_comparison import (
     load_reference_render_plan,
     publish_reference_render_comparison,
 )
-from vntts.synthesis import (
-    SynthesisCompletion,
-    SynthesisDiagnostics,
-    SynthesisLimits,
-    SynthesisResult,
-    SynthesisTiming,
-)
 
 
 def _canonical_sha256(value):
@@ -58,126 +59,9 @@ def _canonical_sha256(value):
     ).hexdigest()
 
 
-class _CollectedResult:
-    def __init__(self, result_factory):
-        self.result_factory = result_factory
-
-    def collect(self):
-        return self.result_factory()
-
-
-class _PreviewBackend:
-    def __init__(self, name, registry, model_name, cancellation, *, on_render=None):
-        self.name = name
-        self.registry = registry
-        self.model_name = model_name
-        self.cancellation = cancellation
-        self.on_render = on_render
-        self.requests = []
-        self.stop_calls = 0
-
-    def render(self, request):
-        self.requests.append(request)
-
-        def result():
-            if self.on_render is not None:
-                self.on_render(self, request)
-            completion = (
-                SynthesisCompletion.CANCELLED
-                if request.cancellation_requested()
-                else SynthesisCompletion.COMPLETE
-            )
-            return SynthesisResult(
-                pcm=np.full((800, 1), 0.2, dtype=np.float32),
-                sample_rate=16_000,
-                completion=completion,
-                limits=SynthesisLimits(100, 2.0),
-                timing=SynthesisTiming(10.0, 20.0),
-                diagnostics=SynthesisDiagnostics(
-                    backend=self.name,
-                    cache_source="fresh-generation",
-                    generation_profile=request.generation_profile,
-                    seed=request.seed,
-                    chunk_count=1,
-                    sample_count=800,
-                ),
-            )
-
-        return _CollectedResult(result)
-
-    def stop(self):
-        self.stop_calls += 1
-
-
-class _PreviewBackendFactory:
-    def __init__(self, *, on_render=None):
-        self.on_render = on_render
-        self.backends = []
-
-    def __call__(
-        self,
-        name,
-        registry,
-        _cache_root,
-        *,
-        model_name=None,
-        startup_cancellation=None,
-        **_options,
-    ):
-        backend = _PreviewBackend(
-            name,
-            registry,
-            model_name,
-            startup_cancellation,
-            on_render=self.on_render,
-        )
-        self.backends.append(backend)
-        return backend
-
-
-def create_failed_reference_workspace(root):
-    return FailureReferenceAuditTest().create_failed_workspace(root)
-
-
 class FailureReferenceAuditTest(unittest.TestCase):
     def create_failed_workspace(self, root):
-        _fixture, _imported, created = create_test_workspace(root)
-        state_path = created.directory / "generated-audio/generation-state.json"
-        state = json.loads(state_path.read_text())
-        queue_id, result = next(iter(state["items"].items()))
-        for field in ("path", "file_sha256", "quality", "review_status"):
-            result.pop(field, None)
-        result.update(
-            {
-                "status": "failed",
-                "provider": "moss-tts",
-                "model": "model",
-                "generation_profile": "stable",
-                "voice_character": "Rhiannon",
-                "synthesis_provenance_sha256": "a" * 64,
-                "failure": {
-                    "schema_version": 1,
-                    "kind": "speech_silence",
-                    "completion": "complete",
-                    "error_type": "SpeechSilenceValidationError",
-                    "speech_quality": {
-                        "leading_silence_seconds": 0.0,
-                        "trailing_silence_seconds": 0.0,
-                        "longest_internal_silence_seconds": 2.0,
-                        "silence_ratio": 0.4,
-                    },
-                    "text_features": {
-                        "word_count": 4,
-                        "character_count": 20,
-                        "sentence_boundary_count": 1,
-                        "comma_count": 0,
-                        "ellipsis_count": 0,
-                    },
-                },
-            }
-        )
-        state_path.write_text(json.dumps(state, sort_keys=True))
-        return created.directory, queue_id
+        return create_failed_reference_workspace(root)
 
     def test_invalid_reference_keeps_byte_identity_when_analysis_fails(self):
         with TemporaryDirectory() as directory:
@@ -290,6 +174,74 @@ class FailureReferenceAuditTest(unittest.TestCase):
                     ),
                 ):
                     load_failure_reference_audit(output)
+
+    def test_audit_rejects_invalid_workspace_paths(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output)
+            audit_path, key_path = output / "audit.json", output / ".blind-key.json"
+            original_audit = json.loads(audit_path.read_bytes())
+            original_key = json.loads(key_path.read_bytes())
+            for value in (None, True, 1, [], {}, "\x00"):
+                with self.subTest(workspace=value):
+                    document = {**original_audit, "workspace": value}
+                    document["audit_id"] = _canonical_sha256(
+                        {
+                            name: item
+                            for name, item in document.items()
+                            if name != "audit_id"
+                        }
+                    )
+                    key = {**original_key, "audit_id": document["audit_id"]}
+                    audit_path.write_text(json.dumps(document))
+                    key_path.write_text(json.dumps(key))
+                    with self.assertRaisesRegex(
+                        FailureReferenceAuditError, "workspace path"
+                    ):
+                        load_failure_reference_audit(output)
+
+    def test_non_finite_documents_raise_audit_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output, seed=0)
+            audit = json.loads((output / "audit.json").read_text())
+            record_failure_reference_decision(
+                output, audit["groups"][0]["group_id"], "neither_acceptable"
+            )
+            sources = (
+                (output / "audit.json", load_failure_reference_audit, lambda doc: doc),
+                (
+                    output / ".blind-key.json",
+                    load_failure_reference_audit,
+                    lambda doc: doc["groups"][0],
+                ),
+                (
+                    output / "decisions.json",
+                    load_failure_reference_decisions,
+                    lambda doc: doc,
+                ),
+                (
+                    workspace / "generated-audio/generation-state.json",
+                    load_failure_reference_audit,
+                    lambda doc: doc["items"][queue_id],
+                ),
+            )
+            for path, loader, target in sources:
+                original = path.read_bytes()
+                for number in (float("nan"), float("inf"), float("-inf")):
+                    with self.subTest(document=path.name, number=number):
+                        document = json.loads(original)
+                        target(document)["unexpected_number"] = number
+                        try:
+                            path.write_text(json.dumps(document))
+                            with self.assertRaises(FailureReferenceAuditError):
+                                loader(output)
+                        finally:
+                            path.write_bytes(original)
 
     def test_explicit_audit_scope_accepts_only_current_failed_queue_ids(self):
         with TemporaryDirectory() as directory:
@@ -408,6 +360,107 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 FailureReferenceAuditError, "decision identity changed"
             ):
                 load_failure_reference_decisions(output)
+
+    def test_conditional_decision_save_preserves_competing_writer(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output)
+            group = json.loads((output / "audit.json").read_text())["groups"][0]
+            expected = load_failure_reference_decisions(output)
+            competitor = record_failure_reference_decision(
+                output, group["group_id"], "neither_acceptable"
+            )
+            before = (output / "decisions.json").read_bytes()
+            with self.assertRaisesRegex(
+                FailureReferenceAuditError, "changed before decision save"
+            ):
+                record_failure_reference_decision(
+                    output,
+                    group["group_id"],
+                    group["candidates"][0]["candidate_id"],
+                    expected_decisions=expected,
+                )
+            self.assertEqual((output / "decisions.json").read_bytes(), before)
+            self.assertEqual(load_failure_reference_decisions(output), competitor)
+            updated = record_failure_reference_decision(
+                output,
+                group["group_id"],
+                group["candidates"][0]["candidate_id"],
+                expected_decisions=competitor,
+            )
+            self.assertEqual(
+                updated["decisions"][0]["decision"],
+                group["candidates"][0]["candidate_id"],
+            )
+
+    def test_decision_guard_timeout_uses_audit_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output)
+            group = json.loads((output / "audit.json").read_text())["groups"][0]
+            with patch.object(
+                audit_module,
+                "exclusive_advisory_lock",
+                side_effect=AdvisoryLockBusyError("guard busy"),
+            ):
+                with self.assertRaisesRegex(FailureReferenceAuditError, "guard busy"):
+                    record_failure_reference_decision(
+                        output, group["group_id"], "neither_acceptable"
+                    )
+            self.assertFalse((output / "decisions.json").exists())
+
+    def test_decision_update_holds_shared_guard_until_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output)
+            group = json.loads((output / "audit.json").read_text())["groups"][0]
+            entered = threading.Event()
+            release = threading.Event()
+            failures = []
+            original = audit_module.load_failure_reference_decisions
+
+            def pause_after_read(directory):
+                current = original(directory)
+                entered.set()
+                if not release.wait(5):
+                    raise AssertionError("Decision writer was not released")
+                return current
+
+            def write():
+                try:
+                    record_failure_reference_decision(
+                        output, group["group_id"], "neither_acceptable"
+                    )
+                except BaseException as error:
+                    failures.append(error)
+
+            with patch.object(
+                audit_module,
+                "load_failure_reference_decisions",
+                side_effect=pause_after_read,
+            ):
+                writer = threading.Thread(target=write)
+                writer.start()
+                try:
+                    self.assertTrue(entered.wait(5))
+                    with self.assertRaises(AdvisoryLockBusyError):
+                        with exclusive_advisory_lock(output / "decisions.json.lock"):
+                            self.fail("Decision writer did not hold the shared guard")
+                finally:
+                    release.set()
+                    writer.join(5)
+            self.assertFalse(writer.is_alive())
+            self.assertEqual(failures, [])
+            self.assertEqual(
+                load_failure_reference_decisions(output)["decisions"][0]["decision"],
+                "neither_acceptable",
+            )
 
     def test_decision_schema_version_requires_exact_integer(self):
         with TemporaryDirectory() as directory:
@@ -584,6 +637,49 @@ class FailureReferenceAuditTest(unittest.TestCase):
             self.assertEqual(state_path.read_bytes(), state_before)
             self.assertFalse((output / "decisions.json").exists())
 
+    def test_render_and_audit_inputs_wrap_undecodable_json(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = root / "plan.json"
+            comparison = root / "comparison"
+            comparison.mkdir()
+            for path, loader, argument in (
+                (plan, load_reference_render_plan, plan),
+                (
+                    comparison / "comparison.json",
+                    load_reference_render_comparison_document,
+                    comparison,
+                ),
+            ):
+                with self.subTest(path=path):
+                    path.write_bytes(b"\xff")
+                    with self.assertRaises(ReferenceRenderComparisonError):
+                        loader(argument)
+
+            workspace, _queue_id = self.create_failed_workspace(root)
+            audit = root / "audit"
+            publish_failure_reference_audit(workspace, audit)
+            for path, loader in (
+                (audit / "audit.json", load_failure_reference_audit),
+                (audit / ".blind-key.json", load_failure_reference_audit),
+                (
+                    workspace / "generated-audio/generation-state.json",
+                    load_failure_reference_audit,
+                ),
+                (audit / "decisions.json", load_failure_reference_decisions),
+            ):
+                with self.subTest(path=path):
+                    original = path.read_bytes() if path.exists() else None
+                    try:
+                        path.write_bytes(b"\xff")
+                        with self.assertRaises(FailureReferenceAuditError):
+                            loader(audit)
+                    finally:
+                        if original is None:
+                            path.unlink()
+                        else:
+                            path.write_bytes(original)
+
     def test_publishes_render_only_alternative_reference_comparison(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -621,6 +717,15 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            original_plan = plan_path.read_bytes()
+            unicode_plan = plan_path.with_name("plan-utf16.json")
+            unicode_payload = original_plan.decode("utf-8").encode("utf-16")
+            unicode_plan.write_bytes(unicode_payload)
+            decoded_plan = load_reference_render_plan(unicode_plan)
+            self.assertEqual(decoded_plan.queue_ids, (queue_id,))
+            self.assertEqual(
+                decoded_plan.sha256, hashlib.sha256(unicode_payload).hexdigest()
+            )
             state_path = workspace / "generated-audio/generation-state.json"
             state_before = state_path.read_bytes()
             factory = _PreviewBackendFactory()
@@ -643,10 +748,16 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 ("failure_count", 0.0),
                 ("complete_pair_queue_ids", []),
                 ("queue_ids", ["another-queue-id"]),
+                ("outcome", []),
+                ("outcome", {}),
+                ("outcome", None),
+                ("extra_metadata", float("nan")),
             ):
                 with self.subTest(field=field, value=value):
                     forged = json.loads(json.dumps(original_comparison))
-                    if field in {"complete_count", "failure_count"}:
+                    if field == "outcome":
+                        forged["arms"][0]["renders"][0][field] = value
+                    elif field in {"complete_count", "failure_count"}:
                         forged["arms"][0][field] = value
                     else:
                         forged[field] = value
@@ -820,6 +931,107 @@ class FailureReferenceAuditTest(unittest.TestCase):
                     arm_ids=("complete-1", "incomplete"),
                 )
 
+    def assert_import_preserves_competing_decision(
+        self, root, workspace, comparison_root, session, queue_id
+    ):
+        conflict_audit = root / "conflict-audit"
+        publish_failure_reference_audit(
+            workspace, conflict_audit, seed=19, queue_ids=(queue_id,)
+        )
+        competitor = None
+
+        def save_competing_decision(directory, group_id, candidate_id, **kwargs):
+            nonlocal competitor
+            competitor = record_failure_reference_decision(
+                directory, group_id, "neither_acceptable"
+            )
+            return record_failure_reference_decision(
+                directory, group_id, candidate_id, **kwargs
+            )
+
+        with patch.object(
+            reference_render_comparison,
+            "record_failure_reference_decision",
+            side_effect=save_competing_decision,
+        ):
+            with self.assertRaisesRegex(
+                ReferenceRenderComparisonError, "changed before decision save"
+            ):
+                import_reference_render_preference(
+                    conflict_audit, comparison_root, session, queue_id
+                )
+        self.assertEqual(load_failure_reference_decisions(conflict_audit), competitor)
+
+    def assert_reference_import_rejects_replacements(
+        self, audit_root, comparison_root, session, queue_id, replacements
+    ):
+        original_source_reference = reference_render_comparison._source_reference
+        expected_decisions = load_failure_reference_decisions(audit_root)["decisions"]
+        for path, replace_payload in replacements:
+            with self.subTest(path=path, has_decision=bool(expected_decisions)):
+                original = path.read_bytes()
+
+                def replace_after_selection(render, groups):
+                    selected = original_source_reference(render, groups)
+                    path.write_bytes(replace_payload(original))
+                    return selected
+
+                try:
+                    with patch.object(
+                        reference_render_comparison,
+                        "_source_reference",
+                        side_effect=replace_after_selection,
+                    ):
+                        with self.assertRaisesRegex(
+                            ReferenceRenderComparisonError, "changed"
+                        ):
+                            import_reference_render_preference(
+                                audit_root,
+                                comparison_root,
+                                session,
+                                queue_id,
+                            )
+                finally:
+                    path.write_bytes(original)
+                self.assertEqual(
+                    load_failure_reference_decisions(audit_root)["decisions"],
+                    expected_decisions,
+                )
+
+    def assert_reference_import_rejects_malformed_report(
+        self, audit_root, comparison_root, session, queue_id
+    ):
+        report_path = session.with_name("report.json")
+        original = report_path.read_bytes()
+        for field, value, python_equal in (
+            ("schema_version", True, True),
+            ("completed_trials", 1.0, True),
+            ("complete", 1, True),
+            ("completed_trials", float("nan"), False),
+        ):
+            with self.subTest(report_field=field):
+                malformed = json.loads(original)
+                malformed[field] = value
+                self.assertEqual(malformed == json.loads(original), python_equal)
+                try:
+                    report_path.write_text(json.dumps(malformed), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        ReferenceRenderComparisonError, "stale or changed"
+                    ):
+                        import_reference_render_preference(
+                            audit_root, comparison_root, session, queue_id
+                        )
+                finally:
+                    report_path.write_bytes(original)
+                self.assertEqual(
+                    load_failure_reference_decisions(audit_root)["decisions"], []
+                )
+
+        allowed = json.loads(original)
+        allowed["generated_at"] = "2000-01-01T00:00:00+00:00"
+        allowed["operator_note"] = "Extra metadata remains compatible"
+        report_path.write_text(json.dumps(allowed), encoding="utf-8")
+
     def test_imports_exact_blind_preference_into_fresh_audit(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -886,6 +1098,10 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 for value in arm["renders"]
                 if value["id"] == queue_id
             )
+            self.assert_import_preserves_competing_decision(
+                root, workspace, comparison.directory, session, queue_id
+            )
+
             fresh_audit_root = root / "fresh-audit"
             fresh_audit = publish_failure_reference_audit(
                 workspace, fresh_audit_root, seed=19, queue_ids=(queue_id,)
@@ -911,11 +1127,124 @@ class FailureReferenceAuditTest(unittest.TestCase):
             )
             fresh_key_path.write_text(json.dumps(fresh_key, sort_keys=True))
 
+            for path in (
+                session.with_name(".blind-key.json"),
+                session.with_name("report.json"),
+            ):
+                with self.subTest(undecodable=path):
+                    original = path.read_bytes()
+                    try:
+                        path.write_bytes(b"\xff")
+                        with self.assertRaises(ReferenceRenderComparisonError):
+                            import_reference_render_preference(
+                                fresh_audit_root,
+                                comparison.directory,
+                                session,
+                                queue_id,
+                            )
+                    finally:
+                        path.write_bytes(original)
+
+            self.assert_reference_import_rejects_malformed_report(
+                fresh_audit_root, comparison.directory, session, queue_id
+            )
+            comparison_document = json.loads(
+                (comparison.directory / "comparison.json").read_text()
+            )
+            arm = next(
+                value
+                for value in comparison_document["arms"]
+                if value["arm_id"] == selected_arm
+            )
+            render = next(value for value in arm["renders"] if value["id"] == queue_id)
+            audio = comparison.directory / "arms" / selected_arm / render["audio"]
+            control = comparison.directory / comparison_document["controls"][0]["audio"]
+
+            def changed_json(payload):
+                return json.dumps({**json.loads(payload), "changed": True}).encode()
+
+            def changed_preference(payload):
+                document = json.loads(payload)
+                document["trials"][0]["rating"]["preference"] = "b"
+                return json.dumps(document).encode()
+
+            def changed_version(payload):
+                return json.dumps(
+                    {**json.loads(payload), "schema_version": True}
+                ).encode()
+
+            replacements = (
+                (session, changed_preference),
+                (session, changed_version),
+                (comparison.directory / "comparison.json", changed_json),
+                (session.with_name(".blind-key.json"), changed_json),
+                (session.with_name("report.json"), changed_json),
+                (source_audit_root / "audit.json", lambda payload: payload + b"\n"),
+                (source_audit_root / ".blind-key.json", changed_json),
+                (fresh_key_path, changed_json),
+                (audio, lambda payload: payload + b"changed"),
+                (comparison.directory / arm["report"], lambda payload: payload + b"\n"),
+                (control, lambda payload: payload + b"changed"),
+                (
+                    source_audit_root / source_group["candidates"][0]["audio"],
+                    lambda payload: payload + b"changed",
+                ),
+                (
+                    fresh_audit_root
+                    / fresh_document["groups"][0]["candidates"][0]["audio"],
+                    lambda payload: payload + b"changed",
+                ),
+            )
+
+            self.assert_reference_import_rejects_replacements(
+                fresh_audit_root, comparison.directory, session, queue_id, replacements
+            )
+
+            original_session = session.read_bytes()
+            report_path = session.with_name("report.json")
+            original_report = report_path.read_bytes()
+            changed_session = changed_preference(original_session)
+            session.write_bytes(changed_session)
+            reference_render_comparison.aggregate_listening_report(session, report_path)
+            session.write_bytes(original_session)
+            original_validate_report = (
+                reference_render_comparison._validate_listening_report
+            )
+
+            def replace_session_during_report_validation(*args, **kwargs):
+                session.write_bytes(changed_session)
+                try:
+                    return original_validate_report(*args, **kwargs)
+                finally:
+                    session.write_bytes(original_session)
+
+            try:
+                with patch.object(
+                    reference_render_comparison,
+                    "_validate_listening_report",
+                    side_effect=replace_session_during_report_validation,
+                ):
+                    with self.assertRaisesRegex(
+                        ReferenceRenderComparisonError, "changed"
+                    ):
+                        import_reference_render_preference(
+                            fresh_audit_root, comparison.directory, session, queue_id
+                        )
+            finally:
+                session.write_bytes(original_session)
+                report_path.write_bytes(original_report)
+            self.assertEqual(
+                load_failure_reference_decisions(fresh_audit_root)["decisions"], []
+            )
+
             imported = import_reference_render_preference(
                 fresh_audit_root,
                 comparison.directory,
                 session,
                 queue_id,
+            )
+            self.assert_reference_import_rejects_replacements(
+                fresh_audit_root, comparison.directory, session, queue_id, replacements
             )
             repeated = import_reference_render_preference(
                 fresh_audit_root,
@@ -940,8 +1269,7 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 0,
             )
 
-            self.assertTrue(imported.created)
-            self.assertFalse(repeated.created)
+            self.assertEqual((imported.created, repeated.created), (True, False))
             self.assertNotEqual(fresh_audit.audit_id, expected_fresh_audit_id)
             self.assertEqual(imported.audit_id, expected_fresh_audit_id)
             self.assertEqual(imported.decision_set_id, repeated.decision_set_id)

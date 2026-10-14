@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
-import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from durable_file import atomic_write_json
 from vntts_artifacts import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import (
     Pcm16MonoWavError,
     Pcm16MonoWavInfo,
@@ -38,6 +38,9 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.cleanup import temporary_directory
+from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json, has_schema_version
 
 AUDIO_EVENT_REVIEW_SCHEMA = "vntts.authoring-audio-event-review"
 AUDIO_EVENT_REVIEW_VERSION = 1
@@ -151,7 +154,7 @@ def publish_source_audio_event_review(
         audio_target.parent.mkdir(parents=True)
         audio_target.write_bytes(audio_snapshot.payload)
         try:
-            audio_info = probe_pcm16_mono_wav(audio_target)
+            audio_info = probe_pcm16_mono_wav(io.BytesIO(audio_snapshot.payload))
         except (OSError, Pcm16MonoWavError) as error:
             raise AudioEventReviewError(
                 f"Source event audio is not PCM16 mono WAV: {error}"
@@ -185,9 +188,15 @@ def publish_source_audio_event_review(
         }
         atomic_write_json(staging / "review.json", review, sort_keys=True)
         load_audio_event_review(staging)
-        assert_authority_snapshot(queue_snapshot, "generation queue")
-        assert_authority_snapshot(story_snapshot, "source story index")
-        assert_authority_snapshot(audio_snapshot, "source event audio")
+        assert_authority_snapshot(
+            queue_snapshot, "generation queue", error_type=AudioEventReviewError
+        )
+        assert_authority_snapshot(
+            story_snapshot, "source story index", error_type=AudioEventReviewError
+        )
+        assert_authority_snapshot(
+            audio_snapshot, "source event audio", error_type=AudioEventReviewError
+        )
         try:
             rename_directory_no_replace(staging, output)
         except (AtomicPublicationError, OSError) as error:
@@ -242,10 +251,18 @@ def load_audio_event_review(directory: str | Path) -> AudioEventReview:
             review_snapshot.sha256,
         )
         decision = _required_text(decision_document.get("decision"), "decision")
-        assert_authority_snapshot(decision_snapshot, "audio-event decision")
-    assert_authority_snapshot(review_snapshot, "audio-event review")
-    assert_authority_snapshot(queue_snapshot, "review queue")
-    assert_authority_snapshot(audio_snapshot, "review candidate audio")
+        assert_authority_snapshot(
+            decision_snapshot, "audio-event decision", error_type=AudioEventReviewError
+        )
+    assert_authority_snapshot(
+        review_snapshot, "audio-event review", error_type=AudioEventReviewError
+    )
+    assert_authority_snapshot(
+        queue_snapshot, "review queue", error_type=AudioEventReviewError
+    )
+    assert_authority_snapshot(
+        audio_snapshot, "review candidate audio", error_type=AudioEventReviewError
+    )
     return AudioEventReview(
         directory=directory,
         review_id=_required_text(review.get("review_id"), "review ID"),
@@ -347,10 +364,8 @@ def _validate_review_document(
 def _validate_review_schema_and_queue_authority(
     review: dict[str, object], queue_snapshot: AuthoritySnapshot
 ) -> VoiceGenerationQueue:
-    if (
-        review.get("schema") != AUDIO_EVENT_REVIEW_SCHEMA
-        or type(review.get("schema_version")) is not int
-        or review.get("schema_version") != AUDIO_EVENT_REVIEW_VERSION
+    if review.get("schema") != AUDIO_EVENT_REVIEW_SCHEMA or not has_schema_version(
+        review, AUDIO_EVENT_REVIEW_VERSION
     ):
         raise AudioEventReviewError("Unsupported audio-event review schema")
     if review.get("queue_sha256") != queue_snapshot.sha256:
@@ -403,7 +418,7 @@ def _validate_review_candidate_audio(
     if candidate.get("audio_sha256") != audio_snapshot.sha256:
         raise AudioEventReviewError("Audio-event review audio changed")
     try:
-        info = probe_pcm16_mono_wav(audio_snapshot.path)
+        info = probe_pcm16_mono_wav(io.BytesIO(audio_snapshot.payload))
     except (OSError, Pcm16MonoWavError) as error:
         raise AudioEventReviewError(
             f"Invalid audio-event review WAV: {error}"
@@ -489,11 +504,7 @@ def _validate_source_evidence(value: object) -> dict[str, object]:
     if value.get("synthesis_voice_character") is not None:
         raise AudioEventReviewError("Audio-event source must not claim synthesis voice")
     story_digest = value.get("source_story_index_sha256")
-    if (
-        not isinstance(story_digest, str)
-        or len(story_digest) != 64
-        or any(character not in "0123456789abcdef" for character in story_digest)
-    ):
+    if not is_lowercase_sha256(story_digest):
         raise AudioEventReviewError("Audio-event source story index hash is invalid")
     return value
 
@@ -512,7 +523,7 @@ def _source_story_record(payload: bytes, line_id: str) -> dict[str, object]:
         for raw_line in payload.splitlines():
             if not raw_line.strip():
                 continue
-            value = json.loads(raw_line.decode("utf-8"))
+            value = decode_json(raw_line.decode("utf-8"))
             if isinstance(value, dict) and value.get("line_id") == expected:
                 matches.append(value)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -559,10 +570,8 @@ def _validate_effect_audio_info(info: Pcm16MonoWavInfo) -> None:
 def _validate_decision_document(
     value: dict[str, object], review: dict[str, object], review_sha256: str
 ) -> dict[str, object]:
-    if (
-        value.get("schema") != AUDIO_EVENT_DECISION_SCHEMA
-        or type(value.get("schema_version")) is not int
-        or value.get("schema_version") != AUDIO_EVENT_DECISION_VERSION
+    if value.get("schema") != AUDIO_EVENT_DECISION_SCHEMA or not has_schema_version(
+        value, AUDIO_EVENT_DECISION_VERSION
     ):
         raise AudioEventReviewError("Unsupported audio-event decision schema")
     if value.get("review_id") != review["review_id"]:
@@ -574,7 +583,10 @@ def _validate_decision_document(
     candidate = _review_candidate(review)
     if value.get("candidate_audio_sha256") != candidate.get("audio_sha256"):
         raise AudioEventReviewError("Audio-event decision audio authority changed")
-    if value.get("decision") not in AUDIO_EVENT_DECISIONS:
+    if (
+        not isinstance(value.get("decision"), str)
+        or value.get("decision") not in AUDIO_EVENT_DECISIONS
+    ):
         raise AudioEventReviewError("Audio-event decision is invalid")
     _aware_timestamp(value.get("reviewed_at"), "audio-event reviewed_at")
     return value
@@ -605,7 +617,7 @@ def _required_single_tongue_click_plan(
 
 
 def _load_queue_snapshot(payload: bytes) -> VoiceGenerationQueue:
-    with tempfile.TemporaryDirectory(prefix="vntts-audio-event-queue-") as directory:
+    with temporary_directory(prefix="vntts-audio-event-queue-") as directory:
         path = Path(directory) / "queue.jsonl"
         path.write_bytes(payload)
         return VoiceGenerationQueue.load(path)

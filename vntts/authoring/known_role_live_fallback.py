@@ -9,13 +9,12 @@ from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.voice_manifest import load_voice_manifest, normalize_character_name
+from vntts_artifacts.voice_manifest import normalize_character_name
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
@@ -68,6 +67,10 @@ from vntts.authoring.workspace_foundation import (
     copy_workspace_tree_snapshot,
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.document_identity import sha256_file
+from vntts.json_types import has_schema_version
+from vntts.path_safety import contained_no_replace_destination
+from vntts.voices import load_voice_manifest
 
 _copy_base_wavs = partial(
     copy_generation_wavs,
@@ -100,6 +103,14 @@ class _KnownRoleSelection:
     run_config: Mapping[str, object]
     ledgers: list[dict[str, object]]
     evidence_sources: dict[Path, dict[str, str]]
+
+
+@dataclass(frozen=True)
+class _KnownRoleEvidence:
+    directory: Path
+    document: dict[str, object]
+    items: dict[str, dict[str, object]]
+    digests: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -196,10 +207,10 @@ def _select_known_role_fallback(
     )
     manifest_sha256 = sha256_file(manifest_path)
 
-    evidence_sources = {}
+    evidence_sources: dict[Path, _KnownRoleEvidence] = {}
     ledgers = []
     for queue_id, evidence_directory in pairs:
-        ledger, source_directory, source_digests = _known_role_evidence_ledger(
+        ledger = _known_role_evidence_ledger(
             queue_id,
             evidence_directory,
             base_directory,
@@ -211,9 +222,9 @@ def _select_known_role_fallback(
             queue_sha256,
             source_character,
             synthesis_character,
+            evidence_sources,
         )
         ledgers.append(ledger)
-        evidence_sources[source_directory] = source_digests
     return _KnownRoleSelection(
         base_directory,
         base_document,
@@ -233,7 +244,7 @@ def _select_known_role_fallback(
         narrator_character,
         run_config,
         ledgers,
-        evidence_sources,
+        {source.directory: source.digests for source in evidence_sources.values()},
     )
 
 
@@ -249,7 +260,8 @@ def _known_role_evidence_ledger(
     queue_sha256: str,
     source_character: str,
     synthesis_character: str,
-) -> tuple[dict[str, object], Path, dict[str, str]]:
+    evidence_sources: dict[Path, _KnownRoleEvidence],
+) -> dict[str, object]:
     queue_item = queue_by_id.get(queue_id)
     if queue_item is None or queue_item.action != "generate":
         raise AuthoringWorkbenchError(
@@ -269,6 +281,45 @@ def _known_role_evidence_ledger(
         raise AuthoringWorkbenchError(
             f"Known-role fallback route does not cover {queue_id!r}"
         )
+    source = evidence_sources.get(evidence_directory)
+    if source is None:
+        source = _load_known_role_evidence(
+            evidence_directory, base_directory, base_document, base_queue, queue_sha256
+        )
+        evidence_sources[evidence_directory] = source
+    source_item = source.items.get(queue_id)
+    if (
+        not isinstance(source_item, dict)
+        or source_item.get("status") != "failed"
+        or source_item.get("review_status") is not None
+        or normalize_character_name(source_item.get("requested_voice_character", ""))
+        != normalize_character_name(source_character)
+        or normalize_character_name(source_item.get("voice_character", ""))
+        != normalize_character_name(synthesis_character)
+        or "path" in source_item
+        or "file_sha256" in source_item
+    ):
+        raise AuthoringWorkbenchError(
+            f"Known-role fallback evidence is not an exact routed failure: {queue_id!r}"
+        )
+    return {
+        "queue_id": queue_id,
+        "evidence_workspace_id": source.document["workspace_id"],
+        "evidence_workspace_sha256": source.digests["workspace"],
+        "evidence_config_fingerprint": source.document["config_fingerprint"],
+        "evidence_state_sha256": source.digests["state"],
+        "evidence_item_sha256": canonical_document_sha256(source_item),
+        "evidence_item": copy.deepcopy(source_item),
+    }
+
+
+def _load_known_role_evidence(
+    evidence_directory: Path,
+    base_directory: Path,
+    base_document: Mapping[str, object],
+    base_queue: VoiceGenerationQueue,
+    queue_sha256: str,
+) -> _KnownRoleEvidence:
     source_directory, source_document, source_workspace_sha256 = (
         load_workspace_authority(evidence_directory)
     )
@@ -300,32 +351,10 @@ def _known_role_evidence_ledger(
         )
     if source_state.get("active") is not None:
         raise AuthoringWorkbenchError("Known-role fallback evidence is active")
-    source_item = _generation_state_items(source_state).get(queue_id)
-    if (
-        not isinstance(source_item, dict)
-        or source_item.get("status") != "failed"
-        or source_item.get("review_status") is not None
-        or normalize_character_name(source_item.get("requested_voice_character", ""))
-        != normalize_character_name(source_character)
-        or normalize_character_name(source_item.get("voice_character", ""))
-        != normalize_character_name(synthesis_character)
-        or "path" in source_item
-        or "file_sha256" in source_item
-    ):
-        raise AuthoringWorkbenchError(
-            f"Known-role fallback evidence is not an exact routed failure: {queue_id!r}"
-        )
-    return (
-        {
-            "queue_id": queue_id,
-            "evidence_workspace_id": source_document["workspace_id"],
-            "evidence_workspace_sha256": source_workspace_sha256,
-            "evidence_config_fingerprint": source_document["config_fingerprint"],
-            "evidence_state_sha256": source_state_sha256,
-            "evidence_item_sha256": canonical_document_sha256(source_item),
-            "evidence_item": copy.deepcopy(source_item),
-        },
+    return _KnownRoleEvidence(
         source_directory,
+        source_document,
+        _generation_state_items(source_state),
         {
             "workspace": source_workspace_sha256,
             "state": source_state_sha256,
@@ -366,8 +395,11 @@ def _known_role_identity(
     workspace_id = workspace_id_for_config(selection.import_id, config_fingerprint)
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    destination = contained_workspace_path(
-        root, Path(workspace_id), "Known-role fallback destination"
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Known-role fallback destination",
+        error_type=AuthoringWorkbenchError,
     )
     return _KnownRoleIdentity(
         batch, batch_id, config_fingerprint, root, destination, workspace_id
@@ -618,7 +650,7 @@ def _validated_known_role_batch(value: object) -> dict[str, object]:
         not isinstance(batch, dict)
         or set(batch) != common
         or batch.get("schema") != SCHEMA
-        or batch.get("schema_version") != SCHEMA_VERSION
+        or not has_schema_version(batch, SCHEMA_VERSION)
         or batch.get("batch_id")
         != canonical_document_sha256(
             {key: value for key, value in batch.items() if key != "batch_id"}
@@ -644,7 +676,7 @@ def _known_role_validation_inputs(
     Path,
     dict[str, object],
     dict[str, object],
-    dict[str, object],
+    dict[str, VoiceGenerationQueueItem],
     Mapping[str, str],
 ]:
     manifest_path = contained_workspace_path(
@@ -654,23 +686,17 @@ def _known_role_validation_inputs(
     )
     manifest = load_workspace_json(manifest_path, "known-role fallback manifest")
     _metadata, voices = load_voice_manifest(manifest_path, allow_legacy=False)
-    try:
-        queue = load_generation_state(
-            root / "generated-audio/generation-state.json", root / "queue.jsonl"
-        )
-    except BulkGenerationError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
-    queue_document = load_stable_workspace_generation_state(
+    queue, state, _payload, _state_sha256 = load_stable_workspace_generation_state(
         root,
         workspace,
         "known-role fallback workspace",
         error_type=AuthoringWorkbenchError,
-    )[0]
-    queue_by_id = {item.queue_id: item for item in queue_document.items}
+    )
+    queue_by_id = {item.queue_id: item for item in queue.items}
     overrides = queue_voice_overrides_from_manifest(
         manifest, queue_ids=queue_by_id, voices=voices
     )
-    return manifest_path, manifest, queue, queue_by_id, overrides
+    return manifest_path, manifest, state, queue_by_id, overrides
 
 
 def _validate_known_role_route(
@@ -699,8 +725,9 @@ def _validate_known_role_ledgers(
     items = batch.get("items")
     if not isinstance(items, list) or not items:
         raise AuthoringWorkbenchError("Known-role fallback item ledger is empty")
+    state_items = _generation_state_items(state)
     observed = [
-        _validate_known_role_ledger(ledger, batch, state, queue_by_id, overrides)
+        _validate_known_role_ledger(ledger, batch, state_items, queue_by_id, overrides)
         for ledger in items
     ]
     if observed != sorted(set(observed)):
@@ -710,7 +737,7 @@ def _validate_known_role_ledgers(
 def _validate_known_role_ledger(
     ledger: object,
     batch: Mapping[str, object],
-    state: dict[str, object],
+    state_items: Mapping[str, dict[str, object]],
     queue_by_id: Mapping[str, object],
     overrides: Mapping[str, str],
 ) -> str:
@@ -733,7 +760,7 @@ def _validate_known_role_ledger(
         "evidence_item_sha256",
     ):
         require_workspace_sha256(ledger.get(field), f"Known-role fallback {field}")
-    result = _generation_state_items(state).get(queue_id)
+    result = state_items.get(queue_id)
     fallback = result.get("live_fallback") if isinstance(result, dict) else None
     evidence = fallback.get("evidence") if isinstance(fallback, dict) else None
     expected_evidence = {

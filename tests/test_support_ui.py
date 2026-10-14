@@ -35,9 +35,13 @@ def event(index):
 class SupportCenterDialogTest(unittest.TestCase):
     def setUp(self):
         self.native_log = NativeSpeechLog()
+        self.game_import_log = GameImportLog()
         native_patch = patch("vntts.support.native_speech_log", self.native_log)
+        game_import_patch = patch("vntts.support.game_import_log", self.game_import_log)
         native_patch.start()
+        game_import_patch.start()
         self.addCleanup(native_patch.stop)
+        self.addCleanup(game_import_patch.stop)
 
     def test_native_timings_are_visible_in_existing_runtime_log(self):
         self.native_log.add("moss-native", "MOSS native: gen_s=1.25")

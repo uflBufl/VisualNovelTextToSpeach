@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from io import BytesIO
@@ -91,6 +92,38 @@ class DependencyAuditTests(unittest.TestCase):
                 self.assertEqual(run.call_args_list[1].args[0][3], str(backend))
                 git_commits.assert_called_once_with(lock_paths)
                 osv.assert_called_once_with(commits)
+
+    def test_script_imports_and_reads_locks_without_installed_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lock = Path(directory) / "uv.lock"
+            commit = "a" * 40
+            lock.write_text(
+                'package = [{ source = { git = "https://example.test/repo#'
+                + commit
+                + '" } }]',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-S",
+                    "-c",
+                    "import runpy, sys; "
+                    "from pathlib import Path; "
+                    "sys.path.insert(0, str(Path(sys.argv[1]).parent)); "
+                    "audit = runpy.run_path(sys.argv[1]); "
+                    "print(audit['locked_git_commits']((Path(sys.argv[2]),)))",
+                    str(Path(dependency_audit.__file__).resolve()),
+                    str(lock),
+                ],
+                cwd=directory,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True,
+            )
+            self.assertEqual(result.stdout.strip(), repr((commit,)))
 
     def test_requires_an_exact_git_commit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

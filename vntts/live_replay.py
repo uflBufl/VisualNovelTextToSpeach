@@ -5,30 +5,32 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
-import json
-import math
 import os
+import shutil
 import stat
 from collections import Counter
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path, PurePosixPath
-from tempfile import TemporaryDirectory
-from threading import Condition, Event, Lock, RLock
+from tempfile import mkdtemp
+from threading import TIMEOUT_MAX, Condition, Event, Lock, RLock, Thread
 from time import monotonic
 from typing import NotRequired, Protocol, TypeAlias, TypedDict
 
 import numpy as np
+from durable_file import atomic_write_json
 from PIL import Image
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.generated_audio import (
     GeneratedAudioIndex,
     GeneratedAudioManifestError,
 )
 
 from vntts.chapter_voice_preload import ChapterVoicePreloader
+from vntts.cleanup import cleanup_on_exit
+from vntts.cleanup import temporary_directory as owned_temporary_directory
 from vntts.cli import cli_error, cli_messages
 from vntts.controller import AppController, LiveSequenceStatus
 from vntts.dialog_capture import (
@@ -46,6 +48,7 @@ from vntts.generated_audio import (
     RouteDecision,
     SourceAudioRoute,
 )
+from vntts.json_types import decode_json
 from vntts.live import (
     CanonicalDialogRoute,
     LiveDialogReader,
@@ -54,13 +57,17 @@ from vntts.live import (
     StableFrameRoute,
 )
 from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan, StoryCursor
+from vntts.numeric_values import optional_finite_number
 from vntts.ocr import DialogRegion
+from vntts.path_safety import ensure_separate_output, open_regular_candidate
 from vntts.playback import PlaybackOutcome, PreparedPlayback, outcome_for_prepared
 from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.support import GenerationTimelineLog, generation_timeline_stages
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 from vntts.window_capture import WindowGeometry
+
+_REPLAY_TERMINAL_TIMEOUT_SECONDS = 10.0
 
 LIVE_REPLAY_CORPUS_VERSION = 2
 LIVE_REPLAY_CORPUS_VERSIONS = frozenset({1, LIVE_REPLAY_CORPUS_VERSION})
@@ -238,13 +245,13 @@ class ReplayAudioOutput:
         self.played.append(
             {
                 "sample_rate": int(sample_rate),
-                "sample_count": int(len(samples)),
+                "sample_count": len(samples),
                 "pcm_sha256": hashlib.sha256(samples.tobytes()).hexdigest(),
             }
         )
 
-    def wait(self) -> object:
-        return type("ReplayStatus", (), {"output_underflow": False})()
+    def wait(self) -> None:
+        return None
 
     def stop(self) -> None:
         return None
@@ -613,6 +620,175 @@ class ReplayAppController(AppController):
         return self.replay_frame_source.advance()
 
 
+class _ReplaySnapshots:
+    """Retain replay files until the worker owner confirms safe release."""
+
+    def __init__(self) -> None:
+        self.directories: list[str] = []
+        self.wait_for: Event | None = None
+
+    def create_directory(self, prefix: str) -> str:
+        directory = mkdtemp(prefix=prefix)
+        self.directories.append(directory)
+        return directory
+
+    def close(self) -> None:
+        if not self.directories:
+            return
+        completed = self.wait_for
+        if completed is None or completed.is_set():
+            self._remove_directories()
+            return
+        try:
+            Thread(
+                target=partial(self._close_after_drain, completed),
+                name="replay-snapshot-release",
+                daemon=True,
+            ).start()
+        except BaseException as error:
+            error.add_note(f"Replay snapshots retained: {self.directories}")
+            raise
+
+    def _close_after_drain(self, completed: Event) -> None:
+        if completed.wait() and completed.is_set():
+            self._remove_directories()
+
+    def _remove_directories(self) -> None:
+        with ExitStack() as cleanup:
+            for directory in reversed(tuple(self.directories)):
+                cleanup.enter_context(
+                    cleanup_on_exit(
+                        partial(self._remove_directory, directory),
+                        description=f"Replay snapshot {directory}",
+                    )
+                )
+
+    def _remove_directory(self, directory: str) -> None:
+        try:
+            shutil.rmtree(directory)
+        except BaseException as error:
+            error.add_note(f"Replay snapshot retained: {directory}")
+            raise
+        self.directories.remove(directory)
+
+
+@contextmanager
+def _replay_snapshot_directory(
+    prefix: str, snapshots: _ReplaySnapshots | None
+) -> Generator[str, None, None]:
+    if snapshots is None:
+        with owned_temporary_directory(prefix=prefix) as directory:
+            yield directory
+    else:
+        yield snapshots.create_directory(prefix)
+
+
+def _shutdown_replay_executors(
+    executors: Sequence[ThreadPoolExecutor], *, wait: bool, cancel_futures: bool
+) -> None:
+    with ExitStack() as cleanup:
+        for executor in reversed(executors):
+            cleanup.enter_context(
+                cleanup_on_exit(
+                    partial(
+                        executor.shutdown, wait=wait, cancel_futures=cancel_futures
+                    ),
+                    description="Replay executor shutdown",
+                )
+            )
+
+
+def _shutdown_legacy_replay(
+    frame_source: ReplayFrameSource,
+    reader: LiveDialogReader,
+    executors: Sequence[ThreadPoolExecutor],
+    router: GeneratedAudioFallbackBackend,
+    completed: Event,
+) -> None:
+    stops_succeeded = False
+    reader_stop_confirmed = False
+
+    def seal_reader() -> None:
+        nonlocal reader_stop_confirmed
+        try:
+            reader.shutdown()
+        finally:
+            reader_stop_confirmed = (
+                reader.shutdown_started is True and reader.stop_event.is_set() is True
+            )
+
+    def stop_reader() -> None:
+        nonlocal reader_stop_confirmed
+        reader.stop()
+        reader_stop_confirmed = True
+
+    def finish(*, cancel_futures: bool = True) -> None:
+        _shutdown_replay_executors(executors, wait=True, cancel_futures=cancel_futures)
+        if reader_stop_confirmed:
+            # Joined workers no longer use snapshots, even if router.stop fails.
+            with cleanup_on_exit(completed.set, description="Replay drain completion"):
+                router.stop()
+
+    def defer() -> None:
+        with cleanup_on_exit(
+            lambda: Thread(
+                target=partial(finish, cancel_futures=False),
+                name="replay-shutdown-drain",
+                daemon=True,
+            ).start(),
+            description="Background replay drain",
+        ):
+            _shutdown_replay_executors(executors, wait=False, cancel_futures=True)
+
+    def drain() -> None:
+        wait_succeeded = False
+
+        def finish_or_defer() -> None:
+            if wait_succeeded:
+                finish()
+            else:
+                with cleanup_on_exit(defer, description="Deferred replay shutdown"):
+                    seal_reader()
+
+        with cleanup_on_exit(finish_or_defer, description="Replay pipeline drain"):
+            if stops_succeeded:
+                reader.wait()
+                wait_succeeded = True
+
+    with cleanup_on_exit(drain, description="Legacy replay drain"):
+        with cleanup_on_exit(stop_reader, description="Legacy reader stop"):
+            frame_source.stop()
+        stops_succeeded = True
+
+
+def _positive_replay_seconds(value: float, name: str) -> float:
+    message = f"Live replay {name} must be finite and positive"
+    try:
+        seconds = optional_finite_number(float(value))
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(message) from error
+    if seconds is None or seconds <= 0:
+        raise ValueError(message)
+    return seconds
+
+
+def _replay_timeout_seconds(value: float) -> float:
+    seconds = _positive_replay_seconds(value, "timeout")
+    if seconds > TIMEOUT_MAX:
+        raise ValueError("Live replay timeout exceeds the thread timeout range")
+    return seconds
+
+
+def _replay_confirmation_seconds(interval_seconds: float) -> float:
+    interval = _positive_replay_seconds(interval_seconds, "interval")
+    confirmation = max(5.0, interval * 10)
+    if confirmation >= _REPLAY_TERMINAL_TIMEOUT_SECONDS:
+        raise ValueError(
+            "Live replay interval must keep confirmation before terminal timeout"
+        )
+    return confirmation
+
+
 class LiveReplayRunner:
     def __init__(
         self,
@@ -628,22 +804,51 @@ class LiveReplayRunner:
         self.corpus = corpus
         self.uses_default_recognizer = recognizer is None
         self.recognizer = recognizer or _recognize_replay_frame
-        self.interval_seconds = float(interval_seconds)
-        self.timeout_seconds = float(timeout_seconds)
-        if not math.isfinite(self.interval_seconds) or self.interval_seconds <= 0:
-            raise ValueError("Live replay interval must be finite and positive")
-        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
-            raise ValueError("Live replay timeout must be finite and positive")
+        self.interval_seconds = _positive_replay_seconds(interval_seconds, "interval")
+        self.timeout_seconds = _replay_timeout_seconds(timeout_seconds)
+        _replay_confirmation_seconds(self.interval_seconds)
         self.audio_source_policy = audio_source_policy
 
     def run(self) -> ReplayReport:
-        with _generated_audio_index_snapshot(
-            self.corpus.generated_audio_manifest
-        ) as generated_audio_index:
-            with _live_sequence_snapshot(self.corpus.live_sequence) as sequence:
+        _replay_confirmation_seconds(self.interval_seconds)
+        _replay_timeout_seconds(self.timeout_seconds)
+        snapshots = _ReplaySnapshots()
+        with cleanup_on_exit(snapshots.close, description="Replay snapshot cleanup"):
+            with (
+                _generated_audio_index_snapshot(
+                    self.corpus.generated_audio_manifest, snapshots=snapshots
+                ) as generated_audio_index,
+                _live_sequence_snapshot(
+                    self.corpus.live_sequence, snapshots=snapshots
+                ) as sequence,
+            ):
                 if sequence is not None:
-                    return self._run_sequence(generated_audio_index, *sequence)
-                return self._run_legacy(generated_audio_index)
+                    return self._run_sequence(
+                        generated_audio_index, *sequence, snapshots
+                    )
+                return self._run_legacy(generated_audio_index, snapshots)
+
+    def _provenance(self) -> dict[str, object]:
+        manifest = self.corpus.generated_audio_manifest
+        return {
+            "corpus_sha256": self.corpus.source_sha256,
+            "generated_audio_manifest_sha256": manifest.sha256 if manifest else None,
+            "generated_audio_artifacts": (
+                [
+                    {"path": artifact.relative_path, "sha256": artifact.sha256}
+                    for artifact in manifest.artifacts
+                ]
+                if manifest
+                else []
+            ),
+            "recognition_sources": sorted(
+                {
+                    source
+                    for dialogue in self.corpus.dialogue
+                    for source in dialogue.frame_recognition_sources
+                }
+            ),
+        }
 
     def _create_audio_stack(
         self,
@@ -675,7 +880,9 @@ class LiveReplayRunner:
         return live_backend, library, audio_output, router
 
     def _run_legacy(
-        self, generated_audio_index: GeneratedAudioIndex | None
+        self,
+        generated_audio_index: GeneratedAudioIndex | None,
+        snapshots: _ReplaySnapshots,
     ) -> ReplayReport:
         frame_source = ReplayFrameSource(self.corpus.dialogue)
         resolver = ChapterVoicePreloader.from_document(self.corpus.story_document)
@@ -831,10 +1038,10 @@ class LiveReplayRunner:
             },
             auto_advance=frame_source.advance,
             auto_advance_delay_seconds=self.interval_seconds,
-            auto_advance_confirmation_timeout_seconds=max(
-                5.0,
-                self.interval_seconds * 10,
+            auto_advance_confirmation_timeout_seconds=_replay_confirmation_seconds(
+                self.interval_seconds
             ),
+            auto_advance_terminal_timeout_seconds=_REPLAY_TERMINAL_TIMEOUT_SECONDS,
             auto_advance_state_changed=lambda state, generation, attempt: (
                 advance_states.append(
                     {
@@ -848,7 +1055,19 @@ class LiveReplayRunner:
             max_speech_jobs=1,
             first_pcm_on_prepare=True,
         )
-        try:
+        drained = Event()
+        snapshots.wait_for = drained
+        with cleanup_on_exit(
+            partial(
+                _shutdown_legacy_replay,
+                frame_source,
+                reader,
+                executors,
+                router,
+                drained,
+            ),
+            description="Legacy replay shutdown",
+        ):
             reader.start()
             completed = frame_source.completed.wait(self.timeout_seconds)
             if not completed:
@@ -857,14 +1076,6 @@ class LiveReplayRunner:
                         f"Live replay timed out after {self.timeout_seconds:g} seconds"
                     )
                 )
-            frame_source.stop()
-            reader.stop()
-            reader.wait()
-        finally:
-            frame_source.stop()
-            for executor in executors:
-                executor.shutdown(wait=True, cancel_futures=True)
-            router.stop()
 
         frame_consumption = frame_source.snapshot()
         observed = _group_played_dialogue(played)
@@ -874,18 +1085,12 @@ class LiveReplayRunner:
             if item.expect_playback
         ]
         route_sources = [route["effective_source"] for route in routes]
-        expected_sources = [
-            item.expected_source
-            for item in self.corpus.dialogue
-            if item.expect_playback and item.expected_source is not None
-        ]
-        actual_expected_sources = route_sources[: len(expected_sources)]
         successful = bool(
             completed
             and frame_consumption["complete"]
             and not errors
             and observed == expected
-            and actual_expected_sources == expected_sources
+            and _legacy_route_sources_match(self.corpus.dialogue, route_sources)
             and frame_source.advance_requests == len(self.corpus.dialogue)
         )
         return {
@@ -910,32 +1115,7 @@ class LiveReplayRunner:
                 "recognized_frames": recognized_frames,
                 "frame_consumption": frame_consumption,
             },
-            "provenance": {
-                "corpus_sha256": self.corpus.source_sha256,
-                "generated_audio_manifest_sha256": (
-                    self.corpus.generated_audio_manifest.sha256
-                    if self.corpus.generated_audio_manifest is not None
-                    else None
-                ),
-                "generated_audio_artifacts": (
-                    [
-                        {
-                            "path": artifact.relative_path,
-                            "sha256": artifact.sha256,
-                        }
-                        for artifact in self.corpus.generated_audio_manifest.artifacts
-                    ]
-                    if self.corpus.generated_audio_manifest is not None
-                    else []
-                ),
-                "recognition_sources": sorted(
-                    {
-                        source
-                        for dialogue in self.corpus.dialogue
-                        for source in dialogue.frame_recognition_sources
-                    }
-                ),
-            },
+            "provenance": self._provenance(),
             "timelines": timelines.snapshot(),
         }
 
@@ -946,6 +1126,7 @@ class LiveReplayRunner:
         resolver: ChapterVoicePreloader,
         story_index_path: Path,
         plan_path: Path,
+        snapshots: _ReplaySnapshots,
     ) -> ReplayReport:
         binding = self.corpus.live_sequence
         if binding is None:
@@ -1164,14 +1345,6 @@ class LiveReplayRunner:
                 return None
             return controller._live_sequence_line_id(character, text)
 
-        def record_pipeline_event(
-            stage: str,
-            generation: int,
-            occurred_at: float,
-            **details: object,
-        ) -> None:
-            pipeline.record(stage, generation, occurred_at, **details)
-
         reader = LiveDialogReader(
             capture_executor=executors[0],
             ocr_executor=executors[1],
@@ -1200,29 +1373,33 @@ class LiveReplayRunner:
             auto_advance=controller._live_auto_advance_callback(),
             require_visible_auto_advance=mode == "audio-auto",
             auto_advance_delay_seconds=self.interval_seconds,
-            auto_advance_confirmation_timeout_seconds=max(
-                5.0,
-                self.interval_seconds * 10,
+            auto_advance_confirmation_timeout_seconds=_replay_confirmation_seconds(
+                self.interval_seconds
             ),
+            auto_advance_terminal_timeout_seconds=_REPLAY_TERMINAL_TIMEOUT_SECONDS,
             auto_advance_state_changed=auto_advance_state_changed,
-            pipeline_event_handler=record_pipeline_event,
+            pipeline_event_handler=pipeline.record,
             max_speech_jobs=1,
             first_pcm_on_prepare=False,
             interval_seconds=live_configuration["interval_seconds"],
             tracker_options=dict(live_configuration["tracker_options"]),
         )
         controller.live_reader = reader
-        controller._set_backend_live_mode(True)
-        try:
-            reader.start()
-            completed = frame_source.completed.wait(self.timeout_seconds)
-            if not completed:
-                errors.append(
-                    TimeoutError(
-                        f"Live replay timed out after {self.timeout_seconds:g} seconds"
+        snapshots.wait_for = controller.shutdown_complete
+        with cleanup_on_exit(
+            controller.shutdown, description="Replay controller cleanup"
+        ):
+            with cleanup_on_exit(
+                frame_source.stop, description="Replay frame source cleanup"
+            ):
+                reader.start()
+                completed = frame_source.completed.wait(self.timeout_seconds)
+                if not completed:
+                    errors.append(
+                        TimeoutError(
+                            f"Live replay timed out after {self.timeout_seconds:g} seconds"
+                        )
                     )
-                )
-            frame_source.stop()
             reader.stop()
             reader.wait()
             metrics = reader.get_pipeline_metrics()
@@ -1232,9 +1409,6 @@ class LiveReplayRunner:
                     "Replay sequence did not initialize its story cursor"
                 )
             final_cursor_snapshot = final_cursor.snapshot()
-        finally:
-            frame_source.stop()
-            controller.shutdown()
 
         frame_consumption = frame_source.snapshot()
         observed = _group_played_dialogue(played)
@@ -1322,30 +1496,10 @@ class LiveReplayRunner:
                 "routed_frames": routed_frames,
                 "frame_consumption": frame_consumption,
             },
-            "provenance": {
-                "corpus_sha256": self.corpus.source_sha256,
+            "provenance": self._provenance()
+            | {
                 "story_index_sha256": binding.story_index.sha256,
                 "live_sequence_plan_sha256": binding.plan.sha256,
-                "generated_audio_manifest_sha256": (
-                    self.corpus.generated_audio_manifest.sha256
-                    if self.corpus.generated_audio_manifest is not None
-                    else None
-                ),
-                "generated_audio_artifacts": (
-                    [
-                        {"path": artifact.relative_path, "sha256": artifact.sha256}
-                        for artifact in self.corpus.generated_audio_manifest.artifacts
-                    ]
-                    if self.corpus.generated_audio_manifest is not None
-                    else []
-                ),
-                "recognition_sources": sorted(
-                    {
-                        source
-                        for dialogue in self.corpus.dialogue
-                        for source in dialogue.frame_recognition_sources
-                    }
-                ),
             },
             "statuses": statuses,
             "timelines": pipeline.timelines.snapshot(),
@@ -1353,10 +1507,7 @@ class LiveReplayRunner:
 
 
 def load_live_replay_corpus(path: str | Path) -> LiveReplayCorpus:
-    path, payload, document = _read_replay_document(path)
-    schema_version = document["schema_version"]
-    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
-        raise ValueError("Live replay schema_version must be an integer")
+    path, payload, document, schema_version = _read_replay_document(path)
     name = _replay_string(document.get("name"), "Live replay name", path.stem)
     fixture_kind = _replay_string(
         document.get("fixture_kind"),
@@ -1598,7 +1749,7 @@ def _load_frame(
     if expected_sha256 is not None and expected_sha256 != digest:
         raise ValueError(f"Live replay frame checksum does not match: {path}")
     with Image.open(io.BytesIO(payload)) as source:
-        image = source.convert("RGB").copy()
+        image = source.convert("RGB")
     if region is not None:
         image = region.crop(image)
     if observation is not None:
@@ -1638,7 +1789,7 @@ def _fingerprint_replay_frame(
     return fingerprint, observation, identity
 
 
-def _read_replay_document(value: str | Path) -> tuple[Path, bytes, JsonObject]:
+def _read_replay_document(value: str | Path) -> tuple[Path, bytes, JsonObject, int]:
     selected_path = Path(value).expanduser()
     if selected_path.is_symlink():
         raise ValueError(f"Live replay corpus must not be a symlink: {selected_path}")
@@ -1649,13 +1800,17 @@ def _read_replay_document(value: str | Path) -> tuple[Path, bytes, JsonObject]:
     )
     document = _decode_json_object(payload, "live replay corpus")
     version = document.get("schema_version")
-    if isinstance(version, bool) or version not in LIVE_REPLAY_CORPUS_VERSIONS:
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or version not in LIVE_REPLAY_CORPUS_VERSIONS
+    ):
         raise ValueError(f"unsupported live replay corpus schema version: {version}")
-    return path, payload, document
+    return path, payload, document, version
 
 
 def _decode_json_object(payload: bytes, document_name: str) -> JsonObject:
-    document = json.loads(payload.decode("utf-8"))
+    document = decode_json(payload.decode("utf-8"))
     if not isinstance(document, dict):
         raise ValueError(f"{document_name} root must be an object")
     return {str(key): _json_safe(value) for key, value in document.items()}
@@ -1672,7 +1827,7 @@ def _contained_regular_file(
 ) -> tuple[Path, str]:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} path must be non-empty")
-    if "\\" in value:
+    if "\\" in value or "\x00" in value:
         raise ValueError(f"{label} path must use a contained relative path")
     relative = PurePosixPath(value)
     if (
@@ -1702,7 +1857,7 @@ def _read_contained_file(
     root: str | Path, value: object, label: str
 ) -> tuple[Path, str, bytes]:
     path, relative = _contained_regular_file(root, value, label)
-    with path.open("rb") as source:
+    with open(path, "rb", opener=open_regular_candidate) as source:
         opened = os.fstat(source.fileno())
         if not stat.S_ISREG(opened.st_mode):
             raise ValueError(f"{label} is not a regular file: {path}")
@@ -1984,6 +2139,8 @@ def _generated_audio_artifact_bindings(
 @contextmanager
 def _generated_audio_index_snapshot(
     binding: GeneratedAudioManifestBinding | None,
+    *,
+    snapshots: _ReplaySnapshots | None = None,
 ) -> Generator[GeneratedAudioIndex | None, None, None]:
     if binding is None:
         yield None
@@ -2005,7 +2162,9 @@ def _generated_audio_index_snapshot(
     )
     if current_artifacts != binding.artifacts:
         raise ValueError("Generated audio inventory changed after corpus validation")
-    with TemporaryDirectory(prefix="vntts-live-replay-") as temporary_directory:
+    with _replay_snapshot_directory(
+        "vntts-live-replay-", snapshots
+    ) as temporary_directory:
         snapshot_root = Path(temporary_directory)
         snapshot_manifest = snapshot_root / "generated-audio.json"
         for artifact in binding.artifacts:
@@ -2030,6 +2189,8 @@ def _generated_audio_index_snapshot(
 @contextmanager
 def _live_sequence_snapshot(
     binding: LiveReplaySequenceBinding | None,
+    *,
+    snapshots: _ReplaySnapshots | None = None,
 ) -> Generator[
     tuple[LiveSequencePlan, ChapterVoicePreloader, Path, Path] | None,
     None,
@@ -2054,7 +2215,9 @@ def _live_sequence_snapshot(
         raise ValueError("Live replay sequence plan changed after corpus validation")
     if story_path != binding.story_index.path or plan_path != binding.plan.path:
         raise ValueError("Live replay sequence authority changed after validation")
-    with TemporaryDirectory(prefix="vntts-live-replay-sequence-") as directory:
+    with _replay_snapshot_directory(
+        "vntts-live-replay-sequence-", snapshots
+    ) as directory:
         root = Path(directory)
         snapshot_story = root / "story-index.jsonl"
         snapshot_plan = root / "live-sequence.json"
@@ -2068,6 +2231,19 @@ def _live_sequence_snapshot(
             ) from error
         resolver = ChapterVoicePreloader.load_snapshot(story_path, story_payload)
         yield plan, resolver, snapshot_story, snapshot_plan
+
+
+def _legacy_route_sources_match(
+    dialogue: Sequence[ReplayDialogue], route_sources: Sequence[object]
+) -> bool:
+    expected_sources = (
+        item.expected_source for item in dialogue if item.expect_playback
+    )
+    return all(
+        expected_source is None
+        or (index < len(route_sources) and route_sources[index] == expected_source)
+        for index, expected_source in enumerate(expected_sources)
+    )
 
 
 def _group_played_dialogue(
@@ -2281,25 +2457,41 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
+        timeout_seconds = _replay_timeout_seconds(arguments.timeout)
+        output = arguments.output or arguments.corpus.with_suffix(".report.json")
+        corpus_path = arguments.corpus.expanduser()
+        ensure_separate_output(output, [corpus_path])
         corpus = load_live_replay_corpus(arguments.corpus)
+        inputs = [
+            corpus_path.parent.resolve() / frame_path
+            for dialogue in corpus.dialogue
+            for frame_path in dialogue.frame_paths
+        ]
+        if corpus.generated_audio_manifest is not None:
+            inputs.append(corpus.generated_audio_manifest.path)
+            inputs.extend(
+                artifact.path for artifact in corpus.generated_audio_manifest.artifacts
+            )
+        if corpus.live_sequence is not None:
+            inputs.extend(
+                (corpus.live_sequence.story_index.path, corpus.live_sequence.plan.path)
+            )
+        ensure_separate_output(output, inputs)
         report = LiveReplayRunner(
             corpus,
-            timeout_seconds=arguments.timeout,
+            timeout_seconds=timeout_seconds,
             audio_source_policy=arguments.audio_source_policy,
         ).run()
+        atomic_write_json(output, report)
     except (OSError, TypeError, ValueError) as error:
-        return int(cli_error(error))
-    output = arguments.output or arguments.corpus.with_suffix(".report.json")
-    atomic_write_json(output, report)
-    return int(
-        cli_messages(
-            (
-                f"Live replay {'passed' if report['successful'] else 'failed'}",
-                output,
-            ),
-            exit_code=0 if report["successful"] else 1,
-            error=not bool(report["successful"]),
-        )
+        return cli_error(error)
+    return cli_messages(
+        (
+            f"Live replay {'passed' if report['successful'] else 'failed'}",
+            output,
+        ),
+        exit_code=0 if report["successful"] else 1,
+        error=not bool(report["successful"]),
     )
 
 

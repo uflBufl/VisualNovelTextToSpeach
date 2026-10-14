@@ -5,19 +5,16 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TypedDict
 
+from durable_file import atomic_write_json
 from vntts_artifacts import VoiceGenerationQueueItem
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     normalize_character_name,
     write_voice_manifest,
 )
@@ -38,7 +35,12 @@ from vntts.authoring.missing_voice_live_fallback import (
     _load_authority,
     _validated_targets,
 )
-from vntts.authoring.publication import rename_directory_no_replace, staged_directory
+from vntts.authoring.publication import (
+    no_replace_destination,
+    publication_errors,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.source_reference_bindings import (
     KNOWN_ROLE_REUSE_AUTHORITY,
     KNOWN_ROLE_REUSE_BINDING_FIELD,
@@ -59,7 +61,10 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_config import selected_voice_manifest_path
 from vntts.authoring.workspace_foundation import load_json_object
-from vntts.voices import synthesis_character_for_line
+from vntts.document_identity import file_sha256
+from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import copy_regular_file, read_regular_bytes
+from vntts.voices import load_voice_manifest, synthesis_character_for_line
 
 KNOWN_ROLE_REUSE_DECISION_SCHEMA = "vntts.authoring-known-role-reuse-decision"
 KNOWN_ROLE_REUSE_DECISION_VERSION = 1
@@ -116,7 +121,7 @@ class ManifestSelection:
     manifest_path: Path
     source_manifest_sha256: str
     authority_document: JsonObject
-    voices: list[VoiceManifestEntry]
+    voices: Sequence[VoiceManifestEntry]
     reuse_voice: VoiceManifestEntry
     all_references: list[ReferenceRecord]
     reuse_references: list[ReferenceRecord]
@@ -160,6 +165,7 @@ class KnownRoleReuseResult:
         return {**asdict(self), "directory": str(self.directory)}
 
 
+@publication_errors(KnownRoleReuseError)
 def publish_known_role_reuse_binding(
     workspace: str | Path,
     unresolved_authority_directory: str | Path,
@@ -230,7 +236,9 @@ def _publish_inputs(
 ) -> tuple[Path, Path, Path, str, str]:
     workspace_path = Path(workspace).expanduser().resolve()
     unresolved_path = Path(unresolved_directory).expanduser().resolve()
-    output_path = Path(output).expanduser().resolve()
+    output_path = no_replace_destination(output)
+    if output_path.is_symlink():
+        raise KnownRoleReuseError("Known-role reuse output must not be a symlink")
     source = _required_text(source_character, "Known source character")
     reuse = _required_text(reuse_character, "Known reuse voice character")
     if normalize_character_name(source) == normalize_character_name(reuse):
@@ -242,11 +250,11 @@ def _load_workspace_snapshot(workspace: Path) -> WorkspaceSnapshot:
     inspect_workspace(workspace)
     workspace_path = workspace / "workspace.json"
     document = _read_json(workspace_path, "workspace")
-    document_sha256 = sha256_file(workspace_path)
+    document_sha256 = file_sha256(workspace_path, error_type=OSError)
     queue, queue_sha256 = load_stable_generation_queue(workspace / "queue.jsonl")
     queue_by_id = {item.queue_id: item for item in queue.items}
     state_path = workspace / "generated-audio/generation-state.json"
-    state_payload = state_path.read_bytes()
+    state_payload = read_regular_bytes(state_path)
     state = _decode_state(state_payload)
     validate_generation_state_document(state, state_path.parent, queue, queue_sha256)
     if state.get("active") is not None or any(state_path.parent.rglob("*.partial.wav")):
@@ -315,7 +323,7 @@ def _select_manifest(
     )
     if selected_path is None:
         raise KnownRoleReuseError("Known-role selected voice manifest is unavailable")
-    selected_sha256 = sha256_file(selected_path)
+    selected_sha256 = file_sha256(selected_path, error_type=OSError)
     workspace_manifest = _object_field(
         snapshot.document, "voice_manifest", "Known-role workspace voice manifest"
     )
@@ -378,11 +386,11 @@ def _manifest_successor(
     authority_document: JsonObject,
     selected_path: Path,
     authority_path: Path,
-    selected_voices: list[VoiceManifestEntry],
-    authority_voices: list[VoiceManifestEntry],
+    selected_voices: Sequence[VoiceManifestEntry],
+    authority_voices: Sequence[VoiceManifestEntry],
     binding: JsonObject,
     selected_sha256: str,
-) -> tuple[JsonObject, Path, list[VoiceManifestEntry]]:
+) -> tuple[JsonObject, Path, Sequence[VoiceManifestEntry]]:
     if KNOWN_ROLE_REUSE_BINDING_FIELD in selected_document or (
         KNOWN_ROLE_REUSE_BINDING_FIELD in authority_document
     ):
@@ -648,14 +656,17 @@ def _copy_references(staging: Path, references: list[ReferenceRecord]) -> None:
     for reference in references:
         target = staging / reference["relative"]
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(reference["source"], target)
-        if sha256_file(target) != reference["sha256"]:
+        copy_regular_file(reference["source"], target)
+        if file_sha256(target, error_type=OSError) != reference["sha256"]:
             raise KnownRoleReuseError("Known-role voice reference changed while copied")
 
 
 def _write_bundle(staging: Path, decision_id: str) -> None:
     inventory = [
-        {"path": path.relative_to(staging).as_posix(), "sha256": sha256_file(path)}
+        {
+            "path": path.relative_to(staging).as_posix(),
+            "sha256": file_sha256(path, error_type=OSError),
+        }
         for path in sorted(staging.rglob("*"))
         if path.is_file()
     ]
@@ -692,7 +703,7 @@ def _validated_bundle_inventory(
     body = {key: value for key, value in bundle.items() if key != "bundle_id"}
     if (
         bundle.get("schema") != KNOWN_ROLE_REUSE_BUNDLE_SCHEMA
-        or bundle.get("schema_version") != KNOWN_ROLE_REUSE_BUNDLE_VERSION
+        or not has_schema_version(bundle, KNOWN_ROLE_REUSE_BUNDLE_VERSION)
         or bundle.get("bundle_id") != canonical_document_sha256(body)
         or bundle.get("decision_id") != canonical_document_sha256(decision_body)
     ):
@@ -717,7 +728,7 @@ def _validate_inventory_files(directory: Path, inventory: list[object]) -> None:
         if (
             artifact.is_symlink()
             or not artifact.is_file()
-            or sha256_file(artifact) != record["sha256"]
+            or file_sha256(artifact, error_type=OSError) != record["sha256"]
         ):
             raise KnownRoleReuseError("Known-role bundle artifact changed")
         declared.add(relative.as_posix())
@@ -775,7 +786,7 @@ def _validate_bundle_manifest(
 
 
 def _resolve_exact_voice(
-    voices: list[VoiceManifestEntry], character: str
+    voices: Sequence[VoiceManifestEntry], character: str
 ) -> VoiceManifestEntry:
     matches = [
         voice
@@ -809,7 +820,7 @@ def _reference_records(
             {
                 "relative": relative,
                 "source": source,
-                "sha256": sha256_file(source),
+                "sha256": file_sha256(source, error_type=OSError),
             }
         )
     if not records:
@@ -828,14 +839,16 @@ def _copy_tree(source: Path, destination: Path) -> None:
         relative = path.relative_to(source)
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, target)
-        if sha256_file(target) != sha256_file(path):
+        copy_regular_file(path, target)
+        if file_sha256(target, error_type=OSError) != file_sha256(
+            path, error_type=OSError
+        ):
             raise KnownRoleReuseError("Known-role authority changed while copied")
 
 
 def _decode_state(payload: bytes) -> dict[str, object]:
     try:
-        value = json.loads(payload.decode("utf-8"))
+        value = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise KnownRoleReuseError(str(error)) from error
     if not isinstance(value, dict):

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import unittest
 import wave
 from dataclasses import replace
@@ -9,21 +10,16 @@ from threading import Event, Thread, current_thread
 from unittest.mock import patch
 
 from PIL import Image
-from vntts_artifacts import write_story_index_document
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.voice_generation_queue import (
-    expected_voice_generation_queue_id,
-    text_sha256,
-)
 
-from vntts.authoring.source_reference_bindings import (
-    SOURCE_REFERENCE_BINDINGS_FIELD,
-    SOURCE_REFERENCE_BINDINGS_SCHEMA,
-    SOURCE_REFERENCE_BINDINGS_VERSION,
-    queue_voice_overrides_sha256,
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from tests.story_fixtures import write_content
+from tests.voice_manifest_fixtures import (
+    write_conflicting_manifest,
+    write_manifest,
+    write_player_candidate_manifest,
+    write_reference,
 )
-from vntts.document_identity import canonical_document_sha256
 from vntts.pregeneration_queue import (
     PregenerationInputStore,
     PregenerationQueueError,
@@ -36,15 +32,14 @@ from vntts.pregeneration_voices import (
     PregenerationVoiceError,
     VoiceDecisionStore,
     VoicePlanStore,
+    _load_registry,
     _materialize_voice_catalog,
+    _reference_duration_seconds,
     player_voice_catalog_is_current,
     resolve_pregeneration_settings,
+    validated_player_voice_candidates,
 )
 from vntts.settings import AppSettings
-from vntts.source_audio_semantics import (
-    SEMANTIC_EVIDENCE_METHOD,
-    semantic_text_sha256,
-)
 from vntts.versioned_json import write_versioned_json
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
@@ -56,380 +51,69 @@ from vntts.voices import (
 )
 
 
-def write_reference(path, payload):
-    if payload.startswith(b"RIFF"):
-        path.write_bytes(payload)
-        return
-    frames = (payload * ((32_000 // len(payload)) + 1))[:32_000]
-    with wave.open(str(path), "wb") as audio:
-        audio.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
-        audio.writeframes(frames)
-
-
-def write_content(root):
-    root.mkdir(parents=True, exist_ok=True)
-    path = root / "story-index.jsonl"
-    line_id = "line:original"
-    text = "Already voiced."
-    text_hash = hashlib.sha256(text.encode()).hexdigest()
-    media_hash = "a" * 64
-    entry = {
-        "locale": "en",
-        "media_id": 7,
-        "media_sha256": media_hash,
-        "displayed_text_sha256": text_hash,
-        "normalized_displayed_text_sha256": semantic_text_sha256(text),
-        "observed_transcript": text,
-        "normalized_observed_text_sha256": semantic_text_sha256(text),
-        "verdict": "full",
-        "reason": "exact-normalized-asr-transcript",
-        "method": SEMANTIC_EVIDENCE_METHOD,
-        "model_sha256": "b" * 64,
-        "source_line_ids": [line_id],
-    }
-    entry["entry_id"] = canonical_document_sha256(
-        {key: value for key, value in entry.items() if key != "source_line_ids"}
-    )
-    evidence = {
-        "schema": "r1999.source-audio-semantic-evidence",
-        "schema_version": 1,
-        "locale": "en",
-        "source_story_index_sha256": "c" * 64,
-        "model": {
-            "kind": "whisper",
-            "snapshot": "synthetic",
-            "sha256": "b" * 64,
-            "device": "cpu",
-            "decoding": "deterministic_greedy_default",
-        },
-        "entries": [entry],
-    }
-    evidence["evidence_id"] = canonical_document_sha256(evidence)
-    evidence["generated_at"] = "2026-09-14T00:00:00+00:00"
-    evidence_path = root / "source-audio-semantic-evidence.json"
-    atomic_write_json(evidence_path, evidence, sort_keys=True)
-    write_story_index_document(
-        path,
-        {
-            "game": "Reverse: 1999",
-            "language": "en",
-            "source_audio_completion": "verified-media-duration-seconds",
-            "source_audio_semantics": {
-                "evidence_id": evidence["evidence_id"],
-                "evidence_sha256": sha256_file(evidence_path),
-                "method": SEMANTIC_EVIDENCE_METHOD,
-                "selected_chapters": ["1"],
-                "applied_count": 1,
-            },
-            "collections": [
-                {
-                    "collection_id": "story",
-                    "title": "Story",
-                    "kind": "character-story",
-                    "order": 1,
-                }
-            ],
-        },
-        [
-            {
-                "record_type": "line",
-                "line_id": line_id,
-                "chapter": "1",
-                "sequence": 1,
-                "speaker": "Rhiannon",
-                "voice_character": "Rhiannon",
-                "text": text,
-                "text_sha256": text_hash,
-                "kind": "dialogue",
-                "collection_id": "story",
-                "source_audio_status": "available",
-                "source_audio_duration_seconds": 1.0,
-                "source_audio_duration_media_id": 7,
-                "source_audio_duration_media_sha256": media_hash,
-                "source_audio_duration_sample_rate": 24000,
-                "source_audio_duration_sample_count": 24000,
-                "source_audio_duration_decoder": "synthetic",
-                "source_media_ids": [7],
-                "available_media_ids": [7],
-                "source_audio_completeness": "full",
-                "source_audio_completeness_reason": ("exact-normalized-asr-transcript"),
-                "source_audio_semantic_evidence_id": evidence["evidence_id"],
-                "source_audio_semantic_evidence_entry_id": entry["entry_id"],
-                "speakable": True,
-                "portrait": 10,
-                "source_bank": "rhiannon.bnk",
-            },
-            {
-                "record_type": "line",
-                "line_id": "line:rhiannon:1",
-                "chapter": "1",
-                "sequence": 2,
-                "speaker": "Aderyn",
-                "voice_character": "Rhiannon",
-                "text": "This is the most useful preview sentence for my voice.",
-                "kind": "dialogue",
-                "collection_id": "story",
-                "source_audio_status": "absent",
-                "speakable": True,
-                "portrait": 10,
-                "source_bank": "rhiannon.bnk",
-            },
-            {
-                "record_type": "line",
-                "line_id": "line:rhiannon:2",
-                "chapter": "1",
-                "sequence": 3,
-                "speaker": "Rhiannon",
-                "voice_character": "Rhiannon",
-                "text": "Short.",
-                "kind": "dialogue",
-                "collection_id": "story",
-                "source_audio_status": "absent",
-                "speakable": True,
-                "portrait": 10,
-                "source_bank": "rhiannon.bnk",
-            },
-            {
-                "record_type": "line",
-                "line_id": "line:unknown",
-                "chapter": "1",
-                "sequence": 4,
-                "speaker": "Hotelier",
-                "voice_character": "Hotelier",
-                "text": "A one-off role.",
-                "kind": "dialogue",
-                "collection_id": "story",
-                "source_audio_status": "absent",
-                "speakable": True,
-                "portrait": 20,
-                "source_bank": "hotel.bnk",
-            },
-            {
-                "record_type": "line",
-                "line_id": "line:unattributed",
-                "chapter": "1",
-                "sequence": 5,
-                "speaker": "???",
-                "voice_character": "Someone",
-                "text": "Who am I?",
-                "kind": "dialogue",
-                "collection_id": "story",
-                "source_audio_status": "absent",
-                "speakable": True,
-            },
-        ],
-    )
-    return path
-
-
-def write_manifest(root, *, rhiannon=b"rhiannon", unrelated=b"unrelated"):
-    references = root / "references"
-    references.mkdir(parents=True, exist_ok=True)
-    write_reference(references / "rhiannon.wav", rhiannon)
-    write_reference(references / "centurion.wav", b"centurion")
-    write_reference(references / "unrelated.wav", unrelated)
-    path = root / "manifest.json"
-    path.write_text(
-        json.dumps(
-            {
-                "version": 2,
-                "voices": [
-                    {
-                        "character": "Rhiannon",
-                        "speaker": "rhiannon-v1",
-                        "aliases": ["Aderyn"],
-                        "references": ["references/rhiannon.wav"],
-                    },
-                    {
-                        "character": "Centurion",
-                        "speaker": "centurion-v1",
-                        "aliases": [],
-                        "references": ["references/centurion.wav"],
-                    },
-                    {
-                        "character": "Unrelated",
-                        "speaker": "unrelated-v1",
-                        "aliases": [],
-                        "references": ["references/unrelated.wav"],
-                    },
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
-def write_conflicting_manifest(root, *, bind_selected_lines=False):
-    references = root / "references"
-    references.mkdir(parents=True, exist_ok=True)
-    payloads = {
-        "rhiannon.wav": b"rhiannon",
-        "adult.wav": b"adult",
-        "child.wav": b"child",
-    }
-    for name, payload in payloads.items():
-        write_reference(references / name, payload)
-    adult_voice = "Source reference Rhiannon adult"
-    child_voice = "Source reference Rhiannon child"
-    adult_queue_ids = ["historical:adult"]
-    if bind_selected_lines:
-        adult_queue_ids = [
-            expected_voice_generation_queue_id(
-                line_id,
-                text_sha256(text),
-            )
-            for line_id, text in (
-                (
-                    "line:rhiannon:1",
-                    "This is the most useful preview sentence for my voice.",
-                ),
-                ("line:rhiannon:2", "Short."),
-            )
-        ]
-    overrides = {
-        **{queue_id: adult_voice for queue_id in adult_queue_ids},
-        "historical:child": child_voice,
-    }
-    variants = [
-        {
-            "variant_id": "a" * 64,
-            "cluster_id": "adult-cluster",
-            "character": "Rhiannon",
-            "portrait": "10",
-            "source_bank": "rhiannon.bnk",
-            "voice_character": adult_voice,
-            "reference_sha256": "b" * 64,
-            "queue_ids": adult_queue_ids,
-        },
-        {
-            "variant_id": "c" * 64,
-            "cluster_id": "child-cluster",
-            "character": "Rhiannon",
-            "portrait": "11",
-            "source_bank": "rhiannon-child.bnk",
-            "voice_character": child_voice,
-            "reference_sha256": "d" * 64,
-            "queue_ids": ["historical:child"],
-        },
-    ]
-    path = root / "manifest.json"
-    path.write_text(
-        json.dumps(
-            {
-                "version": 2,
-                "voices": [
-                    {
-                        "character": "Rhiannon",
-                        "speaker": "rhiannon-v1",
-                        "aliases": ["Aderyn"],
-                        "references": ["references/rhiannon.wav"],
-                    },
-                    {
-                        "character": adult_voice,
-                        "speaker": "adult-v1",
-                        "aliases": [],
-                        "references": ["references/adult.wav"],
-                    },
-                    {
-                        "character": child_voice,
-                        "speaker": "child-v1",
-                        "aliases": [],
-                        "references": ["references/child.wav"],
-                    },
-                ],
-                SOURCE_REFERENCE_BINDINGS_FIELD: {
-                    "schema": SOURCE_REFERENCE_BINDINGS_SCHEMA,
-                    "schema_version": SOURCE_REFERENCE_BINDINGS_VERSION,
-                    "source_reference_plan_sha256": "e" * 64,
-                    "selected_variants": variants,
-                    "queue_voice_overrides": dict(sorted(overrides.items())),
-                    "queue_voice_overrides_sha256": queue_voice_overrides_sha256(
-                        overrides
-                    ),
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
-def write_player_candidate_manifest(
-    root,
-    story_index_sha256,
-    *,
-    portrait_image_sha256=None,
-    quality_scores=(99, 98),
-):
-    references = root / "references"
-    references.mkdir(parents=True, exist_ok=True)
-    report = root / "report.json"
-    report.write_text('{"candidate_count":2}', encoding="utf-8")
-    voices = []
-    variants = []
-    for index, quality_score in enumerate(quality_scores, start=1):
-        reference = references / f"rhiannon-{index}.wav"
-        with wave.open(str(reference), "wb") as audio:
-            audio.setnchannels(1)
-            audio.setsampwidth(2)
-            audio.setframerate(16_000)
-            audio.writeframes((index * 100).to_bytes(2, "little", signed=True) * 1_600)
-        variant_id = str(index) * 64
-        voice_character = f"Player candidate Rhiannon {index}"
-        voices.append(
-            {
-                "character": voice_character,
-                "speaker": f"player-candidate:{variant_id}",
-                "references": [f"references/rhiannon-{index}.wav"],
-            }
-        )
-        variants.append(
-            {
-                "variant_id": variant_id,
-                "character": "Rhiannon",
-                "portrait": "10",
-                "portrait_image_sha256": portrait_image_sha256,
-                "source_bank": "rhiannon.bnk",
-                "source_voice_ids": [f"play_rhiannon_{index}"],
-                "voice_character": voice_character,
-                "reference_sha256": sha256_file(reference),
-                "source_line_ids": [f"line:source:{index}"],
-                "source_excerpts": [
-                    {
-                        "line_id": f"line:source:{index}",
-                        "title": "Voice line",
-                        "text": f"Original line {index}.",
-                    }
-                ],
-                "candidate_origin": "story_line_route",
-                "source_event_ids": [index],
-                "duration_seconds": 3.0 + index,
-                "quality_score": quality_score,
-            }
-        )
-    path = root / "manifest.json"
-    path.write_text(
-        json.dumps(
-            {
-                "version": 2,
-                "voices": voices,
-                PLAYER_VOICE_CANDIDATES_FIELD: {
-                    "schema": "vntts.player-voice-candidates",
-                    "schema_version": 4,
-                    "story_index_sha256": story_index_sha256,
-                    "candidate_report": report.name,
-                    "candidate_report_sha256": sha256_file(report),
-                    "variants": variants,
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
 class VoicePlanStoreTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_reference_duration_refuses_fifo_swap_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "reference.wav"
+            with wave.open(str(path), "wb") as audio:
+                audio.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+                audio.writeframes(b"\x00\x00" * 16_000)
+            gate: RegularFileGate = {"path": path, "armed": True}
+            with swap_at_acquisition(self, gate):
+                self.assertIsNone(_reference_duration_seconds([path]))
+            self.assertFalse(gate["armed"], "regular file must be swapped at open")
+            self.assertEqual(_reference_duration_seconds([path]), 1.0)
+
+    def test_registry_and_manifest_share_one_snapshot_and_recheck_final_bytes(self):
+        for restore in (True, False):
+            with self.subTest(restore=restore), TemporaryDirectory() as directory:
+                manifest_path = write_manifest(Path(directory) / "voices")
+                original = manifest_path.read_bytes()
+                expected = json.loads(original)
+                changed = json.loads(original)
+                changed["voices"][0]["speaker"] = "unbound-speaker"
+                replacement = json.dumps(changed).encode()
+                from_file = CharacterVoiceRegistry.from_file
+                from_document = CharacterVoiceRegistry.from_document
+
+                def replace_during_parse(parse, *args):
+                    manifest_path.write_bytes(replacement)
+                    try:
+                        return parse(*args)
+                    finally:
+                        if restore:
+                            manifest_path.write_bytes(original)
+
+                with (
+                    patch.object(
+                        CharacterVoiceRegistry,
+                        "from_file",
+                        side_effect=lambda path: replace_during_parse(from_file, path),
+                    ),
+                    patch.object(
+                        CharacterVoiceRegistry,
+                        "from_document",
+                        side_effect=lambda document, path: replace_during_parse(
+                            from_document, document, path
+                        ),
+                    ),
+                ):
+                    if not restore:
+                        with self.assertRaisesRegex(
+                            PregenerationVoiceError, "changed while they were read"
+                        ):
+                            _load_registry(manifest_path)
+                        continue
+                    registry, digest, document = _load_registry(manifest_path)
+
+                self.assertEqual(document, expected)
+                self.assertEqual(digest, hashlib.sha256(original).hexdigest())
+                self.assertEqual(registry.resolve("Rhiannon").speaker, "rhiannon-v1")
+                self.assertEqual(manifest_path.read_bytes(), original)
+
     def test_voice_catalog_writes_each_reference_before_reading_the_next(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1202,6 +886,43 @@ class VoicePlanStoreTest(unittest.TestCase):
                 rhiannon.candidates[0].source_voice_ids,
                 ("play_rhiannon_1",),
             )
+
+    def test_player_variant_duration_refuses_unrepresentable_integer_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices", job.story_index_sha256
+            )
+            original = manifest.read_bytes()
+            _, original_variants = validated_player_voice_candidates(manifest)
+            for duration in (10**400, -(10**400)):
+                document = json.loads(original)
+                document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"][0][
+                    "duration_seconds"
+                ] = duration
+                manifest.write_text(json.dumps(document), encoding="utf-8")
+                with (
+                    self.subTest(negative=duration < 0),
+                    patch("vntts.support.record_game_import") as rejected,
+                ):
+                    _, variants = validated_player_voice_candidates(manifest)
+                    self.assertEqual(variants, original_variants[1:])
+                    rejected.assert_called_once_with(
+                        "voice-candidate-validation",
+                        outcome="rejected",
+                        reason="Player voice candidate 0 has invalid duration_seconds",
+                    )
+                    plan = VoicePlanStore(jobs).create(
+                        job,
+                        AppSettings(pocket_gated_model_accepted=True),
+                        manifest_path=manifest,
+                    )
+                    self.assertTrue(plan.groups)
+            manifest.write_bytes(original)
+            _, restored = validated_player_voice_candidates(manifest)
+            self.assertEqual(restored, original_variants)
+            self.assertEqual(manifest.read_bytes(), original)
 
     def test_player_import_accepts_empty_optional_source_links(self):
         with TemporaryDirectory() as temporary_directory:
@@ -2089,6 +1810,28 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             self.assertFalse(VoicePlanStore(jobs).path_for(job).exists())
 
+    def test_decision_lookup_rejects_malformed_hashes(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "decisions.json"
+            decisions = VoiceDecisionStore(path)
+            for digest in ("a" * 64, "A" * 64):
+                self.assertIsNone(decisions.choice_for(digest, digest))
+            for digest in (
+                "+" + "a" * 63,
+                "-" + "a" * 63,
+                "0x" + "a" * 62,
+                "a_" + "b" * 62,
+                "a" * 63 + " ",
+                "０" * 64,
+            ):
+                for group_id, context in ((digest, "b" * 64), ("b" * 64, digest)):
+                    with (
+                        self.subTest(group_id=group_id, context=context),
+                        self.assertRaisesRegex(PregenerationVoiceError, "identity"),
+                    ):
+                        decisions.choice_for(group_id, context)
+            self.assertFalse(path.exists())
+
     def test_decision_store_accepts_explicit_confirmation_of_automatic_route(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -2215,6 +1958,75 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             self.assertEqual(library.binding("Concurrent").route, "live-fallback")
             self.assertFalse(decisions.path.exists())
+
+    def test_decision_write_failure_preserves_primary_when_rollback_is_fatal(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            library = VoiceLibrary(root / "library")
+            plan = VoicePlanStore(jobs, voice_library=library).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=write_manifest(root / "voices"),
+            )
+            decisions = VoiceDecisionStore(
+                root / "decisions.json",
+                voice_library=library,
+            )
+            decision_error = OSError("decision write failed")
+            rollback_error = SystemExit("fatal rollback failure")
+            rollback_error.add_note("rollback detail")
+
+            with (
+                patch(
+                    "vntts.pregeneration_voices.write_versioned_json",
+                    side_effect=decision_error,
+                ),
+                patch.object(
+                    library,
+                    "rollback_bindings",
+                    side_effect=rollback_error,
+                ),
+                self.assertRaisesRegex(OSError, "decision write failed") as caught,
+            ):
+                decisions.remember_many(
+                    tuple((group, "default") for group in plan.groups[:2])
+                )
+
+            self.assertIs(caught.exception, decision_error)
+            notes = " ".join(caught.exception.__notes__)
+            self.assertIn("fatal rollback failure", notes)
+            self.assertIn("rollback detail", notes)
+
+    def test_plan_failure_preserves_primary_when_rollback_is_fatal(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            library = VoiceLibrary(root / "library")
+            planner = VoicePlanStore(jobs, voice_library=library)
+            plan_error = OSError("plan creation failed")
+            rollback_error = SystemExit("fatal rollback failure")
+            rollback_error.add_note("rollback detail")
+
+            def failed_create(*_args, rollback, **_kwargs):
+                library.select("Temporary", route="live-fallback", rollback=rollback)
+                raise plan_error
+
+            with (
+                patch.object(planner, "_create", side_effect=failed_create),
+                patch.object(
+                    library,
+                    "rollback_bindings",
+                    side_effect=rollback_error,
+                ),
+                self.assertRaisesRegex(OSError, "plan creation failed") as caught,
+            ):
+                planner.create(job, AppSettings())
+
+            self.assertIs(caught.exception, plan_error)
+            notes = " ".join(caught.exception.__notes__)
+            self.assertIn("fatal rollback failure", notes)
+            self.assertIn("rollback detail", notes)
 
     def test_simultaneous_decisions_preserve_both_voice_groups(self):
         with TemporaryDirectory() as temporary_directory:

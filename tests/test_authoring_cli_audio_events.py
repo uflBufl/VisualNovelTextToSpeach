@@ -1,6 +1,5 @@
 import argparse
 import ast
-import hashlib
 import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -16,55 +15,6 @@ from vntts.authoring.cli_audio_events import (
     AudioEventReviewError,
     handle,
 )
-
-PARSER_CONTRACT_SHA256 = (
-    "cf01c40624b070eb68db543c361acacda27c4dd590b5b838bcb9f87bf4e18bc7"
-)
-
-
-def _subparser_action(parser):
-    return next(
-        action
-        for action in parser._actions
-        if isinstance(action, argparse._SubParsersAction)
-    )
-
-
-def _audio_event_parser_contract(parser):
-    subparsers = _subparser_action(parser)
-    help_by_command = {
-        action.dest: action.help for action in subparsers._choices_actions
-    }
-    contract = {}
-    for command in sorted(COMMANDS):
-        actions = []
-        for action in subparsers.choices[command]._actions:
-            if action.dest == "help":
-                continue
-            default = action.default
-            if action.dest == "workspaces_root" and isinstance(default, Path):
-                default = "<default-workspaces-root>"
-            elif isinstance(default, Path):
-                default = str(default)
-            actions.append(
-                {
-                    "options": action.option_strings,
-                    "dest": action.dest,
-                    "required": action.required,
-                    "nargs": action.nargs,
-                    "default": default,
-                    "type": None if action.type is None else action.type.__name__,
-                    "choices": (
-                        None if action.choices is None else list(action.choices)
-                    ),
-                    "action": type(action).__name__,
-                }
-            )
-        contract[command] = {
-            "help": help_by_command[command],
-            "actions": actions,
-        }
-    return contract
 
 
 class AuthoringCliAudioEventsTest(unittest.TestCase):
@@ -87,14 +37,8 @@ class AuthoringCliAudioEventsTest(unittest.TestCase):
         self.assertEqual(len(owners), 1)
         self.assertIs(owners[0].handler, handle)
 
-    def test_parser_contract_and_command_order_match_the_captured_legacy_cli(self):
+    def test_command_order_matches_the_captured_cli(self):
         parser = create_parser()
-        contract = _audio_event_parser_contract(parser)
-        digest = hashlib.sha256(
-            json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-
-        self.assertEqual(digest, PARSER_CONTRACT_SHA256)
         help_text = parser.format_help()
         self.assertLess(
             help_text.index("known-role-live-fallback"),
@@ -210,6 +154,60 @@ class AuthoringCliAudioEventsTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("review authority changed", errors.getvalue())
+
+    def test_publication_io_errors_remain_raw_and_reach_the_parser(self):
+        cases = (
+            (
+                "publish_source_audio_event_review",
+                [
+                    "audio-event-review-publish",
+                    "queue.jsonl",
+                    "queue-1",
+                    "story.json",
+                    "source.wav",
+                    "--output",
+                    "review",
+                    "--source-line-id",
+                    "line-1",
+                    "--source-speaker",
+                    "speaker",
+                    "--source-event",
+                    "event",
+                    "--source-bank",
+                    "bank",
+                    "--source-media-id",
+                    "1",
+                    "--source-audio-id",
+                    "audio-1",
+                ],
+            ),
+            (
+                "publish_audio_event_composition",
+                [
+                    "audio-event-composition-publish",
+                    "review",
+                    "--output",
+                    "composition",
+                ],
+            ),
+        )
+        for target, argv in cases:
+            with self.subTest(target=target):
+                error = PermissionError("audio-event storage is read-only")
+                stdout, stderr = StringIO(), StringIO()
+                with (
+                    patch.object(audio_event_cli, target, side_effect=error),
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                ):
+                    with self.assertRaises(PermissionError) as caught:
+                        handle(create_parser().parse_args(argv))
+                    self.assertIs(caught.exception, error)
+                    with self.assertRaises(SystemExit) as exited:
+                        main(argv)
+                self.assertEqual(exited.exception.code, 2)
+                self.assertIn(str(error), stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
 
     def test_family_handler_rejects_an_unowned_command(self):
         with self.assertRaisesRegex(ValueError, "Unsupported audio-event command"):

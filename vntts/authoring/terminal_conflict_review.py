@@ -11,10 +11,11 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Iterator, NotRequired, TypeAlias, TypedDict, TypeGuard
 
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
 from vntts.authoring.advisory_lock import (
@@ -31,11 +32,11 @@ from vntts.authoring.authority import (
 )
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    ReviewAuthority,
-    load_review_audio_bytes,
     process_is_alive,
     process_started_at,
 )
+from vntts.authoring.generation_lease import is_process_id
+from vntts.authoring.generation_review import ReviewAuthority, load_review_audio_bytes
 from vntts.authoring.publication import (
     AtomicPublicationError,
     no_replace_destination,
@@ -57,6 +58,8 @@ from vntts.authoring.workbench import (
     prepare_review_audio,
 )
 from vntts.authoring.workbench_contracts import ReviewItem
+from vntts.json_types import decode_json, has_schema_version, is_json_object
+from vntts.path_safety import read_regular_bytes, read_regular_text
 
 TERMINAL_CONFLICT_REVIEW_SCHEMA = "vntts.authoring-terminal-conflict-review"
 TERMINAL_CONFLICT_REVIEW_VERSION = 1
@@ -175,29 +178,29 @@ class _ReviewPublicationInput:
 
 
 def _is_review_document(value: object) -> TypeGuard[TerminalConflictReviewDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_progress_document(value: object) -> TypeGuard[TerminalConflictReviewProgress]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_progress_decision(value: object) -> TypeGuard[TerminalConflictReviewDecision]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_review_case(value: object) -> TypeGuard[TerminalConflictReviewCase]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_review_candidate(value: object) -> TypeGuard[TerminalConflictReviewCandidate]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_source_authority(
     value: object,
 ) -> TypeGuard[TerminalConflictReviewSourceAuthority]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 class TerminalConflictReviewError(RuntimeError):
@@ -284,7 +287,7 @@ def _review_publication_input(reconciliation_path: Path) -> _ReviewPublicationIn
         ValueError,
     ) as error:
         raise TerminalConflictReviewError(str(error)) from error
-    if report_snapshot.path.read_bytes() != report_snapshot.payload:
+    if read_regular_bytes(report_snapshot.path) != report_snapshot.payload:
         raise TerminalConflictReviewError(
             "Authoring reconciliation changed while it was loaded"
         )
@@ -469,12 +472,13 @@ def _stable_review_candidates(
                 f"Conflict WAV changed while copied: {queue_id}"
             )
         destination.write_bytes(audio_bytes)
-        if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+        copied_payload = read_regular_bytes(destination)
+        if hashlib.sha256(copied_payload).hexdigest() != digest:
             raise TerminalConflictReviewError(
                 f"Conflict WAV changed while copied: {queue_id}"
             )
         try:
-            info = probe_pcm16_mono_wav(destination)
+            info = probe_pcm16_mono_wav(BytesIO(copied_payload))
         except Pcm16MonoWavError as error:
             raise TerminalConflictReviewError(str(error)) from error
         stable_candidates.append(
@@ -588,9 +592,15 @@ def publish_terminal_conflict_review(
         review_rows = _review_rows_for_conflicts(inputs)
         document, candidate_total = _review_document(inputs, review_rows, staging)
         atomic_write_json(staging / "review.json", document, sort_keys=True)
-        load_terminal_conflict_review(staging)
-        assert_authority_snapshot(inputs.snapshot, "authoring reconciliation")
-        review = validate_terminal_conflict_review_document(document, staging)
+        review = load_terminal_conflict_review_document(staging)
+        if review != document:
+            raise TerminalConflictReviewError(
+                "Terminal conflict review changed while loaded"
+            )
+        try:
+            assert_authority_snapshot(inputs.snapshot, "authoring reconciliation")
+        except AuthoringAuthorityError as error:
+            raise TerminalConflictReviewError(str(error)) from error
         _assert_source_authorities(review)
         review_id = review["review_id"]
         if output_exists:
@@ -614,21 +624,11 @@ def publish_terminal_conflict_review(
 def load_terminal_conflict_review(directory: str | Path) -> TerminalConflictReview:
     """Load one immutable conflict review and its optional decision progress."""
     directory = _review_directory(directory)
-    review_path = directory / "review.json"
-    try:
-        payload = review_path.read_bytes()
-        document = json.loads(payload.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise TerminalConflictReviewError(str(error)) from error
-    document = validate_terminal_conflict_review_document(document, directory)
-    if review_path.read_bytes() != payload:
-        raise TerminalConflictReviewError(
-            "Terminal conflict review changed while loaded"
-        )
-    completed = 0
-    progress_path = directory / "progress.json"
-    if progress_path.exists() or progress_path.is_symlink():
-        completed = len(load_terminal_conflict_review_progress(directory)["decisions"])
+    session = load_terminal_conflict_review_session(directory)
+    document = session.review
+    completed = (
+        len(session.progress["decisions"]) if session.progress is not None else 0
+    )
     return TerminalConflictReview(
         directory,
         document["review_id"],
@@ -639,11 +639,18 @@ def load_terminal_conflict_review(directory: str | Path) -> TerminalConflictRevi
     )
 
 
-def load_terminal_conflict_review_document(
-    directory: str | Path,
-) -> TerminalConflictReviewDocument:
-    """Return one exact validated immutable review document."""
-    directory = _review_directory(directory)
+@dataclass(frozen=True)
+class TerminalConflictReviewSession:
+    """One coherent immutable review and optional decision progress snapshot."""
+
+    directory: Path
+    review: TerminalConflictReviewDocument
+    progress: TerminalConflictReviewProgress | None
+
+
+def _capture_review_document(
+    directory: Path,
+) -> tuple[AuthoritySnapshot, TerminalConflictReviewDocument]:
     try:
         snapshot = capture_authority_file(
             directory / "review.json", "terminal conflict review"
@@ -651,10 +658,58 @@ def load_terminal_conflict_review_document(
         document = validate_terminal_conflict_review_document(
             snapshot.json_document("terminal conflict review"), directory
         )
+    except AuthoringAuthorityError as error:
+        raise TerminalConflictReviewError(str(error)) from error
+    return snapshot, document
+
+
+def load_terminal_conflict_review_document(
+    directory: str | Path,
+) -> TerminalConflictReviewDocument:
+    """Return one exact validated immutable review, independently of progress."""
+    directory = _review_directory(directory)
+    snapshot, document = _capture_review_document(directory)
+    try:
         assert_authority_snapshot(snapshot, "terminal conflict review")
     except AuthoringAuthorityError as error:
         raise TerminalConflictReviewError(str(error)) from error
     return document
+
+
+def load_terminal_conflict_review_session(
+    directory: str | Path,
+) -> TerminalConflictReviewSession:
+    """Load one validated review and its optional progress without rereading WAVs."""
+    return _load_review_session(directory, require_progress=False)
+
+
+def _load_review_session(
+    directory: str | Path, *, require_progress: bool
+) -> TerminalConflictReviewSession:
+    directory = _review_directory(directory)
+    review_snapshot, review = _capture_review_document(directory)
+    progress_path = directory / "progress.json"
+    progress_snapshot = None
+    progress = None
+    try:
+        if require_progress or progress_path.exists() or progress_path.is_symlink():
+            progress_snapshot = capture_authority_file(
+                progress_path, "terminal conflict progress"
+            )
+            progress = _validate_progress(
+                progress_snapshot.json_document("terminal conflict progress"), review
+            )
+            _assert_progress_carry_forward(progress, review)
+        assert_authority_snapshot(review_snapshot, "terminal conflict review")
+        if progress_snapshot is not None:
+            assert_authority_snapshot(progress_snapshot, "terminal conflict progress")
+        elif progress_path.exists() or progress_path.is_symlink():
+            raise TerminalConflictReviewError(
+                "Terminal conflict progress changed while loaded"
+            )
+    except AuthoringAuthorityError as error:
+        raise TerminalConflictReviewError(str(error)) from error
+    return TerminalConflictReviewSession(directory, review, progress)
 
 
 def load_terminal_conflict_candidate_audio(
@@ -677,7 +732,7 @@ def load_terminal_conflict_candidate_audio(
             f"Unknown terminal conflict candidate: {candidate_id}"
         )
     path = _contained_file(directory, candidate["audio"], "candidate WAV")
-    payload = path.read_bytes()
+    payload = read_regular_bytes(path)
     if hashlib.sha256(payload).hexdigest() != candidate["audio_sha256"]:
         raise TerminalConflictReviewError("Terminal conflict WAV changed")
     return payload
@@ -687,7 +742,7 @@ def _review_document_header(value: object) -> TerminalConflictReviewDocument:
     if (
         not _is_review_document(value)
         or value.get("schema") != TERMINAL_CONFLICT_REVIEW_SCHEMA
-        or value.get("schema_version") != TERMINAL_CONFLICT_REVIEW_VERSION
+        or not has_schema_version(value, TERMINAL_CONFLICT_REVIEW_VERSION)
     ):
         raise TerminalConflictReviewError("Unsupported terminal conflict review")
     expected_fields = {
@@ -724,7 +779,7 @@ def _review_document_header(value: object) -> TerminalConflictReviewDocument:
     cases = value["cases"]
     if not isinstance(cases, list) or not cases:
         raise TerminalConflictReviewError("Terminal conflict review cases are empty")
-    if value["case_count"] != len(cases):
+    if type(value["case_count"]) is not int or value["case_count"] != len(cases):
         raise TerminalConflictReviewError("Terminal conflict case count changed")
     return value
 
@@ -747,7 +802,7 @@ def _candidate_identity(
         raise TerminalConflictReviewError("Terminal conflict candidate is malformed")
     candidate_id = _sha256(candidate["candidate_id"], "Terminal conflict candidate ID")
     authority = candidate["authority"]
-    if authority not in {"approved", "rejected"}:
+    if not isinstance(authority, str) or authority not in {"approved", "rejected"}:
         raise TerminalConflictReviewError(
             "Terminal conflict candidate authority is invalid"
         )
@@ -767,15 +822,17 @@ def _validate_candidate_audio(candidate: object, root: Path, digest: str) -> Non
     if not _is_review_candidate(candidate):
         raise TerminalConflictReviewError("Terminal conflict candidate is malformed")
     audio = _contained_file(root, candidate["audio"], "candidate WAV")
-    payload = audio.read_bytes()
+    payload = read_regular_bytes(audio)
     if hashlib.sha256(payload).hexdigest() != digest:
         raise TerminalConflictReviewError("Terminal conflict WAV changed")
     try:
-        info = probe_pcm16_mono_wav(audio)
+        info = probe_pcm16_mono_wav(BytesIO(payload))
     except Pcm16MonoWavError as error:
         raise TerminalConflictReviewError(str(error)) from error
     if (
-        candidate["sample_rate"] != info.sample_rate
+        type(candidate["sample_rate"]) is not int
+        or candidate["sample_rate"] != info.sample_rate
+        or type(candidate["sample_count"]) is not int
         or candidate["sample_count"] != info.sample_count
     ):
         raise TerminalConflictReviewError("Terminal conflict WAV metadata changed")
@@ -909,7 +966,10 @@ def validate_terminal_conflict_review_document(
     candidate_count = 0
     for case in cases:
         candidate_count += _validate_review_case(case, root, seen_cases, seen_queue_ids)
-    if value["candidate_count"] != candidate_count:
+    if (
+        type(value["candidate_count"]) is not int
+        or value["candidate_count"] != candidate_count
+    ):
         raise TerminalConflictReviewError("Terminal conflict candidate count changed")
     return value
 
@@ -917,25 +977,9 @@ def validate_terminal_conflict_review_document(
 def load_terminal_conflict_review_progress(
     directory: str | Path,
 ) -> TerminalConflictReviewProgress:
-    directory = _review_directory(directory)
-    try:
-        review_snapshot = capture_authority_file(
-            directory / "review.json", "terminal conflict review"
-        )
-        review = validate_terminal_conflict_review_document(
-            review_snapshot.json_document("terminal conflict review"), directory
-        )
-        progress_snapshot = capture_authority_file(
-            directory / "progress.json", "terminal conflict progress"
-        )
-        progress = progress_snapshot.json_document("terminal conflict progress")
-        validated = _validate_progress(progress, review)
-        _assert_progress_carry_forward(validated, review)
-        assert_authority_snapshot(review_snapshot, "terminal conflict review")
-        assert_authority_snapshot(progress_snapshot, "terminal conflict progress")
-    except AuthoringAuthorityError as error:
-        raise TerminalConflictReviewError(str(error)) from error
-    return validated
+    session = _load_review_session(directory, require_progress=True)
+    assert session.progress is not None
+    return session.progress
 
 
 def record_terminal_conflict_decision(
@@ -1008,7 +1052,7 @@ def record_terminal_conflict_decision(
         _assert_source_authorities(review)
         if (
             original_progress is not None
-            and progress_path.read_bytes() != original_progress
+            and read_regular_bytes(progress_path) != original_progress
         ):
             raise TerminalConflictReviewError(
                 "Terminal conflict progress changed before save"
@@ -1268,7 +1312,10 @@ def assert_terminal_conflict_progress_carry_forward(
     progress: TerminalConflictReviewProgress, review: TerminalConflictReviewDocument
 ) -> None:
     """Recheck an optional predecessor decision ledger and its authorities."""
-    _assert_progress_carry_forward(progress, review)
+    try:
+        _assert_progress_carry_forward(progress, review)
+    except AuthoringAuthorityError as error:
+        raise TerminalConflictReviewError(str(error)) from error
 
 
 def assert_terminal_conflict_review_source_authorities(
@@ -1280,7 +1327,7 @@ def assert_terminal_conflict_review_source_authorities(
 
 def _source_reconciliation(
     review: TerminalConflictReviewDocument,
-) -> tuple[AuthoritySnapshot, JsonDocument, dict[str, JsonDocument]]:
+) -> tuple[AuthoritySnapshot, dict[str, JsonDocument]]:
     try:
         report_snapshot = capture_authority_file(
             review["source_reconciliation"], "source reconciliation"
@@ -1299,7 +1346,7 @@ def _source_reconciliation(
         _text(value.get("workspace_id"), "Workspace ID"): value
         for value in _objects(report.get("workspaces"), "reconciliation workspaces")
     }
-    return report_snapshot, report, workspace_records
+    return report_snapshot, workspace_records
 
 
 def _assert_candidate_source_authority(
@@ -1348,14 +1395,17 @@ def _assert_candidate_source_authority(
 
 
 def _assert_source_authorities(review: TerminalConflictReviewDocument) -> None:
-    report_snapshot, _report, workspace_records = _source_reconciliation(review)
+    report_snapshot, workspace_records = _source_reconciliation(review)
     for case in review["cases"]:
         for candidate in case["candidates"]:
             for source in candidate["source_authorities"]:
                 _assert_candidate_source_authority(
                     case, candidate, source, workspace_records
                 )
-    assert_authority_snapshot(report_snapshot, "source reconciliation")
+    try:
+        assert_authority_snapshot(report_snapshot, "source reconciliation")
+    except AuthoringAuthorityError as error:
+        raise TerminalConflictReviewError(str(error)) from error
 
 
 def _objects(value: object, label: str) -> list[JsonDocument]:
@@ -1401,14 +1451,17 @@ def _validate_progress_decisions(
         }:
             raise TerminalConflictReviewError("Terminal conflict decision is malformed")
         case_id = decision["case_id"]
-        if case_id in seen or case_id not in cases:
+        if not isinstance(case_id, str) or case_id in seen or case_id not in cases:
             raise TerminalConflictReviewError(
                 "Terminal conflict decision is duplicated"
             )
         seen.add(case_id)
         allowed = {item["candidate_id"] for item in cases[case_id]["candidates"]}
         allowed.add(NEITHER_ACCEPTABLE)
-        if decision["decision"] not in allowed:
+        if (
+            not isinstance(decision["decision"], str)
+            or decision["decision"] not in allowed
+        ):
             raise TerminalConflictReviewError("Terminal conflict winner is invalid")
         _aware_timestamp(
             decision["reviewed_at"], "Terminal conflict decision timestamp"
@@ -1579,9 +1632,8 @@ def _is_stored_progress_lease(value: object) -> TypeGuard[_StoredProgressLease]:
     return (
         isinstance(value, dict)
         and value.get("schema") == PROGRESS_LEASE_SCHEMA
-        and value.get("schema_version") == PROGRESS_LEASE_VERSION
-        and isinstance(value.get("pid"), int)
-        and value["pid"] > 0
+        and has_schema_version(value, PROGRESS_LEASE_VERSION)
+        and is_process_id(value.get("pid"))
         and isinstance(value.get("hostname"), str)
         and bool(value["hostname"])
         and isinstance(value.get("lease_id"), str)
@@ -1591,8 +1643,8 @@ def _is_stored_progress_lease(value: object) -> TypeGuard[_StoredProgressLease]:
 
 def _stored_progress_lease(path: Path) -> tuple[bytes, _StoredProgressLease]:
     try:
-        payload = path.read_bytes()
-        existing = json.loads(payload.decode("utf-8"))
+        payload = read_regular_bytes(path)
+        existing = decode_json(payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise TerminalConflictReviewError(
             "Unrecognized terminal conflict progress lock blocks review"
@@ -1627,7 +1679,7 @@ def _recover_stale_progress_lock(directory: Path, path: Path) -> None:
             "Another terminal conflict decision is being saved"
         )
     interrupted = directory / (".progress.lock.interrupted-" + uuid.uuid4().hex)
-    if path.read_bytes() != existing_payload:
+    if read_regular_bytes(path) != existing_payload:
         raise TerminalConflictReviewError(
             "Terminal conflict progress lock changed during recovery"
         )
@@ -1642,9 +1694,9 @@ def _recover_stale_progress_lock(directory: Path, path: Path) -> None:
 def _remove_progress_lock(path: Path, guard_path: Path, lease: _ProgressLease) -> None:
     try:
         with exclusive_advisory_lock(guard_path, blocking=True):
-            if json.loads(path.read_text(encoding="utf-8")) == lease:
+            if decode_json(read_regular_text(path, encoding="utf-8")) == lease:
                 path.unlink()
-    except OSError, json.JSONDecodeError, AdvisoryLockBusyError:
+    except OSError, UnicodeError, json.JSONDecodeError, AdvisoryLockBusyError:
         return
 
 
@@ -1676,6 +1728,8 @@ def _progress_lock(directory: Path) -> Iterator[None]:
         ) from error
     try:
         yield
+    except AuthoringAuthorityError as error:
+        raise TerminalConflictReviewError(str(error)) from error
     finally:
         _remove_progress_lock(path, guard_path, lease)
 
@@ -1690,6 +1744,7 @@ __all__ = [
     "TERMINAL_CONFLICT_REVIEW_VERSION",
     "TerminalConflictReview",
     "TerminalConflictReviewError",
+    "TerminalConflictReviewSession",
     "assert_terminal_conflict_review_source_authorities",
     "assert_terminal_conflict_progress_carry_forward",
     "carry_approved_cohort_terminal_conflict_decisions",
@@ -1698,6 +1753,7 @@ __all__ = [
     "load_terminal_conflict_candidate_audio",
     "load_terminal_conflict_review_document",
     "load_terminal_conflict_review_progress",
+    "load_terminal_conflict_review_session",
     "publish_terminal_conflict_review",
     "record_terminal_conflict_decision",
     "validate_terminal_conflict_review_document",

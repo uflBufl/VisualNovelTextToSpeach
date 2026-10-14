@@ -1,12 +1,15 @@
+import hashlib
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from tests.authoring_fixtures import create_test_workspace, tree_hashes
 from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_workbench import create_test_workspace
+from vntts.authoring import voice_repair_comparison as comparison_module
 from vntts.authoring.bulk_generation import _canonical_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.voice_repair_comparison import (
@@ -17,11 +20,12 @@ from vntts.authoring.voice_repair_comparison import (
     prepare_voice_repair_candidate_workspace,
     write_voice_repair_comparison_plan,
 )
+from vntts.authoring.workbench import create_resume_workspace
 
 
 class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
-    def create_rejected_workspace(self, root):
-        fixture, _imported, workspace = create_test_workspace(root)
+    def create_rejected_workspace(self, root, *, text=None):
+        fixture, _imported, workspace = create_test_workspace(root, text=text)
         state_path = workspace.directory / "generated-audio/generation-state.json"
         state = json.loads(state_path.read_text(encoding="utf-8"))
         state["active"] = None
@@ -30,6 +34,274 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
         result["review_status"] = "rejected"
         state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
         return fixture, workspace.directory, state_path
+
+    def create_candidate(self, root):
+        fixture, imported, workspace = create_test_workspace(root / "seed")
+        state_path = workspace.directory / "generated-audio/generation-state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["active"] = None
+        result = state["items"][fixture["queue_id"]]
+        result["status"] = "generated"
+        result["review_status"] = "rejected"
+        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        plan = build_voice_repair_comparison_plan(workspace.directory, "Rhiannon")
+        candidate = plan.document["candidates"][0]
+        prepared = prepare_voice_repair_candidate_workspace(
+            plan,
+            candidate["candidate_id"],
+            imported,
+            root / "candidate-inputs",
+            root / "candidate-workspaces",
+        )
+        return fixture, imported, workspace.directory, plan, candidate, prepared
+
+    def test_profile_iterators_preserve_plan_identity_and_validation(self):
+        with TemporaryDirectory() as directory:
+            _, workspace, _ = self.create_rejected_workspace(Path(directory))
+            expected = build_voice_repair_comparison_plan(workspace, "Rhiannon")
+            actual = build_voice_repair_comparison_plan(
+                workspace,
+                "Rhiannon",
+                generation_profiles=iter(("stable", "natural")),
+            )
+            self.assertEqual(actual.to_dict(), expected.to_dict())
+            for profiles, message in (
+                ((), "non-empty"),
+                (("stable", "stable"), "duplicated"),
+            ):
+                with self.subTest(profiles=profiles):
+                    with self.assertRaisesRegex(VoiceRepairComparisonError, message):
+                        build_voice_repair_comparison_plan(
+                            workspace, "Rhiannon", generation_profiles=iter(profiles)
+                        )
+
+    def test_rehashed_plan_rejects_malformed_samples_states_and_controls(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, workspace, _ = self.create_rejected_workspace(root, text="Hello")
+            plan = build_voice_repair_comparison_plan(workspace, "Rhiannon")
+            output = root / "malformed-plan.json"
+            for field, value, message in (
+                ("comparison_sample_queue_ids", [{}], "sample ID"),
+                ("comparison_sample_queue_ids", [[]], "sample ID"),
+                ("status", [], "unresolved item state"),
+                ("review_status", {}, "unresolved item state"),
+                ("word_count", True, "word count"),
+                ("word_count", 1.0, "word count"),
+                ("kind", [], "model control"),
+                ("kind", {}, "model control"),
+            ):
+                with self.subTest(field=field, value=value):
+                    document = plan.to_dict()
+                    if field == "comparison_sample_queue_ids":
+                        document[field] = value
+                    elif field == "kind":
+                        candidate = document["candidates"][0]
+                        candidate["model_control"][field] = value
+                        candidate["candidate_id"] = _canonical_sha256(
+                            {
+                                key: item
+                                for key, item in candidate.items()
+                                if key != "candidate_id"
+                            }
+                        )
+                    else:
+                        document["targets"][0][field] = value
+                    document["plan_id"] = _canonical_sha256(
+                        {
+                            key: item
+                            for key, item in document.items()
+                            if key != "plan_id"
+                        }
+                    )
+                    output.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(VoiceRepairComparisonError, message):
+                        load_voice_repair_comparison_plan(output)
+
+    def test_rehashed_candidate_controls_fail_before_reuse_or_command(self):
+        for changed_control in ("reference", "manifest", "numeric-binding"):
+            with (
+                self.subTest(changed_control=changed_control),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                fixture, imported, source, plan, candidate, prepared = (
+                    self.create_candidate(root)
+                )
+                manifest_path = prepared.input_directory / "manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if changed_control == "reference":
+                    changed_path = (
+                        prepared.input_directory
+                        / manifest["voices"][0]["references"][0]
+                    )
+                    changed_path.write_bytes(b"different reference")
+                    message = "reference differs from the plan"
+                else:
+                    if changed_control == "numeric-binding":
+                        manifest[
+                            comparison_module.VOICE_REPAIR_CANDIDATE_MANIFEST_FIELD
+                        ]["schema_version"] = 1.0
+                    else:
+                        manifest["voices"][0]["references"].reverse()
+                    changed_path = manifest_path
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                    message = "manifest differs from the plan"
+                bundle_path = prepared.input_directory / "bundle.json"
+                bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+                for entry in bundle["inventory"]:
+                    if prepared.input_directory / entry["path"] == changed_path:
+                        entry["sha256"] = hashlib.sha256(
+                            changed_path.read_bytes()
+                        ).hexdigest()
+                bundle["bundle_id"] = _canonical_sha256(
+                    {key: value for key, value in bundle.items() if key != "bundle_id"}
+                )
+                bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+                with self.assertRaisesRegex(VoiceRepairComparisonError, message):
+                    prepare_voice_repair_candidate_workspace(
+                        plan,
+                        candidate["candidate_id"],
+                        imported,
+                        root / "candidate-inputs",
+                        root / "other-workspaces",
+                    )
+                changed_workspace = create_resume_workspace(
+                    imported,
+                    root / "changed-workspaces",
+                    story_index=source / "inputs/story-index.jsonl",
+                    voice_manifest=manifest_path,
+                    narrator_character="Rhiannon",
+                    backend=candidate["provider"],
+                    model=candidate["model"],
+                    generation_profile=candidate["generation_profile"],
+                ).directory
+                state_path = changed_workspace / "generated-audio/generation-state.json"
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                state["active"] = None
+                state["items"].pop(fixture["queue_id"], None)
+                state_path.write_text(json.dumps(state), encoding="utf-8")
+                with self.assertRaisesRegex(VoiceRepairComparisonError, message):
+                    build_voice_repair_candidate_command(
+                        plan, candidate["candidate_id"], changed_workspace
+                    )
+
+    def test_reference_paths_share_canonical_admission(self):
+        variant = {
+            "voice_character": "Voice",
+            "voice_speaker": "voice",
+            "ordered_references": [],
+        }
+        for path in (
+            "C:/voice.wav",
+            "C:voice.wav",
+            "../voice.wav",
+            "audio/./voice.wav",
+            "audio/bad\x00.wav",
+        ):
+            with self.subTest(path=path):
+                variant["ordered_references"] = [{"path": path, "sha256": "a" * 64}]
+                with self.assertRaisesRegex(
+                    VoiceRepairComparisonError, "path is unsafe"
+                ):
+                    comparison_module._validate_variants([variant])
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "reference.wav"
+            reference.write_bytes(b"reference")
+            symlink_or_skip(root / "linked", root, target_is_directory=True)
+            with self.assertRaisesRegex(VoiceRepairComparisonError, "symlink"):
+                comparison_module._regular_contained_file(
+                    root, "linked/reference.wav", "Reference"
+                )
+
+    def test_captured_manifest_validates_original_reference_root(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "manifest.json"
+            reference = root / "reference.wav"
+            reference.write_bytes(b"original reference")
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Voice",
+                                "speaker": "voice",
+                                "references": ["reference.wav"],
+                            },
+                            {
+                                "character": "Unused",
+                                "speaker": "unused",
+                                "references": ["missing.wav"],
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            plan = {
+                "source": {
+                    "voice_manifest_sha256": hashlib.sha256(
+                        manifest.read_bytes()
+                    ).hexdigest()
+                }
+            }
+            document, entries = comparison_module._candidate_source_manifest(
+                manifest, plan
+            )
+            self.assertEqual(document["voices"][0]["character"], "Voice")
+            self.assertEqual(entries[0].references, ("reference.wav",))
+            self.assertEqual(entries[1].references, ("missing.wav",))
+
+            outside = root / "outside.wav"
+            outside.write_bytes(b"external reference")
+            symlink_or_skip(root / "missing.wav", outside)
+            with self.assertRaisesRegex(VoiceRepairComparisonError, "symlink"):
+                comparison_module._candidate_source_manifest(manifest, plan)
+
+    def test_final_source_read_failure_preserves_cause_and_prevents_plan_output(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, workspace, _ = self.create_rejected_workspace(root)
+            before = tree_hashes(root)
+            output = root / "comparison.json"
+            failure = PermissionError("Final repair source read was blocked")
+            original_check = comparison_module._rehash_sources
+
+            def fail_final_read(*arguments):
+                with patch.object(
+                    comparison_module, "sha256_file", side_effect=failure
+                ):
+                    return original_check(*arguments)
+
+            with patch.object(
+                comparison_module, "_rehash_sources", side_effect=fail_final_read
+            ):
+                with self.assertRaises(VoiceRepairComparisonError) as caught:
+                    build_voice_repair_comparison_plan(workspace, "Rhiannon")
+                self.assertIs(caught.exception.__cause__, failure)
+                stdout, stderr = StringIO(), StringIO()
+                with (
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as exited,
+                ):
+                    authoring_main(
+                        [
+                            "voice-repair-comparison-plan",
+                            str(workspace),
+                            "Rhiannon",
+                            "--output",
+                            str(output),
+                        ]
+                    )
+                self.assertEqual(exited.exception.code, 2)
+                self.assertIn(str(failure), stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
+            self.assertFalse(output.exists())
+            self.assertEqual(tree_hashes(root), before)
 
     def test_plan_binds_exact_unresolved_item_and_supported_profiles(self):
         with TemporaryDirectory() as directory:
@@ -315,6 +587,101 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
                     root / "candidate-workspaces",
                 )
 
+    def test_candidate_json_encoding_and_shape_fail_as_domain_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, imported, workspace_result = create_test_workspace(root / "seed")
+            source_state = (
+                workspace_result.directory / "generated-audio/generation-state.json"
+            )
+            state = json.loads(source_state.read_text(encoding="utf-8"))
+            state["active"] = None
+            _queue_id, result = next(iter(state["items"].items()))
+            result["status"] = "generated"
+            result["review_status"] = "rejected"
+            source_state.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            plan = build_voice_repair_comparison_plan(
+                workspace_result.directory, "Rhiannon"
+            )
+            candidate_id = plan.document["candidates"][0]["candidate_id"]
+            prepared = prepare_voice_repair_candidate_workspace(
+                plan,
+                candidate_id,
+                imported,
+                root / "candidate-inputs",
+                root / "candidate-workspaces",
+            )
+            bundle_path = prepared.input_directory / "bundle.json"
+            bundle = bundle_path.read_bytes()
+            bundle_path.write_bytes(b"\xff")
+            with self.assertRaisesRegex(
+                VoiceRepairComparisonError,
+                "Unable to load voice repair candidate input",
+            ):
+                prepare_voice_repair_candidate_workspace(
+                    plan,
+                    candidate_id,
+                    imported,
+                    root / "candidate-inputs",
+                    root / "candidate-workspaces",
+                )
+            bundle_path.write_bytes(bundle)
+            for schema_version in (True, 1.0):
+                bundle_document = json.loads(bundle)
+                bundle_document["schema_version"] = schema_version
+                bundle_document["bundle_id"] = _canonical_sha256(
+                    {
+                        key: value
+                        for key, value in bundle_document.items()
+                        if key != "bundle_id"
+                    }
+                )
+                bundle_path.write_text(json.dumps(bundle_document), encoding="utf-8")
+                with self.assertRaisesRegex(
+                    VoiceRepairComparisonError, "input conflicts"
+                ):
+                    prepare_voice_repair_candidate_workspace(
+                        plan,
+                        candidate_id,
+                        imported,
+                        root / "candidate-inputs",
+                        root / "candidate-workspaces",
+                    )
+                bundle_path.write_bytes(bundle)
+
+            manifest_path = prepared.input_directory / "manifest.json"
+            manifest = manifest_path.read_bytes()
+            for replacement, message in (
+                (b"\xff", "Unable to load candidate voice manifest"),
+                (b"[]", "Candidate manifest binding changed"),
+            ):
+                manifest_path.write_bytes(replacement)
+                bundle_document = json.loads(bundle)
+                manifest_entry = next(
+                    item
+                    for item in bundle_document["inventory"]
+                    if item["path"] == "manifest.json"
+                )
+                manifest_entry["sha256"] = hashlib.sha256(replacement).hexdigest()
+                bundle_document["bundle_id"] = _canonical_sha256(
+                    {
+                        key: value
+                        for key, value in bundle_document.items()
+                        if key != "bundle_id"
+                    }
+                )
+                bundle_path.write_text(json.dumps(bundle_document), encoding="utf-8")
+                with self.assertRaisesRegex(VoiceRepairComparisonError, message):
+                    prepare_voice_repair_candidate_workspace(
+                        plan,
+                        candidate_id,
+                        imported,
+                        root / "candidate-inputs",
+                        root / "candidate-workspaces",
+                    )
+                bundle_path.write_bytes(bundle)
+            manifest_path.write_bytes(manifest)
+
     def test_candidate_input_symlink_fails_closed(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -347,7 +714,7 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
             reference.unlink()
             symlink_or_skip(reference, prepared.input_directory / "manifest.json")
 
-            with self.assertRaisesRegex(VoiceRepairComparisonError, "symbolic link"):
+            with self.assertRaisesRegex(VoiceRepairComparisonError, "symlink"):
                 prepare_voice_repair_candidate_workspace(
                     plan,
                     candidate_id,
@@ -392,6 +759,27 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
                 prepare_voice_repair_candidate_workspace(
                     plan,
                     candidate_id,
+                    imported,
+                    root / "candidate-inputs",
+                    root / "candidate-workspaces",
+                )
+
+    def test_candidate_reuse_rejects_unlisted_nested_bundle_document(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, imported, _source, plan, candidate, prepared = (
+                self.create_candidate(root)
+            )
+            nested = prepared.input_directory / "unlisted/bundle.json"
+            nested.parent.mkdir()
+            nested.write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                VoiceRepairComparisonError, "inventory is incomplete"
+            ):
+                prepare_voice_repair_candidate_workspace(
+                    plan,
+                    candidate["candidate_id"],
                     imported,
                     root / "candidate-inputs",
                     root / "candidate-workspaces",

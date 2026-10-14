@@ -1,4 +1,3 @@
-import json
 import math
 import re
 import unicodedata
@@ -9,9 +8,9 @@ from difflib import SequenceMatcher
 from hashlib import sha256
 from os.path import commonprefix
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TypeAlias
 
+from durable_file import atomic_output_path
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
@@ -20,6 +19,10 @@ from vntts_artifacts.story_index import (
     load_story_index_document,
 )
 
+from vntts.cleanup import temporary_directory
+from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
+from vntts.path_safety import copy_regular_file, open_regular_text, read_regular_bytes
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
@@ -99,7 +102,9 @@ class ChapterVoicePreloader:
             self.by_exact_dialogue[
                 (speaker_key, _normalize_exact_text(row.text))
             ].append(row)
-            self.by_normalized_dialogue[(speaker_key, _normalize(row.text))].append(row)
+            self.by_normalized_dialogue[
+                (speaker_key, self.normalized_text[row])
+            ].append(row)
         for rows in self.by_chapter.values():
             rows.sort(key=lambda row: row.sequence)
         self.current_match: ChapterMatch | None = None
@@ -131,21 +136,15 @@ class ChapterVoicePreloader:
                 sequence = 0
             line_id = str(entry.get("line_id") or "").strip() or None
             text_hash = str(entry.get("text_sha256") or "").strip() or None
-            source_audio_status = _source_audio_status(entry)
-            source_audio_id = (
-                str(
-                    entry.get("source_audio_id") or entry.get("source_voice_id") or ""
-                ).strip()
-                or None
-            )
-            source_audio_duration_seconds = _source_audio_duration_seconds(
+            (
+                source_audio_status,
+                source_audio_id,
+                source_audio_duration_seconds,
+                source_audio_completeness,
+                source_audio_authoritative,
+            ) = _source_audio_extension(
                 entry,
                 completion_contract=completion_contract or None,
-            )
-            source_audio_completeness = _source_audio_completeness(
-                entry,
-                completion_contract=completion_contract or None,
-                duration_seconds=source_audio_duration_seconds,
                 semantic_authorized=False,
             )
             rows.append(
@@ -160,6 +159,7 @@ class ChapterVoicePreloader:
                     source_audio_id,
                     source_audio_duration_seconds,
                     source_audio_completeness,
+                    source_audio_authoritative=source_audio_authoritative,
                 )
             )
         return cls(rows, lookahead_rows=lookahead_rows)
@@ -169,13 +169,16 @@ class ChapterVoicePreloader:
         cls, path: str | Path, payload: bytes, *, lookahead_rows: int = 80
     ) -> ChapterVoicePreloader:
         """Load captured story bytes with their optional checksum-bound evidence."""
-        with TemporaryDirectory(prefix="vntts-story-snapshot-") as directory:
+        with temporary_directory(prefix="vntts-story-snapshot-") as directory:
             snapshot = Path(directory) / "story-index.jsonl"
             snapshot.write_bytes(payload)
             evidence = Path(path).with_name("source-audio-semantic-evidence.json")
             try:
                 if evidence.is_file() and not evidence.is_symlink():
-                    snapshot.with_name(evidence.name).write_bytes(evidence.read_bytes())
+                    with atomic_output_path(
+                        snapshot.with_name(evidence.name)
+                    ) as staged:
+                        copy_regular_file(evidence, staged)
             except OSError:
                 # Unavailable optional evidence cannot authorise source audio.
                 pass
@@ -353,7 +356,7 @@ class ChapterVoicePreloader:
                 for line_id in allowed
                 if (row := self.by_line_id.get(line_id)) is not None
                 and row.text_sha256
-                and _normalize(row.text) == normalized_text
+                and self.normalized_text[row] == normalized_text
                 and _normalize(row.speaker) == speaker_key
             ]
             match_result = "expected-normalized-exact"
@@ -693,7 +696,7 @@ class ChapterVoicePreloader:
         best_row = None
         best_score = 0.0
         for row in candidates:
-            candidate_text = _normalize(row.text)
+            candidate_text = self.normalized_text[row]
             if not candidate_text:
                 continue
             if normalized_text in candidate_text or candidate_text in normalized_text:
@@ -831,9 +834,9 @@ def _source_audio_duration_seconds(
     value = entry.get("source_audio_duration_seconds")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    value = float(value)
-    if not math.isfinite(value) or not 0 < value <= 600:
+    if not 0 < value <= 600:
         return None
+    value = float(value)
     if completion_contract != VERIFIED_SOURCE_AUDIO_COMPLETION:
         return None
     media_id = entry.get("source_audio_duration_media_id")
@@ -850,7 +853,7 @@ def _source_audio_duration_seconds(
         or isinstance(sample_count, bool)
         or not isinstance(sample_count, int)
         or sample_count <= 0
-        or re.fullmatch(r"[0-9a-f]{64}", media_sha256) is None
+        or not is_lowercase_sha256(media_sha256)
         or not decoder
     ):
         return None
@@ -858,7 +861,10 @@ def _source_audio_duration_seconds(
         "available_media_ids"
     ) != [media_id]:
         return None
-    measured = sample_count / sample_rate
+    try:
+        measured = sample_count / sample_rate
+    except OverflowError:
+        return None
     return value if math.isclose(value, measured, rel_tol=0, abs_tol=0.000001) else None
 
 
@@ -917,8 +923,21 @@ def _source_audio_extension(
     )
 
 
+def _source_audio_evidence_payload(path: str | Path) -> bytes:
+    evidence_path = Path(path).expanduser().resolve().parent / (
+        "source-audio-semantic-evidence.json"
+    )
+    try:
+        return read_regular_bytes(evidence_path)
+    except OSError:
+        return b""
+
+
 def _validated_source_audio_line_ids(
-    path: str | Path, document: StoryIndexDocument | None = None
+    path: str | Path,
+    document: StoryIndexDocument | None = None,
+    *,
+    evidence_payload: bytes | None = None,
 ) -> frozenset[str]:
     if document is None:
         return frozenset()
@@ -931,7 +950,9 @@ def _validated_source_audio_line_ids(
         "source-audio-semantic-evidence.json"
     )
     try:
-        load_source_audio_semantic_evidence(evidence_path, document)
+        load_source_audio_semantic_evidence(
+            evidence_path, document, payload=evidence_payload
+        )
     except OSError, SourceAudioSemanticEvidenceError:
         return frozenset()
     return frozenset(
@@ -980,10 +1001,10 @@ def _load_source_audio_extensions(
     """Retain optional source-audio fields omitted by older contract readers."""
     result: dict[str, SourceAudioExtension] = {}
     try:
-        with open(path, encoding="utf-8") as stream:
+        with open_regular_text(path, encoding="utf-8") as stream:
             next(stream, None)
             for row in stream:
-                record = _string_mapping(json.loads(row))
+                record = _string_mapping(decode_json(row))
                 line_id = str(record.get("line_id") or "").strip()
                 if not line_id:
                     continue

@@ -7,15 +7,17 @@ import hashlib
 import json
 import os
 import random
-import shutil
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypeAlias, TypedDict
+from typing import NotRequired, TypeAlias, TypedDict
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
 
+from vntts.authoring.advisory_lock import (
+    AdvisoryLockBusyError,
+    exclusive_advisory_lock,
+)
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.missing_voice_reuse import (
     MISSING_VOICE_REUSE_PLAN_SCHEMA,
@@ -26,7 +28,7 @@ from vntts.authoring.missing_voice_reuse import (
     load_missing_voice_reuse_plan,
 )
 from vntts.authoring.private_files import private_file_is_restricted
-from vntts.authoring.publication import staged_directory
+from vntts.authoring.publication import publication_errors, staged_directory
 from vntts.authoring.source_reference_bindings import (
     MISSING_VOICE_REUSE_BINDING_FIELD,
 )
@@ -38,6 +40,9 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.document_identity import sha256_file
+from vntts.json_types import decode_json, has_schema_version, is_json_object
+from vntts.path_safety import copy_regular_file, read_regular_text
 
 REVIEW_BUNDLE_SCHEMA = "vntts.authoring-missing-voice-reuse-review-bundle"
 REVIEW_SESSION_SCHEMA = "vntts.authoring-missing-voice-reuse-review-session"
@@ -46,38 +51,35 @@ REVIEW_VERSION = 1
 AUTOMATIC_UNRESOLVED_ORIGIN = "automatic_no_complete_candidate"
 
 
-class ReviewSample(TypedDict, total=False):
+class ReviewSample(TypedDict):
     queue_id: str
-    line_id: str
-    text: str
-    text_sha256: str
-    length_bucket: str
-    portrait: object
+    line_id: NotRequired[str]
+    text: NotRequired[str]
+    text_sha256: NotRequired[str]
+    length_bucket: NotRequired[str]
+    portrait: NotRequired[object]
     cohort_id: str
 
 
-class ReviewArm(TypedDict, total=False):
+class ReviewArm(TypedDict):
     queue_id: str
     status: str
     attempt_count: int
-    audio: str
-    audio_sha256: str
-    quality: object
-    repair_strategy: str | None
-    failure_kind: str
-    failure_summary: str
+    audio: NotRequired[str]
+    audio_sha256: NotRequired[str]
+    quality: NotRequired[object]
+    repair_strategy: NotRequired[str | None]
+    failure_kind: NotRequired[str]
+    failure_summary: NotRequired[str]
 
 
-class ReviewCandidate(TypedDict, total=False):
+class ReviewCandidate(TypedDict):
     label: str
-    candidate_id: str
-    voice_character: str
-    speaker: str
     samples: list[ReviewArm]
     generated_count: int
 
 
-class ReviewCohort(TypedDict, total=False):
+class ReviewCohort(TypedDict):
     cohort_id: str
     sample_count: int
     samples: list[ReviewSample]
@@ -85,11 +87,11 @@ class ReviewCohort(TypedDict, total=False):
     decision_options: list[str]
 
 
-class ReviewDecision(TypedDict, total=False):
+class ReviewDecision(TypedDict):
     cohort_id: str
     decision: str | None
-    decided_at: str
-    decision_origin: str
+    decided_at: NotRequired[str]
+    decision_origin: NotRequired[str]
 
 
 class HeardRecord(TypedDict):
@@ -98,26 +100,25 @@ class HeardRecord(TypedDict):
     label: str
 
 
-class ReviewBundle(TypedDict, total=False):
+class ReviewBundle(TypedDict):
     schema: str
     schema_version: int
     bundle_id: str
     plan: JsonObject
-    target_mode: str
+    target_mode: NotRequired[str]
     character: str
     decision_context: JsonObject | None
     candidates: list[ReviewCandidate]
     cohorts: list[ReviewCohort]
-    source_control: list[JsonObject]
+    source_control: NotRequired[list[JsonObject]]
     cohort_count: int
     candidate_count: int
     blind_key_sha256: str
-    plan_id: str
     seed: int
     policy: JsonObject
 
 
-class ReviewSession(TypedDict, total=False):
+class ReviewSession(TypedDict):
     schema: str
     schema_version: int
     bundle_id: str
@@ -128,33 +129,26 @@ class ReviewSession(TypedDict, total=False):
     decisions: list[ReviewDecision]
 
 
-class PlanCandidate(TypedDict, total=False):
+class PlanCandidate(TypedDict):
     candidate_id: str
     voice_character: str
     speaker: str
     ordered_references: list[JsonObject]
-    render_hypothesis: JsonObject | None
+    render_hypothesis: NotRequired[JsonObject]
 
 
-class PlanTarget(TypedDict, total=False):
+class PlanTarget(TypedDict):
     queue_id: str
     cohort_id: str
-    line_id: str
-    text: str
-    text_sha256: str
-    portrait: object
-    failure_category: str
-    source_state_item_sha256: str
+    line_id: NotRequired[str]
+    text: NotRequired[str]
+    text_sha256: NotRequired[str]
+    portrait: NotRequired[object]
+    failure_category: NotRequired[str]
+    source_state_item_sha256: NotRequired[str]
 
 
-class PlanSample(TypedDict, total=False):
-    queue_id: str
-    cohort_id: str
-    line_id: str
-    text: str
-    text_sha256: str
-    length_bucket: str
-    portrait: object
+PlanSample: TypeAlias = ReviewSample
 
 
 class CandidateSnapshot(TypedDict):
@@ -727,26 +721,17 @@ def _review_cohort_for_plan(
     cohort_id = _text(cohort.get("cohort_id"), "Plan cohort ID")
     samples = [
         copy.deepcopy(sample)
-        for sample in sample_by_id.values()
-        if sample["cohort_id"] == cohort_id
+        for queue_id in document["comparison_sample_queue_ids"]
+        if (sample := sample_by_id[queue_id])["cohort_id"] == cohort_id
     ]
-    samples.sort(
-        key=lambda sample: document["comparison_sample_queue_ids"].index(
-            sample["queue_id"]
-        )
-    )
     required_ids = {sample["queue_id"] for sample in samples}
-    complete = [
-        candidate["label"]
-        for candidate in candidates
-        if all(
-            {sample["queue_id"]: sample["status"] for sample in candidate["samples"]}[
-                queue_id
-            ]
-            == "generated"
-            for queue_id in required_ids
-        )
-    ]
+    complete = []
+    for candidate in candidates:
+        statuses = {
+            sample["queue_id"]: sample["status"] for sample in candidate["samples"]
+        }
+        if all(statuses[queue_id] == "generated" for queue_id in required_ids):
+            complete.append(candidate["label"])
     return {
         "cohort_id": cohort_id,
         "sample_count": len(samples),
@@ -761,8 +746,14 @@ def load_missing_voice_reuse_review(
 ) -> tuple[ReviewBundle, ReviewSession]:
     """Validate and return the immutable bundle plus mutable review session."""
     session_path = Path(session_path).expanduser().resolve()
-    root = session_path.parent
     session = load_workspace_json(session_path, "missing-voice review session")
+    return _validate_missing_voice_reuse_review(session_path, session)
+
+
+def _validate_missing_voice_reuse_review(
+    session_path: Path, session: JsonObject
+) -> tuple[ReviewBundle, ReviewSession]:
+    root = session_path.parent
     bundle_path = root / "bundle.json"
     bundle = load_workspace_json(bundle_path, "missing-voice review bundle")
     if (
@@ -773,9 +764,15 @@ def load_missing_voice_reuse_review(
     ):
         raise MissingVoiceReuseReviewError("Missing-voice review schema is unsupported")
     claimed_bundle_id = bundle.get("bundle_id")
-    if claimed_bundle_id != canonical_document_sha256(
-        {key: value for key, value in bundle.items() if key != "bundle_id"}
-    ):
+    try:
+        bundle_id = canonical_document_sha256(
+            {key: value for key, value in bundle.items() if key != "bundle_id"}
+        )
+    except (TypeError, ValueError) as error:
+        raise MissingVoiceReuseReviewError(
+            f"Missing-voice review bundle identity is invalid: {error}"
+        ) from error
+    if claimed_bundle_id != bundle_id:
         raise MissingVoiceReuseReviewError(
             "Missing-voice review bundle identity changed"
         )
@@ -792,7 +789,7 @@ def load_missing_voice_reuse_review(
     bundle_plan = _object(bundle.get("plan"), "Missing-voice review plan")
     if (
         key.get("schema") != REVIEW_KEY_SCHEMA
-        or key.get("schema_version") != REVIEW_VERSION
+        or not has_schema_version(key, REVIEW_VERSION)
         or key.get("plan_id") != bundle_plan.get("plan_id")
     ):
         raise MissingVoiceReuseReviewError("Missing-voice blind key is invalid")
@@ -806,57 +803,89 @@ def record_missing_voice_reuse_heard(
     session_path: str | Path, cohort_id: str, queue_id: str, label: str
 ) -> ReviewSession:
     """Record that one exact generated opaque arm has started playback."""
-    bundle, session = load_missing_voice_reuse_review(session_path)
-    cohort = _cohort(bundle, cohort_id)
-    if queue_id not in {sample["queue_id"] for sample in cohort["samples"]}:
-        raise MissingVoiceReuseReviewError("Review sample is outside the cohort")
-    sample = _public_sample(bundle, label, queue_id)
-    if sample["status"] != "generated":
-        raise MissingVoiceReuseReviewError("A failed review arm cannot be heard")
-    record: HeardRecord = {"cohort_id": cohort_id, "queue_id": queue_id, "label": label}
-    if record not in session["heard"]:
-        session["heard"].append(record)
-        session["heard"].sort(
-            key=lambda value: (
-                value["cohort_id"],
-                value["queue_id"],
-                value["label"],
-            )
-        )
-        session["updated_at"] = _utc_now()
-        atomic_write_json(Path(session_path).resolve(), session, sort_keys=True)
-    return session
+    session_path = Path(session_path).expanduser().resolve()
+    try:
+        with (
+            publication_errors(MissingVoiceReuseReviewError),
+            exclusive_advisory_lock(
+                session_path.with_name(f".{session_path.name}.guard"), blocking=True
+            ),
+        ):
+            bundle, session = load_missing_voice_reuse_review(session_path)
+            cohort = _cohort(bundle, cohort_id)
+            if queue_id not in {sample["queue_id"] for sample in cohort["samples"]}:
+                raise MissingVoiceReuseReviewError(
+                    "Review sample is outside the cohort"
+                )
+            sample = _public_sample(bundle, label, queue_id)
+            if sample["status"] != "generated":
+                raise MissingVoiceReuseReviewError(
+                    "A failed review arm cannot be heard"
+                )
+            record: HeardRecord = {
+                "cohort_id": cohort_id,
+                "queue_id": queue_id,
+                "label": label,
+            }
+            if record not in session["heard"]:
+                session["heard"].append(record)
+                session["heard"].sort(
+                    key=lambda value: (
+                        value["cohort_id"],
+                        value["queue_id"],
+                        value["label"],
+                    )
+                )
+                session["updated_at"] = _utc_now()
+                atomic_write_json(session_path, session, sort_keys=True)
+            return session
+    except AdvisoryLockBusyError as error:
+        raise MissingVoiceReuseReviewError(str(error)) from error
 
 
 def record_missing_voice_reuse_decision(
     session_path: str | Path, cohort_id: str, decision: str
 ) -> ReviewSession:
     """Record one candidate or neither after every available arm was heard."""
-    bundle, session = load_missing_voice_reuse_review(session_path)
-    cohort = _cohort(bundle, cohort_id)
-    if decision not in cohort["decision_options"]:
-        raise MissingVoiceReuseReviewError("Review decision is not available")
-    record = next(
-        value for value in session["decisions"] if value["cohort_id"] == cohort_id
-    )
-    if record["decision"] is not None:
-        raise MissingVoiceReuseReviewError("Review cohort already has a decision")
-    required_heard = _available_heard_keys(bundle, cohort)
-    observed = {
-        (value["queue_id"], value["label"])
-        for value in session["heard"]
-        if value["cohort_id"] == cohort_id
-    }
-    if observed != required_heard:
-        raise MissingVoiceReuseReviewError(
-            "Every available cohort sample must be heard before deciding"
-        )
-    record["decision"] = decision
-    record["decided_at"] = _utc_now()
-    session["updated_at"] = _utc_now()
-    atomic_write_json(Path(session_path).resolve(), session, sort_keys=True)
-    load_missing_voice_reuse_review(session_path)
-    return session
+    session_path = Path(session_path).expanduser().resolve()
+    try:
+        with (
+            publication_errors(MissingVoiceReuseReviewError),
+            exclusive_advisory_lock(
+                session_path.with_name(f".{session_path.name}.guard"), blocking=True
+            ),
+        ):
+            bundle, session = load_missing_voice_reuse_review(session_path)
+            cohort = _cohort(bundle, cohort_id)
+            if decision not in cohort["decision_options"]:
+                raise MissingVoiceReuseReviewError("Review decision is not available")
+            record = next(
+                value
+                for value in session["decisions"]
+                if value["cohort_id"] == cohort_id
+            )
+            if record["decision"] is not None:
+                raise MissingVoiceReuseReviewError(
+                    "Review cohort already has a decision"
+                )
+            required_heard = _available_heard_keys(bundle, cohort)
+            observed = {
+                (value["queue_id"], value["label"])
+                for value in session["heard"]
+                if value["cohort_id"] == cohort_id
+            }
+            if observed != required_heard:
+                raise MissingVoiceReuseReviewError(
+                    "Every available cohort sample must be heard before deciding"
+                )
+            record["decision"] = decision
+            record["decided_at"] = _utc_now()
+            session["updated_at"] = _utc_now()
+            atomic_write_json(session_path, session, sort_keys=True)
+            load_missing_voice_reuse_review(session_path)
+            return session
+    except AdvisoryLockBusyError as error:
+        raise MissingVoiceReuseReviewError(str(error)) from error
 
 
 def missing_voice_reuse_review_progress(
@@ -910,10 +939,14 @@ def _load_candidate_workspace(
     state = _object(state, "Candidate generation state")
     manifest_path = directory / "inputs/voice/manifest.json"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = decode_json(read_regular_text(manifest_path, encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise MissingVoiceReuseReviewError(str(error)) from error
-    binding = manifest.get(MISSING_VOICE_REUSE_BINDING_FIELD)
+    binding = (
+        manifest.get(MISSING_VOICE_REUSE_BINDING_FIELD)
+        if isinstance(manifest, dict)
+        else None
+    )
     if (
         not isinstance(binding, dict)
         or binding.get("mode") != "comparison_sample_only"
@@ -1551,7 +1584,7 @@ def _review_decision(value: JsonObject) -> ReviewDecision:
 
 
 def _object(value: object, label: str) -> JsonObject:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise MissingVoiceReuseReviewError(f"{label} is malformed")
     return {key: item for key, item in value.items()}
 
@@ -1597,7 +1630,7 @@ def _link_or_copy(source: Path, destination: Path) -> None:
     try:
         os.link(source, destination)
     except OSError:
-        shutil.copy2(source, destination)
+        copy_regular_file(source, destination, preserve_metadata=True)
 
 
 def _opaque_label(index: int) -> str:

@@ -6,31 +6,31 @@ import copy
 import hashlib
 import json
 import re
-import tempfile
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueueItem
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     normalize_character_name,
 )
 
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    canonical_document_sha256,
+    write_json_document_no_replace,
+)
 from vntts.authoring.bulk_generation import sha256_control_path
 from vntts.authoring.cohort_review import (
     CohortReviewError,
     _load_document,
-    _write_document_no_replace,
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -50,8 +50,17 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workbench_contracts import ReviewItem
 from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import is_lowercase_sha256, sha256_file
+from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import (
+    contained_no_replace_destination,
+    contained_regular_file,
+    read_regular_bytes,
+    read_regular_text,
+    safe_relative_path,
+)
 from vntts.speech_backend import get_moss_tts_generation_profile
+from vntts.voices import voice_manifest_entries_at_path
 
 JsonObject: TypeAlias = dict[str, object]
 JsonList: TypeAlias = list[object]
@@ -128,7 +137,7 @@ class _PlanSections:
     targets: list[JsonObject]
     variants: list[JsonObject]
     candidates: list[JsonObject]
-    samples: JsonList
+    samples: list[str]
 
 
 def build_voice_repair_comparison_plan(
@@ -285,11 +294,11 @@ def _comparison_plan_inputs(workspace_directory: str | Path) -> _ComparisonPlanI
     manifest_path = directory / "inputs/voice/manifest.json"
     manifest_payload = _read(manifest_path, "voice manifest")
     try:
-        manifest_document = json.loads(manifest_payload.decode("utf-8"))
-        with tempfile.TemporaryDirectory(prefix="vntts-voice-repair-manifest-") as temp:
-            snapshot = Path(temp) / "manifest.json"
-            snapshot.write_bytes(manifest_payload)
-            _metadata, voices = load_voice_manifest(snapshot, allow_legacy=False)
+        manifest_document = decode_json(manifest_payload.decode("utf-8"))
+        voices = voice_manifest_entries_at_path(
+            manifest_document, manifest_path, allow_legacy=False
+        )
+        assert isinstance(manifest_document, dict)
         overrides = queue_voice_overrides_from_manifest(
             manifest_document,
             queue_ids=(item.queue_id for item in queue.items),
@@ -398,14 +407,12 @@ def write_voice_repair_comparison_plan(
     plan: VoiceRepairComparisonPlan, output_path: str | Path
 ) -> Path:
     document = _validate_plan(plan)
-    try:
-        return Path(
-            _write_document_no_replace(
-                output_path, document, "voice repair comparison plan"
-            )
-        )
-    except CohortReviewError as error:
-        raise VoiceRepairComparisonError(str(error)) from error
+    return write_json_document_no_replace(
+        output_path,
+        document,
+        "voice repair comparison plan",
+        error_type=VoiceRepairComparisonError,
+    )
 
 
 def load_voice_repair_comparison_plan(path: str | Path) -> VoiceRepairComparisonPlan:
@@ -513,17 +520,7 @@ def build_voice_repair_candidate_command(
         raise VoiceRepairComparisonError(
             "Candidate workspace run configuration differs from the plan"
         )
-    manifest_path = directory / "inputs/voice/manifest.json"
-    manifest_payload = _read(manifest_path, "candidate voice manifest")
-    try:
-        manifest = json.loads(manifest_payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise VoiceRepairComparisonError(str(error)) from error
-    binding = manifest.get(VOICE_REPAIR_CANDIDATE_MANIFEST_FIELD)
-    if binding != _candidate_manifest_binding(document, candidate):
-        raise VoiceRepairComparisonError(
-            "Candidate workspace manifest is not bound to the requested plan"
-        )
+    _validate_candidate_manifest(directory / "inputs/voice", document, candidate)
     model = _required_text(candidate.get("model"), "Comparison model")
     model_path = Path(model).expanduser()
     model_control = _required_object(
@@ -652,12 +649,11 @@ def _candidate_input_destination(
         candidate.get("candidate_id"), "Comparison candidate ID"
     )
     name = f"voice-repair-{plan_id[:24]}-{candidate_key[:16]}"
-    if (root / name).is_symlink():
-        raise VoiceRepairComparisonError(
-            "Voice repair candidate input is a symbolic link"
-        )
-    return root, contained_workspace_path(
-        root, Path(name), "Voice repair candidate input"
+    return root, contained_no_replace_destination(
+        root,
+        Path(name),
+        "Voice repair candidate input",
+        error_type=VoiceRepairComparisonError,
     )
 
 
@@ -714,13 +710,10 @@ def _candidate_source_manifest(
     if hashlib.sha256(source_payload).hexdigest() != _source_manifest_sha256(document):
         raise VoiceRepairComparisonError("Source voice manifest changed after planning")
     try:
-        manifest = json.loads(source_payload.decode("utf-8"))
-        with tempfile.TemporaryDirectory(
-            prefix="vntts-voice-repair-candidate-manifest-"
-        ) as temp:
-            snapshot = Path(temp) / "manifest.json"
-            snapshot.write_bytes(source_payload)
-            _metadata, voices = load_voice_manifest(snapshot, allow_legacy=False)
+        manifest = decode_json(source_payload.decode("utf-8"))
+        voices = voice_manifest_entries_at_path(
+            manifest, source_manifest, allow_legacy=False
+        )
     except (
         UnicodeDecodeError,
         json.JSONDecodeError,
@@ -729,7 +722,7 @@ def _candidate_source_manifest(
         raise VoiceRepairComparisonError(str(error)) from error
     if not isinstance(manifest, dict):
         raise VoiceRepairComparisonError("Source voice manifest is malformed")
-    return manifest, tuple(voices)
+    return manifest, voices
 
 
 def _source_manifest_sha256(document: JsonObject) -> str:
@@ -770,7 +763,7 @@ def _copy_candidate_reference(
     if key in seen:
         return
     seen.add(key)
-    payload = source.read_bytes()
+    payload = read_regular_bytes(source)
     target = staging / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(payload)
@@ -812,8 +805,8 @@ def _candidate_bundle(directory: Path) -> JsonObject:
     if bundle_path.is_symlink():
         raise VoiceRepairComparisonError("Candidate bundle document is unsafe")
     try:
-        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        bundle = decode_json(read_regular_text(bundle_path, encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise VoiceRepairComparisonError(
             f"Unable to load voice repair candidate input: {error}"
         ) from error
@@ -827,7 +820,7 @@ def _validate_candidate_bundle_identity(
 ) -> None:
     if bundle.get("schema") != VOICE_REPAIR_CANDIDATE_BUNDLE_SCHEMA:
         raise VoiceRepairComparisonError("Voice repair candidate input conflicts")
-    if bundle.get("schema_version") != VOICE_REPAIR_CANDIDATE_BUNDLE_VERSION:
+    if not has_schema_version(bundle, VOICE_REPAIR_CANDIDATE_BUNDLE_VERSION):
         raise VoiceRepairComparisonError("Voice repair candidate input conflicts")
     if bundle.get("plan_id") != _required_text(
         document.get("plan_id"), "Comparison plan ID"
@@ -862,7 +855,7 @@ def _validate_candidate_bundle_inventory(directory: Path, bundle: JsonObject) ->
     actual = {
         path.relative_to(directory).as_posix()
         for path in paths
-        if path.is_file() and path.name != "bundle.json"
+        if path.is_file() and path != directory / "bundle.json"
     }
     if declared != actual:
         raise VoiceRepairComparisonError("Candidate bundle inventory is incomplete")
@@ -892,32 +885,59 @@ def _validate_candidate_inventory_item(
     ordered.append(key)
 
 
+@publication_errors(VoiceRepairComparisonError)
 def _validate_candidate_manifest(
     directory: Path, document: JsonObject, candidate: JsonObject
 ) -> None:
     try:
-        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        manifest = decode_json(
+            read_regular_text(directory / "manifest.json", encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise VoiceRepairComparisonError(
             f"Unable to load candidate voice manifest: {error}"
         ) from error
+    if not isinstance(manifest, dict):
+        raise VoiceRepairComparisonError("Candidate manifest binding changed")
     if manifest.get(VOICE_REPAIR_CANDIDATE_MANIFEST_FIELD) != (
         _candidate_manifest_binding(document, candidate)
     ):
         raise VoiceRepairComparisonError("Candidate manifest binding changed")
+    source = _required_object(document.get("source"), "Comparison source")
+    source_manifest = (
+        Path(_required_text(source.get("workspace"), "Comparison source workspace"))
+        / "inputs/voice/manifest.json"
+    )
+    expected_manifest, _voices = _candidate_source_manifest(source_manifest, document)
+    expected_manifest[VOICE_REPAIR_CANDIDATE_MANIFEST_FIELD] = (
+        _candidate_manifest_binding(document, candidate)
+    )
+    if canonical_document_sha256(manifest, allow_nan=True) != canonical_document_sha256(
+        expected_manifest, allow_nan=True
+    ):
+        raise VoiceRepairComparisonError(
+            "Candidate voice manifest differs from the plan"
+        )
+    for variant in _object_list(document.get("variants"), "Comparison variants"):
+        for reference in _object_list(
+            variant.get("ordered_references"), "Comparison references"
+        ):
+            path = contained_regular_file(
+                directory,
+                _required_text(reference.get("path"), "Comparison reference path"),
+                "Candidate voice reference",
+                error_type=VoiceRepairComparisonError,
+            )
+            if sha256_file(path) != reference.get("sha256"):
+                raise VoiceRepairComparisonError(
+                    "Candidate voice reference differs from the plan"
+                )
 
 
 def _regular_contained_file(root: str | Path, relative: str | Path, label: str) -> Path:
-    root = Path(root).resolve()
-    current = root
-    for part in Path(relative).parts:
-        current /= part
-        if current.is_symlink():
-            raise VoiceRepairComparisonError(f"{label} contains a symbolic link")
-    path = contained_workspace_path(root, Path(relative), label)
-    if not path.is_file():
-        raise VoiceRepairComparisonError(f"{label} is missing or is not a file")
-    return Path(path)
+    return contained_regular_file(
+        root, relative, label, error_type=VoiceRepairComparisonError
+    )
 
 
 def _selected_variant(
@@ -1040,11 +1060,11 @@ def _require_unresolved_result(queue_id: str, result: JsonObject | None) -> None
     if result is None:
         return
     combination = (result.get("status"), result.get("review_status"))
-    if combination not in {
+    if combination not in (
         ("generated", "pending_review"),
         ("generated", "rejected"),
         ("failed", None),
-    }:
+    ):
         raise VoiceRepairComparisonError(
             f"Comparison item has an unsupported authority state: {queue_id} {combination}"
         )
@@ -1088,7 +1108,13 @@ def _comparison_samples(targets: Sequence[JsonObject]) -> list[str]:
 def _validated_profiles(
     provider: str, generation_profiles: Iterable[object]
 ) -> list[str]:
-    if not isinstance(generation_profiles, (list, tuple)) or not generation_profiles:
+    try:
+        generation_profiles = list(generation_profiles)
+    except TypeError as error:
+        raise VoiceRepairComparisonError(
+            "Comparison profiles must be non-empty"
+        ) from error
+    if not generation_profiles:
         raise VoiceRepairComparisonError("Comparison profiles must be non-empty")
     profiles = []
     for value in generation_profiles:
@@ -1125,8 +1151,7 @@ def _validate_plan_header(document: object) -> None:
     if (
         not isinstance(document, dict)
         or document.get("schema") != VOICE_REPAIR_COMPARISON_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != VOICE_REPAIR_COMPARISON_VERSION
+        or not has_schema_version(document, VOICE_REPAIR_COMPARISON_VERSION)
     ):
         raise VoiceRepairComparisonError(
             "Voice repair comparison schema is unsupported"
@@ -1166,9 +1191,12 @@ def _plan_sections(document: JsonObject) -> _PlanSections:
     targets = _object_list(document.get("targets"), "Comparison targets")
     variants = _object_list(document.get("variants"), "Comparison variants")
     candidates = _object_list(document.get("candidates"), "Comparison candidates")
-    samples = _required_list(
+    raw_samples = _required_list(
         document.get("comparison_sample_queue_ids"), "Comparison samples"
     )
+    samples = [_required_text(value, "Comparison sample ID") for value in raw_samples]
+    if raw_samples != samples:
+        raise VoiceRepairComparisonError("Comparison samples are not deterministic")
     return _PlanSections(approved, targets, variants, candidates, samples)
 
 
@@ -1303,7 +1331,7 @@ def _validate_candidates(
         if (
             not isinstance(model_control, dict)
             or set(model_control) != {"kind", "sha256"}
-            or model_control.get("kind") not in {"path", "identifier"}
+            or model_control.get("kind") not in ("path", "identifier")
         ):
             raise VoiceRepairComparisonError("Comparison model control is malformed")
         _required_sha256(
@@ -1368,7 +1396,7 @@ def _validate_item_identity(value: JsonObject) -> None:
         raise VoiceRepairComparisonError("Comparison item text identity is invalid")
     word_count = value.get("word_count")
     expected_words = len(re.findall(r"[\w’'-]+", text, flags=re.UNICODE))
-    if word_count != expected_words:
+    if type(word_count) is not int or word_count != expected_words:
         raise VoiceRepairComparisonError("Comparison item word count is invalid")
     expected_bucket = (
         "short" if word_count <= 6 else "medium" if word_count <= 14 else "long"
@@ -1419,10 +1447,10 @@ def _validate_target_item(value: JsonObject) -> None:
         _required_text(value.get("failure_category"), "Failure category")
         if value.get("audio_sha256") is not None:
             raise VoiceRepairComparisonError("Comparison failed item has a WAV")
-    elif combination in {
+    elif combination in (
         ("generated", "pending_review"),
         ("generated", "rejected"),
-    }:
+    ):
         _required_sha256(value.get("state_item_sha256"), "Generated state item SHA-256")
         _required_sha256(value.get("audio_sha256"), "Generated WAV SHA-256")
         if value.get("failure_category") is not None:
@@ -1457,15 +1485,16 @@ def _validate_variants(variants: Sequence[JsonObject]) -> None:
             if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
                 raise VoiceRepairComparisonError("Comparison reference is malformed")
             value = _required_text(reference.get("path"), "Comparison reference path")
-            if (
-                "\\" in value
-                or Path(value).is_absolute()
-                or any(part in {"", ".", ".."} for part in value.split("/"))
-            ):
-                raise VoiceRepairComparisonError("Comparison reference path is unsafe")
+            try:
+                safe_relative_path(value, "Comparison reference")
+            except ValueError as error:
+                raise VoiceRepairComparisonError(
+                    "Comparison reference path is unsafe"
+                ) from error
             _required_sha256(reference.get("sha256"), "Comparison reference SHA-256")
 
 
+@publication_errors(VoiceRepairComparisonError)
 def _rehash_sources(
     directory: Path,
     workspace_sha256: str,
@@ -1503,7 +1532,7 @@ def _read(path: str | Path, label: str) -> bytes:
     if path.is_symlink():
         raise VoiceRepairComparisonError(f"Comparison {label} must not be a symlink")
     try:
-        return path.read_bytes()
+        return read_regular_bytes(path)
     except OSError as error:
         raise VoiceRepairComparisonError(
             f"Unable to read comparison {label}: {error}"

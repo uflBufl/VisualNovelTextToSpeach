@@ -40,7 +40,7 @@ class _Controller(Protocol):
 
     def apply_settings(
         self, settings: AppSettings, *, cancellation: Event | None = None
-    ) -> object: ...
+    ) -> bool | None: ...
 
     def prepare_startup(self) -> None: ...
 
@@ -137,7 +137,7 @@ class ConfigurationApplyMixin:
 
         def _update_auto_advance_action(self) -> None: ...
 
-        def _sync_active_profile(self, settings: AppSettings | None = None) -> bool: ...
+        def _sync_active_profile(self) -> bool: ...
 
         def _save_settings_candidate(self, candidate: AppSettings) -> Path: ...
 
@@ -149,7 +149,7 @@ class ConfigurationApplyMixin:
     def _setup_configuration_apply(self) -> None:
         if not isinstance(self, QObject):
             raise TypeError("ConfigurationApplyMixin requires a QObject host")
-        self.cancel_configuration_action = QAction("Cancel settings apply")
+        self.cancel_configuration_action = QAction("Cancel settings apply", self)
         self.cancel_configuration_action.setVisible(False)
         self.cancel_configuration_action.setEnabled(False)
         self.cancel_configuration_action.setStatusTip(
@@ -233,7 +233,7 @@ class ConfigurationApplyMixin:
         self.set_status("Runtime configuration apply is already completing")
 
     def _configuration_apply_finished(
-        self, result: tuple[bool, bool], error: Exception | None
+        self, result: tuple[bool, bool] | None, error: Exception | None
     ) -> None:
         generation = self._configuration_generation
         self._configuration_generation = None
@@ -250,6 +250,7 @@ class ConfigurationApplyMixin:
                 f"{error}. Restart the application to apply them."
             )
             return
+        assert result is not None
         current, applied = result
         if not current:
             return
@@ -329,7 +330,7 @@ class ConfigurationApplyMixin:
             is_live_sequence_audio_mode(self.settings.live_sequence_mode)
         )
         self._update_auto_advance_action()
-        profile_synced = self._sync_active_profile(updated_settings)
+        profile_synced = self._sync_active_profile()
         profile_suffix = ""
         if not profile_synced:
             profile_suffix = "; active profile could not be updated"
@@ -365,7 +366,7 @@ class ConfigurationApplyMixin:
             self.show_error(f"Unable to save model and voice settings: {error}")
             return
         self.settings = candidate
-        profile_synced = self._sync_active_profile(candidate)
+        profile_synced = self._sync_active_profile()
         profile_suffix = ""
         if not profile_synced:
             profile_suffix = "; active profile could not be updated"

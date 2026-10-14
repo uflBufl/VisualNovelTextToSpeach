@@ -1,7 +1,6 @@
-import hashlib
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 from io import StringIO
 from pathlib import Path
@@ -18,18 +17,26 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 import vntts.authoring.reconciliation as reconciliation_module
-from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_cohort_review import create_pending_cohort_workspace
-from tests.test_authoring_legacy_import import write_legacy_fixture
-from tests.test_authoring_source_reference_review import (
+from tests.authoring_fixtures import (
+    create_pending_cohort_workspace,
+    create_test_workspace,
+    tree_hashes,
+    write_legacy_fixture,
+)
+from tests.source_reference_fixtures import (
     publish_source_reference_quality_fixture,
 )
-from tests.test_authoring_workbench import create_test_workspace
-from vntts.authoring.bulk_generation import authorize_live_fallback
+from tests.symlink_support import symlink_or_skip
+from tests.terminal_conflict_fixtures import (
+    create_parallel_review_workspaces,
+    decide_parallel_review_bundle,
+)
 from vntts.authoring.cohort_bundle import (
     build_cohort_review_bundle,
-    execute_cohort_bundle_decision,
     write_cohort_review_bundle,
+)
+from vntts.authoring.generation_fallback import (
+    authorize_live_fallback,
 )
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.reconciliation import (
@@ -41,14 +48,6 @@ from vntts.authoring.reconciliation import (
 from vntts.authoring.reconciliation_cli import main as reconciliation_main
 from vntts.authoring.reconciliation_merge import merge_reconciled_terminal_outcomes
 from vntts.authoring.workbench import create_resume_workspace, generation_command
-
-
-def _tree_hashes(root):
-    return {
-        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
 
 
 class AuthoringReconciliationTest(unittest.TestCase):
@@ -65,64 +64,239 @@ class AuthoringReconciliationTest(unittest.TestCase):
         return authoring, workspace, state, queue_id, bundles, quality, publication
 
     def create_parallel_fixture(self, root):
-        _fixture, imported, primary = create_test_workspace(root)
-        primary_directory = primary.directory
-        secondary = create_resume_workspace(
-            imported,
-            root / "workspaces",
-            story_index=primary_directory / "inputs/story-index.jsonl",
-            voice_manifest=primary_directory / "inputs/voice/manifest.json",
-            narrator_character="Rhiannon",
-            backend="moss-tts",
-            model="model with spaces",
-            generation_profile="alternate",
-        ).directory
-        queue_id = None
-        for workspace, profile in (
-            (primary_directory, "stable"),
-            (secondary, "alternate"),
-        ):
-            state_path = workspace / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            queue_id, result = next(iter(state["items"].items()))
-            result.update(
-                {
-                    "status": "generated",
-                    "review_status": "pending_review",
-                    "generation_profile": profile,
-                    "voice_character": "Rhiannon",
-                    "prompt_applied": False,
-                    "synthesis_provenance_sha256": "b" * 64,
-                }
-            )
-            state["active"] = None
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-        bundles = root / "review-bundles"
-        bundles.mkdir()
-        publication = bundles / "parallel.json"
-        write_cohort_review_bundle(
-            build_cohort_review_bundle((primary_directory, secondary)), publication
-        )
-        return primary_directory, secondary, queue_id, bundles, publication
+        return create_parallel_review_workspaces(root)
 
     def decide_parallel_bundle(self, publication, decisions):
-        bundle = reconciliation_module.validate_cohort_review_bundle_document(
-            json.loads(publication.read_text(encoding="utf-8"))
-        )
-        for workspace_id, decision in decisions:
-            cohort = next(
-                value
-                for value in bundle.document["cohorts"]
-                if value["workspace_id"] == workspace_id
+        return decide_parallel_review_bundle(publication, decisions)
+
+    def test_snapshot_registration_reuses_capture_digest_and_detects_changes(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "authority.json"
+            payload = b'{"value": 1}\n'
+            path.write_bytes(payload)
+            snapshot, document = reconciliation_module._read_json_snapshot(
+                path, "test authority"
             )
-            projection = execute_cohort_bundle_decision(
-                bundle,
-                workspace_id,
-                cohort["cohort_id"],
-                decision,
-                reviewed_queue_ids=[cohort["samples"][0]["queue_id"]],
+            self.assertEqual(snapshot.payload, payload)
+            self.assertEqual(document, {"value": 1})
+            self.assertEqual(snapshot.sha256, sha256_file(path))
+            snapshots = {}
+            with patch("hashlib.sha256", side_effect=AssertionError("Repeated hash")):
+                reconciliation_module._remember_snapshot(
+                    snapshots, path, snapshot.sha256
+                )
+                reconciliation_module._remember_snapshot(
+                    snapshots, path, snapshot.sha256
+                )
+            self.assertEqual(snapshots, {path.resolve(): snapshot.sha256})
+
+            path.write_bytes(b'{"value": 2}\n')
+            changed = reconciliation_module._capture_snapshot(path, "test authority")
+            with self.assertRaisesRegex(
+                AuthoringReconciliationError, "Authority changed while reading"
+            ):
+                reconciliation_module._remember_snapshot(
+                    snapshots, path, changed.sha256
+                )
+            self.assertEqual(snapshots, {path.resolve(): snapshot.sha256})
+            path.unlink()
+            with self.assertRaisesRegex(
+                AuthoringReconciliationError, "Authority changed during reconciliation"
+            ):
+                reconciliation_module._assert_snapshots_unchanged(snapshots)
+
+    def test_json_snapshot_preserves_decode_error_causes(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "authority.json"
+            for payload, cause in (
+                (b"{", json.JSONDecodeError),
+                (b"\xff", UnicodeDecodeError),
+            ):
+                with self.subTest(payload=payload):
+                    path.write_bytes(payload)
+                    with self.assertRaisesRegex(
+                        AuthoringReconciliationError, "Unable to read test authority"
+                    ) as caught:
+                        reconciliation_module._read_json_snapshot(
+                            path, "test authority"
+                        )
+                    self.assertIsInstance(caught.exception.__cause__, cause)
+            path.write_bytes(b"[]")
+            with self.assertRaisesRegex(
+                AuthoringReconciliationError, "Test authority must be an object"
+            ):
+                reconciliation_module._read_json_snapshot(path, "test authority")
+
+    def test_primary_unbundled_spoken_admission_is_reused(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _authoring, workspace, _state, _queue_id, bundles, _quality, publication = (
+                self.create_fixture(root)
             )
-            bundle = projection.next_bundle
+            publication.unlink()
+            with patch.object(
+                reconciliation_module,
+                "is_spoken_queue_item",
+                wraps=reconciliation_module.is_spoken_queue_item,
+            ) as classify:
+                report = build_authoring_reconciliation(workspace, bundles)
+            self.assertEqual(classify.call_count, 1)
+            self.assertEqual(
+                report.document["workspaces"][0]["reported_queue_item_count"], 1
+            )
+            self.assertEqual(
+                report.document["workspaces"][0]["authoritative_counts"]["eligible"], 1
+            )
+
+    def test_final_actions_are_counted_once_across_workspaces(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary, secondary, _, bundles, publication = self.create_parallel_fixture(
+                root
+            )
+            project_actions = reconciliation_module._project_terminal_merge_actions
+            for decision in (None, "accepted"):
+                with self.subTest(decision=decision):
+                    if decision is not None:
+                        self.decide_parallel_bundle(
+                            publication, ((secondary.name, decision),)
+                        )
+                    expected = build_authoring_reconciliation(primary, bundles)
+                    before = tree_hashes(root)
+                    traversals = []
+
+                    class CountedActions(list):
+                        def __iter__(self):
+                            traversals.append(1)
+                            return super().__iter__()
+
+                    def count_actions(*args):
+                        return CountedActions(project_actions(*args))
+
+                    with patch.object(
+                        reconciliation_module,
+                        "_project_terminal_merge_actions",
+                        side_effect=count_actions,
+                    ):
+                        actual = build_authoring_reconciliation(primary, bundles)
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(before, tree_hashes(root))
+                    self.assertEqual(len(traversals), 2)
+                    reconciliation_module._validated_report(actual)
+
+    def test_report_traverses_state_map_once_per_snapshot(self):
+        class CountedItems(dict):
+            traversals = 0
+
+            def items(self):
+                self.traversals += 1
+                return super().items()
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, workspace, _, _, bundles, _, publication = self.create_fixture(root)
+            validate_state = reconciliation_module.validate_generation_state_document
+            for decision in (None, "accepted"):
+                with self.subTest(decision=decision):
+                    if decision is not None:
+                        self.decide_parallel_bundle(
+                            publication, ((workspace.name, decision),)
+                        )
+                    expected = build_authoring_reconciliation(workspace, bundles)
+                    before = tree_hashes(root)
+                    captured_maps = []
+
+                    def capture_items(*args, **kwargs):
+                        state = validate_state(*args, **kwargs)
+                        items = CountedItems(state["items"])
+                        state["items"] = items
+                        captured_maps.append(items)
+                        return state
+
+                    with patch.object(
+                        reconciliation_module,
+                        "validate_generation_state_document",
+                        side_effect=capture_items,
+                    ):
+                        actual = build_authoring_reconciliation(workspace, bundles)
+
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(before, tree_hashes(root))
+                    self.assertEqual(len(captured_maps), 1)
+                    self.assertLessEqual(captured_maps[0].traversals, 2)
+
+    def test_public_report_boundaries_require_exact_integer_versions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, workspace, _, _, bundles, _, _ = self.create_fixture(root)
+            report = build_authoring_reconciliation(workspace, bundles)
+            for index, version in enumerate((True, 1.0, "1", None, [], {})):
+                with self.subTest(version=version):
+                    document = deepcopy(report.document)
+                    document["schema_version"] = version
+                    document["report_id"] = (
+                        reconciliation_module.canonical_document_sha256(
+                            {
+                                key: value
+                                for key, value in document.items()
+                                if key != "report_id"
+                            }
+                        )
+                    )
+                    source = root / f"invalid-report-{index}.json"
+                    source.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        AuthoringReconciliationError,
+                        "Unsupported authoring reconciliation",
+                    ):
+                        load_authoring_reconciliation(source)
+                    output = root / f"output-{index}.json"
+                    with self.assertRaisesRegex(
+                        AuthoringReconciliationError,
+                        "Unsupported authoring reconciliation",
+                    ):
+                        write_authoring_reconciliation(document, output)
+                    self.assertFalse(output.exists())
+
+    def test_public_report_loading_rejects_non_text_enums(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary, secondary, _, bundles, publication = self.create_parallel_fixture(
+                root
+            )
+            self.decide_parallel_bundle(publication, ((secondary.name, "accepted"),))
+            report = build_authoring_reconciliation(primary, bundles)
+            terminal_index = next(
+                index
+                for index, action in enumerate(report.document["actions"])
+                if action["action"] == "terminal_merge_required"
+            )
+            for path in (
+                ("workspaces", 0, "runtime_status"),
+                ("workspaces", 0, "report_scope"),
+                ("actions", terminal_index, "action"),
+                ("actions", terminal_index, "terminal_source", "authority"),
+            ):
+                for value in ([], {}):
+                    with self.subTest(path=path, value=value):
+                        document = deepcopy(report.document)
+                        target = document
+                        for key in path[:-1]:
+                            target = target[key]
+                        target[path[-1]] = value
+                        document["report_id"] = (
+                            reconciliation_module.canonical_document_sha256(
+                                {
+                                    key: item
+                                    for key, item in document.items()
+                                    if key != "report_id"
+                                }
+                            )
+                        )
+                        source = root / "malformed-report.json"
+                        source.write_text(json.dumps(document), encoding="utf-8")
+                        with self.assertRaises(AuthoringReconciliationError):
+                            load_authoring_reconciliation(source)
 
     def test_report_reconciles_bundle_without_mutating_authority(self):
         with TemporaryDirectory() as directory:
@@ -136,13 +310,13 @@ class AuthoringReconciliationTest(unittest.TestCase):
                 _quality,
                 _publication,
             ) = self.create_fixture(root)
-            before = _tree_hashes(root)
+            before = tree_hashes(root)
 
             first = build_authoring_reconciliation(workspace, bundles)
             second = build_authoring_reconciliation(workspace, bundles)
 
             self.assertEqual(first, second)
-            self.assertEqual(before, _tree_hashes(root))
+            self.assertEqual(before, tree_hashes(root))
             self.assertEqual(first.document["summary"]["workspace_count"], 1)
             self.assertEqual(first.document["summary"]["bundle_count"], 1)
             self.assertEqual(
@@ -356,6 +530,30 @@ class AuthoringReconciliationTest(unittest.TestCase):
             Path(report.document["review_bundles"][0]["publication"]),
             publication.resolve(),
         )
+
+    def test_explicit_bundle_selection_fails_if_directory_disappears(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, workspace, _, _, bundles, _, publication = self.create_fixture(root)
+            inspect_bundles = reconciliation_module._inspect_review_bundles
+
+            def move_bundle_directory(*args, **kwargs):
+                bundles.rename(root / "moved-review-bundles")
+                return inspect_bundles(*args, **kwargs)
+
+            with (
+                patch.object(
+                    reconciliation_module,
+                    "_inspect_review_bundles",
+                    side_effect=move_bundle_directory,
+                ),
+                self.assertRaisesRegex(
+                    AuthoringReconciliationError, "Review bundle is unavailable"
+                ),
+            ):
+                build_authoring_reconciliation(
+                    workspace, bundles, bundle_publications=(publication,)
+                )
 
     def test_explicit_bundle_selection_rejects_selected_non_bundle(self):
         with TemporaryDirectory() as directory:
@@ -753,6 +951,46 @@ class AuthoringReconciliationTest(unittest.TestCase):
             ):
                 build_authoring_reconciliation(workspace, bundles)
 
+    def test_final_snapshot_read_error_preserves_cause_and_cli_fails_cleanly(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, workspace, _, _, bundles, _, _ = self.create_fixture(root)
+            before = tree_hashes(root)
+            output = root / "report.json"
+            failure = PermissionError("Authority read was blocked")
+            stdout = StringIO()
+            stderr = StringIO()
+            with patch.object(
+                reconciliation_module, "sha256_file", side_effect=failure
+            ):
+                with self.assertRaisesRegex(
+                    AuthoringReconciliationError, "Unable to recheck authority"
+                ) as caught:
+                    build_authoring_reconciliation(workspace, bundles)
+                self.assertIs(caught.exception.__cause__, failure)
+                with (
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as exited,
+                ):
+                    reconciliation_main(
+                        [
+                            "--primary-workspace",
+                            str(workspace),
+                            "--bundle-root",
+                            str(bundles),
+                            "--output",
+                            str(output),
+                        ]
+                    )
+            self.assertEqual(exited.exception.code, 2)
+            self.assertIn("Unable to recheck authority", stderr.getvalue())
+            self.assertIn(str(failure), stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertFalse(output.exists())
+            self.assertEqual(tree_hashes(root), before)
+
     def test_report_publication_is_no_replace_and_cli_matches(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -826,6 +1064,66 @@ class AuthoringReconciliationTest(unittest.TestCase):
                 AuthoringReconciliationError, "nonterminal_action_count is inconsistent"
             ):
                 reconciliation_module._validated_report(document)
+
+    def test_workspace_action_counts_match_projected_actions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary, secondary, _, bundles, publication = self.create_parallel_fixture(
+                root
+            )
+            for decision in (None, "accepted"):
+                with self.subTest(decision=decision):
+                    if decision is not None:
+                        self.decide_parallel_bundle(
+                            publication, ((secondary.name, decision),)
+                        )
+                    document = deepcopy(
+                        build_authoring_reconciliation(primary, bundles).document
+                    )
+                    for workspace in document["workspaces"]:
+                        workspace["action_counts"]["workspace_blocked"] = 0
+                        if workspace["workspace_id"] != primary.name:
+                            workspace["report_scope"] = "current_bundle_items_only"
+                    document["report_id"] = (
+                        reconciliation_module.canonical_document_sha256(
+                            {k: v for k, v in document.items() if k != "report_id"}
+                        )
+                    )
+                    source = root / "workspace-counts.json"
+                    source.write_text(json.dumps(document), encoding="utf-8")
+                    self.assertEqual(
+                        load_authoring_reconciliation(source).document, document
+                    )
+                    workspace = next(
+                        value
+                        for value in document["workspaces"]
+                        if value["workspace_id"] == primary.name
+                    )
+                    kind = next(
+                        key
+                        for key, count in workspace["action_counts"].items()
+                        if count
+                    )
+                    count = workspace["action_counts"].pop(kind)
+                    workspace["action_counts"]["workspace_blocked"] = count
+                    document["report_id"] = (
+                        reconciliation_module.canonical_document_sha256(
+                            {k: v for k, v in document.items() if k != "report_id"}
+                        )
+                    )
+                    source.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        AuthoringReconciliationError,
+                        "Workspace action counts are inconsistent",
+                    ):
+                        load_authoring_reconciliation(source)
+                    output = root / f"rejected-{decision}.json"
+                    with self.assertRaisesRegex(
+                        AuthoringReconciliationError,
+                        "Workspace action counts are inconsistent",
+                    ):
+                        write_authoring_reconciliation(document, output)
+                    self.assertFalse(output.exists())
 
     def test_legacy_current_bundle_scope_report_remains_loadable(self):
         with TemporaryDirectory() as directory:

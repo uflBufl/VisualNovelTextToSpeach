@@ -1,4 +1,5 @@
 import unittest
+from itertools import combinations
 
 import numpy as np
 
@@ -29,6 +30,22 @@ from vntts.synthesis import (
 
 
 class AuthoringFailureRepairTest(unittest.TestCase):
+    def test_pause_boundaries_preserve_abbreviations_and_reject_long_runs(self):
+        for prefix in ("A" * 4096 + "3.", "A." * 4096 + "3."):
+            text = prefix + " Next sentence starts here."
+            with self.subTest(prefix_length=len(prefix)):
+                self.assertEqual(
+                    inline_sentence_pause_prompt(text),
+                    (prefix + " [pause 0.18s] Next sentence starts here.", 1),
+                )
+        for prefix in ("Dr.", "Mr.", "A.B.", "Long.A.B.", "2A.B.C.", "éA.B.C."):
+            text = prefix + " Next sentence starts here."
+            with (
+                self.subTest(prefix=prefix),
+                self.assertRaisesRegex(ValueError, "requires a sentence boundary"),
+            ):
+                inline_sentence_pause_prompt(text)
+
     def test_policy_is_canonical_exact_and_round_trips(self):
         policy = FailureRepairPolicy(
             ("line:b", "line:a"),
@@ -85,6 +102,75 @@ class AuthoringFailureRepairTest(unittest.TestCase):
                 self.assertRaisesRegex(FailureRepairPolicyError, "malformed"),
             ):
                 FailureRepairPolicy.from_document(malformed_version)
+
+    def test_policy_versions_require_json_lists_for_all_strategies(self):
+        for policy, version in (
+            (FailureRepairPolicy(), 1),
+            (FailureRepairPolicy(bounded_seed_retry_queue_ids=("line:b",)), 2),
+            (FailureRepairPolicy(offline_fallback_queue_ids=("line:f",)), 3),
+            (FailureRepairPolicy(inline_pause_queue_ids=("line:i",)), 4),
+        ):
+            document = policy.to_document()
+            self.assertEqual(document["schema_version"], version)
+            self.assertEqual(FailureRepairPolicy.from_document(document), policy)
+            for field in document:
+                if not field.endswith("queue_ids"):
+                    continue
+                for value in ("x", {"line:x": False}, None, False, 0, ("line:x",), [1]):
+                    with (
+                        self.subTest(version=version, field=field, value=value),
+                        self.assertRaisesRegex(FailureRepairPolicyError, "JSON lists"),
+                    ):
+                        FailureRepairPolicy.from_document({**document, field: value})
+
+    def test_all_repair_strategies_are_mutually_exclusive(self):
+        fields = (
+            "sentence_segment_queue_ids",
+            "edge_silence_queue_ids",
+            "bounded_seed_retry_queue_ids",
+            "offline_fallback_queue_ids",
+            "inline_pause_queue_ids",
+        )
+        for first, second in combinations(fields, 2):
+            with (
+                self.subTest(first=first, second=second),
+                self.assertRaisesRegex(FailureRepairPolicyError, "strategies: line:a$"),
+            ):
+                FailureRepairPolicy(**{first: ("line:a",), second: ("line:a",)})
+        with self.assertRaisesRegex(
+            FailureRepairPolicyError, "strategies: line:a, line:z$"
+        ):
+            FailureRepairPolicy(
+                sentence_segment_queue_ids=("line:z", "line:a"),
+                edge_silence_queue_ids=("line:z",),
+                bounded_seed_retry_queue_ids=("line:a",),
+            )
+
+    def test_repair_parameters_reject_nonfinite_values_before_editing(self):
+        speech = np.full(800, 0.2, dtype=np.float32)
+        pcm = np.concatenate((speech, np.zeros(1_600), speech))
+        pcm[1_500] = 0.01
+        original = pcm.copy()
+        for value in (float("nan"), float("inf"), float("-inf")):
+            for field in ("trigger_seconds", "padding_seconds", "silence_dbfs"):
+                with self.subTest(repair="edge", field=field, value=value):
+                    with self.assertRaises(ValueError):
+                        trim_excess_edge_silence(pcm, 1_000, **{field: value})
+            for field in (
+                "trigger_seconds",
+                "target_seconds",
+                "silence_dbfs",
+                "removal_dbfs",
+            ):
+                with self.subTest(repair="internal", field=field, value=value):
+                    with self.assertRaises(ValueError):
+                        compress_single_sentence_boundary_silence(
+                            pcm,
+                            1_000,
+                            "The gate is already open. We should leave before dawn.",
+                            **{field: value},
+                        )
+        np.testing.assert_array_equal(pcm, original)
 
     def test_inline_pause_prompt_is_exact_and_bounded(self):
         prompt, count = inline_sentence_pause_prompt(

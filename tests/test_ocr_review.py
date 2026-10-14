@@ -10,11 +10,12 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image  # noqa: E402
-from PySide6.QtCore import Qt, QTimer  # noqa: E402
+from PySide6.QtCore import Qt, QThreadPool, QTimer  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea  # noqa: E402
 
+from tests.qt_task_fixtures import release_and_wait_for_pool  # noqa: E402
 from tests.symlink_support import symlink_or_skip  # noqa: E402
 from vntts.ocr import OCRResult, UncertainFrameRecorder  # noqa: E402
 from vntts.ocr_corrections import OCRCorrectionStore  # noqa: E402
@@ -161,6 +162,63 @@ class OCRReviewStoreTest(unittest.TestCase):
             self.assertEqual(
                 len(list(directory.glob("uncertain-invalid-number-*.json"))), len(cases)
             )
+
+    def test_skips_nonstring_text_metadata_without_changing_files(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "sample.png").write_bytes(b"image")
+            originals = {}
+            for field in ("character", "text", "preprocessing_profile"):
+                for index, value in enumerate((123, 0, 1.5, True, False, [], {})):
+                    path = directory / f"uncertain-{field}-{index}.json"
+                    raw = json.dumps({"image": "sample.png", field: value})
+                    path.write_text(raw, encoding="utf-8")
+                    originals[path] = raw
+
+            self.assertEqual(OCRReviewStore(directory).pending_samples(), [])
+            for path, raw in originals.items():
+                self.assertEqual(path.read_text(encoding="utf-8"), raw)
+
+    def test_preserves_optional_text_defaults_and_literal_strings(self):
+        cases = (
+            ({}, ("Narrator", "", "unknown")),
+            (
+                {
+                    field: None
+                    for field in ("character", "text", "preprocessing_profile")
+                },
+                ("Narrator", "", "unknown"),
+            ),
+            (
+                {field: "" for field in ("character", "text", "preprocessing_profile")},
+                ("Narrator", "", "unknown"),
+            ),
+            (
+                {
+                    "character": "123",
+                    "text": "  Hello.  ",
+                    "preprocessing_profile": "fast",
+                },
+                ("123", "  Hello.  ", "fast"),
+            ),
+        )
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "sample.png").write_bytes(b"image")
+            for index, (fields, expected) in enumerate(cases):
+                with self.subTest(fields=fields):
+                    path = directory / f"uncertain-{index}.json"
+                    path.write_text(
+                        json.dumps({"image": "sample.png", **fields}), encoding="utf-8"
+                    )
+                    samples = OCRReviewStore(directory).pending_samples()
+                    sample = next(
+                        item for item in samples if item.metadata_path == path
+                    )
+                    self.assertEqual(
+                        (sample.character, sample.text, sample.preprocessing_profile),
+                        expected,
+                    )
 
     def test_future_metadata_schema_is_not_offered_for_review(self):
         with TemporaryDirectory() as temporary_directory:
@@ -561,12 +619,23 @@ class OCRReviewDialogTest(unittest.TestCase):
             dialog.deleteLater()
 
     def test_save_disables_competing_edits_and_failed_deferred_close_keeps_draft(self):
-        with TemporaryDirectory() as temporary_directory:
+        release = Event()
+        pool = QThreadPool()
+        dialog = None
+        with (
+            TemporaryDirectory() as temporary_directory,
+            release_and_wait_for_pool(
+                pool,
+                release,
+                finish=lambda: self.wait_for(
+                    lambda: dialog is None or (not dialog._write_active)
+                ),
+            ),
+        ):
             record_uncertain_sample(temporary_directory)
-            dialog = OCRReviewDialog(temporary_directory)
+            dialog = OCRReviewDialog(temporary_directory, thread_pool=pool)
             dialog.corrected_character.setText("Marcus")
             started = Event()
-            release = Event()
 
             def fail_late(*_args):
                 started.set()
@@ -611,13 +680,24 @@ class OCRReviewDialogTest(unittest.TestCase):
             dialog.deleteLater()
 
     def test_slow_resolution_keeps_qt_responsive_and_defers_close(self):
-        with TemporaryDirectory() as temporary_directory:
+        release = Event()
+        pool = QThreadPool()
+        dialog = None
+        with (
+            TemporaryDirectory() as temporary_directory,
+            release_and_wait_for_pool(
+                pool,
+                release,
+                finish=lambda: self.wait_for(
+                    lambda: dialog is None or (not dialog._write_active)
+                ),
+            ),
+        ):
             review_directory = Path(temporary_directory) / "review"
             record_uncertain_sample(review_directory)
-            dialog = OCRReviewDialog(review_directory)
+            dialog = OCRReviewDialog(review_directory, thread_pool=pool)
             original = dialog.review_store.mark_resolved
             started = Event()
-            release = Event()
 
             def slow_resolve(*args, **kwargs):
                 started.set()

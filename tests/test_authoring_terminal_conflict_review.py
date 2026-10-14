@@ -1,24 +1,19 @@
-import hashlib
 import json
+import os
 import socket
+import stat
 import unittest
-from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import numpy as np
-from vntts_artifacts.audio import write_pcm16_wav
-
-import tests.test_authoring_reconciliation as reconciliation_tests
+from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
+from tests.terminal_conflict_fixtures import create_terminal_conflict_fixture
+from vntts.authoring import terminal_conflict_review as terminal_module
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.bulk_generation import inspect_generated_wav
-from vntts.authoring.cohort_bundle import (
-    build_cohort_review_bundle,
-    write_cohort_review_bundle,
-)
 from vntts.authoring.publication import AtomicPublicationError
 from vntts.authoring.reconciliation import (
     build_authoring_reconciliation,
@@ -41,38 +36,26 @@ from vntts.authoring.terminal_conflict_review import (
 
 
 class TerminalConflictReviewTest(unittest.TestCase):
+    def test_progress_lock_cleanup_preserves_malformed_foreign_lease(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / ".progress.lock"
+            path.write_bytes(b"\xff")
+            terminal_module._remove_progress_lock(
+                path,
+                root / ".progress.lock.guard",
+                terminal_module._new_progress_lease(),
+            )
+            self.assertEqual(path.read_bytes(), b"\xff")
+
     def create_fixture(self, root):
-        helper = reconciliation_tests.AuthoringReconciliationTest()
-        primary, secondary, queue_id, bundles, publication = (
-            helper.create_parallel_fixture(root)
-        )
-        publication.unlink()
-        state_path = secondary / "generated-audio/generation-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        result = state["items"][queue_id]
-        audio = secondary / "generated-audio" / result["path"]
-        samples = np.linspace(-0.25, 0.25, 4_000, dtype=np.float32)
-        write_pcm16_wav(audio, samples, 16_000)
-        result["file_sha256"] = hashlib.sha256(audio.read_bytes()).hexdigest()
-        result["quality"] = asdict(inspect_generated_wav(audio))
-        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-        write_cohort_review_bundle(
-            build_cohort_review_bundle((primary, secondary)), publication
-        )
-        helper.decide_parallel_bundle(
-            publication,
-            ((primary.name, "accepted"), (secondary.name, "rejected")),
-        )
-        report = build_authoring_reconciliation(primary, bundles)
-        report_path = root / "reconciliation.json"
-        write_authoring_reconciliation(report, report_path)
-        return primary, secondary, queue_id, report_path
+        return create_terminal_conflict_fixture(root)
 
     def test_publish_collapses_only_identical_authorities_and_records_neither(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             primary, secondary, queue_id, report_path = self.create_fixture(root)
-            before = reconciliation_tests._tree_hashes(root)
+            before = tree_hashes(root)
             output = root / "conflict-review"
 
             created = publish_terminal_conflict_review(report_path, output)
@@ -95,7 +78,7 @@ class TerminalConflictReviewTest(unittest.TestCase):
             )
             source_after_publish = {
                 key: value
-                for key, value in reconciliation_tests._tree_hashes(root).items()
+                for key, value in tree_hashes(root).items()
                 if not key.startswith("conflict-review/")
             }
             self.assertEqual(before, source_after_publish)
@@ -111,7 +94,7 @@ class TerminalConflictReviewTest(unittest.TestCase):
                 before,
                 {
                     key: value
-                    for key, value in reconciliation_tests._tree_hashes(root).items()
+                    for key, value in tree_hashes(root).items()
                     if not key.startswith("conflict-review/")
                 },
             )
@@ -427,6 +410,93 @@ class TerminalConflictReviewTest(unittest.TestCase):
                     document, root / "conflict-review"
                 )
 
+    def test_malformed_progress_pids_preserve_lock_and_review_without_lookup(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, report = self.create_fixture(root)
+            output = root / "conflict-review"
+            created = publish_terminal_conflict_review(report, output)
+            review = json.loads(created.review.read_text(encoding="utf-8"))
+            case_id = review["cases"][0]["case_id"]
+            lock = output / ".progress.lock"
+            (output / ".progress.lock.guard").touch()
+            for pid in (True, False, 0, -1, 42.0, "42", None, 0x100000000, 10**100):
+                lock.write_bytes(
+                    json.dumps(
+                        {
+                            "schema": PROGRESS_LEASE_SCHEMA,
+                            "schema_version": PROGRESS_LEASE_VERSION,
+                            "pid": pid,
+                            "hostname": socket.gethostname(),
+                            "lease_id": "malformed-owner",
+                            "process_started_at": "recorded-start",
+                        },
+                        indent=2,
+                    ).encode()
+                    + b"\n"
+                )
+                before = tree_hashes(output)
+                with (
+                    self.subTest(pid=pid),
+                    patch.object(
+                        terminal_module, "process_is_alive", return_value=False
+                    ) as alive,
+                    patch.object(
+                        terminal_module, "process_started_at", return_value="own-start"
+                    ) as started,
+                    self.assertRaisesRegex(
+                        TerminalConflictReviewError,
+                        "Unrecognized terminal conflict progress lock",
+                    ),
+                ):
+                    record_terminal_conflict_decision(
+                        output, case_id, NEITHER_ACCEPTABLE
+                    )
+                alive.assert_not_called()
+                started.assert_called_once_with(os.getpid())
+                self.assertEqual(tree_hashes(output), before)
+
+    def test_foreign_windows_dword_progress_lease_stays_recognized_and_blocks(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, report = self.create_fixture(root)
+            output = root / "conflict-review"
+            created = publish_terminal_conflict_review(report, output)
+            review = json.loads(created.review.read_text(encoding="utf-8"))
+            lock = output / ".progress.lock"
+            lock.write_bytes(
+                json.dumps(
+                    {
+                        "schema": PROGRESS_LEASE_SCHEMA,
+                        "schema_version": PROGRESS_LEASE_VERSION,
+                        "pid": 0xFFFFFFFF,
+                        "hostname": "foreign-" + socket.gethostname(),
+                        "lease_id": "windows-owner",
+                    },
+                    indent=2,
+                ).encode()
+                + b"\n"
+            )
+            (output / ".progress.lock.guard").touch()
+            before = tree_hashes(output)
+            with (
+                patch("sys.platform", "darwin"),
+                patch.object(terminal_module, "process_is_alive") as alive,
+                patch.object(
+                    terminal_module, "process_started_at", return_value="own-start"
+                ) as started,
+                self.assertRaisesRegex(
+                    TerminalConflictReviewError,
+                    "Another terminal conflict decision is being saved",
+                ),
+            ):
+                record_terminal_conflict_decision(
+                    output, review["cases"][0]["case_id"], NEITHER_ACCEPTABLE
+                )
+            alive.assert_not_called()
+            started.assert_called_once_with(os.getpid())
+            self.assertEqual(tree_hashes(output), before)
+
     def test_dead_progress_lease_is_archived_and_review_continues(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -463,6 +533,102 @@ class TerminalConflictReviewTest(unittest.TestCase):
             self.assertEqual(len(progress["decisions"]), 1)
             self.assertFalse(lock.exists())
             self.assertEqual(len(list(output.glob(".progress.lock.interrupted-*"))), 1)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_progress_lease_captures_refuse_fifo_and_recover(self):
+        for selected_call in (1, 2):
+            with self.subTest(capture=selected_call), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                _primary, _secondary, _queue_id, report_path = self.create_fixture(root)
+                sources_before = tree_hashes(root)
+                output = root / "conflict-review"
+                created = publish_terminal_conflict_review(report_path, output)
+                case_id = json.loads(created.review.read_bytes())["cases"][0]["case_id"]
+                lock = output / ".progress.lock"
+                payload = json.dumps(
+                    {
+                        "schema": PROGRESS_LEASE_SCHEMA,
+                        "schema_version": PROGRESS_LEASE_VERSION,
+                        "pid": 999999,
+                        "hostname": socket.gethostname(),
+                        "process_started_at": "stale",
+                        "lease_id": "dead-owner",
+                        "started_at": "2026-08-26T12:00:00+00:00",
+                    }
+                ).encode()
+                lock.write_bytes(payload)
+                lock.chmod(0o444)
+                guard = output / ".progress.lock.guard"
+                guard.touch()
+                guard_inode = guard.stat().st_ino
+                before = tree_hashes(root)
+                original = terminal_module.read_regular_bytes
+                calls, refused = [], []
+
+                def refuse_capture(path):
+                    if path != lock:
+                        return original(path)
+                    calls.append(path)
+                    if len(calls) != selected_call:
+                        return original(path)
+                    gate: RegularFileGate = {"path": path, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(path)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                error_type = (
+                    OSError if selected_call == 2 else TerminalConflictReviewError
+                )
+                label = (
+                    "regular file"
+                    if selected_call == 2
+                    else "Unrecognized terminal conflict progress lock"
+                )
+                with patch.object(
+                    terminal_module, "process_is_alive", return_value=False
+                ):
+                    with (
+                        patch.object(
+                            terminal_module, "read_regular_bytes", refuse_capture
+                        ),
+                        self.assertRaisesRegex(error_type, label) as caught,
+                    ):
+                        record_terminal_conflict_decision(
+                            output, case_id, NEITHER_ACCEPTABLE
+                        )
+                    self.assertEqual(len(calls), selected_call)
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(
+                        caught.exception
+                        if selected_call == 2
+                        else caught.exception.__cause__,
+                        refused[0],
+                    )
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o444)
+                    self.assertFalse(list(output.glob(".progress.lock.interrupted-*")))
+                    progress = record_terminal_conflict_decision(
+                        output, case_id, NEITHER_ACCEPTABLE
+                    )
+                self.assertEqual(progress["decisions"][0]["case_id"], case_id)
+                self.assertEqual(
+                    load_terminal_conflict_review_progress(output), progress
+                )
+                self.assertFalse(lock.exists())
+                archives = list(output.glob(".progress.lock.interrupted-*"))
+                self.assertEqual(len(archives), 1)
+                self.assertEqual(archives[0].read_bytes(), payload)
+                after = tree_hashes(root)
+                self.assertEqual(
+                    {path: after[path] for path in sources_before}, sources_before
+                )
+                self.assertEqual(guard.stat().st_ino, guard_inode)
 
     def test_progress_lease_write_failure_leaves_no_partial_lock(self):
         with TemporaryDirectory() as directory:
@@ -557,6 +723,41 @@ class TerminalConflictReviewTest(unittest.TestCase):
                 )
 
             self.assertFalse((output / ".progress.lock").exists())
+
+    def test_progress_lease_schema_version_requires_exact_integer(self):
+        value = {
+            "schema": PROGRESS_LEASE_SCHEMA,
+            "schema_version": True,
+            "pid": 1,
+            "hostname": "host",
+            "lease_id": "lease",
+        }
+        self.assertFalse(terminal_module._is_stored_progress_lease(value))
+
+    def test_candidate_metadata_uses_checksum_bound_payload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, report = self.create_fixture(root)
+            output = root / "conflict-review"
+            created = publish_terminal_conflict_review(report, output)
+            review = json.loads(created.review.read_text(encoding="utf-8"))
+            candidate = review["cases"][0]["candidates"][0]
+            audio = output / candidate["audio"]
+            probe = terminal_module.probe_pcm16_mono_wav
+
+            def replace_before_decode(source):
+                audio.write_bytes(b"replaced after checksum")
+                return probe(source)
+
+            with patch.object(
+                terminal_module,
+                "probe_pcm16_mono_wav",
+                side_effect=replace_before_decode,
+            ):
+                terminal_module._validate_candidate_audio(
+                    candidate, output, candidate["audio_sha256"]
+                )
+            self.assertEqual(audio.read_bytes(), b"replaced after checksum")
 
 
 if __name__ == "__main__":

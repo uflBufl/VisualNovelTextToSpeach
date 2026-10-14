@@ -1,22 +1,28 @@
 """Public, device-independent import boundary for complete VNTTS game packs."""
 
 import argparse
-import json
+import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from time import perf_counter, process_time
 
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePack, GamePackError, load_game_pack
-from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
+from vntts_artifacts.story_index import (
+    StoryIndexDocument,
+    StoryIndexError,
+)
 
+from vntts.cli import print_json
+from vntts.document_identity import sha256_file
+from vntts.path_safety import contained_path, read_regular_bytes, safe_relative_path
 from vntts.settings import AppSettings
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
 )
+from vntts.story_index_snapshot import load_story_index_snapshot
 
 
 @dataclass(frozen=True)
@@ -128,9 +134,11 @@ def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
     )
     if extension is None:
         try:
-            story = load_story_index_document(pack.story_index.path)
+            story = _load_bound_story_index(
+                pack.story_index.path, pack.story_index.sha256
+            )
             story_metadata = story.metadata.get("source_audio_semantics")
-        except StoryIndexError as error:
+        except (StoryIndexError, OSError) as error:
             raise GamePackError(str(error)) from error
         if isinstance(story_metadata, dict):
             raise GamePackError(
@@ -144,22 +152,16 @@ def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
         "entry_count",
     }:
         raise GamePackError("Game pack semantic evidence extension is malformed")
-    relative = extension.get("path")
-    if not isinstance(relative, str) or not relative:
-        raise GamePackError("Game pack semantic evidence path is invalid")
-    pure = PurePosixPath(relative)
-    if (
-        pure.is_absolute()
-        or not pure.parts
-        or any(part in {"", ".", ".."} for part in pure.parts)
-    ):
-        raise GamePackError("Game pack semantic evidence path is unsafe")
-    root = pack.manifest_path.parent.resolve()
-    evidence_path = (root / Path(*pure.parts)).resolve()
-    try:
-        evidence_path.relative_to(root)
-    except ValueError as error:
-        raise GamePackError("Game pack semantic evidence leaves its pack") from error
+    evidence_path = contained_path(
+        Path(pack.manifest_path).parent,
+        safe_relative_path(
+            extension.get("path"),
+            "Game pack semantic evidence path",
+            error_type=GamePackError,
+        ),
+        "Game pack semantic evidence",
+        error_type=GamePackError,
+    )
     evidence_sha256 = extension.get("sha256")
     if not evidence_path.is_file() or sha256_file(evidence_path) != evidence_sha256:
         raise GamePackError("Game pack semantic evidence checksum changed")
@@ -176,7 +178,7 @@ def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
             evidence_id,
             entry_count,
         )
-    except SourceAudioSemanticEvidenceError as error:
+    except (StoryIndexError, SourceAudioSemanticEvidenceError, OSError) as error:
         raise GamePackError(str(error)) from error
     return evidence_path
 
@@ -184,13 +186,13 @@ def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
 @lru_cache(maxsize=8)
 def _validate_semantic_evidence(
     story_path: str,
-    _story_sha256: str,
+    story_sha256: str,
     evidence_path: str,
-    _evidence_sha256: str,
+    evidence_sha256: str,
     evidence_id: str,
     entry_count: int,
 ) -> None:
-    story = load_story_index_document(story_path)
+    story = _load_bound_story_index(Path(story_path), story_sha256)
     document = load_source_audio_semantic_evidence(evidence_path, story)
     if (
         document["evidence_id"] != evidence_id
@@ -199,6 +201,21 @@ def _validate_semantic_evidence(
         raise SourceAudioSemanticEvidenceError(
             "Game pack semantic evidence extension changed"
         )
+
+    if sha256_file(evidence_path) != evidence_sha256:
+        raise SourceAudioSemanticEvidenceError(
+            "Game pack semantic evidence checksum changed while it was being read"
+        )
+
+
+def _load_bound_story_index(path: Path, checksum: str) -> StoryIndexDocument:
+    payload = read_regular_bytes(path)
+    if hashlib.sha256(payload).hexdigest() != checksum:
+        raise GamePackError("Game pack story checksum changed while it was being read")
+    document = load_story_index_snapshot(path, payload)
+    if sha256_file(path) != checksum:
+        raise GamePackError("Game pack story checksum changed while it was being read")
+    return document
 
 
 def apply_game_pack(
@@ -210,11 +227,10 @@ def apply_game_pack(
     if not configured_path:
         return settings
     imported = import_game_pack(configured_path)
-    result = imported.apply_to(
+    return imported.apply_to(
         settings,
         preserve_external_sequence=path is None,
     )
-    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -228,32 +244,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         imported = import_game_pack(arguments.game_pack)
     except GamePackError as error:
         parser.error(str(error))
-    print(
-        json.dumps(
-            {
-                "game_pack": str(imported.pack.manifest_path),
-                "game_id": imported.pack.game_id,
-                "game_version": imported.pack.game_version,
-                "story_index": str(imported.story_index),
-                "voice_manifest": str(imported.voice_manifest),
-                "generated_audio_manifest": (
-                    str(imported.generated_audio_manifest)
-                    if imported.generated_audio_manifest is not None
-                    else None
-                ),
-                "live_sequence_plan": (
-                    str(imported.live_sequence_plan)
-                    if imported.live_sequence_plan is not None
-                    else None
-                ),
-                "source_audio_semantic_evidence": (
-                    str(imported.source_audio_semantic_evidence)
-                    if imported.source_audio_semantic_evidence is not None
-                    else None
-                ),
-            },
-            indent=2,
-            sort_keys=True,
-        )
+    print_json(
+        {
+            "game_pack": str(imported.pack.manifest_path),
+            "game_id": imported.pack.game_id,
+            "game_version": imported.pack.game_version,
+            "story_index": str(imported.story_index),
+            "voice_manifest": str(imported.voice_manifest),
+            "generated_audio_manifest": (
+                str(imported.generated_audio_manifest)
+                if imported.generated_audio_manifest is not None
+                else None
+            ),
+            "live_sequence_plan": (
+                str(imported.live_sequence_plan)
+                if imported.live_sequence_plan is not None
+                else None
+            ),
+            "source_audio_semantic_evidence": (
+                str(imported.source_audio_semantic_evidence)
+                if imported.source_audio_semantic_evidence is not None
+                else None
+            ),
+        }
     )
     return 0

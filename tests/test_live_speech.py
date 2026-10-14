@@ -1,7 +1,8 @@
 import unittest
 
-from vntts.live_speech import play_typed_text
+from vntts.live_speech import TypedPlaybackBackend, play_typed_text
 from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
+from vntts.playback import TypedPlaybackBackend as SharedTypedPlaybackBackend
 from vntts.services.tts_engine import (
     AudioPlaybackError,
     TTSConfigurationError,
@@ -24,6 +25,14 @@ class StubBackend:
 
 
 class TypedLiveSpeechTests(unittest.TestCase):
+    def test_live_protocol_reexports_shared_runtime_contract(self):
+        self.assertIs(TypedPlaybackBackend, SharedTypedPlaybackBackend)
+        self.assertIsInstance(
+            StubBackend(PlaybackOutcome(PlaybackStatus.COMPLETED, 10.0)),
+            TypedPlaybackBackend,
+        )
+        self.assertNotIsInstance(object(), TypedPlaybackBackend)
+
     def test_completed_and_interrupted_outcomes_remain_distinct(self):
         self.assertTrue(
             play_typed_text(

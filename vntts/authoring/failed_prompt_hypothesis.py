@@ -6,9 +6,8 @@ import copy
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-
-from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
@@ -27,6 +26,9 @@ from vntts.authoring.missing_voice_reuse_review import (
     load_missing_voice_reuse_review,
 )
 from vntts.authoring.publication import no_replace_destination
+from vntts.document_identity import file_sha256
+from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_text
 
 FAILED_PROMPT_SELECTION_SCHEMA = "vntts.authoring-failed-prompt-selection"
 FAILED_PROMPT_SELECTION_VERSION = 1
@@ -53,6 +55,9 @@ class FailedPromptHypothesisResult:
         }
 
 
+_file_sha256 = partial(file_sha256, error_type=FailedPromptHypothesisError)
+
+
 def publish_failed_prompt_hypothesis_selection(
     plan_path: str | Path,
     session_path: str | Path,
@@ -75,7 +80,7 @@ def publish_failed_prompt_hypothesis_selection(
         )
     if bundle["plan"].get("plan_id") != document["plan_id"] or bundle["plan"].get(
         "sha256"
-    ) != sha256_file(plan_path):
+    ) != _file_sha256(plan_path):
         raise FailedPromptHypothesisError(
             "Prompt review belongs to a different immutable plan"
         )
@@ -149,10 +154,10 @@ def publish_failed_prompt_hypothesis_selection(
         "schema": FAILED_PROMPT_SELECTION_SCHEMA,
         "schema_version": FAILED_PROMPT_SELECTION_VERSION,
         "plan_id": document["plan_id"],
-        "plan_sha256": sha256_file(plan_path),
+        "plan_sha256": _file_sha256(plan_path),
         "review_bundle_id": bundle["bundle_id"],
         "review_bundle_sha256": session["bundle_sha256"],
-        "review_session_sha256": sha256_file(session_path),
+        "review_session_sha256": _file_sha256(session_path),
         "blind_key_sha256": bundle["blind_key_sha256"],
         "decisions": decisions,
         "authority": (
@@ -162,7 +167,8 @@ def publish_failed_prompt_hypothesis_selection(
             "state, or approve speech."
         ),
     }
-    selection = {**body, "selection_id": canonical_document_sha256(body)}
+    selection_id = canonical_document_sha256(body)
+    selection = {**body, "selection_id": selection_id}
     try:
         write_json_document_no_replace(
             output, selection, "failed prompt hypothesis selection"
@@ -171,7 +177,7 @@ def publish_failed_prompt_hypothesis_selection(
         raise FailedPromptHypothesisError(str(error)) from error
     return FailedPromptHypothesisResult(
         output,
-        selection["selection_id"],
+        selection_id,
         sum(value["decision"] == "select_hypothesis" for value in decisions),
         sum(value["decision"] == "keep_unresolved" for value in decisions),
     )
@@ -190,7 +196,7 @@ def _record_text(record: Mapping[str, object], field: str, label: str) -> str:
 
 def _load_private_candidates(path: Path) -> dict[object, object]:
     try:
-        key = json.loads(path.read_text(encoding="utf-8"))
+        key = decode_json(read_regular_text(path, encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise FailedPromptHypothesisError(str(error)) from error
     if not isinstance(key, dict):

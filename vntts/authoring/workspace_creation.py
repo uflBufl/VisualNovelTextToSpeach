@@ -4,27 +4,23 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
 import re
-import shutil
 from collections.abc import Iterable, Mapping, MutableSequence, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypeAlias, TypeGuard
 
+from durable_file import atomic_write_json
 from platformdirs import user_data_path
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.voice_manifest import (
-    VoiceManifestError,
-    load_voice_manifest,
-)
+from vntts_artifacts.voice_manifest import VoiceManifestError
 
 import vntts.authoring.legacy_import as legacy_import
 from vntts.authoring.audio_event_composition import (
@@ -48,15 +44,14 @@ from vntts.authoring.bulk_generation import (
     NO_PROMPT_SHA256,
     BulkGenerationError,
     JsonDocument,
-    inline_pause_matches_failure,
-    inspect_generated_wav,
     load_generation_state,
     normalize_short_trailing_ellipsis,
-    normalized_failure_record,
     publish_generated_manifest,
-    sentence_repair_matches_failure,
     sha256_control_path,
     snapshot_generation_control_files,
+)
+from vntts.authoring.bulk_generation import (
+    inspect_generated_wav as inspect_generated_wav,
 )
 from vntts.authoring.failure_reference_binding_records import (
     FailureReferenceBinding,
@@ -74,11 +69,20 @@ from vntts.authoring.failure_repair import (
     FailureRepairPolicyError,
 )
 from vntts.authoring.game_pack import FinalGamePackError
+from vntts.authoring.generation_failures import (
+    failure_repair_history,
+    inline_pause_matches_failure,
+    normalized_failure_record,
+    sentence_repair_matches_failure,
+)
 from vntts.authoring.generation_lease import (
     GenerationLease,
     process_is_alive,
 )
-from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_manifest import (
+    inspect_generated_wav_with_samples,
+    write_generated_manifest_from_state,
+)
 from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
@@ -91,6 +95,7 @@ from vntts.authoring.offline_fallback_authority import (
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
+    publication_errors,
     staged_directory,
 )
 from vntts.authoring.publication import (
@@ -110,7 +115,11 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_sha256,
 )
 from vntts.authoring.speech_quality import (
-    measure_generated_speech_bytes,
+    SPEECH_QUALITY_ANALYSIS_VERSION,
+    measure_generated_speech_samples,
+)
+from vntts.authoring.speech_quality import (
+    measure_generated_speech_bytes as measure_generated_speech_bytes,
 )
 from vntts.authoring.terminal_conflict_records import is_terminal_review_outcome
 from vntts.authoring.workbench_contracts import (
@@ -162,10 +171,18 @@ from vntts.authoring.workspace_voice_runtime import (
     load_workspace_queue_voice_overrides,
     load_workspace_voice_registry,
 )
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, file_sha256, sha256_file
+from vntts.json_types import decode_json
+from vntts.json_types import is_json_object as _is_json_document
+from vntts.path_safety import (
+    contained_no_replace_destination,
+    copy_regular_file,
+    read_regular_bytes,
+)
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
+    load_voice_manifest,
     synthesis_character_for_line,
 )
 
@@ -180,10 +197,6 @@ GenerationStateItems: TypeAlias = dict[str, JsonDocument]
 GenerationControls: TypeAlias = dict[str, tuple[Path, str]]
 
 
-def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
-
-
 def _json_document(value: object, label: str) -> JsonDocument:
     if not _is_json_document(value):
         raise AuthoringWorkbenchError(f"{label} must be a JSON object")
@@ -191,10 +204,8 @@ def _json_document(value: object, label: str) -> JsonDocument:
 
 
 def _is_generation_state_items(value: object) -> TypeGuard[GenerationStateItems]:
-    return (
-        isinstance(value, dict)
-        and all(isinstance(key, str) for key in value)
-        and all(_is_json_document(item) for item in value.values())
+    return _is_json_document(value) and all(
+        _is_json_document(item) for item in value.values()
     )
 
 
@@ -351,7 +362,7 @@ def _copy_resume_seed_inputs(staging: Path, source: _ResumeSource) -> None:
         source_path = _within(source.directory, relative, "Imported artifact")
         target = staging / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_path, target)
+        copy_regular_file(source_path, target, preserve_metadata=True)
         if sha256_file(target) != item["sha256"]:
             raise AuthoringWorkbenchError(
                 f"Imported artifact changed during workspace copy: {relative}"
@@ -508,7 +519,12 @@ def _resume_identity_and_document(
         queue_extension=queue_extension,
     )
     workspace_id = workspace_id_for_config(source.import_id, config_fingerprint)
-    destination = _within(root, Path(workspace_id), "Workspace destination")
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Workspace destination",
+        error_type=AuthoringWorkbenchError,
+    )
     for existing in root.iterdir():
         if (
             existing.name.casefold() == workspace_id.casefold()
@@ -556,7 +572,6 @@ def _resume_identity_and_document(
 def _publish_resume_workspace(
     staging: Path,
     destination: Path,
-    workspace: WorkspaceDocument,
     source: _ResumeSource,
 ) -> WorkspaceCreationResult:
     if destination.exists():
@@ -603,7 +618,7 @@ def _assert_failure_reference_workspace_base(base_document: WorkspaceDocument) -
 
 
 def _assert_failure_reference_generation_available(
-    base_directory: Path, state: GenerationState
+    state: GenerationState,
 ) -> None:
     if state.get("active") is not None:
         raise AuthoringWorkbenchError(
@@ -649,6 +664,7 @@ def _assert_failure_reference_binding_items(
     queue: VoiceGenerationQueue, state: GenerationState, document: JsonDocument
 ) -> None:
     queue_ids = {item.queue_id for item in queue.items}
+    state_items = _state_items(state)
     selected_ids = set()
     groups = document.get("groups")
     if not isinstance(groups, list):
@@ -665,7 +681,7 @@ def _assert_failure_reference_binding_items(
             queue_id = _required_text(
                 case.get("queue_id"), "Failure-reference queue ID"
             )
-            result = _state_items(state).get(queue_id)
+            result = state_items.get(queue_id)
             if queue_id not in queue_ids or not isinstance(result, dict):
                 raise AuthoringWorkbenchError(
                     f"Failure-reference base item is missing: {queue_id!r}"
@@ -680,9 +696,7 @@ def _assert_failure_reference_binding_items(
                 )
             selected_ids.add(queue_id)
     overrides = document.get("queue_voice_overrides")
-    if not isinstance(overrides, dict) or not all(
-        isinstance(queue_id, str) for queue_id in overrides
-    ):
+    if not _is_json_document(overrides):
         raise AuthoringWorkbenchError(
             "Failure-reference binding selection inventory is inconsistent"
         )
@@ -703,7 +717,7 @@ def _failure_reference_workspace_document(
     state_sha256: str,
 ) -> tuple[JsonDocument, Path, WorkspaceDocument]:
     controls = _failure_reference_controls(document, target)
-    config = {
+    config: JsonDocument = {
         "path": "inputs/failure-reference-binding/binding.json",
         "sha256": sha256_file(binding_path),
         "binding_id": binding.binding_id,
@@ -731,7 +745,13 @@ def _failure_reference_workspace_document(
             "config_fingerprint": fingerprint,
         }
     )
-    return config, _within(root, Path(workspace_id), "Workspace destination"), workspace
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Workspace destination",
+        error_type=AuthoringWorkbenchError,
+    )
+    return config, destination, workspace
 
 
 def _failure_reference_controls(
@@ -855,7 +875,7 @@ def _stage_resume_workspace(
         source.directory, source.copied, source.import_path, source.import_sha256
     )
     _verify_selected_sources(selected_sources)
-    return _publish_resume_workspace(staging, destination, workspace, source)
+    return _publish_resume_workspace(staging, destination, source)
 
 
 def create_failure_reference_workspace(
@@ -871,7 +891,7 @@ def create_failure_reference_workspace(
     queue, state, _state_payload, state_sha256 = _stable_workspace_state(
         base_directory, base_document, "failure-reference base"
     )
-    _assert_failure_reference_generation_available(base_directory, state)
+    _assert_failure_reference_generation_available(state)
     binding, binding_document = _failure_reference_workspace_binding(binding_directory)
     queue_sha256 = sha256_file(base_directory / "queue.jsonl")
     _assert_failure_reference_binding_authority(
@@ -993,6 +1013,7 @@ def _stage_failure_reference_workspace(
     return binding_config, destination
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _assert_failure_reference_sources_unchanged(
     snapshots: Iterable[WorkspaceSnapshot],
 ) -> None:
@@ -1148,7 +1169,6 @@ def create_audio_event_composition_workspace(
                 )
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(str(error)) from error
-    return WorkspaceCreationResult(destination, True)
 
 
 def _install_audio_event_composition(
@@ -1167,8 +1187,9 @@ def _install_audio_event_composition(
     relative = Path("audio/audio-events") / f"{composition.composition_id[:24]}.wav"
     audio = _within(output, relative, "Composed audio-event WAV")
     audio.parent.mkdir(parents=True, exist_ok=True)
-    audio.write_bytes(composition.audio.read_bytes())
-    if sha256_file(audio) != composition.audio_sha256:
+    copy_regular_file(composition.audio, audio)
+    payload = read_regular_bytes(audio)
+    if hashlib.sha256(payload).hexdigest() != composition.audio_sha256:
         raise AuthoringWorkbenchError(
             "Audio-event composition changed while copied into its successor"
         )
@@ -1184,8 +1205,18 @@ def _install_audio_event_composition(
             else {}
         )
     try:
-        quality = asdict(inspect_generated_wav(audio, allow_short_audio_event=True))
-        speech_quality = asdict(measure_generated_speech_bytes(audio.read_bytes()))
+        audio_quality, samples = inspect_generated_wav_with_samples(
+            io.BytesIO(payload), allow_short_audio_event=True
+        )
+        quality = asdict(audio_quality)
+        speech_quality = asdict(
+            measure_generated_speech_samples(
+                samples,
+                sample_rate=audio_quality.sample_rate,
+                duration_seconds=audio_quality.sample_count / audio_quality.sample_rate,
+                analysis_version=SPEECH_QUALITY_ANALYSIS_VERSION,
+            )
+        )
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
     target_state = copy.deepcopy(state)
@@ -1257,6 +1288,7 @@ def _publish_audio_event_workspace(
     return WorkspaceCreationResult(destination, True)
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _verify_audio_event_publication_sources(
     snapshots: Iterable[WorkspaceSnapshot],
 ) -> None:
@@ -1427,7 +1459,13 @@ def _audio_event_workspace_document(
             "config_fingerprint": fingerprint,
         }
     )
-    return config, _within(root, Path(workspace_id), "Workspace destination"), workspace
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Workspace destination",
+        error_type=AuthoringWorkbenchError,
+    )
+    return config, destination, workspace
 
 
 def _preserve_seed_generation_state(
@@ -1473,7 +1511,7 @@ def _install_extended_generation_queue(
         config.get("base_queue_path"), "Base queue snapshot"
     )
     base_snapshot.parent.mkdir(parents=True, exist_ok=True)
-    base_snapshot.write_bytes(base_queue.read_bytes())
+    copy_regular_file(base_queue, base_snapshot)
     base_queue.write_bytes(payload)
 
     state_path = staging / "generated-audio/generation-state.json"
@@ -1506,7 +1544,7 @@ class _CarryForwardSource:
     document: WorkspaceDocument
     output: Path
     run_config: JsonDocument
-    state: GenerationState
+    items: GenerationStateItems
     state_path: Path
     state_sha256: str
 
@@ -1667,7 +1705,7 @@ def _load_carry_forward_source(
     source_state_sha256 = hashlib.sha256(source_state_payload).hexdigest()
     try:
         state = _json_document(
-            json.loads(source_state_payload.decode("utf-8")),
+            decode_json(source_state_payload.decode("utf-8")),
             "Carry-forward source state",
         )
         validated_state = load_generation_state(source_state_path, source_queue_path)
@@ -1691,7 +1729,7 @@ def _load_carry_forward_source(
         source_document,
         source_output,
         source_run_config_normalized,
-        state,
+        _state_items(state),
         source_state_path,
         source_state_sha256,
     )
@@ -1712,7 +1750,7 @@ def _stage_offline_fallback_authorities(
         loaded: tuple[OfflineFallbackAuthority, ...] = (
             load_offline_fallback_authorities(
                 authorities,
-                _state_items(source.state),
+                source.items,
                 selection.offline_queue_ids,
             )
         )
@@ -1817,7 +1855,14 @@ def _carry_forward_reviewed_items(
     source_provenance = None
     snapshots: list[WorkspaceSnapshot] = []
     carried: list[JsonDocument] = []
-    source_items = _state_items(source.state)
+    source_items = source.items
+    target_items = _state_items(target_state)
+    target_seed_items = _state_items(target_seed)
+    target_seed_paths: dict[str, list[str]] = {}
+    for queue_id, seed_result in target_seed_items.items():
+        path = seed_result.get("path")
+        if isinstance(path, str):
+            target_seed_paths.setdefault(path, []).append(queue_id)
     for queue_item in target_queue.items:
         result = source_items.get(queue_item.queue_id)
         if result is None or not _terminal_review_outcome(result):
@@ -1833,8 +1878,9 @@ def _carry_forward_reviewed_items(
             result,
             character,
             source,
-            target_state,
-            target_seed,
+            target_items,
+            target_seed_items,
+            target_seed_paths,
             source_provenance,
             source_registry,
             target_registry,
@@ -1852,8 +1898,9 @@ def _carry_forward_reviewed_item(
     result: JsonDocument,
     character: str,
     source: _CarryForwardSource,
-    target_state: GenerationState,
-    target_seed: GenerationState,
+    target_items: GenerationStateItems,
+    target_seed_items: GenerationStateItems,
+    target_seed_paths: Mapping[str, list[str]],
     source_provenance: str | None,
     source_registry: CharacterVoiceRegistry,
     target_registry: CharacterVoiceRegistry,
@@ -1861,7 +1908,6 @@ def _carry_forward_reviewed_item(
     target_queue_overrides: Mapping[str, str],
 ) -> tuple[JsonDocument, WorkspaceSnapshot, str | None]:
     mode = "review-only"
-    target_seed_items = _state_items(target_seed)
     if not _same_seed_generation(target_seed_items.get(queue_item.queue_id), result):
         mode = "full-outcome"
         if source_provenance is None:
@@ -1887,12 +1933,8 @@ def _carry_forward_reviewed_item(
     relative = _safe_relative(
         result.get("path"), f"Carry-forward item {queue_item.queue_id!r} path"
     )
-    for other_queue_id, other_result in target_seed_items.items():
-        if (
-            other_queue_id != queue_item.queue_id
-            and isinstance(other_result, dict)
-            and other_result.get("path") == relative.as_posix()
-        ):
+    for other_queue_id in target_seed_paths.get(relative.as_posix(), ()):
+        if other_queue_id != queue_item.queue_id:
             raise AuthoringWorkbenchError(
                 f"Carry-forward WAV path collides with {other_queue_id!r}"
             )
@@ -1926,7 +1968,7 @@ def _carry_forward_reviewed_item(
     }
     copied_result = copy.deepcopy(result)
     copied_result["carry_forward"] = carry_record
-    _state_items(target_state)[queue_item.queue_id] = copied_result
+    target_items[queue_item.queue_id] = copied_result
     return carry_record, (source_audio, audio_sha256), source_provenance
 
 
@@ -1963,29 +2005,32 @@ def _validate_failed_carry_forward_kind(
     )
 
 
+@dataclass(frozen=True)
+class _CarryForwardFailure:
+    result: JsonDocument
+    failure: JsonDocument
+    attempts: int
+    source_model: str
+    source_profile: str
+    strategy: str
+    fallback_authority: OfflineFallbackAuthority | None
+    source_provider_attempts: object
+    source_repair_strategy: object
+    provider_attempts: int | None
+
+
 def _validate_failed_carry_forward_source(
     source: _CarryForwardSource,
     selection: _CarryForwardSelection,
     queue_by_id: Mapping[str, VoiceGenerationQueueItem],
     authority_by_queue_id: Mapping[str, OfflineFallbackAuthority],
     queue_id: str,
-) -> tuple[
-    JsonDocument,
-    JsonDocument,
-    int,
-    str,
-    str,
-    str,
-    OfflineFallbackAuthority | None,
-    object,
-    object,
-    int | None,
-]:
+) -> _CarryForwardFailure:
     if queue_id not in queue_by_id:
         raise AuthoringWorkbenchError(
             f"Failure repair references unknown queue item {queue_id!r}"
         )
-    result = _state_items(source.state).get(queue_id)
+    result = source.items.get(queue_id)
     if result is None or result.get("status") != "failed":
         raise AuthoringWorkbenchError(
             f"Failure repair requires a current failed source outcome for {queue_id!r}"
@@ -2008,7 +2053,7 @@ def _validate_failed_carry_forward_source(
     attempts_by_provider = result.get("attempts_by_provider")
     provider = result.get("provider")
     source_provider_attempts = (
-        attempts_by_provider.get(provider, attempts)
+        attempts_by_provider.get(provider, 0)
         if _is_json_document(attempts_by_provider) and isinstance(provider, str)
         else attempts
     )
@@ -2022,7 +2067,9 @@ def _validate_failed_carry_forward_source(
         else 1
     )
     if (
-        _validate_failed_carry_forward_kind(
+        strategy == SENTENCE_BOUNDARY_SEGMENTATION
+        and SENTENCE_BOUNDARY_SEGMENTATION in failure_repair_history(result)
+        or _validate_failed_carry_forward_kind(
             strategy,
             failure,
             queue_item.text,
@@ -2048,11 +2095,7 @@ def _validate_failed_carry_forward_source(
         )
     provider_attempts: int | None = None
     if strategy in {BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}:
-        provider_attempts_value = (
-            attempts_by_provider.get(provider, attempts)
-            if _is_json_document(attempts_by_provider) and isinstance(provider, str)
-            else attempts
-        )
+        provider_attempts_value = source_provider_attempts
         if (
             not isinstance(provider_attempts_value, int)
             or isinstance(provider_attempts_value, bool)
@@ -2062,17 +2105,17 @@ def _validate_failed_carry_forward_source(
                 f"Bounded repair source attempts are exhausted for {queue_id!r}"
             )
         provider_attempts = provider_attempts_value
-    return (
-        result,
-        failure,
-        attempts,
-        source_model,
-        source_profile,
-        strategy,
-        fallback_authority,
-        source_provider_attempts,
-        source_repair_strategy,
-        provider_attempts,
+    return _CarryForwardFailure(
+        result=result,
+        failure=failure,
+        attempts=attempts,
+        source_model=source_model,
+        source_profile=source_profile,
+        strategy=strategy,
+        fallback_authority=fallback_authority,
+        source_provider_attempts=source_provider_attempts,
+        source_repair_strategy=source_repair_strategy,
+        provider_attempts=provider_attempts,
     )
 
 
@@ -2085,22 +2128,13 @@ def _carry_forward_failed_items(
     source_registry: CharacterVoiceRegistry,
 ) -> list[JsonDocument]:
     queue_by_id = {item.queue_id: item for item in target_queue.items}
+    target_items = _state_items(target_state)
     carried = []
     for queue_id in selection.failed_queue_ids:
-        (
-            result,
-            failure,
-            attempts,
-            source_model,
-            source_profile,
-            strategy,
-            fallback_authority,
-            source_provider_attempts,
-            source_repair_strategy,
-            provider_attempts,
-        ) = _validate_failed_carry_forward_source(
+        failed = _validate_failed_carry_forward_source(
             source, selection, queue_by_id, authority_by_queue_id, queue_id
         )
+        result = failed.result
         queue_item = queue_by_id[queue_id]
         requested_character = synthesis_character_for_line(
             queue_item.speaker, queue_item.voice_character
@@ -2124,31 +2158,31 @@ def _carry_forward_failed_items(
             "source_item_sha256": canonical_document_sha256(result),
             "character": effective_character,
             "source_provider": result["provider"],
-            "source_model": source_model,
-            "source_generation_profile": source_profile,
-            "source_attempts": attempts,
+            "source_model": failed.source_model,
+            "source_generation_profile": failed.source_profile,
+            "source_attempts": failed.attempts,
             "source_seed": result.get("seed"),
-            "source_failure_kind": failure["kind"],
+            "source_failure_kind": failed.failure["kind"],
             "source_voice_reference": _voice_reference_identity(
                 source_registry, reference_character
             ),
         }
-        if source_repair_strategy is not None:
-            carry_record["source_repair_strategy"] = source_repair_strategy
-        if strategy == OFFLINE_FALLBACK_BACKEND:
-            carry_record["source_provider_attempts"] = source_provider_attempts
-            if fallback_authority is not None:
+        if failed.source_repair_strategy is not None:
+            carry_record["source_repair_strategy"] = failed.source_repair_strategy
+        if failed.strategy == OFFLINE_FALLBACK_BACKEND:
+            carry_record["source_provider_attempts"] = failed.source_provider_attempts
+            if failed.fallback_authority is not None:
                 carry_record["source_unresolved_authority"] = (
-                    fallback_authority.reference_record(queue_id)
+                    failed.fallback_authority.reference_record(queue_id)
                 )
-        if strategy == BOUNDED_SEED_RETRY:
-            carry_record["source_provider_attempts"] = provider_attempts
+        if failed.strategy == BOUNDED_SEED_RETRY:
+            carry_record["source_provider_attempts"] = failed.provider_attempts
         parent_carry = result.get("carry_forward")
         if isinstance(parent_carry, dict):
             carry_record["source_parent_carry_forward"] = copy.deepcopy(parent_carry)
         copied_result = copy.deepcopy(result)
         copied_result["carry_forward"] = carry_record
-        _state_items(target_state)[queue_id] = copied_result
+        target_items[queue_id] = copied_result
         carried.append({"queue_id": queue_id, **carry_record})
     return carried
 
@@ -2168,6 +2202,7 @@ def _validate_carry_forward_results(
         )
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _publish_carry_forward_staging(
     target_state_path: Path,
     target_state: GenerationState,
@@ -2179,12 +2214,12 @@ def _publish_carry_forward_staging(
         publish_generated_manifest(target_state_path)
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    if sha256_file(source.state_path) != source.state_sha256:
+    if file_sha256(source.state_path, error_type=OSError) != source.state_sha256:
         raise AuthoringWorkbenchError(
             "Carry-forward source state changed before workspace publication"
         )
     for path, digest in snapshots:
-        if not path.is_file() or sha256_file(path) != digest:
+        if not path.is_file() or file_sha256(path, error_type=OSError) != digest:
             raise AuthoringWorkbenchError(
                 "Carry-forward source WAV changed before workspace publication"
             )
@@ -2458,8 +2493,11 @@ def _narrator_fallback_overrides(
         and all(reference.is_file() for reference in narrator_voice.references)
     )
     overrides: dict[str, str] = {}
-    for item in queue.items:
-        requested = synthesis_character_for_line(item.speaker, item.voice_character)
+    requested_characters = dict.fromkeys(
+        synthesis_character_for_line(item.speaker, item.voice_character)
+        for item in queue.items
+    )
+    for requested in requested_characters:
         voice = registry.resolve(requested)
         missing = (
             voice is None
@@ -2813,7 +2851,7 @@ def _copy_carry_forward_failure_reference_binding(
 
 def _read_source_bytes(path: Path, label: str) -> tuple[bytes, str]:
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
     except OSError as error:
         raise AuthoringWorkbenchError(
             f"Unable to read {label} {path}: {error}"
@@ -2821,9 +2859,10 @@ def _read_source_bytes(path: Path, label: str) -> tuple[bytes, str]:
     return payload, hashlib.sha256(payload).hexdigest()
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _verify_selected_sources(selected_sources: Iterable[SelectedSource]) -> None:
     for path, digest, label in selected_sources:
-        if not path.is_file() or sha256_file(path) != digest:
+        if not path.is_file() or file_sha256(path, error_type=OSError) != digest:
             raise AuthoringWorkbenchError(
                 f"Selected {label} changed while workspace was being created"
             )
@@ -2863,6 +2902,7 @@ def _selected_voice_manifest(
     return manifest
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _verify_import_sources(
     source: Path,
     copied: Iterable[ArtifactRecord],

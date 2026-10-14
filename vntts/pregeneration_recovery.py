@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from threading import Event, Lock
 from typing import Protocol
 
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
@@ -16,19 +15,23 @@ from vntts_artifacts.voice_generation_queue import (
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.authoring.bulk_generation import (
-    AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS,
     BulkGenerationError,
     _state_items,
-    authorize_live_fallback,
-    generation_failure_repair_plan,
     is_spoken_queue_item,
     load_generation_state,
+)
+from vntts.authoring.generation_failures import (
+    generation_failure_repair_plan,
+)
+from vntts.authoring.generation_fallback import (
+    AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS,
+    authorize_live_fallback,
 )
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
     load_stable_generation_queue,
 )
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
@@ -157,7 +160,6 @@ def plan_automatic_recovery(
     if not isinstance(records, list):
         raise OfflineRecoveryError("Offline recovery plan is malformed")
     grouped: dict[str, list[str]] = {action: [] for action in AUTOMATIC_ACTION_ORDER}
-    deferred: Counter[str] = Counter()
     deferred_queue_ids: dict[str, list[str]] = {}
     live_fallback_queue_ids: list[str] = []
     seen_queue_ids: set[str] = set()
@@ -183,7 +185,6 @@ def plan_automatic_recovery(
         ):
             grouped[action].append(queue_id)
         else:
-            deferred[action] += 1
             deferred_queue_ids.setdefault(action, []).append(queue_id)
             if (
                 provider is not None
@@ -207,7 +208,10 @@ def plan_automatic_recovery(
             for action in AUTOMATIC_ACTION_ORDER
             if grouped[action]
         ),
-        deferred_action_counts=tuple(sorted(deferred.items())),
+        deferred_action_counts=tuple(
+            (action, len(queue_ids))
+            for action, queue_ids in sorted(deferred_queue_ids.items())
+        ),
         deferred_batches=tuple(
             OfflineRecoveryBatch(action, tuple(sorted(queue_ids)))
             for action, queue_ids in sorted(deferred_queue_ids.items())
@@ -302,11 +306,12 @@ class OfflineRecoveryWorker:
                         if queue_id in batch.queue_ids
                     )
                 )
-                for batch in plan.automatic_batches:
-                    remaining[batch.action] += sum(
-                        queue_id is None or candidate == queue_id
-                        for candidate in batch.queue_ids
-                    )
+                remaining.update(
+                    batch.action
+                    for batch in plan.automatic_batches
+                    for candidate in batch.queue_ids
+                    if queue_id is None or candidate == queue_id
+                )
                 remaining_failed = (
                     current.failed
                     if queue_id is None

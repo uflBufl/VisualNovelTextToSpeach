@@ -7,31 +7,23 @@ import json
 import re
 import socket
 import sys
-import tempfile
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 from statistics import median
 from typing import SupportsIndex, SupportsInt
 
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
-    load_story_index_document,
 )
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.voice_manifest import (
-    VoiceManifestError,
-    load_voice_manifest,
-    validate_voice_manifest,
-)
+from vntts_artifacts.voice_manifest import VoiceManifestError, validate_voice_manifest
 
 import vntts.authoring.legacy_import as legacy_import
 from vntts.authoring.audio_event_workspace import (
@@ -40,22 +32,27 @@ from vntts.authoring.audio_event_workspace import (
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     JsonDocument,
-    ReviewAuthority,
     StateItems,
     is_spoken_queue_item,
-    normalized_failure_record,
-    sentence_repair_matches_failure,
 )
 from vntts.authoring.failure_repair import (
+    DEFAULT_INLINE_PAUSE_MS,
+    DEFAULT_SEGMENT_PAUSE_MS,
     FailureRepairPolicy,
     FailureRepairPolicyError,
+)
+from vntts.authoring.generation_failures import (
+    normalized_failure_record,
+    sentence_repair_matches_failure,
 )
 from vntts.authoring.generation_lease import (
     LEASE_SCHEMA,
     LEASE_VERSION,
+    is_process_id,
     process_is_alive,
     process_started_at,
 )
+from vntts.authoring.generation_review import ReviewAuthority
 from vntts.authoring.generation_state import load_generation_state_from_snapshot
 from vntts.authoring.missing_voice_policy import (
     NARRATOR_ALL_UNRESOLVED,
@@ -63,6 +60,7 @@ from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
 )
+from vntts.authoring.publication import publication_errors
 from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
@@ -79,6 +77,7 @@ from vntts.authoring.workbench_contracts import (
     GenerationReadiness,
     ImmutableHistoryTimestamp,
     ReviewItem,
+    ReviewItemsSnapshot,
     WorkbenchProjectionData,
     WorkspaceCollection,
     WorkspaceSummary,
@@ -118,9 +117,15 @@ from vntts.authoring.workspace_state import (
     cached_workspace_generation_state,
     shared_workspace_state_reads,
 )
+from vntts.document_identity import canonical_document_sha256, sha256_file
+from vntts.json_types import decode_json, has_schema_version
+from vntts.numeric_values import optional_finite_number
+from vntts.path_safety import read_regular_bytes
+from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
+    load_voice_manifest,
     synthesis_character_for_line,
 )
 
@@ -172,10 +177,8 @@ def _review_internal_pause_seconds(
     )
     if not isinstance(source, dict):
         return None
-    value = source.get("longest_internal_silence_seconds")
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
-        return None
-    return float(value)
+    value = optional_finite_number(source.get("longest_internal_silence_seconds"))
+    return value if value is not None and value >= 0 else None
 
 
 def _inspection_state_items(state: Mapping[str, object]) -> StateItems:
@@ -188,7 +191,6 @@ def _inspection_state_items(state: Mapping[str, object]) -> StateItems:
     return {queue_id: value for queue_id, value in items.items()}
 
 
-@lru_cache(maxsize=2048)
 def discover_imports(import_root: str | Path | None = None) -> tuple[Path, ...]:
     root = (
         Path(import_root or legacy_import.default_import_root()).expanduser().resolve()
@@ -459,13 +461,10 @@ def _review_technical_metrics(
     quality = result.get("quality")
     if not isinstance(quality, dict):
         return None, None, None, ()
-    duration = quality.get("duration_seconds")
-    peak = quality.get("peak")
-    if not isinstance(duration, (int, float)) or duration <= 0:
+    duration = optional_finite_number(quality.get("duration_seconds"))
+    peak = optional_finite_number(quality.get("peak"))
+    if duration is not None and duration <= 0:
         duration = None
-    else:
-        duration = float(duration)
-    peak = float(peak) if isinstance(peak, (int, float)) else None
     is_audio_event = result.get("provider") == AUDIO_EVENT_PROVIDER
     speech_quality = (
         projected_speech_quality
@@ -483,11 +482,9 @@ def _review_technical_metrics(
     leading_silence = speech_quality.get("leading_silence_seconds")
     trailing_silence = speech_quality.get("trailing_silence_seconds")
     trimmed_seconds = sum(
-        float(value)
+        number
         for value in (leading_silence, trailing_silence)
-        if isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and value >= 0
+        if (number := optional_finite_number(value)) is not None and number >= 0
     )
     audible_duration = (
         None if duration is None else max(0.0, duration - trimmed_seconds)
@@ -495,14 +492,16 @@ def _review_technical_metrics(
     words_per_minute = (
         None
         if is_audio_event or not audible_duration
-        else float(word_count * 60 / audible_duration)
+        else optional_finite_number(word_count * 60 / audible_duration)
     )
-    internal_silence = speech_quality.get("longest_internal_silence_seconds")
+    internal_silence = optional_finite_number(
+        speech_quality.get("longest_internal_silence_seconds")
+    )
     flags = []
     if peak is not None and peak >= 0.98:
         flags.append("near clipping")
     if (
-        isinstance(internal_silence, (int, float))
+        internal_silence is not None
         and internal_silence >= REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS
     ):
         flags.append("notable pause")
@@ -558,18 +557,19 @@ def _annotate_pace_advisories(
         scope = None
         if word_count >= PACE_MINIMUM_WORDS and item.words_per_minute is not None:
             if len(same_length) >= PACE_MINIMUM_LENGTH_BUCKET_SAMPLES:
-                baseline = float(median(same_length))
+                baseline = optional_finite_number(median(same_length))
                 scope = f"same voice/{length} lines"
             elif len(same_voice) >= PACE_MINIMUM_VOICE_SAMPLES:
-                baseline = float(median(same_voice))
+                baseline = optional_finite_number(median(same_voice))
                 scope = "same voice/all eligible lengths"
         advisories: tuple[str, ...] = ()
         ratio = None
         words_per_minute = item.words_per_minute
         if baseline is not None and baseline > 0 and words_per_minute is not None:
-            ratio = float(words_per_minute / baseline)
+            ratio = optional_finite_number(words_per_minute / baseline)
             if (
-                ratio <= PACE_SLOW_RELATIVE_RATIO
+                ratio is not None
+                and ratio <= PACE_SLOW_RELATIVE_RATIO
                 and baseline - words_per_minute >= PACE_SLOW_MINIMUM_DELTA_WPM
             ):
                 advisories = (
@@ -594,7 +594,7 @@ def _corrected_legacy_speech_quality(
     """Re-measure one legacy WAV from digest-bound bytes for review attention."""
     path = Path(audio_path)
     try:
-        content = path.read_bytes()
+        content = read_regular_bytes(path)
     except OSError as error:
         raise AuthoringWorkbenchError(
             f"Unable to read generated WAV for review metrics: {error}"
@@ -641,44 +641,37 @@ def _normalize_review_queue_ids(queue_ids: object) -> set[str] | None:
 def list_review_items(
     workspace_directory: str | Path, queue_ids: object = None
 ) -> tuple[ReviewItem, ...]:
+    snapshot = load_review_items_snapshot(workspace_directory, queue_ids)
+    return () if snapshot is None else snapshot.items
+
+
+@publication_errors(AuthoringWorkbenchError)
+def load_review_items_snapshot(
+    workspace_directory: str | Path, queue_ids: object = None
+) -> ReviewItemsSnapshot | None:
+    """Read review state once and retain the identity used to project its rows."""
     selected_queue_ids = _normalize_review_queue_ids(queue_ids)
-    directory, workspace = _load_workspace(workspace_directory)
-    queue_path = _within(
-        directory, _safe_relative(workspace["queue"], "Queue"), "Queue"
+    read = _load_workbench_projection_read(
+        workspace_directory, load_projection_details=False
     )
-    output = _within(
-        directory,
-        _safe_relative(workspace["output"], "Output"),
-        "Output",
+    if read.state_path is None or read.state is None or read.state_sha256 is None:
+        return None
+    story = _load_bound_story_document(read.directory, read.workspace)
+    items = _list_review_items_from_read(
+        read.queue,
+        story,
+        read.state_path,
+        read.state,
+        read.state_sha256,
+        read.queue_path,
+        read.output,
+        selected_queue_ids=selected_queue_ids,
     )
-    state_path = output / "generation-state.json"
-    if not state_path.is_file():
-        return ()
-    queue = _load_bound_workspace_queue(directory, workspace)
-    story = _load_bound_story_document(directory, workspace)
-    state_document, state_sha256, _payload = _load_json_snapshot(
-        state_path, "generation state"
-    )
-    state = load_generation_state_from_snapshot(
-        state_path,
-        queue,
-        workspace_queue_sha256(workspace, error_type=AuthoringWorkbenchError),
-        state_document=state_document,
-    )
-    if sha256_file(state_path) != state_sha256:
+    if sha256_file(read.state_path) != read.state_sha256:
         raise AuthoringWorkbenchError(
             "Generation state changed while review rows were being projected"
         )
-    return _list_review_items_from_read(
-        queue,
-        story,
-        state_path,
-        state,
-        state_sha256,
-        queue_path,
-        output,
-        selected_queue_ids=selected_queue_ids,
-    )
+    return ReviewItemsSnapshot(read.workspace, read.state, read.state_sha256, items)
 
 
 def _list_review_items_from_read(
@@ -697,11 +690,12 @@ def _list_review_items_from_read(
         for collection in story.collections
         for record in story.records_for_collection(collection.collection_id)
     }
+    state_items = _inspection_state_items(state)
     records: list[ReviewItem] = []
     for item in queue.items:
         if selected_queue_ids is not None and item.queue_id not in selected_queue_ids:
             continue
-        result = _inspection_state_items(state).get(item.queue_id)
+        result = state_items.get(item.queue_id)
         if not isinstance(result, dict):
             continue
         status = str(result.get("status") or "unknown")
@@ -751,14 +745,7 @@ def _list_review_items_from_read(
                             _required_text(state.get("queue_sha256"), "Queue SHA-256")
                         ),
                         state_sha256=state_sha256,
-                        item_sha256=hashlib.sha256(
-                            json.dumps(
-                                result,
-                                ensure_ascii=False,
-                                sort_keys=True,
-                                separators=(",", ":"),
-                            ).encode("utf-8")
-                        ).hexdigest(),
+                        item_sha256=_review_result_sha256(result, item.queue_id),
                         audio_sha256=str(result["file_sha256"]),
                     )
                     if status in {"generated", "approved"}
@@ -791,6 +778,15 @@ def _list_review_items_from_read(
                 f"Requested review outcomes are unavailable: {missing}"
             )
     return _annotate_pace_advisories(records)
+
+
+def _review_result_sha256(result: JsonDocument, queue_id: str) -> str:
+    try:
+        return canonical_document_sha256(result, allow_nan=True)
+    except ValueError as error:
+        raise AuthoringWorkbenchError(
+            f"Review outcome authority is invalid: {queue_id}"
+        ) from error
 
 
 def inspect_generation_readiness(
@@ -1067,7 +1063,7 @@ def _workspace_voice_projection_from_read(
         "Voice manifest snapshot",
     )
     try:
-        document = json.loads(payload.decode("utf-8"))
+        document = decode_json(payload.decode("utf-8"))
         entries = validate_voice_manifest(document)
     except (UnicodeDecodeError, json.JSONDecodeError, VoiceManifestError) as error:
         raise AuthoringWorkbenchError(
@@ -1134,13 +1130,10 @@ def _load_bound_story_document(
         _require_sha256(story.get("sha256"), "Story index snapshot SHA-256"),
         "Story index snapshot",
     )
-    with tempfile.TemporaryDirectory(prefix="vntts-story-snapshot-") as temporary:
-        snapshot = Path(temporary) / "story-index.jsonl"
-        snapshot.write_bytes(payload)
-        try:
-            return load_story_index_document(snapshot)
-        except StoryIndexError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
+    try:
+        return load_story_index_snapshot(path, payload)
+    except StoryIndexError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
 
 
 def immutable_history_timestamps(
@@ -1207,6 +1200,7 @@ def _load_workbench_projection_read(
         )
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _load_workbench_projection_read_scoped(
     workspace_directory: str | Path,
     *,
@@ -1605,9 +1599,9 @@ def _append_repair_options(
     _append_repair(
         command, "--inline-pause-failed", repair_policy.inline_pause_queue_ids
     )
-    if repair_policy.segment_pause_ms != 180:
+    if repair_policy.segment_pause_ms != DEFAULT_SEGMENT_PAUSE_MS:
         command.extend(("--segment-pause-ms", str(repair_policy.segment_pause_ms)))
-    if repair_policy.inline_pause_ms != 180:
+    if repair_policy.inline_pause_ms != DEFAULT_INLINE_PAUSE_MS:
         command.extend(("--inline-pause-ms", str(repair_policy.inline_pause_ms)))
 
 
@@ -1832,12 +1826,12 @@ def _leased_runtime_status(
         return AuthoringRuntimeStatus.BLOCKED
     if (
         lease.get("schema") != LEASE_SCHEMA
-        or lease.get("schema_version") != LEASE_VERSION
+        or not has_schema_version(lease, LEASE_VERSION)
         or lease.get("queue_sha256") != queue_sha256
     ):
         return AuthoringRuntimeStatus.BLOCKED
     pid = lease.get("pid")
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+    if not is_process_id(pid):
         return AuthoringRuntimeStatus.BLOCKED
     if lease.get("hostname") not in {None, socket.gethostname()}:
         return AuthoringRuntimeStatus.RUNNING_EXTERNAL
@@ -1930,8 +1924,8 @@ def _load_voice_routing(
     manifest_path: str | Path,
 ) -> tuple[CharacterVoiceRegistry, dict[str, str]]:
     try:
-        registry = CharacterVoiceRegistry.from_file(manifest_path)
         document, entries = load_voice_manifest(manifest_path, allow_legacy=False)
+        registry = CharacterVoiceRegistry.from_document(document, manifest_path)
         overrides = queue_voice_overrides_from_manifest(document, voices=entries)
     except (SourceReferenceBindingError, VoiceManifestError, OSError) as error:
         raise AuthoringWorkbenchError(
@@ -2087,6 +2081,7 @@ __all__ = [
     "inspect_voice_readiness",
     "inspect_workspace",
     "list_review_items",
+    "load_review_items_snapshot",
     "list_workspace_collections",
     "load_workbench_projection_data",
     "workspace_voice_snapshot",

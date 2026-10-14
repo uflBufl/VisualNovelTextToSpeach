@@ -7,6 +7,37 @@ from scripts.run_changed_unittests import changed_paths, select_test_modules
 
 
 class ChangedUnittestsTest(unittest.TestCase):
+    def test_non_python_changes_do_not_enumerate_or_parse_modules(self):
+        for changed in (
+            set(),
+            {"todo.md", "docs/usage.md"},
+            {"uv.lock"},
+            {"unknown.fixture"},
+        ):
+            with (
+                self.subTest(changed=changed),
+                patch("scripts.run_changed_unittests._module_files") as files,
+                patch("scripts.run_changed_unittests._reverse_dependencies") as imports,
+            ):
+                selected, reason = select_test_modules(changed)
+                if changed & {"uv.lock", "unknown.fixture"}:
+                    self.assertIsNone(selected)
+                    self.assertIsNotNone(reason)
+                else:
+                    self.assertEqual((selected, reason), ([], None))
+                files.assert_not_called()
+                imports.assert_not_called()
+
+    def test_changed_python_import_errors_still_require_full_suite(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "bad.py"
+            path.write_text("def unfinished(\n", encoding="utf-8")
+            selected, reason = select_test_modules(
+                {"vntts/bad.py"}, {"vntts.bad": path}
+            )
+        self.assertIsNone(selected)
+        self.assertIn("cannot map Python imports", reason)
+
     def test_branch_local_changes_and_transitive_imports(self):
         with patch(
             "scripts.run_changed_unittests._git",

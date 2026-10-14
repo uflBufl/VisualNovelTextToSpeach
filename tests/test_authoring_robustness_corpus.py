@@ -4,13 +4,17 @@ import json
 import unittest
 import wave
 from contextlib import redirect_stdout
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 
-from tests.test_authoring_workbench import create_test_workspace
+import vntts.authoring.robustness_asr as asr_module
+from tests.authoring_fixtures import create_test_workspace
+from vntts.authoring import robustness_corpus
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import (
     build_cohort_review_decision,
@@ -32,8 +36,8 @@ from vntts.authoring.robustness_corpus import (
 )
 
 
-def _pending_workspace(root):
-    _fixture, _imported, created = create_test_workspace(root)
+def _pending_workspace(root, *, text=None):
+    _fixture, _imported, created = create_test_workspace(root, text=text)
     state_path = created.directory / "generated-audio/generation-state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     queue_id, item = next(iter(state["items"].items()))
@@ -95,6 +99,266 @@ def _canonical_sha256(document):
 
 
 class AuthoringRobustnessCorpusTest(unittest.TestCase):
+    def test_supported_corpus_versions_preserve_optional_summary_fields(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            result = publish_speech_robustness_corpus(
+                [workspace / "cohort-reviews"], [], root / "corpus"
+            )
+            current = load_speech_robustness_corpus(result.directory).to_dict()
+            for version in (1, 2, 3):
+                with self.subTest(version=version):
+                    document = json.loads(json.dumps(current))
+                    document["schema_version"] = version
+                    for sample in document["samples"]:
+                        if version < 3:
+                            del sample["human_defect_reasons"]
+                        if version < 2:
+                            for field in (
+                                "queue_sha256",
+                                "text",
+                                "speaker",
+                                "voice_character",
+                                "text_timing",
+                            ):
+                                del sample[field]
+                    if version < 3:
+                        del document["summary"]["human_defect_reasons"]
+                    if version < 2:
+                        del document["summary"]["text_timing_signals"]
+                        del document["summary"]["text_timing_signal_human_labels"]
+                    document["corpus_id"] = _canonical_sha256(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "corpus_id"
+                        }
+                    )
+                    (result.directory / "corpus.json").write_text(json.dumps(document))
+                    loaded = load_speech_robustness_corpus(result.directory)
+                    self.assertEqual(loaded.document, document)
+                    self.assertEqual(loaded.sample_count, 1)
+
+    def test_corpus_summary_projects_each_sample_once(self):
+        class CountedRecords(list):
+            iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                return super().__iter__()
+
+        for version in (1, 2, 3):
+            with self.subTest(version=version):
+                samples = CountedRecords(
+                    {
+                        "human_label": label,
+                        "synthesis": {"provider": provider},
+                        "analysis": {"signals": signals},
+                        "technical_flags": ["flag"],
+                        **(
+                            {"text_timing": {"signals": ["pause"]}}
+                            if version >= 2
+                            else {}
+                        ),
+                        **({"human_defect_reasons": reasons} if version >= 3 else {}),
+                    }
+                    for label, provider, signals, reasons in (
+                        ("bad", "z", ["repeat"], ["pause_or_pacing"]),
+                        ("acceptable", "a", [], []),
+                        ("bad", "z", [], ["pause_or_pacing"]),
+                    )
+                )
+                summary = robustness_corpus._counts(
+                    samples, [{"failure": {"kind": "decoder"}}], version=version
+                )
+                expected = {
+                    "sample_count": 3,
+                    "failure_count": 1,
+                    "human_labels": {"acceptable": 1, "bad": 2},
+                    "providers": {"a": 1, "z": 2},
+                    "provider_labels": {"a:acceptable": 1, "z:bad": 2},
+                    "diagnostic_signals": {"repeat": 1},
+                    "diagnostic_signal_human_labels": {"repeat:bad": 1},
+                    "technical_flags": {"flag": 3},
+                    "failure_kinds": {"decoder": 1},
+                    "bad_without_diagnostic_signal": 1,
+                }
+                if version >= 2:
+                    expected.update(
+                        text_timing_signals={"pause": 3},
+                        text_timing_signal_human_labels={
+                            "pause:acceptable": 1,
+                            "pause:bad": 2,
+                        },
+                    )
+                if version >= 3:
+                    expected["human_defect_reasons"] = {"pause_or_pacing": 2}
+                self.assertEqual(samples.iterations, 1)
+                self.assertEqual(summary, expected)
+
+    def test_public_reader_rejects_malformed_artifact_inventory(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            result = publish_speech_robustness_corpus(
+                [workspace / "cohort-reviews"], [], root / "corpus"
+            )
+            corpus_path = result.directory / "corpus.json"
+            original = corpus_path.read_text(encoding="utf-8")
+            for field, value, reason in (
+                (
+                    "path",
+                    json.loads(original)["artifacts"][1]["path"],
+                    "inventory is invalid",
+                ),
+                ("path", [], "POSIX-relative path"),
+                ("path", {}, "POSIX-relative path"),
+                ("path", None, "POSIX-relative path"),
+                ("size", True, "size must be positive"),
+                ("size", 1.0, "size must be positive"),
+                ("size", 0, "size must be positive"),
+            ):
+                with self.subTest(field=field, value=value):
+                    document = json.loads(original)
+                    document["artifacts"][0][field] = value
+                    document["corpus_id"] = _canonical_sha256(
+                        {
+                            key: item
+                            for key, item in document.items()
+                            if key != "corpus_id"
+                        }
+                    )
+                    corpus_path.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(SpeechRobustnessCorpusError, reason):
+                        load_speech_robustness_corpus(result.directory)
+            corpus_path.write_text(original, encoding="utf-8")
+            self.assertEqual(
+                load_speech_robustness_corpus(result.directory).sample_count, 1
+            )
+
+    def test_public_reader_requires_exact_nested_schema_versions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            result = publish_speech_robustness_corpus(
+                [workspace / "cohort-reviews"], [], root / "corpus"
+            )
+            corpus_path = result.directory / "corpus.json"
+            original = corpus_path.read_text(encoding="utf-8")
+            for field in ("analysis_policy", "analysis", "text_timing"):
+                for value in (True, 1.0):
+                    with self.subTest(field=field, value=value):
+                        document = json.loads(original)
+                        target = (
+                            document
+                            if field == "analysis_policy"
+                            else document["samples"][0]
+                        )
+                        target[field]["schema_version"] = value
+                        document["corpus_id"] = _canonical_sha256(
+                            {
+                                key: item
+                                for key, item in document.items()
+                                if key != "corpus_id"
+                            }
+                        )
+                        corpus_path.write_text(json.dumps(document), encoding="utf-8")
+                        with self.assertRaisesRegex(
+                            SpeechRobustnessCorpusError, "policy is invalid"
+                        ):
+                            load_speech_robustness_corpus(result.directory)
+
+    def test_public_reader_requires_boolean_policy_flags(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            result = publish_speech_robustness_corpus(
+                [workspace / "cohort-reviews"], [], root / "corpus"
+            )
+            corpus_path = result.directory / "corpus.json"
+            original = corpus_path.read_text(encoding="utf-8")
+            for section in ("analysis_policy", "analysis", "text_timing"):
+                fields = {"diagnostic_only": 1, "automatic_rejection": 0}
+                if section == "analysis_policy":
+                    fields["human_labels_are_authoritative"] = 1
+                for field, value in fields.items():
+                    with self.subTest(section=section, field=field):
+                        document = json.loads(original)
+                        policy = (
+                            document[section]
+                            if section == "analysis_policy"
+                            else document["samples"][0][section]["policy"]
+                        )
+                        policy[field] = value
+                        document["corpus_id"] = _canonical_sha256(
+                            {
+                                key: item
+                                for key, item in document.items()
+                                if key != "corpus_id"
+                            }
+                        )
+                        corpus_path.write_text(json.dumps(document), encoding="utf-8")
+                        with self.assertRaisesRegex(
+                            SpeechRobustnessCorpusError, "policy is invalid"
+                        ):
+                            load_speech_robustness_corpus(result.directory)
+
+    def test_exact_repeat_preserves_nonoverlap_and_first_winning_lag(self):
+        block = np.repeat(np.arange(1000, 1300, dtype=np.int16), 20)
+        for samples, seconds in (
+            (np.tile(block, 2), 6.0),
+            (np.concatenate((block, block, block[:3000])), 6.0),
+            (np.full(1200, 1000, dtype=np.int16), 0.32),
+        ):
+            with self.subTest(sample_count=len(samples)):
+                self.assertEqual(
+                    robustness_corpus._max_exact_active_repeat(samples, 1000),
+                    {"seconds": seconds, "lag_seconds": seconds},
+                )
+
+    def test_asr_summary_counts_and_groups_share_one_traversal(self):
+        class CountedRecords(list):
+            iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                return super().__iter__()
+
+        records = CountedRecords(
+            {
+                "human_label": label,
+                "provider": provider,
+                "comparison": compare_speech_transcript("one", text),
+            }
+            for label, provider, text in (
+                ("bad", "z", "two"),
+                ("acceptable", "a", "one"),
+                ("bad", "z", "one"),
+                ("bad", "a", ""),
+            )
+        )
+        summary = asr_module._summary(records)
+        self.assertEqual(records.iterations, 1)
+        self.assertEqual(
+            list(summary["human_labels"].items()), [("bad", 3), ("acceptable", 1)]
+        )
+        self.assertEqual(list(summary["providers"].items()), [("z", 2), ("a", 2)])
+        self.assertEqual(
+            list(summary["groups"]),
+            [
+                "label:acceptable",
+                "label:bad",
+                "provider:a:acceptable",
+                "provider:a:bad",
+                "provider:z:bad",
+            ],
+        )
+
     def test_public_reader_rejects_boolean_schema_version(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -145,6 +409,282 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
         self.assertEqual(comparison["expected_word_count"], 5)
         self.assertGreater(comparison["distance"], 0)
         self.assertGreater(comparison["insertions"], 0)
+
+    def test_word_comparison_preserves_tie_breaking_and_normalization(self):
+        for expected, observed, edits in (
+            ("", "one two", (2, 0, 2, 0)),
+            ("one two", "", (2, 0, 0, 2)),
+            ("one two", "two one", (2, 0, 1, 1)),
+            ("one one", "one", (1, 0, 0, 1)),
+            ("one two one", "two one two", (2, 0, 1, 1)),
+            ("One, isn’t two.", "one ISN'T three", (1, 1, 0, 0)),
+        ):
+            with self.subTest(expected=expected, observed=observed):
+                comparison = compare_speech_transcript(expected, observed)
+                self.assertEqual(
+                    tuple(
+                        comparison[field]
+                        for field in (
+                            "distance",
+                            "substitutions",
+                            "insertions",
+                            "deletions",
+                        )
+                    ),
+                    edits,
+                )
+
+    def test_whisper_input_rejects_incomplete_pcm_before_resampling(self):
+        for payload in (
+            _wav_bytes([]),
+            _wav_bytes([1, 2, 3, 4])[:-2],
+            _wav_bytes([1, 2, 3, 4])[:24] + bytes(4) + _wav_bytes([1, 2, 3, 4])[28:],
+        ):
+            with self.subTest(payload_length=len(payload)):
+                with self.assertRaises(SpeechRobustnessAsrError):
+                    _WhisperTranscriber._input(payload)
+
+    def test_asr_resume_preserves_sample_metadata_and_immutable_model(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            corpus = root / "corpus"
+            publish_speech_robustness_corpus([workspace / "cohort-reviews"], [], corpus)
+            model = root / "model"
+            model.mkdir()
+            weights = model / "weights.bin"
+            weights.write_bytes(b"model")
+            progress = root / "progress.json"
+            build_speech_robustness_asr_report(
+                corpus, model, transcriber=lambda _: "text", progress_path=progress
+            )
+            original = progress.read_bytes()
+            for field, value in (("human_label", "bad"), ("provider", "different")):
+                with self.subTest(field=field):
+                    document = json.loads(original)
+                    document["records"][0][field] = value
+                    document["progress_id"] = _canonical_sha256(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "progress_id"
+                        }
+                    )
+                    progress.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        SpeechRobustnessAsrError, "record authority"
+                    ):
+                        build_speech_robustness_asr_report(
+                            corpus,
+                            model,
+                            transcriber=lambda _: self.fail("changed progress resumed"),
+                            progress_path=progress,
+                        )
+            for version in (2.0, float("nan")):
+                with self.subTest(version=version):
+                    document = json.loads(original)
+                    document["schema_version"] = version
+                    document["progress_id"] = _canonical_sha256(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "progress_id"
+                        }
+                    )
+                    progress.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaises(SpeechRobustnessAsrError):
+                        build_speech_robustness_asr_report(
+                            corpus,
+                            model,
+                            transcriber=lambda _: self.fail("invalid progress resumed"),
+                            progress_path=progress,
+                        )
+            with self.assertRaisesRegex(SpeechRobustnessAsrError, "immutable model"):
+                build_speech_robustness_asr_report(
+                    corpus,
+                    model,
+                    transcriber=lambda _: self.fail("model modified"),
+                    progress_path=model / "progress.json",
+                )
+            self.assertEqual(weights.read_bytes(), b"model")
+            self.assertEqual(
+                sorted(path.name for path in model.iterdir()), ["weights.bin"]
+            )
+
+    def test_asr_report_rejects_inexact_policy_version_and_nonfinite_json(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            corpus = root / "corpus"
+            publish_speech_robustness_corpus([workspace / "cohort-reviews"], [], corpus)
+            model = root / "model"
+            model.mkdir()
+            (model / "weights.bin").write_bytes(b"model")
+            report = build_speech_robustness_asr_report(
+                corpus, model, transcriber=lambda _: "text"
+            )
+            for field, value in (
+                ("schema_version", 2.0),
+                ("corpus_schema_version", 3.0),
+                ("policy", {"diagnostic_only": 1, "automatic_rejection": 0}),
+                ("asr", {"invalid": float("nan")}),
+            ):
+                with self.subTest(field=field):
+                    document = report.to_dict()
+                    document[field] = value
+                    document["report_id"] = _canonical_sha256(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "report_id"
+                        }
+                    )
+                    output = root / "invalid.json"
+                    with self.assertRaises(SpeechRobustnessAsrError):
+                        write_speech_robustness_asr_report(
+                            replace(report, document=document), output
+                        )
+                    self.assertFalse(output.exists())
+
+    def test_asr_progress_save_errors_preserve_checkpoint_and_allow_retry(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            decisions = []
+            for index in range(2):
+                workspace, _state, queue_id = _pending_workspace(
+                    root / f"reviewed-{index}", text=f"Sample number {index}"
+                )
+                _decision(workspace, queue_id)
+                decisions.append(workspace / "cohort-reviews")
+            corpus = root / "corpus"
+            publish_speech_robustness_corpus(decisions, [], corpus)
+            model = root / "model"
+            model.mkdir()
+            (model / "weights.bin").write_bytes(b"model")
+            progress = root / "progress.json"
+
+            def interrupt_after_checkpoint(_payload):
+                if progress.exists():
+                    raise SpeechRobustnessAsrError("interrupted after checkpoint")
+                return "saved transcript"
+
+            with self.assertRaisesRegex(SpeechRobustnessAsrError, "interrupted"):
+                build_speech_robustness_asr_report(
+                    corpus,
+                    model,
+                    transcriber=interrupt_after_checkpoint,
+                    progress_path=progress,
+                )
+            checkpoint = progress.read_bytes()
+            saved_records = json.loads(checkpoint)["records"]
+            self.assertEqual(len(saved_records), 1)
+            for target in (
+                "pathlib.Path.mkdir",
+                "vntts.authoring.robustness_asr.atomic_write_json",
+            ):
+                failure = PermissionError("checkpoint is unwritable")
+                with (
+                    self.subTest(target=target),
+                    patch(target, side_effect=failure),
+                    self.assertRaisesRegex(
+                        SpeechRobustnessAsrError, "checkpoint is unwritable"
+                    ) as raised,
+                ):
+                    build_speech_robustness_asr_report(
+                        corpus,
+                        model,
+                        transcriber=lambda _: "retried transcript",
+                        progress_path=progress,
+                    )
+                self.assertIs(raised.exception.__cause__, failure)
+                self.assertEqual(progress.read_bytes(), checkpoint)
+
+            retried = []
+
+            def transcribe_remaining(payload):
+                retried.append(payload)
+                return "retried transcript"
+
+            report = build_speech_robustness_asr_report(
+                corpus,
+                model,
+                transcriber=transcribe_remaining,
+                progress_path=progress,
+            )
+            self.assertEqual(len(retried), 1)
+            self.assertEqual(report.document["records"][0], saved_records[0])
+            self.assertEqual(len(json.loads(progress.read_bytes())["records"]), 2)
+
+    def test_asr_batch_results_match_single_results_and_reject_a_string(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            corpus = root / "corpus"
+            publish_speech_robustness_corpus([workspace / "cohort-reviews"], [], corpus)
+            model = root / "model"
+            model.mkdir()
+            (model / "weights.bin").write_bytes(b"model")
+            single = build_speech_robustness_asr_report(
+                corpus, model, transcriber=lambda _: "text"
+            )
+
+            class Batch:
+                def __init__(self, result):
+                    self.result = result
+
+                def __call__(self, payload):
+                    raise AssertionError("batch fallback")
+
+                def transcribe_many(self, payloads):
+                    return self.result
+
+            batch = build_speech_robustness_asr_report(
+                corpus, model, transcriber=Batch(["text"])
+            )
+            self.assertEqual(batch.document, single.document)
+            for result in ("x", None, [], [1]):
+                with self.subTest(result=result):
+                    with self.assertRaisesRegex(SpeechRobustnessAsrError, "batch text"):
+                        build_speech_robustness_asr_report(
+                            corpus, model, transcriber=Batch(result)
+                        )
+
+    def test_audio_reports_reuse_one_decode_and_preserve_metrics(self):
+        from dataclasses import asdict
+
+        from vntts.authoring.speech_quality import measure_generated_speech_bytes
+
+        for count in (1, 1_280, 1_281):
+            samples = np.full(count, 184, dtype=np.int16)
+            samples[count // 3 : count // 2] = 0
+            payload = _wav_bytes(samples)
+            expected = asdict(measure_generated_speech_bytes(payload))
+            with patch("wave.open", wraps=wave.open) as opened:
+                report = analyze_speech_robustness_bytes(payload)
+                self.assertEqual(opened.call_count, 1)
+            self.assertEqual(report["speech_quality"], expected)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            with patch.object(
+                robustness_corpus, "_read_pcm16", wraps=robustness_corpus._read_pcm16
+            ) as decoded:
+                corpus = publish_speech_robustness_corpus(
+                    [workspace / "cohort-reviews"], [], root / "corpus"
+                )
+            # One decode for creation, one for staged and one for final validation.
+            self.assertEqual(decoded.call_count, 3)
+            with patch.object(
+                robustness_corpus, "_read_pcm16", wraps=robustness_corpus._read_pcm16
+            ) as decoded:
+                loaded = load_speech_robustness_corpus(corpus.directory)
+            self.assertEqual(decoded.call_count, 1)
+            self.assertEqual(loaded.corpus_id, corpus.corpus_id)
 
     def test_exact_active_pcm_repetition_is_diagnostic_only(self):
         rng = np.random.default_rng(42)
@@ -360,6 +900,16 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
                 SpeechRobustnessAsrError, "validated corpus authority"
             ):
                 write_speech_robustness_asr_report(report.to_dict(), root / "raw.json")
+            failure = PermissionError("report destination is inaccessible")
+            with (
+                patch.object(asr_module, "no_replace_destination", side_effect=failure),
+                self.assertRaisesRegex(
+                    SpeechRobustnessAsrError, "report destination is inaccessible"
+                ) as raised,
+            ):
+                write_speech_robustness_asr_report(report, root / "unwritten.json")
+            self.assertIs(raised.exception.__cause__, failure)
+            self.assertFalse((root / "unwritten.json").exists())
 
 
 if __name__ == "__main__":

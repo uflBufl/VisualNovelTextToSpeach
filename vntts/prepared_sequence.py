@@ -10,18 +10,21 @@ import sys
 from collections.abc import Callable, Sequence
 from os import PathLike
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Protocol, TypeAlias
 
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.live_sequence import (
     LiveSequencePlan,
     LiveSequencePlanError,
-    load_live_sequence_plan,
 )
-from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
+from vntts_artifacts.story_index import StoryIndexError
 
-from vntts.subprocess_utils import last_output_line, terminate_process
+from vntts.authoring.publication import staged_directory
+from vntts.cleanup import cleanup_on_exit
+from vntts.document_identity import sha256_file
+from vntts.live_sequence import load_live_sequence_plan
+from vntts.path_safety import read_regular_bytes
+from vntts.story_index_snapshot import load_story_index_snapshot
+from vntts.subprocess_utils import last_output_line, terminate_running_process
 
 PathInput: TypeAlias = str | PathLike[str]
 PopenFactory: TypeAlias = Callable[..., subprocess.Popen[str]]
@@ -87,7 +90,7 @@ def prepare_reverse1999_sequence(
             "Reverse: 1999 live-sequence publisher is not installed."
         )
     output.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix=f".{output.name}-", dir=output.parent) as directory:
+    with staged_directory(output.parent, prefix=f".{output.name}-") as directory:
         candidate = Path(directory) / output.name
         arguments = [
             *publisher,
@@ -123,7 +126,7 @@ def prepare_sequence_for_prepared_story(
     """Prepare an exact Reverse: 1999 plan using only prepared-story inputs."""
     story_index = _required_file(story_index, "Story index")
     try:
-        story = load_story_index_document(story_index)
+        story = load_story_index_snapshot(story_index, read_regular_bytes(story_index))
     except (OSError, StoryIndexError) as error:
         raise PreparedSequenceError(
             f"Unable to read prepared story: {error}"
@@ -193,7 +196,10 @@ def _run(
         raise PreparedSequenceError(
             f"Unable to start live-sequence publisher: {error}"
         ) from error
-    try:
+    with cleanup_on_exit(
+        lambda: terminate_running_process(process),
+        description="Live-sequence publisher process cleanup",
+    ):
         while True:
             if (
                 cancellation is not None
@@ -206,9 +212,6 @@ def _run(
                 break
             except subprocess.TimeoutExpired:
                 continue
-    finally:
-        if process.poll() is None:
-            terminate_process(process)
     if process.returncode:
         detail = last_output_line(stderr) or last_output_line(stdout)
         suffix = f": {detail}" if detail else ""
@@ -223,9 +226,8 @@ def _required_file(value: PathInput, label: str) -> Path:
 
 
 def _chapters(chapters: Sequence[object]) -> tuple[str, ...]:
-    selected = tuple(
-        sorted({str(chapter).strip() for chapter in chapters if str(chapter).strip()})
-    )
+    normalized = (str(chapter).strip() for chapter in chapters)
+    selected = tuple(sorted({chapter for chapter in normalized if chapter}))
     if not selected:
         raise PreparedSequenceError("At least one story chapter is required.")
     return selected

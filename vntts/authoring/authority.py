@@ -6,11 +6,19 @@ import hashlib
 import json
 import os
 import tempfile
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import canonical_document_sha256
+from vntts.json_types import decode_json
+from vntts.path_safety import (
+    contained_regular_file,
+    no_replace_destination,
+    read_regular_bytes,
+)
 
 
 class AuthoringAuthorityError(RuntimeError):
@@ -28,7 +36,7 @@ class AuthoritySnapshot:
     def json_document(self, label: str) -> dict[str, object]:
         """Decode one captured JSON object without reopening the source path."""
         try:
-            document = json.loads(self.payload.decode("utf-8"))
+            document = decode_json(self.payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise AuthoringAuthorityError(f"Unable to read {label}: {error}") from error
         if not isinstance(document, dict):
@@ -57,7 +65,7 @@ def capture_authority_file(
                 f"{label.capitalize()} leaves its canonical root"
             ) from error
     try:
-        payload = candidate.read_bytes()
+        payload = read_regular_bytes(candidate)
     except OSError as error:
         raise AuthoringAuthorityError(f"Unable to read {label}: {error}") from error
     if (
@@ -76,18 +84,60 @@ def capture_authority_file(
 
 
 def assert_authority_snapshot(
-    snapshot: AuthoritySnapshot, label: str = "authority"
+    snapshot: AuthoritySnapshot,
+    label: str = "authority",
+    *,
+    error_type: type[Exception] = AuthoringAuthorityError,
 ) -> None:
-    """Require one captured path to remain the same regular-file payload."""
+    """Require unchanged bytes, using the caller's error boundary when supplied."""
     path = snapshot.path
     if path.is_symlink() or not path.is_file():
-        raise AuthoringAuthorityError(f"{label.capitalize()} changed: {path}")
+        raise error_type(f"{label.capitalize()} changed: {path}")
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
     except OSError as error:
-        raise AuthoringAuthorityError(f"Unable to recheck {label}: {error}") from error
+        raise error_type(f"Unable to recheck {label}: {error}") from error
     if hashlib.sha256(payload).hexdigest() != snapshot.sha256:
-        raise AuthoringAuthorityError(f"{label.capitalize()} changed: {path}")
+        raise error_type(f"{label.capitalize()} changed: {path}")
+
+
+def capture_successor_base_authority(
+    directory: Path,
+    binding: Mapping[str, object],
+    label: str,
+    *,
+    error_type: type[Exception] = ValueError,
+) -> tuple[dict[str, object], tuple[AuthoritySnapshot, AuthoritySnapshot]]:
+    """Capture the two copied base inputs and validate their batch bindings."""
+    snapshots = []
+    documents = []
+    try:
+        for path_field, hash_field, kind in (
+            ("base_workspace_path", "base_workspace_sha256", "base workspace"),
+            ("base_state_path", "base_state_sha256", "base state"),
+        ):
+            description = f"{label} {kind}"
+            source = contained_regular_file(
+                directory, binding.get(path_field), description, error_type=error_type
+            )
+            snapshot = capture_authority_file(source, description, root=directory)
+            if snapshot.sha256 != binding.get(hash_field):
+                raise error_type(f"{description.capitalize()} authority changed")
+            snapshots.append(snapshot)
+            documents.append(snapshot.json_document(description))
+    except AuthoringAuthorityError as error:
+        raise error_type(str(error)) from error
+    workspace, state = documents
+    workspace_id = workspace.get("workspace_id")
+    if (
+        not isinstance(workspace_id, str)
+        or not workspace_id
+        or workspace_id != binding.get("base_workspace_id")
+        or state.get("queue_sha256") != binding.get("queue_sha256")
+        or state.get("active") is not None
+    ):
+        raise error_type(f"{label.capitalize()} base authority changed")
+    return state, (snapshots[0], snapshots[1])
 
 
 def write_json_document_no_replace(
@@ -98,17 +148,19 @@ def write_json_document_no_replace(
     error_type: type[Exception] = AuthoringAuthorityError,
 ) -> Path:
     """Atomically publish one JSON document while refusing replacement."""
-    requested = Path(output).expanduser()
-    path = requested.parent.resolve() / requested.name
+    path = no_replace_destination(output)
     payload = (
         json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
     temporary = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
+        stream = tempfile.NamedTemporaryFile(
             prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False
-        ) as stream:
+        )
+        with cleanup_on_exit(
+            stream.close, description="Publication temporary stream cleanup"
+        ):
             temporary = Path(stream.name)
             stream.write(payload)
             stream.flush()
@@ -132,5 +184,6 @@ __all__ = [
     "assert_authority_snapshot",
     "canonical_document_sha256",
     "capture_authority_file",
+    "capture_successor_base_authority",
     "write_json_document_no_replace",
 ]

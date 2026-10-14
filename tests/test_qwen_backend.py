@@ -7,7 +7,7 @@ from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -25,6 +25,64 @@ from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class QwenBackendTest(unittest.TestCase):
+    def test_invalid_volume_never_downloads_or_loads_model(self):
+        for platform in ("darwin", "win32"):
+            for volume in (True, "0.5", None, -0.1, 1.1, float("nan"), float("inf")):
+                for injected in (False, True):
+                    with self.subTest(
+                        platform=platform, volume=volume, injected=injected
+                    ):
+                        download = Mock()
+                        factory = Mock()
+                        with (
+                            patch("vntts.qwen_backend.sys.platform", platform),
+                            patch.dict(
+                                "sys.modules",
+                                {
+                                    "huggingface_hub": SimpleNamespace(
+                                        snapshot_download=download
+                                    )
+                                },
+                            ),
+                            patch("vntts.qwen_backend._require_cuda_device") as cuda,
+                            self.assertRaises(TTSConfigurationError),
+                        ):
+                            QwenTTSVoiceRouterBackend(
+                                CharacterVoiceRegistry(),
+                                volume=volume,
+                                model_factory=factory if injected else None,
+                            )
+                        download.assert_not_called()
+                        factory.assert_not_called()
+                        cuda.assert_not_called()
+
+    def test_unsupported_platform_refusal_precedes_volume_admission(self):
+        with (
+            patch("vntts.qwen_backend.sys.platform", "linux"),
+            self.assertRaisesRegex(
+                TTSConfigurationError, "requires Apple Silicon or Windows CUDA"
+            ),
+        ):
+            QwenTTSVoiceRouterBackend(CharacterVoiceRegistry(), volume=False)
+
+    def test_qwen_factory_rejects_invalid_volume_before_runtime_install(self):
+        for options in ({}, {"runtime_directory": Path("/tmp/qwen-runtime")}):
+            with self.subTest(options=options):
+                with (
+                    patch(
+                        "vntts.runtime_installation.ensure_speech_runtime"
+                    ) as prepare,
+                    patch(
+                        "vntts.speech_worker._isolated_backend_constructor"
+                    ) as construct,
+                    self.assertRaises(TTSConfigurationError),
+                ):
+                    create_qwen_worker_backend(
+                        CharacterVoiceRegistry(), volume=False, **options
+                    )
+                prepare.assert_not_called()
+                construct.assert_not_called()
+
     def test_qwen_accepts_mlx_dynamic_speech_tokenizer(self):
         class DynamicModel:
             sample_rate = 24000

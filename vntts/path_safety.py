@@ -1,6 +1,90 @@
-"""Shared filesystem containment checks."""
+"""Shared filesystem containment and regular-file admission."""
 
+import os
+import shutil
+import stat
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from io import BufferedReader, TextIOWrapper, text_encoding
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
+
+
+def open_regular_candidate(path: str | os.PathLike[str], flags: int) -> int:
+    # Reject FIFOs with fstat without waiting for a writer, even after a path swap.
+    return os.open(path, flags | getattr(os, "O_NONBLOCK", 0))
+
+
+@contextmanager
+def open_regular_binary(path: str | os.PathLike[str]) -> Iterator[BufferedReader]:
+    """Own a binary stream only after its opened descriptor is a regular file."""
+    with open(path, "rb", opener=open_regular_candidate) as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise OSError(f"{path} is not a regular file")
+        yield source
+
+
+def read_regular_bytes(path: str | os.PathLike[str]) -> bytes:
+    """Capture a regular file once, preserving raw filesystem errors."""
+    with open_regular_binary(path) as source:
+        return source.read()
+
+
+@contextmanager
+def open_regular_text(
+    path: str | os.PathLike[str], encoding: str | None = None
+) -> Iterator[TextIOWrapper]:
+    """Own strict decoded text with the platform's universal-newline semantics."""
+    encoding = text_encoding(encoding)
+    with (
+        open_regular_binary(path) as source,
+        TextIOWrapper(source, encoding=encoding) as text,
+    ):
+        yield text
+
+
+def read_regular_text(path: str | os.PathLike[str], encoding: str | None = None) -> str:
+    """Read complete admitted text, preserving filesystem and decoding errors."""
+    with open_regular_text(path, encoding) as source:
+        return source.read()
+
+
+def copy_regular_file(
+    source: str | Path,
+    destination: str | Path,
+    *,
+    preserve_metadata: bool = False,
+) -> None:
+    """Copy an admitted regular source into a caller-owned destination."""
+    source, destination = Path(source), Path(destination)
+    if destination.exists() and source.samefile(destination):
+        raise shutil.SameFileError(f"{source!r} and {destination!r} are the same file")
+    with (
+        open_regular_binary(source) as original,
+        destination.open("wb") as output,
+    ):
+        shutil.copyfileobj(original, output)
+    if preserve_metadata:
+        shutil.copystat(source, destination)
+
+
+def ensure_separate_output(
+    output: str | Path,
+    inputs: Iterable[str | Path],
+    *,
+    error_type: type[Exception] = ValueError,
+) -> None:
+    """Refuse a report destination that aliases an existing input file."""
+    output = Path(output)
+    if output.exists() and any(
+        Path(source).exists() and output.samefile(source) for source in inputs
+    ):
+        raise error_type(f"Output must differ from input files: {output}")
+
+
+def no_replace_destination(value: str | Path) -> Path:
+    """Canonicalize the parent while preserving the leaf for atomic no-replace."""
+    requested = Path(value).expanduser()
+    return requested.parent.resolve() / requested.name
 
 
 def safe_relative_path(
@@ -10,7 +94,12 @@ def safe_relative_path(
     error_type: type[Exception] = ValueError,
 ) -> Path:
     """Validate one canonical POSIX-relative path without touching the filesystem."""
-    if not isinstance(value, str) or not value.strip() or "\\" in value:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or "\\" in value
+        or "\x00" in value
+    ):
         raise error_type(f"{label} must be a POSIX-relative path")
     pure = PurePosixPath(value)
     if (
@@ -36,6 +125,28 @@ def contained_path(
         path.relative_to(root)
     except ValueError as error:
         raise error_type(f"{label} leaves its owning directory") from error
+    return path
+
+
+def contained_no_replace_destination(
+    root: str | Path,
+    relative: str | PurePath,
+    label: str,
+    *,
+    error_type: type[Exception] = ValueError,
+) -> Path:
+    """Admit an immutable destination without following its final symlink."""
+    if isinstance(relative, PurePath):
+        relative = relative.as_posix()
+    relative = safe_relative_path(relative, label, error_type=error_type)
+    root = Path(root).resolve()
+    path = no_replace_destination(root / relative)
+    try:
+        path.relative_to(root)
+    except ValueError as error:
+        raise error_type(f"{label} leaves its owning directory") from error
+    if path.is_symlink():
+        raise error_type(f"{label} must not be a symbolic link")
     return path
 
 
@@ -67,4 +178,17 @@ def contained_regular_file(
     return path
 
 
-__all__ = ["contained_path", "contained_regular_file", "safe_relative_path"]
+__all__ = [
+    "contained_no_replace_destination",
+    "contained_path",
+    "contained_regular_file",
+    "copy_regular_file",
+    "ensure_separate_output",
+    "no_replace_destination",
+    "open_regular_candidate",
+    "open_regular_binary",
+    "open_regular_text",
+    "read_regular_bytes",
+    "read_regular_text",
+    "safe_relative_path",
+]

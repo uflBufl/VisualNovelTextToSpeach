@@ -7,10 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from vntts_artifacts.voice_manifest import (
-    VoiceManifestError,
-    load_voice_manifest,
-)
+from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.authoring.failure_reference_binding_records import (
     FailureReferenceBindingError,
@@ -26,7 +23,7 @@ from vntts.authoring.workspace_foundation import (
     read_regular_file,
     safe_relative_path,
 )
-from vntts.voices import CharacterVoice, CharacterVoiceRegistry
+from vntts.voices import CharacterVoice, CharacterVoiceRegistry, load_voice_manifest
 
 
 @dataclass(frozen=True)
@@ -95,21 +92,18 @@ def load_failure_reference_runtime_binding(
             "Selected reference",
             error_type=error_type,
         )
-        _read_bound_bytes(
-            reference,
-            _text(
-                control.get("sha256"),
-                "Selected reference SHA-256",
-                error_type=error_type,
-            ),
-            "Selected reference",
-            error_type=error_type,
-        )
-        controls[reference] = _text(
+        reference_sha256 = _text(
             control.get("sha256"),
             "Selected reference SHA-256",
             error_type=error_type,
         )
+        _read_bound_bytes(
+            reference,
+            reference_sha256,
+            "Selected reference",
+            error_type=error_type,
+        )
+        controls[reference] = reference_sha256
         voices.append(
             CharacterVoice(
                 character=_text(

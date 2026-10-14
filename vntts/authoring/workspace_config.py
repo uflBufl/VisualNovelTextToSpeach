@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping
 from pathlib import Path
-
-from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.failure_repair import (
     FailureRepairPolicy,
@@ -22,6 +18,7 @@ from vntts.authoring.workspace_foundation import (
     require_sha256,
     safe_relative_path,
 )
+from vntts.document_identity import canonical_document_sha256, sha256_file
 
 
 def normalize_workspace_run_config(
@@ -153,13 +150,7 @@ def workspace_config_fingerprint(
             if value is not None
         }
     )
-    payload = json.dumps(
-        fingerprint,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return canonical_document_sha256(fingerprint, allow_nan=True)
 
 
 _SUCCESSOR_OVERLAY_FIELDS = frozenset(

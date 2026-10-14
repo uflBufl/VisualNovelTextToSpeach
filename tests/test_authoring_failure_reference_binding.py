@@ -1,15 +1,20 @@
 import json
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_creation as workspace_creation_module
+from tests.authoring_fixtures import create_failed_reference_workspace, tree_hashes
+from tests.bulk_generation_fixtures import SyntheticRenderer
 from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_bulk_generation import SyntheticRenderer
-from tests.test_authoring_failure_reference_audit import (
-    create_failed_reference_workspace,
+from vntts.authoring import (
+    failure_reference_audit as failure_audit_module,
+)
+from vntts.authoring import (
+    failure_reference_binding as binding_module,
 )
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cli import main as authoring_main
@@ -44,6 +49,82 @@ from vntts.authoring.workbench import (
 
 
 class FailureReferenceBindingTest(unittest.TestCase):
+    def test_final_source_recheck_translates_io_error_and_cleans_up(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, workspace, *_rest = self.create_decided_audit(root)
+            binding = root / "binding"
+            publish_failure_reference_binding(audit, binding)
+            before = {
+                path: digest
+                for path, digest in tree_hashes(root).items()
+                if not path.endswith(".guard")
+            }
+            verifier = (
+                workspace_creation_module._assert_failure_reference_sources_unchanged
+            )
+            failure = PermissionError("final source is unreadable")
+
+            def fail_final_hash(*args, **kwargs):
+                with patch.object(
+                    workspace_creation_module, "sha256_file", side_effect=failure
+                ):
+                    return verifier(*args, **kwargs)
+
+            with (
+                patch.object(
+                    workspace_creation_module,
+                    "_assert_failure_reference_sources_unchanged",
+                    side_effect=fail_final_hash,
+                ),
+                self.assertRaisesRegex(
+                    AuthoringWorkbenchError, "final source is unreadable"
+                ) as caught,
+            ):
+                create_failure_reference_workspace(
+                    workspace, binding, root / "successors"
+                )
+
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertEqual(
+                {
+                    path: digest
+                    for path, digest in tree_hashes(root).items()
+                    if not path.endswith(".guard")
+                },
+                before,
+            )
+            self.assertEqual(list((root / "successors").iterdir()), [])
+            self.assertFalse(list(root.rglob(".generation-lease.json")))
+
+    def test_staged_reference_corruption_is_rejected_before_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, *_rest = self.create_decided_audit(root)
+            output = root / "binding"
+            original_write = Path.write_text
+
+            def corrupt_copy(path, text, *args, **kwargs):
+                result = original_write(path, text, *args, **kwargs)
+                if path.name == "binding.json" and path.parent.name.startswith(
+                    ".binding.staging-"
+                ):
+                    document = json.loads(text)
+                    reference = path.parent / document["groups"][0]["reference"]
+                    payload = reference.read_bytes()
+                    reference.write_bytes(payload[:-1] + bytes((payload[-1] ^ 1,)))
+                return result
+
+            with patch.object(Path, "write_text", new=corrupt_copy):
+                with self.assertRaisesRegex(
+                    FailureReferenceBindingError, "Selected reference changed"
+                ):
+                    publish_failure_reference_binding(audit, output)
+            self.assertFalse(output.exists())
+            self.assertFalse(list(root.glob(".binding.staging-*")))
+            publish_failure_reference_binding(audit, output)
+            self.assertEqual(load_failure_reference_binding(output).group_count, 1)
+
     def create_decided_audit(self, root):
         workspace, queue_id = create_failed_reference_workspace(root)
         state_path = workspace / "generated-audio/generation-state.json"
@@ -59,6 +140,76 @@ class FailureReferenceBindingTest(unittest.TestCase):
             audit, group["group_id"], candidate["candidate_id"]
         )
         return audit, workspace, queue_id, group, candidate, decisions
+
+    def test_output_symlinks_are_refused_before_and_during_resolution(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            audit, *_rest = self.create_decided_audit(root)
+            for swapped in (False, True):
+                for state in ("missing", "empty", "occupied"):
+                    with self.subTest(swapped=swapped, target=state):
+                        target = root / f"target-{swapped}-{state}"
+                        if state != "missing":
+                            target.mkdir()
+                        if state == "occupied":
+                            (target / "keep").write_bytes(b"unchanged")
+                        output = root / f"output-{swapped}-{state}"
+                        armed = swapped
+                        original_resolve = Path.resolve
+
+                        def resolve(path, *args, **kwargs):
+                            nonlocal armed
+                            if armed and path in (root, output):
+                                armed = False
+                                symlink_or_skip(
+                                    output, target, target_is_directory=True
+                                )
+                            return original_resolve(path, *args, **kwargs)
+
+                        if not swapped:
+                            symlink_or_skip(output, target, target_is_directory=True)
+                        with (
+                            patch.object(Path, "resolve", resolve),
+                            self.assertRaisesRegex(
+                                FailureReferenceBindingError, "symlink"
+                            ),
+                        ):
+                            publish_failure_reference_binding(audit, output)
+                        self.assertFalse(armed)
+                        self.assertTrue(output.is_symlink())
+                        self.assertEqual(output.readlink(), target)
+                        self.assertEqual(target.exists(), state != "missing")
+                        if target.exists():
+                            self.assertEqual(
+                                list(target.iterdir()),
+                                [target / "keep"] if state == "occupied" else [],
+                            )
+                        if state == "occupied":
+                            self.assertEqual(
+                                (target / "keep").read_bytes(), b"unchanged"
+                            )
+                        self.assertEqual(
+                            list(root.glob(f".{output.name}.staging-*")), []
+                        )
+
+    def test_output_parent_alias_preserves_publication_and_idempotency(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            audit, *_rest = self.create_decided_audit(root)
+            parent = root / "bindings"
+            parent.mkdir()
+            alias = root / "bindings-alias"
+            symlink_or_skip(alias, parent, target_is_directory=True)
+            output = alias / "binding"
+            created = publish_failure_reference_binding(audit, output)
+            repeated = publish_failure_reference_binding(audit, output)
+            self.assertTrue(created.created)
+            self.assertFalse(repeated.created)
+            self.assertEqual(created.directory, parent / "binding")
+            self.assertEqual(created.binding_id, repeated.binding_id)
+            self.assertEqual(
+                load_failure_reference_binding(output).binding_id, created.binding_id
+            )
 
     def test_publish_is_self_contained_exact_and_idempotent(self):
         with TemporaryDirectory() as directory:
@@ -105,6 +256,308 @@ class FailureReferenceBindingTest(unittest.TestCase):
             )
             self.assertEqual(selected["cases"][0]["queue_id"], queue_id)
             self.assertEqual(selected["group_id"], group["group_id"])
+
+    def test_fresh_and_repeated_publication_validate_each_audit_phase_once(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, *_rest = self.create_decided_audit(root)
+            load_audit = failure_audit_module.load_failure_reference_audit
+            for created in (True, False):
+                with (
+                    self.subTest(created=created),
+                    patch.object(
+                        failure_audit_module,
+                        "load_failure_reference_audit",
+                        wraps=load_audit,
+                    ) as audit_loader,
+                ):
+                    result = publish_failure_reference_binding(audit, root / "binding")
+                    self.assertEqual(result.created, created)
+                    self.assertEqual(audit_loader.call_count, 2)
+
+    def test_binding_loaders_normalize_encoding_and_canonical_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, *_rest = self.create_decided_audit(root)
+            output = root / "binding"
+            publish_failure_reference_binding(audit, output)
+            path = output / "binding.json"
+            original = path.read_bytes()
+            payloads = [b"\xff"]
+            for value in (float("nan"), float("inf"), float("-inf"), "\ud800"):
+                document = json.loads(original)
+                document["authority"] = value
+                payloads.append(json.dumps(document).encode())
+            for payload in payloads:
+                for loader in (
+                    load_failure_reference_binding,
+                    load_failure_reference_binding_document,
+                ):
+                    with self.subTest(payload=payload, loader=loader.__name__):
+                        path.write_bytes(payload)
+                        with self.assertRaises(FailureReferenceBindingError):
+                            loader(output)
+            path.write_bytes(original)
+            self.assertEqual(
+                load_failure_reference_binding_document(output)["binding_id"],
+                json.loads(original)["binding_id"],
+            )
+
+    def test_document_loader_validates_captured_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, *_rest = self.create_decided_audit(root)
+            output = root / "binding"
+            publish_failure_reference_binding(audit, output)
+            path = output / "binding.json"
+            original = path.read_bytes()
+            altered = {
+                **json.loads(original),
+                "authority": "changed without a new identity",
+            }
+            original_open = open
+            for value in (altered, [], None):
+                changed = json.dumps(value).encode()
+                reads = 0
+
+                @contextmanager
+                def capture_changed_binding(candidate, *args, **kwargs):
+                    nonlocal reads
+                    candidate = Path(candidate)
+                    if candidate.resolve() != path.resolve():
+                        with original_open(candidate, *args, **kwargs) as stream:
+                            yield stream
+                        return
+                    reads += 1
+                    path.write_bytes(changed)
+                    try:
+                        with original_open(candidate, *args, **kwargs) as stream:
+                            yield stream
+                    finally:
+                        if reads == 1:
+                            path.write_bytes(original)
+
+                try:
+                    with (
+                        self.subTest(value=value),
+                        patch(
+                            "vntts.path_safety.open",
+                            side_effect=capture_changed_binding,
+                            create=True,
+                        ),
+                    ):
+                        with self.assertRaises(FailureReferenceBindingError):
+                            load_failure_reference_binding_document(output)
+                finally:
+                    path.write_bytes(original)
+
+    def test_idempotent_publish_rechecks_audit_inputs(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, _workspace, _queue_id, _group, candidate, _decisions = (
+                self.create_decided_audit(root)
+            )
+            output = root / "binding"
+            publish_failure_reference_binding(audit, output)
+            load_existing = binding_module.load_failure_reference_binding
+            for source in (
+                audit / "audit.json",
+                audit / ".blind-key.json",
+                audit / "decisions.json",
+                audit / candidate["audio"],
+            ):
+                original = source.read_bytes()
+
+                def replace_source_after_existing(path):
+                    result = load_existing(path)
+                    source.write_bytes(original + b"\n")
+                    return result
+
+                try:
+                    with (
+                        self.subTest(source=source.name),
+                        patch.object(
+                            binding_module,
+                            "load_failure_reference_binding",
+                            side_effect=replace_source_after_existing,
+                        ),
+                    ):
+                        with self.assertRaisesRegex(
+                            FailureReferenceBindingError, "changed"
+                        ):
+                            publish_failure_reference_binding(audit, output)
+                finally:
+                    source.write_bytes(original)
+            self.assertFalse(publish_failure_reference_binding(audit, output).created)
+
+    def test_new_publish_rechecks_after_final_decision_load(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, *_rest = self.create_decided_audit(root)
+            load_decisions = failure_audit_module.load_failure_reference_decisions
+            for name in ("audit.json", ".blind-key.json", "decisions.json"):
+                path = audit / name
+                original = path.read_bytes()
+                reads = 0
+                output = root / ("binding-" + name)
+
+                def replace_source_after_decisions(*args, **kwargs):
+                    nonlocal reads
+                    result = load_decisions(*args, **kwargs)
+                    reads += 1
+                    if reads == 2:
+                        path.write_bytes(original + b"\n")
+                    return result
+
+                try:
+                    with (
+                        self.subTest(source=name),
+                        patch.object(
+                            failure_audit_module,
+                            "load_failure_reference_decisions",
+                            side_effect=replace_source_after_decisions,
+                        ),
+                    ):
+                        with self.assertRaisesRegex(
+                            FailureReferenceBindingError, "changed"
+                        ):
+                            publish_failure_reference_binding(audit, output)
+                        self.assertFalse(output.exists())
+                        self.assertEqual(
+                            list(root.glob(f".{output.name}.staging-*")), []
+                        )
+                finally:
+                    path.write_bytes(original)
+
+    def test_captured_group_ids_are_validated_before_indexing(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, *_rest = self.create_decided_audit(root)
+            paths = [
+                audit / name
+                for name in ("audit.json", ".blind-key.json", "decisions.json")
+            ]
+            originals = [path.read_bytes() for path in paths]
+            document, key, decisions = [json.loads(payload) for payload in originals]
+            document["groups"][0]["group_id"] = []
+            key["groups"][0]["group_id"] = []
+            decisions["decisions"][0]["group_id"] = []
+            document["blind_key_groups_sha256"] = canonical_document_sha256(
+                key["groups"]
+            )
+            document["audit_id"] = canonical_document_sha256(
+                {name: value for name, value in document.items() if name != "audit_id"}
+            )
+            key["audit_id"] = decisions["audit_id"] = document["audit_id"]
+            decisions["decision_set_id"] = canonical_document_sha256(
+                {
+                    name: value
+                    for name, value in decisions.items()
+                    if name != "decision_set_id"
+                }
+            )
+            captured = [
+                json.dumps(value).encode() for value in (document, key, decisions)
+            ]
+            load_decisions = failure_audit_module.load_failure_reference_decisions
+
+            def replace_after_initial_validation(*args, **kwargs):
+                result = load_decisions(*args, **kwargs)
+                for path, payload in zip(paths, captured, strict=True):
+                    path.write_bytes(payload)
+                return result
+
+            try:
+                with patch.object(
+                    failure_audit_module,
+                    "load_failure_reference_decisions",
+                    side_effect=replace_after_initial_validation,
+                ):
+                    with self.assertRaisesRegex(
+                        FailureReferenceBindingError, "group ID"
+                    ):
+                        publish_failure_reference_binding(audit, root / "binding")
+                self.assertFalse((root / "binding").exists())
+            finally:
+                for path, payload in zip(paths, originals, strict=True):
+                    path.write_bytes(payload)
+
+    def test_captured_versions_and_selection_authority_fail_closed(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, *_rest = self.create_decided_audit(root)
+            load_decisions = failure_audit_module.load_failure_reference_decisions
+            mutations = [
+                (name, "schema_version", value)
+                for name in ("audit.json", ".blind-key.json", "decisions.json")
+                for value in (True, 2.0, [], {})
+            ]
+            mutations.extend(
+                ("decisions.json", "selection_authority", value)
+                for value in (None, [], "not an object")
+            )
+            for index, (name, field, value) in enumerate(mutations):
+                path = audit / name
+                original = path.read_bytes()
+                document = json.loads(original)
+                if field == "selection_authority":
+                    document["decisions"][0][field] = value
+                    document["decision_set_id"] = canonical_document_sha256(
+                        {
+                            key: item
+                            for key, item in document.items()
+                            if key != "decision_set_id"
+                        }
+                    )
+                    message = "Reference audit selection authority is malformed"
+                else:
+                    document[field] = value
+                    message = "Unsupported reference audit schema"
+                captured = json.dumps(document).encode()
+                output = root / f"binding-{index}"
+
+                def replace_after_initial_validation(*args, **kwargs):
+                    result = load_decisions(*args, **kwargs)
+                    path.write_bytes(captured)
+                    return result
+
+                try:
+                    with (
+                        self.subTest(name=name, field=field, value=value),
+                        patch.object(
+                            failure_audit_module,
+                            "load_failure_reference_decisions",
+                            side_effect=replace_after_initial_validation,
+                        ),
+                        self.assertRaisesRegex(FailureReferenceBindingError, message),
+                    ):
+                        publish_failure_reference_binding(audit, output)
+                    self.assertFalse(output.exists())
+                    self.assertEqual(list(root.glob(f".{output.name}.staging-*")), [])
+                finally:
+                    path.write_bytes(original)
+
+    def test_publication_race_preserves_competing_output_and_domain_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, *_rest = self.create_decided_audit(root)
+            output = root / "binding"
+            rename = binding_module.rename_directory_no_replace
+
+            def create_competing_output(staging, destination):
+                destination.mkdir()
+                (destination / "sentinel").write_bytes(b"competing output")
+                rename(staging, destination)
+
+            with patch.object(
+                binding_module,
+                "rename_directory_no_replace",
+                side_effect=create_competing_output,
+            ):
+                with self.assertRaisesRegex(FailureReferenceBindingError, "exists"):
+                    publish_failure_reference_binding(audit, output)
+            self.assertEqual((output / "sentinel").read_bytes(), b"competing output")
+            self.assertEqual(list(root.glob(".binding.staging-*")), [])
 
     def test_binding_schema_version_requires_exact_integer(self):
         with TemporaryDirectory() as directory:

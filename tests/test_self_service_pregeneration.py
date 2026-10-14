@@ -10,34 +10,34 @@ import soundfile as sf
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEvent, Qt, QThreadPool  # noqa: E402
 from PySide6.QtGui import QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog, QSizePolicy  # noqa: E402
-
-from tests.test_authoring_bulk_generation import SyntheticRenderer  # noqa: E402
-from tests.test_pregeneration_setup import (  # noqa: E402
-    ManualThreadPool,
-    write_story_index,
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QDialog,
+    QMessageBox,
+    QSizePolicy,
 )
-from tests.test_pregeneration_voices import (  # noqa: E402
+
+from tests.pregeneration_fixtures import (  # noqa: E402
+    InProcessPocketGenerator,
+    InterruptingPocketGenerator,
+    fixture,
+)
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
+from tests.story_fixtures import (
+    write_content,  # noqa: E402
+    write_story_index,  # noqa: E402
+)
+from tests.voice_manifest_fixtures import (  # noqa: E402
     write_conflicting_manifest,
-    write_content,
     write_manifest,
 )
 from vntts.app import TrayApplication  # noqa: E402
 from vntts.async_ui import LatestTaskRunner  # noqa: E402
-from vntts.authoring.bulk_generation import run_bulk_generation  # noqa: E402
-from vntts.authoring.missing_voice_policy import (  # noqa: E402
-    NARRATOR_ROLES,
-    MissingVoicePolicy,
-)
 from vntts.game_content_importer import GameContentImportError  # noqa: E402
 from vntts.game_narrator_ui import GameNarratorDialog  # noqa: E402
-from vntts.pregeneration_generation import (  # noqa: E402
-    OfflineGenerationCancelled,
-    OfflineGenerationWorker,
-)
 from vntts.pregeneration_queue import PregenerationInputStore  # noqa: E402
 from vntts.pregeneration_recovery import OfflineRecoveryWorker  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
@@ -52,7 +52,6 @@ from vntts.pregeneration_voices import (  # noqa: E402
 )
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.speech_presentation import engine_model_label  # noqa: E402
-from vntts.synthesis import SynthesisCompletion  # noqa: E402
 from vntts.ui_text import plain_label_text  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
 from vntts.voices import CharacterVoiceRegistry, remember_voice_binding  # noqa: E402
@@ -67,114 +66,6 @@ def write_voice_references(manifest: Path) -> None:
             audio,
             24_000,
             subtype="PCM_16",
-        )
-
-
-class InProcessPocketGenerator(OfflineGenerationWorker):
-    def __init__(self):
-        super().__init__()
-        self.rendered = False
-        self.calls = 0
-
-    def generate(
-        self, generation_input, voice_plan, cancel_event=None, *, queue_ids=None
-    ):
-        output = generation_input.directory.parent / (
-            f"generation-output-{generation_input.identity[:16]}"
-        )
-        renderer = SyntheticRenderer(
-            [
-                SynthesisCompletion.COMPLETE
-                if self.calls == 0
-                else SynthesisCompletion.LIMITED
-            ]
-        )
-        self.calls += 1
-        renderer.name = "pocket-tts"
-        renderer.model_name = "pocket-tts"
-        run_bulk_generation(
-            generation_input.queue,
-            output,
-            renderer,
-            provider="pocket-tts",
-            model="pocket-tts",
-            generation_profile=voice_plan.synthesis_profile,
-            retries=0,
-            cancellation=cancel_event,
-            missing_voice_policy=MissingVoicePolicy(
-                NARRATOR_ROLES,
-                generation_input.narrator_fallback_roles,
-            ),
-            narrator_character="Narrator",
-            include_queue_ids=queue_ids,
-            approve_validated_audio=True,
-        )
-        self.rendered = True
-        return self.inspect(generation_input)
-
-
-class InterruptingPocketGenerator(InProcessPocketGenerator):
-    def __init__(self, *, interrupt):
-        super().__init__()
-        self.interrupt = interrupt
-        self.rendered_texts = []
-
-    def generate(
-        self, generation_input, voice_plan, cancel_event=None, *, queue_ids=None
-    ):
-        output = generation_input.directory.parent / (
-            f"generation-output-{generation_input.identity[:16]}"
-        )
-        cancel_now = self.interrupt and bool(self.rendered_texts)
-        renderer = SyntheticRenderer(
-            [
-                SynthesisCompletion.CANCELLED
-                if cancel_now
-                else SynthesisCompletion.COMPLETE
-            ]
-        )
-        renderer.name = "pocket-tts"
-        renderer.model_name = "pocket-tts"
-        run_bulk_generation(
-            generation_input.queue,
-            output,
-            renderer,
-            provider="pocket-tts",
-            model="pocket-tts",
-            generation_profile="default",
-            retries=0,
-            cancellation=cancel_event,
-            missing_voice_policy=MissingVoicePolicy(
-                NARRATOR_ROLES,
-                generation_input.narrator_fallback_roles,
-            ),
-            narrator_character="Narrator",
-            include_queue_ids=queue_ids,
-            approve_validated_audio=True,
-        )
-        self.rendered_texts.extend(request.text for request in renderer.requests)
-        if cancel_now:
-            raise OfflineGenerationCancelled("Synthetic generation interrupted")
-        self.rendered = True
-        return self.inspect(generation_input)
-
-    def repair(
-        self,
-        generation_input,
-        voice_plan,
-        _generation_result,
-        *,
-        action,
-        queue_ids,
-        cancel_event=None,
-    ):
-        if action != "safe_resume":
-            raise AssertionError(f"Unexpected test repair: {action}")
-        return self.generate(
-            generation_input,
-            voice_plan,
-            cancel_event,
-            queue_ids=queue_ids,
         )
 
 
@@ -277,6 +168,164 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog.sequence_runner.cancel()
             dialog.reject()
 
+    def test_sequence_only_native_close_finishes_after_any_terminal_result(self):
+        for outcome in (None, Path("sequence.json"), RuntimeError("cancelled")):
+            with self.subTest(outcome=outcome), TemporaryDirectory() as directory:
+                pool = ManualThreadPool()
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(),
+                    discovery=lambda: ContentDiscovery(()),
+                    job_store=PregenerationJobStore(Path(directory) / "jobs"),
+                    thread_pool=pool,
+                )
+                self._run_tasks(pool, len(pool.tasks))
+
+                def prepare():
+                    self.assertTrue(dialog.voice_cancel_event.is_set())
+                    if isinstance(outcome, Exception):
+                        raise outcome
+                    return outcome
+
+                dialog.sequence_runner.start(prepare)
+                finished = Mock()
+                dialog.finished.connect(finished)
+                dialog.show()
+                self.assertFalse(dialog.close())
+                self.assertFalse(dialog.has_pending_work())
+                self.assertFalse(dialog.cancel_button.isEnabled())
+                self._run_tasks(pool, 1)
+
+                self.assertFalse(dialog.isVisible())
+                finished.assert_called_once_with(QDialog.DialogCode.Rejected)
+                self.assertTrue(dialog.cancel_button.isEnabled())
+                dialog.deleteLater()
+
+    def test_sequence_close_save_failure_restores_controls_before_retry(self):
+        with TemporaryDirectory() as directory:
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                job_store=PregenerationJobStore(Path(directory) / "jobs"),
+                thread_pool=pool,
+            )
+            self._run_tasks(pool, len(pool.tasks))
+            dialog.sequence_runner.start(lambda: None)
+            dialog.show()
+            self.assertFalse(dialog.close())
+            with (
+                patch.object(
+                    dialog, "_save_story_selection_drafts", return_value=False
+                ),
+                patch(
+                    "vntts.pregeneration_ui.QMessageBox.question",
+                    return_value=QMessageBox.StandardButton.Cancel,
+                ),
+            ):
+                self._run_tasks(pool, 1)
+            self.assertTrue(dialog.isVisible())
+            self.assertTrue(dialog.cancel_button.isEnabled())
+            self.assertTrue(dialog.game_folder_button.isEnabled())
+            dialog.cancel_button.click()
+            self.assertFalse(dialog.isVisible())
+            dialog.deleteLater()
+
+    def test_sequence_terminal_does_not_finish_foreground_cancellation(self):
+        with TemporaryDirectory() as directory:
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                job_store=PregenerationJobStore(Path(directory) / "jobs"),
+                thread_pool=pool,
+            )
+            self._run_tasks(pool, len(pool.tasks))
+            dialog.sequence_runner.start(lambda: None)
+            dialog.generating = True
+            dialog._set_import_controls(False)
+            dialog.show()
+            self.assertFalse(dialog.close())
+            self.assertIn("Cancelling generation", dialog.resume_status.text())
+            self._run_tasks(pool, 1)
+            self.assertTrue(dialog.isVisible())
+            self.assertTrue(dialog.has_pending_work())
+            self.assertFalse(dialog.cancel_button.isEnabled())
+            self.assertFalse(dialog.game_folder_button.isEnabled())
+            dialog._generation_finished(None, RuntimeError("cancelled"))
+            self.assertFalse(dialog.isVisible())
+            dialog.deleteLater()
+
+    def test_foreground_terminal_consumes_close_request_before_late_sequence(self):
+        for save_selection in (False, True):
+            with (
+                self.subTest(save_selection=save_selection),
+                TemporaryDirectory() as directory,
+            ):
+                pool = ManualThreadPool()
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(),
+                    discovery=lambda: ContentDiscovery(()),
+                    job_store=PregenerationJobStore(Path(directory) / "jobs"),
+                    thread_pool=pool,
+                )
+                self._run_tasks(pool, len(pool.tasks))
+                dialog.sequence_runner.start(lambda: None)
+                dialog.generating = True
+                finished = Mock()
+                dialog.finished.connect(finished)
+                dialog.show()
+                self.assertFalse(dialog.close())
+                with (
+                    patch.object(
+                        dialog,
+                        "_save_story_selection_drafts",
+                        return_value=save_selection,
+                    ),
+                    patch(
+                        "vntts.pregeneration_ui.QMessageBox.question",
+                        return_value=QMessageBox.StandardButton.Cancel,
+                    ) as question,
+                ):
+                    dialog._generation_finished(None, RuntimeError("cancelled"))
+                    self.assertFalse(dialog._close_after_voice_cancel)
+                    self._run_tasks(pool, 1)
+                    if save_selection:
+                        finished.assert_called_once_with(QDialog.DialogCode.Rejected)
+                        question.assert_not_called()
+                        self.assertFalse(dialog.isVisible())
+                    else:
+                        finished.assert_not_called()
+                        question.assert_called_once()
+                        self.assertTrue(dialog.isVisible())
+                        self.assertTrue(dialog.cancel_button.isEnabled())
+                        self.assertTrue(dialog.game_folder_button.isEnabled())
+                if not save_selection:
+                    dialog.cancel_button.click()
+                    finished.assert_called_once_with(QDialog.DialogCode.Rejected)
+                    self.assertFalse(dialog.isVisible())
+                dialog.deleteLater()
+
+    def test_optional_sequence_does_not_delay_accept_or_reject(self):
+        for result in (QDialog.DialogCode.Accepted, QDialog.DialogCode.Rejected):
+            with self.subTest(result=result), TemporaryDirectory() as directory:
+                pool = ManualThreadPool()
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(),
+                    discovery=lambda: ContentDiscovery(()),
+                    job_store=PregenerationJobStore(Path(directory) / "jobs"),
+                    thread_pool=pool,
+                )
+                self._run_tasks(pool, len(pool.tasks))
+                dialog.sequence_runner.start(lambda: None)
+                finished = Mock()
+                dialog.finished.connect(finished)
+                dialog.done(result)
+                finished.assert_called_once_with(result)
+                self.assertFalse(dialog.voice_cancel_event.is_set())
+                self._run_tasks(pool, 1)
+                finished.assert_called_once_with(result)
+                dialog.deleteLater()
+
     def test_generation_exception_keeps_exact_copyable_details(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -298,6 +347,54 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 QSizePolicy.Policy.Ignored,
             )
             dialog.deleteLater()
+
+    def test_recovery_submission_failure_stops_progress_and_preserves_saved_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, generation_input, generated, _items = fixture(root)
+            failed = replace(generated, failed=1, other_terminal=0)
+            saved = {
+                path: path.read_bytes()
+                for path in failed.output.rglob("*")
+                if path.is_file()
+            }
+            self.assertTrue(any(path.suffix == ".wav" for path in saved))
+            pool = ManualThreadPool()
+            recovery = Mock()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                job_store=PregenerationJobStore(root / "jobs"),
+                recovery=recovery,
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog._job = job
+            dialog._generation_input = generation_input
+            dialog.generating = True
+            dialog.progress_timer.start()
+            failure = RuntimeError("recovery pool unavailable")
+
+            with patch.object(pool, "start", side_effect=failure):
+                dialog._generation_finished(failed, None)
+            self.application.processEvents()
+
+            recovery.recover.assert_not_called()
+            self.assertFalse(dialog.generating)
+            self.assertFalse(dialog.recovering)
+            self.assertFalse(dialog.recovery_runner.active)
+            self.assertFalse(dialog.progress_timer.isActive())
+            self.assertEqual(
+                dialog.resume_status.text(),
+                f"Unable to recover offline audio: {failure}",
+            )
+            self.assertEqual(dialog.progress_phase.text(), "Automatic recovery paused")
+            self.assertIs(dialog.generation_result(), failed)
+            self.assertEqual(pool.tasks, [])
+            self.assertEqual(
+                {path: path.read_bytes() for path in saved},
+                saved,
+            )
 
     def test_quit_button_finishes_idle_embedded_preparation(self):
         for action in ("button", "window", "tray"):
@@ -410,6 +507,98 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         self.assertEqual(received, [])
         self.assertEqual(timing.call_args.args[0], "<lambda>")
         self.assertEqual(timing.call_args.args[2], "complete")
+
+    def test_submission_failure_publishes_once_and_allows_retry(self):
+        pool = ManualThreadPool()
+        runner = LatestTaskRunner(thread_pool=pool)
+        self.addCleanup(runner.deleteLater)
+        received = []
+        activity = []
+        runner.finished.connect(lambda result, error: received.append((result, error)))
+        runner.activeChanged.connect(activity.append)
+        operation = Mock(return_value="retried")
+        failure = RuntimeError("pool unavailable")
+
+        with patch.object(pool, "start", side_effect=failure):
+            failed_serial = runner.start(operation)
+        self.application.processEvents()
+
+        self.assertFalse(runner.active)
+        self.assertEqual(activity, [True, False])
+        self.assertEqual(len(received), 1)
+        self.assertIsNone(received[0][0])
+        self.assertIs(received[0][1], failure)
+        operation.assert_not_called()
+        self.assertEqual(pool.tasks, [])
+
+        retry_serial = runner.start(operation)
+        self.assertGreater(retry_serial, failed_serial)
+        self.assertTrue(runner.active)
+        pool.run_next()
+        self.application.processEvents()
+
+        operation.assert_called_once_with()
+        self.assertEqual(received, [(None, failure), ("retried", None)])
+        self.assertEqual(activity, [True, False, True, False])
+        self.assertFalse(runner.active)
+
+    def test_deleted_thread_pool_reports_submission_failure_without_running_work(self):
+        pool = QThreadPool()
+        runner = LatestTaskRunner(thread_pool=pool)
+        self.addCleanup(runner.deleteLater)
+        received = []
+        runner.finished.connect(lambda result, error: received.append((result, error)))
+        pool.deleteLater()
+        QCoreApplication.sendPostedEvents(pool, QEvent.Type.DeferredDelete)
+        operation = Mock()
+
+        runner.start(operation)
+        self.application.processEvents()
+
+        operation.assert_not_called()
+        self.assertFalse(runner.active)
+        self.assertEqual(len(received), 1)
+        self.assertIsNone(received[0][0])
+        self.assertIsInstance(received[0][1], RuntimeError)
+
+    def test_older_submission_failure_preserves_reentrant_newer_launch(self):
+        pool = ManualThreadPool()
+        runner = LatestTaskRunner(thread_pool=pool)
+        self.addCleanup(runner.deleteLater)
+        received = []
+        runner.finished.connect(lambda result, error: received.append((result, error)))
+        old_operation = Mock()
+        new_operation = Mock(return_value="new")
+        replacement_started = False
+
+        def start_replacement(active):
+            nonlocal replacement_started
+            if active and not replacement_started:
+                replacement_started = True
+                runner.start(new_operation)
+
+        def submit(task):
+            if task.serial == 1:
+                raise RuntimeError("old submission refused")
+            pool.tasks.append(task)
+
+        runner.activeChanged.connect(start_replacement)
+        with patch.object(pool, "start", side_effect=submit):
+            runner.start(old_operation)
+        self.application.processEvents()
+
+        self.assertTrue(runner.active)
+        self.assertEqual(received, [])
+        old_operation.assert_not_called()
+        new_operation.assert_not_called()
+        self.assertEqual(len(pool.tasks), 1)
+        pool.run_next()
+        self.application.processEvents()
+
+        old_operation.assert_not_called()
+        new_operation.assert_called_once_with()
+        self.assertEqual(received, [("new", None)])
+        self.assertFalse(runner.active)
 
     def test_reentrant_restart_drops_completed_task_result(self):
         pool = ManualThreadPool()
@@ -1127,6 +1316,38 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         self.assertIsNotNone(dialog.pack_result())
         return content, jobs, dialog, generator, visible_text
 
+    def test_restored_evidence_final_coverage_uses_prepared_input_not_job_estimate(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = write_story_index(root / "content")
+            evidence = story.parent / "source-audio-semantic-evidence.json"
+            payload = evidence.read_bytes()
+            evidence.unlink()
+            missing = inspect_story_index(story)
+            jobs = PregenerationJobStore(root / "jobs")
+            planned = jobs.create_or_resume(
+                missing, (selection.selection_id for selection in missing.selections)
+            )
+            self.assertEqual(planned.estimate.original_audio_lines, 0)
+            evidence.write_bytes(payload)
+            content, _jobs, dialog, _generator, _visible = (
+                self._prepared_synthetic_live_fallback_pack(root)
+            )
+            self.addCleanup(dialog.deleteLater)
+            try:
+                self.assertEqual(content.story_index_sha256, planned.story_index_sha256)
+                self.assertEqual(dialog.job().job_id, planned.job_id)
+                self.assertEqual(dialog.job().estimate.original_audio_lines, 0)
+                self.assertEqual(dialog.job().status, "prepared")
+                self.assertIn(
+                    "Original game audio: 1 in this selection",
+                    plain_label_text(dialog.progress_coverage),
+                )
+            finally:
+                dialog.reject()
+
     def test_zero_ambiguity_story_reaches_an_active_portable_pack(self):
         with (
             TemporaryDirectory() as temporary_directory,
@@ -1189,7 +1410,15 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 self.assertIs(tray.open_pregeneration(), dialog)
                 dialog.automatic_activation = True
                 tray._remember_preparation_context()
-                dialog._show_final_handoff(dialog.pack_result())
+                pack = dialog.pack_result()
+                self.assertIsNotNone(pack)
+                dialog._show_final_handoff(
+                    original=dialog.job().estimate.original_audio_lines,
+                    approved=pack.approved,
+                    live_fallbacks=pack.live_fallbacks,
+                    story_lines=pack.story_lines,
+                    omissions=pack.omissions,
+                )
                 self.assertIsNone(tray.pregeneration_dialog)
             for _attempt in range(400):
                 self.application.processEvents()

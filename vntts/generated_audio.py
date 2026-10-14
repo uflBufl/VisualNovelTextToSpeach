@@ -34,6 +34,8 @@ from vntts.audio_output import (
 )
 from vntts.chapter_voice_preload import ChapterDialogue
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import read_regular_bytes, read_regular_text
 from vntts.playback import (
     PlaybackOutcome as PlaybackOutcome,
 )
@@ -286,11 +288,7 @@ def recorded_voice_identity(
     if not isinstance(document, dict):
         return None
     identity = document.get("vntts.recorded_voice")
-    if (
-        not isinstance(identity, dict)
-        or type(identity.get("schema_version")) is not int
-        or identity["schema_version"] != 1
-    ):
+    if not isinstance(identity, dict) or not has_schema_version(identity, 1):
         return None
     for field in ("audio_sha256", "synthesis_provenance_sha256"):
         if not is_lowercase_sha256(identity.get(field)) or identity[
@@ -454,7 +452,7 @@ class GeneratedAudioLibrary:
             self._warn_once(entry, f"Generated audio path is unsafe: {entry.audio}")
             return None, "generated-audio-entry-unsafe-path"
         try:
-            payload = entry.audio.read_bytes()
+            payload = read_regular_bytes(entry.audio)
         except OSError:
             self._warn_once(
                 entry, f"Generated audio is missing or modified: {entry.audio}"
@@ -520,7 +518,7 @@ class GeneratedAudioLibrary:
         signature = _manifest_signature(state_path)
         if signature != self.progress_state_signature:
             try:
-                state = json.loads(state_path.read_text(encoding="utf-8"))
+                state = decode_json(read_regular_text(state_path, encoding="utf-8"))
             except OSError, UnicodeError, json.JSONDecodeError:
                 return None
             self.progress_state_signature = signature
@@ -1370,7 +1368,7 @@ class AudioRoutePlaybackOwner:
                     samples,
                     route.prepared.sample_rate,
                 )
-                sample_count = int(len(samples))
+                sample_count = len(samples)
                 expected_playback_ms = sample_count * 1000 / sample_rate
                 if self.generated_audio_stop.is_set() or (
                     playback_guard is not None and not playback_guard()

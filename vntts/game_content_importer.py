@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
 import importlib.util
 import json
@@ -12,17 +13,18 @@ import sys
 import time
 import uuid
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from functools import lru_cache, partial
 from os import PathLike
 from pathlib import Path
 from typing import Protocol, TypeAlias
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
+    StoryIndexRecord,
     load_story_index_document,
 )
 from vntts_artifacts.voice_manifest import normalize_character_name
@@ -37,8 +39,16 @@ from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
 )
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit
+from vntts.document_identity import file_sha256, is_lowercase_sha256, sha256_file
 from vntts.game_audio_decoder import Cancellation, ProgressCallback, ensure_game_decoder
-from vntts.path_safety import contained_regular_file
+from vntts.json_types import decode_json
+from vntts.path_safety import (
+    contained_regular_file,
+    open_regular_text,
+    read_regular_bytes,
+    read_regular_text,
+)
 from vntts.pregeneration_setup import (
     GameContent,
     PregenerationJob,
@@ -50,7 +60,8 @@ from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
 )
-from vntts.subprocess_utils import last_output_line, terminate_process
+from vntts.story_index_snapshot import load_story_index_snapshot
+from vntts.subprocess_utils import last_output_line, terminate_running_process
 from vntts.voice_candidate_cache import voice_candidate_cache_guard
 from vntts.voices import is_narrator, synthesis_character_for_line
 
@@ -264,11 +275,19 @@ class Reverse1999GameImporter:
                     "The game importer finished without producing story content."
                 )
             result = inspect_story_index(story_index, provider_id=self.provider_id)
-        except Exception:
+        except BaseException as error:
             if backup.is_file():
-                os.replace(backup, story_index)
+                attempt_cleanup(
+                    lambda: os.replace(backup, story_index),
+                    description="story catalog rollback",
+                    primary_error=error,
+                )
             else:
-                story_index.unlink(missing_ok=True)
+                attempt_cleanup(
+                    lambda: story_index.unlink(missing_ok=True),
+                    description="story catalog rollback",
+                    primary_error=error,
+                )
             raise
         try:
             backup.unlink(missing_ok=True)
@@ -283,7 +302,7 @@ class Reverse1999GameImporter:
             return False
         state_path = story_index.parent / "source-inputs.json"
         try:
-            saved = json.loads(state_path.read_text(encoding="utf-8"))
+            saved = decode_json(read_regular_text(state_path, encoding="utf-8"))
         except FileNotFoundError:
             roots = self._previous_installation()
             if roots is None:
@@ -313,17 +332,18 @@ class Reverse1999GameImporter:
                 raise ValueError("Invalid saved import inputs")
             inputs = saved.get("inputs")
             if (
-                saved.get("version") != 1
+                type(saved.get("version")) is not int
+                or saved.get("version") != 1
                 or not isinstance(inputs, dict)
                 or len(inputs) != 3
             ):
                 raise ValueError("Invalid saved import inputs")
-            if saved.get("story_index") != self._file_signature(story_index):
+            if not self._matches_file_signature(saved.get("story_index"), story_index):
                 return True
             for raw_path, signature in inputs.items():
                 if not isinstance(raw_path, str) or not raw_path:
                     raise ValueError("Invalid saved import input path")
-                if signature != self._file_signature(Path(raw_path)):
+                if not self._matches_file_signature(signature, Path(raw_path)):
                     return True
         except OSError, ValueError, TypeError:
             return True
@@ -334,12 +354,20 @@ class Reverse1999GameImporter:
         stat = path.stat()
         return [stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
 
+    @classmethod
+    def _matches_file_signature(cls, value: object, path: Path) -> bool:
+        return (
+            isinstance(value, list)
+            and len(value) == 3
+            and all(type(component) is int for component in value)
+            and value == cls._file_signature(path)
+        )
+
     @staticmethod
     def _story_input_paths(
         story_index: Path, roots: InstallationRoots
     ) -> tuple[Path, Path, Path]:
-        with story_index.open(encoding="utf-8") as stream:
-            metadata = json.loads(stream.readline())
+        metadata = _read_story_metadata(story_index)
         source = metadata.get("source_bundle")
         if not isinstance(source, str) or not source:
             raise ValueError("Imported story source is missing")
@@ -398,20 +426,23 @@ class Reverse1999GameImporter:
     def _previous_installation(self) -> InstallationRoots | None:
         """Prefer durable selection; an existing index can recover older imports."""
         try:
-            saved = json.loads(self.installation_file.read_text(encoding="utf-8"))
-            values = [
-                saved[key]
-                for key in ("resource_root", "config_directory", "audio_directory")
-            ]
-            if not all(isinstance(value, str) and value for value in values):
+            saved = decode_json(
+                read_regular_text(self.installation_file, encoding="utf-8")
+            )
+            if not isinstance(saved, dict):
                 raise ValueError("Invalid saved installation paths")
-            resources, configs, audio = (Path(value) for value in values)
+            values: list[Path] = []
+            for key in ("resource_root", "config_directory", "audio_directory"):
+                value = saved[key]
+                if not isinstance(value, str) or not value:
+                    raise ValueError("Invalid saved installation paths")
+                values.append(Path(value))
+            resources, configs, audio = values
             roots = resources, configs, audio
             if not (
                 all(path.is_absolute() for path in roots)
                 and (resources / "bundles").is_dir()
-                and (configs / "datacfg_1.dat").is_file()
-                and (configs / "language/json_language_en.json.dat").is_file()
+                and not _missing_config_files(configs)
                 and any(audio.glob("*.bnk"))
             ):
                 raise ValueError("Saved installation files are no longer available")
@@ -434,8 +465,7 @@ class Reverse1999GameImporter:
         story_index = self.output_root / "reverse1999" / "story-index.jsonl"
         self._record("saved-source", index=story_index, exists=story_index.is_file())
         try:
-            with story_index.open(encoding="utf-8") as stream:
-                metadata = json.loads(stream.readline())
+            metadata = _read_story_metadata(story_index)
             source = metadata.get("source_bundle")
             if not isinstance(source, str) or not source:
                 self._record("saved-source", reason="source_bundle missing or invalid")
@@ -703,14 +733,26 @@ class Reverse1999GameImporter:
             return Path(result["model_directory"])
 
     @staticmethod
-    def _raise_if_cancelled(cancel_event: Cancellation | None) -> None:
+    def _raise_if_cancelled(
+        cancel_event: Cancellation | None,
+        *,
+        message: str = "Source-audio semantic preparation cancelled",
+    ) -> None:
         if cancel_event is not None and cancel_event.is_set():
-            raise GameContentImportCancelled(
-                "Source-audio semantic preparation cancelled"
-            )
+            raise GameContentImportCancelled(message)
 
     @staticmethod
     def _publisher_command(executable: str, module: str) -> tuple[str, ...] | None:
+        if getattr(sys, "frozen", False):
+            worker = {
+                "r1999-source-audio-duration": "duration",
+                "r1999-source-audio-semantics": "semantics",
+            }.get(executable)
+            return (
+                (sys.executable, "--source-audio-publisher-worker", worker)
+                if worker is not None
+                else None
+            )
         command = shutil.which(executable)
         if command:
             return (command,)
@@ -718,16 +760,7 @@ class Reverse1999GameImporter:
             module_available = importlib.util.find_spec(module) is not None
         except ImportError, ModuleNotFoundError, ValueError:
             module_available = False
-        if module_available and not getattr(sys, "frozen", False):
-            return (sys.executable, "-m", module)
-        if getattr(sys, "frozen", False):
-            worker = {
-                "r1999-source-audio-duration": "duration",
-                "r1999-source-audio-semantics": "semantics",
-            }.get(executable)
-            if worker is not None:
-                return (sys.executable, "--source-audio-publisher-worker", worker)
-        return None
+        return (sys.executable, "-m", module) if module_available else None
 
     def _semantic_output_root(self, job: PregenerationJob) -> Path:
         return self.output_root / "reverse1999" / "source-audio-semantics" / job.job_id
@@ -763,16 +796,14 @@ class Reverse1999GameImporter:
         )
 
     @staticmethod
-    def _has_exact_source_audio_timing(record: object) -> bool:
-        document = getattr(record, "document", {})
+    def _has_exact_source_audio_timing(record: StoryIndexRecord) -> bool:
+        document = record.document
         media_id = document.get("source_audio_duration_media_id")
         media_sha256 = document.get("source_audio_duration_media_sha256")
         return (
             isinstance(media_id, int)
             and not isinstance(media_id, bool)
-            and isinstance(media_sha256, str)
-            and len(media_sha256) == 64
-            and all(character in "0123456789abcdef" for character in media_sha256)
+            and is_lowercase_sha256(media_sha256)
         )
 
     @classmethod
@@ -817,8 +848,8 @@ class Reverse1999GameImporter:
         result = self._cached_narrator_characters(
             story_index,
             narrator_banks,
-            sha256_file(story_index),
-            sha256_file(narrator_banks),
+            file_sha256(story_index, error_type=GameContentImportError),
+            file_sha256(narrator_banks, error_type=GameContentImportError),
         )
         self._record(
             "narrator-result",
@@ -837,10 +868,13 @@ class Reverse1999GameImporter:
     ) -> tuple[str, ...]:
         cache = story_index.parent / "narrator-characters.json"
         try:
-            saved = json.loads(cache.read_text(encoding="utf-8"))
+            saved = decode_json(read_regular_text(cache, encoding="utf-8"))
+            if not isinstance(saved, dict):
+                raise ValueError("Narrator character cache must be an object")
             names = saved["characters"]
             if (
-                saved["version"] == 1
+                type(saved["version"]) is int
+                and saved["version"] == 2
                 and saved["story_index_sha256"] == index_sha256
                 and saved["narrator_banks_sha256"] == banks_sha256
                 and isinstance(names, list)
@@ -849,30 +883,42 @@ class Reverse1999GameImporter:
                 return tuple(names)
         except OSError, ValueError, KeyError, TypeError:
             pass
+        banks_payload = read_regular_bytes(narrator_banks)
+        if hashlib.sha256(banks_payload).hexdigest() != banks_sha256:
+            raise GameContentImportError("Narrator banks changed while being read")
+        banks = decode_json(banks_payload.decode("utf-8"))
+        if not isinstance(banks, (dict, list)) or not all(
+            isinstance(name, str) for name in banks
+        ):
+            raise GameContentImportError(
+                "Narrator banks must be an object or list of names"
+            )
         characters = {
             normalize_character_name(name): name
-            for name in json.loads(narrator_banks.read_text(encoding="utf-8"))
+            for name in banks
             if not is_narrator(name)
         }
-        for record in load_story_index_document(story_index).records:
+        if sha256_file(narrator_banks) != banks_sha256:
+            raise GameContentImportError("Narrator banks changed while being read")
+        for record in load_verified_story_index_document(
+            story_index, index_sha256
+        ).records:
             character = synthesis_character_for_line(
                 record.speaker, record.voice_character
             )
             if record.source_audio_status == "available" and not is_narrator(character):
                 characters.setdefault(normalize_character_name(character), character)
         result = tuple(sorted(characters.values(), key=str.casefold))
-        try:
+        with suppress(OSError):
             atomic_write_json(
                 cache,
                 {
-                    "version": 1,
+                    "version": 2,
                     "story_index_sha256": index_sha256,
                     "narrator_banks_sha256": banks_sha256,
                     "characters": result,
                 },
             )
-        except OSError:
-            pass
         return result
 
     @staticmethod
@@ -882,7 +928,7 @@ class Reverse1999GameImporter:
         from vntts.support import record_game_import
 
         try:
-            document = json.loads(path.read_text(encoding="utf-8"))
+            document = decode_json(read_regular_text(path, encoding="utf-8"))
         except (OSError, ValueError) as error:
             record_game_import(
                 "bank-index", index=path, reason=str(error), cache_state="unreadable"
@@ -1044,6 +1090,7 @@ class Reverse1999GameImporter:
         *,
         environment: dict[str, str] | None = None,
     ) -> tuple[str, str]:
+        self._raise_if_cancelled(cancel_event, message="Game import was cancelled")
         started = time.monotonic()
         self._record("process-start", executable=arguments[0])
         try:
@@ -1066,22 +1113,24 @@ class Reverse1999GameImporter:
             ) from error
         cancelled = False
         try:
-            while True:
-                if (
-                    cancel_event is not None
-                    and cancel_event.is_set()
-                    and process.poll() is None
-                ):
-                    cancelled = True
-                    raise GameContentImportCancelled("Game import was cancelled")
-                try:
-                    stdout, stderr = process.communicate(timeout=0.1)
-                    break
-                except subprocess.TimeoutExpired:
-                    continue
+            with cleanup_on_exit(
+                lambda: terminate_running_process(process),
+                description="Game importer process cleanup",
+            ):
+                while True:
+                    if (
+                        cancel_event is not None
+                        and cancel_event.is_set()
+                        and process.poll() is None
+                    ):
+                        cancelled = True
+                        raise GameContentImportCancelled("Game import was cancelled")
+                    try:
+                        stdout, stderr = process.communicate(timeout=0.1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
         finally:
-            if process.poll() is None:
-                terminate_process(process)
             if cancelled:
                 self._record(
                     "process-exit",
@@ -1114,6 +1163,14 @@ class Reverse1999GameImporter:
                 + (f": {detail}" if detail else ".")
             )
         return stdout, stderr
+
+
+def _read_story_metadata(story_index: Path) -> dict[str, object]:
+    with open_regular_text(story_index, encoding="utf-8") as stream:
+        metadata = decode_json(stream.readline())
+    if not isinstance(metadata, dict):
+        raise ValueError("Imported story metadata must be a JSON object")
+    return metadata
 
 
 def _candidate_roles(
@@ -1182,11 +1239,12 @@ def _cached_playable_voice_roles(index: Path) -> set[str]:
     checksum = sha256_file(index)
     cache = index.parent / "playable-voice-roles.json"
     try:
-        saved = json.loads(cache.read_text(encoding="utf-8"))
+        saved = decode_json(read_regular_text(cache, encoding="utf-8"))
         if isinstance(saved, dict):
             roles = saved.get("roles")
             if (
-                saved.get("version") == 1
+                type(saved.get("version")) is int
+                and saved.get("version") == 2
                 and saved.get("index_sha256") == checksum
                 and isinstance(roles, list)
                 and all(
@@ -1198,16 +1256,17 @@ def _cached_playable_voice_roles(index: Path) -> set[str]:
                 return set(roles)
     except OSError, ValueError, TypeError:
         pass
-    available = _playable_voice_roles(load_story_index_document(index))
+    payload = read_regular_bytes(index)
+    if hashlib.sha256(payload).hexdigest() != checksum:
+        raise GameContentImportError("Voice reference index changed while being read")
+    available = _playable_voice_roles(load_story_index_snapshot(index, payload))
     if sha256_file(index) != checksum:
         raise GameContentImportError("Voice reference index changed while being read")
-    try:
+    with suppress(OSError):
         atomic_write_json(
             cache,
-            {"version": 1, "index_sha256": checksum, "roles": sorted(available)},
+            {"version": 2, "index_sha256": checksum, "roles": sorted(available)},
         )
-    except OSError:
-        pass
     return available
 
 
@@ -1259,6 +1318,14 @@ def resolve_reverse1999_installation(path: PathInput) -> InstallationRoots:
     return resource_root, config_directory, audio_directory
 
 
+def _missing_config_files(directory: Path) -> list[str]:
+    return [
+        name
+        for name in ("datacfg_1.dat", "language/json_language_en.json.dat")
+        if not (directory / name).is_file()
+    ]
+
+
 def _find_installation_parts(
     root: Path,
     search_roots: Sequence[Path],
@@ -1276,14 +1343,7 @@ def _find_installation_parts(
                 resource_root = current.resolve()
             if current.name == "configs":
                 checked_configs.add(current)
-                missing = [
-                    name
-                    for name in (
-                        "datacfg_1.dat",
-                        "language/json_language_en.json.dat",
-                    )
-                    if not (current / name).is_file()
-                ]
+                missing = _missing_config_files(current)
                 record("config-candidate", path=current, missing=missing)
                 if not missing:
                     config_directory = current.resolve()
@@ -1300,11 +1360,7 @@ def _find_installation_parts(
 
     direct_config = root / "configs"
     if config_directory is None and direct_config not in checked_configs:
-        missing = [
-            name
-            for name in ("datacfg_1.dat", "language/json_language_en.json.dat")
-            if not (direct_config / name).is_file()
-        ]
+        missing = _missing_config_files(direct_config)
         record("config-candidate", path=direct_config, missing=missing)
     return resource_root, config_directory, audio_directory
 

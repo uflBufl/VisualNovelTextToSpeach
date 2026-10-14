@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -12,6 +11,7 @@ from vntts.authoring.reconciliation import (
     build_authoring_reconciliation,
     write_authoring_reconciliation,
 )
+from vntts.cli import print_json
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -42,7 +42,8 @@ def create_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    options = create_parser().parse_args(argv)
+    parser = create_parser()
+    options = parser.parse_args(argv)
     try:
         report = build_authoring_reconciliation(
             options.primary_workspace,
@@ -53,7 +54,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if options.output is not None:
             write_authoring_reconciliation(report, options.output)
     except AuthoringReconciliationError as error:
-        create_parser().error(str(error))
+        parser.error(str(error))
     payload = report.document
     if options.output is not None:
         payload = {
@@ -61,7 +62,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "report_id": report.report_id,
             "summary": report.document["summary"],
         }
-    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    print_json(payload, ensure_ascii=False)
     return 0
 
 

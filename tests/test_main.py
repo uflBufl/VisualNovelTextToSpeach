@@ -383,6 +383,18 @@ class MainTest(unittest.TestCase):
                     dialog_completion_cue_visible(CapturedDialogFrame(resized, 0))
                 )
 
+    def test_dialog_completion_cue_rejects_a_component_touching_crop_bottom(self):
+        for bottom, expected in ((228, True), (229, False)):
+            with self.subTest(bottom=bottom):
+                image = Image.new("RGB", (1200, 240), "#202020")
+                draw = ImageDraw.Draw(image)
+                draw.text((60, 100), "Same dialogue", fill="white")
+                draw.rectangle((1150, 214, 1160, bottom), fill="white")
+                self.assertEqual(
+                    dialog_completion_cue_visible(CapturedDialogFrame(image, 0)),
+                    expected,
+                )
+
     def test_dialog_completion_cue_rejects_text_only_and_bright_popup(self):
         text_only = Image.new("RGB", (1200, 240), "#202020")
         ImageDraw.Draw(text_only).text(
@@ -1300,6 +1312,10 @@ class MainTest(unittest.TestCase):
         live_reader_factory.assert_called_once()
         session_id = controller.live_reader_session_id
         self.assertEqual(UUID(session_id).hex, session_id)
+        self.assertIs(
+            live_reader_factory.call_args.kwargs["shutdown_requested"],
+            controller.shutdown_requested,
+        )
         pipeline = live_reader_factory.call_args.kwargs["pipeline_event_handler"]
         self.assertEqual(pipeline.keywords["session_id"], session_id)
         schedule_dialog_read.assert_called_once_with(
@@ -1310,6 +1326,7 @@ class MainTest(unittest.TestCase):
             error_handler=controller.error_handler,
             capture_target=None,
             speech_handler=controller._enqueue_dialog,
+            shutdown_requested=controller.shutdown_requested,
             minimum_confidence=60,
             uncertain_frame_recorder=None,
             diagnostic_handler=controller._publish_diagnostic,
@@ -1487,7 +1504,7 @@ class MainTest(unittest.TestCase):
 
         controller.shutdown()
 
-        reader.emergency_stop.assert_called_once_with()
+        reader.shutdown.assert_called_once_with()
         reader.wait.assert_called_once_with(timeout_seconds=5.0)
         reader.stop.assert_not_called()
         reader.clear_queue.assert_not_called()
@@ -1857,7 +1874,11 @@ class MainTest(unittest.TestCase):
 
     def test_listener_is_stopped_when_acquisition_or_waiting_is_interrupted(self):
         for stage in ("start", "wait", "join"):
-            for cleanup_error in (None, RuntimeError("cleanup unavailable")):
+            for cleanup_error in (
+                None,
+                RuntimeError("cleanup unavailable"),
+                SystemExit("cleanup interrupted"),
+            ):
                 listener = Mock()
                 interruption = KeyboardInterrupt()
                 getattr(listener, stage).side_effect = interruption
@@ -1901,6 +1922,33 @@ class MainTest(unittest.TestCase):
                 self.assertIn("cleanup unavailable", errors.getvalue())
             listener.stop.assert_called_once_with()
             controller.shutdown.assert_called_once_with()
+
+    def test_controller_cleanup_retains_only_propagating_listener_error(self):
+        for handled in (False, True):
+            primary = (
+                KeyboardInterrupt() if handled else SystemExit("listener interrupted")
+            )
+            cleanup_error = OSError("controller cleanup failed")
+            controller = Mock()
+            controller.start.return_value = True
+            controller.shutdown.side_effect = cleanup_error
+            with (
+                self.subTest(handled=handled),
+                patch("vntts.main.load_app_settings", return_value=AppSettings()),
+                patch("vntts.main.AppController", return_value=controller),
+                patch("vntts.main.listen_for_hotkeys", side_effect=primary),
+                self.assertRaises(BaseException) as caught,
+            ):
+                main()
+            self.assertIs(caught.exception, cleanup_error if handled else primary)
+            controller.shutdown.assert_called_once_with()
+            if not handled:
+                self.assertEqual(
+                    primary.__notes__,
+                    [
+                        "Application controller cleanup failed: controller cleanup failed"
+                    ],
+                )
 
     def test_main_reports_listener_failure_and_shuts_down(self):
         controller = Mock()
@@ -2530,6 +2578,230 @@ class MainTest(unittest.TestCase):
             controller.story_cursor.reason,
             "canonical-line-integrity-failed",
         )
+
+    def _sequence_controller(self):
+        lines = tuple(
+            ChapterDialogue(
+                f"reverse1999:1:{index}",
+                "1",
+                index,
+                "Rhiannon",
+                text,
+                text_sha256(text),
+            )
+            for index, text in enumerate(
+                ("First canonical line.", "Next canonical line."), 1
+            )
+        )
+        plan = stub_live_sequence_plan(*lines)
+        plan.events["event-1"] = replace(
+            plan.events["event-1"], control="automatic", successors=("event-2",)
+        )
+        pipeline = Mock()
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=ChapterVoicePreloader(lines),
+            live_sequence_plan_factory=Mock(return_value=plan),
+            pipeline_event_handler=pipeline,
+        )
+        return controller, lines, pipeline
+
+    def test_successor_prefetch_rejects_same_event_new_occurrence_before_or_during_work(
+        self,
+    ):
+        for reanchor_before_work in (True, False):
+            with self.subTest(reanchor_before_work=reanchor_before_work):
+                controller, lines, pipeline = self._sequence_controller()
+                backend = Mock()
+                pending = PreparedPlayback(object(), None, None, None, "test:fresh")
+                backend.prepare_playback.return_value = pending
+                controller.speech_backend = backend
+                controller.speech_executor = Mock()
+                controller.story_cursor.anchor_event("event-1")
+                lease = controller._begin_sequence_playback(
+                    SpeechChunk(
+                        1, lines[0].speaker, lines[0].text, line_id=lines[0].line_id
+                    )
+                )
+                submitted = controller.speech_executor.submit.call_args.args
+                key = submitted[1]
+                self.assertIn(key, controller.sequence_prefetch_keys)
+
+                def reanchor():
+                    with controller.story_cursor_lock:
+                        controller.story_cursor.reset("prefetch-race")
+                        controller.story_cursor.anchor_event(
+                            "event-1", "same-event-resync"
+                        )
+
+                def materialize(_prepared, *, cancellation):
+                    self.assertFalse(cancellation())
+                    reanchor()
+                    return replace(pending, generation_completed=True)
+
+                backend.materialize_prepared.side_effect = materialize
+                if reanchor_before_work:
+                    reanchor()
+                self.assertEqual(submitted[0](*submitted[1:]), "stale")
+                if reanchor_before_work:
+                    backend.prepare_playback.assert_not_called()
+                    backend.materialize_prepared.assert_not_called()
+                else:
+                    backend.materialize_prepared.assert_called_once_with(
+                        pending, cancellation=ANY
+                    )
+                self.assertNotIn(key, controller.sequence_prefetch_keys)
+                self.assertEqual(
+                    pipeline.call_args.args[0], "sequence-successor-prefetch"
+                )
+                self.assertEqual(pipeline.call_args.kwargs["outcome"], "stale")
+                self.assertEqual(
+                    controller.story_cursor.current_event_id, lease.event_id
+                )
+                self.assertGreater(
+                    controller.story_cursor.occurrence_id, lease.occurrence_id
+                )
+                self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
+                self.assertEqual(controller.sequence_event_terminal_routes, {})
+                self.assertEqual(controller.sequence_advance_leases, set())
+
+    def test_terminal_audio_requires_success_or_actual_first_pcm(self):
+        for status, first_audio_ms, sealed in (
+            (PlaybackStatus.COMPLETED, None, True),
+            (PlaybackStatus.INTERRUPTED, 0.0, True),
+            (PlaybackStatus.INTERRUPTED, None, False),
+            (PlaybackStatus.INTERRUPTED, True, False),
+        ):
+            with self.subTest(status=status, first_audio_ms=first_audio_ms):
+                controller, lines, _pipeline = self._sequence_controller()
+                controller.story_cursor.anchor_event("event-1")
+                lease = controller._begin_sequence_playback(
+                    SpeechChunk(
+                        1, lines[0].speaker, lines[0].text, line_id=lines[0].line_id
+                    )
+                )
+                completed = status == PlaybackStatus.COMPLETED
+                self.assertEqual(
+                    controller._finish_sequence_playback(
+                        lease,
+                        PlaybackOutcome(
+                            status,
+                            1.0,
+                            first_audio_ms=first_audio_ms,
+                            audio_source="generated",
+                        ),
+                    ),
+                    completed,
+                )
+                self.assertEqual(
+                    controller.sequence_event_terminal_routes,
+                    {lease: "generated"} if sealed else {},
+                )
+                self.assertEqual(
+                    controller.story_cursor.reason,
+                    "playback-completed" if completed else "playback-failed",
+                )
+                if not completed:
+                    self.assertFalse(controller.story_cursor.can_auto_advance)
+
+    def test_terminal_route_conflicts_keep_the_first_route_and_desynchronize(self):
+        for silent in (True, False):
+            with self.subTest(silent=silent):
+                controller, lines, _pipeline = self._sequence_controller()
+                if silent:
+                    plan = controller.live_sequence_plan
+                    plan.events["event-1"] = replace(
+                        plan.events["event-1"], kind="silent", line_id=None
+                    )
+                    controller.story_cursor.anchor_event("event-1")
+                    lease = SequenceEventLease(
+                        "event-1", controller.story_cursor.occurrence_id
+                    )
+                    with controller.story_cursor_lock:
+                        self.assertTrue(
+                            controller._mark_sequence_silence_locked("event-1")
+                        )
+                        self.assertTrue(
+                            controller._mark_sequence_silence_locked("event-1")
+                        )
+                    self.assertEqual(
+                        controller.sequence_event_terminal_routes, {lease: "silence"}
+                    )
+                else:
+                    controller.story_cursor.anchor_event("event-1")
+                    lease = controller._begin_sequence_playback(
+                        SpeechChunk(
+                            1, lines[0].speaker, lines[0].text, line_id=lines[0].line_id
+                        )
+                    )
+                controller.sequence_event_terminal_routes[lease] = "competing-route"
+                if silent:
+                    with controller.story_cursor_lock:
+                        accepted = controller._mark_sequence_silence_locked("event-1")
+                else:
+                    accepted = controller._finish_sequence_playback(
+                        lease,
+                        PlaybackOutcome(
+                            PlaybackStatus.COMPLETED, 1.0, audio_source="game"
+                        ),
+                    )
+                self.assertFalse(accepted)
+                self.assertEqual(
+                    controller.story_cursor.state, StoryCursorState.DESYNCHRONIZED
+                )
+                self.assertEqual(
+                    controller.story_cursor.reason, "conflicting-terminal-audio-route"
+                )
+                self.assertEqual(
+                    controller.sequence_event_terminal_routes,
+                    {lease: "competing-route"},
+                )
+                self.assertFalse(controller.story_cursor.can_auto_advance)
+
+    def test_explicit_anchor_survives_first_start_and_next_start_invalidates_old_lease(
+        self,
+    ):
+        controller, lines, _pipeline = self._sequence_controller()
+        reader = Mock(is_running=False)
+        controller.live_reader = reader
+
+        def toggle():
+            reader.is_running = not reader.is_running
+            return reader.is_running
+
+        reader.toggle.side_effect = toggle
+        self.assertTrue(controller.resync_live_sequence("event-1"))
+        self.assertTrue(controller.explicit_sequence_anchor_pending)
+        anchored = controller.story_cursor.snapshot()
+        self.assertTrue(controller.toggle_live())
+        self.assertFalse(controller.explicit_sequence_anchor_pending)
+        self.assertEqual(controller.story_cursor.snapshot(), anchored)
+        old_lease = controller._begin_sequence_playback(
+            SpeechChunk(1, lines[0].speaker, lines[0].text, line_id=lines[0].line_id)
+        )
+        playing = controller.story_cursor.snapshot()
+        self.assertFalse(controller.toggle_live())
+        self.assertEqual(controller.story_cursor.snapshot(), playing)
+        self.assertTrue(controller.toggle_live())
+        self.assertEqual(controller.story_cursor.state, StoryCursorState.UNSYNCHRONIZED)
+        self.assertEqual(controller.story_cursor.reason, "live-session-started")
+        self.assertGreater(
+            controller.story_cursor.occurrence_id, old_lease.occurrence_id
+        )
+        controller.story_cursor.anchor_event("event-1")
+        new_lease = controller._begin_sequence_playback(
+            SpeechChunk(2, lines[0].speaker, lines[0].text, line_id=lines[0].line_id)
+        )
+        completed = PlaybackOutcome(PlaybackStatus.COMPLETED, 1.0, audio_source="game")
+        self.assertFalse(controller._finish_sequence_playback(old_lease, completed))
+        self.assertEqual(controller.story_cursor.state, StoryCursorState.PLAYING)
+        self.assertTrue(controller._finish_sequence_playback(new_lease, completed))
+        self.assertEqual(controller.sequence_event_terminal_routes, {new_lease: "game"})
 
     def test_stale_playback_lease_cannot_finish_a_resynced_same_event(self):
         text = "The same event is explicitly revisited."
@@ -5538,6 +5810,30 @@ class MainTest(unittest.TestCase):
             controller.speech_backend.prime,
             "Kamuta",
         )
+        future.add_done_callback.assert_called_once_with(
+            controller._voice_prime_finished
+        )
+
+    def test_voice_prime_submission_failure_does_not_mark_voice_as_primed(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        controller.speech_backend = Mock()
+        controller.speech_executor = Mock()
+        failure = RuntimeError("executor unavailable")
+        future = Mock()
+        controller.speech_executor.submit.side_effect = (failure, future)
+
+        with self.assertRaises(RuntimeError) as caught:
+            controller._prime_observed_voice("Kamuta")
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(controller.primed_voice_keys, set())
+        self.assertEqual(controller.voice_prime_futures, set())
+        controller.speech_backend.prime.assert_not_called()
+
+        self.assertTrue(controller._prime_observed_voice("Kamuta"))
+        self.assertFalse(controller._prime_observed_voice("Kamuta"))
+        self.assertEqual(controller.primed_voice_keys, {"kamuta"})
+        self.assertEqual(controller.voice_prime_futures, {future})
+        self.assertEqual(controller.speech_executor.submit.call_count, 2)
         future.add_done_callback.assert_called_once_with(
             controller._voice_prime_finished
         )

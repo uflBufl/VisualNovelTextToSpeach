@@ -1,6 +1,5 @@
 import argparse
 import ast
-import hashlib
 import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -11,61 +10,12 @@ from unittest.mock import Mock, patch
 
 import vntts.authoring.cli_terminal_conflicts as terminal_cli
 from vntts.authoring.cli import COMMAND_FAMILIES, create_parser, main
+from vntts.authoring.cli_contract import parser_contract
 from vntts.authoring.cli_terminal_conflicts import (
     COMMANDS,
     TerminalConflictResolutionError,
     handle,
 )
-
-PARSER_CONTRACT_SHA256 = (
-    "690143304daaaf71069cab2d9dbf152cef5bdd3a90c80a591ac4d3b0a7ccf2f8"
-)
-
-
-def _subparser_action(parser):
-    return next(
-        action
-        for action in parser._actions
-        if isinstance(action, argparse._SubParsersAction)
-    )
-
-
-def _parser_contract(parser):
-    subparsers = _subparser_action(parser)
-    help_by_command = {
-        action.dest: action.help for action in subparsers._choices_actions
-    }
-    contract = {}
-    for command in sorted(COMMANDS):
-        actions = []
-        for action in subparsers.choices[command]._actions:
-            if action.dest == "help":
-                continue
-            default = action.default
-            if action.dest == "workspaces_root" and isinstance(default, Path):
-                default = "<default-workspaces-root>"
-            elif isinstance(default, Path):
-                default = str(default)
-            actions.append(
-                {
-                    "options": action.option_strings,
-                    "dest": action.dest,
-                    "required": action.required,
-                    "nargs": action.nargs,
-                    "default": default,
-                    "type": None if action.type is None else action.type.__name__,
-                    "choices": (
-                        None if action.choices is None else list(action.choices)
-                    ),
-                    "action": type(action).__name__,
-                    "metavar": action.metavar,
-                }
-            )
-        contract[command] = {
-            "help": help_by_command[command],
-            "actions": actions,
-        }
-    return contract
 
 
 class AuthoringCliTerminalConflictsTest(unittest.TestCase):
@@ -84,15 +34,9 @@ class AuthoringCliTerminalConflictsTest(unittest.TestCase):
         self.assertEqual(len(owners), 1)
         self.assertIs(owners[0].handler, handle)
 
-    def test_parser_contract_and_order_match_the_captured_legacy_cli(self):
+    def test_command_order_matches_the_captured_cli(self):
         parser = create_parser()
-        contract = _parser_contract(parser)
-        digest = hashlib.sha256(
-            json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-
-        self.assertEqual(digest, PARSER_CONTRACT_SHA256)
-        names = list(_subparser_action(parser).choices)
+        names = list(parser_contract(parser))
         expected = (
             "failed-prompt-hypothesis-selection",
             "terminal-conflict-resolution",
@@ -209,6 +153,39 @@ class AuthoringCliTerminalConflictsTest(unittest.TestCase):
             json.loads(output.getvalue()),
             {"directory": "workspace", "created": False},
         )
+
+    def test_carry_io_failures_remain_raw_and_become_parser_errors(self):
+        for target, arguments in (
+            (
+                "carry_terminal_conflict_decisions",
+                ["terminal-conflict-carry", "source", "target"],
+            ),
+            (
+                "carry_approved_cohort_terminal_conflict_decisions",
+                ["terminal-conflict-cohort-carry", "review"],
+            ),
+        ):
+            failure = PermissionError("terminal progress is unwritable")
+            with (
+                self.subTest(command=arguments[0]),
+                patch.object(terminal_cli, target, side_effect=failure),
+            ):
+                with self.assertRaisesRegex(
+                    PermissionError,
+                    "terminal progress is unwritable",
+                ) as raised:
+                    handle(create_parser().parse_args(arguments))
+                self.assertIs(raised.exception, failure)
+                output, errors = StringIO(), StringIO()
+                with (
+                    redirect_stdout(output),
+                    redirect_stderr(errors),
+                    self.assertRaises(SystemExit) as exited,
+                ):
+                    main(arguments)
+                self.assertEqual(exited.exception.code, 2)
+                self.assertIn("terminal progress is unwritable", errors.getvalue())
+                self.assertEqual(output.getvalue(), "")
 
     def test_top_level_parser_translates_family_domain_errors(self):
         errors = StringIO()

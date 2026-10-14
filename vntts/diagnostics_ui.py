@@ -100,19 +100,6 @@ class DiagnosticsDialog(QDialog):
         ):
             label.setTextFormat(Qt.TextFormat.PlainText)
 
-        speaker_details = QFormLayout()
-        speaker_details.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        speaker_details.addRow("Speaker", self.speaker)
-        speaker_details.addRow("Speaker OCR confidence", self.speaker_confidence)
-        dialogue_details = QFormLayout()
-        dialogue_details.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        dialogue_details.addRow("Recognized text", self.text)
-        dialogue_details.addRow("Dialogue OCR confidence", self.dialogue_confidence)
-        shared_summary = QFormLayout()
-        shared_summary.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        shared_summary.addRow("Selected voice", self.voice)
-        shared_summary.addRow("OCR corrections", self.corrections)
-
         technical_details = QFormLayout()
         technical_details.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         technical_details.addRow("Preprocessing", self.preprocessing)
@@ -162,6 +149,31 @@ class DiagnosticsDialog(QDialog):
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self._create_body())
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.warning)
+        layout.addWidget(self.warning_action, 0, Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(scroll, 1)
+        layout.addLayout(controls)
+        layout.addWidget(buttons)
+        make_text_copyable(self)
+
+    def _create_body(self) -> QWidget:
+        speaker_details = QFormLayout()
+        speaker_details.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        speaker_details.addRow("Speaker", self.speaker)
+        speaker_details.addRow("Speaker OCR confidence", self.speaker_confidence)
+        dialogue_details = QFormLayout()
+        dialogue_details.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        dialogue_details.addRow("Recognized text", self.text)
+        dialogue_details.addRow("Dialogue OCR confidence", self.dialogue_confidence)
+        shared_summary = QFormLayout()
+        shared_summary.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        shared_summary.addRow("Selected voice", self.voice)
+        shared_summary.addRow("OCR corrections", self.corrections)
+
         capture_header = QHBoxLayout()
         capture_header.addWidget(QLabel("Captured dialogue region"))
         capture_header.addStretch()
@@ -196,16 +208,7 @@ class DiagnosticsDialog(QDialog):
         body_layout.addWidget(self.technical_toggle)
         body_layout.addWidget(self.technical_panel)
         body_layout.addStretch()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(body)
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.warning)
-        layout.addWidget(self.warning_action, 0, Qt.AlignmentFlag.AlignRight)
-        layout.addWidget(scroll, 1)
-        layout.addLayout(controls)
-        layout.addWidget(buttons)
-        make_text_copyable(self)
+        return body
 
     @staticmethod
     def _image_preview(
@@ -234,7 +237,7 @@ class DiagnosticsDialog(QDialog):
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
-        QTimer.singleShot(0, self._scale_preview)
+        QTimer.singleShot(0, self, self._scale_preview)
 
     def request_refresh(self) -> None:
         if self.refresh_in_flight:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import shutil
 import tempfile
 import threading
@@ -11,8 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypeAlias, TypedDict
 
-from vntts_artifacts.audio import write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.audio import Pcm16MonoWavError, write_pcm16_wav
 
 from vntts.authoring.bulk_generation import (
     generated_mono_pcm,
@@ -21,6 +19,9 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.failure_reference_audit import (
     FailureReferenceAudio,
     FailureReferenceAudit,
+    _load_validated_audit,
+    _prepare_failure_reference_audio,
+    _source_reference_character_family,
     load_failure_reference_audit,
     prepare_failure_reference_audio,
 )
@@ -28,12 +29,16 @@ from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     load_workspace_authority,
 )
+from vntts.document_identity import sha256_file
+from vntts.json_types import is_json_object
+from vntts.path_safety import read_regular_bytes
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisChunkStream,
     SynthesisCompletion,
     SynthesisRequest,
+    SynthesisResult,
 )
 from vntts.tts_benchmark import create_backend
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
@@ -71,7 +76,7 @@ class _PreviewGroup(TypedDict):
 
 
 def _document(value: object, message: str) -> JsonDocument:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise FailureReferencePreviewError(message)
     return {key: item for key, item in value.items()}
 
@@ -155,6 +160,32 @@ class FailureReferencePreview:
     candidate_group_id: str | None = None
 
 
+@dataclass(frozen=True)
+class _PreviewControls:
+    backend: str
+    model: str
+    generation_profile: str
+
+
+@dataclass(frozen=True)
+class _PreviewKey:
+    audit_id: str
+    group_id: str
+    candidate_group_id: str
+    candidate_id: str
+    candidate_sha256: str
+    text: str
+    controls: _PreviewControls
+
+
+@dataclass(frozen=True)
+class _PreviewPlan:
+    audit: FailureReferenceAudit
+    document: JsonDocument
+    key: _PreviewKey
+    synthesis_text: str
+
+
 class FailureReferencePreviewService:
     """Own one lazy backend and memory-only preview cache for a dialog lifetime."""
 
@@ -168,8 +199,8 @@ class FailureReferencePreviewService:
         self.backend_factory = backend_factory
         self._root = Path(tempfile.mkdtemp(prefix="vntts-reference-preview-")).resolve()
         self._backend: _PreviewBackend | None = None
-        self._backend_config: tuple[str, str, str] | None = None
-        self._cache: dict[tuple[str, ...], FailureReferencePreview] = {}
+        self._backend_config: _PreviewControls | None = None
+        self._cache: dict[_PreviewKey, FailureReferencePreview] = {}
         self._lock = threading.Lock()
         self._cancel = threading.Event()
         self._closed = False
@@ -190,158 +221,184 @@ class FailureReferencePreviewService:
             if self._closed:
                 raise FailureReferencePreviewError("Preview service is closed")
             self._cancel.clear()
-            audit, document, group = self._load_group(group_id)
-            source_group_id = candidate_group_id or group_id
-            _source_audit, _source_document, source_group = self._load_group(
-                source_group_id
-            )
-            if source_group_id != group_id and _reference_family(
-                source_group
-            ) != _reference_family(group):
-                raise FailureReferencePreviewError(
-                    "Cross-group preview candidates must belong to the same exact "
-                    "source-reference character family"
-                )
-            if text not in {value["text"] for value in group["cases"]}:
-                raise FailureReferencePreviewError(
-                    "Preview text is not an affected line in this reference group"
-                )
-            candidate = next(
-                (
-                    value
-                    for value in source_group["candidates"]
-                    if value["candidate_id"] == candidate_id
-                ),
-                None,
-            )
-            if candidate is None:
-                raise FailureReferencePreviewError(
-                    f"Reference candidate is unknown: {candidate_id}"
-                )
-            _directory, workspace = self._load_workspace(document)
-            run_config = _document(
-                workspace.get("run_config"), "Preview workspace run configuration"
-            )
-            backend_name = _required_text(run_config.get("backend"), "Preview backend")
-            model = _required_text(run_config.get("model"), "Preview model")
-            profile = _required_text(
-                run_config.get("generation_profile"), "Preview generation profile"
-            )
-            synthesis_text = (
-                normalize_short_trailing_ellipsis(text)
-                if backend_name == "moss-tts"
-                else text
-            )
-            key = (
-                audit.audit_id,
-                group_id,
-                source_group_id,
-                candidate_id,
-                candidate["sha256"],
-                text,
-                backend_name,
-                model,
-                profile,
-            )
-            cached = self._cache.get(key)
+            plan = self._preview_plan(group_id, candidate_id, text, candidate_group_id)
+            cached = self._cache.get(plan.key)
             if cached is not None:
                 return cached
-
-            source = prepare_failure_reference_audio(
-                audit.directory, source_group_id, candidate_id
+            source = _prepare_failure_reference_audio(
+                plan.audit, plan.document, plan.key.candidate_group_id, candidate_id
             )
-            reference = self._copy_reference(source)
-            synthetic_voice = f"Reference candidate {source.sha256[:16]}"
-            registry = CharacterVoiceRegistry(
-                (
-                    CharacterVoice(
-                        character=synthetic_voice,
-                        speaker=f"reference-preview:{source.sha256}",
-                        references=(reference,),
-                    ),
-                )
-            )
-            backend_config = (backend_name, model, profile)
-            if self._backend is None or self._backend_config != backend_config:
-                shutdown_speech_backend(self._backend)
-                self._backend = None
-                self._backend_config = None
-                self._backend = self.backend_factory(
-                    backend_name,
-                    registry,
-                    self._root / "cache",
-                    model_name=model,
-                    startup_cancellation=self._cancel,
-                )
-                self._backend_config = backend_config
-            else:
-                self._backend.registry = registry
-
-            request = SynthesisRequest(
-                voice=synthetic_voice,
-                text=synthesis_text,
-                seed=0,
-                generation_profile=profile,
-                cancellation=self._cancel,
-                cache_policy=SynthesisCachePolicy.BYPASS,
-            )
-            result = self._backend.render(request).collect()
-            if (
-                self._cancel.is_set()
-                or result.completion is SynthesisCompletion.CANCELLED
-            ):
-                raise FailureReferencePreviewCancelled(
-                    "Preview generation was cancelled"
-                )
-            if result.completion is not SynthesisCompletion.COMPLETE:
-                raise FailureReferencePreviewIncomplete(
-                    "Preview generation did not complete within its typed limits"
-                )
-            diagnostics = result.diagnostics
-            if (
-                diagnostics.backend != backend_name
-                or diagnostics.generation_profile != profile
-                or diagnostics.seed != 0
-            ):
-                raise FailureReferencePreviewError(
-                    "Preview render diagnostics differ from the requested controls"
-                )
-            pcm = generated_mono_pcm(result.pcm)
-            if not len(pcm) or int(result.sample_rate) <= 0:
-                raise FailureReferencePreviewError("Preview render produced no audio")
-            output = self._root / "preview.wav"
-            write_pcm16_wav(output, pcm, int(result.sample_rate))
-            payload = output.read_bytes()
-            output.unlink(missing_ok=True)
-            final_source = prepare_failure_reference_audio(
-                audit.directory, source_group_id, candidate_id
-            )
-            if final_source.sha256 != source.sha256:
-                raise FailureReferencePreviewError(
-                    "Reference candidate changed while its preview was generated"
-                )
-            final_audit = load_failure_reference_audit(audit.directory)
-            if final_audit.audit_id != audit.audit_id:
-                raise FailureReferencePreviewError(
-                    "Reference audit changed while its preview was generated"
-                )
-            preview = FailureReferencePreview(
-                group_id=group_id,
-                candidate_group_id=source_group_id,
-                candidate_id=candidate_id,
-                text=text,
-                synthesis_text=synthesis_text,
-                text_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                backend=backend_name,
-                model=model,
-                generation_profile=profile,
-                seed=0,
-                sample_rate=int(result.sample_rate),
-                audio_sha256=hashlib.sha256(payload).hexdigest(),
-                payload=payload,
-            )
-            self._cache[key] = preview
+            preview = self._render_preview(plan, source)
+            self._cache[plan.key] = preview
             return preview
+
+    def _preview_plan(
+        self,
+        group_id: str,
+        candidate_id: str,
+        text: str,
+        candidate_group_id: str | None,
+    ) -> _PreviewPlan:
+        audit, document = _load_validated_audit(self.audit_directory)
+        groups = {
+            group["group_id"]: group
+            for group in _preview_groups(document.get("groups"))
+        }
+        group = _preview_group(groups, group_id)
+        source_group_id = candidate_group_id or group_id
+        source_group = _preview_group(groups, source_group_id)
+        if source_group_id != group_id and _reference_family(
+            source_group
+        ) != _reference_family(group):
+            raise FailureReferencePreviewError(
+                "Cross-group preview candidates must belong to the same exact "
+                "source-reference character family"
+            )
+        if text not in {value["text"] for value in group["cases"]}:
+            raise FailureReferencePreviewError(
+                "Preview text is not an affected line in this reference group"
+            )
+        candidate = next(
+            (
+                value
+                for value in source_group["candidates"]
+                if value["candidate_id"] == candidate_id
+            ),
+            None,
+        )
+        if candidate is None:
+            raise FailureReferencePreviewError(
+                f"Reference candidate is unknown: {candidate_id}"
+            )
+        _directory, workspace = self._load_workspace(document)
+        run_config = _document(
+            workspace.get("run_config"), "Preview workspace run configuration"
+        )
+        controls = _PreviewControls(
+            backend=_required_text(run_config.get("backend"), "Preview backend"),
+            model=_required_text(run_config.get("model"), "Preview model"),
+            generation_profile=_required_text(
+                run_config.get("generation_profile"), "Preview generation profile"
+            ),
+        )
+        key = _PreviewKey(
+            audit_id=audit.audit_id,
+            group_id=group_id,
+            candidate_group_id=source_group_id,
+            candidate_id=candidate_id,
+            candidate_sha256=candidate["sha256"],
+            text=text,
+            controls=controls,
+        )
+        synthesis_text = (
+            normalize_short_trailing_ellipsis(text)
+            if controls.backend == "moss-tts"
+            else text
+        )
+        return _PreviewPlan(audit, document, key, synthesis_text)
+
+    def _preview_backend(
+        self, source: FailureReferenceAudio, controls: _PreviewControls, voice: str
+    ) -> _PreviewBackend:
+        reference = self._copy_reference(source)
+        registry = CharacterVoiceRegistry(
+            (
+                CharacterVoice(
+                    character=voice,
+                    speaker=f"reference-preview:{source.sha256}",
+                    references=(reference,),
+                ),
+            )
+        )
+        if self._backend is None or self._backend_config != controls:
+            shutdown_speech_backend(self._backend)
+            self._backend = None
+            self._backend_config = None
+            self._backend = self.backend_factory(
+                controls.backend,
+                registry,
+                self._root / "cache",
+                model_name=controls.model,
+                startup_cancellation=self._cancel,
+            )
+            self._backend_config = controls
+        else:
+            self._backend.registry = registry
+        return self._backend
+
+    def _render_preview(
+        self, plan: _PreviewPlan, source: FailureReferenceAudio
+    ) -> FailureReferencePreview:
+        key = plan.key
+        controls = key.controls
+        request = SynthesisRequest(
+            voice=f"Reference candidate {source.sha256[:16]}",
+            text=plan.synthesis_text,
+            seed=0,
+            generation_profile=controls.generation_profile,
+            cancellation=self._cancel,
+            cache_policy=SynthesisCachePolicy.BYPASS,
+        )
+        backend = self._preview_backend(source, controls, request.voice)
+        result = backend.render(request).collect()
+        payload = self._preview_payload(result, controls)
+        final_source = prepare_failure_reference_audio(
+            plan.audit.directory, key.candidate_group_id, key.candidate_id
+        )
+        if final_source.sha256 != source.sha256:
+            raise FailureReferencePreviewError(
+                "Reference candidate changed while its preview was generated"
+            )
+        final_audit = load_failure_reference_audit(plan.audit.directory)
+        if final_audit.audit_id != plan.audit.audit_id:
+            raise FailureReferencePreviewError(
+                "Reference audit changed while its preview was generated"
+            )
+        return FailureReferencePreview(
+            group_id=key.group_id,
+            candidate_group_id=key.candidate_group_id,
+            candidate_id=key.candidate_id,
+            text=key.text,
+            synthesis_text=plan.synthesis_text,
+            text_sha256=hashlib.sha256(key.text.encode("utf-8")).hexdigest(),
+            backend=controls.backend,
+            model=controls.model,
+            generation_profile=controls.generation_profile,
+            seed=0,
+            sample_rate=int(result.sample_rate),
+            audio_sha256=hashlib.sha256(payload).hexdigest(),
+            payload=payload,
+        )
+
+    def _preview_payload(
+        self, result: SynthesisResult, controls: _PreviewControls
+    ) -> bytes:
+        if self._cancel.is_set() or result.completion is SynthesisCompletion.CANCELLED:
+            raise FailureReferencePreviewCancelled("Preview generation was cancelled")
+        if result.completion is not SynthesisCompletion.COMPLETE:
+            raise FailureReferencePreviewIncomplete(
+                "Preview generation did not complete within its typed limits"
+            )
+        diagnostics = result.diagnostics
+        if (
+            diagnostics.backend != controls.backend
+            or diagnostics.generation_profile != controls.generation_profile
+            or diagnostics.seed != 0
+        ):
+            raise FailureReferencePreviewError(
+                "Preview render diagnostics differ from the requested controls"
+            )
+        pcm = generated_mono_pcm(result.pcm)
+        if not len(pcm):
+            raise FailureReferencePreviewError("Preview render produced no audio")
+        output = self._root / "preview.wav"
+        try:
+            write_pcm16_wav(output, pcm, result.sample_rate)
+        except Pcm16MonoWavError as error:
+            raise FailureReferencePreviewError(str(error)) from error
+        payload = read_regular_bytes(output)
+        output.unlink(missing_ok=True)
+        return payload
 
     def cancel(self) -> None:
         """Request cancellation of backend startup or the active render."""
@@ -355,35 +412,18 @@ class FailureReferencePreviewService:
                 return
             self._closed = True
             self._cache.clear()
-            shutdown_speech_backend(self._backend)
-            self._backend = None
-            self._backend_config = None
-            shutil.rmtree(self._root, ignore_errors=True)
+            try:
+                shutdown_speech_backend(self._backend)
+            finally:
+                self._backend = None
+                self._backend_config = None
+                shutil.rmtree(self._root, ignore_errors=True)
 
     def __del__(self) -> None:
         try:
             self.close()
         except Exception:
             pass
-
-    def _load_group(
-        self, group_id: str
-    ) -> tuple[FailureReferenceAudit, JsonDocument, _PreviewGroup]:
-        audit = load_failure_reference_audit(self.audit_directory)
-        document = _read_audit_document(audit.directory)
-        group = next(
-            (
-                value
-                for value in _preview_groups(document.get("groups"))
-                if value["group_id"] == group_id
-            ),
-            None,
-        )
-        if group is None:
-            raise FailureReferencePreviewError(
-                f"Reference audit group is unknown: {group_id}"
-            )
-        return audit, document, group
 
     def _load_workspace(self, document: JsonDocument) -> tuple[Path, JsonDocument]:
         expected = (
@@ -418,14 +458,13 @@ class FailureReferencePreviewService:
         return target
 
 
-def _read_audit_document(directory: str | Path) -> JsonDocument:
+def _preview_group(groups: dict[str, _PreviewGroup], group_id: str) -> _PreviewGroup:
     try:
-        return _document(
-            json.loads((Path(directory) / "audit.json").read_text(encoding="utf-8")),
-            "Reference audit document is malformed",
-        )
-    except (OSError, ValueError) as error:
-        raise FailureReferencePreviewError(str(error)) from error
+        return groups[group_id]
+    except KeyError as error:
+        raise FailureReferencePreviewError(
+            f"Reference audit group is unknown: {group_id}"
+        ) from error
 
 
 def _required_text(value: object, label: str) -> str:
@@ -435,19 +474,11 @@ def _required_text(value: object, label: str) -> str:
 
 
 def _reference_family(group: _PreviewGroup) -> str:
-    value = group["synthesis_voice_character"]
-    prefix = "Source reference "
-    marker = " cluster-"
-    if not value.startswith(prefix) or marker not in value:
-        raise FailureReferencePreviewError(
-            "Cross-group preview is restricted to source-reference character families"
-        )
-    character, separator, _cluster = value[len(prefix) :].partition(marker)
-    if not separator or not character:
-        raise FailureReferencePreviewError(
-            "Cross-group preview source-reference identity is malformed"
-        )
-    return character
+    return _source_reference_character_family(
+        group["synthesis_voice_character"],
+        label="Cross-group preview",
+        error_type=FailureReferencePreviewError,
+    )
 
 
 __all__ = [

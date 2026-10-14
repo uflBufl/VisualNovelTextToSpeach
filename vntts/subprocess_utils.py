@@ -21,6 +21,13 @@ def terminate_process(
         process.wait(timeout=timeout)
 
 
+def terminate_running_process(
+    process: subprocess.Popen[str] | subprocess.Popen[bytes],
+) -> None:
+    if process.poll() is None:
+        terminate_process(process)
+
+
 def last_output_line(value: object) -> str | None:
     if not isinstance(value, str):
         return None
@@ -29,4 +36,4 @@ def last_output_line(value: object) -> str | None:
     )
 
 
-__all__ = ["last_output_line", "terminate_process"]
+__all__ = ["last_output_line", "terminate_process", "terminate_running_process"]

@@ -1,5 +1,4 @@
 import argparse
-import json
 import platform
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from difflib import SequenceMatcher
@@ -9,12 +8,18 @@ from statistics import median
 from time import perf_counter, process_time
 from typing import TypeAlias, TypedDict
 
+from durable_file import atomic_write_json
 from PIL import Image
-from vntts_artifacts.atomic_io import atomic_write_json
 
 from vntts.cli import cli_error, cli_messages
+from vntts.json_types import decode_json, is_json_object
 from vntts.ocr import VoiceRegistry
 from vntts.ocr_backend import OCRBackend, RapidOCRBackend, TesseractOCRBackend
+from vntts.path_safety import (
+    ensure_separate_output,
+    open_regular_binary,
+    read_regular_text,
+)
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest
 
@@ -78,10 +83,8 @@ def _percentile(values: Sequence[float], fraction: float) -> float | None:
 def load_expectations(path: PathInput | None) -> Expectations:
     if path is None:
         return {}
-    document: object = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or not all(
-        isinstance(name, str) for name in document
-    ):
+    document: object = decode_json(read_regular_text(Path(path), encoding="utf-8"))
+    if not is_json_object(document):
         raise ValueError("OCR benchmark expectations must be a JSON object")
     return {name: value for name, value in document.items() if isinstance(name, str)}
 
@@ -146,7 +149,13 @@ def benchmark_ocr(
     all_latencies: list[float] = []
     for image_path in image_paths:
         image_path = Path(image_path).expanduser().resolve()
-        with Image.open(image_path) as source:
+        expected_text, expected_speaker = _expected_dialog(
+            expectations.get(image_path.name), image_path.name
+        )
+        with (
+            open_regular_binary(image_path) as stream,
+            Image.open(stream) as source,
+        ):
             image = source.convert("RGB")
         for _index in range(warmups):
             backend.recognize(
@@ -172,9 +181,6 @@ def benchmark_ocr(
         all_latencies.extend(latencies)
         if result is None:
             raise RuntimeError("OCR benchmark produced no measured result")
-        expected_text, expected_speaker = _expected_dialog(
-            expectations.get(image_path.name), image_path.name
-        )
         samples.append(
             {
                 "image": str(image_path),
@@ -271,6 +277,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
         manifest = find_default_voice_manifest()
+        inputs = [image.expanduser().resolve() for image in arguments.images]
+        if arguments.expectations is not None:
+            inputs.append(arguments.expectations)
+        if manifest is not None:
+            inputs.append(manifest.expanduser().resolve())
+        ensure_separate_output(arguments.output.expanduser().resolve(), inputs)
         registry = CharacterVoiceRegistry.from_file(manifest) if manifest else None
         backend = (
             RapidOCRBackend()
@@ -288,7 +300,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         output = write_report(report, arguments.output)
     except (OSError, RuntimeError, TypeError, ValueError) as error:
-        return int(cli_error(error))
+        return cli_error(error)
     summary = report["summary"]
     return cli_messages(
         (

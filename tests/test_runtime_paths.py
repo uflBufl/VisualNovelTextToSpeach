@@ -10,7 +10,9 @@ from unittest.mock import Mock, patch
 
 import pytesseract
 
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
+from vntts import runtime_paths
 from vntts.package_self_test import (
     probe_bundled_pocket_render,
     probe_bundled_pocket_runtime,
@@ -26,6 +28,69 @@ from vntts.synthesis import SynthesisCompletion
 
 
 class RuntimePathsTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_runtime_recipe_capture_refuses_fifo_without_creating_runtime_and_recovers(
+        self,
+    ):
+        for role in ("pyproject.toml", "uv.lock"):
+            with self.subTest(role=role), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                project = root / "project"
+                project.mkdir()
+                payloads = {
+                    "pyproject.toml": b"project recipe",
+                    "uv.lock": b"locked sources",
+                }
+                for name, payload in payloads.items():
+                    (project / name).write_bytes(payload)
+                selected = project / role
+                selected.chmod(0o444)
+                mode = selected.stat().st_mode
+                original = runtime_paths.read_regular_bytes
+                refused = []
+
+                def capture(candidate):
+                    if candidate != selected:
+                        return original(candidate)
+                    gate: RegularFileGate = {"path": selected, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(candidate)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                with (
+                    patch.object(
+                        runtime_paths, "source_runtime_project", return_value=project
+                    ),
+                    patch(
+                        "vntts.application_directories.get_local_data_directory",
+                        return_value=root / "data",
+                    ),
+                ):
+                    expected = runtime_paths.managed_runtime_location("pocket-tts")
+                    with (
+                        patch.object(runtime_paths, "read_regular_bytes", capture),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        runtime_paths.managed_runtime_location("pocket-tts")
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(caught.exception, refused[0])
+                    self.assertFalse((root / "data").exists())
+                    self.assertEqual(selected.stat().st_mode, mode)
+                    self.assertEqual(
+                        {path.name: path.read_bytes() for path in project.iterdir()},
+                        payloads,
+                    )
+                    self.assertEqual(
+                        runtime_paths.managed_runtime_location("pocket-tts"), expected
+                    )
+                    self.assertFalse((root / "data").exists())
+
     @staticmethod
     def _speech_runtime_report():
         return {"executable": "python", "modules": {}}
@@ -400,6 +465,42 @@ class RuntimePathsTest(unittest.TestCase):
             {"model", "tokenizer", "voice"},
         )
         self.assertTrue(all(item["sha256"] for item in report["artifacts"]))
+
+    def test_package_render_keeps_primary_during_backend_and_cache_cleanup(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary = RuntimeError("packaged render failed")
+            backend = Mock()
+            backend.render.side_effect = primary
+            backend.shutdown.side_effect = KeyboardInterrupt("backend cleanup failed")
+            original_cleanup = TemporaryDirectory.cleanup
+
+            def remove_then_fail(temporary):
+                original_cleanup(temporary)
+                if Path(temporary.name).name.startswith("package-self-test-"):
+                    raise OSError("cache cleanup failed")
+
+            with (
+                patch(
+                    "vntts.package_self_test.get_local_data_directory",
+                    return_value=root,
+                ),
+                patch.object(TemporaryDirectory, "cleanup", new=remove_then_fail),
+                self.assertRaises(RuntimeError) as caught,
+            ):
+                probe_bundled_pocket_render(
+                    root / "bundle", backend_factory=Mock(return_value=backend)
+                )
+            self.assertIs(caught.exception, primary)
+            backend.shutdown.assert_called_once_with()
+            self.assertEqual(
+                primary.__notes__,
+                [
+                    "Package render backend cleanup failed: backend cleanup failed",
+                    "Temporary directory cleanup failed: cache cleanup failed",
+                ],
+            )
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_invalid_probe_details_do_not_abort_package_report(self):
         for failed_check in (

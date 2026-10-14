@@ -4,17 +4,43 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QPalette, QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QHeaderView, QLabel  # noqa: E402
 
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.onboarding import DiagnosticResult  # noqa: E402
 from vntts.readiness_ui import ReadinessDialog  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 
 
 class ReadinessDialogTest(unittest.TestCase):
+    def tearDown(self):
+        for widget in self.application.topLevelWidgets():
+            if isinstance(widget, ReadinessDialog):
+                widget.close()
+                widget.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_failed_assertion_releases_the_readiness_window(self):
+        case = ReadinessDialogTest(
+            "test_intro_describes_live_reading_not_starting_the_game"
+        )
+        case.assertEqual = Mock(side_effect=AssertionError("injected failure"))
+        result = unittest.TestResult()
+
+        case.run(result)
+
+        self.assertEqual(len(result.failures), 1)
+        self.assertEqual(result.errors, [])
+        self.assertFalse(
+            any(
+                isinstance(widget, ReadinessDialog)
+                for widget in self.application.topLevelWidgets()
+            )
+        )
+
     def test_copy_selected_check_keeps_full_error_and_path(self):
         pool = ManualThreadPool()
         message = "Missing voice reference: C:/voices/" + "a" * 100 + "/centurion.wav"
@@ -487,17 +513,6 @@ class ReadinessDialogTest(unittest.TestCase):
         self.assertFalse(dialog.remediation_button.isEnabled())
         self.assertIn("Select a warning or error", dialog.remediation_reason.text())
         dialog.deleteLater()
-
-
-class ManualThreadPool:
-    def __init__(self):
-        self.tasks = []
-
-    def start(self, task):
-        self.tasks.append(task)
-
-    def run_next(self):
-        self.tasks.pop(0).run()
 
 
 if __name__ == "__main__":

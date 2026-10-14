@@ -7,18 +7,19 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import Literal, TypedDict
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueueItem
-from vntts_artifacts.voice_manifest import (
-    VoiceManifestEntry,
-    load_voice_manifest,
-    normalize_character_name,
-)
+from vntts_artifacts.voice_manifest import VoiceManifestEntry, normalize_character_name
 
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    AuthoringAuthorityError,
+    AuthoritySnapshot,
+    assert_authority_snapshot,
+    canonical_document_sha256,
+    capture_authority_file,
+)
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
@@ -59,11 +60,25 @@ from vntts.authoring.workspace_foundation import (
     stage_single_base_successor,
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
-from vntts.voices import synthesis_character_for_line
+from vntts.document_identity import sha256_file
+from vntts.json_types import has_schema_version
+from vntts.path_safety import contained_no_replace_destination
+from vntts.voices import load_voice_manifest, synthesis_character_for_line
 
 SCHEMA = "vntts.authoring-reviewed-rejection-live-fallback-batch"
 SCHEMA_VERSION = 1
 REASON = "generated_audio_rejected"
+
+
+class _RejectionLedger(TypedDict):
+    queue_id: str
+    line_id: str
+    text_sha256: str
+    speaker: str
+    base_result_sha256: str
+    synthesis_character: str
+    route_source: Literal["config_rebase", "voice_manifest"]
+    route_reference_sha256s: list[str]
 
 
 @dataclass(frozen=True)
@@ -78,7 +93,7 @@ class _RejectionSelection:
     import_id: str
     narrator_character: str
     voice_sha256: str
-    ledgers: list[dict[str, object]]
+    ledgers: list[_RejectionLedger]
 
 
 @dataclass(frozen=True)
@@ -112,7 +127,16 @@ def create_reviewed_rejection_fallback_workspace(
             staged = _stage_rejection_workspace(selection, staging)
             workspace = _mutate_rejection_state(selection, identity, staged)
             _validate_staged_rejection_workspace(staging, staged, workspace)
-            _publish_rejection_workspace(selection, identity, staging, staged.snapshots)
+            publish_single_base_successor(
+                staging,
+                identity.destination,
+                selection.base_directory,
+                selection.queue_sha256,
+                staged.snapshots,
+                label="Reviewed-rejection fallback",
+                publish_label="reviewed-rejection",
+                error_type=AuthoringWorkbenchError,
+            )
     except (BulkGenerationError, OSError, ValueError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
     return WorkspaceCreationResult(identity.destination, True)
@@ -149,7 +173,7 @@ def _select_rejection_fallback(base_workspace: str | Path) -> _RejectionSelectio
         raise AuthoringWorkbenchError(str(error)) from error
     reference_sha256s = _voice_reference_sha256s(voice_path, voice_entries)
 
-    ledgers = []
+    ledgers: list[_RejectionLedger] = []
     for queue_id, base_result in sorted(state_items.items()):
         ledger = _rejection_ledger(
             queue_id, base_result, queue_by_id, overrides, reference_sha256s
@@ -181,7 +205,7 @@ def _rejection_ledger(
     queue_by_id: Mapping[str, VoiceGenerationQueueItem],
     overrides: Mapping[str, str],
     reference_sha256s: Mapping[str, list[str]],
-) -> dict[str, object] | None:
+) -> _RejectionLedger | None:
     if (
         base_result.get("status") != "generated"
         or base_result.get("review_status") != "rejected"
@@ -195,19 +219,28 @@ def _rejection_ledger(
         )
     rebase = base_result.get("config_rebase")
     if isinstance(rebase, dict):
+        target_character = rebase.get("target_effective_character")
+        target_references = rebase.get("target_reference_sha256s")
         if (
             rebase.get("target_route_status") != "active"
-            or not isinstance(rebase.get("target_effective_character"), str)
-            or not rebase["target_effective_character"].strip()
-            or not isinstance(rebase.get("target_reference_sha256s"), list)
-            or not rebase["target_reference_sha256s"]
+            or not isinstance(target_character, str)
+            or not target_character.strip()
+            or not isinstance(target_references, list)
+            or not target_references
         ):
             raise AuthoringWorkbenchError(
                 f"Reviewed-rejection config route is invalid: {queue_id!r}"
             )
-        route_source = "config_rebase"
-        synthesis_character = rebase["target_effective_character"]
-        references = sorted(set(rebase["target_reference_sha256s"]))
+        route_source: Literal["config_rebase", "voice_manifest"] = "config_rebase"
+        synthesis_character = target_character
+        references = sorted(
+            {
+                require_workspace_sha256(
+                    value, f"Reviewed-rejection reference for {queue_id!r}"
+                )
+                for value in target_references
+            }
+        )
     else:
         route_source = "voice_manifest"
         synthesis_character, references = _manifest_route(
@@ -251,8 +284,11 @@ def _rejection_identity(
     workspace_id = workspace_id_for_config(selection.import_id, config_fingerprint)
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    destination = contained_workspace_path(
-        root, Path(workspace_id), "Reviewed-rejection fallback destination"
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Reviewed-rejection fallback destination",
+        error_type=AuthoringWorkbenchError,
     )
     return _RejectionIdentity(
         batch, config_fingerprint, root, destination, workspace_id
@@ -308,7 +344,6 @@ def _mutate_rejection_state(
     decided_at = datetime.now(timezone.utc).isoformat()
     for ledger in selection.ledgers:
         queue_id = ledger["queue_id"]
-        assert isinstance(queue_id, str)
         base_result = state_items[queue_id]
         evidence = {
             "schema": REVIEWED_REJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA,
@@ -376,27 +411,6 @@ def _validate_staged_rejection_workspace(
     )
 
 
-def _publish_rejection_workspace(
-    selection: _RejectionSelection,
-    identity: _RejectionIdentity,
-    staging: Path,
-    snapshots: list[tuple[Path, str]],
-) -> None:
-    try:
-        publish_single_base_successor(
-            staging,
-            identity.destination,
-            selection.base_directory,
-            selection.queue_sha256,
-            snapshots,
-            label="Reviewed-rejection fallback",
-            publish_label="reviewed-rejection",
-            error_type=AuthoringWorkbenchError,
-        )
-    except BulkGenerationError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
-
-
 def validate_reviewed_rejection_fallback_workspace(
     directory: str | Path, workspace: Mapping[str, object]
 ) -> None:
@@ -406,10 +420,7 @@ def validate_reviewed_rejection_fallback_workspace(
         return
     batch, ledgers = _validated_rejection_batch(batch)
     root = Path(directory)
-    _validate_rejection_authority_snapshots(root, batch)
-    base_state = load_workspace_json(
-        root / cast(str, batch["base_state_path"]), "reviewed-rejection base state"
-    )
+    base_state, snapshots = _validate_rejection_authority_snapshots(root, batch)
     queue, state, _payload, _state_sha256 = load_stable_workspace_generation_state(
         root,
         workspace,
@@ -456,6 +467,11 @@ def validate_reviewed_rejection_fallback_workspace(
     _validate_rejection_state(
         workspace, base_state, state, base_items, state_items, set(observed)
     )
+    try:
+        for snapshot in snapshots:
+            assert_authority_snapshot(snapshot, "reviewed-rejection source")
+    except AuthoringAuthorityError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
 
 
 def _validated_rejection_batch(value: object) -> tuple[dict[str, object], list[object]]:
@@ -478,7 +494,7 @@ def _validated_rejection_batch(value: object) -> tuple[dict[str, object], list[o
         not isinstance(batch, dict)
         or set(batch) != fields
         or batch.get("schema") != SCHEMA
-        or batch.get("schema_version") != SCHEMA_VERSION
+        or not has_schema_version(batch, SCHEMA_VERSION)
         or batch.get("reason") != REASON
         or not isinstance(batch.get("items"), list)
         or batch.get("batch_id")
@@ -500,22 +516,32 @@ def _validated_rejection_batch(value: object) -> tuple[dict[str, object], list[o
 
 def _validate_rejection_authority_snapshots(
     root: Path, batch: dict[str, object]
-) -> None:
-    for path_field, hash_field, label in (
-        ("base_workspace_path", "base_workspace_sha256", "base workspace"),
-        ("base_state_path", "base_state_sha256", "base state"),
-    ):
-        source = contained_workspace_path(
-            root,
-            safe_workspace_relative_path(
-                batch.get(path_field), f"Reviewed-rejection {label}"
-            ),
-            f"Reviewed-rejection {label}",
-        )
-        if not source.is_file() or sha256_file(source) != batch.get(hash_field):
-            raise AuthoringWorkbenchError(
-                f"Reviewed-rejection {label} authority changed"
+) -> tuple[dict[str, object], tuple[AuthoritySnapshot, ...]]:
+    snapshots: list[AuthoritySnapshot] = []
+    try:
+        for path_field, hash_field, label in (
+            ("base_workspace_path", "base_workspace_sha256", "base workspace"),
+            ("base_state_path", "base_state_sha256", "base state"),
+        ):
+            source = contained_workspace_path(
+                root,
+                safe_workspace_relative_path(
+                    batch.get(path_field), f"Reviewed-rejection {label}"
+                ),
+                f"Reviewed-rejection {label}",
             )
+            captured = capture_authority_file(
+                source, f"reviewed-rejection {label}", root=root
+            )
+            if captured.sha256 != batch.get(hash_field):
+                raise AuthoringWorkbenchError(
+                    f"Reviewed-rejection {label} authority changed"
+                )
+            snapshots.append(captured)
+        base_state = snapshots[1].json_document("reviewed-rejection base state")
+    except AuthoringAuthorityError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    return base_state, tuple(snapshots)
 
 
 def _expected_rejection_queue_ids(
@@ -561,35 +587,29 @@ def _validate_rejection_ledger(
     if (
         queue_item is None
         or not isinstance(base_result, dict)
-        or canonical_document_sha256(base_result) != ledger.get("base_result_sha256")
-        or ledger.get("line_id") != queue_item.line_id
-        or ledger.get("text_sha256") != queue_item.text_sha256
-        or ledger.get("speaker") != queue_item.speaker
         or not isinstance(evidence, dict)
-        or evidence.get("base_result") != base_result
-        or evidence.get("batch_id") != batch.get("batch_id")
-        or evidence.get("synthesis_character") != ledger.get("synthesis_character")
-        or evidence.get("route_source") != ledger.get("route_source")
-        or evidence.get("route_reference_sha256s")
-        != ledger.get("route_reference_sha256s")
     ):
         raise AuthoringWorkbenchError(
             f"Reviewed-rejection result changed for {queue_id!r}"
         )
-    if ledger["route_source"] == "voice_manifest":
-        character, references = _manifest_route(
-            queue_item,
-            base_result,
-            overrides,
-            reference_sha256s,
+    expected = _rejection_ledger(
+        queue_id, base_result, queue_by_id, overrides, reference_sha256s
+    )
+    if expected is None or expected != ledger:
+        raise AuthoringWorkbenchError(
+            f"Reviewed-rejection result changed for {queue_id!r}"
         )
-        if (
-            character != ledger["synthesis_character"]
-            or references != ledger["route_reference_sha256s"]
-        ):
-            raise AuthoringWorkbenchError(
-                f"Reviewed-rejection manifest route changed for {queue_id!r}"
-            )
+    if (
+        evidence.get("base_result") != base_result
+        or evidence.get("batch_id") != batch.get("batch_id")
+        or evidence.get("synthesis_character") != expected["synthesis_character"]
+        or evidence.get("route_source") != expected["route_source"]
+        or evidence.get("route_reference_sha256s")
+        != expected["route_reference_sha256s"]
+    ):
+        raise AuthoringWorkbenchError(
+            f"Reviewed-rejection result changed for {queue_id!r}"
+        )
     return queue_id
 
 

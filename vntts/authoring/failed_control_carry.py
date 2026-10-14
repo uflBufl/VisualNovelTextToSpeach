@@ -3,35 +3,41 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
-    BulkGenerationError,
-    load_generation_state,
-    process_is_alive,
-)
-from vntts.authoring.bulk_generation import (
     _state_items as _generation_state_items,
 )
+from vntts.authoring.bulk_generation import process_is_alive
 from vntts.authoring.config_rebase import _route_reference_identity
+from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.authoring.generation_state import (
+    load_generation_state,
+    load_generation_state_from_snapshot,
+    load_stable_generation_queue,
+)
 from vntts.authoring.publication import generation_publication_leases
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     load_workspace_authority,
 )
+from vntts.authoring.workspace_foundation import load_json_object_snapshot
 from vntts.authoring.workspace_voice_runtime import (
     load_failure_reference_runtime_binding,
     load_workspace_queue_voice_overrides,
     load_workspace_voice_registry,
 )
+from vntts.document_identity import sha256_file
+from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_bytes, read_regular_text
 
 FAILED_CONTROL_CARRY_SCHEMA = "vntts.authoring-failed-control-carry"
 FAILED_CONTROL_CARRY_VERSION = 1
@@ -58,6 +64,22 @@ class FailedControlCarryResult:
             "carry_id": self.carry_id,
             "item_count": self.item_count,
         }
+
+
+@dataclass(frozen=True)
+class _CarryControlCapture:
+    queue: VoiceGenerationQueue
+    source_state: dict[str, object]
+    target_state: dict[str, object]
+    source_state_sha256: str
+    snapshots: tuple[tuple[Path, str, str], ...]
+
+
+@dataclass(frozen=True)
+class _CarryControlProposal:
+    state: dict[str, object]
+    base_state_id: str
+    records: list[dict[str, object]]
 
 
 def carry_failed_controls(
@@ -97,15 +119,15 @@ def carry_failed_controls(
     source_queue = source_directory / "queue.jsonl"
     target_queue = target_directory / "queue.jsonl"
     try:
-        source_queue_payload = source_queue.read_bytes()
-        target_queue_payload = target_queue.read_bytes()
+        source_queue_payload = read_regular_bytes(source_queue)
+        target_queue_payload = read_regular_bytes(target_queue)
     except OSError as error:
         raise FailedControlCarryError(str(error)) from error
     if source_queue_payload != target_queue_payload:
         raise FailedControlCarryError(
             "Failed-control carry queues are not byte-identical"
         )
-    queue_sha256 = sha256_file(source_queue)
+    queue_sha256 = hashlib.sha256(source_queue_payload).hexdigest()
     source_output = source_directory / "generated-audio"
     target_output = target_directory / "generated-audio"
     report_path = target_output / FAILED_CONTROL_CARRY_FILENAME
@@ -122,120 +144,28 @@ def carry_failed_controls(
             )
             source_state_path = source_output / "generation-state.json"
             target_state_path = target_output / "generation-state.json"
-            source_state = load_generation_state(source_state_path, source_queue)
-            target_state = load_generation_state(target_state_path, target_queue)
-            if (
-                source_state.get("active") is not None
-                or target_state.get("active") is not None
-            ):
-                raise FailedControlCarryError(
-                    "Failed-control carry authority has an active attempt"
-                )
-            queue = VoiceGenerationQueue.load(source_queue)
-            queue_by_id = {item.queue_id: item for item in queue.items}
-            source_items = _generation_state_items(source_state)
-            target_items = _generation_state_items(target_state)
-            source_registry = load_workspace_voice_registry(
-                source_directory,
-                source,
-                error_type=AuthoringWorkbenchError,
+            capture = _capture_carry_controls(
+                source_queue,
+                target_queue,
+                source_state_path,
+                target_state_path,
+                queue_sha256,
             )
-            target_registry = load_workspace_voice_registry(
-                target_directory,
-                target,
-                error_type=AuthoringWorkbenchError,
+            proposal = _prepare_carry_controls(
+                source_directory, source, target_directory, target, capture, requested
             )
-            source_overrides = load_workspace_queue_voice_overrides(
-                source_directory,
-                source,
-                error_type=AuthoringWorkbenchError,
-            )
-            target_overrides = load_workspace_queue_voice_overrides(
-                target_directory,
-                target,
-                error_type=AuthoringWorkbenchError,
-            )
-            source_failure_binding = load_failure_reference_runtime_binding(
-                source_directory,
-                source,
-                error_type=AuthoringWorkbenchError,
-            )
-            target_failure_binding = load_failure_reference_runtime_binding(
-                target_directory,
-                target,
-                error_type=AuthoringWorkbenchError,
-            )
-            records = []
-            proposed = copy.deepcopy(target_state)
-            base = copy.deepcopy(target_state)
-            proposed_items = _generation_state_items(proposed)
-            base_items = _generation_state_items(base)
-            for queue_id in requested:
-                queue_item = queue_by_id.get(queue_id)
-                result = source_items.get(queue_id)
-                target_result = target_items.get(queue_id)
-                if queue_item is None:
-                    raise FailedControlCarryError(
-                        f"Failed-control queue ID is absent: {queue_id}"
-                    )
-                if not isinstance(result, dict) or result.get("status") != "failed":
-                    raise FailedControlCarryError(
-                        f"Failed-control source item is not failed: {queue_id}"
-                    )
-                if (
-                    result.get("path") is not None
-                    or result.get("file_sha256") is not None
-                ):
-                    raise FailedControlCarryError(
-                        f"Failed-control source unexpectedly publishes a WAV: {queue_id}"
-                    )
-                source_route = _route_reference_identity(
-                    source_registry,
-                    source,
-                    source_overrides,
-                    queue_item,
-                    result=result,
-                    failure_reference_binding=source_failure_binding,
-                )
-                target_route = _route_reference_identity(
-                    target_registry,
-                    target,
-                    target_overrides,
-                    queue_item,
-                    source_result=result,
-                    failure_reference_binding=target_failure_binding,
-                )
-                if source_route != target_route:
-                    raise FailedControlCarryError(
-                        "Failed-control target changes the effective reference for "
-                        f"{queue_id!r}"
-                    )
-                if target_result is not None and target_result != result:
-                    raise FailedControlCarryError(
-                        f"Failed-control target item is already different: {queue_id}"
-                    )
-                proposed_items[queue_id] = copy.deepcopy(result)
-                base_items.pop(queue_id, None)
-                records.append(
-                    {
-                        "queue_id": queue_id,
-                        "source_item_sha256": canonical_document_sha256(result),
-                        "effective_voice_character": source_route[0],
-                        "reference_sha256s": list(source_route[1]),
-                    }
-                )
             body = {
                 "schema": FAILED_CONTROL_CARRY_SCHEMA,
                 "schema_version": FAILED_CONTROL_CARRY_VERSION,
                 "source_workspace_id": source["workspace_id"],
                 "source_workspace_sha256": source_workspace_sha256,
-                "source_state_sha256": sha256_file(source_state_path),
+                "source_state_sha256": capture.source_state_sha256,
                 "target_workspace_id": target["workspace_id"],
                 "target_workspace_sha256": target_workspace_sha256,
                 "queue_sha256": queue_sha256,
-                "target_base_state_id": canonical_document_sha256(base),
-                "target_result_state_id": canonical_document_sha256(proposed),
-                "items": records,
+                "target_base_state_id": proposal.base_state_id,
+                "target_result_state_id": canonical_document_sha256(proposal.state),
+                "items": proposal.records,
                 "authority": (
                     "Exact non-playable failed controls only. This carry adds no "
                     "audio, generation attempt, review decision or voice binding."
@@ -246,21 +176,15 @@ def carry_failed_controls(
                 raise FailedControlCarryError(
                     "Failed-control carry report must not be a symbolic link"
                 )
+            _assert_carry_controls_unchanged(capture)
             if report_path.exists():
-                _validate_existing_report(report_path, report, proposed)
+                _validate_existing_report(report_path, report, proposal.state)
+                _assert_carry_controls_unchanged(capture)
                 return _result(target_directory, report_path, report, created=False)
-            if any(
-                target_items.get(queue_id) is not None
-                and target_items.get(queue_id) != source_items[queue_id]
-                for queue_id in requested
-            ):
-                raise FailedControlCarryError(
-                    "Failed-control target changed before publication"
-                )
-            atomic_write_json(target_state_path, proposed, sort_keys=True)
+            atomic_write_json(target_state_path, proposal.state, sort_keys=True)
             load_generation_state(target_state_path, target_queue)
             atomic_write_json(report_path, report, sort_keys=True)
-            _validate_existing_report(report_path, report, proposed)
+            _validate_existing_report(report_path, report, proposal.state)
             return _result(target_directory, report_path, report, created=True)
     except (
         AuthoringWorkbenchError,
@@ -271,15 +195,166 @@ def carry_failed_controls(
         raise FailedControlCarryError(str(error)) from error
 
 
+def _prepare_carry_controls(
+    source_directory: Path,
+    source: dict[str, object],
+    target_directory: Path,
+    target: dict[str, object],
+    capture: _CarryControlCapture,
+    requested: tuple[str, ...],
+) -> _CarryControlProposal:
+    source_state, target_state = capture.source_state, capture.target_state
+    queue_by_id = {item.queue_id: item for item in capture.queue.items}
+    source_items = _generation_state_items(source_state)
+    target_items = _generation_state_items(target_state)
+    source_registry = load_workspace_voice_registry(
+        source_directory,
+        source,
+        error_type=AuthoringWorkbenchError,
+    )
+    target_registry = load_workspace_voice_registry(
+        target_directory,
+        target,
+        error_type=AuthoringWorkbenchError,
+    )
+    source_overrides = load_workspace_queue_voice_overrides(
+        source_directory,
+        source,
+        error_type=AuthoringWorkbenchError,
+    )
+    target_overrides = load_workspace_queue_voice_overrides(
+        target_directory,
+        target,
+        error_type=AuthoringWorkbenchError,
+    )
+    source_failure_binding = load_failure_reference_runtime_binding(
+        source_directory,
+        source,
+        error_type=AuthoringWorkbenchError,
+    )
+    target_failure_binding = load_failure_reference_runtime_binding(
+        target_directory,
+        target,
+        error_type=AuthoringWorkbenchError,
+    )
+    records: list[dict[str, object]] = []
+    proposed = copy.deepcopy(target_state)
+    base = copy.deepcopy(target_state)
+    proposed_items = _generation_state_items(proposed)
+    base_items = _generation_state_items(base)
+    for queue_id in requested:
+        queue_item = queue_by_id.get(queue_id)
+        result = source_items.get(queue_id)
+        target_result = target_items.get(queue_id)
+        if queue_item is None:
+            raise FailedControlCarryError(
+                f"Failed-control queue ID is absent: {queue_id}"
+            )
+        if not isinstance(result, dict) or result.get("status") != "failed":
+            raise FailedControlCarryError(
+                f"Failed-control source item is not failed: {queue_id}"
+            )
+        if result.get("path") is not None or result.get("file_sha256") is not None:
+            raise FailedControlCarryError(
+                f"Failed-control source unexpectedly publishes a WAV: {queue_id}"
+            )
+        source_route = _route_reference_identity(
+            source_registry,
+            source,
+            source_overrides,
+            queue_item,
+            result=result,
+            failure_reference_binding=source_failure_binding,
+        )
+        target_route = _route_reference_identity(
+            target_registry,
+            target,
+            target_overrides,
+            queue_item,
+            source_result=result,
+            failure_reference_binding=target_failure_binding,
+        )
+        if source_route != target_route:
+            raise FailedControlCarryError(
+                "Failed-control target changes the effective reference for "
+                f"{queue_id!r}"
+            )
+        if target_result is not None and target_result != result:
+            raise FailedControlCarryError(
+                f"Failed-control target item is already different: {queue_id}"
+            )
+        proposed_items[queue_id] = copy.deepcopy(result)
+        base_items.pop(queue_id, None)
+        records.append(
+            {
+                "queue_id": queue_id,
+                "source_item_sha256": canonical_document_sha256(result),
+                "effective_voice_character": source_route[0],
+                "reference_sha256s": list(source_route[1]),
+            }
+        )
+    return _CarryControlProposal(proposed, canonical_document_sha256(base), records)
+
+
+def _capture_carry_controls(
+    source_queue: Path,
+    target_queue: Path,
+    source_state_path: Path,
+    target_state_path: Path,
+    queue_sha256: str,
+) -> _CarryControlCapture:
+    queue, captured_queue_sha256 = load_stable_generation_queue(source_queue)
+    if captured_queue_sha256 != queue_sha256:
+        raise FailedControlCarryError(
+            "Failed-control source queue changed during capture"
+        )
+    source_state, source_sha256, _source_payload = load_json_object_snapshot(
+        source_state_path, "source generation state", error_type=FailedControlCarryError
+    )
+    target_state, target_sha256, _target_payload = load_json_object_snapshot(
+        target_state_path, "target generation state", error_type=FailedControlCarryError
+    )
+    source_state = load_generation_state_from_snapshot(
+        source_state_path, queue, queue_sha256, state_document=source_state
+    )
+    target_state = load_generation_state_from_snapshot(
+        target_state_path, queue, queue_sha256, state_document=target_state
+    )
+    if source_state.get("active") is not None or target_state.get("active") is not None:
+        raise FailedControlCarryError(
+            "Failed-control carry authority has an active attempt"
+        )
+    return _CarryControlCapture(
+        queue,
+        source_state,
+        target_state,
+        source_sha256,
+        (
+            (source_queue, queue_sha256, "source queue"),
+            (target_queue, queue_sha256, "target queue"),
+            (source_state_path, source_sha256, "source generation state"),
+            (target_state_path, target_sha256, "target generation state"),
+        ),
+    )
+
+
+def _assert_carry_controls_unchanged(capture: _CarryControlCapture) -> None:
+    for path, digest, label in capture.snapshots:
+        if sha256_file(path) != digest:
+            raise FailedControlCarryError(
+                f"Failed-control {label} changed before publication"
+            )
+
+
 def _validate_existing_report(
     report_path: Path,
     expected: Mapping[str, object],
     expected_state: Mapping[str, object],
 ) -> None:
     try:
-        observed = json.loads(report_path.read_text(encoding="utf-8"))
+        observed = decode_json(read_regular_text(report_path, encoding="utf-8"))
         state_path = report_path.parent / "generation-state.json"
-        observed_state = json.loads(state_path.read_text(encoding="utf-8"))
+        observed_state = decode_json(read_regular_text(state_path, encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise FailedControlCarryError(str(error)) from error
     if observed != expected:

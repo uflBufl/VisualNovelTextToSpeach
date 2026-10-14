@@ -6,19 +6,16 @@ import copy
 import hashlib
 import json
 import re
-import shutil
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NotRequired, TypeAlias, TypedDict, TypeIs
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
     StoryIndexRecord,
-    load_story_index_document,
 )
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
@@ -27,17 +24,22 @@ from vntts_artifacts.voice_generation_queue import (
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     normalize_character_name,
     write_voice_manifest,
 )
 
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    AuthoringAuthorityError,
+    AuthoritySnapshot,
+    assert_authority_snapshot,
+    canonical_document_sha256,
+    capture_authority_file,
+    write_json_document_no_replace,
+)
 from vntts.authoring.bulk_generation import is_spoken_queue_item
 from vntts.authoring.cohort_review import (
     CohortReviewError,
     _load_document,
-    _write_document_no_replace,
 )
 from vntts.authoring.config_rebase import rebase_workspace_config
 from vntts.authoring.failed_control_carry import (
@@ -49,7 +51,11 @@ from vntts.authoring.failure_repair import (
     FailureRepairPolicy,
     inline_sentence_pause_prompt,
 )
-from vntts.authoring.publication import rename_directory_no_replace, staged_directory
+from vntts.authoring.publication import (
+    publication_errors,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.source_reference_bindings import (
     MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION,
     MISSING_VOICE_REUSE_BINDING_FIELD,
@@ -70,6 +76,15 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.document_identity import sha256_file
+from vntts.json_types import decode_json, has_schema_version, is_json_object
+from vntts.path_safety import (
+    contained_no_replace_destination,
+    copy_regular_file,
+    read_regular_text,
+)
+from vntts.story_index_snapshot import load_story_index_snapshot
+from vntts.voices import voice_manifest_entries_at_path
 
 JsonObject: TypeAlias = dict[str, object]
 JsonObjects: TypeAlias = list[JsonObject]
@@ -161,7 +176,7 @@ class _PlanSourceSnapshot:
     manifest_path: Path
     manifest_sha256: str
     story_sha256: str
-    voices: list[VoiceManifestEntry]
+    voices: tuple[VoiceManifestEntry, ...]
     overrides: dict[str, str]
     retired_names: set[str]
     story: StoryIndexDocument
@@ -268,18 +283,24 @@ def _load_plan_source(workspace_directory: str | Path) -> _PlanSourceSnapshot:
     manifest_path = directory / "inputs/voice/manifest.json"
     story_path = directory / "inputs/story-index.jsonl"
     queue_sha256 = sha256_file(queue_path)
-    manifest_sha256 = sha256_file(manifest_path)
-    story_sha256 = sha256_file(story_path)
     try:
-        manifest_document = json.loads(manifest_path.read_text(encoding="utf-8"))
-        _metadata, voices = load_voice_manifest(manifest_path, allow_legacy=False)
+        manifest_snapshot = capture_authority_file(
+            manifest_path, "missing-voice source manifest"
+        )
+        manifest_document = manifest_snapshot.json_document("source voice manifest")
+        voices = voice_manifest_entries_at_path(
+            manifest_document, manifest_path, allow_legacy=False
+        )
         overrides = queue_voice_overrides_from_manifest(
             manifest_document,
             queue_ids=(item.queue_id for item in queue.items),
             voices=voices,
         )
         retired = retired_source_reference_variants_from_manifest(manifest_document)
-        story = load_story_index_document(story_path)
+        story_snapshot = capture_authority_file(
+            story_path, "missing-voice source story index"
+        )
+        story = load_story_index_snapshot(story_path, story_snapshot.payload)
     except (
         OSError,
         UnicodeDecodeError,
@@ -287,6 +308,7 @@ def _load_plan_source(workspace_directory: str | Path) -> _PlanSourceSnapshot:
         VoiceManifestError,
         SourceReferenceBindingError,
         StoryIndexError,
+        AuthoringAuthorityError,
     ) as error:
         raise MissingVoiceReuseError(str(error)) from error
     return _PlanSourceSnapshot(
@@ -298,8 +320,8 @@ def _load_plan_source(workspace_directory: str | Path) -> _PlanSourceSnapshot:
         state_sha256=state_sha256,
         queue_sha256=queue_sha256,
         manifest_path=manifest_path,
-        manifest_sha256=manifest_sha256,
-        story_sha256=story_sha256,
+        manifest_sha256=manifest_snapshot.sha256,
+        story_sha256=story_snapshot.sha256,
         voices=voices,
         overrides=overrides,
         retired_names={
@@ -540,12 +562,12 @@ def write_missing_voice_reuse_plan(
     plan: MissingVoiceReusePlan | JsonObject, output_path: str | Path
 ) -> Path:
     document = _validate_plan(plan)
-    try:
-        return _write_document_no_replace(
-            output_path, document, "missing-voice reuse plan"
-        )
-    except CohortReviewError as error:
-        raise MissingVoiceReuseError(str(error)) from error
+    return write_json_document_no_replace(
+        output_path,
+        document,
+        "missing-voice reuse plan",
+        error_type=MissingVoiceReuseError,
+    )
 
 
 def load_missing_voice_reuse_plan(path: str | Path) -> MissingVoiceReusePlan:
@@ -557,6 +579,7 @@ def load_missing_voice_reuse_plan(path: str | Path) -> MissingVoiceReusePlan:
     return MissingVoiceReusePlan(_string(validated["plan_id"], "plan_id"), validated)
 
 
+@publication_errors(MissingVoiceReuseError)
 def prepare_missing_voice_reuse_candidate_workspace(
     plan: MissingVoiceReusePlan | JsonObject,
     candidate_id: str,
@@ -675,12 +698,12 @@ def build_missing_voice_reuse_candidate_command(
             )
     manifest_path = directory / "inputs/voice/manifest.json"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = decode_json(read_regular_text(manifest_path, encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise MissingVoiceReuseError(str(error)) from error
-    if manifest.get(MISSING_VOICE_REUSE_BINDING_FIELD) != _candidate_binding(
-        document, candidate
-    ):
+    if not isinstance(manifest, dict) or manifest.get(
+        MISSING_VOICE_REUSE_BINDING_FIELD
+    ) != _candidate_binding(document, candidate):
         raise MissingVoiceReuseError(
             "Missing-voice candidate manifest is not bound to the requested plan"
         )
@@ -828,19 +851,18 @@ def _publish_candidate_input(
     source_info = _object(document["source"], "plan source")
     root.mkdir(parents=True, exist_ok=True)
     name = f"missing-voice-reuse-{_string(document['plan_id'], 'plan_id')[:24]}-{_string(candidate['candidate_id'], 'candidate_id')[:16]}"
-    destination = contained_workspace_path(
-        root, Path(name), "Missing-voice candidate input"
+    destination = contained_no_replace_destination(
+        root,
+        Path(name),
+        "Missing-voice candidate input",
+        error_type=MissingVoiceReuseError,
     )
-    if destination.is_symlink():
-        raise MissingVoiceReuseError(
-            "Missing-voice candidate input must not be a symbolic link"
-        )
     if destination.exists():
         _validate_candidate_input(destination, document, candidate)
         return destination, False
     with staged_directory(root, prefix=".missing-voice-reuse-staging-") as staging:
         source_manifest = source_directory / "inputs/voice/manifest.json"
-        manifest, voices = _load_candidate_source_manifest(
+        manifest, voices, manifest_snapshot = _load_candidate_source_manifest(
             source_manifest,
             _string(source_info["voice_manifest_sha256"], "voice manifest hash"),
         )
@@ -874,34 +896,42 @@ def _publish_candidate_input(
             sort_keys=True,
         )
         _validate_candidate_input(staging, document, candidate)
+        try:
+            assert_authority_snapshot(
+                manifest_snapshot, "missing-voice source manifest"
+            )
+        except AuthoringAuthorityError as error:
+            raise MissingVoiceReuseError(str(error)) from error
         rename_directory_no_replace(staging, destination)
     return destination, True
 
 
 def _load_candidate_source_manifest(
     source_manifest: Path, expected_sha256: str
-) -> tuple[JsonObject, list[VoiceManifestEntry]]:
-    source_payload = source_manifest.read_bytes()
-    if hashlib.sha256(source_payload).hexdigest() != expected_sha256:
-        raise MissingVoiceReuseError(
-            "Missing-voice source manifest changed after planning"
-        )
+) -> tuple[JsonObject, tuple[VoiceManifestEntry, ...], AuthoritySnapshot]:
     try:
-        manifest = _object(
-            json.loads(source_payload.decode("utf-8")), "source voice manifest"
+        snapshot = capture_authority_file(
+            source_manifest, "missing-voice source manifest"
         )
-        _metadata, voices = load_voice_manifest(source_manifest, allow_legacy=False)
-    except (UnicodeDecodeError, json.JSONDecodeError, VoiceManifestError) as error:
+        if snapshot.sha256 != expected_sha256:
+            raise MissingVoiceReuseError(
+                "Missing-voice source manifest changed after planning"
+            )
+        manifest = snapshot.json_document("source voice manifest")
+        voices = voice_manifest_entries_at_path(
+            manifest, source_manifest, allow_legacy=False
+        )
+    except (AuthoringAuthorityError, VoiceManifestError) as error:
         raise MissingVoiceReuseError(str(error)) from error
-    return manifest, voices
+    return manifest, voices, snapshot
 
 
 def _copy_candidate_references(
     source_root: Path,
     staging: Path,
-    voices: list[VoiceManifestEntry],
+    voices: tuple[VoiceManifestEntry, ...],
 ) -> JsonObjects:
-    inventory = []
+    inventory: JsonObjects = []
     seen = set()
     for voice in voices:
         for value in voice.references:
@@ -921,7 +951,7 @@ def _copy_candidate_references(
             seen.add(key)
             target = staging / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
+            copy_regular_file(source, target)
             digest = sha256_file(source)
             if sha256_file(target) != digest:
                 raise MissingVoiceReuseError(
@@ -976,7 +1006,7 @@ def _validate_candidate_input(
 def _load_candidate_bundle(bundle_path: Path) -> JsonObject:
     try:
         return _object(
-            json.loads(bundle_path.read_text(encoding="utf-8")),
+            decode_json(read_regular_text(bundle_path, encoding="utf-8")),
             "Missing-voice candidate bundle",
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -991,7 +1021,7 @@ def _validate_candidate_bundle_identity(
     claimed = bundle.get("bundle_id")
     if (
         bundle.get("schema") != MISSING_VOICE_REUSE_CANDIDATE_BUNDLE_SCHEMA
-        or bundle.get("schema_version") != MISSING_VOICE_REUSE_CANDIDATE_BUNDLE_VERSION
+        or not has_schema_version(bundle, MISSING_VOICE_REUSE_CANDIDATE_BUNDLE_VERSION)
         or bundle.get("plan_id") != document["plan_id"]
         or bundle.get("candidate_id") != candidate["candidate_id"]
         or claimed
@@ -1034,7 +1064,7 @@ def _validate_candidate_bundle_inventory(directory: Path, bundle: JsonObject) ->
     actual = {
         path.relative_to(directory).as_posix()
         for path in directory.rglob("*")
-        if path.is_file() and path.name != "bundle.json"
+        if path.is_file() and path != directory / "bundle.json"
     }
     if declared != actual:
         raise MissingVoiceReuseError("Missing-voice candidate inventory is incomplete")
@@ -1046,8 +1076,12 @@ def _validate_candidate_manifest(
     candidate: JsonObject,
 ) -> None:
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        _metadata, voices = load_voice_manifest(manifest_path, allow_legacy=False)
+        manifest = decode_json(read_regular_text(manifest_path, encoding="utf-8"))
+        voices = voice_manifest_entries_at_path(
+            manifest, manifest_path, allow_legacy=False
+        )
+        if not isinstance(manifest, dict):
+            raise VoiceManifestError("Voice manifest must be a JSON object")
         overrides = queue_voice_overrides_from_manifest(manifest, voices=voices)
     except (
         OSError,
@@ -1274,7 +1308,7 @@ def _cohort_for_portrait(rules: JsonObjects, portrait: str, queue_id: str) -> st
     matches = [
         _string(rule["cohort_id"], "cohort ID")
         for rule in rules
-        if portrait in set(_strings(rule["portraits"], "cohort portraits"))
+        if portrait in _strings(rule["portraits"], "cohort portraits")
     ]
     if len(matches) != 1:
         raise MissingVoiceReuseError(
@@ -1385,9 +1419,10 @@ def _validate_plan(
 
 
 def _validate_plan_header(document: JsonObject) -> None:
-    if (
-        document.get("schema") != MISSING_VOICE_REUSE_PLAN_SCHEMA
-        or document.get("schema_version") != MISSING_VOICE_REUSE_PLAN_VERSION
+    if document.get(
+        "schema"
+    ) != MISSING_VOICE_REUSE_PLAN_SCHEMA or not has_schema_version(
+        document, MISSING_VOICE_REUSE_PLAN_VERSION
     ):
         raise MissingVoiceReuseError("Missing-voice reuse plan schema is unsupported")
     claimed = document.get("plan_id")
@@ -1523,6 +1558,7 @@ def _validate_inline_pause_prompt(prompt: JsonObject, target: JsonObject) -> Non
         )
 
 
+@publication_errors(MissingVoiceReuseError)
 def _assert_sources_unchanged(
     directory: Path,
     workspace_sha256: str,
@@ -1561,7 +1597,7 @@ def _assert_sources_unchanged(
 
 
 def _object(value: object, label: str) -> JsonObject:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise MissingVoiceReuseError(f"{label} must be a JSON object")
     return {key: item for key, item in value.items()}
 

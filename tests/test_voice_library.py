@@ -1,6 +1,9 @@
 import hashlib
+import io
 import json
 import os
+import shutil
+import stat
 import unittest
 import wave
 from pathlib import Path
@@ -10,6 +13,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import vntts.voice_library as voice_library
+from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.voice_library import VoiceLibrary, VoiceLibraryError, VoiceSelection
 
 
@@ -94,6 +99,27 @@ class _CopySnapshotProbe:
 
 
 class VoiceLibraryTest(unittest.TestCase):
+    def test_deep_library_json_reports_read_error_without_rewriting(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            payload = b"[" * 100000 + b"0" + b"]" * 100000
+            library.path.write_bytes(payload)
+            with self.assertRaisesRegex(
+                VoiceLibraryError, "Unable to read voice library"
+            ) as caught:
+                library.bindings()
+            self.assertIsInstance(caught.exception.__cause__, json.JSONDecodeError)
+            self.assertEqual(library.path.read_bytes(), payload)
+
+    def test_invalid_index_encoding_preserves_domain_error(self) -> None:
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            library.path.write_bytes(b"\xff")
+            with self.assertRaisesRegex(
+                VoiceLibraryError, "Unable to read voice library"
+            ):
+                library.bindings()
+
     def test_thread_lock_creates_one_shared_lock_per_path(self) -> None:
         with (
             patch.object(voice_library, "_THREAD_LOCKS", {}),
@@ -133,6 +159,87 @@ class VoiceLibraryTest(unittest.TestCase):
                 )
 
             self.assertEqual(library.bindings(), ())
+
+    def test_missing_required_document_fields_are_rejected_without_rewriting(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "voice.wav"
+            write_wav(reference, b"\x00\x00")
+            library = VoiceLibrary(root / "library")
+            choice = library.discover("Role", reference, bind_if_missing=True)
+            original = library.path.read_text()
+            for version in (1, 2, 3):
+                for collection in ("alternatives", "bindings"):
+                    for field in json.loads(original)[collection]["role:"]:
+                        with self.subTest(
+                            version=version, collection=collection, field=field
+                        ):
+                            document = json.loads(original)
+                            document["version"] = version
+                            if version < 3:
+                                document.pop("person_link_migrations")
+                            if version == 1:
+                                document.pop("person_aliases")
+                            del document[collection]["role:"][field]
+                            library.path.write_text(json.dumps(document))
+                            index = library.path.read_bytes()
+                            for read in (
+                                library.validate,
+                                library.bindings,
+                                lambda: library.alternatives("Role"),
+                            ):
+                                with self.assertRaises(VoiceLibraryError):
+                                    read()
+                                self.assertEqual(library.path.read_bytes(), index)
+            document = json.loads(original)
+            document["alternatives"]["role:"]["extra"] = "retained"
+            document["bindings"]["role:"]["extra"] = "retained"
+            library.path.write_text(json.dumps(document))
+            library.validate()
+            self.assertIsNone(library.binding("Role").variant_key)
+            self.assertIsNone(library.binding("Role").source_id)
+            self.assertEqual(library.alternatives("Role")[0].sha256, choice.sha256)
+
+    def test_persisted_person_names_use_writer_identity_validation(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            library.select("Aderyn", route="narrator")
+            library.link_person("Rhiannon", "Aderyn")
+            original = library.path.read_text()
+            for alias, canonical, variant in (
+                ("", "Rhiannon", None),
+                ("aderyn", "!!!", None),
+                ("aderyn", "Rhiannon", ""),
+                ("aderyn", "Rhiannon", "!!!"),
+            ):
+                with self.subTest(alias=alias, canonical=canonical, variant=variant):
+                    document = json.loads(original)
+                    document["person_aliases"] = {alias: canonical}
+                    document["person_link_migrations"] = {
+                        alias: [
+                            {
+                                "role": alias,
+                                "variant_key": variant,
+                                "linked_variant_key": voice_library._linked_variant_key(
+                                    alias, variant
+                                ),
+                            }
+                        ]
+                    }
+                    library.path.write_text(json.dumps(document))
+                    index = library.path.read_bytes()
+                    for read in (
+                        library.validate,
+                        lambda: library.canonical_role("Aderyn"),
+                        lambda: library.unlink_person("Aderyn"),
+                    ):
+                        with self.assertRaises(VoiceLibraryError):
+                            read()
+                        self.assertEqual(library.path.read_bytes(), index)
+            library.path.write_text(original)
+            library.validate()
+            self.assertTrue(library.unlink_person("Aderyn"))
+            self.assertEqual(library.binding("Aderyn").route, "narrator")
 
     def test_boolean_document_version_is_rejected(self) -> None:
         with TemporaryDirectory() as directory:
@@ -233,6 +340,264 @@ class VoiceLibraryTest(unittest.TestCase):
                 {"Alice", "Bob"},
             )
 
+    def test_validate_reads_each_unique_blob_once_and_checks_unbound_alternatives(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            shared, unused = root / "shared.wav", root / "unused.wav"
+            write_wav(shared, b"\x00\x00")
+            write_wav(unused, b"\x01\x00")
+            library = VoiceLibrary(root / "library")
+            first = library.discover("Alice", shared, bind_if_missing=True)
+            library.discover("Bob", shared, bind_if_missing=True)
+            other = library.discover("Unbound", unused)
+            index = library.path.read_bytes()
+            payloads = [first.path.read_bytes(), other.path.read_bytes()]
+            with (
+                patch.object(
+                    voice_library,
+                    "read_regular_bytes",
+                    wraps=voice_library.read_regular_bytes,
+                ) as capture,
+                patch.object(
+                    voice_library.hashlib, "sha256", wraps=voice_library.hashlib.sha256
+                ) as hashing,
+                patch.object(
+                    voice_library.wave, "open", wraps=voice_library.wave.open
+                ) as headers,
+            ):
+                library.validate()
+            self.assertEqual(
+                [call.args[0] for call in capture.call_args_list],
+                [first.path, other.path],
+            )
+            self.assertEqual(
+                [call.args[0] for call in hashing.call_args_list], payloads
+            )
+            self.assertEqual(headers.call_count, 2)
+            for alternative in (first, other):
+                with self.subTest(role=alternative.role):
+                    payload = alternative.path.read_bytes()
+                    try:
+                        alternative.path.write_bytes(b"corrupted")
+                        with self.assertRaisesRegex(
+                            VoiceLibraryError, "checksum failed"
+                        ):
+                            library.validate()
+                    finally:
+                        alternative.path.write_bytes(payload)
+                    self.assertEqual(library.path.read_bytes(), index)
+            library.validate()
+
+    def test_validate_rejects_bound_checksum_missing_from_inventory_before_blob_reads(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "voice.wav"
+            write_wav(reference, b"\x00\x00")
+            library = VoiceLibrary(root / "library")
+            library.discover("Role", reference, bind_if_missing=True)
+            document = json.loads(library.path.read_bytes())
+            document["alternatives"]["role:"]["items"] = []
+            library.path.write_text(json.dumps(document))
+            index = library.path.read_bytes()
+            with (
+                patch.object(voice_library, "read_regular_bytes") as capture,
+                patch.object(voice_library.hashlib, "sha256") as hashing,
+                self.assertRaisesRegex(VoiceLibraryError, "not an alternative"),
+            ):
+                library.validate()
+            capture.assert_not_called()
+            hashing.assert_not_called()
+            self.assertEqual(library.path.read_bytes(), index)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_copy_to_refuses_fifo_members_and_recovers_after_caller_cleanup(self):
+        for member in ("index", "blob", "extra"):
+            with self.subTest(member=member), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                reference = root / "reference.wav"
+                write_wav(reference, b"\x01\x00")
+                source = VoiceLibrary(root / "source" / "custom.json")
+                alternative = source.discover("Role", reference, bind_if_missing=True)
+                extra = source.root / "extra.txt"
+                extra.write_bytes(b"complete-library extra")
+                selected = {
+                    "index": source.path,
+                    "blob": alternative.path,
+                    "extra": extra,
+                }[member]
+                before = tree_hashes(source.root)
+                destination = root / "copy"
+                original_copy = voice_library.copy_regular_file
+                refused = []
+
+                def copy(original, target, **kwargs):
+                    if Path(original) != selected:
+                        return original_copy(original, target, **kwargs)
+                    gate: RegularFileGate = {"path": selected, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original_copy(original, target, **kwargs)
+                    self.assertFalse(Path(target).exists())
+                    refused.append((Path(target), caught.exception))
+                    raise caught.exception
+
+                with (
+                    patch.object(voice_library, "copy_regular_file", copy),
+                    self.assertRaises(shutil.Error) as caught,
+                ):
+                    source.copy_to(destination / "renamed.json")
+                self.assertEqual(len(refused), 1)
+                failed_target, error = refused[0]
+                self.assertEqual(
+                    caught.exception.args[0],
+                    [(str(selected), str(failed_target), str(error))],
+                )
+                self.assertIsNone(caught.exception.__cause__)
+                self.assertTrue(destination.is_dir())
+                self.assertFalse(failed_target.exists())
+                self.assertEqual(tree_hashes(source.root), before)
+                source.validate()
+                shutil.rmtree(destination)
+                recovered = source.copy_to(destination / "renamed.json")
+                recovered.validate()
+                expected = before.copy()
+                expected["renamed.json"] = expected.pop("custom.json")
+                self.assertEqual(tree_hashes(destination), expected)
+                self.assertEqual(recovered.binding("Role"), source.binding("Role"))
+                self.assertEqual(tree_hashes(source.root), before)
+                with self.assertRaisesRegex(VoiceLibraryError, "already exists"):
+                    source.copy_to(destination / "renamed.json")
+                self.assertEqual(tree_hashes(destination), expected)
+
+    def test_copy_to_preserves_interrupt_and_caller_owned_partial_tree(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = VoiceLibrary(root / "source")
+            source.select("Role", route="narrator")
+            before = tree_hashes(source.root)
+            destination = root / "copy"
+            original_copy = voice_library.copy_regular_file
+            interrupt = KeyboardInterrupt("copy interrupted")
+            copied_members = []
+
+            def copy(original, target, **kwargs):
+                original_copy(original, target, **kwargs)
+                copied_members.append(Path(target))
+                raise interrupt
+
+            with (
+                patch.object(voice_library, "copy_regular_file", copy),
+                self.assertRaises(KeyboardInterrupt) as caught,
+            ):
+                source.copy_to(destination)
+            self.assertIs(caught.exception, interrupt)
+            self.assertEqual(len(copied_members), 1)
+            self.assertTrue(copied_members[0].is_file())
+            self.assertEqual(tree_hashes(source.root), before)
+            shutil.rmtree(destination)
+            copied = source.copy_to(destination)
+            copied.validate()
+            self.assertEqual(tree_hashes(copied.root), before)
+
+    def test_copy_to_preserves_complete_tree_metadata_and_person_aliases(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            reference = root / "reference.wav"
+            write_wav(reference, b"\x01\x00")
+            source = VoiceLibrary(root / "source")
+            source.discover("Role", reference, bind_if_missing=True)
+            source.link_person("Role", "Alias")
+            extra_directory = source.root / "extra" / "nested"
+            extra_directory.mkdir(parents=True)
+            (extra_directory / "payload.bin").write_bytes(b"extra member")
+            metadata = {}
+            for member in (source.root, *source.root.rglob("*")):
+                member.chmod(0o750 if member.is_dir() else 0o600)
+                os.utime(member, ns=(1_700_000_000_000_000_000,) * 2)
+                captured = member.stat()
+                metadata[member.relative_to(source.root)] = (
+                    stat.S_IMODE(captured.st_mode),
+                    captured.st_mtime_ns,
+                )
+            before = tree_hashes(source.root)
+            copied = source.copy_to(root / "copy")
+            self.assertEqual(tree_hashes(copied.root), before)
+            self.assertEqual(copied.person_aliases(), source.person_aliases())
+            self.assertEqual(copied.binding("Alias"), source.binding("Alias"))
+            copied.validate()
+            for relative, expected in metadata.items():
+                with self.subTest(member=relative):
+                    original = (source.root / relative).stat()
+                    staged = (copied.root / relative).stat()
+                    self.assertEqual(
+                        (stat.S_IMODE(original.st_mode), original.st_mtime_ns), expected
+                    )
+                    self.assertEqual(
+                        (stat.S_IMODE(staged.st_mode), staged.st_mtime_ns), expected
+                    )
+            self.assertEqual(tree_hashes(source.root), before)
+
+    def test_copy_to_follows_extra_symlinks_and_aggregates_dangling_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = VoiceLibrary(root / "source")
+            source.select("Role", route="narrator")
+            external = root / "external"
+            external.mkdir()
+            payload = external / "payload.bin"
+            payload.write_bytes(b"external member contents")
+            file_alias = source.root / "file-alias"
+            directory_alias = source.root / "directory-alias"
+            try:
+                file_alias.symlink_to(payload)
+                directory_alias.symlink_to(external, target_is_directory=True)
+            except OSError as error:
+                if os.name != "nt" or error.winerror != 1314:
+                    raise
+                self.skipTest(f"Symlink creation requires Windows privilege: {error}")
+            copied = source.copy_to(root / "copy")
+            self.assertFalse((copied.root / file_alias.name).is_symlink())
+            self.assertFalse((copied.root / directory_alias.name).is_symlink())
+            self.assertEqual(
+                (copied.root / file_alias.name).read_bytes(), payload.read_bytes()
+            )
+            self.assertEqual(
+                (copied.root / directory_alias.name / payload.name).read_bytes(),
+                payload.read_bytes(),
+            )
+            copied.validate()
+            dangling = source.root / "dangling"
+            dangling.symlink_to(root / "missing-member")
+            destination = root / "partial"
+            with self.assertRaises(shutil.Error) as caught:
+                source.copy_to(destination)
+            failures = caught.exception.args[0]
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(
+                failures[0][:2], (str(dangling), str(destination / dangling.name))
+            )
+            self.assertFalse((destination / dangling.name).exists())
+            self.assertEqual(
+                (destination / file_alias.name).read_bytes(), payload.read_bytes()
+            )
+            self.assertTrue(dangling.is_symlink())
+            self.assertEqual(payload.read_bytes(), b"external member contents")
+
+    def test_copy_to_missing_index_creates_neither_tree(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = VoiceLibrary(root / "missing")
+            copied = source.copy_to(root / "copy")
+            self.assertFalse(source.root.exists())
+            self.assertFalse(copied.root.exists())
+            self.assertEqual(copied.bindings(), ())
+
     def test_copy_to_keeps_index_and_blobs_from_one_snapshot(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -276,7 +641,15 @@ class VoiceLibraryTest(unittest.TestCase):
                     write_wav(reference, b"\x01\x00")
                     source = VoiceLibrary(root / "source" / source_name)
                     source.discover("Role", reference, bind_if_missing=True)
+                    source.path.chmod(0o600)
+                    os.utime(source.path, ns=(1_700_000_000_000_000_000,) * 2)
+                    before = source.path.stat()
                     copied = source.copy_to(root / destination)
+                    after = copied.path.stat()
+                    self.assertEqual(
+                        stat.S_IMODE(after.st_mode), stat.S_IMODE(before.st_mode)
+                    )
+                    self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
                     self.assertEqual(copied.binding("Role"), source.binding("Role"))
                     self.assertEqual(
                         tuple(item.sha256 for item in copied.alternatives("Role")),
@@ -339,6 +712,85 @@ class VoiceLibraryTest(unittest.TestCase):
 
             self.assertTrue(library.rollback_bindings(rollback))
             self.assertIsNone(library.binding("Alice"))
+
+    def test_reused_rollback_token_preserves_original_choice_across_duplicate_batch(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "library"
+            library = VoiceLibrary(root)
+            for peer_before_batch in (False, True):
+                with self.subTest(peer_before_batch=peer_before_batch):
+                    library.clear("Alice")
+                    rollback = library.binding_rollback()
+                    library.select(
+                        "Alice", route="narrator", timestamp="first", rollback=rollback
+                    )
+                    expected = (
+                        VoiceLibrary(root).select(
+                            "Alice", route="voice", source_id="preset:alba"
+                        )
+                        if peer_before_batch
+                        else None
+                    )
+                    results = library.select_many(
+                        (
+                            VoiceSelection("Alice", "narrator", timestamp="second"),
+                            VoiceSelection("Alice", "live-fallback", timestamp="third"),
+                        ),
+                        rollback=rollback,
+                    )
+                    self.assertEqual(
+                        tuple(item.route for item in results),
+                        ("narrator", "live-fallback"),
+                    )
+                    self.assertTrue(library.rollback_bindings(rollback))
+                    self.assertEqual(library.binding("Alice"), expected)
+
+    def test_reference_descriptor_cleanup_preserves_read_error(self) -> None:
+        native_close, native_fstat = os.close, os.fstat
+        for primary_type in (OSError, KeyboardInterrupt, None):
+            with self.subTest(primary=primary_type), TemporaryDirectory() as directory:
+                root = Path(directory)
+                reference = root / "voice.wav"
+                write_wav(reference, b"\x00\x00")
+                primary = (
+                    primary_type("reference read failed") if primary_type else None
+                )
+                if primary is not None:
+                    primary.add_note("original read note")
+                cleanup_error = OSError("descriptor close failed")
+                cleanup_error.add_note("nested close note")
+
+                def fail_close(descriptor):
+                    native_close(descriptor)
+                    raise cleanup_error
+
+                with (
+                    patch(
+                        "vntts.voice_library.os.close", side_effect=fail_close
+                    ) as close,
+                    patch(
+                        "vntts.voice_library.os.fstat",
+                        wraps=native_fstat,
+                        side_effect=primary,
+                    ),
+                    self.assertRaises(primary_type or OSError) as raised,
+                ):
+                    VoiceLibrary(root / "library").discover("Role", reference)
+
+                self.assertIs(raised.exception, primary or cleanup_error)
+                close.assert_called_once()
+                if primary is not None:
+                    self.assertEqual(
+                        primary.__notes__,
+                        [
+                            "original read note",
+                            "Voice reference descriptor cleanup failed: "
+                            "descriptor close failed",
+                            "nested close note",
+                        ],
+                    )
 
     def test_windows_reference_is_opened_in_binary_mode(self) -> None:
         with TemporaryDirectory() as directory:
@@ -670,6 +1122,54 @@ class VoiceLibraryTest(unittest.TestCase):
                 VoiceLibraryError, "cannot have a voice source"
             ):
                 library.select("Role", route="narrator", source_id="preset:alba")
+
+    def test_blob_header_uses_checksum_bound_payload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "voice.wav"
+            write_wav(reference, b"\x00\x00")
+            library = VoiceLibrary(root / "library")
+            alternative = library.discover("Role", reference)
+            index = library.path.read_bytes()
+            open_wav = wave.open
+
+            def replace_before_header(source, mode):
+                alternative.path.write_bytes(b"replaced after checksum")
+                return open_wav(source, mode)
+
+            with patch.object(wave, "open", side_effect=replace_before_header):
+                self.assertEqual(
+                    library._validate_blob(alternative.sha256), alternative.path
+                )
+            self.assertEqual(library.path.read_bytes(), index)
+            with self.assertRaisesRegex(VoiceLibraryError, "checksum failed"):
+                library.validate()
+            self.assertEqual(library.path.read_bytes(), index)
+
+    def test_blob_header_accepts_stereo_and_non_pcm16_wav(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            library = VoiceLibrary(root / "library")
+            for channels, width in ((2, 1), (1, 3)):
+                with self.subTest(channels=channels, width=width):
+                    reference = root / f"voice-{channels}-{width}.wav"
+                    with wave.open(str(reference), "wb") as output:
+                        output.setnchannels(channels)
+                        output.setsampwidth(width)
+                        output.setframerate(24_000)
+                        output.writeframes(b"\0" * channels * width * 4)
+                    alternative = library.discover(
+                        f"Role {channels}-{width}", reference
+                    )
+                    self.assertEqual(
+                        library._validate_blob(alternative.sha256), alternative.path
+                    )
+                    with wave.open(
+                        io.BytesIO(alternative.path.read_bytes()), "rb"
+                    ) as audio:
+                        self.assertEqual(audio.getnchannels(), channels)
+                        self.assertEqual(audio.getsampwidth(), width)
+            library.validate()
 
 
 if __name__ == "__main__":

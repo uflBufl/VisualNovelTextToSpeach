@@ -1,12 +1,20 @@
+import errno
 import json
 import os
+import shutil
+import stat
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
+from vntts import release_runtime as runtime_module
 from vntts.release_runtime import (
     PROBE_MODULES,
     QWEN_PROBE_MODULES,
@@ -19,10 +27,242 @@ from vntts.release_runtime import (
     _runtime_interpreter,
     _runtime_site,
     stage_pocket_runtime,
+    stage_speech_runtime,
 )
 
 
 class ReleaseRuntimeTest(unittest.TestCase):
+    def _promotion_fixture(self, root):
+        managed = root / "_python"
+        distribution = managed / "cpython"
+        for relative, payload, mode in (
+            ("python.exe", b"interpreter", 0o755),
+            ("Lib/example.py", b"module", 0o644),
+        ):
+            path = distribution / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+            path.chmod(mode)
+            os.utime(path, ns=(1_600_000_000_000_000_000,) * 2)
+        return managed, distribution / "python.exe", root / "pocket-tts"
+
+    def test_windows_promotion_renames_without_copying(self):
+        with TemporaryDirectory() as directory:
+            managed, interpreter, destination = self._promotion_fixture(Path(directory))
+            inode = interpreter.stat().st_ino
+            with patch.object(runtime_module, "copy_regular_file") as copy:
+                promoted = _promote_windows_runtime(managed, interpreter, destination)
+            copy.assert_not_called()
+            self.assertEqual(promoted, destination / "python.exe")
+            self.assertEqual(promoted.stat().st_ino, inode)
+            self.assertEqual(promoted.read_bytes(), b"interpreter")
+            self.assertFalse(managed.exists())
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_windows_promotion_copy_fallback_refuses_and_recovers(self):
+        for relative in ("python.exe", "Lib/example.py"):
+            with self.subTest(member=relative), TemporaryDirectory() as directory:
+                managed, interpreter, destination = self._promotion_fixture(
+                    Path(directory)
+                )
+                distribution = interpreter.parent
+                source = distribution / relative
+                before = tree_hashes(managed)
+                original_copy = runtime_module.copy_regular_file
+                refused = []
+
+                def copy(original, target, **options):
+                    if Path(original) != source:
+                        return original_copy(original, target, **options)
+                    gate: RegularFileGate = {"path": source, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original_copy(original, target, **options)
+                    self.assertFalse(Path(target).exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                with (
+                    patch.object(
+                        runtime_module.os,
+                        "rename",
+                        side_effect=OSError(errno.EXDEV, "cross-device move"),
+                    ),
+                    patch.object(runtime_module, "copy_regular_file", copy),
+                    self.assertRaises(shutil.Error) as caught,
+                ):
+                    _promote_windows_runtime(managed, interpreter, destination)
+                self.assertEqual(len(refused), 1)
+                self.assertEqual(len(caught.exception.args[0]), 1)
+                original, target, message = caught.exception.args[0][0]
+                self.assertEqual(Path(original), source)
+                self.assertEqual(Path(target), destination / relative)
+                self.assertIn("regular file", message)
+                self.assertEqual(tree_hashes(managed), before)
+                self.assertTrue(destination.is_dir())
+                shutil.rmtree(destination)
+                self._assert_promotion_copy_recovery(managed, interpreter, destination)
+
+    def _assert_promotion_copy_recovery(self, managed, interpreter, destination):
+        expected = {
+            path.relative_to(interpreter.parent): (
+                path.read_bytes(),
+                stat.S_IMODE(path.stat().st_mode),
+                path.stat().st_mtime_ns,
+            )
+            for path in interpreter.parent.rglob("*")
+            if path.is_file()
+        }
+        with patch.object(
+            runtime_module.os,
+            "rename",
+            side_effect=OSError(errno.EXDEV, "cross-device move"),
+        ):
+            promoted = _promote_windows_runtime(managed, interpreter, destination)
+        self.assertEqual(promoted, destination / "python.exe")
+        self.assertFalse(managed.exists())
+        for relative, (payload, mode, mtime) in expected.items():
+            target = destination / relative
+            self.assertEqual(target.read_bytes(), payload)
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), mode)
+            self.assertEqual(target.stat().st_mtime_ns, mtime)
+
+    def _relocation_fixture(self, root):
+        runtimes = root / "speech-runtimes"
+        managed = runtimes / "_python/cpython/bin/python3.14"
+        module = runtimes / "pocket-tts/lib/python3.14/site-packages/example.py"
+        for path, payload, mode in (
+            (managed, b"interpreter", 0o755),
+            (module, b"module", 0o644),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+            path.chmod(mode)
+            os.utime(path, ns=(1_600_000_000_000_000_000,) * 2)
+        interpreter = runtimes / "pocket-tts/bin/python"
+        interpreter.parent.mkdir()
+        symlink_or_skip(interpreter, Path("../../_python/cpython/bin/python3.14"))
+        return runtimes, managed, module
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_relocation_refuses_member_acquisition_cleans_up_and_recovers(self):
+        for phase in ("interpreter", "module"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                runtimes, managed, module = self._relocation_fixture(root)
+                source = managed if phase == "interpreter" else module
+                before = tree_hashes(runtimes)
+                original_copy = runtime_module.copy_regular_file
+                refused = []
+                targets = []
+
+                def copy(original, target, **options):
+                    target = Path(target)
+                    targets.append(target)
+                    if Path(original) != source:
+                        return original_copy(original, target, **options)
+                    gate: RegularFileGate = {"path": source, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original_copy(original, target, **options)
+                    self.assertFalse(target.exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                runner = Mock()
+                with (
+                    patch.object(runtime_module, "copy_regular_file", copy),
+                    self.assertRaises(shutil.Error) as caught,
+                ):
+                    _probe_relocated_runtime(
+                        runtimes, platform_name="darwin", run=runner
+                    )
+                self.assertEqual(len(refused), 1)
+                self.assertEqual(len(caught.exception.args[0]), 1)
+                original, target, message = caught.exception.args[0][0]
+                self.assertEqual(Path(original), source)
+                self.assertIn(Path(target), targets)
+                self.assertIn("regular file", message)
+                self.assertTrue(targets)
+                for destination in targets:
+                    relocated = next(
+                        parent
+                        for parent in destination.parents
+                        if parent.name == "speech-runtimes"
+                    )
+                    self.assertFalse(relocated.parent.exists())
+                runner.assert_not_called()
+                self.assertEqual(tree_hashes(runtimes), before)
+                self._assert_relocation_metadata_and_provenance(runtimes)
+                self.assertEqual(tree_hashes(runtimes), before)
+
+    def _assert_relocation_metadata_and_provenance(self, runtimes):
+        def runner(command, **options):
+            interpreter = Path(command[0])
+            relocated = interpreter.parents[2]
+            runtime = relocated / "pocket-tts"
+            self.assertEqual(command[1:4], ["-I", "-B", "-c"])
+            self.assertTrue(options["check"])
+            for original in runtimes.rglob("*"):
+                copied = relocated / original.relative_to(runtimes)
+                if original.is_symlink():
+                    self.assertTrue(copied.is_symlink())
+                    self.assertEqual(os.readlink(copied), os.readlink(original))
+                else:
+                    self.assertEqual(
+                        copied.stat().st_mtime_ns, original.stat().st_mtime_ns
+                    )
+                    if os.name != "nt":
+                        self.assertEqual(
+                            stat.S_IMODE(copied.stat().st_mode),
+                            stat.S_IMODE(original.stat().st_mode),
+                        )
+                    if original.is_file():
+                        self.assertEqual(copied.read_bytes(), original.read_bytes())
+            self.assertTrue(interpreter.resolve().is_file())
+            return SimpleNamespace(
+                stdout=json.dumps(
+                    {
+                        "executable": str(interpreter),
+                        "prefix": str(runtime),
+                        "base_prefix": str(relocated / "_python/cpython"),
+                        "modules": {
+                            "example": str(
+                                runtime / "lib/python3.14/site-packages/example.py"
+                            )
+                        },
+                    }
+                )
+            )
+
+        report = _probe_relocated_runtime(
+            runtimes,
+            platform_name="darwin",
+            run=runner,
+            probe_modules=("example",),
+        )
+        self.assertEqual(set(report["modules"]), {"example"})
+        self.assertFalse(Path(report["prefix"]).parent.parent.exists())
+
+    def test_relocation_preserves_tree_metadata_and_symlinks(self):
+        with TemporaryDirectory() as directory:
+            runtimes, _managed, module = self._relocation_fixture(Path(directory))
+            symlink_or_skip(
+                runtimes / "site-alias", module.parent, target_is_directory=True
+            )
+            symlink_or_skip(runtimes / "missing-library", Path("absent-library"))
+            module.parent.chmod(0o750)
+            os.utime(module.parent, ns=(1_600_000_000_000_000_000,) * 2)
+            self._assert_relocation_metadata_and_provenance(runtimes)
+
     def test_staging_rejects_aliased_destination_before_removing_files(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -45,6 +285,75 @@ class ReleaseRuntimeTest(unittest.TestCase):
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
             run.assert_not_called()
 
+    def _assert_append_rejects_aliases(
+        self, make_alias, *, target_exists=True, platform_name="darwin"
+    ):
+        for name in ("_python", "pocket-tts"):
+            with self.subTest(directory=name), TemporaryDirectory() as directory:
+                root = Path(directory)
+                project = root / "project"
+                backend = project / "backends/pocket-tts"
+                backend.mkdir(parents=True)
+                (backend / "uv.lock").write_text("locked", encoding="utf-8")
+                destination = root / "speech-runtimes"
+                destination.mkdir()
+                retained = destination / "keep.txt"
+                retained.write_bytes(b"keep")
+                outside = root / "outside"
+                external = outside / "cpython/include/keep.txt"
+                if target_exists:
+                    external.parent.mkdir(parents=True)
+                    external.write_bytes(b"outside")
+                    interpreter = outside / "cpython/bin/python3.14"
+                    interpreter.parent.mkdir()
+                    interpreter.write_bytes(b"python")
+                if name == "_python":
+                    previous = destination / "pocket-tts/previous.txt"
+                    previous.parent.mkdir()
+                    previous.write_bytes(b"previous")
+                make_alias(destination / name, outside)
+                run = Mock()
+
+                with self.assertRaisesRegex(RuntimeError, "must not be an alias"):
+                    stage_speech_runtime(
+                        project,
+                        destination,
+                        append=True,
+                        platform_name=platform_name,
+                        run=run,
+                    )
+
+                run.assert_not_called()
+                self.assertEqual(retained.read_bytes(), b"keep")
+                if target_exists:
+                    self.assertEqual(external.read_bytes(), b"outside")
+                else:
+                    self.assertFalse(outside.exists())
+                if name == "_python":
+                    self.assertEqual(previous.read_bytes(), b"previous")
+
+    def test_append_rejects_directory_links_before_mutating_destination(self):
+        for target_exists in (True, False):
+            with self.subTest(target_exists=target_exists):
+                self._assert_append_rejects_aliases(
+                    lambda link, target: symlink_or_skip(
+                        link, target, target_is_directory=True
+                    ),
+                    target_exists=target_exists,
+                )
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows junctions require Windows")
+    def test_append_rejects_junctions_before_mutating_destination(self):
+        def make_junction(link, target):
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                check=True,
+                capture_output=True,
+            )
+            self.assertTrue(link.is_junction())
+
+        self._assert_append_rejects_aliases(make_junction, platform_name="win32")
+
     def test_staging_rejects_destination_containing_source_project(self):
         with TemporaryDirectory() as directory:
             project = Path(directory) / "project"
@@ -56,7 +365,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
             run = Mock()
 
             with self.assertRaisesRegex(RuntimeError, "contains the source project"):
-                stage_pocket_runtime(project, project, run=run)
+                stage_speech_runtime(project, project, run=run)
 
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
             run.assert_not_called()
@@ -69,6 +378,12 @@ class ReleaseRuntimeTest(unittest.TestCase):
             (backend / "uv.lock").write_text("locked", encoding="utf-8")
             (project / "pyproject.toml").write_text("[project]", encoding="utf-8")
             destination = Path(directory) / "build" / "speech-runtimes"
+            outside = Path(directory) / "outside"
+            outside.mkdir()
+            retained = outside / "keep.txt"
+            retained.write_bytes(b"keep")
+            destination.mkdir(parents=True)
+            symlink_or_skip(destination / "_python", outside, target_is_directory=True)
             calls = []
 
             def runner(command, **options):
@@ -117,7 +432,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
                 }
                 return SimpleNamespace(stdout=json.dumps(report))
 
-            manifest_path = stage_pocket_runtime(
+            manifest_path = stage_speech_runtime(
                 project,
                 destination,
                 platform_name="darwin",
@@ -127,6 +442,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             interpreter = destination / "pocket-tts/bin/python"
             self.assertEqual(manifest["backend"], "pocket-tts")
+            self.assertEqual(retained.read_bytes(), b"keep")
             self.assertTrue(interpreter.is_symlink())
             self.assertFalse(os.readlink(interpreter).startswith("/"))
             flattened = [part for command, _options in calls for part in command]
@@ -190,7 +506,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
                 }
                 return SimpleNamespace(stdout=json.dumps(report))
 
-            manifest_path = stage_pocket_runtime(
+            manifest_path = stage_speech_runtime(
                 project,
                 destination,
                 platform_name="win32",
@@ -252,7 +568,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
             with patch(
                 "vntts.release_runtime._probe_relocated_runtime", return_value={}
             ):
-                manifest = stage_pocket_runtime(
+                manifest = stage_speech_runtime(
                     project,
                     destination,
                     backend="qwen-tts",
@@ -446,6 +762,66 @@ class ReleaseRuntimeTest(unittest.TestCase):
             self.assertFalse(entrypoint.exists())
             self.assertFalse(entrypoint.parent.exists())
             self.assertTrue(runtime_library.exists())
+
+    def test_entrypoint_pruning_removes_directory_links_without_visiting_targets(self):
+        for platform_name, scripts_folder in (("darwin", "bin"), ("win32", "Scripts")):
+            with (
+                self.subTest(platform=platform_name),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                managed = root / "_python/cpython/bin/python3.14"
+                managed.parent.mkdir(parents=True)
+                managed.write_bytes(b"python")
+                runtime = root / "runtime"
+                runtime.mkdir()
+                outside = root / "outside"
+                outside.mkdir()
+                sentinel = outside / "keep.txt"
+                sentinel.write_bytes(b"keep")
+                scripts = runtime / scripts_folder
+                symlink_or_skip(scripts, outside, target_is_directory=True)
+
+                _prune_runtime_entrypoints(
+                    root / "_python", managed, runtime, platform_name
+                )
+
+                self.assertEqual(sentinel.read_bytes(), b"keep")
+                self.assertFalse(scripts.is_symlink())
+                self.assertFalse(scripts.exists())
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows junctions require Windows")
+    def test_entrypoint_pruning_removes_junctions_without_visiting_targets(self):
+        for platform_name, scripts_folder in (("darwin", "bin"), ("win32", "Scripts")):
+            with (
+                self.subTest(platform=platform_name),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                managed = root / "_python/cpython/bin/python3.14"
+                managed.parent.mkdir(parents=True)
+                managed.write_bytes(b"python")
+                runtime = root / "runtime"
+                runtime.mkdir()
+                outside = root / "outside"
+                outside.mkdir()
+                sentinel = outside / "keep.txt"
+                sentinel.write_bytes(b"keep")
+                scripts = runtime / scripts_folder
+                subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(scripts), str(outside)],
+                    check=True,
+                    capture_output=True,
+                )
+                self.assertTrue(scripts.is_junction())
+
+                _prune_runtime_entrypoints(
+                    root / "_python", managed, runtime, platform_name
+                )
+
+                self.assertEqual(sentinel.read_bytes(), b"keep")
+                self.assertFalse(scripts.is_junction())
+                self.assertFalse(scripts.exists())
 
     def test_runtime_site_rejects_ambiguous_posix_layout(self):
         with TemporaryDirectory() as directory:

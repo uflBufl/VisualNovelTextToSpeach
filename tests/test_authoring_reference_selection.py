@@ -1,4 +1,6 @@
+import hashlib
 import json
+import os
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -10,6 +12,8 @@ import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
 
 import vntts.authoring.reference_selection as selection_module
+from tests.authoring_fixtures import create_test_workspace, tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.reference_selection import (
@@ -18,6 +22,8 @@ from vntts.authoring.reference_selection import (
     select_voice_reference,
     validate_reference_selection_provenance,
 )
+from vntts.authoring.workbench import AuthoringWorkbenchError, create_resume_workspace
+from vntts.reference_quality import analyze_reference
 
 
 def write_reference(path, frequency):
@@ -59,6 +65,94 @@ def write_manifest(root):
 
 
 class AuthoringReferenceSelectionTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_public_hash_acquisitions_refuse_fifo_preserve_inputs_and_recover(self):
+        for phase in ("manifest recheck", "reference recheck", "provenance"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                manifest = write_manifest(root)
+                output = root / "selected.json"
+                selected = (
+                    manifest
+                    if phase == "manifest recheck"
+                    else root / "references/hero-1.wav"
+                )
+                if phase == "provenance":
+                    select_voice_reference(manifest, "Hero", 2, output)
+                    document = json.loads(output.read_text(encoding="utf-8"))
+                before = tree_hashes(root)
+                original = selection_module.sha256_file
+                refused = []
+
+                def checksum(path):
+                    if Path(path) != selected:
+                        return original(path)
+                    gate: RegularFileGate = {"path": selected, "armed": True}
+                    with (
+                        swap_at_acquisition(self, gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(path)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                with (
+                    patch.object(selection_module, "sha256_file", checksum),
+                    self.assertRaisesRegex(
+                        ReferenceSelectionError, "regular file"
+                    ) as caught,
+                ):
+                    if phase == "provenance":
+                        validate_reference_selection_provenance(output, document)
+                    else:
+                        select_voice_reference(manifest, "Hero", 2, output)
+                self.assertEqual(len(refused), 1)
+                self.assertIs(caught.exception.__cause__, refused[0])
+                self.assertEqual(tree_hashes(root), before)
+                if phase != "provenance":
+                    self.assertFalse(output.exists())
+                    select_voice_reference(manifest, "Hero", 2, output)
+                document = json.loads(output.read_text(encoding="utf-8"))
+                recovered = tree_hashes(root)
+                validate_reference_selection_provenance(output, document)
+                validate_reference_selection_provenance(output, document)
+                with self.assertRaisesRegex(ReferenceSelectionError, "output exists"):
+                    select_voice_reference(manifest, "Hero", 2, output)
+                self.assertEqual(tree_hashes(root), recovered)
+
+    def test_relocated_selection_requires_the_same_reference_bytes(self):
+        for destination in ("missing", "changed", "matching"):
+            with (
+                self.subTest(destination=destination),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                manifest = write_manifest(root / "source")
+                output = root / "export" / "selected.json"
+                if destination == "missing":
+                    output.parent.mkdir()
+                else:
+                    write_manifest(output.parent)
+                    if destination == "changed":
+                        (output.parent / "references/hero-1.wav").write_bytes(
+                            b"changed"
+                        )
+                before = tree_hashes(root)
+                if destination == "matching":
+                    result = select_voice_reference(manifest, "Hero", 2, output)
+                    self.assertEqual(result.output, output.resolve())
+                    validate_reference_selection_provenance(
+                        output, json.loads(output.read_text(encoding="utf-8"))
+                    )
+                    output.unlink()
+                else:
+                    with self.assertRaises(ReferenceSelectionError):
+                        select_voice_reference(manifest, "Hero", 2, output)
+                    self.assertFalse(output.exists())
+                self.assertEqual(tree_hashes(root), before)
+
     def test_dangling_symlink_output_is_not_redirected(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -115,10 +209,54 @@ class AuthoringReferenceSelectionTest(unittest.TestCase):
             root = Path(directory)
             manifest = write_manifest(root)
             source = manifest.read_bytes()
-            report = inspect_voice_reference_candidates(manifest, "The Hero")
-            self.assertEqual(report["objective_ranking"], [1, 2])
-            output = root / "selected.json"
-            result = select_voice_reference(manifest, "Hero", 2, output)
+            with (
+                patch.object(
+                    selection_module,
+                    "analyze_reference_bytes",
+                    wraps=selection_module.analyze_reference_bytes,
+                ) as analysis,
+                patch.object(
+                    selection_module,
+                    "rank_reference_quality",
+                    wraps=selection_module.rank_reference_quality,
+                ) as ranking,
+            ):
+                report = inspect_voice_reference_candidates(manifest, "The Hero")
+                self.assertEqual(analysis.call_count, 2)
+                ranking.assert_called_once()
+                analysis.reset_mock()
+                ranking.reset_mock()
+                output = root / "selected.json"
+                result = select_voice_reference(manifest, "Hero", 2, output)
+                self.assertEqual(analysis.call_count, 2)
+                ranking.assert_not_called()
+            self.assertEqual(
+                report,
+                {
+                    "schema": "vntts.authoring-reference-candidates",
+                    "schema_version": 1,
+                    "manifest": str(manifest.resolve()),
+                    "manifest_sha256": hashlib.sha256(source).hexdigest(),
+                    "character": "Hero",
+                    "references": [
+                        {
+                            **analyze_reference(root / relative),
+                            "path": relative,
+                            "reference_number": number,
+                        }
+                        for number, relative in enumerate(
+                            ("references/hero-1.wav", "references/hero-2.wav"),
+                            start=1,
+                        )
+                    ],
+                    "objective_ranking": [1, 2],
+                    "manual_review_required": [
+                        "speaker similarity",
+                        "music or background contamination",
+                        "spoken content and pronunciation",
+                    ],
+                },
+            )
             selected = json.loads(output.read_text(encoding="utf-8"))
             stdout = StringIO()
             with redirect_stdout(stdout):
@@ -154,6 +292,109 @@ class AuthoringReferenceSelectionTest(unittest.TestCase):
             provenance["selected_reference_sha256"], report["references"][1]["sha256"]
         )
         self.assertTrue(provenance["manual_review_required"])
+
+    def test_selection_still_rejects_a_malformed_unselected_wav(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = write_manifest(root)
+            (root / "references/hero-2.wav").write_bytes(b"not a WAV")
+            before = tree_hashes(root)
+            output = root / "selected.json"
+            with self.assertRaisesRegex(ReferenceSelectionError, "reference WAV"):
+                select_voice_reference(manifest, "Hero", 1, output)
+            self.assertFalse(output.exists())
+            self.assertEqual(tree_hashes(root), before)
+
+    def test_provenance_refuses_duplicate_manifest_references_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = write_manifest(root)
+            write_reference(root / "references/hero-3.wav", 440)
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            document["voices"][0]["references"].append("references/hero-3.wav")
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+            output = root / "selected.json"
+            select_voice_reference(manifest, "Hero", 2, output)
+            selected = json.loads(output.read_text(encoding="utf-8"))
+            references = selected["voices"][0]["references"]
+            references[1:] = reversed(references[1:])
+            before = tree_hashes(root)
+            validate_reference_selection_provenance(output, selected)
+            references.append(references[-1])
+            with self.assertRaisesRegex(ReferenceSelectionError, "inventory conflicts"):
+                validate_reference_selection_provenance(output, selected)
+            self.assertEqual(tree_hashes(root), before)
+            references.pop()
+            validate_reference_selection_provenance(output, selected)
+
+    def test_workspace_refuses_duplicate_selection_references_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, _workspace = create_test_workspace(root)
+            manifest = Path(fixture["job"]["voice_manifest"])
+            write_reference(manifest.parent / "rhiannon.wav", 220)
+            write_reference(manifest.parent / "rhiannon-2.wav", 330)
+            output = manifest.with_name("selected.json")
+            select_voice_reference(manifest, "Rhiannon", 2, output)
+            original = output.read_bytes()
+            selected = json.loads(original)
+            references = selected["voices"][0]["references"]
+            references.append(references[-1])
+            output.write_text(json.dumps(selected), encoding="utf-8")
+            workspaces = root / "selected-workspaces"
+            workspaces.mkdir()
+            before = tree_hashes(root)
+            with self.assertRaisesRegex(AuthoringWorkbenchError, "inventory conflicts"):
+                create_resume_workspace(
+                    imported,
+                    workspaces,
+                    story_index=fixture["job"]["story_index"],
+                    voice_manifest=output,
+                    backend="moss-tts",
+                    model="model",
+                    generation_profile="stable",
+                    narrator_character="Rhiannon",
+                )
+            self.assertEqual(list(workspaces.iterdir()), [])
+            self.assertEqual(tree_hashes(root), before)
+            output.write_bytes(original)
+            recovered = create_resume_workspace(
+                imported,
+                workspaces,
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=output,
+                backend="moss-tts",
+                model="model",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+            )
+            copied = recovered.directory / "inputs/voice/manifest.json"
+            self.assertEqual(copied.read_bytes(), original)
+            validate_reference_selection_provenance(copied, json.loads(original))
+
+    def test_legacy_manifest_still_reports_and_publishes_selection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = write_manifest(root)
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            document.pop("version")
+            voice = document["voices"][0]
+            voice.pop("references")
+            voice["reference"] = "references/hero-1.wav"
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+            original = manifest.read_bytes()
+            report = inspect_voice_reference_candidates(manifest, "The Hero")
+            output = root / "selected.json"
+            result = select_voice_reference(manifest, "The Hero", 1, output)
+            selected = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(manifest.read_bytes(), original)
+            self.assertEqual(report["manifest_sha256"], result.source_manifest_sha256)
+            self.assertEqual(selected["version"], 2)
+            self.assertNotIn("reference", selected["voices"][0])
+            self.assertEqual(
+                selected["voices"][0]["references"], ["references/hero-1.wav"]
+            )
+            validate_reference_selection_provenance(output, selected)
 
     def test_rejects_symlink_escape_and_source_mutation_before_publish(self):
         with TemporaryDirectory() as directory:

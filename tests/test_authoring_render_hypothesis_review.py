@@ -2,24 +2,28 @@ import hashlib
 import io
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.audio import write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
 
-from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_failure_reference_audit import (
-    _PreviewBackendFactory,
-    create_failed_reference_workspace,
+from tests.authoring_fixtures import create_failed_reference_workspace
+from tests.source_reference_fixtures import (
+    PreviewBackendFactory as _PreviewBackendFactory,
 )
+from tests.source_reference_fixtures import (
+    write_reference_render_comparison_fixture as write_comparison,
+)
+from tests.symlink_support import symlink_or_skip
+from vntts.authoring import render_hypothesis_records, render_hypothesis_review
+from vntts.authoring.authority import AuthoringAuthorityError
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_reference_audit import (
     load_failure_reference_decisions,
     publish_failure_reference_audit,
+    record_failure_reference_decision,
 )
 from vntts.authoring.failure_reference_binding import (
     load_failure_reference_binding_document,
@@ -50,101 +54,6 @@ def canonical_sha256(value):
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
     ).hexdigest()
-
-
-def write_comparison(root, *, reference_format="wav"):
-    root.mkdir()
-    controls = root / "controls"
-    controls.mkdir()
-    reference = controls / f"reference.{reference_format}"
-    if reference_format == "wav":
-        write_pcm16_wav(reference, np.full(1_200, 0.1, dtype=np.float32), 24_000)
-    else:
-        reference.write_bytes(b"OggS\x00checksum-bound-fixture")
-    reference_sha = sha256_file(reference)
-    text_sha = hashlib.sha256(b"A measured test line.").hexdigest()
-    queue_id = "reverse1999:1:2:" + text_sha[:16]
-    reports = []
-    arms = []
-    for index, arm_id in enumerate(("reference-02", "reference-03"), start=1):
-        arm_root = root / "arms" / arm_id
-        (arm_root / "audio").mkdir(parents=True)
-        base = {
-            "id": queue_id,
-            "line_id": "reverse1999:1:2",
-            "text": "A measured test line.",
-            "text_sha256": text_sha,
-            "case_group_id": "b" * 64,
-            "candidate_group_id": "c" * 64,
-            "candidate_id": "candidate-one",
-            "reference_sha256": reference_sha,
-        }
-        if index == 1:
-            audio = arm_root / "audio/0001.wav"
-            write_pcm16_wav(audio, np.full(2_400, 0.2, dtype=np.float32), 24_000)
-            render = {
-                **base,
-                "outcome": "complete",
-                "audio": "audio/0001.wav",
-                "audio_sha256": sha256_file(audio),
-                "sample_rate": 24_000,
-                "backend": "moss-tts",
-                "model": "fixture",
-                "generation_profile": "stable",
-                "seed": 0,
-            }
-        else:
-            render = {**base, "outcome": "error", "error": "typed limited"}
-        report = {
-            "schema": "vntts.voice-model-report",
-            "schema_version": 1,
-            "model_id": arm_id,
-            "provider": "reference-render-comparison",
-            "backend": "reference-render-comparison",
-            "model": "one exact alternative reference per sample",
-            "samples": [render],
-        }
-        report_path = arm_root / "report.json"
-        atomic_write_json(report_path, report)
-        report_relative = f"arms/{arm_id}/report.json"
-        reports.append(report_relative)
-        arms.append(
-            {
-                "arm_id": arm_id,
-                "report": report_relative,
-                "report_sha256": sha256_file(report_path),
-                "complete_count": int(index == 1),
-                "failure_count": int(index != 1),
-                "renders": [render],
-            }
-        )
-    body = {
-        "schema": "vntts.authoring-reference-render-comparison",
-        "schema_version": 1,
-        "generated_at": "2026-08-27T00:00:00+00:00",
-        "input_plan": "/immutable/plan.json",
-        "input_plan_sha256": "d" * 64,
-        "audit": "/immutable/audit",
-        "audit_id": "e" * 64,
-        "audit_sha256": "f" * 64,
-        "queue_ids": [queue_id],
-        "controls": [
-            {
-                "group_id": "c" * 64,
-                "candidate_id": "candidate-one",
-                "audio": f"controls/reference.{reference_format}",
-                "sha256": reference_sha,
-            }
-        ],
-        "arms": arms,
-        "reports": reports,
-        "complete_pair_queue_ids": [],
-    }
-    atomic_write_json(
-        root / "comparison.json",
-        {**body, "comparison_id": canonical_sha256(body)},
-    )
-    return queue_id
 
 
 class RenderHypothesisReviewTest(unittest.TestCase):
@@ -222,8 +131,51 @@ class RenderHypothesisReviewTest(unittest.TestCase):
                     queue_id,
                 )
 
+            for audit_path, label in (
+                (source_audit, "source failure audit key"),
+                (fresh_audit, "fresh failure audit key"),
+            ):
+                with self.subTest(audit=label):
+                    self.assert_import_rejects_captured_key_replacement(
+                        audit_path,
+                        label,
+                        fresh_audit,
+                        comparison.directory,
+                        review_root,
+                        queue_id,
+                    )
+                    self.assert_import_rejects_captured_key_replacement(
+                        audit_path,
+                        label,
+                        fresh_audit,
+                        comparison.directory,
+                        review_root,
+                        queue_id,
+                        value=float("nan"),
+                        message="canonically",
+                    )
+            self.assert_import_rejects_audio_replacements(
+                source_audit, fresh_audit, comparison.directory, review_root, queue_id
+            )
+            self.assertEqual(
+                load_failure_reference_decisions(fresh_audit)["decisions"], []
+            )
+            self.assert_import_preserves_competing_decision(
+                root, workspace, comparison.directory, review_root, queue_id
+            )
+
+            self.assert_import_translates_captured_comparison_errors(
+                fresh_audit, comparison.directory, review_root, queue_id
+            )
+
             imported = import_accepted_render_hypothesis(
                 fresh_audit, comparison.directory, review_root, queue_id
+            )
+            self.assert_import_rejects_review_replacement(
+                fresh_audit, comparison.directory, review_root, queue_id
+            )
+            self.assert_import_rejects_audio_replacements(
+                source_audit, fresh_audit, comparison.directory, review_root, queue_id
             )
             repeated = import_accepted_render_hypothesis(
                 fresh_audit, comparison.directory, review_root, queue_id
@@ -233,8 +185,7 @@ class RenderHypothesisReviewTest(unittest.TestCase):
             binding = load_failure_reference_binding_document(binding_root)
             decision = load_failure_reference_decisions(fresh_audit)["decisions"][0]
 
-            self.assertTrue(imported.created)
-            self.assertFalse(repeated.created)
+            self.assertEqual((imported.created, repeated.created), (True, False))
             self.assertEqual(imported.decision_set_id, repeated.decision_set_id)
             self.assertEqual(
                 decision["selection_authority"]["schema"],
@@ -257,6 +208,215 @@ class RenderHypothesisReviewTest(unittest.TestCase):
                 )
             self.assertEqual(code, 0)
             self.assertFalse(json.loads(stdout.getvalue())["created"])
+
+    def assert_import_translates_captured_comparison_errors(
+        self, fresh_audit, comparison_root, review_root, queue_id
+    ):
+        path = comparison_root / "comparison.json"
+        original = path.read_bytes()
+        capture = render_hypothesis_review.capture_authority_file
+        for malformed in (b"[]", b"{", b"\xff"):
+
+            def capture_changed_comparison(source, label, **kwargs):
+                if Path(source) != path:
+                    return capture(source, label, **kwargs)
+                path.write_bytes(malformed)
+                try:
+                    return capture(source, label, **kwargs)
+                finally:
+                    path.write_bytes(original)
+
+            with (
+                self.subTest(payload=malformed),
+                patch.object(
+                    render_hypothesis_review,
+                    "capture_authority_file",
+                    capture_changed_comparison,
+                ),
+            ):
+                with self.assertRaises(RenderHypothesisReviewError) as raised:
+                    import_accepted_render_hypothesis(
+                        fresh_audit, comparison_root, review_root, queue_id
+                    )
+                self.assertIsInstance(
+                    raised.exception.__cause__, AuthoringAuthorityError
+                )
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(
+                    load_failure_reference_decisions(fresh_audit)["decisions"], []
+                )
+
+    def assert_import_preserves_competing_decision(
+        self, root, workspace, comparison_root, review_root, queue_id
+    ):
+        conflict_audit = root / "conflict-audit"
+        publish_failure_reference_audit(
+            workspace, conflict_audit, seed=19, queue_ids=(queue_id,)
+        )
+        competitor = None
+
+        def save_competing_decision(directory, group_id, candidate_id, **kwargs):
+            nonlocal competitor
+            competitor = record_failure_reference_decision(
+                directory, group_id, "neither_acceptable"
+            )
+            return record_failure_reference_decision(
+                directory, group_id, candidate_id, **kwargs
+            )
+
+        with patch.object(
+            render_hypothesis_review,
+            "record_failure_reference_decision",
+            side_effect=save_competing_decision,
+        ):
+            with self.assertRaisesRegex(
+                RenderHypothesisReviewError, "changed before decision save"
+            ):
+                import_accepted_render_hypothesis(
+                    conflict_audit, comparison_root, review_root, queue_id
+                )
+        self.assertEqual(load_failure_reference_decisions(conflict_audit), competitor)
+
+    def assert_import_rejects_captured_key_replacement(
+        self,
+        audit_path,
+        label,
+        fresh_audit,
+        comparison_root,
+        review_root,
+        queue_id,
+        *,
+        value="references/changed.wav",
+        message="blind key",
+    ):
+        key_path = audit_path / ".blind-key.json"
+        original_key = key_path.read_bytes()
+        changed_key = json.loads(original_key)
+        changed_key["groups"][0]["candidates"][0]["source_reference"] = value
+        changed_key_bytes = json.dumps(changed_key).encode()
+        original_capture = render_hypothesis_review.capture_authority_file
+        original_load_audit = render_hypothesis_review.load_failure_reference_audit
+        captured = False
+
+        def capture_changed_key(path, current_label, **kwargs):
+            nonlocal captured
+            if current_label != label:
+                return original_capture(path, current_label, **kwargs)
+            key_path.write_bytes(changed_key_bytes)
+            try:
+                return original_capture(path, current_label, **kwargs)
+            finally:
+                key_path.write_bytes(original_key)
+                captured = True
+
+        def restore_changed_key_after_validation(path):
+            audit = original_load_audit(path)
+            if captured and Path(path).resolve() == audit_path.resolve():
+                key_path.write_bytes(changed_key_bytes)
+            return audit
+
+        try:
+            with (
+                patch.object(
+                    render_hypothesis_review,
+                    "capture_authority_file",
+                    side_effect=capture_changed_key,
+                ),
+                patch.object(
+                    render_hypothesis_review,
+                    "load_failure_reference_audit",
+                    side_effect=restore_changed_key_after_validation,
+                ),
+            ):
+                with self.assertRaisesRegex(RenderHypothesisReviewError, message):
+                    import_accepted_render_hypothesis(
+                        fresh_audit, comparison_root, review_root, queue_id
+                    )
+        finally:
+            key_path.write_bytes(original_key)
+
+    def assert_import_rejects_audio_replacements(
+        self, source_audit, fresh_audit, comparison_root, review_root, queue_id
+    ):
+        for audit_path in (source_audit, fresh_audit):
+            document = json.loads((audit_path / "audit.json").read_text())
+            audio = audit_path / document["groups"][0]["candidates"][0]["audio"]
+            original_audio = audio.read_bytes()
+            for hook in ("_import_selection", "load_failure_reference_decisions"):
+                with self.subTest(audit=audit_path.name, phase=hook):
+                    original = getattr(render_hypothesis_review, hook)
+
+                    def replace_audio_after_read(*args, **kwargs):
+                        result = original(*args, **kwargs)
+                        audio.write_bytes(original_audio + b"changed")
+                        return result
+
+                    try:
+                        with patch.object(
+                            render_hypothesis_review,
+                            hook,
+                            side_effect=replace_audio_after_read,
+                        ):
+                            with self.assertRaisesRegex(
+                                RenderHypothesisReviewError, "changed"
+                            ):
+                                import_accepted_render_hypothesis(
+                                    fresh_audit, comparison_root, review_root, queue_id
+                                )
+                    finally:
+                        audio.write_bytes(original_audio)
+
+    def assert_import_rejects_review_replacement(
+        self, fresh_audit, comparison_root, review_root, queue_id
+    ):
+        original_load_decisions = (
+            render_hypothesis_review.load_failure_reference_decisions
+        )
+        review_path = review_root / "review.json"
+        original_review = review_path.read_bytes()
+
+        def replace_review_after_decisions(*args, **kwargs):
+            decisions = original_load_decisions(*args, **kwargs)
+            review_path.write_bytes(original_review + b"\n")
+            return decisions
+
+        try:
+            with patch.object(
+                render_hypothesis_review,
+                "load_failure_reference_decisions",
+                side_effect=replace_review_after_decisions,
+            ):
+                with self.assertRaisesRegex(RenderHypothesisReviewError, "changed"):
+                    import_accepted_render_hypothesis(
+                        fresh_audit, comparison_root, review_root, queue_id
+                    )
+        finally:
+            review_path.write_bytes(original_review)
+
+    def test_result_metadata_decodes_the_captured_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            comparison = root / "comparison"
+            queue_id = write_comparison(comparison)
+            result = publish_render_hypothesis_review(
+                comparison, queue_id, "reference-02", root / "review"
+            )
+            payload = result.result.read_bytes()
+            probe = render_hypothesis_records.probe_pcm16_mono_wav
+
+            def replace_before_decode(source):
+                result.result.write_bytes(b"RIFF")
+                try:
+                    return probe(source)
+                finally:
+                    result.result.write_bytes(payload)
+
+            with patch.object(
+                render_hypothesis_records, "probe_pcm16_mono_wav", replace_before_decode
+            ):
+                loaded = load_render_hypothesis_record(result.directory)
+            self.assertEqual(loaded.result_snapshot.payload, payload)
+            self.assertEqual(loaded.review["review_id"], result.review_id)
 
     def test_publish_load_and_decide_are_self_contained(self):
         with TemporaryDirectory() as directory:
@@ -285,6 +445,81 @@ class RenderHypothesisReviewTest(unittest.TestCase):
             decision_path.write_text(json.dumps(decision), encoding="utf-8")
             with self.assertRaisesRegex(RenderHypothesisReviewError, "malformed"):
                 load_render_hypothesis_review(output)
+
+    def test_publication_io_errors_leave_no_output_and_reach_cli(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            comparison = root / "comparison"
+            queue_id = write_comparison(comparison)
+            original_sources = {
+                path.relative_to(comparison): path.read_bytes()
+                for path in comparison.rglob("*")
+                if path.is_file()
+            }
+            output = root / "destination" / "review"
+            mkdir = Path.mkdir
+            write_bytes = Path.write_bytes
+            error = PermissionError("review storage is read-only")
+
+            def blocked_mkdir(path, *args, **kwargs):
+                if path.resolve() == output.parent.resolve():
+                    raise error
+                return mkdir(path, *args, **kwargs)
+
+            def blocked_audio_write(path, payload):
+                if path.name == "result.wav":
+                    raise error
+                return write_bytes(path, payload)
+
+            failures = (
+                patch.object(
+                    render_hypothesis_review,
+                    "no_replace_destination",
+                    side_effect=error,
+                ),
+                patch.object(Path, "mkdir", blocked_mkdir),
+                patch.object(Path, "write_bytes", blocked_audio_write),
+                patch.object(
+                    render_hypothesis_review, "atomic_write_json", side_effect=error
+                ),
+            )
+            for failure in failures:
+                with self.subTest(boundary=failure.attribute), failure:
+                    with self.assertRaises(RenderHypothesisReviewError) as raised:
+                        publish_render_hypothesis_review(
+                            comparison, queue_id, "reference-02", output
+                        )
+                    self.assertIs(raised.exception.__cause__, error)
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        with self.assertRaises(SystemExit) as exited:
+                            authoring_main(
+                                [
+                                    "render-hypothesis-review-publish",
+                                    str(comparison),
+                                    queue_id,
+                                    "reference-02",
+                                    "--output",
+                                    str(output),
+                                ]
+                            )
+                    self.assertEqual(exited.exception.code, 2)
+                    self.assertIn(str(error), stderr.getvalue())
+                    self.assertEqual(stdout.getvalue(), "")
+                self.assertFalse(output.exists())
+                self.assertEqual(list(output.parent.glob(".review.staging-*")), [])
+                self.assertEqual(
+                    {
+                        path.relative_to(comparison): path.read_bytes()
+                        for path in comparison.rglob("*")
+                        if path.is_file()
+                    },
+                    original_sources,
+                )
+            published = publish_render_hypothesis_review(
+                comparison, queue_id, "reference-02", output
+            )
+            self.assertEqual(published.queue_id, queue_id)
 
     def test_rejects_incomplete_arm_and_ambiguous_reference(self):
         with TemporaryDirectory() as directory:
@@ -361,6 +596,29 @@ class RenderHypothesisReviewTest(unittest.TestCase):
                 )
             self.assertFalse(target.exists())
 
+    def test_non_finite_review_identity_uses_record_and_review_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            comparison = root / "comparison"
+            queue_id = write_comparison(comparison)
+            output = root / "review"
+            publish_render_hypothesis_review(
+                comparison, queue_id, "reference-02", output
+            )
+            path = output / "review.json"
+            original = json.loads(path.read_text())
+            for value in (float("nan"), float("inf"), float("-inf")):
+                for loader, error_type in (
+                    (load_render_hypothesis_record, RenderHypothesisRecordError),
+                    (load_render_hypothesis_review, RenderHypothesisReviewError),
+                ):
+                    with self.subTest(value=value, loader=loader.__name__):
+                        path.write_text(json.dumps({**original, "seed": value}))
+                        with self.assertRaisesRegex(error_type, "identity is invalid"):
+                            loader(output)
+            path.write_text(json.dumps(original))
+            self.assertEqual(load_render_hypothesis_review(output).queue_id, queue_id)
+
     def test_public_record_rejects_noninteger_versions(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -401,9 +659,15 @@ class RenderHypothesisReviewTest(unittest.TestCase):
             record_render_hypothesis_decision(output, "accept_hypothesis")
             decision_path = output / "decision.json"
             decision = json.loads(decision_path.read_text(encoding="utf-8"))
-            for version in (True, 1.0):
-                decision["schema_version"] = version
-                atomic_write_json(decision_path, decision)
+            for field, value in (
+                ("schema_version", True),
+                ("schema_version", 1.0),
+                ("decision", []),
+                ("decision", {}),
+                ("decision", None),
+            ):
+                malformed = {**decision, field: value}
+                atomic_write_json(decision_path, malformed)
                 with self.assertRaisesRegex(
                     RenderHypothesisRecordError, "decision is malformed"
                 ):

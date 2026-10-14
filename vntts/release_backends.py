@@ -17,7 +17,6 @@ SPEECH_BACKEND_LABELS = {
     "moss-tts": "MOSS-TTS Local v1.5",
     "qwen-tts": "Qwen3-TTS voice cloning (experimental)",
 }
-_SOURCE_BACKENDS = tuple(SPEECH_BACKEND_LABELS)
 
 
 def _frozen_moss_backend_available() -> bool:
@@ -31,7 +30,7 @@ def packaged_speech_backend_available(
 ) -> bool:
     bundle_root = get_bundle_root() if bundle_root is None else bundle_root
     if bundle_root is None:
-        return backend in _SOURCE_BACKENDS and (
+        return backend in SPEECH_BACKEND_LABELS and (
             backend != "qwen-tts"
             or sys.platform == "darwin"
             and platform.machine().casefold() == "arm64"

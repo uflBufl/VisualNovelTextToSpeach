@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
+from tests.speech_worker_fixtures import FakeProcess
 from tests.symlink_support import symlink_or_skip
 from vntts.speech_backend import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_worker import (
@@ -84,6 +85,58 @@ class FakeWorkerBackend:
 
 
 class BackendFactoryTests(unittest.TestCase):
+    def test_invalid_retained_options_preserve_worker_and_configuration(self):
+        registry = CharacterVoiceRegistry()
+        cancellation = Event()
+        progress = MagicMock()
+        worker = MagicMock(
+            registry=registry,
+            narrator_reference="alba",
+            startup_cancellation=cancellation,
+            startup_progress=progress,
+        )
+        worker.process.poll.return_value = None
+        factory = MagicMock(return_value=worker)
+        runtime = RetainedWorkerRuntime("pocket-tts", backend_factory=factory)
+        runtime(
+            registry,
+            narrator_reference="alba",
+            startup_cancellation=cancellation,
+            startup_progress=progress,
+        )
+        identity = runtime._identity
+        for options in (
+            {"narrator_reference": "bella", "volume": False},
+            {"narrator_reference": 42},
+            {"narrator_reference": "bella", "startup_cancellation": 42},
+            {"startup_cancellation": Event(), "startup_progress": 42},
+        ):
+            with self.subTest(options=options):
+                with self.assertRaises(TTSConfigurationError):
+                    runtime(CharacterVoiceRegistry(), **options)
+                self.assertIs(runtime._instance, worker)
+                self.assertEqual(runtime._identity, identity)
+                self.assertIs(worker.registry, registry)
+                self.assertEqual(worker.narrator_reference, "alba")
+                self.assertIs(worker.startup_cancellation, cancellation)
+                self.assertIs(worker.startup_progress, progress)
+                worker.shutdown.assert_not_called()
+                worker.set_volume.assert_not_called()
+                factory.assert_called_once()
+
+    def test_retained_reuse_preserves_omitted_narrator_and_raw_volume_setter(self):
+        registry = CharacterVoiceRegistry()
+        worker = MagicMock(narrator_reference="alba")
+        worker.process.poll.return_value = None
+        runtime = RetainedWorkerRuntime(
+            "pocket-tts", backend_factory=MagicMock(return_value=worker)
+        )
+        runtime(registry)
+        runtime(registry, volume=1)
+        self.assertEqual(worker.narrator_reference, "alba")
+        worker.set_volume.assert_called_once_with(1)
+        self.assertIs(type(worker.set_volume.call_args.args[0]), int)
+
     def test_retained_worker_reuses_only_unchanged_live_process(self):
         registry = CharacterVoiceRegistry()
         first = MagicMock(narrator_reference="alba")
@@ -123,34 +176,33 @@ class BackendFactoryTests(unittest.TestCase):
         native.assert_called_once_with(registry, model_name="model.gguf")
 
 
-class FakeProcess:
-    def __init__(self, health):
-        output = BytesIO()
-        if health is not None:
-            _write_frame(output, health)
-        output.seek(0)
-        self.stdin = BytesIO()
-        self.stdout = output
-        self.stderr = BytesIO()
-        self.returncode = None
-
-    def poll(self):
-        return self.returncode
-
-    def wait(self, timeout=None):
-        del timeout
-        if self.returncode is None:
-            self.returncode = 0
-        return self.returncode
-
-    def terminate(self):
-        self.returncode = -15
-
-    def kill(self):
-        self.returncode = -9
-
-
 class SpeechWorkerTest(unittest.TestCase):
+    def test_invalid_volume_never_installs_runtime_or_launches_process(self):
+        for backend in (
+            "pocket-tts",
+            "chatterbox-nano",
+            "moss-tts",
+            "qwen-tts",
+            "moss-tts-delay",
+        ):
+            for volume in (True, "0.5", None, -0.1, 1.1, float("nan"), float("inf")):
+                with self.subTest(backend=backend, volume=volume):
+                    factory = MagicMock()
+                    with (
+                        patch(
+                            "vntts.runtime_installation.ensure_speech_runtime"
+                        ) as prepare,
+                        self.assertRaises(TTSConfigurationError),
+                    ):
+                        IsolatedSpeechBackend(
+                            backend,
+                            CharacterVoiceRegistry(),
+                            volume=volume,
+                            process_factory=factory,
+                        )
+                    prepare.assert_not_called()
+                    factory.assert_not_called()
+
     def test_worker_integer_boundaries_reject_booleans(self):
         backend = FakeWorkerBackend(CharacterVoiceRegistry())
         self.assertTrue(_is_worker_backend(backend))
@@ -959,6 +1011,171 @@ class SpeechWorkerTest(unittest.TestCase):
 
         self.assertEqual(process.returncode, -15)
 
+    def test_startup_failures_have_one_cleanup_owner(self):
+        for failure in (
+            "cancelled",
+            "timeout",
+            "health",
+            "interpreter",
+            "prefix",
+            "send",
+        ):
+            with self.subTest(failure=failure):
+                with (
+                    patch.object(IsolatedSpeechBackend, "_start_worker"),
+                    patch(
+                        "vntts.speech_worker._runtime_paths",
+                        return_value=(
+                            Path("/runtime"),
+                            Path("/runtime/python"),
+                            Path("/site"),
+                        ),
+                    ),
+                ):
+                    backend = IsolatedSpeechBackend(
+                        "moss-tts", CharacterVoiceRegistry()
+                    )
+                process = FakeProcess(None)
+                process.terminate = MagicMock()
+                process.kill = MagicMock()
+                process.wait = MagicMock(
+                    side_effect=subprocess.TimeoutExpired("worker", 2)
+                )
+                backend.process_factory = lambda *_args, **_options: process
+                use = MagicMock()
+                backend._runtime_use = use
+                message = {
+                    "type": "health",
+                    "interpreter": "/runtime/python",
+                    "prefix": "/runtime",
+                    "sample_rate": 24_000,
+                }
+                if failure == "health":
+                    message = {"type": "error", "error": "model failed"}
+                elif failure in {"interpreter", "prefix"}:
+                    message[failure] = "/wrong"
+                expected = (
+                    TTSSynthesisError
+                    if failure == "cancelled"
+                    else TTSConfigurationError
+                )
+                send_error = ValueError("initialize failed")
+                if failure == "send":
+                    expected = ValueError
+                with (
+                    patch("vntts.speech_worker.threading.Thread.start"),
+                    patch.object(
+                        backend,
+                        "_startup_cancelled",
+                        return_value=failure == "cancelled",
+                    ),
+                    patch("vntts.speech_worker.monotonic", side_effect=(0, 9999)),
+                    patch.object(backend, "_next_frame", return_value=(message, b"")),
+                    patch.object(
+                        backend,
+                        "_send",
+                        side_effect=send_error if failure == "send" else None,
+                    ),
+                    patch.object(
+                        backend, "_terminate_process", wraps=backend._terminate_process
+                    ) as terminate,
+                    self.assertRaises(expected),
+                ):
+                    # Use a live deadline for the health-response cases.
+                    if failure != "timeout":
+                        with patch("vntts.speech_worker.monotonic", return_value=0):
+                            backend._start_worker()
+                    else:
+                        backend._start_worker()
+                terminate.assert_called_once_with(process)
+                process.terminate.assert_called_once_with()
+                process.kill.assert_called_once_with()
+                self.assertEqual(process.wait.call_count, 2)
+                use.close.assert_called_once_with()
+                self.assertIsNone(backend.process)
+                self.assertIsNone(backend._runtime_use)
+
+    def test_startup_error_survives_process_and_claim_cleanup_failures(self):
+        with (
+            patch.object(IsolatedSpeechBackend, "_start_worker"),
+            patch(
+                "vntts.speech_worker._runtime_paths",
+                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+            ),
+        ):
+            backend = IsolatedSpeechBackend("moss-tts", CharacterVoiceRegistry())
+        use = MagicMock()
+        backend._runtime_use = use
+        use.close.side_effect = OSError("claim cleanup failed")
+        for error in (ValueError("launch failed"), KeyboardInterrupt()):
+            with self.subTest(error=type(error).__name__):
+                backend._runtime_use = use
+                use.reset_mock()
+                with (
+                    patch.object(backend, "_launch_worker", side_effect=error),
+                    patch.object(
+                        backend,
+                        "_terminate_process",
+                        side_effect=OSError("terminate failed"),
+                    ) as terminate,
+                    self.assertRaises(type(error)) as raised,
+                ):
+                    backend._start_worker()
+                self.assertIs(raised.exception, error)
+                self.assertEqual(len(error.__notes__), 2)
+                terminate.assert_called_once()
+                use.close.assert_called_once_with()
+                self.assertIsNone(backend._runtime_use)
+
+    def test_factory_failures_preserve_cause_and_conservative_claim(self):
+        for failure in ("spawn", "malformed-terminate", "malformed-poll"):
+            with self.subTest(failure=failure):
+                with (
+                    patch.object(IsolatedSpeechBackend, "_start_worker"),
+                    patch(
+                        "vntts.speech_worker._runtime_paths",
+                        return_value=(
+                            Path("/runtime"),
+                            Path("/runtime/python"),
+                            Path("/site"),
+                        ),
+                    ),
+                ):
+                    backend = IsolatedSpeechBackend(
+                        "moss-tts", CharacterVoiceRegistry()
+                    )
+                use = MagicMock()
+                backend._runtime_use = use
+                if failure == "spawn":
+                    original = OSError("spawn failed")
+                    backend.process_factory = MagicMock(side_effect=original)
+                    use.launched.side_effect = OSError("launch reset failed")
+                    expected = OSError
+                else:
+                    process = SimpleNamespace(
+                        poll=MagicMock(return_value=None),
+                        terminate=MagicMock(),
+                        kill=MagicMock(),
+                        wait=MagicMock(return_value=0),
+                    )
+                    backend.process_factory = MagicMock(return_value=process)
+                    if failure == "malformed-terminate":
+                        process.terminate.side_effect = OSError("termination failed")
+                    else:
+                        process.poll.side_effect = OSError("poll failed")
+                    expected = TTSConfigurationError
+                with self.assertRaises(expected) as raised:
+                    backend._start_worker()
+                self.assertEqual(len(raised.exception.__notes__), 1)
+                if failure == "spawn":
+                    self.assertIs(raised.exception, original)
+                    use.launched.assert_called_once_with(None)
+                else:
+                    self.assertIn("factory is malformed", str(raised.exception))
+                    use.launched.assert_not_called()
+                use.close.assert_called_once_with()
+                self.assertIsNone(backend.process)
+
     def test_worker_rejects_nonfinite_timeouts(self):
         for options in (
             {"startup_timeout": float("nan")},
@@ -971,6 +1188,54 @@ class SpeechWorkerTest(unittest.TestCase):
                     IsolatedSpeechBackend(
                         "moss-tts", CharacterVoiceRegistry(), **options
                     )
+
+    def test_worker_rejects_unrepresentable_timeouts_before_process_acquisition(self):
+        for name in ("startup_timeout", "request_timeout"):
+            for value in (10**400, -(10**400)):
+                process_factory = MagicMock()
+                with self.subTest(field=name, negative=value < 0):
+                    with (
+                        patch(
+                            "vntts.runtime_installation.ensure_speech_runtime"
+                        ) as prepare,
+                        self.assertRaisesRegex(
+                            TTSConfigurationError, "timeout must be positive and finite"
+                        ) as caught,
+                    ):
+                        IsolatedSpeechBackend(
+                            "moss-tts",
+                            CharacterVoiceRegistry(),
+                            process_factory=process_factory,
+                            **{name: value},
+                        )
+                    self.assertIsInstance(caught.exception.__cause__, OverflowError)
+                    prepare.assert_not_called()
+                    process_factory.assert_not_called()
+
+    def test_worker_timeout_conversion_keeps_string_bool_and_large_finite_values(self):
+        for value, expected in (("12.5", 12.5), (True, 1.0), (10**300, 1e300)):
+            with (
+                self.subTest(value=value),
+                patch.object(IsolatedSpeechBackend, "_start_worker"),
+                patch(
+                    "vntts.runtime_installation.ensure_speech_runtime",
+                    return_value=(
+                        Path("/runtime"),
+                        Path("/runtime/python"),
+                        Path("/site"),
+                    ),
+                ),
+            ):
+                backend = IsolatedSpeechBackend(
+                    "moss-tts",
+                    CharacterVoiceRegistry(),
+                    startup_timeout=value,
+                    request_timeout=value,
+                )
+                self.assertEqual(
+                    (backend.startup_timeout, backend.request_timeout),
+                    (expected, expected),
+                )
 
     def test_cancelled_startup_terminates_the_exact_worker(self):
         registry = CharacterVoiceRegistry()
