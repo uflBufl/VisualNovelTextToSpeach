@@ -2022,6 +2022,7 @@ class MossTTSVoiceRouterBackend:
         emitted_samples = 0
         max_samples = max(1, round(self.sample_rate * prepared.max_audio_seconds))
         generation: Iterator[_MossGeneratedChunk] | None = None
+        source_chunks: Generator[AudioArray, None, None] | None = None
         cache_source = prepared.cache_source
         self.last_generation_limited = False
         self.last_generated_audio = prepared.cached_audio
@@ -2095,7 +2096,7 @@ class MossTTSVoiceRouterBackend:
             else:
                 cache_source = "fresh-generation"
 
-                def generated_chunks() -> Iterator[AudioArray]:
+                def generated_chunks() -> Generator[AudioArray, None, None]:
                     nonlocal generation, completion
                     with self.model_lock:
                         generation = self._generate(prepared, request)
@@ -2144,8 +2145,13 @@ class MossTTSVoiceRouterBackend:
                 return finish(SynthesisCompletion.CANCELLED)
             raise TTSSynthesisError(str(error)) from error
         finally:
-            if generation is not None:
-                self._close_active_generation()
+            try:
+                if generation is not None:
+                    self._close_active_generation()
+            finally:
+                # The wrapper owns model_lock even when its frame survives close().
+                if source_chunks is not None:
+                    source_chunks.close()
 
     def prime(self, character: str) -> bool:
         voice_key, _source = self._resolve_voice_source(character)
@@ -2645,7 +2651,7 @@ class MossTTSVoiceRouterBackend:
             )
         )
 
-    def _cached_chunks(self, audio: AudioArray) -> Iterator[AudioArray]:
+    def _cached_chunks(self, audio: AudioArray) -> Generator[AudioArray, None, None]:
         prepared = (
             audio
             if audio.ndim == 2 and audio.shape[1] in {1, 2}

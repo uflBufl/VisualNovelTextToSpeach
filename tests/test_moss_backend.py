@@ -474,6 +474,47 @@ class MossTTSBackendTest(unittest.TestCase):
             "fresh-generation",
         )
 
+    def test_interrupted_render_releases_lock_with_its_frame_retained(self):
+        for outcome in ("limited", "cancelled", "closed", "failed"):
+            with self.subTest(outcome=outcome):
+                model = (
+                    EndlessMossModel()
+                    if outcome == "limited"
+                    else ErrorAfterFirstMossModel()
+                    if outcome == "failed"
+                    else FakeMossModel()
+                )
+                backend, _model, _output = self.create_backend(model=model)
+                cancelled = Event()
+                stream = backend.render(
+                    SynthesisRequest(
+                        voice="Narrator", text="Retry this.", cancellation=cancelled
+                    )
+                )
+                frame = stream._producer.gi_frame
+                try:
+                    next(stream)
+                    if outcome == "closed":
+                        stream.close()
+                    elif outcome == "failed":
+                        with self.assertRaises(TTSSynthesisError):
+                            stream.collect()
+                    else:
+                        if outcome == "cancelled":
+                            cancelled.set()
+                        result = stream.collect()
+                        self.assertEqual(result.completion.value, outcome)
+                    self.assertIsNone(backend.active_generation)
+                    self.assertFalse(backend.model_lock.locked())
+                    cancelled.clear()
+                    self.assertEqual(
+                        backend.prepare("Narrator", "Retry this.").cache_source,
+                        "fresh-generation",
+                    )
+                finally:
+                    stream.close()
+                    frame.clear()
+
     def test_cache_key_computes_generation_limits_once(self):
         backend = object.__new__(MossTTSVoiceRouterBackend)
         backend.generation_profile = "stable"

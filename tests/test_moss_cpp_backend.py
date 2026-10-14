@@ -1318,8 +1318,14 @@ class MossCppBackendTest(unittest.TestCase):
     def test_limit_is_not_cached_as_complete(self):
         backend = self.backend()
         request = SynthesisRequest("Narrator", "Limit.", seed=0)
-        result = backend.render(request).collect()
+        stream = backend.render(request)
+        next(stream)
+        # Python 3.14.2 can retain this frame through GeneratorExit's traceback.
+        frame = stream._producer.gi_yieldfrom.gi_frame
+        self.addCleanup(frame.clear)
+        result = stream.collect()
         self.assertEqual(result.completion, SynthesisCompletion.LIMITED)
+        self.assertFalse(backend.model_lock.locked())
         first = self.native_log.snapshot()[-1]["message"]
         result = backend.render(request).collect()
         self.assertEqual(result.diagnostics.cache_source, "fresh-generation")

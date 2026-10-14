@@ -617,3 +617,7 @@ Planned implementation order after approval:
 ## Active - Continue cleanup ownership expansion
 
 - [ ] **Windows job acquisition next gate:** qualify actual native failures before assignment, before resume and after resume on Windows. Current `__init__` closes job through raw cleanup and allocates `_ExtendedLimits` after handle acquisition outside its guard; assign/resume finally blocks can replace primary errors. Stage the existing cleanup leaf only after native ownership checks; prepare limits before acquisition. Four CloseHandle results are ignored and close clears `_handle` on FALSE. Microsoft documents FALSE as failure, but it can mean INVALID_HANDLE rather than a leaked valid handle; preserve returned status/last error and prove valid-handle cleanup and no runnable child with real Windows failure injection. Keep the two-second process wait budget; successful host-crash test and mock cleanup order do not qualify these failures.
+
+## Active - Offline generation retry deadlock
+
+- [ ] Verify on the reported Windows/GPU setup that a frame-limited phrase reaches its bounded retry result and Cancel finishes. Incomplete audio must remain unpublished. Local Python 3.14.2 HTTP-fixture and retained-frame regressions pass; actual model EOS quality remains a separate hardware gate.
