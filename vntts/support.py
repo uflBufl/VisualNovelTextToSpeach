@@ -540,6 +540,227 @@ def _read_bounded_json_lines(
     return tuple(entries)
 
 
+generation_stall_phases = frozenset(
+    {
+        "starting",
+        "generating",
+        "retrying",
+        "validating",
+        "publishing",
+        "finalizing",
+        "subprocess",
+        "unknown",
+    }
+)
+generation_stall_providers = frozenset(
+    {
+        "moss-tts",
+        "pocket-tts",
+        "chatterbox-nano",
+        "qwen-tts",
+        "moss-tts-delay",
+        "unknown",
+    }
+)
+
+
+def _sanitize_generation_stall(details: object) -> SupportDocument:
+    if not isinstance(details, dict):
+        return {}
+    safe: SupportDocument = {}
+    for key, allowed in (
+        ("phase", generation_stall_phases),
+        ("provider", generation_stall_providers),
+    ):
+        value = details.get(key)
+        safe[key] = value if isinstance(value, str) and value in allowed else "unknown"
+    for key in (
+        "attempt",
+        "provider_attempt",
+        "seed",
+        "worker_thread_id",
+        "process_id",
+        "capture_index",
+    ):
+        value = details.get(key)
+        if type(value) is int and 0 <= value < 2**64:
+            if key != "capture_index" or 1 <= value <= 3:
+                safe[key] = value
+    if is_lowercase_sha256(details.get("queue_id_sha256")):
+        safe["queue_id_sha256"] = details["queue_id_sha256"]
+    elapsed = optional_finite_number(details.get("elapsed_seconds"))
+    if elapsed is not None and elapsed >= 0:
+        safe["elapsed_seconds"] = round(elapsed, 3)
+    if type(details.get("cancellation_requested")) is bool:
+        safe["cancellation_requested"] = details["cancellation_requested"]
+    threads: list[SupportDocument] = []
+    raw_threads = details.get("threads")
+    for thread in raw_threads[:32] if isinstance(raw_threads, list) else ():
+        if not isinstance(thread, dict):
+            continue
+        thread_id = thread.get("thread_id")
+        if type(thread_id) is not int or not 0 <= thread_id < 2**64:
+            continue
+        frames: list[SupportDocument] = []
+        raw_frames = thread.get("frames")
+        for frame in raw_frames[:64] if isinstance(raw_frames, list) else ():
+            if not isinstance(frame, dict):
+                continue
+            module, filename, function = (
+                frame.get(key) for key in ("module", "file", "function")
+            )
+            line = frame.get("line")
+            if (
+                not isinstance(module, str)
+                or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,159}", module)
+                or not isinstance(function, str)
+                or not re.fullmatch(
+                    r"(?:[A-Za-z_][A-Za-z0-9_]{0,159}|"
+                    r"<(?:module|lambda|listcomp|dictcomp|setcomp|genexpr)>)",
+                    function,
+                )
+                or type(line) is not int
+                or not 0 <= line < 2**31
+            ):
+                continue
+            safe_frame: SupportDocument = {
+                "module": module,
+                "function": function,
+                "line": line,
+            }
+            if (
+                isinstance(filename, str)
+                and len(filename) <= 240
+                and re.fullmatch(
+                    r"(?:(?:vntts|tests|scripts)/(?:[A-Za-z_][A-Za-z0-9_]*/)*|)"
+                    r"[A-Za-z_][A-Za-z0-9_]*\.py",
+                    filename,
+                )
+            ):
+                safe_frame["file"] = filename
+            frames.append(safe_frame)
+        threads.append(
+            {
+                "thread_id": thread_id,
+                "worker": thread.get("worker") is True,
+                "frames": frames,
+                "truncated": thread.get("truncated") is True
+                or isinstance(raw_frames, list)
+                and len(raw_frames) > 64,
+            }
+        )
+    safe["threads"] = threads
+    return safe
+
+
+class GenerationStallLog(RuntimeSupportLog):
+    """Retain bounded Python stack locations across application restarts."""
+
+    def __init__(
+        self,
+        maximum_entries: int = 8,
+        *,
+        maximum_bytes: int = 512 * 1024,
+        path: str | Path | None = None,
+    ) -> None:
+        super().__init__(
+            maximum_entries=max(1, min(8, maximum_entries)),
+            maximum_bytes=min(512 * 1024, maximum_bytes),
+            path=path,
+        )
+        try:
+            for entry in _read_bounded_json_lines(self.path, self.maximum_bytes):
+                if entry.get("level") != "generation-stall":
+                    continue
+                safe = _sanitize_generation_stall(entry)
+                timestamp = entry.get("recorded_at")
+                if not isinstance(timestamp, str):
+                    continue
+                try:
+                    timestamp = datetime.fromisoformat(timestamp).isoformat()
+                except ValueError:
+                    continue
+                self.entries.append(self._entry(safe, timestamp))
+            self._persist_locked()
+        except Exception:
+            # Diagnostics must not prevent application startup.
+            pass
+
+    @staticmethod
+    def _entry(details: SupportDocument, timestamp: str) -> SupportDocument:
+        return {
+            "recorded_at": timestamp,
+            "level": "generation-stall",
+            "message": "Generation stalled; captured Python thread stacks",
+            **details,
+        }
+
+    def record(self, **details: object) -> None:
+        with self.lock:
+            self.entries.append(
+                self._entry(
+                    _sanitize_generation_stall(details), self.clock().isoformat()
+                )
+            )
+            try:
+                self._persist_locked()
+            except OSError:
+                pass
+
+    def _persist_locked(self) -> None:
+        if self.entries:
+            newest = self.entries[-1]
+            threads = newest.get("threads")
+            if isinstance(threads, list):
+                # Keep the worker stack when other thread locations exceed the budget.
+                threads.sort(key=lambda thread: thread.get("worker") is not True)
+                while (
+                    len(threads) > 1
+                    and len(self._json_line(newest)) > self.maximum_bytes
+                ):
+                    threads.pop()
+        while (
+            self.entries
+            and sum(len(self._json_line(entry)) for entry in self.entries)
+            > self.maximum_bytes
+        ):
+            self.entries.popleft()
+        super()._persist_locked()
+
+    @staticmethod
+    def _json_line(entry: SupportDetails) -> bytes:
+        return (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
+
+    def report(self) -> SupportDocument:
+        return {
+            "schema_version": 1,
+            "events": self.snapshot(),
+            "limitations": [
+                "Python thread locations in the application process only; "
+                "native code, child process stacks, and a native call holding the "
+                "GIL may be unavailable."
+            ],
+        }
+
+
+generation_stall_log = GenerationStallLog()
+
+
+def configure_generation_stall_log(
+    path: str | Path | None = None,
+) -> GenerationStallLog:
+    global generation_stall_log
+    generation_stall_log = GenerationStallLog(path=path)
+    return generation_stall_log
+
+
+def record_generation_stall(**details: object) -> None:
+    try:
+        generation_stall_log.record(**details)
+    except Exception:
+        pass
+
+
 performance_fields = (
     "operation",
     "outcome",
@@ -1800,6 +2021,7 @@ class SupportBundleBuilder:
                 ]
             },
             "performance.json": (self.performance_log or performance_log).report(),
+            "generation-stalls.json": generation_stall_log.report(),
             "native-speech.json": {
                 **native_speech_log.report(),
                 "timing_note": (

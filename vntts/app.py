@@ -154,6 +154,7 @@ from vntts.support import (
     collect_active_content_identity,
     configure_audio_lifecycle_log,
     configure_game_import_log,
+    configure_generation_stall_log,
     configure_native_speech_log,
     configure_performance_log,
     configure_pregeneration_support,
@@ -1689,6 +1690,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         configure_native_speech_log(
             get_local_data_directory() / "native-speech.log"
+            if uses_saved_settings
+            else None
+        )
+        configure_generation_stall_log(
+            get_local_data_directory() / "generation-stalls.log"
             if uses_saved_settings
             else None
         )

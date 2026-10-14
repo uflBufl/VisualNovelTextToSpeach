@@ -6,7 +6,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event
+from threading import Event, Thread
 from unittest.mock import Mock, patch
 
 from vntts_artifacts.file_integrity import sha256_file
@@ -616,6 +616,78 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         self.assertEqual([value.generated for value in snapshots], [1, 1, 2, 2, 2])
         self.assertEqual(snapshots[0].active_phase, "publishing")
         self.assertIn("RTX 2070 SUPER", snapshots[0].runtime_status)
+
+    def test_stalled_second_retry_progress_callback_is_captured_until_cancel_settles(
+        self,
+    ):
+        from vntts.generation_stall import GenerationStallWatchdog
+
+        entered = Event()
+        release = Event()
+        captured = Event()
+        cancellation = Event()
+        snapshots = []
+        errors = []
+
+        with TemporaryDirectory() as directory:
+            inputs, plan = generation_inputs(
+                Path(directory), backend="moss-tts", model="model-id"
+            )
+            worker = OfflineGenerationWorker(backend_factory=Mock())
+
+            def progress_callback(_state, _inputs):
+                entered.set()
+                release.wait(3)
+
+            def render(_parsed, **kwargs):
+                kwargs["progress_callback"](
+                    {"active": {"phase": "generating", "attempt": 2, "seed": 1}}
+                )
+
+            def record(**details):
+                snapshots.append(details)
+                captured.set()
+
+            def generate():
+                try:
+                    worker.generate(inputs, plan, cancellation)
+                except BaseException as error:
+                    errors.append(error)
+
+            with (
+                patch.object(worker, "inspect", side_effect=OfflineGenerationError),
+                patch("vntts.pregeneration_generation._ensure_remaining_disk_space"),
+                patch.object(worker, "_record_progress", side_effect=progress_callback),
+                patch(
+                    "vntts.authoring.cli_generation.run_generation", side_effect=render
+                ),
+                patch.object(GenerationStallWatchdog, "STALL_SECONDS", 0.02),
+                patch.object(GenerationStallWatchdog, "CANCEL_SECONDS", 0.02),
+                patch.object(GenerationStallWatchdog, "POLL_SECONDS", 0.005),
+                patch(
+                    "vntts.generation_stall.record_generation_stall", side_effect=record
+                ),
+            ):
+                thread = Thread(target=generate)
+                thread.start()
+                try:
+                    self.assertTrue(entered.wait(2))
+                    self.assertTrue(captured.wait(2))
+                    self.assertFalse(snapshots[-1]["cancellation_requested"])
+                    captured.clear()
+                    cancellation.set()
+                    self.assertTrue(captured.wait(2))
+                    self.assertTrue(snapshots[-1]["cancellation_requested"])
+                finally:
+                    release.set()
+                    thread.join(2)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], OfflineGenerationCancelled)
+            self.assertEqual(snapshots[0]["attempt"], 2)
+            frames = next(t["frames"] for t in snapshots[0]["threads"] if t["worker"])
+            self.assertIn("progress_callback", [f["function"] for f in frames])
+            self.assertIn("_execute", [f["function"] for f in frames])
 
     def test_pocket_cloning_opt_in_reaches_isolated_worker(self):
         with TemporaryDirectory() as temporary_directory:

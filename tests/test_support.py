@@ -22,6 +22,7 @@ from vntts.settings import AppSettings
 from vntts.support import (
     AudioLifecycleLog,
     GameImportLog,
+    GenerationStallLog,
     GenerationTimelineLog,
     NativeSpeechLog,
     PerformanceLog,
@@ -36,6 +37,7 @@ from vntts.support import (
     native_speech_context,
     preserve_previous_session,
     record_game_import,
+    record_generation_stall,
     record_native_speech,
     redact_text,
     sanitize_diagnostic,
@@ -1168,6 +1170,203 @@ class GameImportLogTest(unittest.TestCase):
         self.assertEqual(log.snapshot()[0]["package_version"], "1.2.3")
 
 
+class GenerationStallLogTest(unittest.TestCase):
+    @staticmethod
+    def details():
+        return {
+            "phase": "generating",
+            "attempt": 2,
+            "provider_attempt": 1,
+            "seed": 314,
+            "provider": "moss-tts",
+            "queue_id_sha256": "a" * 64,
+            "elapsed_seconds": 120.5,
+            "capture_index": 1,
+            "cancellation_requested": False,
+            "worker_thread_id": 123,
+            "process_id": 456,
+            "threads": [
+                {
+                    "thread_id": 123,
+                    "worker": True,
+                    "frames": [
+                        {
+                            "module": "tests.test_generation_stall",
+                            "file": "tests/test_generation_stall.py",
+                            "function": "blocked_worker",
+                            "line": 42,
+                        }
+                    ],
+                    "truncated": False,
+                }
+            ],
+        }
+
+    def test_restart_and_bundle_keep_blocked_worker_locations(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            path = directory / "generation-stalls.log"
+            first = GenerationStallLog(path=path)
+            first.record(**self.details())
+            restored = GenerationStallLog(path=path)
+            self.assertEqual(restored.report(), first.report())
+            with patch.object(support_module, "generation_stall_log", restored):
+                output = SupportBundleBuilder(
+                    AppSettings(), RuntimeSupportLog(), dependency_probe=lambda: {}
+                ).build(directory / "support.zip")
+            with zipfile.ZipFile(output) as archive:
+                report = json.loads(archive.read("generation-stalls.json"))
+
+        event = report["events"][0]
+        self.assertEqual(event["seed"], 314)
+        self.assertEqual(event["queue_id_sha256"], "a" * 64)
+        self.assertEqual(event["threads"][0]["frames"][0]["function"], "blocked_worker")
+        self.assertEqual(event["threads"][0]["frames"][0]["line"], 42)
+
+    def test_untrusted_persistent_fields_are_whitelisted(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "generation-stalls.log"
+            hostile = self.details() | {
+                "recorded_at": "2026-10-15T10:00:00+00:00",
+                "level": "generation-stall",
+                "message": "PRIVATE DIALOGUE /Users/private-user/file",
+                "phase": "PRIVATE DIALOGUE",
+                "provider": "/Users/private-user/model",
+                "queue_id_sha256": "PRIVATE DIALOGUE",
+                "attempt": True,
+                "seed": "PRIVATE DIALOGUE",
+                "elapsed_seconds": float("inf"),
+                "capture_index": 4,
+                "dialogue": "PRIVATE DIALOGUE",
+            }
+            hostile["threads"][0].update(
+                {
+                    "name": "PRIVATE DIALOGUE",
+                    "locals": {"text": "PRIVATE DIALOGUE"},
+                }
+            )
+            hostile["threads"][0]["frames"] += [
+                {
+                    "module": "threading",
+                    "file": filename,
+                    "function": "wait",
+                    "line": 1,
+                    "source": "PRIVATE DIALOGUE",
+                    "locals": {"text": "PRIVATE DIALOGUE"},
+                }
+                for filename in (
+                    "/Users/private-user/threading.py",
+                    r"C:\Users\private-user\threading.py",
+                    "../private-user.py",
+                    "<frozen threading>",
+                )
+            ]
+            hostile["threads"][0]["frames"] += [
+                {
+                    "module": "PRIVATE DIALOGUE",
+                    "file": "private.py",
+                    "function": "PRIVATE DIALOGUE",
+                    "line": 1,
+                }
+            ]
+            path.write_text(json.dumps(hostile) + "\n", encoding="utf-8")
+            restored = GenerationStallLog(path=path)
+            report = restored.report()
+            serialized = json.dumps(report, allow_nan=False) + path.read_text()
+
+        self.assertNotIn("PRIVATE DIALOGUE", serialized)
+        self.assertNotIn("private-user", serialized)
+        event = report["events"][0]
+        self.assertEqual(event["phase"], "unknown")
+        self.assertEqual(event["provider"], "unknown")
+        for field in (
+            "queue_id_sha256",
+            "attempt",
+            "seed",
+            "elapsed_seconds",
+            "capture_index",
+        ):
+            self.assertNotIn(field, event)
+        self.assertEqual(len(event["threads"][0]["frames"]), 5)
+        self.assertTrue(
+            all("file" not in frame for frame in event["threads"][0]["frames"][1:])
+        )
+
+    def test_entries_and_persistent_size_stay_bounded(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "generation-stalls.log"
+            log = GenerationStallLog(maximum_entries=100, path=path)
+            for attempt in range(12):
+                log.record(**(self.details() | {"attempt": attempt}))
+            self.assertEqual(len(log.report()["events"]), 8)
+            self.assertEqual(log.report()["events"][0]["attempt"], 4)
+            self.assertEqual(len(GenerationStallLog(path=path).report()["events"]), 8)
+            bounded = GenerationStallLog(maximum_bytes=1024, path=path)
+            for attempt in range(12):
+                bounded.record(**(self.details() | {"attempt": attempt}))
+            self.assertLessEqual(path.stat().st_size, 1024)
+            self.assertEqual(len(bounded.report()["events"]), 1)
+            self.assertEqual(bounded.report()["events"][0]["attempt"], 11)
+            memory_only = GenerationStallLog(maximum_bytes=1024)
+            for _ in range(12):
+                memory_only.record(**self.details())
+            self.assertEqual(len(memory_only.report()["events"]), 1)
+
+    def test_validation_and_publish_phases_remain_diagnostic(self):
+        log = GenerationStallLog()
+        for phase in ("validating", "publishing"):
+            log.record(**(self.details() | {"phase": phase}))
+        self.assertEqual(
+            [event["phase"] for event in log.report()["events"]],
+            ["validating", "publishing"],
+        )
+
+    def test_threads_and_frames_are_bounded_and_special_functions_survive(self):
+        details = self.details()
+        frame = details["threads"][0]["frames"][0] | {"function": "<lambda>"}
+        thread = details["threads"][0] | {"frames": [frame] * 65}
+        log = GenerationStallLog()
+        log.record(**(details | {"threads": [thread] * 33}))
+        threads = log.report()["events"][0]["threads"]
+        self.assertEqual(len(threads), 32)
+        self.assertEqual(len(threads[0]["frames"]), 64)
+        self.assertEqual(threads[0]["frames"][0]["function"], "<lambda>")
+        self.assertTrue(threads[0]["truncated"])
+
+    def test_large_capture_keeps_worker_within_default_file_limit(self):
+        details = self.details()
+        frame = {
+            "module": "m" * 160,
+            "file": "vntts/" + "a" * 110 + "/" + "b" * 110 + ".py",
+            "function": "f" * 160,
+            "line": 42,
+        }
+        thread = details["threads"][0] | {"frames": [frame] * 64, "worker": False}
+        details["threads"] = [thread] * 31 + [thread | {"worker": True}]
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "stalls.log"
+            log = GenerationStallLog(path=path)
+            log.record(**details)
+            self.assertLessEqual(path.stat().st_size, 512 * 1024)
+            threads = log.report()["events"][0]["threads"]
+        self.assertLess(len(threads), 32)
+        self.assertTrue(threads[0]["worker"])
+        self.assertEqual(len(threads[0]["frames"]), 64)
+
+    def test_global_helper_and_persistence_are_fail_soft(self):
+        log = GenerationStallLog()
+        with patch.object(support_module, "generation_stall_log", log):
+            record_generation_stall(**self.details())
+            with patch.object(log, "record", side_effect=RuntimeError):
+                record_generation_stall(**self.details())
+        self.assertEqual(len(log.report()["events"]), 1)
+        with TemporaryDirectory() as temporary_directory:
+            log = GenerationStallLog(path=Path(temporary_directory) / "stalls.log")
+            with patch("vntts.support.atomic_output_path", side_effect=OSError):
+                log.record(**self.details())
+        self.assertEqual(len(log.report()["events"]), 1)
+
+
 class SupportBundleBuilderTest(unittest.TestCase):
     def test_diagnostic_snapshot_excludes_non_finite_metrics(self):
         snapshot = sanitize_diagnostic(
@@ -1310,6 +1509,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
                     "native-speech.json",
                     "build.json",
                     "generation-timelines.json",
+                    "generation-stalls.json",
                     "previous-session.json",
                     "audio-lifecycle.json",
                     "ocr-metrics.json",

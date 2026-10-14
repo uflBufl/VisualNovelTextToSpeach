@@ -29,6 +29,7 @@ from vntts.chapter_voice_preload import (
 )
 from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import sha256_file
+from vntts.generation_stall import GenerationStallWatchdog
 from vntts.json_types import decode_json
 from vntts.path_safety import read_regular_text
 from vntts.pregeneration_contract import (
@@ -375,35 +376,43 @@ class OfflineGenerationWorker:
                     and self._live_progress[0] != generation_input.identity
                 ):
                     self._live_progress = None
-            try:
-                run_generation(
-                    parsed,
-                    backend_factory=self.backend_factory,
-                    cancellation=cancel_event,
-                    startup_progress=self._set_startup_status,
-                    progress_callback=lambda state: self._record_progress(
-                        state, generation_input
-                    ),
-                )
-            except Exception as error:
+            with GenerationStallWatchdog(cancel_event) as watchdog:
+
+                def record_progress(state: object) -> None:
+                    watchdog.progress(state)
+                    self._record_progress(state, generation_input)
+
+                try:
+                    run_generation(
+                        parsed,
+                        backend_factory=self.backend_factory,
+                        cancellation=cancel_event,
+                        startup_progress=self._set_startup_status,
+                        progress_callback=record_progress,
+                    )
+                except Exception as error:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise OfflineGenerationCancelled(
+                            "Offline speech generation was cancelled"
+                        ) from error
+                    raise OfflineGenerationError(
+                        f"Offline speech could not be generated: {error}"
+                    ) from error
+                finally:
+                    with self._progress_lock:
+                        self._in_process_active = False
+                        self._startup_status = None
                 if cancel_event is not None and cancel_event.is_set():
                     raise OfflineGenerationCancelled(
                         "Offline speech generation was cancelled"
-                    ) from error
-                raise OfflineGenerationError(
-                    f"Offline speech could not be generated: {error}"
-                ) from error
-            finally:
-                with self._progress_lock:
-                    self._in_process_active = False
-                    self._startup_status = None
-            if cancel_event is not None and cancel_event.is_set():
-                raise OfflineGenerationCancelled(
-                    "Offline speech generation was cancelled"
-                )
+                    )
+                watchdog.progress()
+                return _load_result(output, generation_input)
+        with GenerationStallWatchdog(cancel_event) as watchdog:
+            watchdog.progress({"active": {"phase": "subprocess"}})
+            self._run_subprocess(arguments, cancel_event)
+            watchdog.progress()
             return _load_result(output, generation_input)
-        self._run_subprocess(arguments, cancel_event)
-        return _load_result(output, generation_input)
 
     def _run_subprocess(
         self, arguments: list[str], cancel_event: _Cancellation | None
