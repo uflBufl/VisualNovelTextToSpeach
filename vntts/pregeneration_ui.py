@@ -724,14 +724,15 @@ class OfflineAudioPreparationDialog(QDialog):
     def _build_progress_story_readiness(self) -> None:
         self.progress_story_readiness_label = QLabel("Ready to read")
         self.progress_story_readiness_label.setToolTip(
-            "Includes original game audio and prepared speech. Consecutive lines "
-            "show how far reading can continue without waiting."
+            "Includes original game audio and prepared speech. Read without waiting "
+            "shows how many lines can be read in a row from the start or current "
+            "position before more audio is needed."
         )
         self.progress_story_readiness_label.setStyleSheet("font-weight: 600;")
         self.progress_story_readiness = QTreeWidget()
         self.progress_story_readiness.setColumnCount(3)
         self.progress_story_readiness.setHeaderLabels(
-            ["Story", "Ready lines", "Consecutive"]
+            ["Story", "Ready lines", "Read without waiting"]
         )
         self.progress_story_readiness.setRootIsDecorated(False)
         self.progress_story_readiness.setItemsExpandable(False)
