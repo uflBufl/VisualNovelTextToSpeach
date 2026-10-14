@@ -45,6 +45,7 @@ from vntts.pregeneration_queue import (  # noqa: E402
 from vntts.pregeneration_recovery import OfflineRecoveryResult  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
+    PregenerationJob,
     PregenerationJobStore,
     PregenerationSetupError,
     _cached_story_index,
@@ -370,6 +371,139 @@ class PregenerationSetupTest(unittest.TestCase):
             self.assertEqual(store.source_story_indexes(), ())
             self.assertEqual(len(store.jobs_for_content(content)), 2)
 
+    def test_selected_jobs_keep_one_complete_catalog_for_status_and_discovery(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = write_story_index(root / "content")
+            content = inspect_story_index(source)
+            store = PregenerationJobStore(root / "jobs")
+            first = store.create_or_resume(
+                store.selected_content(store.create_or_resume(content, ("main-1",))),
+                ("main-1",),
+            )
+            second = store.create_or_resume(
+                store.selected_content(store.create_or_resume(content, ("rhiannon",))),
+                ("rhiannon",),
+            )
+            self.assertNotEqual(first.story_index, second.story_index)
+            self.assertNotEqual(first.story_index_sha256, content.story_index_sha256)
+            self.assertEqual(first.catalog_story_index, str(source))
+            self.assertEqual(
+                second.catalog_story_index_sha256, content.story_index_sha256
+            )
+            self.assertEqual(
+                tuple(
+                    record.line_id
+                    for record in load_verified_story_index_document(
+                        first.story_index, first.story_index_sha256
+                    ).records
+                ),
+                first.selected_line_ids,
+            )
+            self.assertEqual(store.load(first.job_id), first)
+            self.assertEqual(store.source_story_indexes(), (source,))
+            store.mark_prepared(first)
+            self.assertEqual(
+                store.story_statuses(content),
+                {"main-1": "ready", "rhiannon": "in_progress"},
+            )
+            selected_content = inspect_story_index(first.story_index)
+            store.save_selection(selected_content, first.selected_story_ids)
+            self.assertEqual(store.selection_for_content(content), ("main-1",))
+
+    def test_catalog_job_creation_defers_snapshot_work_to_the_worker(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            store = PregenerationJobStore(root / "jobs")
+            with patch(
+                "vntts.selected_story_snapshot.create_selected_story_snapshot",
+                side_effect=AssertionError(
+                    "Snapshot preparation belongs in the worker"
+                ),
+            ):
+                job = store.create_or_resume(content, ("main-1",))
+            self.assertEqual(job.story_index, str(content.story_index))
+            self.assertFalse((store.root / "story-snapshots").exists())
+
+    def test_selected_job_revalidates_origin_and_does_not_share_mutable_parse(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = write_story_index(root / "content")
+            content = inspect_story_index(source)
+            store = PregenerationJobStore(root / "jobs")
+            job = store.create_or_resume(
+                store.selected_content(store.create_or_resume(content, ("main-1",))),
+                ("main-1",),
+            )
+            first = load_verified_story_index_document(
+                job.story_index, job.story_index_sha256
+            )
+            first.metadata["game"] = "Forged metadata"
+            second = load_verified_story_index_document(
+                job.story_index, job.story_index_sha256
+            )
+            self.assertEqual(second.metadata["game"], content.game)
+            self.assertIsNot(first, second)
+            write_story_index(root / "content", generated_text="Changed source.")
+            with self.assertRaisesRegex(
+                (ValueError, RuntimeError), "[Cc]hang|[Ss]ource|[Oo]rigin"
+            ):
+                load_verified_story_index_document(
+                    job.story_index, job.story_index_sha256
+                )
+
+    def test_selected_discovery_rechecks_the_origin_after_a_cache_hit(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_story_index(root / "content")
+            content = inspect_story_index(source)
+            store = PregenerationJobStore(root / "jobs")
+            selected = store.selected_content(
+                store.create_or_resume(content, ("rhiannon",))
+            )
+            with patch(
+                "vntts.pregeneration_setup.get_local_data_directory",
+                return_value=root / "app-data",
+            ):
+                settings = AppSettings(story_index=str(selected.story_index))
+                environment = {"R1999_EXTRACTOR_DATA": str(root / "extractor")}
+                first = discover_game_content(settings, environment=environment)
+                self.assertEqual(len(first.content), 1)
+                write_story_index(
+                    root / "content", generated_text="Changed unselected line."
+                )
+                second = discover_game_content(settings, environment=environment)
+            self.assertEqual(second.content, ())
+            self.assertEqual(len(second.errors), 1)
+
+    def test_legacy_job_source_identity_defaults_and_rejects_partial_new_identity(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            store = PregenerationJobStore(root / "jobs")
+            job = store.create_or_resume(
+                store.selected_content(store.create_or_resume(content, ("main-1",))),
+                ("main-1",),
+            )
+            document = job.to_document()
+            document.pop("source_story_index")
+            document.pop("source_story_index_sha256")
+            legacy = PregenerationJob.from_document(document)
+            self.assertEqual(legacy.catalog_story_index, legacy.story_index)
+            self.assertEqual(
+                legacy.catalog_story_index_sha256, legacy.story_index_sha256
+            )
+            for field, value in (
+                ("source_story_index", str(content.story_index)),
+                ("source_story_index_sha256", content.story_index_sha256),
+            ):
+                with (
+                    self.subTest(field=field),
+                    self.assertRaises(PregenerationSetupError),
+                ):
+                    PregenerationJob.from_document(document | {field: value})
+
     def test_story_records_are_grouped_in_one_pass(self):
         class CountingRecords(tuple):
             iterations = 0
@@ -548,9 +682,19 @@ class PregenerationSetupTest(unittest.TestCase):
                 ],
             )
             content = inspect_story_index(path)
-            job = PregenerationJobStore(root / "jobs").create_or_resume(
-                content, ("story:stage:1002",)
+            store = PregenerationJobStore(root / "jobs")
+            job = store.create_or_resume(content, ("story:stage:1002",))
+            selected = store.selected_content(job)
+            self.assertEqual(
+                tuple(selection.selection_id for selection in selected.selections),
+                ("story:stage:1002",),
             )
+            selected_job = store.create_or_resume(selected, job.selected_story_ids)
+            resumed = store.create_or_resume(
+                store.selected_content(selected_job), selected_job.selected_story_ids
+            )
+            self.assertEqual(resumed, selected_job)
+            self.assertEqual(selected_job.selected_line_ids, ("stage-two",))
 
         self.assertEqual(
             [
@@ -570,6 +714,56 @@ class PregenerationSetupTest(unittest.TestCase):
             [("story", "A Story"), ("story", "A Story")],
         )
         self.assertEqual(job.selected_line_ids, ("stage-two",))
+
+    def test_subset_preserves_legacy_chapter_and_whole_collection_selectors(self):
+        for collections, chapters, selector in (
+            ([], ("1", "2"), "chapter:2"),
+            (
+                [
+                    {
+                        "collection_id": "story",
+                        "title": "A Story",
+                        "kind": "story",
+                        "order": 1,
+                    }
+                ],
+                ("1", "2", "1"),
+                "story",
+            ),
+        ):
+            with self.subTest(selector=selector), TemporaryDirectory() as directory:
+                root = Path(directory)
+                path = root / "story-index.jsonl"
+                write_story_index_document(
+                    path,
+                    {
+                        "game": "Synthetic",
+                        "language": "en",
+                        **({"collections": collections} if collections else {}),
+                    },
+                    [
+                        {
+                            "record_type": "line",
+                            "line_id": f"line-{index}",
+                            "chapter": chapter,
+                            "sequence": index,
+                            "speaker": "Ada",
+                            "text": "A line.",
+                            **({"collection_id": "story"} if collections else {}),
+                        }
+                        for index, chapter in enumerate(chapters)
+                    ],
+                )
+                content = inspect_story_index(path)
+                store = PregenerationJobStore(root / "jobs")
+                job = store.create_or_resume(content, (selector,))
+                selected = store.selected_content(job)
+                self.assertEqual(
+                    tuple(selection.selection_id for selection in selected.selections),
+                    (selector,),
+                )
+                selected_job = store.create_or_resume(selected, (selector,))
+                self.assertEqual(selected_job.selected_line_ids, job.selected_line_ids)
 
     def test_discovery_reuses_unchanged_catalog_and_reloads_changed_bytes(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1925,10 +2119,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.addCleanup(dialog.deleteLater)
             dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
-            dialog._job = SimpleNamespace(
-                story_index_sha256=content.story_index_sha256,
-                selected_story_ids=("main-1",),
-            )
+            dialog._job = dialog.job_store.create_or_resume(content, ("main-1",))
             error = RuntimeError("Qwen could not prepare the reference")
             dialog._set_resume_error("Unable to prepare", error)
             dialog._preparation_paused("Preparation paused", error)
@@ -2077,12 +2268,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(Path(directory) / "jobs"),
             )
             self.addCleanup(dialog.deleteLater)
-            dialog._job = SimpleNamespace(
-                story_index_sha256=content.story_index_sha256,
-                selected_story_ids=("main-1",),
-            )
+            dialog._job = dialog.job_store.create_or_resume(content, ("main-1",))
             dialog._generation_input = SimpleNamespace(ready_items=2)
             dialog._progress_snapshot = OfflineGenerationProgress(
                 ready_line_ids=("reverse1999:2",)
@@ -3144,9 +3333,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             ):
                 result = dialog._create_voice_plan(job)
 
-            self.assertIs(result, voice_plan)
+            self.assertIs(result.plan, voice_plan)
+            self.assertEqual(
+                result.job.catalog_story_index_sha256, content.story_index_sha256
+            )
+            self.assertEqual(dialog.current_content(), content)
             importer.prepare_voice_candidates.assert_called_once_with(
-                job,
+                result.job,
                 dialog.voice_cancel_event,
                 progress=dialog.decoderProgress.emit,
                 scan_progress=dialog.sourceAudioProgress.emit,
@@ -3419,7 +3612,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertNotEqual(dialog.job().job_id, job.job_id)
             self.assertEqual(dialog.job().selected_story_ids, ("main-1",))
             self.assertEqual(
-                dialog.job().story_index_sha256,
+                dialog.job().catalog_story_index_sha256,
                 inspect_story_index(story_index).story_index_sha256,
             )
             self.assertEqual(library.binding("Narrator").source_id, "preset:marius")

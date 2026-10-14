@@ -151,6 +151,8 @@ class PregenerationInputStore:
                         staging,
                     )
                 )
+                story_metadata = dict(story_metadata)
+                story_metadata.pop("selection_origin", None)
                 write_story_index_document(story_path, story_metadata, selected_records)
                 if semantic_evidence is not None:
                     load_source_audio_semantic_evidence(semantic_evidence, story_path)

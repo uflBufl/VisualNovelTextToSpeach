@@ -94,7 +94,7 @@ from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidence,
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
-    project_source_audio_semantics,
+    merge_source_audio_semantics,
 )
 from vntts.support import record_background_operation
 from vntts.voices import load_voice_manifest
@@ -414,8 +414,7 @@ class OfflinePackPublisher:
         cancel_event: Cancellation | None = None,
         live_sequence_plan: Path | None = None,
     ) -> OfflinePackResult:
-        _validate_inputs(job, generation_input, generation_result)
-        _raise_if_cancelled(cancel_event)
+        _validate_inputs(job, generation_input, generation_result, cancel_event)
         phase_started, cpu_started = perf_counter(), process_time()
         try:
             _verify_prepared_inputs(generation_input)
@@ -524,6 +523,7 @@ class OfflinePackPublisher:
                             source_story,
                             generation_input,
                             story_copy,
+                            catalog_sha256=job.catalog_story_index_sha256,
                         )
                     )
                     _write_cumulative_voices(
@@ -647,6 +647,7 @@ class OfflinePackPublisher:
                 )
                 _raise_if_cancelled(cancel_event)
                 phase_started, cpu_started = perf_counter(), process_time()
+                _verify_catalog_source(job, cumulative=base is not None)
                 try:
                     rename_directory_no_replace(staging, destination)
                 except AtomicPublicationError:
@@ -886,12 +887,15 @@ def _validate_inputs(
     job: PregenerationJob,
     generation_input: PregenerationInput,
     generation_result: OfflineGenerationResult,
+    cancel_event: Cancellation | None = None,
 ) -> None:
     if not isinstance(job, PregenerationJob):
         raise OfflinePackError("Offline preparation job is invalid")
     validate_offline_generation_result(
         generation_input, generation_result, "pack", error_type=OfflinePackError
     )
+    _raise_if_cancelled(cancel_event)
+    _verify_catalog_source(job)
 
 
 def _require_terminal_generation(
@@ -1058,10 +1062,10 @@ def _load_incremental_base(
             selected_story.game or job.game
         ) or imported.pack.game_version != (job.game_version or "local"):
             return None, None
-        source_path = Path(job.story_index).expanduser().resolve()
+        source_path = Path(job.catalog_story_index).expanduser().resolve()
         try:
             source = load_verified_story_index_document(
-                source_path, job.story_index_sha256
+                source_path, job.catalog_story_index_sha256
             )
         except ValueError as error:
             raise OfflinePackError("Selected source story changed") from error
@@ -1094,6 +1098,8 @@ def _write_cumulative_story(
     source_story: StoryIndexDocument,
     generation_input: PregenerationInput,
     story_copy: Path,
+    *,
+    catalog_sha256: str | None = None,
 ) -> tuple[StoryIndexDocument, Path | None, SourceAudioSemanticEvidence | None]:
     base_story = load_verified_story_index_document(
         base.story_index, base.pack.story_index.sha256
@@ -1105,18 +1111,24 @@ def _write_cumulative_story(
         *(record.line_id for record in base_story.records),
         *(record.line_id for record in current_story.records),
     }
+    selected_records = {record.line_id: record for record in base_story.records}
+    selected_records.update(
+        (record.line_id, record) for record in current_story.records
+    )
     records = [
-        record.to_record()
+        selected_records[record.line_id].to_record()
         for record in source_story.records
         if record.line_id in selected_ids
     ]
     if {record["line_id"] for record in records} != selected_ids:
         raise OfflinePackError("Cumulative story selection changed")
     story_copy.parent.mkdir(parents=True, exist_ok=True)
-    metadata, records, semantic_copy = project_source_audio_semantics(
+    metadata, records, semantic_copy = merge_source_audio_semantics(
         source_story,
+        (base_story, current_story),
         records,
         story_copy.parent,
+        expected_catalog_sha256=catalog_sha256,
     )
     published_story = write_story_index_document(story_copy, metadata, records)
     semantic_document = (
@@ -1495,6 +1507,15 @@ def _copy_prepared_file(
 ) -> None:
     if _copy_file(source, destination) != expected_sha256:
         raise OfflinePackError(f"Prepared staged {label} changed")
+
+
+def _verify_catalog_source(job: PregenerationJob, *, cumulative: bool = False) -> None:
+    if job.source_story_index is not None or cumulative:
+        _verify_prepared_file(
+            Path(job.catalog_story_index),
+            job.catalog_story_index_sha256,
+            "source story catalog",
+        )
 
 
 def _verify_prepared_file(path: Path, expected_sha256: str, label: str) -> None:

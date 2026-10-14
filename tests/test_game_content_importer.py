@@ -402,8 +402,11 @@ class Reverse1999GameImporterTest(unittest.TestCase):
 
             def publish(arguments, _cancel_event):
                 if "--evidence-output" not in arguments:
+                    selected_source = load_story_index_document(
+                        Path(arguments[arguments.index("--story-index") + 1])
+                    )
                     record = {
-                        **load_story_index_document(source).records[0].to_record(),
+                        **selected_source.records[0].to_record(),
                         "source_audio_duration_seconds": 1.0,
                         "source_audio_duration_media_id": 7,
                         "source_audio_duration_media_sha256": "a" * 64,
@@ -415,10 +418,11 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                             "duration-plausible-but-semantic-coverage-unverified"
                         ),
                     }
-                    untimed = load_story_index_document(source).records[1].to_record()
+                    untimed = selected_source.records[1].to_record()
                     write_story_index_document(
                         Path(arguments[arguments.index("--output") + 1]),
                         {
+                            **selected_source.metadata,
                             "game": "Reverse: 1999",
                             "language": "en",
                             "source_audio_completion": "verified-media-duration-seconds",
@@ -427,8 +431,9 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     )
                     return "", ""
                 timed = Path(arguments[arguments.index("--story-index") + 1])
-                record = load_story_index_document(timed).records[0].to_record()
-                untimed = load_story_index_document(timed).records[1].to_record()
+                timed_document = load_story_index_document(timed)
+                record = timed_document.records[0].to_record()
+                untimed = timed_document.records[1].to_record()
                 evidence_path = Path(
                     arguments[arguments.index("--evidence-output") + 1]
                 )
@@ -451,6 +456,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 write_story_index_document(
                     Path(arguments[arguments.index("--story-output") + 1]),
                     {
+                        **timed_document.metadata,
                         "game": "Reverse: 1999",
                         "language": "en",
                         "source_audio_completion": "verified-media-duration-seconds",
@@ -479,6 +485,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
 
             self.assertEqual(source.read_bytes(), original)
             self.assertNotEqual(successor.story_index, source)
+            self.assertEqual(successor.catalog_story_index, source.resolve())
             self.assertEqual(successor.selections[0].original_audio_lines, 1)
             self.assertEqual(successor.selections[0].generation_lines, 1)
             self.assertFalse(

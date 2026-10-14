@@ -92,6 +92,16 @@ class GameContent:
     story_index: Path
     story_index_sha256: str
     selections: tuple[StorySelection, ...]
+    source_story_index: Path | None = None
+    source_story_index_sha256: str | None = None
+
+    @property
+    def catalog_story_index(self) -> Path:
+        return self.source_story_index or self.story_index
+
+    @property
+    def catalog_story_index_sha256(self) -> str:
+        return self.source_story_index_sha256 or self.story_index_sha256
 
     @property
     def display_name(self) -> str:
@@ -143,6 +153,16 @@ class PregenerationJob:
     selected_story_ids: tuple[str, ...]
     selected_line_ids: tuple[str, ...]
     estimate: PreparationEstimate
+    source_story_index: str | None = None
+    source_story_index_sha256: str | None = None
+
+    @property
+    def catalog_story_index(self) -> str:
+        return self.source_story_index or self.story_index
+
+    @property
+    def catalog_story_index_sha256(self) -> str:
+        return self.source_story_index_sha256 or self.story_index_sha256
 
     @classmethod
     def from_document(cls, document: Mapping[str, object]) -> PregenerationJob:
@@ -151,6 +171,18 @@ class PregenerationJob:
             raise PregenerationSetupError("Saved preparation estimate is invalid")
         estimate = _string_mapping(estimate)
         try:
+            source_story_index = (
+                _required_text(document, "source_story_index")
+                if "source_story_index" in document
+                else None
+            )
+            source_story_index_sha256 = (
+                _sha256_text(document, "source_story_index_sha256")
+                if "source_story_index_sha256" in document
+                else None
+            )
+            if (source_story_index is None) != (source_story_index_sha256 is None):
+                raise ValueError("Saved source story identity is incomplete")
             return cls(
                 job_id=_required_text(document, "job_id"),
                 created_at=_required_text(document, "created_at"),
@@ -163,6 +195,8 @@ class PregenerationJob:
                 story_index_sha256=_sha256_text(document, "story_index_sha256"),
                 selected_story_ids=_text_tuple(document, "selected_story_ids"),
                 selected_line_ids=_text_tuple(document, "selected_line_ids"),
+                source_story_index=source_story_index,
+                source_story_index_sha256=source_story_index_sha256,
                 estimate=PreparationEstimate(
                     selected_lines=_nonnegative_int(estimate, "selected_lines"),
                     original_audio_lines=_nonnegative_int(
@@ -190,7 +224,7 @@ class PregenerationJob:
             ) from error
 
     def to_document(self) -> dict[str, object]:
-        return {
+        document: dict[str, object] = {
             "job_id": self.job_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -204,6 +238,10 @@ class PregenerationJob:
             "selected_line_ids": list(self.selected_line_ids),
             "estimate": asdict(self.estimate),
         }
+        if self.source_story_index is not None:
+            document["source_story_index"] = self.source_story_index
+            document["source_story_index_sha256"] = self.source_story_index_sha256
+        return document
 
 
 def inspect_story_index(
@@ -223,7 +261,8 @@ def inspect_story_index(
         if source_audio_evidence_payload is None:
             source_audio_evidence_payload = _source_audio_evidence_payload(path)
         evidence_sha256 = hashlib.sha256(source_audio_evidence_payload).hexdigest()
-        persistent_cache = size >= story_catalog_minimum_bytes
+        selected_snapshot = _has_selection_origin(path)
+        persistent_cache = size >= story_catalog_minimum_bytes and not selected_snapshot
         content = (
             _load_story_catalog(path, checksum, provider_id, evidence_sha256)
             if persistent_cache
@@ -232,7 +271,11 @@ def inspect_story_index(
         cache_state = "disk" if content is not None else "miss"
         if content is None:
             cache_hits = _cached_story_index_document.cache_info().hits
-            document = _cached_story_index_document(str(path), checksum)
+            document = (
+                load_verified_story_index_document(path, checksum)
+                if selected_snapshot
+                else _cached_story_index_document(str(path), checksum)
+            )
             selections = _story_selections(
                 document,
                 _validated_source_audio_line_ids(
@@ -244,6 +287,9 @@ def inspect_story_index(
                     "Story content has no selectable dialogue"
                 )
             metadata = document.metadata
+            from vntts.selected_story_snapshot import selected_story_origin
+
+            origin = selected_story_origin(document)
             version = metadata.get("game_version")
             content = GameContent(
                 provider_id=provider_id,
@@ -254,6 +300,8 @@ def inspect_story_index(
                 story_index=path,
                 story_index_sha256=checksum,
                 selections=selections,
+                source_story_index=origin[0] if origin else None,
+                source_story_index_sha256=origin[1] if origin else None,
             )
             cache_state = (
                 "memory"
@@ -431,7 +479,21 @@ def load_verified_story_index_document(
     path = Path(path).expanduser().resolve()
     if sha256_file(path) != expected_sha256:
         raise StoryContentChanged("Story content checksum changed")
+    if _has_selection_origin(path):
+        payload = read_regular_bytes(path)
+        if hashlib.sha256(payload).hexdigest() != expected_sha256:
+            raise StoryContentChanged("Story content changed while it was being read")
+        document = load_story_index_snapshot(path, payload)
+        if sha256_file(path) != expected_sha256:
+            raise StoryContentChanged("Story content changed while it was being read")
+        return document
     return _cached_story_index_document(str(path), expected_sha256)
+
+
+def _has_selection_origin(path: Path) -> bool:
+    with open_regular_text(path, encoding="utf-8") as stream:
+        metadata = decode_json(stream.readline())
+    return isinstance(metadata, dict) and "selection_origin" in metadata
 
 
 @lru_cache(maxsize=8)
@@ -505,10 +567,14 @@ def discover_game_content(
             )
             continue
         try:
+            provider_id = "reverse1999" if path in trusted_game_paths else provider_id
+            if _has_selection_origin(path):
+                discovered.append(inspect_story_index(path, provider_id=provider_id))
+                continue
             discovered.append(
                 _cached_story_index(
                     str(path),
-                    "reverse1999" if path in trusted_game_paths else provider_id,
+                    provider_id,
                     sha256_file(path),
                     hashlib.sha256(_source_audio_evidence_payload(path)).hexdigest(),
                 )
@@ -619,7 +685,9 @@ class PregenerationJobStore:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def _selection_path(self, content: GameContent) -> Path:
-        checksum = _sha256_text({"checksum": content.story_index_sha256}, "checksum")
+        checksum = _sha256_text(
+            {"checksum": content.catalog_story_index_sha256}, "checksum"
+        )
         return self.root / "selections" / f"{checksum}.json"
 
     def selection_for_content(self, content: GameContent) -> tuple[str, ...] | None:
@@ -631,7 +699,7 @@ class PregenerationJobStore:
         except FileNotFoundError:
             return None
         try:
-            if document["story_index_sha256"] != content.story_index_sha256:
+            if document["story_index_sha256"] != content.catalog_story_index_sha256:
                 raise ValueError("Story selection belongs to different content")
             values = document["selected_story_ids"]
             return (
@@ -658,7 +726,7 @@ class PregenerationJobStore:
             path,
             1,
             {
-                "story_index_sha256": content.story_index_sha256,
+                "story_index_sha256": content.catalog_story_index_sha256,
                 "selected_story_ids": list(selected),
             },
         )
@@ -687,6 +755,9 @@ class PregenerationJobStore:
                 job.story_index_sha256 != content.story_index_sha256
                 or job.selected_story_ids != selected_ids
                 or job.selected_line_ids != line_ids
+                or job.catalog_story_index_sha256 != content.catalog_story_index_sha256
+                or Path(job.catalog_story_index).expanduser().resolve()
+                != content.catalog_story_index.expanduser().resolve()
             ):
                 raise PregenerationSetupError(
                     "Saved preparation identity conflicts with the selected story"
@@ -712,10 +783,45 @@ class PregenerationJobStore:
             selected_story_ids=selected_ids,
             selected_line_ids=line_ids,
             estimate=estimate_preparation(content, selected_ids),
+            source_story_index=str(content.source_story_index)
+            if content.source_story_index is not None
+            else None,
+            source_story_index_sha256=content.source_story_index_sha256,
         )
         path.parent.mkdir(parents=True, exist_ok=True)
         write_versioned_json(path, job_schema_version, job.to_document())
         return job
+
+    def selected_content(self, job: PregenerationJob) -> GameContent:
+        """Prepare strict, source-bound dialogue inside a background worker."""
+        from vntts.selected_story_snapshot import create_selected_story_snapshot
+
+        snapshot_identity = hashlib.sha256(
+            json.dumps(
+                [job.story_index_sha256, job.selected_story_ids, job.selected_line_ids],
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()[:24]
+        try:
+            snapshot = create_selected_story_snapshot(
+                Path(job.story_index),
+                job.story_index_sha256,
+                job.selected_line_ids,
+                job.selected_story_ids,
+                self.root / "story-snapshots" / snapshot_identity,
+            )
+            content = inspect_story_index(snapshot, provider_id=job.provider_id)
+        except (OSError, StoryIndexError, ValueError) as error:
+            raise PregenerationSetupError(
+                f"Unable to prepare selected story snapshot: {error}"
+            ) from error
+        if set(job.selected_line_ids) != {
+            line_id
+            for selection in content.selections
+            for line_id in selection.line_ids
+        }:
+            raise PregenerationSetupError("Selected story snapshot changed its lines")
+        return content
 
     def load(self, job_id: str) -> PregenerationJob:
         path = self.path_for(job_id)
@@ -753,11 +859,13 @@ class PregenerationJobStore:
         return tuple(
             job
             for job in self._saved_jobs()
-            if job.story_index_sha256 == content.story_index_sha256
+            if job.catalog_story_index_sha256 == content.catalog_story_index_sha256
         )
 
     def source_story_indexes(self) -> tuple[Path, ...]:
-        sources = (Path(job.story_index).expanduser() for job in self._saved_jobs())
+        sources = (
+            Path(job.catalog_story_index).expanduser() for job in self._saved_jobs()
+        )
         return tuple(dict.fromkeys(source for source in sources if source.is_file()))
 
     def prepared_story_ids(self, content: GameContent) -> frozenset[str]:
@@ -812,6 +920,8 @@ class PregenerationJobStore:
             current.story_index_sha256 != job.story_index_sha256
             or current.selected_story_ids != job.selected_story_ids
             or current.selected_line_ids != job.selected_line_ids
+            or current.catalog_story_index_sha256 != job.catalog_story_index_sha256
+            or current.catalog_story_index != job.catalog_story_index
         ):
             raise PregenerationSetupError("Saved preparation identity changed")
         prepared = replace(
@@ -844,6 +954,12 @@ def _story_selections(
         raw_completion_contract if isinstance(raw_completion_contract, str) else None
     )
     if document.collections:
+        origin = metadata.get("selection_origin")
+        origin_selection_ids = (
+            frozenset(origin["selected_story_ids"])
+            if isinstance(origin, dict)
+            else frozenset()
+        )
         records_by_collection: dict[str | None, list[StoryIndexRecord]] = {}
         for record in document.records:
             records_by_collection.setdefault(record.collection_id, []).append(record)
@@ -856,6 +972,15 @@ def _story_selections(
                 collection.kind,
                 collection.order,
                 tuple(records_by_collection.get(collection.collection_id, ())),
+                force_stages=any(
+                    f"{collection.collection_id}:stage:{record.chapter}"
+                    in origin_selection_ids
+                    for record in records_by_collection.get(
+                        collection.collection_id, ()
+                    )
+                )
+                if origin_selection_ids
+                else False,
             )
         ]
     else:
@@ -899,6 +1024,8 @@ def _collection_stage_groups(
     kind: str,
     order: int,
     records: tuple[StoryIndexRecord, ...],
+    *,
+    force_stages: bool = False,
 ) -> tuple[
     tuple[str, str, str, int, tuple[StoryIndexRecord, ...], str | None, str | None],
     ...,
@@ -913,7 +1040,7 @@ def _collection_stage_groups(
         by_chapter.setdefault(chapter, []).append(record)
         if not stage_order or stage_order[-1] != chapter:
             stage_order.append(chapter)
-    if len(by_chapter) < 2:
+    if len(by_chapter) < 2 and not force_stages:
         return ((collection_id, title, kind, order, records, None, None),)
     if len(stage_order) != len(by_chapter):
         return ((collection_id, title, kind, order, records, None, None),)

@@ -2026,7 +2026,11 @@ class GameNarratorTest(unittest.TestCase):
                 root / "story-candidates", content.story_index_sha256
             )
             importer = Mock()
-            importer.prepare_voice_candidates.return_value = candidates
+            importer.prepare_voice_candidates.side_effect = (
+                lambda prepared_job, *args, **kwargs: write_player_candidate_manifest(
+                    root / "story-candidates", prepared_job.story_index_sha256
+                )
+            )
             importer.availability.return_value = Mock(
                 available=True, message="Available"
             )
@@ -2045,7 +2049,7 @@ class GameNarratorTest(unittest.TestCase):
             stale.write_text(json.dumps(old_document), encoding="utf-8")
             dialog._prepared_voice_job = job.job_id
             dialog._prepared_voice_manifest = stale
-            plan = dialog._create_voice_plan(job)
+            plan = dialog._create_voice_plan(job).plan
             importer.prepare_voice_candidates.assert_called_once()
             self.assertTrue(any(group.candidates for group in plan.groups))
             narrator = initialize_voice_registry(
@@ -2072,11 +2076,12 @@ class GameNarratorTest(unittest.TestCase):
                 }
             )
             manifest.write_text(json.dumps(document), encoding="utf-8")
-            candidates = write_player_candidate_manifest(
-                root / "story-candidates", content.story_index_sha256
-            )
             importer = Mock()
-            importer.prepare_voice_candidates.return_value = candidates
+            importer.prepare_voice_candidates.side_effect = (
+                lambda prepared_job, *args, **kwargs: write_player_candidate_manifest(
+                    root / "story-candidates", prepared_job.story_index_sha256
+                )
+            )
             importer.availability.return_value = Mock(
                 available=True, message="Available"
             )
@@ -2109,7 +2114,7 @@ class GameNarratorTest(unittest.TestCase):
             )
             job = jobs.create_or_resume(content, ["story"])
 
-            plan = dialog._create_voice_plan(job)
+            plan = dialog._create_voice_plan(job).plan
 
             importer.prepare_voice_candidates.assert_called_once()
             group = next(

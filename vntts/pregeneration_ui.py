@@ -2004,7 +2004,7 @@ class OfflineAudioPreparationDialog(QDialog):
         ContentDiscovery, GameContent | None, PregenerationJob | None, str | None
     ]:
         discovery = self._discover_content()
-        source = Path(job.story_index).expanduser().resolve()
+        source = Path(job.catalog_story_index).expanduser().resolve()
         content = next(
             (
                 value
@@ -3087,7 +3087,8 @@ class OfflineAudioPreparationDialog(QDialog):
                 )
                 if (
                     self._job is not None
-                    and self._job.story_index_sha256 == content.story_index_sha256
+                    and self._job.catalog_story_index_sha256
+                    == content.catalog_story_index_sha256
                     and selection_id in self._job.selected_story_ids
                     and self.has_pending_work()
                 ):
@@ -3133,7 +3134,8 @@ class OfflineAudioPreparationDialog(QDialog):
         selected = (
             set(self._job.selected_story_ids)
             if self._job is not None
-            and self._job.story_index_sha256 == content.story_index_sha256
+            and self._job.catalog_story_index_sha256
+            == content.catalog_story_index_sha256
             else set(self.selected_story_ids())
         )
         rows = []
@@ -4016,7 +4018,7 @@ class OfflineAudioPreparationDialog(QDialog):
     ) -> VoicePlan | _SemanticVoicePlan:
         started, cpu_started = monotonic(), process_time()
         settings = resolve_pregeneration_settings(self.settings)
-        semantic_content = None
+        job, selected_content = self._prepare_selected_voice_job(job)
         if semantic_enabled:
             try:
                 semantic_content = self.importer.prepare_source_audio_semantics(
@@ -4031,6 +4033,7 @@ class OfflineAudioPreparationDialog(QDialog):
                     "Source-audio semantic preparation was cancelled"
                 ) from error
             if semantic_content is not None:
+                selected_content = semantic_content
                 job = self.job_store.create_or_resume(
                     semantic_content, job.selected_story_ids
                 )
@@ -4081,9 +4084,22 @@ class OfflineAudioPreparationDialog(QDialog):
             "complete",
             cpu_ms=(process_time() - cpu_started) * 1000,
         )
-        if semantic_content is not None:
-            return _SemanticVoicePlan(plan, job, semantic_content)
-        return plan
+        return _SemanticVoicePlan(plan, job, selected_content)
+
+    def _prepare_selected_voice_job(
+        self, job: PregenerationJob
+    ) -> tuple[PregenerationJob, GameContent]:
+        if self.voice_cancel_event.is_set():
+            raise PregenerationVoiceCancelled("Voice matching was cancelled")
+        content = self.job_store.selected_content(job)
+        if self.voice_cancel_event.is_set():
+            raise PregenerationVoiceCancelled("Voice matching was cancelled")
+        if (
+            content.story_index_sha256 != job.story_index_sha256
+            or str(content.story_index) != job.story_index
+        ):
+            job = self.job_store.create_or_resume(content, job.selected_story_ids)
+        return job, content
 
     def _decoder_progress(self, message: str) -> None:
         if self.planning_voices and not self._close_after_voice_cancel:
@@ -4131,7 +4147,7 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         if isinstance(plan, _SemanticVoicePlan):
             self._job = plan.job
-            self._story_selection_drafts[plan.content.story_index_sha256] = set(
+            self._story_selection_drafts[plan.job.catalog_story_index_sha256] = set(
                 plan.job.selected_story_ids
             )
             plan = plan.plan

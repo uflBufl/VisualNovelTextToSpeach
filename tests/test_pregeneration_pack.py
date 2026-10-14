@@ -1429,7 +1429,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.pregeneration_pack.project_source_audio_semantics",
+                    "vntts.pregeneration_pack.merge_source_audio_semantics",
                     side_effect=SourceAudioSemanticEvidenceError("corrupt sidecar"),
                 ),
                 self.assertRaisesRegex(OfflinePackError, "corrupt sidecar"),

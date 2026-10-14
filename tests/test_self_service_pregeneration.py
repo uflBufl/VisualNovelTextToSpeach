@@ -54,6 +54,7 @@ from vntts.settings import AppSettings  # noqa: E402
 from vntts.source_audio_progress import SourceAudioProgress  # noqa: E402
 from vntts.speech_presentation import engine_model_label  # noqa: E402
 from vntts.ui_text import plain_label_text  # noqa: E402
+from vntts.versioned_json import write_versioned_json  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
 from vntts.voices import CharacterVoiceRegistry, remember_voice_binding  # noqa: E402
 
@@ -1371,13 +1372,22 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             self.assertEqual(planned.estimate.original_audio_lines, 0)
             evidence.write_bytes(payload)
+            selected = jobs.create_or_resume(
+                jobs.selected_content(planned), planned.selected_story_ids
+            )
+            selected = replace(selected, estimate=planned.estimate)
+            write_versioned_json(
+                jobs.path_for(selected.job_id), 1, selected.to_document()
+            )
             content, _jobs, dialog, _generator, _visible = (
                 self._prepared_synthetic_live_fallback_pack(root)
             )
             self.addCleanup(dialog.deleteLater)
             try:
-                self.assertEqual(content.story_index_sha256, planned.story_index_sha256)
-                self.assertEqual(dialog.job().job_id, planned.job_id)
+                self.assertEqual(
+                    content.story_index_sha256, selected.catalog_story_index_sha256
+                )
+                self.assertEqual(dialog.job().job_id, selected.job_id)
                 self.assertEqual(dialog.job().estimate.original_audio_lines, 0)
                 self.assertEqual(dialog.job().status, "prepared")
                 self.assertIn(

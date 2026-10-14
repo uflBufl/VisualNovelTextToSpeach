@@ -369,6 +369,143 @@ def _selected_semantic_ids(records: list[JsonDocument]) -> tuple[set[str], set[s
     return selected_line_ids, selected_entry_ids
 
 
+def _merge_cumulative_semantic_entry(
+    record: JsonDocument,
+    entry_id: str,
+    owner_entries: dict[str, SourceAudioSemanticEvidenceEntry],
+    entries: dict[str, SourceAudioSemanticEvidenceEntry],
+) -> None:
+    found = owner_entries.get(entry_id)
+    if found is None or record["line_id"] not in found["source_line_ids"]:
+        raise SourceAudioSemanticEvidenceError(
+            "Cumulative dialogue semantic entry changed"
+        )
+    candidate = deepcopy(found)
+    candidate["source_line_ids"] = []
+    previous = entries.setdefault(candidate["entry_id"], candidate)
+    if {key: value for key, value in previous.items() if key != "source_line_ids"} != {
+        key: value for key, value in candidate.items() if key != "source_line_ids"
+    }:
+        raise SourceAudioSemanticEvidenceError(
+            "Cumulative dialogue has conflicting semantic evidence"
+        )
+    previous["source_line_ids"].append(str(record["line_id"]))
+
+
+def _collect_cumulative_semantic_entries(
+    stories: tuple[StoryIndexDocument, ...], records: list[JsonDocument]
+) -> tuple[
+    dict[str, SourceAudioSemanticEvidenceEntry], SourceAudioSemanticEvidence | None
+]:
+    owners = {record.line_id: story for story in stories for record in story.records}
+    evidence_by_owner = {}
+    entries_by_owner = {}
+    for story in stories:
+        if isinstance(story.metadata.get("source_audio_semantics"), dict):
+            evidence_by_owner[id(story)] = load_source_audio_semantic_evidence(
+                story.path.parent / "source-audio-semantic-evidence.json", story
+            )
+            entries_by_owner[id(story)] = {
+                entry["entry_id"]: entry
+                for entry in evidence_by_owner[id(story)]["entries"]
+            }
+    entries: dict[str, SourceAudioSemanticEvidenceEntry] = {}
+    template: SourceAudioSemanticEvidence | None = None
+    for record in records:
+        entry_id = record.get("source_audio_semantic_evidence_entry_id")
+        if entry_id is None:
+            continue
+        if not isinstance(entry_id, str):
+            raise SourceAudioSemanticEvidenceError(
+                "Cumulative dialogue semantic entry ID is invalid"
+            )
+        owner = owners.get(str(record.get("line_id")))
+        evidence = evidence_by_owner.get(id(owner))
+        if evidence is None:
+            raise SourceAudioSemanticEvidenceError(
+                "Cumulative dialogue lost its semantic owner"
+            )
+        if template is not None and (
+            evidence.get("model") != template.get("model")
+            or evidence.get("locale") != template.get("locale")
+        ):
+            raise SourceAudioSemanticEvidenceError(
+                "Cumulative source-audio evidence uses incompatible models or languages"
+            )
+        template = evidence
+        _merge_cumulative_semantic_entry(
+            record, entry_id, entries_by_owner[id(owner)], entries
+        )
+    return entries, template
+
+
+def merge_source_audio_semantics(
+    catalog: StoryIndexDocument,
+    stories: tuple[StoryIndexDocument, ...],
+    records: list[JsonDocument],
+    staging: Path,
+    *,
+    expected_catalog_sha256: str | None = None,
+) -> tuple[dict[str, object], list[JsonDocument], Path | None]:
+    """Combine validated chapter verdicts, with the latest chapter owner winning."""
+    catalog_sha256 = sha256_file(catalog.path)
+    if (
+        expected_catalog_sha256 is not None
+        and catalog_sha256 != expected_catalog_sha256
+    ):
+        raise SourceAudioSemanticEvidenceError("Cumulative source catalog changed")
+    metadata = deepcopy(catalog.metadata)
+    metadata.pop("selection_origin", None)
+    metadata.pop("source_audio_semantics", None)
+    for story in stories:
+        for key in ("source_audio_completion", "source_audio_timing"):
+            if key in story.metadata:
+                metadata[key] = deepcopy(story.metadata[key])
+    entries, template = _collect_cumulative_semantic_entries(stories, records)
+    if template is None:
+        return metadata, records, None
+    for entry in entries.values():
+        entry["source_line_ids"] = sorted(set(entry["source_line_ids"]))
+    merged = {
+        key: deepcopy(value)
+        for key, value in template.items()
+        if key not in {"evidence_id", "generated_at", "entries"}
+    }
+    merged["entries"] = sorted(
+        entries.values(),
+        key=lambda entry: (
+            entry["locale"],
+            entry["media_sha256"],
+            entry["normalized_displayed_text_sha256"],
+        ),
+    )
+    merged["source_story_index_sha256"] = catalog_sha256
+    merged["evidence_id"] = _semantic_document_sha256(merged)
+    merged["generated_at"] = template["generated_at"]
+    validate_source_audio_semantic_evidence(merged)
+    if sha256_file(catalog.path) != catalog_sha256:
+        raise SourceAudioSemanticEvidenceError(
+            "Cumulative source catalog changed while read"
+        )
+    projected = deepcopy(records)
+    for record in projected:
+        if record.get("source_audio_semantic_evidence_entry_id") is not None:
+            record["source_audio_semantic_evidence_id"] = merged["evidence_id"]
+    destination = staging / "source-audio-semantic-evidence.json"
+    atomic_write_json(destination, merged, sort_keys=True)
+    metadata["source_audio_semantics"] = {
+        "evidence_id": merged["evidence_id"],
+        "evidence_sha256": sha256_file(destination),
+        "method": SEMANTIC_EVIDENCE_METHOD,
+        "selected_chapters": sorted({str(record["chapter"]) for record in projected}),
+        "applied_count": sum(
+            record.get("source_audio_semantic_evidence_entry_id") is not None
+            for record in projected
+        ),
+    }
+    return metadata, projected, destination
+
+
 def _require_sha256(value: object, label: str) -> str:
     if not isinstance(value, str) or not is_lowercase_sha256(value):
         raise SourceAudioSemanticEvidenceError(f"{label} SHA-256 is invalid")

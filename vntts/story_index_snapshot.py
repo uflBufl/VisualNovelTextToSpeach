@@ -24,4 +24,8 @@ def load_story_index_snapshot(path: str | Path, payload: bytes) -> StoryIndexDoc
             raise StoryIndexError(
                 str(error).replace(str(snapshot), str(source))
             ) from error.__cause__
-    return replace(document, path=source)
+    document = replace(document, path=source)
+    from vntts.selected_story_snapshot import validate_selected_story_origin
+
+    validate_selected_story_origin(document)
+    return document

@@ -539,15 +539,8 @@ class Reverse1999GameImporter:
         if job.provider_id != self.provider_id or job.game != self.display_name:
             return None
         self._raise_if_cancelled(cancel_event)
-        source = Path(job.story_index).expanduser().resolve()
-        try:
-            document = load_verified_story_index_document(
-                source, job.story_index_sha256
-            )
-        except (OSError, StoryIndexError, ValueError) as error:
-            raise GameContentImportError(
-                f"Unable to inspect selected source audio: {error}"
-            ) from error
+        document = self._selected_source_audio_snapshot(job)
+        source = document.path
         selected = set(job.selected_line_ids)
         selected_records = tuple(
             record for record in document.records if record.line_id in selected
@@ -560,7 +553,7 @@ class Reverse1999GameImporter:
         if not any(
             record.source_audio_status == "available" for record in selected_records
         ):
-            return None
+            return inspect_story_index(source, provider_id=self.provider_id)
         if self._semantic_evidence_is_current(source, document, selected):
             return inspect_story_index(source, provider_id=self.provider_id)
 
@@ -568,7 +561,9 @@ class Reverse1999GameImporter:
         timed_story = root / "timed-story-index.jsonl"
         semantic_story = root / "story-index.jsonl"
         evidence = root / "source-audio-semantic-evidence.json"
-        if self._semantic_success_is_current(semantic_story, evidence, selected):
+        if self._semantic_success_is_current(
+            semantic_story, evidence, selected, source_snapshot=document
+        ):
             timed_story.unlink(missing_ok=True)
             return inspect_story_index(semantic_story, provider_id=self.provider_id)
         # These are only private, derived outputs.  A semantic publisher can
@@ -577,6 +572,10 @@ class Reverse1999GameImporter:
         semantic_story.unlink(missing_ok=True)
         evidence.unlink(missing_ok=True)
         root.mkdir(parents=True, exist_ok=True)
+        if timed_story.exists() and not self._matches_selected_snapshot(
+            timed_story, document, selected
+        ):
+            timed_story.unlink()
         decoder, bank_index = self._prepare_timed_source_audio(
             source,
             timed_story,
@@ -600,12 +599,34 @@ class Reverse1999GameImporter:
             scan_progress=scan_progress,
         )
         self._raise_if_cancelled(cancel_event)
-        if not self._semantic_success_is_current(semantic_story, evidence, selected):
+        if not self._semantic_success_is_current(
+            semantic_story, evidence, selected, source_snapshot=document
+        ):
             raise GameContentImportError(
                 "Source-audio semantic publisher produced unverifiable evidence."
             )
         timed_story.unlink(missing_ok=True)
         return inspect_story_index(semantic_story, provider_id=self.provider_id)
+
+    def _selected_source_audio_snapshot(
+        self, job: PregenerationJob
+    ) -> StoryIndexDocument:
+        from vntts.selected_story_snapshot import create_selected_story_snapshot
+
+        source = Path(job.story_index).expanduser().resolve()
+        try:
+            source = create_selected_story_snapshot(
+                source,
+                job.story_index_sha256,
+                job.selected_line_ids,
+                job.selected_story_ids,
+                self._semantic_output_root(job) / "selected",
+            )
+            return load_verified_story_index_document(source, sha256_file(source))
+        except (OSError, StoryIndexError, ValueError) as error:
+            raise GameContentImportError(
+                f"Unable to inspect selected source audio: {error}"
+            ) from error
 
     def _prepare_timed_source_audio(
         self,
@@ -847,7 +868,12 @@ class Reverse1999GameImporter:
 
     @classmethod
     def _semantic_success_is_current(
-        cls, story: Path, evidence: Path, selected: set[str]
+        cls,
+        story: Path,
+        evidence: Path,
+        selected: set[str],
+        *,
+        source_snapshot: StoryIndexDocument | None = None,
     ) -> bool:
         try:
             document = load_verified_story_index_document(story, sha256_file(story))
@@ -855,7 +881,27 @@ class Reverse1999GameImporter:
             return False
         if evidence != story.parent / "source-audio-semantic-evidence.json":
             return False
+        if source_snapshot is not None and (
+            {record.line_id for record in document.records} != selected
+            or document.metadata.get("selection_origin")
+            != source_snapshot.metadata.get("selection_origin")
+        ):
+            return False
         return cls._semantic_evidence_is_current(story, document, selected)
+
+    @staticmethod
+    def _matches_selected_snapshot(
+        story: Path, source_snapshot: StoryIndexDocument, selected: set[str]
+    ) -> bool:
+        try:
+            document = load_verified_story_index_document(story, sha256_file(story))
+        except OSError, StoryIndexError, ValueError:
+            return False
+        return {
+            record.line_id for record in document.records
+        } == selected and document.metadata.get(
+            "selection_origin"
+        ) == source_snapshot.metadata.get("selection_origin")
 
     def narrator_characters(
         self,
