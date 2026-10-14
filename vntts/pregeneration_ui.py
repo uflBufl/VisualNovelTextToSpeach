@@ -761,7 +761,6 @@ class OfflineAudioPreparationDialog(QDialog):
         progress_layout.addWidget(self.progress_bar)
         progress_layout.addWidget(self.progress_counts)
         progress_layout.addWidget(self.progress_timing)
-        progress_layout.addWidget(self.progress_runtime)
         progress_layout.addWidget(self.resume_status)
         progress_layout.addWidget(self.progress_failures)
         progress_layout.addWidget(self.progress_story_readiness_label)
@@ -770,7 +769,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_details_toggle = QPushButton("Show generation details")
         self.progress_details_toggle.setCheckable(True)
         self.progress_details_toggle.setAccessibleDescription(
-            "Show the locked voice and model configuration and source details"
+            "Show device, locked voice and model configuration, and source details"
         )
         progress_layout.addWidget(
             self.progress_details_toggle, alignment=Qt.AlignmentFlag.AlignLeft
@@ -781,6 +780,7 @@ class OfflineAudioPreparationDialog(QDialog):
         configuration_row = QHBoxLayout()
         configuration_row.addWidget(self.progress_configuration, 1)
         configuration_row.addWidget(self.copy_progress_configuration)
+        details_layout.addWidget(self.progress_runtime)
         details_layout.addLayout(configuration_row)
         details_layout.addWidget(self.story_context)
         progress_layout.addWidget(self.progress_details)
