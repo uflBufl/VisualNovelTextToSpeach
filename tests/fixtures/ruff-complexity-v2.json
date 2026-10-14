@@ -1252,7 +1252,7 @@
       "path": "vntts/diagnostics_ui.py",
       "scope": "DiagnosticsDialog.__init__",
       "count": 1,
-      "maximum": 113
+      "maximum": 102
     },
     {
       "code": "PLR0915",
