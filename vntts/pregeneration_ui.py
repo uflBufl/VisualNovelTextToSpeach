@@ -115,6 +115,7 @@ from vntts.release_backends import speech_backend_options
 from vntts.settings import AppSettings
 from vntts.source_audio_progress import SourceAudioProgress
 from vntts.speech_presentation import (
+    compact_runtime_label,
     speech_configuration_label,
     speech_configuration_rows,
 )
@@ -670,7 +671,13 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.progress_phase = QLabel()
         self.progress_phase.setAccessibleName("Offline preparation phase")
-        self.progress_phase.setStyleSheet("font-weight: 600;")
+        phase_font = self.progress_phase.font()
+        phase_font.setBold(True)
+        phase_font.setPointSizeF(phase_font.pointSizeF() * 1.2)
+        self.progress_phase.setFont(phase_font)
+        self.progress_scope = QLabel()
+        self.progress_scope.setWordWrap(True)
+        self.progress_scope.setAccessibleName("Preparation scope")
         self.progress_configuration = QLabel()
         self.progress_configuration.setWordWrap(True)
         self.progress_configuration.setAccessibleName("Locked generation configuration")
@@ -686,6 +693,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_counts = QLabel()
         self.progress_counts.setAccessibleName("Offline generation durable counts")
         self.progress_counts.setWordWrap(True)
+        self.progress_counts.setStyleSheet("font-weight: 600;")
         self.progress_timing = QLabel()
         self.progress_timing.setWordWrap(True)
         self.progress_timing.setAccessibleName("Progress freshness and remaining time")
@@ -693,8 +701,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_runtime.setWordWrap(True)
         self.progress_runtime.setTextFormat(Qt.TextFormat.PlainText)
         self.progress_runtime.setAccessibleName("Offline generation device")
-        self.progress_guarantee = QLabel()
-        self.progress_guarantee.setWordWrap(True)
         self.progress_cancel_consequence = QLabel()
         self.progress_cancel_consequence.setAccessibleName(
             "Cancel and resume consequence"
@@ -706,20 +712,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_coverage = QLabel()
         self.progress_coverage.setAccessibleName("Final offline audio coverage")
         self.progress_coverage.setWordWrap(True)
-        self.progress_story_readiness_label = QLabel(
-            "Story readiness (all dialogue, including game audio)"
-        )
-        self.progress_story_readiness_label.setStyleSheet("font-weight: 600;")
-        self.progress_story_readiness = QListWidget()
-        self.progress_story_readiness.setAccessibleName(
-            "Selected story preparation readiness"
-        )
-        self.progress_story_readiness.setSelectionMode(
-            QAbstractItemView.SelectionMode.NoSelection
-        )
-        self.progress_story_readiness.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.progress_story_readiness.setWordWrap(True)
-        self.progress_story_readiness.setMaximumHeight(150)
+        self._build_progress_story_readiness()
         self.play_ready_button = QPushButton("Start reading ready dialogue")
         self.play_ready_button.setAccessibleDescription(
             "Start the selected story while preparation continues in the background"
@@ -728,31 +721,80 @@ class OfflineAudioPreparationDialog(QDialog):
         self.play_ready_button.hide()
         self._layout_progress_panel()
 
+    def _build_progress_story_readiness(self) -> None:
+        self.progress_story_readiness_label = QLabel("Ready to read")
+        self.progress_story_readiness_label.setToolTip(
+            "Includes original game audio and prepared speech. Consecutive lines "
+            "show how far reading can continue without waiting."
+        )
+        self.progress_story_readiness_label.setStyleSheet("font-weight: 600;")
+        self.progress_story_readiness = QTreeWidget()
+        self.progress_story_readiness.setColumnCount(3)
+        self.progress_story_readiness.setHeaderLabels(
+            ["Story", "Ready lines", "Consecutive"]
+        )
+        self.progress_story_readiness.setRootIsDecorated(False)
+        self.progress_story_readiness.setItemsExpandable(False)
+        self.progress_story_readiness.setAlternatingRowColors(True)
+        self.progress_story_readiness.header().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch
+        )
+        for column in (1, 2):
+            self.progress_story_readiness.header().setSectionResizeMode(
+                column, QHeaderView.ResizeMode.ResizeToContents
+            )
+        self.progress_story_readiness.setAccessibleName(
+            "Selected story preparation readiness"
+        )
+        self.progress_story_readiness.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection
+        )
+        self.progress_story_readiness.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.progress_story_readiness.setWordWrap(True)
+        self.progress_story_readiness.setMinimumHeight(180)
+
     def _layout_progress_panel(self) -> None:
         progress_layout = QVBoxLayout(self.progress_panel)
         progress_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         progress_layout.addWidget(self.progress_phase)
-        progress_configuration_row = QHBoxLayout()
-        progress_configuration_row.addWidget(self.progress_configuration, 1)
-        progress_configuration_row.addWidget(self.copy_progress_configuration)
-        progress_layout.addLayout(progress_configuration_row)
-        progress_layout.addWidget(self.story_context)
+        progress_layout.addWidget(self.progress_scope)
         progress_layout.addWidget(self.progress_bar)
         progress_layout.addWidget(self.progress_counts)
         progress_layout.addWidget(self.progress_timing)
         progress_layout.addWidget(self.progress_runtime)
         progress_layout.addWidget(self.resume_status)
-        progress_layout.addWidget(self.progress_guarantee)
         progress_layout.addWidget(self.progress_failures)
-        progress_layout.addWidget(self.progress_cancel_consequence)
         progress_layout.addWidget(self.progress_story_readiness_label)
         progress_layout.addWidget(self.progress_story_readiness)
         progress_layout.addWidget(self.progress_coverage)
-        progress_action_row = QHBoxLayout()
-        progress_action_row.addStretch()
-        progress_action_row.addWidget(self.play_ready_button)
-        progress_layout.addLayout(progress_action_row)
+        self.progress_details_toggle = QPushButton("Show generation details")
+        self.progress_details_toggle.setCheckable(True)
+        self.progress_details_toggle.setAccessibleDescription(
+            "Show the locked voice and model configuration and source details"
+        )
+        progress_layout.addWidget(
+            self.progress_details_toggle, alignment=Qt.AlignmentFlag.AlignLeft
+        )
+        self.progress_details = QWidget()
+        details_layout = QVBoxLayout(self.progress_details)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        configuration_row = QHBoxLayout()
+        configuration_row.addWidget(self.progress_configuration, 1)
+        configuration_row.addWidget(self.copy_progress_configuration)
+        details_layout.addLayout(configuration_row)
+        details_layout.addWidget(self.story_context)
+        progress_layout.addWidget(self.progress_details)
+        self.progress_details.hide()
+        self.progress_details_toggle.toggled.connect(
+            self._set_progress_details_expanded
+        )
         self.progress_panel.hide()
+
+    def _set_progress_details_expanded(self, expanded: bool) -> None:
+        self.progress_details.setVisible(expanded)
+        self.progress_details_toggle.setText(
+            "Hide generation details" if expanded else "Show generation details"
+        )
 
     def _build_voice_confirmation(
         self, game_narrator_chooser: Callable[..., AppSettings | None] | None
@@ -928,6 +970,9 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _build_buttons(self) -> None:
         self.buttons = QDialogButtonBox()
+        self.buttons.addButton(
+            self.play_ready_button, QDialogButtonBox.ButtonRole.ActionRole
+        )
         cancel_button = self.buttons.addButton(
             "Cancel", QDialogButtonBox.ButtonRole.RejectRole
         )
@@ -1003,6 +1048,8 @@ class OfflineAudioPreparationDialog(QDialog):
         shell.addWidget(self.selection_panel, 1)
         shell.addWidget(self.content_scroll, 1)
         shell.addWidget(self.copy_resume_error)
+        self.progress_cancel_consequence.hide()
+        shell.addWidget(self.progress_cancel_consequence)
         shell.addWidget(self.buttons)
         make_text_copyable(self)
 
@@ -1305,7 +1352,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._changes_rows = ()
         self.voice_panel.hide()
         self.voice_confirmation.hide()
-        self.progress_panel.hide()
+        self._set_progress_visible(False)
         self.content_scroll.hide()
         self.selection_panel.show()
         self.step.setText("Step 1 of 4 - Choose stories")
@@ -1357,7 +1404,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._changes_rows = ()
         self._awaiting_voice_confirmation = False
         self.voice_confirmation.hide()
-        self.progress_panel.hide()
+        self._set_progress_visible(False)
         self.voice_panel.hide()
         self.selection_panel.show()
         self._set_import_controls(True)
@@ -1463,11 +1510,16 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _full_generation_details(self) -> str:
         content = self.current_content()
-        return self._full_narrator_configuration() + (
-            f"\nSource story index: {content.story_index}\n"
-            f"{plain_label_text(self.story_context)}"
-            if content is not None
-            else ""
+        runtime = self.progress_runtime.toolTip() or self.progress_runtime.text()
+        return (
+            self._full_narrator_configuration()
+            + (
+                f"\nSource story index: {content.story_index}\n"
+                f"{plain_label_text(self.story_context)}"
+                if content is not None
+                else ""
+            )
+            + (f"\nRuntime: {runtime}" if runtime else "")
         )
 
     def _voice_choices(self, plan: VoicePlan) -> tuple[VoiceChoice, ...]:
@@ -1519,7 +1571,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.pocket_voice_cloning.setEnabled(True)
         self.selection_panel.hide()
         self.voice_panel.hide()
-        self.progress_panel.hide()
+        self._set_progress_visible(False)
         self.voice_confirmation.show()
         self.work_summary.setTextFormat(Qt.TextFormat.RichText)
         self.work_summary.setText(self.summary.text())
@@ -2353,6 +2405,25 @@ class OfflineAudioPreparationDialog(QDialog):
     def pack_result(self) -> OfflinePackResult | None:
         return self._pack_result
 
+    def _set_progress_visible(self, visible: bool) -> None:
+        self.progress_panel.setVisible(visible)
+        self.progress_cancel_consequence.setVisible(
+            visible and bool(self.progress_cancel_consequence.text())
+        )
+        if not visible:
+            self.play_ready_button.hide()
+            self.cancel_button.setToolTip("")
+            self.cancel_button.setAccessibleDescription("")
+
+    def _set_progress_runtime(self, detail: str) -> None:
+        self.progress_runtime.setText(compact_runtime_label(detail))
+        self.progress_runtime.setToolTip(detail)
+        self.progress_runtime.setVisible(bool(detail))
+
+    def _set_recovery_status(self, detail: str) -> None:
+        self.progress_failures.setText(detail)
+        self.progress_failures.setVisible(bool(detail))
+
     def _show_phase(self, phase: str, detail: str, cancel_consequence: str) -> None:
         self._clear_resume_error()
         self.pocket_voice_cloning.hide()
@@ -2360,7 +2431,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.selection_panel.hide()
         self.content_scroll.show()
         self.content_scroll.verticalScrollBar().setValue(0)
-        self.progress_panel.show()
+        self._set_progress_visible(True)
         self.continue_button.setVisible(not self.has_pending_work())
         self.progress_phase.setText(phase)
         settings, narrator = self._narrator_configuration_values()
@@ -2370,10 +2441,29 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.progress_configuration.setToolTip(self._full_generation_details())
         self.story_context.show()
-        self.resume_status.setText(detail)
+        self._set_phase_detail(detail)
         self.progress_cancel_consequence.setText(cancel_consequence)
+        self.progress_cancel_consequence.setVisible(bool(cancel_consequence))
+        self.cancel_button.setToolTip(cancel_consequence)
+        self.cancel_button.setAccessibleDescription(cancel_consequence)
+        content = self.current_content()
+        selected = (
+            self._job.selected_story_ids
+            if self._job is not None
+            else self.selected_story_ids()
+        )
+        self.progress_scope.setText(
+            f"{content.display_name} · {len(selected)} selected "
+            f"{'story' if len(selected) == 1 else 'stories'}"
+            if content
+            else ""
+        )
         self._refresh_story_statuses()
         self._emit_task_progress()
+
+    def _set_phase_detail(self, detail: str) -> None:
+        self.resume_status.setText(detail)
+        self.resume_status.setVisible(bool(detail))
 
     def _emit_task_progress(self) -> None:
         self.phaseChanged.emit(
@@ -2390,16 +2480,18 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _preparation_paused(self, phase: str, error: Exception | str | None) -> None:
         self.progress_phase.setText(phase)
-        self.progress_failures.clear()
+        self._set_recovery_status("")
         if not self.has_pending_work():
             self.cancel_button.setText("Close")
+            self.cancel_button.setToolTip("")
+            self.cancel_button.setAccessibleDescription("")
         self._refresh_story_statuses()
         self._selection_changed()
         QTimer.singleShot(0, self, self._emit_task_progress)
 
     def _set_resume_error(self, prefix: str, error: Exception | str) -> None:
         self._resume_error_details = f"{prefix}: {error}"
-        self.resume_status.setText(self._resume_error_details)
+        self._set_phase_detail(self._resume_error_details)
         self.selection_status.setText(self._resume_error_details)
         self.selection_status.show()
         self.copy_resume_error.show()
@@ -2435,12 +2527,11 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_bar.setAccessibleName("Preparation progress")
         self.progress_counts.setAccessibleName("Preparation progress counts")
         self.progress_counts.clear()
+        self.progress_counts.hide()
         self.progress_timing.clear()
-        self.progress_runtime.clear()
-        self.progress_guarantee.setText(
-            "Your selected stories and completed voice choices are saved for restart."
-        )
-        self.progress_failures.clear()
+        self.progress_timing.hide()
+        self._set_progress_runtime("")
+        self._set_recovery_status("")
         self.progress_coverage.clear()
         self._render_progress_story_readiness()
         self._emit_task_progress()
@@ -2453,19 +2544,21 @@ class OfflineAudioPreparationDialog(QDialog):
         failed: int = 0,
         other: int = 0,
     ) -> None:
-        set_labeled_text(
-            self.progress_counts,
-            (
-                ("Progress", f"{completed} of {total} new speech lines processed"),
-                ("Prepared", str(generated)),
-                ("Pending", str(max(0, total - completed))),
-                ("Failed", str(failed)),
-                ("Live fallback or omitted", str(other)),
-            ),
-        )
+        text = f"{completed} of {total} new speech lines processed"
+        if failed or other:
+            outcomes = [f"Prepared: {generated}"]
+            if failed:
+                outcomes.append(f"Failed: {failed}")
+            if other:
+                outcomes.append(f"Live fallback or omitted: {other}")
+            text += "\n" + " · ".join(outcomes)
+        self.progress_counts.setTextFormat(Qt.TextFormat.PlainText)
+        self.progress_counts.setText(text)
+        self.progress_counts.show()
 
     def _set_progress_timing(self, value: str) -> None:
         set_labeled_text(self.progress_timing, (("Time", value),))
+        self.progress_timing.setVisible(bool(value))
 
     def _start_generation_progress(self) -> None:
         assert self._generation_input is not None
@@ -2474,23 +2567,22 @@ class OfflineAudioPreparationDialog(QDialog):
         self._progress_snapshot = None
         self._progress_changed_at = monotonic()
         self._progress_error = None
-        self.progress_runtime.setText("Generation device: waiting for the worker.")
-        total = self._generation_input.ready_items
+        self._set_progress_runtime("Generation device: waiting for the worker.")
         self._show_phase(
             "Generating offline audio",
-            f"Generating {total} new speech lines.",
-            "Cancel stops generation and closes this window. Finished lines stay "
-            "saved; reopen and select Continue to generate only unfinished lines.",
+            "",
+            "Finished lines are saved. Reopen this window to continue only unfinished lines.",
         )
+        cancel_detail = "Stop generation and close this window after the worker stops. Finished lines are saved; reopen to continue."
+        self.cancel_button.setToolTip(cancel_detail)
+        self.cancel_button.setAccessibleDescription(cancel_detail)
         self.progress_bar.setRange(0, 0)
-        self.progress_bar.setFormat("Loading saved progress...")
+        self.progress_bar.setFormat("")
         set_labeled_text(
             self.progress_counts, (("Progress", "Loading saved progress..."),)
         )
-        self.progress_guarantee.setText(
-            "Each finished item is saved on disk; cancellation does not discard it."
-        )
-        self.progress_failures.clear()
+        self.progress_counts.show()
+        self._set_recovery_status("")
         self.progress_coverage.clear()
         self.play_ready_button.show()
         self.play_ready_button.setEnabled(False)
@@ -2514,13 +2606,14 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         if error is not None or not isinstance(progress, OfflineGenerationProgress):
             self._progress_error = str(error or "Invalid progress response")
-            self.progress_runtime.setText("Generation device: report unavailable.")
+            self._set_progress_runtime("Generation device: report unavailable.")
         else:
             self._progress_error = None
-            self.progress_runtime.setText(
+            runtime = (
                 progress.runtime_status
                 or "Generation device: waiting for the worker to confirm CPU/GPU use."
             )
+            self._set_progress_runtime(runtime)
             now = monotonic()
             if progress != self._progress_snapshot:
                 self._progress_changed_at = now
@@ -2565,13 +2658,19 @@ class OfflineAudioPreparationDialog(QDialog):
                 estimate = (
                     f"About {max(1, round(seconds / 60))} min of generation left."
                 )
-        self._set_progress_timing(f"Last progress change {age}s ago. {estimate}")
+        self.progress_timing.setToolTip(
+            f"Last progress change {age}s ago. " + self.progress_timing.toolTip()
+        )
+        self._set_progress_timing(
+            f"Last progress change {age}s ago. {estimate}" if age >= 30 else estimate
+        )
 
     def _stop_generation_progress(self) -> None:
         self.progress_timer.stop()
         self.progress_runner.cancel()
         self.progress_timing.clear()
-        self.progress_runtime.clear()
+        self.progress_timing.hide()
+        self._set_progress_runtime("")
 
     def _render_generation_progress(self, progress: OfflineGenerationProgress) -> None:
         assert self._generation_input is not None
@@ -2593,9 +2692,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 self.progress_phase.setText(durable_phase)
         self.progress_bar.setRange(0, max(1, total))
         self.progress_bar.setValue(completed)
-        self.progress_bar.setFormat(
-            f"{completed} of {total} new speech lines processed"
-        )
+        self.progress_bar.setFormat("%p%")
         self._set_progress_counts(
             completed,
             total,
@@ -2619,17 +2716,15 @@ class OfflineAudioPreparationDialog(QDialog):
             else "Waiting for the first ready dialogue..."
         )
         if self.recovering:
-            self.progress_failures.setText(
-                f"Automatic recovery is working on {progress.failed} failed "
-                f"item{'s' if progress.failed != 1 else ''}."
+            self._set_recovery_status(
+                "Automatic recovery is working on the current dialogue."
             )
         elif progress.failed:
-            self.progress_failures.setText(
-                f"{progress.failed} failure{'s' if progress.failed != 1 else ''} "
-                "found so far; each dialogue is repaired before the next starts."
+            self._set_recovery_status(
+                "Each failed dialogue is repaired before the next starts."
             )
         else:
-            self.progress_failures.clear()
+            self._set_recovery_status("")
         self._refresh_story_statuses()
         self._emit_task_progress()
 
@@ -2661,6 +2756,11 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(1)
         self.progress_bar.setFormat("Audio saved")
+        self.progress_counts.clear()
+        self.progress_counts.hide()
+        self._set_progress_runtime("")
+        self.progress_timing.clear()
+        self.progress_timing.hide()
         self.play_ready_button.hide()
         self._show_phase(
             "Ready with live speech for remaining lines"
@@ -2682,20 +2782,17 @@ class OfflineAudioPreparationDialog(QDialog):
         coverage_rows = [
             ("Original game audio", f"{original} in this selection"),
             ("Prepared", f"{approved} in the saved pack"),
-            ("Live fallback", str(live_fallbacks)),
             (
                 "Story lines",
                 str(story_lines or self._job.estimate.selected_lines),
             ),
         ]
+        if live_fallbacks:
+            coverage_rows.insert(2, ("Live fallback", str(live_fallbacks)))
         if omissions:
             coverage_rows.append(("Omissions", f"{omissions} explicit"))
         set_labeled_text(self.progress_coverage, coverage_rows)
-        self.progress_failures.setText(
-            "Automatic recovery finished before this pack was validated."
-            if self._recovery_result is not None
-            else "No automatic recovery was needed."
-        )
+        self._set_recovery_status("")
         self.continue_button.setText("Use prepared audio")
         self.continue_button.setAccessibleDescription(
             "Close this preparation and activate the saved offline audio pack"
@@ -2712,7 +2809,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def defer_activation(self, reason: str) -> None:
         self.progress_phase.setText("Audio saved; activation needs attention")
-        self.resume_status.setText(
+        self._set_phase_detail(
             reason
             + " Review the saved voice setup, then click Use prepared audio when ready."
         )
@@ -2931,7 +3028,9 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.story_audio_status.setToolTip(str(coverage.manifest or ""))
 
-    def _preparation_story_status(self, selection: StorySelection) -> tuple[str, str]:
+    def _story_readiness_counts(
+        self, selection: StorySelection
+    ) -> tuple[int, int, int]:
         ready = set(getattr(self._progress_snapshot, "ready_line_ids", ()))
         ready_count = sum(line_id in ready for line_id in selection.line_ids)
         ready_prefix = 0
@@ -2944,6 +3043,10 @@ class OfflineAudioPreparationDialog(QDialog):
             if line_id not in ready:
                 break
             ready_prefix += 1
+        return ready_count, ready_prefix, start
+
+    def _preparation_story_status(self, selection: StorySelection) -> tuple[str, str]:
+        ready_count, ready_prefix, start = self._story_readiness_counts(selection)
         remaining = selection.line_count - start
         if ready_prefix == selection.line_count:
             return "ready", "all lines are playable while other selections prepare"
@@ -3022,11 +3125,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self._render_progress_story_readiness()
 
     def _render_progress_story_readiness(self) -> None:
-        self.progress_story_readiness.clear()
         content = self.current_content()
         if content is None:
-            self.progress_story_readiness_label.hide()
-            self.progress_story_readiness.hide()
+            self._set_story_readiness_rows([])
             return
         selected = (
             set(self._job.selected_story_ids)
@@ -3034,25 +3135,64 @@ class OfflineAudioPreparationDialog(QDialog):
             and self._job.story_index_sha256 == content.story_index_sha256
             else set(self.selected_story_ids())
         )
-        if self._job is not None and self._progress_snapshot is not None:
-            for selection in content.selections:
-                if selection.selection_id not in selected:
-                    continue
-                status, detail = self._preparation_story_status(selection)
-                label = "Ready" if status == "ready" else "Preparing"
-                self.progress_story_readiness.addItem(
-                    f"{selection.title} ({selection.line_count} line"
-                    f"{'s' if selection.line_count != 1 else ''}) - {label}: {detail}"
+        rows = []
+        for selection in content.selections:
+            if selection.selection_id not in selected:
+                continue
+            if self._job is not None and self._progress_snapshot is not None:
+                _status, detail = self._preparation_story_status(selection)
+                ready, consecutive, start = self._story_readiness_counts(selection)
+                continuity = (
+                    "All lines"
+                    if ready == selection.line_count
+                    else f"{consecutive} from {'current line' if start else 'start'}"
+                    if consecutive
+                    else "Waiting at current line"
+                    if start
+                    else "Waiting at start"
                 )
-        else:
-            for row in range(self.stories.count()):
-                item = self.stories.item(row)
-                if item.data(0, Qt.ItemDataRole.UserRole) in selected:
-                    self.progress_story_readiness.addItem(
-                        f"{item.text(0)} ({item.data(0, Qt.ItemDataRole.UserRole + 5)} lines) "
-                        f"- {item.text(1)}: {item.data(0, Qt.ItemDataRole.UserRole + 4)}"
+                rows.append(
+                    (
+                        selection.title,
+                        f"{ready}/{selection.line_count}",
+                        continuity,
+                        detail,
                     )
-        visible = self.progress_story_readiness.count() > 0
+                )
+            else:
+                item = next(
+                    (
+                        self.stories.item(row)
+                        for row in range(self.stories.count())
+                        if self.stories.item(row).data(0, Qt.ItemDataRole.UserRole)
+                        == selection.selection_id
+                    ),
+                    None,
+                )
+                if item is not None:
+                    rows.append(
+                        (
+                            selection.title,
+                            item.text(1),
+                            "",
+                            str(item.data(0, Qt.ItemDataRole.UserRole + 4)),
+                        )
+                    )
+        self._set_story_readiness_rows(rows)
+
+    def _set_story_readiness_rows(self, rows: list[tuple[str, str, str, str]]) -> None:
+        # Update in place so progress polling preserves keyboard position and scroll.
+        while self.progress_story_readiness.topLevelItemCount() > len(rows):
+            self.progress_story_readiness.takeTopLevelItem(len(rows))
+        for index, (title, ready, continuity, detail) in enumerate(rows):
+            item = self.progress_story_readiness.topLevelItem(index)
+            if item is None:
+                item = QTreeWidgetItem(self.progress_story_readiness)
+            for column, value in enumerate((title, ready, continuity)):
+                item.setText(column, value)
+                item.setToolTip(column, title if column == 0 else detail)
+                item.setData(column, Qt.ItemDataRole.AccessibleDescriptionRole, detail)
+        visible = bool(rows)
         self.progress_story_readiness_label.setVisible(visible)
         self.progress_story_readiness.setVisible(visible)
 
@@ -3061,17 +3201,19 @@ class OfflineAudioPreparationDialog(QDialog):
         if content is None or self._job is None:
             return
         selected = set(self._job.selected_story_ids)
-        self.progress_story_readiness.clear()
         suffix = "Ready with live speech" if live else "Ready in saved audio"
-        for selection in content.selections:
-            if selection.selection_id in selected:
-                self.progress_story_readiness.addItem(
-                    f"{selection.title} ({selection.line_count} line"
-                    f"{'s' if selection.line_count != 1 else ''}) - {suffix}"
+        self._set_story_readiness_rows(
+            [
+                (
+                    selection.title,
+                    f"{selection.line_count}/{selection.line_count}",
+                    "All lines",
+                    suffix,
                 )
-        visible = self.progress_story_readiness.count() > 0
-        self.progress_story_readiness_label.setVisible(visible)
-        self.progress_story_readiness.setVisible(visible)
+                for selection in content.selections
+                if selection.selection_id in selected
+            ]
+        )
 
     def _saved_story_status(
         self,
@@ -3329,7 +3471,7 @@ class OfflineAudioPreparationDialog(QDialog):
             if selection_error is not None:
                 message = f"Unable to restore story selection: {selection_error}. Select stories again."
             self.selection_status.setText(message)
-            self.resume_status.setText(message)
+            self._set_phase_detail(message)
         else:
             self.selection_status.clear()
             self.resume_status.clear()
@@ -3944,7 +4086,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _decoder_progress(self, message: str) -> None:
         if self.planning_voices and not self._close_after_voice_cancel:
-            self.resume_status.setText(message)
+            self._set_phase_detail(message)
             if message == "Matching character voices...":
                 self.progress_phase.setText("Matching character voices")
             self.progress_bar.setRange(0, 0)
@@ -3973,7 +4115,7 @@ class OfflineAudioPreparationDialog(QDialog):
         counts = f"{value.processed} of {value.total} {unit} checked"
         self.progress_bar.setFormat(counts)
         self.progress_counts.setText(counts)
-        self.resume_status.setText(
+        self._set_phase_detail(
             "Saving scanned story data..."
             if value.state == "publishing"
             else phase + "..."
@@ -4076,7 +4218,7 @@ class OfflineAudioPreparationDialog(QDialog):
             return False
         self.cancel_button.setText("Cancel")
         self.cancel_button.setEnabled(True)
-        self.progress_panel.hide()
+        self._set_progress_visible(False)
         self.content_scroll.hide()
         self.selection_panel.setVisible(True)
         self.step.setText("Step 1 of 4 - Choose stories")
@@ -4086,7 +4228,7 @@ class OfflineAudioPreparationDialog(QDialog):
             "Change the selection or choose Continue to retry."
         )
         if isinstance(error, PregenerationVoiceCancelled):
-            self.resume_status.setText("Voice matching cancelled.")
+            self._set_phase_detail("Voice matching cancelled.")
             return True
         self._set_resume_error("Unable to match character voices", error)
         if isinstance(error, DecoderSetupRequired) and confirm_decoder_setup(
@@ -4177,8 +4319,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self._set_import_controls(True)
         self.selection_panel.setVisible(True)
         self.selection_status.setText("Voice selection cancelled.")
-        self.resume_status.setText("Voice selection cancelled.")
-        self.progress_panel.hide()
+        self._set_phase_detail("Voice selection cancelled.")
+        self._set_progress_visible(False)
 
     def _start_generation_input(self, plan: VoicePlan) -> None:
         self.preparing_inputs = True
@@ -4257,7 +4399,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 if self._close_after_voice_cancel:
                     self.reject()
                 else:
-                    self.resume_status.setText("Offline preparation cancelled.")
+                    self._set_phase_detail("Offline preparation cancelled.")
                 return
             self._set_resume_error("Unable to prepare generation", error)
             return
@@ -4378,7 +4520,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 "unfinished lines, or Close to resume later."
             )
             if isinstance(error, OfflineGenerationCancelled):
-                self.resume_status.setText(
+                self._set_phase_detail(
                     "Generation cancelled. Continue later to resume saved lines."
                 )
                 return
@@ -4400,14 +4542,11 @@ class OfflineAudioPreparationDialog(QDialog):
         self.cancel_button.setEnabled(True)
         self._show_phase(
             "Recovering failed lines",
-            f"Trying safe automatic fixes for {result.failed} unfinished lines...",
+            "",
             "Cancel stops recovery and closes this window. Finished lines remain "
             "saved; reopen and choose Continue to retry unfinished lines.",
         )
-        self.progress_failures.setText(
-            f"Automatic recovery is working on {result.failed} failed "
-            f"item{'s' if result.failed != 1 else ''}."
-        )
+        self._set_recovery_status("Trying safe automatic fixes before continuing.")
         self.progress_timer.start()
         self.recovery_runner.start(
             self.recovery.recover,
@@ -4433,7 +4572,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 "lines, or Close to resume later."
             )
             if isinstance(error, OfflineGenerationCancelled):
-                self.resume_status.setText(
+                self._set_phase_detail(
                     "Automatic recovery cancelled. Continue later to resume saved lines."
                 )
                 return
@@ -4444,7 +4583,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._recovery_result = result
         self._generation_result = result.generation
         self._render_generation_result(result.generation)
-        self.progress_failures.setText(
+        self._set_recovery_status(
             f"Recovery repaired {result.recovered} item"
             f"{'s' if result.recovered != 1 else ''}; "
             f"{result.live_fallbacks} will use live fallback and "
@@ -4465,7 +4604,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 "Prepared lines remain saved. Choose Continue to retry only the "
                 "unfinished lines, or Close to resume later."
             )
-            self.resume_status.setText(
+            self._set_phase_detail(
                 f"Offline audio is not complete: {result.remaining_failed} line"
                 f"{'s' if result.remaining_failed != 1 else ''} still need a safe "
                 "automatic repair."
@@ -4503,7 +4642,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.selection_panel.setVisible(True)
             self._preparation_paused("Final save paused", error)
             if isinstance(error, OfflineGenerationCancelled):
-                self.resume_status.setText(
+                self._set_phase_detail(
                     "Final save cancelled. Continue later to reuse prepared lines."
                 )
                 return
@@ -4526,7 +4665,7 @@ class OfflineAudioPreparationDialog(QDialog):
             omissions=result.omissions,
         )
         if status_error is not None:
-            self.resume_status.setText(
+            self._set_phase_detail(
                 "Offline audio was saved, but its story status could not be updated: "
                 f"{status_error}"
             )
@@ -4667,7 +4806,8 @@ class OfflineAudioPreparationDialog(QDialog):
             if self.auditioning_voices:
                 self.voice_panel.cancel()
             self.cancel_button.setEnabled(False)
-            self.resume_status.setText(f"Cancelling {stage}...")
+            self.play_ready_button.setEnabled(False)
+            self._set_phase_detail(f"Cancelling {stage}...")
             return
         if not self.importing:
             self.reject()
