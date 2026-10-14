@@ -1052,8 +1052,15 @@ class LiveDialogReader:
                 else:
                     last_frame_recheck_at = None
                 with self.state_lock:
+                    # Keep recognizing a dispatched transition after its timeout.
                     awaiting_post_advance_dialog = (
                         self.pending_auto_advance_generation == self.active_generation
+                        or (
+                            self.last_auto_advance_dispatched_generation
+                            == self.active_generation
+                            and self.failed_auto_advance_generation
+                            == self.active_generation
+                        )
                     )
                 render_changed = bool(
                     self.tracker_options.get("complete_dialogue_only")

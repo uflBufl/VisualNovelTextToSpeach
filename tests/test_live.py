@@ -817,6 +817,69 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
             )
             self.assertEqual(harness.errors, [])
 
+    def test_timed_out_advance_recognizes_same_fingerprint_without_another_press(self):
+        for stale_text in ("", "I, erhm ..."):
+            with self.subTest(stale_text=stale_text):
+                harness = AutoAdvanceFakeFrameHarness(
+                    dialog_observed=lambda _character, text: bool(text),
+                    tracker_options={"complete_dialogue_only": True},
+                )
+                with patch(
+                    "vntts.live.Timer",
+                    side_effect=harness.timer_scheduler.create,
+                ):
+                    harness.start()
+                    try:
+                        harness.prepare_ready_dialogue()
+                        harness.finish_playback()
+                        harness.timer_scheduler.fire_next("_run_auto_advance")
+                        harness.push(
+                            "Rhiannon" if stale_text else None,
+                            stale_text,
+                            background="unrecognized-next-frame",
+                        )
+                        harness.timer_scheduler.fire_next(
+                            "_auto_advance_confirmation_expired"
+                        )
+                        harness.timer_scheduler.fire_next(
+                            "_auto_advance_confirmation_expired"
+                        )
+                        self.assertIsNone(
+                            harness.reader.pending_auto_advance_generation
+                        )
+                        self.assertEqual(
+                            harness.reader.failed_auto_advance_generation, 1
+                        )
+                        recognized_before_recovery = len(harness.recognized_frames)
+
+                        for background in ("recovery-a", "recovery-b"):
+                            harness.push(
+                                "Rhiannon",
+                                "The recovered line.",
+                                background=background,
+                            )
+                        harness.clock.advance(0.2)
+                        harness.push(
+                            "Rhiannon",
+                            "The recovered line.",
+                            background="recovery-complete",
+                        )
+                        harness.finish_playback()
+
+                        self.assertGreater(
+                            len(harness.recognized_frames), recognized_before_recovery
+                        )
+                        self.assertEqual(harness.reader.active_generation, 2)
+                        self.assertEqual(
+                            [chunk.text for chunk, _prepared in harness.played],
+                            ["I, erhm ...", "The recovered line."],
+                        )
+                        self.assertEqual(harness.advance_calls, [1])
+                        self.assertIsNone(harness.reader.failed_auto_advance_generation)
+                        self.assertEqual(harness.errors, [])
+                    finally:
+                        harness.stop()
+
     def test_unconfirmed_press_is_not_retried_after_focus_returns(self):
         harness = AutoAdvanceFakeFrameHarness()
         with patch(

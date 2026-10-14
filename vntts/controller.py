@@ -2344,6 +2344,16 @@ class AppController:
                 return "explicit-recovery"
             if cursor.state == StoryCursorState.PLAYING:
                 return None
+            reader = self.live_reader
+            if (
+                self.settings.live_sequence_mode == "audio-auto"
+                and cursor.state == StoryCursorState.WAITING_TRANSITION
+                and reader is not None
+                and reader.failed_auto_advance_generation == reader.active_generation
+                and reader.last_auto_advance_dispatched_generation
+                == reader.active_generation
+            ):
+                return "post-advance-recovery"
             if self.sequence_prefix_confirmation_event_id == cursor.current_event_id:
                 return None
             if not cursor.can_confirm_visual_transition:

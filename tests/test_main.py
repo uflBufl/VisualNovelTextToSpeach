@@ -2611,6 +2611,50 @@ class MainTest(unittest.TestCase):
         )
         return controller, lines, pipeline
 
+    def test_sequence_timeout_recovers_only_from_bounded_dialogue_ocr(self):
+        controller, lines, _pipeline = self._sequence_controller()
+        unrelated = replace(
+            lines[0],
+            line_id="reverse1999:2:1",
+            chapter="2",
+            text="Unrelated words.",
+            text_sha256=text_sha256("Unrelated words."),
+        )
+        controller.chapter_voice_preloader = ChapterVoicePreloader((*lines, unrelated))
+        reader = Mock(
+            active_generation=1,
+            failed_auto_advance_generation=None,
+            last_auto_advance_dispatched_generation=1,
+        )
+        controller.live_reader = reader
+        controller.dialog_handler = Mock()
+        controller.story_cursor.anchor_event("event-1")
+        controller.story_cursor.begin_playback()
+        controller.story_cursor.finish_playback()
+        controller.story_cursor.dispatch_advance()
+
+        self.assertIsNone(controller._live_ocr_purpose())
+        reader.failed_auto_advance_generation = 1
+        reader.last_auto_advance_dispatched_generation = None
+        self.assertIsNone(controller._live_ocr_purpose())
+        reader.last_auto_advance_dispatched_generation = 1
+        self.assertEqual(controller._live_ocr_purpose(), "post-advance-recovery")
+
+        self.assertFalse(controller._dialog_observed(unrelated.speaker, unrelated.text))
+        self.assertEqual(controller.story_cursor.current_event_id, "event-1")
+        self.assertEqual(
+            controller.story_cursor.state, StoryCursorState.WAITING_TRANSITION
+        )
+        self.assertEqual(
+            controller._dialog_observed(lines[1].speaker, lines[1].text),
+            (lines[1].speaker, lines[1].text),
+        )
+        self.assertEqual(controller.story_cursor.current_event_id, "event-2")
+        controller.dialog_handler.assert_called_once_with(
+            lines[1].speaker, lines[1].text
+        )
+        self.assertIsNone(controller._live_ocr_purpose())
+
     def test_successor_prefetch_rejects_same_event_new_occurrence_before_or_during_work(
         self,
     ):
