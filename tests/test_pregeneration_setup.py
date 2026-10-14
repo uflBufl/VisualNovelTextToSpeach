@@ -3027,6 +3027,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 job,
                 dialog.voice_cancel_event,
                 progress=dialog.decoderProgress.emit,
+                scan_progress=dialog.sourceAudioProgress.emit,
             )
             self.assertEqual(
                 voice_plan_store.create.call_args.kwargs["manifest_path"],

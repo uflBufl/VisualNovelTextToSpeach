@@ -51,6 +51,7 @@ from vntts.pregeneration_voices import (  # noqa: E402
     VoicePlanStore,
 )
 from vntts.settings import AppSettings  # noqa: E402
+from vntts.source_audio_progress import SourceAudioProgress  # noqa: E402
 from vntts.speech_presentation import engine_model_label  # noqa: E402
 from vntts.ui_text import plain_label_text  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
@@ -152,6 +153,40 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         for _ in range(count):
             pool.tasks.pop(0).run()
             self.application.processEvents()
+
+    def test_source_audio_scan_counts_show_phase_and_publication_without_completing_job(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            dialog, _pool, _ = self._shared_voice_replan_dialog(Path(directory))
+            self.addCleanup(dialog.deleteLater)
+            dialog.planning_voices = True
+            dialog.sourceAudioProgress.emit(
+                SourceAudioProgress("duration", 12, 111, "analyzing")
+            )
+            self.assertEqual(dialog.progress_bar.maximum(), 111)
+            self.assertEqual(dialog.progress_bar.value(), 12)
+            self.assertIn("12 of 111", dialog.progress_counts.text())
+            dialog.sourceAudioProgress.emit(
+                SourceAudioProgress("semantics", 49, 49, "publishing")
+            )
+            self.assertEqual(dialog.progress_bar.maximum(), 49)
+            self.assertEqual(dialog.progress_bar.value(), 49)
+            self.assertIn("Saving", dialog.resume_status.text())
+            self.assertTrue(dialog.planning_voices)
+            dialog.sourceAudioProgress.emit(
+                SourceAudioProgress("references", 50, 1456, "analyzing")
+            )
+            self.assertIn("50 of 1456 voice references", dialog.progress_counts.text())
+            dialog.sourceAudioProgress.emit(
+                SourceAudioProgress("portraits", 2, 12, "publishing")
+            )
+            self.assertIn("2 of 12 game archives", dialog.progress_counts.text())
+            dialog._close_after_voice_cancel = True
+            dialog.sourceAudioProgress.emit(
+                SourceAudioProgress("duration", 1, 2, "analyzing")
+            )
+            self.assertEqual(dialog.progress_bar.value(), 2)
 
     def test_optional_sequence_preparation_does_not_block_voice_controls(self):
         with TemporaryDirectory() as directory:

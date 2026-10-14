@@ -28,6 +28,7 @@ from vntts.game_content_importer import (
     resolve_reverse1999_installation,
 )
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
+from vntts.source_audio_progress import SourceAudioProgress
 from vntts.source_audio_semantics import SEMANTIC_EVIDENCE_METHOD
 
 
@@ -1015,6 +1016,55 @@ class Reverse1999GameImporterTest(unittest.TestCase):
         self.assertEqual(stdout, "x" * 1048576)
         self.assertEqual(stderr, "y" * 1048576)
 
+    def test_source_audio_progress_arrives_before_exit_and_can_cancel_worker(self):
+        cancelled = Event()
+        observed = []
+
+        def progress(value):
+            observed.append(value)
+            cancelled.set()
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "progress.json"
+            script = (
+                "import json,sys,time; from pathlib import Path; "
+                "Path(sys.argv[1]).write_text(json.dumps({"
+                "'schema':'r1999.source-audio-progress','schema_version':1,"
+                "'stage':'duration','processed':1,'total':8,'state':'analyzing'})); "
+                "time.sleep(30)"
+            )
+            with self.assertRaises(GameContentImportCancelled):
+                Reverse1999GameImporter()._run(
+                    (sys.executable, "-c", script, str(path)),
+                    cancelled,
+                    progress_file=path,
+                    scan_progress=progress,
+                )
+        self.assertEqual(observed, [SourceAudioProgress("duration", 1, 8, "analyzing")])
+
+    def test_final_source_audio_progress_preserves_large_stdout_and_stderr(self):
+        observed = []
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "progress.json"
+            script = (
+                "import json,sys; from pathlib import Path; "
+                "Path(sys.argv[1]).write_text(json.dumps({"
+                "'schema':'r1999.source-audio-progress','schema_version':1,"
+                "'stage':'semantics','processed':8,'total':8,'state':'publishing'})); "
+                "sys.stdout.write('x'*1048576); sys.stderr.write('y'*1048576)"
+            )
+            stdout, stderr = Reverse1999GameImporter()._run(
+                (sys.executable, "-c", script, str(path)),
+                None,
+                progress_file=path,
+                scan_progress=observed.append,
+            )
+        self.assertEqual(stdout, "x" * 1048576)
+        self.assertEqual(stderr, "y" * 1048576)
+        self.assertEqual(
+            observed, [SourceAudioProgress("semantics", 8, 8, "publishing")]
+        )
+
     def test_cancellation_interrupts_importer_while_communicating(self):
         cancelled = Event()
         timeout = Timer(0.2, cancelled.set)
@@ -1281,6 +1331,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                         None,
                         progress=None,
                         target_story_index=job.story_index,
+                        scan_progress=None,
                     )
 
                     cache = catalog.parent / "playable-voice-roles.json"

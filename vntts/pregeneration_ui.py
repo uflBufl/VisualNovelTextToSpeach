@@ -113,6 +113,7 @@ from vntts.prepared_sequence import (
 from vntts.qt_audio import QtPcmPlayer
 from vntts.release_backends import speech_backend_options
 from vntts.settings import AppSettings
+from vntts.source_audio_progress import SourceAudioProgress
 from vntts.speech_presentation import (
     speech_configuration_label,
     speech_configuration_rows,
@@ -219,6 +220,7 @@ class OfflineAudioPreparationDialog(QDialog):
     continue_button: QPushButton
 
     decoderProgress = Signal(str)
+    sourceAudioProgress = Signal(object)
     phaseChanged = Signal(str)
     activityChanged = Signal(bool)
     preparationRequested = Signal()
@@ -309,6 +311,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.import_runner.finished.connect(self._import_finished)
         self.voice_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.decoderProgress.connect(self._decoder_progress)
+        self.sourceAudioProgress.connect(self._source_audio_progress)
         self.voice_runner.finished.connect(self._voice_plan_finished)
         self.voice_panel = VoiceAuditionPanel(
             self.voice_decisions,
@@ -2429,6 +2432,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self._show_phase(phase, detail, cancel_consequence)
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setFormat("")
+        self.progress_bar.setAccessibleName("Preparation progress")
+        self.progress_counts.setAccessibleName("Preparation progress counts")
         self.progress_counts.clear()
         self.progress_timing.clear()
         self.progress_runtime.clear()
@@ -2571,6 +2576,8 @@ class OfflineAudioPreparationDialog(QDialog):
     def _render_generation_progress(self, progress: OfflineGenerationProgress) -> None:
         assert self._generation_input is not None
         total = self._generation_input.ready_items
+        self.progress_bar.setAccessibleName("Durably completed generation items")
+        self.progress_counts.setAccessibleName("Offline generation durable counts")
         completed = min(progress.completed, total)
         if self.generating:
             durable_phase = (
@@ -3874,6 +3881,7 @@ class OfflineAudioPreparationDialog(QDialog):
                     self.voice_cancel_event,
                     progress=self.decoderProgress.emit,
                     provision_model=True,
+                    scan_progress=self.sourceAudioProgress.emit,
                 )
             except GameContentImportCancelled as error:
                 raise PregenerationVoiceCancelled(
@@ -3883,6 +3891,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 job = self.job_store.create_or_resume(
                     semantic_content, job.selected_story_ids
                 )
+        self.decoderProgress.emit("Matching character voices...")
         self.voice_plan_store.validate_saved_voice_access(job, settings)
         if self._prepared_voice_job != job.job_id:
             self._prepared_voice_manifest = None
@@ -3897,6 +3906,7 @@ class OfflineAudioPreparationDialog(QDialog):
                     job,
                     self.voice_cancel_event,
                     progress=self.decoderProgress.emit,
+                    scan_progress=self.sourceAudioProgress.emit,
                 )
             except GameContentImportCancelled as error:
                 raise PregenerationVoiceCancelled(
@@ -3935,6 +3945,40 @@ class OfflineAudioPreparationDialog(QDialog):
     def _decoder_progress(self, message: str) -> None:
         if self.planning_voices and not self._close_after_voice_cancel:
             self.resume_status.setText(message)
+            if message == "Matching character voices...":
+                self.progress_phase.setText("Matching character voices")
+            self.progress_bar.setRange(0, 0)
+            self.progress_bar.setFormat("")
+            self.progress_counts.clear()
+
+    def _source_audio_progress(self, value: object) -> None:
+        if (
+            not isinstance(value, SourceAudioProgress)
+            or not self.planning_voices
+            or self._close_after_voice_cancel
+        ):
+            return
+        phases = {
+            "duration": ("Measuring selected game speech", "source-audio lines"),
+            "semantics": ("Classifying selected game speech", "source-audio lines"),
+            "references": ("Preparing character voices", "voice references"),
+            "portraits": ("Finding character portraits", "game archives"),
+        }
+        phase, unit = phases[value.stage]
+        self.progress_phase.setText(phase)
+        self.progress_bar.setAccessibleName("Story scan progress")
+        self.progress_counts.setAccessibleName("Story scan progress counts")
+        self.progress_bar.setRange(0, max(1, value.total))
+        self.progress_bar.setValue(value.processed)
+        counts = f"{value.processed} of {value.total} {unit} checked"
+        self.progress_bar.setFormat(counts)
+        self.progress_counts.setText(counts)
+        self.resume_status.setText(
+            "Saving scanned story data..."
+            if value.state == "publishing"
+            else phase + "..."
+        )
+        self._emit_task_progress()
 
     def _voice_plan_finished(self, plan: object, error: Exception | None) -> None:
         self.planning_voices = False
