@@ -76,10 +76,12 @@ from vntts.live_speech import TypedPlaybackBackend, play_typed_text
 from vntts.model_assets import ModelAssetManager
 from vntts.ocr import (
     DialogRegion,
+    OCRRegions,
     OCRResult,
     UncertainFrameRecorder,
     default_minimum_ocr_confidence,
     get_dialog_region,
+    get_ocr_regions,
 )
 from vntts.ocr_corrections import OCRCorrectionDictionary, OCRCorrectionStore
 from vntts.playback import PreparedPlayback
@@ -409,6 +411,7 @@ def create_dialog_read_scheduler(
     ocr_language: str = "eng",
     correction_dictionary: OCRCorrectionDictionary | None = None,
     region_provider: Callable[[], DialogRegion] | None = None,
+    ocr_regions_provider: Callable[[], OCRRegions | None] | None = None,
 ) -> _ScheduledDialogRead:
     def deliver(character: str, text: str) -> object:
         if speech_handler is not None:
@@ -432,6 +435,9 @@ def create_dialog_read_scheduler(
             ocr_language=ocr_language,
             correction_dictionary=correction_dictionary,
             region=region_provider() if region_provider is not None else None,
+            ocr_regions=ocr_regions_provider()
+            if ocr_regions_provider is not None
+            else None,
         )
 
     return _ScheduledDialogRead(submit, deliver, live_reader, shutdown_requested)
@@ -990,11 +996,20 @@ class AppController:
             get_screenshot_directory(self.settings),
             self.capture_target,
             region=self._capture_region(),
+            ocr_regions=self._capture_ocr_regions(),
         )
 
     def _capture_region(self) -> DialogRegion:
         profile = self.profile_store.get(self.settings.active_profile_id)
         return get_dialog_region(profile.dialog_region if profile is not None else None)
+
+    def _capture_ocr_regions(self) -> OCRRegions | None:
+        profile = self.profile_store.get(self.settings.active_profile_id)
+        return get_ocr_regions(
+            self._capture_region(),
+            profile.dialog_region if profile is not None else None,
+            profile.ocr_regions if profile is not None else None,
+        )
 
     def _recognize_live_frame(self, frame: object) -> tuple[str, str]:
         voice_router = self.voice_router

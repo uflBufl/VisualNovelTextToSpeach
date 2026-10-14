@@ -31,7 +31,7 @@ from vntts.dialog_capture import (
 )
 from vntts.document_identity import sha256_file
 from vntts.numeric_values import optional_finite_scalar, optional_milliseconds_seconds
-from vntts.ocr import get_dialog_region
+from vntts.ocr import OCRRegions, get_dialog_region, get_ocr_regions
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.path_safety import read_regular_bytes
 from vntts.profiles import GameProfileStore
@@ -777,6 +777,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return cli_error(error)
     profile = GameProfileStore.load().get(settings.active_profile_id)
     region = get_dialog_region(profile.dialog_region if profile is not None else None)
+    ocr_regions = get_ocr_regions(
+        region,
+        profile.dialog_region if profile is not None else None,
+        profile.ocr_regions if profile is not None else None,
+    )
     story_index = arguments.story_index or settings.story_index
     resolver: StoryResolver | None = None
     story_path: Path | None = None
@@ -809,18 +814,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
         def recognize(frame: CapturedImageFrame) -> tuple[str, str]:
+            frame_regions = getattr(frame, "ocr_regions", None)
             result = recognize_screenshot_result(
                 frame.image,
                 minimum_confidence=settings.ocr_minimum_confidence,
                 ocr_language=settings.ocr_language,
                 correction_dictionary=corrections,
+                ocr_regions=frame_regions,
             )
             # Capture evidence is intentionally broader than live playback.
             # Keep low-confidence OCR in the immutable observation ledger so a
             # later exact story/sequence recovery can accept or reject it. The
             # capture session only promotes exact canonical text or standalone
             # punctuation to dialogue groups.
-            if detect_standalone_ellipsis_frame(frame.image):
+            ellipsis_image = (
+                frame_regions.dialogue.crop(frame.image)
+                if isinstance(frame_regions, OCRRegions)
+                else frame.image
+            )
+            if detect_standalone_ellipsis_frame(ellipsis_image):
                 return (
                     ellipsis_speaker_hint(result.character, result.text, resolver),
                     "...",
@@ -832,7 +844,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = capture_replay_session(
                 session,
                 capture_frame=lambda: capture_live_frame(
-                    get_screenshot_directory(settings), capture_target, region=region
+                    get_screenshot_directory(settings),
+                    capture_target,
+                    region=region,
+                    ocr_regions=ocr_regions,
                 ),
                 recognize_frame=recognize,
                 interval_seconds=interval_seconds,

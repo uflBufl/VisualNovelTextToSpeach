@@ -589,6 +589,13 @@ class RecognizedDialogTest(unittest.TestCase):
 
         self.assertEqual(result.character, "Fatutu")
         self.assertEqual(result.text, "Kamuta ...")
+        self.assertIs(result.speaker_image, recognize_data.call_args_list[0].args[0])
+        self.assertIs(result.processed_image, recognize_text.call_args.args[0])
+        self.assertIs(result.processed_image, recognize_data.call_args.args[0])
+        self.assertLess(
+            result.processed_image.height,
+            recognize_data.call_args_list[0].args[0].height,
+        )
         self.assertEqual(
             [call.kwargs["config"] for call in recognize_data.call_args_list],
             ["--psm 6", "--psm 11", "--psm 6"],
@@ -849,6 +856,33 @@ class RecognizedDialogTest(unittest.TestCase):
         self.assertEqual(result.profile, "second")
         self.assertEqual(result.attempts, 2)
         self.assertGreater(result.confidence, 60)
+        self.assertIs(result.processed_image, recognize_text.call_args.args[0])
+        self.assertEqual(result.processed_image.mode, "L")
+        self.assertEqual(set(result.processed_image.getdata()), {0})
+
+    def test_best_uncertain_result_keeps_its_own_image_instead_of_last_attempt(self):
+        recognize_text = Mock(side_effect=["First result.", "Second result."])
+        recognize_data = Mock(
+            side_effect=[
+                {"text": ["First", "result"], "conf": [45, 45]},
+                {"text": ["Second", "result"], "conf": [20, 20]},
+            ]
+        )
+        result = recognize_dialog_image_result(
+            Image.new("RGB", (320, 120), "black"),
+            recognize_text=recognize_text,
+            recognize_data=recognize_data,
+            profiles=(
+                OCRPreprocessingProfile("first", 1.0, 170),
+                OCRPreprocessingProfile("second", 2.0, 200),
+            ),
+        )
+
+        self.assertEqual(result.profile, "first")
+        self.assertIs(result.processed_image, recognize_text.call_args_list[0].args[0])
+        self.assertIsNot(
+            result.processed_image, recognize_text.call_args_list[1].args[0]
+        )
 
     def test_confident_first_attempt_does_not_run_extra_ocr(self):
         recognize_text = Mock(return_value="A reliable result.")

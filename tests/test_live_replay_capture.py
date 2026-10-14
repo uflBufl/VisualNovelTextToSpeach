@@ -26,7 +26,7 @@ from vntts.live_replay_capture import (
     LiveReplayCaptureSession,
     capture_replay_session,
 )
-from vntts.ocr import OCRResult
+from vntts.ocr import DialogRegion, OCRRegions, OCRResult
 from vntts.settings import AppSettings
 
 
@@ -82,6 +82,68 @@ def frame(color):
 
 
 class LiveReplayCaptureTest(unittest.TestCase):
+    def test_cli_preserves_split_regions_and_ignores_ellipsis_outside_dialogue(self):
+        region = DialogRegion(0, 0.5, 1, 0.5)
+        regions = OCRRegions(
+            DialogRegion(0.1, 0.1, 0.2, 0.1),
+            DialogRegion(0.4, 0.4, 0.5, 0.4),
+        )
+        image = Image.new("RGB", (200, 100), "#202020")
+        draw = ImageDraw.Draw(image)
+        for left in (8, 14, 20):
+            draw.rectangle((left, 60, left + 1, 61), fill="white")
+        captured = CapturedDialogFrame(image, 0.0, regions)
+        self.assertTrue(detect_standalone_ellipsis_frame(image))
+        profile = SimpleNamespace(dialog_region=region, ocr_regions=regions)
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "capture"
+            result = SimpleNamespace(
+                dialogue_count=1,
+                frame_count=1,
+                boundary_review_count=0,
+                corpus=output / "corpus.json",
+                report=output / "capture-report.json",
+            )
+
+            def capture_session(_session, **kwargs):
+                frame = kwargs["capture_frame"]()
+                self.assertEqual(
+                    kwargs["recognize_frame"](frame), ("Rhiannon", "Hello there.")
+                )
+                return result
+
+            with (
+                patch.object(
+                    live_replay_capture, "load_app_settings", return_value=AppSettings()
+                ),
+                patch.object(live_replay_capture.GameProfileStore, "load") as profiles,
+                patch.object(
+                    live_replay_capture, "get_dialog_region", return_value=region
+                ),
+                patch.object(
+                    live_replay_capture, "get_ocr_regions", return_value=regions
+                ) as layout,
+                patch.object(live_replay_capture.OCRCorrectionStore, "load"),
+                patch.object(
+                    live_replay_capture, "capture_live_frame", return_value=captured
+                ) as capture,
+                patch.object(
+                    live_replay_capture,
+                    "recognize_screenshot_result",
+                    return_value=OCRResult("Rhiannon", "Hello there.", 95, "split", 1),
+                ) as recognize,
+                patch.object(
+                    live_replay_capture,
+                    "capture_replay_session",
+                    side_effect=capture_session,
+                ),
+            ):
+                profiles.return_value.get.return_value = profile
+                self.assertEqual(live_replay_capture.main([str(output)]), 0)
+                layout.assert_called_once_with(region, region, regions)
+                self.assertEqual(capture.call_args.kwargs["ocr_regions"], regions)
+                self.assertEqual(recognize.call_args.kwargs["ocr_regions"], regions)
+
     def test_capture_story_loader_uses_one_snapshot_and_keeps_optional_evidence(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

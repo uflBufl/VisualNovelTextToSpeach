@@ -390,6 +390,7 @@ class RuntimeLifecycleTest(unittest.TestCase):
             "ocr_language": "rus",
             "correction_dictionary": controller.correction_dictionary,
             "region_provider": controller._capture_region,
+            "ocr_regions_provider": controller._capture_ocr_regions,
         }
         self.assertEqual(refreshed.kwargs, expected)
         self.assertEqual(

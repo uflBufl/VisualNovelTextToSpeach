@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 from vntts_artifacts.game_pack import GamePackError
 
-from vntts.ocr import get_dialog_region
+from vntts.ocr import get_dialog_region, get_ocr_regions
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.profiles import GameProfile, GameProfileStore
 from vntts.settings import AppSettings
@@ -119,13 +119,18 @@ class GameProfilesDialog(QDialog):
         if name is None:
             return
         active = self.store.get(self.original_settings.active_profile_id)
+        if active is not None:
+            region = active.dialog_region
+            ocr_regions = active.ocr_regions
+        else:
+            region = get_dialog_region()
+            ocr_regions = get_ocr_regions(region)
         try:
             profile = self.store.create(
                 name,
                 self.original_settings,
-                region=active.dialog_region
-                if active is not None
-                else get_dialog_region(),
+                region=region,
+                ocr_regions=ocr_regions,
             )
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Unable to create profile", str(error))

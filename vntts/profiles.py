@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Self, TypeAlias
 from uuid import uuid4
 
-from vntts.ocr import DialogRegion, get_dialog_region
+from vntts.ocr import DialogRegion, OCRRegions, get_dialog_region
 from vntts.settings import (
     AppSettings,
     audio_source_policies,
@@ -19,7 +19,7 @@ from vntts.versioned_json import (
     write_versioned_json_if_unchanged,
 )
 
-profiles_schema_version = 8
+profiles_schema_version = 9
 
 PathInput: TypeAlias = str | Path
 WarningHandler: TypeAlias = Callable[[str], None]
@@ -45,6 +45,7 @@ class GameProfile:
     generated_audio_manifest: str | None
     audio_source_policy: str
     force_live_narrator: bool
+    ocr_regions: OCRRegions | None = None
 
     @classmethod
     def from_settings(
@@ -54,6 +55,7 @@ class GameProfile:
         *,
         region: DialogRegion | None = None,
         profile_id: str | None = None,
+        ocr_regions: OCRRegions | None = None,
     ) -> Self:
         return cls(
             id=profile_id or uuid4().hex,
@@ -70,6 +72,7 @@ class GameProfile:
             generated_audio_manifest=settings.generated_audio_manifest,
             audio_source_policy=settings.audio_source_policy,
             force_live_narrator=settings.force_live_narrator,
+            ocr_regions=ocr_regions,
         )
 
     @classmethod
@@ -80,6 +83,12 @@ class GameProfile:
         source_schema: int = profiles_schema_version,
     ) -> Self:
         region = DialogRegion.from_mapping(values.get("dialog_region"))
+        raw_ocr_regions = values.get("ocr_regions")
+        ocr_regions = (
+            None
+            if raw_ocr_regions is None
+            else OCRRegions.from_mapping(raw_ocr_regions)
+        )
         profile_id = values["id"]
         if not isinstance(profile_id, str) or not profile_id.strip():
             raise ValueError("profile IDs must be nonempty strings")
@@ -121,6 +130,7 @@ class GameProfile:
             ),
             audio_source_policy=_audio_source_policy(values.get("audio_source_policy")),
             force_live_narrator=force_live_narrator,
+            ocr_regions=ocr_regions,
         )
 
     def to_mapping(self) -> dict[str, object]:
@@ -148,13 +158,22 @@ class GameProfile:
         return settings
 
     def updated_from_settings(
-        self, settings: AppSettings, *, region: DialogRegion | None = None
+        self,
+        settings: AppSettings,
+        *,
+        region: DialogRegion | None = None,
+        ocr_regions: OCRRegions | None = None,
     ) -> Self:
+        selected_region = self.dialog_region if region is None else region
+        selected_layout = self.ocr_regions if ocr_regions is None else ocr_regions
+        if region is not None and region != self.dialog_region and ocr_regions is None:
+            selected_layout = None
         return self.from_settings(
             self.name,
             settings,
-            region=region if region is not None else self.dialog_region,
+            region=selected_region,
             profile_id=self.id,
+            ocr_regions=selected_layout,
         )
 
 
@@ -250,9 +269,12 @@ class GameProfileStore:
         settings: AppSettings,
         *,
         region: DialogRegion | None = None,
+        ocr_regions: OCRRegions | None = None,
     ) -> GameProfile:
         self._ensure_name_available(name)
-        profile = GameProfile.from_settings(name, settings, region=region)
+        profile = GameProfile.from_settings(
+            name, settings, region=region, ocr_regions=ocr_regions
+        )
         self._commit_profiles((*self.profiles, profile))
         return profile
 
@@ -285,16 +307,32 @@ class GameProfileStore:
         settings: AppSettings,
         *,
         region: DialogRegion | None = None,
+        ocr_regions: OCRRegions | None = None,
     ) -> GameProfile:
         profile = self._required(profile_id).updated_from_settings(
             settings,
             region=region,
+            ocr_regions=ocr_regions,
         )
         self._commit_profiles(self._replaced(profile))
         return profile
 
     def update_region(self, profile_id: str, region: DialogRegion) -> GameProfile:
-        profile = replace(self._required(profile_id), dialog_region=region)
+        profile = replace(
+            self._required(profile_id), dialog_region=region, ocr_regions=None
+        )
+        self._commit_profiles(self._replaced(profile))
+        return profile
+
+    def update_capture_regions(
+        self,
+        profile_id: str,
+        region: DialogRegion,
+        ocr_regions: OCRRegions,
+    ) -> GameProfile:
+        profile = replace(
+            self._required(profile_id), dialog_region=region, ocr_regions=ocr_regions
+        )
         self._commit_profiles(self._replaced(profile))
         return profile
 

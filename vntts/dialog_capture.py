@@ -21,6 +21,7 @@ from vntts.diagnostics import DiagnosticSnapshot
 from vntts.dialog import is_empty, speak_dialog
 from vntts.ocr import (
     DialogRegion,
+    OCRRegions,
     OCRResult,
     UncertainFrameRecorder,
     VoiceRegistry,
@@ -76,6 +77,7 @@ class TTSInitializationError(RuntimeError):
 class CapturedDialogFrame:
     image: Image.Image
     capture_ms: float
+    ocr_regions: OCRRegions | None = None
 
 
 def get_screenshot_directory(settings: ScreenshotSettings | None = None) -> Path:
@@ -143,15 +145,25 @@ def recognize_screenshot_result(
     ocr_language: str = "eng",
     correction_dictionary: OCRCorrectionDictionary | None = None,
     ocr_backend: OCRBackend | None = None,
+    ocr_regions: OCRRegions | None = None,
 ) -> OCRResult:
     try:
         backend = ocr_backend or TesseractOCRBackend(recognize_dialog_image_result)
-        result = backend.recognize(
-            image,
-            voice_registry,
-            minimum_confidence=minimum_confidence,
-            language=ocr_language,
-        )
+        if ocr_regions is None:
+            result = backend.recognize(
+                image,
+                voice_registry,
+                minimum_confidence=minimum_confidence,
+                language=ocr_language,
+            )
+        else:
+            result = backend.recognize(
+                image,
+                voice_registry,
+                minimum_confidence=minimum_confidence,
+                language=ocr_language,
+                ocr_regions=ocr_regions,
+            )
         return (
             correction_dictionary.correct_result(result)
             if correction_dictionary is not None
@@ -167,6 +179,7 @@ def capture_live_frame(
     *,
     region: DialogRegion | None = None,
     clock: Clock = monotonic,
+    ocr_regions: OCRRegions | None = None,
 ) -> CapturedDialogFrame:
     capture_started = clock()
     image, _output = capture_dialog(
@@ -178,6 +191,7 @@ def capture_live_frame(
     return CapturedDialogFrame(
         image=image,
         capture_ms=(clock() - capture_started) * 1000,
+        ocr_regions=ocr_regions,
     )
 
 
@@ -205,8 +219,13 @@ def fingerprint_dialog_frame(frame: object) -> bytes:
         minimum_brightness: int,
         *,
         ignore_continue_indicator: bool = False,
+        region_image: Image.Image | None = None,
     ) -> bytes:
-        band = grayscale.crop((0, top, width, bottom))
+        band = (
+            grayscale.crop((0, top, width, bottom))
+            if region_image is None
+            else region_image.convert("L")
+        )
         if ignore_continue_indicator:
             # Clear the chrome before measuring the band's brightest pixel;
             # otherwise a blinking indicator also changes the threshold used
@@ -238,6 +257,16 @@ def fingerprint_dialog_frame(frame: object) -> bytes:
     # Speaker labels are often dimmer than dialogue, so fingerprint the upper
     # label and lower text bands independently. The overlap accommodates games
     # whose first dialogue line starts unusually high.
+    regions = getattr(frame, "ocr_regions", None)
+    if isinstance(regions, OCRRegions):
+        source = _frame_image(frame)
+        label = glyph_band(
+            0, height, 27, 180, region_image=regions.speaker.crop(source)
+        )
+        dialog = glyph_band(
+            0, height, 45, 200, region_image=regions.dialogue.crop(source)
+        )
+        return blake2b(label + dialog, digest_size=16).digest()
     label_bottom = max(1, round(height * 0.36))
     dialog_top = min(height - 1, round(height * 0.25))
     label = glyph_band(0, label_bottom, 27, 180)
@@ -264,7 +293,12 @@ def fingerprint_dialog_render_activity(frame: object) -> bytes:
     left = min(width - 1, max(0, round(width * 0.18)))
     right = max(left + 1, min(width, round(width * 0.92)))
     top = min(height - 1, max(0, round(height * 0.25)))
-    band = grayscale.crop((left, top, right, height))
+    regions = getattr(frame, "ocr_regions", None)
+    band = (
+        regions.dialogue.crop(grayscale)
+        if isinstance(regions, OCRRegions)
+        else grayscale.crop((left, top, right, height))
+    )
     brightest = band.getextrema()[1]
     assert isinstance(brightest, (int, float))
     threshold = max(205, brightest - 20)
@@ -289,6 +323,9 @@ def dialog_glyphs_visible(frame: object) -> bool:
     width, height = grayscale.size
     dialog_top = min(height - 1, round(height * 0.25))
     dialog = grayscale.crop((0, dialog_top, width, height))
+    regions = getattr(frame, "ocr_regions", None)
+    if isinstance(regions, OCRRegions):
+        dialog = regions.dialogue.crop(grayscale)
     histogram: list[int] = dialog.histogram()
     bright_pixels = sum(histogram[160:])
     dialog_width: int = dialog.width
@@ -432,8 +469,15 @@ def recognize_live_frame(
         minimum_confidence,
         ocr_language,
         correction_dictionary,
+        ocr_regions=getattr(frame, "ocr_regions", None),
     )
-    recognized_text = "..." if detect_standalone_ellipsis_frame(image) else result.text
+    regions = getattr(frame, "ocr_regions", None)
+    dialogue_image = (
+        regions.dialogue.crop(image) if isinstance(regions, OCRRegions) else image
+    )
+    recognized_text = (
+        "..." if detect_standalone_ellipsis_frame(dialogue_image) else result.text
+    )
     recognized_character = result.character
     if recognized_text == "..." and ellipsis_speaker_resolver is not None:
         recognized_character = ellipsis_speaker_hint(
@@ -456,6 +500,10 @@ def recognize_live_frame(
         capture_ms=capture_ms,
         ocr_ms=ocr_ms,
         corrections=result.corrections,
+        processed_image=result.processed_image,
+        speaker_image=result.speaker_image,
+        speaker_confidence=result.speaker_confidence,
+        dialogue_confidence=result.dialogue_confidence,
     )
     if diagnostic_handler is not None:
         diagnostic_handler(snapshot)
@@ -510,6 +558,7 @@ def analyze_dialog_snapshot(
     ocr_language: str = "eng",
     correction_dictionary: OCRCorrectionDictionary | None = None,
     region: DialogRegion | None = None,
+    ocr_regions: OCRRegions | None = None,
 ) -> tuple[Image.Image, Path | None, OCRResult]:
     capture_started = clock()
     image, output = capture_dialog(
@@ -527,6 +576,7 @@ def analyze_dialog_snapshot(
         minimum_confidence,
         ocr_language,
         correction_dictionary,
+        ocr_regions=ocr_regions,
     )
     ocr_ms = (clock() - ocr_started) * 1000
     snapshot = DiagnosticSnapshot(
@@ -543,6 +593,10 @@ def analyze_dialog_snapshot(
         capture_ms=capture_ms,
         ocr_ms=ocr_ms,
         corrections=result.corrections,
+        processed_image=result.processed_image,
+        speaker_image=result.speaker_image,
+        speaker_confidence=result.speaker_confidence,
+        dialogue_confidence=result.dialogue_confidence,
     )
     if diagnostic_handler is not None:
         diagnostic_handler(snapshot)
@@ -561,6 +615,7 @@ def read_dialog(
     ocr_language: str = "eng",
     correction_dictionary: OCRCorrectionDictionary | None = None,
     region: DialogRegion | None = None,
+    ocr_regions: OCRRegions | None = None,
 ) -> None:
     image, output, result = analyze_dialog_snapshot(
         screenshot_directory,
@@ -573,6 +628,7 @@ def read_dialog(
         voice_resolver=voice_resolver,
         ocr_language=ocr_language,
         correction_dictionary=correction_dictionary,
+        ocr_regions=ocr_regions,
     )
     if result.text and not result.is_confident(minimum_confidence):
         error = OCRUncertainError(result, minimum_confidence)
@@ -612,6 +668,7 @@ def read_dialog_safely(
     ocr_language: str = "eng",
     correction_dictionary: OCRCorrectionDictionary | None = None,
     region: DialogRegion | None = None,
+    ocr_regions: OCRRegions | None = None,
 ) -> None:
     try:
         read_dialog(
@@ -626,6 +683,7 @@ def read_dialog_safely(
             ocr_language,
             correction_dictionary,
             region,
+            ocr_regions,
         )
     except Exception as error:
         (error_handler or report_runtime_error)(error)

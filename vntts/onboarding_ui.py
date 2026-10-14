@@ -43,7 +43,11 @@ from vntts.auto_advance_policy import (
     auto_advance_control_state,
     guard_auto_advance_settings,
 )
-from vntts.calibration import DialogRegionOverlay, show_calibration_overlay
+from vntts.calibration import (
+    CaptureLayoutSaver,
+    DialogRegionOverlay,
+    show_calibration_overlay,
+)
 from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.game_pack import GamePackError, apply_game_pack
 from vntts.hotkey_ui import HotkeyRecorder, hotkey_recording_errors
@@ -1261,10 +1265,14 @@ class CalibrationPage(QWizardPage):
         self,
         capture_target_factory: CaptureTargetFactory,
         save_region: Callable[[DialogRegion], None] | None = None,
+        save_layout: CaptureLayoutSaver | None = None,
+        capture_region: DialogRegion | None = None,
     ) -> None:
         super().__init__()
         self.capture_target_factory = capture_target_factory
         self.save_region = save_region
+        self.save_layout = save_layout
+        self.capture_region = capture_region
         self.flow: OnboardingWizard
         self.calibrated = False
         self.overlay: DialogRegionOverlay | None = None
@@ -1275,7 +1283,12 @@ class CalibrationPage(QWizardPage):
         self.capture_timer.timeout.connect(self.open_overlay)
         self.setTitle("Calibrate the dialogue area")
         self.instructions = QLabel(
-            "Open a scene with dialogue, click Calibrate, then drag over the "
+            "Open a scene with dialogue, click Calibrate, then select the speaker "
+            "name and the full dialogue area separately. Leave room for multiline "
+            "dialogue and exclude the continue indicator. Review both OCR results "
+            "before saving. Press Escape to cancel."
+            if save_layout is not None
+            else "Open a scene with dialogue, click Calibrate, then drag over the "
             "speaker name and dialogue text. Keyboard: press Enter for a "
             "suggested region, use arrows to move it, Shift plus arrows to "
             "resize it, and Enter again to review. Press Escape to cancel."
@@ -1322,13 +1335,20 @@ class CalibrationPage(QWizardPage):
             return
         self.capture_timer.stop()
         try:
-            overlay = (
-                show_calibration_overlay(self.pending_geometry)
-                if self.save_region is None
-                else show_calibration_overlay(
-                    self.pending_geometry, save_region=self.save_region
+            if self.save_layout is not None:
+                overlay = show_calibration_overlay(
+                    self.pending_geometry,
+                    save_layout=self.save_layout,
+                    capture_region=self.capture_region,
                 )
-            )
+            else:
+                overlay = (
+                    show_calibration_overlay(self.pending_geometry)
+                    if self.save_region is None
+                    else show_calibration_overlay(
+                        self.pending_geometry, save_region=self.save_region
+                    )
+                )
         except Exception as error:
             self.restore_wizard()
             self.status.setText(
@@ -1508,6 +1528,8 @@ class OnboardingWizard(QDialog):
         auto_discover_windows: bool | None = None,
         reading_setup: bool = False,
         save_region: Callable[[DialogRegion], None] | None = None,
+        save_layout: CaptureLayoutSaver | None = None,
+        capture_region: DialogRegion | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -1519,6 +1541,8 @@ class OnboardingWizard(QDialog):
             window_loader,
             reading_setup,
             save_region,
+            save_layout,
+            capture_region,
         )
         self.finished.connect(self.calibration_page.cancel_calibration)
         navigation = self._build_navigation(reading_setup)
@@ -1555,6 +1579,8 @@ class OnboardingWizard(QDialog):
         window_loader: WindowLoader,
         reading_setup: bool,
         save_region: Callable[[DialogRegion], None] | None,
+        save_layout: CaptureLayoutSaver | None,
+        capture_region: DialogRegion | None,
     ) -> None:
         welcome = QWizardPage()
         welcome.setTitle("Set up Visual Novel Text to Speech")
@@ -1576,7 +1602,9 @@ class OnboardingWizard(QDialog):
             reading_setup=reading_setup,
         )
         self.diagnostics_page = DiagnosticsPage(diagnostics or OnboardingDiagnostics())
-        self.calibration_page = CalibrationPage(capture_target_factory, save_region)
+        self.calibration_page = CalibrationPage(
+            capture_target_factory, save_region, save_layout, capture_region
+        )
         self.test_page = EndToEndTestPage()
         self.test_page.test_requested.connect(self.test_requested.emit)
         self.test_page.cancel_requested.connect(self.cancel_requested.emit)

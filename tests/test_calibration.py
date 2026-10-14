@@ -21,7 +21,7 @@ from vntts.calibration import (  # noqa: E402
     DialogRegionOverlay,
     show_calibration_overlay,
 )
-from vntts.ocr import OCRResult  # noqa: E402
+from vntts.ocr import DialogRegion, OCRRegions, OCRResult  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
 
 
@@ -38,6 +38,79 @@ class DialogRegionOverlayTest(unittest.TestCase):
                 return
             QTest.qWait(5)
         self.fail("Timed out waiting for calibration OCR")
+
+    def split_overlay(self, save, review_result=QDialog.DialogCode.Accepted):
+        overlay = DialogRegionOverlay(
+            background=Image.new("RGB", (800, 450), "black"),
+            reviewer=Mock(return_value=Mock(exec=Mock(return_value=review_result))),
+            save_layout=save,
+            capture_region=DialogRegion(0, 0.5, 1, 0.5),
+        )
+        self.addCleanup(overlay.deleteLater)
+        self.addCleanup(overlay.close)
+        overlay.resize(800, 450)
+        overlay.show()
+        return overlay
+
+    def test_split_calibration_saves_both_only_after_review(self):
+        save = Mock()
+        overlay = self.split_overlay(save)
+        selected = Mock()
+        overlay.selected.connect(selected)
+        overlay._review_rectangle(QRect(80, 270, 160, 30))
+        save.assert_not_called()
+        overlay.reviewer.assert_not_called()
+        self.assertIsNotNone(overlay.speaker_region)
+
+        overlay._review_rectangle(QRect(80, 330, 640, 60))
+        save.assert_called_once()
+        capture, regions = save.call_args.args
+        self.assertEqual(capture, DialogRegion(0, 0.5, 1, 0.5))
+        self.assertIsInstance(regions, OCRRegions)
+        self.assertEqual(
+            regions.speaker.crop(capture.crop(overlay.background)).size, (160, 30)
+        )
+        self.assertEqual(
+            regions.dialogue.crop(capture.crop(overlay.background)).size, (640, 60)
+        )
+        selected.assert_called_once_with(capture)
+        self.assertFalse(overlay.isVisible())
+
+    def test_split_calibration_overlap_can_be_corrected(self):
+        save = Mock()
+        overlay = self.split_overlay(save)
+        overlay._review_rectangle(QRect(80, 270, 160, 30))
+        overlay._review_rectangle(QRect(80, 270, 200, 50))
+        self.assertIn("must not overlap", overlay.save_error)
+        self.assertTrue(overlay.isVisible())
+        save.assert_not_called()
+        overlay._review_rectangle(QRect(80, 330, 640, 60))
+        save.assert_called_once()
+
+    def test_split_calibration_draw_again_resets_both_and_cancel_writes_nothing(self):
+        save = Mock()
+        overlay = self.split_overlay(save, CalibrationReviewDialog.DrawAgain)
+        overlay._review_rectangle(QRect(80, 270, 160, 30))
+        overlay._review_rectangle(QRect(80, 330, 640, 60))
+        self.assertIsNone(overlay.speaker_region)
+        self.assertIsNone(overlay.pending_ocr_regions)
+        self.assertTrue(overlay.isVisible())
+        overlay._review_rectangle(QRect(80, 270, 160, 30))
+        overlay.close()
+        save.assert_not_called()
+
+    def test_split_calibration_failed_save_keeps_both_retryable(self):
+        save = Mock(side_effect=[OSError("disk unavailable"), None])
+        overlay = self.split_overlay(save)
+        overlay._review_rectangle(QRect(80, 270, 160, 30))
+        overlay._review_rectangle(QRect(80, 330, 640, 60))
+        self.assertTrue(overlay.isVisible())
+        self.assertIn("disk unavailable", overlay.save_error)
+        self.assertIsNotNone(overlay.pending_ocr_regions)
+        overlay._review_rectangle(QRect(80, 330, 640, 60))
+        self.assertEqual(save.call_count, 2)
+        self.assertEqual(save.call_args_list[0], save.call_args_list[1])
+        self.assertFalse(overlay.isVisible())
 
     def test_review_failure_keeps_selection_visible_and_retryable(self):
         for stage in ("construction", "execution"):

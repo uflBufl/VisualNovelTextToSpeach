@@ -4767,11 +4767,13 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.calibrate()
             self.wait_until(lambda: show_overlay.called)
 
-        show_overlay.assert_called_once_with(
-            geometry,
-            background=background,
-            save_region=tray_application._save_calibration_region,
-        )
+            show_overlay.assert_called_once_with(
+                geometry,
+                background=background,
+                save_region=tray_application._save_calibration_region,
+                save_layout=tray_application._save_calibration_layout,
+                capture_region=controller._capture_region.return_value,
+            )
         tray_application.shutdown()
 
     def test_calibration_overlay_blocks_reentry_until_it_closes(self):
@@ -4987,6 +4989,8 @@ class TrayApplicationTest(unittest.TestCase):
                 geometry,
                 background=background,
                 save_region=tray_application._save_calibration_region,
+                save_layout=tray_application._save_calibration_layout,
+                capture_region=controller._capture_region.return_value,
             )
 
             overlay.closed.connect.call_args.args[0]()

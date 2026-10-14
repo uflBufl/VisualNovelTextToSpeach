@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, QTimer  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton  # noqa: E402
 
-from vntts.ocr import DialogRegion  # noqa: E402
+from vntts.ocr import DialogRegion, OCRRegions  # noqa: E402
 from vntts.ocr_corrections import OCRCorrectionStore  # noqa: E402
 from vntts.profiles import (  # noqa: E402
     GameProfile,
@@ -24,6 +24,125 @@ from vntts.settings import AppSettings  # noqa: E402
 
 
 class GameProfileStoreTest(unittest.TestCase):
+    def test_profile_round_trips_optional_ocr_regions(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "profiles.json"
+            regions = OCRRegions(
+                speaker=DialogRegion(0.1, 0.6, 0.3, 0.08),
+                dialogue=DialogRegion(0.1, 0.7, 0.8, 0.2),
+            )
+            store = GameProfileStore(path)
+            profile = store.create("Game", AppSettings(), ocr_regions=regions)
+
+            loaded = GameProfileStore.load(path).get(profile.id)
+
+        self.assertEqual(loaded.ocr_regions, regions)
+        self.assertEqual(
+            loaded.to_mapping()["ocr_regions"],
+            {
+                "speaker": regions.speaker.to_json(),
+                "dialogue": regions.dialogue.to_json(),
+            },
+        )
+
+    def test_schema8_profile_migrates_without_ocr_regions(self):
+        profile = GameProfile.from_settings("Game", AppSettings())
+        values = profile.to_mapping()
+        values.pop("ocr_regions", None)
+        values["dialog_region"] = values["dialog_region"]
+        values["id"] = "legacy"
+        values["name"] = "Legacy"
+
+        migrated = GameProfile.from_mapping(values, source_schema=8)
+
+        self.assertIsNone(migrated.ocr_regions)
+
+    def test_settings_update_preserves_layout_but_region_recalibration_clears_it(self):
+        regions = OCRRegions(
+            speaker=DialogRegion(0.1, 0.6, 0.3, 0.08),
+            dialogue=DialogRegion(0.1, 0.7, 0.8, 0.2),
+        )
+        profile = GameProfile.from_settings("Game", AppSettings(), ocr_regions=regions)
+
+        self.assertEqual(
+            profile.updated_from_settings(AppSettings(ocr_language="eng")).ocr_regions,
+            regions,
+        )
+        self.assertEqual(
+            profile.updated_from_settings(
+                AppSettings(), region=profile.dialog_region
+            ).ocr_regions,
+            regions,
+        )
+        self.assertIsNone(
+            profile.updated_from_settings(
+                AppSettings(), region=DialogRegion(0.0, 0.7, 1.0, 0.3)
+            ).ocr_regions
+        )
+        replacement = OCRRegions(
+            speaker=DialogRegion(0.05, 0.72, 0.25, 0.06),
+            dialogue=DialogRegion(0.05, 0.8, 0.9, 0.15),
+        )
+        self.assertEqual(
+            profile.updated_from_settings(
+                AppSettings(),
+                region=DialogRegion(0.0, 0.7, 1.0, 0.3),
+                ocr_regions=replacement,
+            ).ocr_regions,
+            replacement,
+        )
+
+    def test_legacy_update_region_clears_layout(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "profiles.json"
+            regions = OCRRegions(
+                speaker=DialogRegion(0.1, 0.6, 0.3, 0.08),
+                dialogue=DialogRegion(0.1, 0.7, 0.8, 0.2),
+            )
+            store = GameProfileStore(path)
+            profile = store.create("Game", AppSettings(), ocr_regions=regions)
+
+            updated = store.update_region(profile.id, profile.dialog_region)
+
+        self.assertIsNone(updated.ocr_regions)
+
+    def test_update_capture_regions_replaces_both_in_one_commit(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "profiles.json"
+            store = GameProfileStore(path)
+            profile = store.create("Game", AppSettings())
+            region = DialogRegion(0.0, 0.65, 1.0, 0.35)
+            regions = OCRRegions(
+                speaker=DialogRegion(0.1, 0.66, 0.3, 0.08),
+                dialogue=DialogRegion(0.1, 0.75, 0.8, 0.2),
+            )
+
+            updated = store.update_capture_regions(profile.id, region, regions)
+            loaded = GameProfileStore.load(path).get(profile.id)
+
+        self.assertEqual(updated.dialog_region, region)
+        self.assertEqual(updated.ocr_regions, regions)
+        self.assertEqual(loaded, updated)
+
+    def test_update_capture_regions_does_not_publish_after_stale_write(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "profiles.json"
+            store = GameProfileStore(path)
+            profile = store.create("Game", AppSettings())
+            before = store.profiles
+            path.write_bytes(path.read_bytes() + b" ")
+            with self.assertRaisesRegex(OSError, "changed on disk"):
+                store.update_capture_regions(
+                    profile.id,
+                    profile.dialog_region,
+                    OCRRegions(
+                        speaker=DialogRegion(0.1, 0.66, 0.3, 0.08),
+                        dialogue=DialogRegion(0.1, 0.75, 0.8, 0.2),
+                    ),
+                )
+
+        self.assertEqual(store.profiles, before)
+
     def test_profile_round_trips_all_game_specific_settings(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "profiles.json"
@@ -591,6 +710,34 @@ class GameProfilesDialogTest(unittest.TestCase):
 
         self.assertEqual(dialog.settings().active_profile_id, profile.id)
         self.assertEqual(dialog.settings().game_window_title, "Reverse: 1999")
+
+    def test_create_profile_copies_active_capture_layout(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
+            regions = OCRRegions(
+                speaker=DialogRegion(0.1, 0.05, 0.3, 0.1),
+                dialogue=DialogRegion(0.1, 0.2, 0.8, 0.7),
+            )
+            active = store.create(
+                "Active game",
+                AppSettings(),
+                region=DialogRegion(0.0, 0.6, 1.0, 0.4),
+                ocr_regions=regions,
+            )
+            dialog = GameProfilesDialog(
+                AppSettings(active_profile_id=active.id),
+                store,
+            )
+            with patch.object(dialog, "_ask_name", return_value="Copied setup"):
+                dialog.create_profile()
+
+            copied = store.get(dialog.profiles.currentData())
+
+        self.assertIsNotNone(copied)
+        self.assertEqual(copied.dialog_region, active.dialog_region)
+        self.assertEqual(copied.ocr_regions, regions)
+        dialog.close()
+        dialog.deleteLater()
 
     def test_active_and_selected_profiles_have_distinct_actions(self):
         with TemporaryDirectory() as temporary_directory:

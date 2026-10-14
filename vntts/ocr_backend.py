@@ -8,9 +8,11 @@ from numpy.typing import NDArray
 from PIL import Image
 
 from vntts.ocr import (
+    OCRRegions,
     OCRResult,
     VoiceRegistry,
     default_minimum_ocr_confidence,
+    normalize_recognized_speaker,
     parse_recognized_dialog,
     recognize_dialog_image_result,
 )
@@ -27,6 +29,7 @@ class OCRRecognizer(Protocol):
         *,
         minimum_confidence: float = default_minimum_ocr_confidence,
         language: str = "eng",
+        ocr_regions: OCRRegions | None = None,
     ) -> OCRResult: ...
 
 
@@ -44,6 +47,7 @@ class OCRBackend(Protocol):
         *,
         minimum_confidence: float = default_minimum_ocr_confidence,
         language: str = "eng",
+        ocr_regions: OCRRegions | None = None,
     ) -> OCRResult: ...
 
 
@@ -61,7 +65,16 @@ class TesseractOCRBackend:
         *,
         minimum_confidence: float = default_minimum_ocr_confidence,
         language: str = "eng",
+        ocr_regions: OCRRegions | None = None,
     ) -> OCRResult:
+        if ocr_regions is not None:
+            return self.recognizer(
+                image,
+                voice_registry,
+                minimum_confidence=minimum_confidence,
+                language=language,
+                ocr_regions=ocr_regions,
+            )
         return self.recognizer(
             image,
             voice_registry,
@@ -92,14 +105,47 @@ class RapidOCRBackend:
         *,
         minimum_confidence: float = default_minimum_ocr_confidence,
         language: str = "eng",
+        ocr_regions: OCRRegions | None = None,
     ) -> OCRResult:
         del minimum_confidence
         if language.casefold() not in {"eng", "en"}:
             raise ValueError("The RapidOCR prototype currently supports English only")
-        output = self.engine(np.asarray(image.convert("RGB")), use_cls=False)
-        lines = self._ordered_lines(output)
+        if ocr_regions is not None:
+            speaker_image, speaker_lines, speaker_confidence = self._recognize_image(
+                ocr_regions.speaker.crop(image)
+            )
+            dialogue_image, dialogue_lines, dialogue_confidence = self._recognize_image(
+                ocr_regions.dialogue.crop(image)
+            )
+            return OCRResult(
+                normalize_recognized_speaker(
+                    " ".join(text for _box, text, _score in speaker_lines),
+                    voice_registry,
+                ),
+                " ".join(text for _box, text, _score in dialogue_lines),
+                min(speaker_confidence, dialogue_confidence)
+                if speaker_lines
+                else dialogue_confidence,
+                self.name,
+                1,
+                processed_image=dialogue_image,
+                speaker_image=speaker_image,
+                speaker_confidence=speaker_confidence,
+                dialogue_confidence=dialogue_confidence,
+            )
+        processed_image, lines, confidence = self._recognize_image(image)
         recognized = "\n".join(text for _box, text, _score in lines)
         character, text = parse_recognized_dialog(recognized, voice_registry)
+        return OCRResult(
+            character, text, confidence, self.name, 1, processed_image=processed_image
+        )
+
+    def _recognize_image(
+        self, image: Image.Image
+    ) -> tuple[Image.Image, list[RapidOCRLine], float]:
+        processed_image = image.convert("RGB")
+        output = self.engine(np.asarray(processed_image), use_cls=False)
+        lines = self._ordered_lines(output)
         total_characters = sum(max(1, len(text)) for _box, text, _score in lines)
         confidence = (
             sum(max(1, len(text)) * score for _box, text, score in lines)
@@ -110,13 +156,7 @@ class RapidOCRBackend:
         )
         if not math.isfinite(confidence):
             raise ValueError("RapidOCR confidence aggregate is non-finite")
-        return OCRResult(
-            character,
-            text,
-            confidence,
-            self.name,
-            1,
-        )
+        return processed_image, lines, confidence
 
     @staticmethod
     def _ordered_lines(output: object) -> list[RapidOCRLine]:
