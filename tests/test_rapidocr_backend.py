@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from vntts.ocr import DialogRegion, OCRRegions
 from vntts.ocr_backend import RapidOCRBackend
@@ -32,8 +32,10 @@ class RapidOCRBackendTest(unittest.TestCase):
             inputs.append(image)
             return next(outputs)
 
+        image = Image.new("RGB", (400, 200), (10, 20, 30))
+        ImageDraw.Draw(image).text((45, 25), "X", fill="white")
         result = RapidOCRBackend(engine).recognize(
-            Image.new("RGB", (400, 200), (10, 20, 30)),
+            image,
             ocr_regions=OCRRegions(
                 DialogRegion(0.1, 0.1, 0.3, 0.2), DialogRegion(0.1, 0.4, 0.7, 0.4)
             ),
@@ -45,6 +47,32 @@ class RapidOCRBackendTest(unittest.TestCase):
         self.assertTrue(np.array_equal(np.asarray(result.processed_image), inputs[1]))
         self.assertEqual(result.speaker_confidence, 96)
         self.assertEqual(result.dialogue_confidence, 95)
+
+    def test_split_background_is_narration_but_uncertain_visible_name_is_rejected(self):
+        regions = OCRRegions(
+            DialogRegion(0.1, 0.1, 0.3, 0.2), DialogRegion(0.1, 0.4, 0.7, 0.4)
+        )
+        for visible in (False, True):
+            with self.subTest(visible=visible):
+                image = Image.new("RGB", (400, 200), "black")
+                if visible:
+                    ImageDraw.Draw(image).text((45, 25), "Unknown", fill="#555555")
+                else:
+                    ImageDraw.Draw(image).rectangle((40, 20, 159, 23), fill="#555555")
+                outputs = iter(
+                    SimpleNamespace(
+                        boxes=[[[0, 0], [20, 0], [20, 20], [0, 20]]],
+                        txts=[text],
+                        scores=[score],
+                    )
+                    for text, score in (("Unknown", 0.27), ("Hey!", 0.95))
+                )
+                result = RapidOCRBackend(
+                    lambda *_args, **_kwargs: next(outputs)
+                ).recognize(image, ocr_regions=regions)
+                self.assertEqual(result.character, "Unknown" if visible else "Narrator")
+                self.assertEqual(result.confidence, 27 if visible else 95)
+                self.assertEqual(result.is_confident(), not visible)
 
     def test_orders_lines_and_returns_shared_ocr_result(self):
         output = SimpleNamespace(

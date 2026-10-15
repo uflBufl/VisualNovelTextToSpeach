@@ -9,10 +9,12 @@ from time import monotonic
 from typing import Protocol, Self, TypeVar
 from uuid import uuid4
 
+import numpy as np
 import pytesseract
 from durable_file import atomic_write_json
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from pytesseract import pytesseract as pytesseract_runtime
+from scipy.ndimage import find_objects, label, maximum_filter, minimum_filter
 from vntts_artifacts.atomic_io import atomic_output_group
 
 from vntts.dialog import (
@@ -501,7 +503,7 @@ def recognize_dialog_image_result(
             max(speaker.attempts, dialogue.attempts),
             processed_image=dialogue.processed_image,
             speaker_image=speaker.processed_image,
-            speaker_confidence=speaker.confidence,
+            speaker_confidence=speaker.confidence if speaker.text.strip() else None,
             dialogue_confidence=dialogue.confidence,
         )
 
@@ -543,6 +545,7 @@ def _recognize_isolated_region(
     combine_outputs: bool,
 ) -> OCRResult:
     best_result: OCRResult | None = None
+    has_speaker_glyphs = not speaker or speaker_glyphs_visible(image)
     for attempt, profile in enumerate(profiles, start=1):
         remaining_timeout()
         processed = preprocess_dialog_image(image, profile)
@@ -559,7 +562,11 @@ def _recognize_isolated_region(
                 output_type=pytesseract.Output.DICT,
                 lang=language,
             )
-            text = " ".join(word for word, _confidence in _recognized_words(data))
+            text = (
+                " ".join(word for word, _confidence in _recognized_words(data))
+                if has_speaker_glyphs
+                else ""
+            )
         else:
             if combine_outputs:
                 text, data = _recognize_psm6_text_data(
@@ -834,6 +841,30 @@ def _normalize_unknown_nameplate(text: str) -> str:
     ):
         return "???"
     return value
+
+
+def speaker_glyphs_visible(image: Image.Image) -> bool:
+    pixels = np.asarray(image.convert("L"), dtype=np.int16)
+    # Test local strokes before autocontrast can amplify empty scenery.
+    # shortcut: qualify fonts below 4px or 16 levels of contrast before widening this gate.
+    for contrast in (
+        pixels - minimum_filter(pixels, size=3),
+        maximum_filter(pixels, size=3) - pixels,
+    ):
+        foreground = contrast >= 16
+        components, _count = label(foreground, structure=np.ones((3, 3)))
+        for bounds in find_objects(components):
+            if bounds is None:
+                continue
+            height = bounds[0].stop - bounds[0].start
+            width = bounds[1].stop - bounds[1].start
+            if (
+                height >= 4
+                and 1 <= width <= height * 3
+                and np.count_nonzero(foreground[bounds]) >= 4
+            ):
+                return True
+    return False
 
 
 def normalize_recognized_speaker(

@@ -25,6 +25,7 @@ from vntts.ocr import (
     load_ocr_regions,
     recognize_dialog_image_result,
     save_dialog_region,
+    speaker_glyphs_visible,
 )
 from vntts.ocr_corrections import OCRCorrectionDictionary
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
@@ -36,6 +37,12 @@ class SplitOCRTest(unittest.TestCase):
             DialogRegion(0.1, 0.1, 0.3, 0.2),
             DialogRegion(0.1, 0.4, 0.7, 0.4),
         )
+
+    @staticmethod
+    def _image_with_name(name="Marcus", fill="white"):
+        image = Image.new("RGB", (1000, 300))
+        ImageDraw.Draw(image).text((120, 35), name, fill=fill)
+        return image
 
     def test_regions_validate_bounds_types_and_nonoverlap(self):
         self.assertEqual(OCRRegions.from_mapping(self.regions.to_json()), self.regions)
@@ -114,7 +121,7 @@ class SplitOCRTest(unittest.TestCase):
                 )
                 read = Mock(return_value=text)
                 result = recognize_dialog_image_result(
-                    Image.new("RGB", (1000, 300)),
+                    self._image_with_name(),
                     registry,
                     recognize_text=read,
                     recognize_data=data,
@@ -146,7 +153,7 @@ class SplitOCRTest(unittest.TestCase):
         )
         read = Mock(return_value="Hey!")
         result = recognize_dialog_image_result(
-            Image.new("RGB", (1000, 300)),
+            self._image_with_name(),
             recognize_text=read,
             recognize_data=data,
             profiles=(
@@ -161,6 +168,81 @@ class SplitOCRTest(unittest.TestCase):
         self.assertEqual(result.dialogue_confidence, 96)
         self.assertIs(result.speaker_image, data.call_args_list[1].args[0])
         self.assertIs(result.processed_image, read.call_args.args[0])
+
+    def test_background_in_empty_nameplate_does_not_block_narration(self):
+        image = Image.new("RGB", (1000, 300))
+        ImageDraw.Draw(image).polygon(
+            ((100, 30), (400, 30), (350, 48), (260, 40), (100, 34)),
+            fill="#555555",
+        )
+        text = "She scans the instructions quickly, then signs her name."
+        data = Mock(
+            side_effect=[{"text": ["To", "a"], "conf": [27, 27]}] * 3
+            + [{"text": [text], "conf": [95.3]}]
+        )
+        result = recognize_dialog_image_result(
+            image,
+            recognize_text=Mock(return_value=text),
+            recognize_data=data,
+            ocr_regions=self.regions,
+        )
+        self.assertEqual((result.character, result.text), ("Narrator", text))
+        self.assertIsNone(result.speaker_confidence)
+        self.assertEqual(result.confidence, 95.3)
+        self.assertTrue(result.is_confident())
+        self.assertIs(result.speaker_image, data.call_args_list[0].args[0])
+        uncertain = Mock()
+        snapshots = []
+        with patch(
+            "vntts.dialog_capture.recognize_screenshot_result", return_value=result
+        ):
+            self.assertEqual(
+                recognize_live_frame(
+                    CapturedDialogFrame(image, 0, self.regions),
+                    uncertain_handler=uncertain,
+                    diagnostic_handler=snapshots.append,
+                ),
+                ("Narrator", text),
+            )
+        uncertain.assert_not_called()
+        self.assertEqual(snapshots[0].confidence, 95.3)
+
+    def test_visible_unknown_low_confidence_name_is_not_treated_as_narration(self):
+        for name in ("Unlisted NPC", "lowercase", "X", "I", "???", "6", "37"):
+            with self.subTest(name=name):
+                result = recognize_dialog_image_result(
+                    self._image_with_name(name, fill="#555555"),
+                    recognize_text=Mock(return_value="Hey!"),
+                    recognize_data=Mock(
+                        side_effect=[
+                            {"text": [name], "conf": [27]},
+                            {"text": ["Hey!"], "conf": [95]},
+                        ]
+                    ),
+                    profiles=(OCRPreprocessingProfile("first", 1, 170),),
+                    ocr_regions=self.regions,
+                )
+                self.assertEqual(result.character, name)
+                self.assertEqual(result.confidence, 27)
+                self.assertFalse(result.is_confident())
+
+    def test_speaker_presence_accepts_both_text_polarities(self):
+        for background, fill in (("#101010", "#555555"), ("#eeeeee", "#888888")):
+            image = Image.new("RGB", (150, 40), background)
+            ImageDraw.Draw(image).text((20, 10), "X", fill=fill)
+            self.assertTrue(speaker_glyphs_visible(image))
+            self.assertFalse(
+                speaker_glyphs_visible(Image.new("RGB", (150, 40), background))
+            )
+
+    def test_dim_name_survives_bright_scenery_and_a_tall_capture(self):
+        for name in ("X", "I", "Unknown", "Sharpodonties", "???", "6", "37"):
+            with self.subTest(name=name):
+                image = Image.new("RGB", (300, 300), "black")
+                draw = ImageDraw.Draw(image)
+                draw.text((20, 50), name, fill="#555555")
+                draw.rectangle((0, 0, 299, 7), fill="white")
+                self.assertTrue(speaker_glyphs_visible(image))
 
     def test_blank_name_is_narration_without_stealing_first_dialogue_word(self):
         data = Mock(

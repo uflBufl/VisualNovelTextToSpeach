@@ -15,6 +15,7 @@ from vntts.ocr import (
     normalize_recognized_speaker,
     parse_recognized_dialog,
     recognize_dialog_image_result,
+    speaker_glyphs_visible,
 )
 
 RapidOCRBox: TypeAlias = Iterable[Sequence[float]]
@@ -117,20 +118,22 @@ class RapidOCRBackend:
             dialogue_image, dialogue_lines, dialogue_confidence = self._recognize_image(
                 ocr_regions.dialogue.crop(image)
             )
+            speaker_text = (
+                " ".join(text for _box, text, _score in speaker_lines)
+                if speaker_glyphs_visible(speaker_image)
+                else ""
+            )
             return OCRResult(
-                normalize_recognized_speaker(
-                    " ".join(text for _box, text, _score in speaker_lines),
-                    voice_registry,
-                ),
+                normalize_recognized_speaker(speaker_text, voice_registry),
                 " ".join(text for _box, text, _score in dialogue_lines),
                 min(speaker_confidence, dialogue_confidence)
-                if speaker_lines
+                if speaker_text
                 else dialogue_confidence,
                 self.name,
                 1,
                 processed_image=dialogue_image,
                 speaker_image=speaker_image,
-                speaker_confidence=speaker_confidence,
+                speaker_confidence=speaker_confidence if speaker_text else None,
                 dialogue_confidence=dialogue_confidence,
             )
         processed_image, lines, confidence = self._recognize_image(image)
