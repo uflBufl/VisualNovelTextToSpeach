@@ -866,6 +866,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._build_narrator_confirmation_controls(game_narrator_chooser)
         self._build_voice_route_confirmation_controls()
         self.voice_confirmation_status = QLabel()
+        self.voice_confirmation_status.setTextFormat(Qt.TextFormat.PlainText)
         self.voice_confirmation_status.setWordWrap(True)
         self._layout_voice_confirmation()
 
@@ -907,7 +908,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def _build_voice_route_confirmation_controls(self) -> None:
         self.voice_routes = _VoiceRouteList()
         self.voice_routes.setIconSize(QSize(64, 64))
-        self.voice_routes.setAccessibleName("Planned character voice routes")
+        self.voice_routes.setAccessibleName("Character voices for selected stories")
         self.voice_routes.setMinimumHeight(90)
         self.voice_routes.setAlternatingRowColors(True)
         self.voice_routes.setVerticalScrollMode(
@@ -921,11 +922,6 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.choose_character_voice.setEnabled(False)
         self.choose_character_voice.clicked.connect(self._choose_character_voice)
-        self.voice_routes.currentItemChanged.connect(
-            lambda item, _previous: self.choose_character_voice.setEnabled(
-                item is not None
-            )
-        )
         self.voice_routes.itemDoubleClicked.connect(
             lambda _item: self._inspect_character_voice()
         )
@@ -936,17 +932,16 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_routes.currentItemChanged.connect(self._show_voice_route_details)
         self.voice_route_summary = QLabel()
         self.voice_route_summary.setWordWrap(True)
+        self.voice_routes_empty = QLabel()
+        self.voice_routes_empty.setWordWrap(True)
+        self.voice_routes_empty.setAccessibleName("Character voice list status")
+        self.voice_routes_empty.hide()
         self.inspect_character_voice = QPushButton("Listen or change voice...")
         self.inspect_character_voice.setAccessibleDescription(
             "Listen to a role's game references and choose its voice."
         )
         self.inspect_character_voice.setEnabled(False)
         self.inspect_character_voice.clicked.connect(self._inspect_character_voice)
-        self.voice_routes.currentItemChanged.connect(
-            lambda item, _previous: self.inspect_character_voice.setEnabled(
-                item is not None
-            )
-        )
         self.link_identity = QPushButton("Link same person...")
         self.link_identity.clicked.connect(self._link_selected_person)
         self.unlink_identity = QPushButton("Unlink name")
@@ -957,7 +952,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.identity_suggestion.setAccessibleName("Possible same-person match")
         self.identity_suggestion.hide()
         self.voice_routes.currentItemChanged.connect(
-            lambda _item, _previous: self._update_identity_actions()
+            lambda _item, _previous: self._update_voice_route_actions()
         )
         self._build_more_voice_actions()
         self.back_to_story_selection = QPushButton("Back to stories")
@@ -1030,6 +1025,7 @@ class OfflineAudioPreparationDialog(QDialog):
         confirmation_layout.addWidget(self.show_all_voice_routes)
         confirmation_layout.addWidget(self.voice_routes_header)
         confirmation_layout.addWidget(self.voice_routes, 1)
+        confirmation_layout.addWidget(self.voice_routes_empty)
         confirmation_layout.addWidget(self.voice_route_details)
         actions = QHBoxLayout()
         actions.addWidget(self.back_to_story_selection)
@@ -1214,7 +1210,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _choose_character_voice(self) -> None:
         item = self.voice_routes.currentItem()
-        if item is None or self.has_pending_work():
+        if item is None or self.has_pending_work() or self._voice_plan_needs_update():
             return
         character = item.data(Qt.ItemDataRole.UserRole)
         if not isinstance(character, str) or not character:
@@ -1244,14 +1240,20 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _inspect_character_voice(self) -> None:
         item = self.voice_routes.currentItem()
-        if item is None or self.has_pending_work() or self._voice_plan is None:
+        if (
+            item is None
+            or self.has_pending_work()
+            or self._voice_plan is None
+            or self._voice_plan_needs_update()
+        ):
             return
         group_id = item.data(int(Qt.ItemDataRole.UserRole) + 1)
         try:
             self.voice_panel.start(self._voice_plan, group_id=group_id)
         except VoiceAuditionUIError as error:
             self.voice_confirmation_status.setText(
-                f"Unable to inspect this voice: {error}"
+                f"Unable to inspect {item.data(Qt.ItemDataRole.UserRole)}'s voice: {error}\n"
+                "Choose another voice through More actions > Edit role in Voices."
             )
             return
         self._awaiting_voice_confirmation = False
@@ -1275,14 +1277,19 @@ class OfflineAudioPreparationDialog(QDialog):
         role = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
         return role if isinstance(role, str) and role else None
 
-    def _update_identity_actions(self) -> None:
+    def _update_voice_route_actions(self) -> None:
         role = self._selected_routing_role()
+        ready = role is not None and not self._voice_plan_needs_update()
+        self.inspect_character_voice.setEnabled(ready)
+        self.choose_character_voice.setEnabled(ready)
         if role and normalize_character_name(role) == "narrator":
             role = None
         linked = bool(role and self.voice_library.linked_variant_key(role))
         aliases = self._linked_person_aliases(role)
-        self.link_identity.setEnabled(bool(role) and not linked and not aliases)
-        self.unlink_identity.setEnabled(linked or bool(aliases))
+        self.link_identity.setEnabled(
+            ready and bool(role) and not linked and not aliases
+        )
+        self.unlink_identity.setEnabled(ready and (linked or bool(aliases)))
         suggestions = self._suggested_person_links(role) if not linked else ()
         if suggestions:
             matches = ", ".join(
@@ -1371,6 +1378,7 @@ class OfflineAudioPreparationDialog(QDialog):
             or normalize_character_name(role) == "narrator"
             or plan is None
             or self.has_pending_work()
+            or self._voice_plan_needs_update()
         ):
             return
         suggestions = self._suggested_person_links(role)
@@ -1466,7 +1474,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _unlink_selected_person(self) -> None:
         role = self._selected_routing_role()
-        if role is None or self.has_pending_work():
+        if role is None or self.has_pending_work() or self._voice_plan_needs_update():
             return
         try:
             if not self.voice_library.linked_variant_key(role):
@@ -1627,11 +1635,6 @@ class OfflineAudioPreparationDialog(QDialog):
                     "The previous narrator is unavailable with this cloning setting. "
                     "Choose another narrator before generation."
                 )
-            self.continue_button.setText("Update voice routes")
-            if selected_narrator is None or selected_index >= 0:
-                self.voice_confirmation_status.setText(
-                    "Voice cloning changed. Update the routes before generation."
-                )
         else:
             self._voice_plan = None
 
@@ -1786,11 +1789,14 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         selected = self.narrator_choice.findData(current)
         self.narrator_choice.setCurrentIndex(max(0, selected))
+        model = self.narrator_choice.model()
+        if isinstance(model, QStandardItemModel):
+            model.item(0).setEnabled(False)
         self.narrator_choice.blockSignals(False)
         self._render_voice_routes(plan)
         self.continue_button.setText("Generate with these voices")
         self.continue_button.setAccessibleDescription(
-            "Start offline generation with the exact visible voice routes"
+            "Generate the selected stories with the voices shown"
         )
         self.cancel_button.setText("Cancel")
         self.cancel_button.setEnabled(True)
@@ -1834,13 +1840,13 @@ class OfflineAudioPreparationDialog(QDialog):
             f"Optional voice review: {needs_review} assignment{'s' if needs_review != 1 else ''}. "
             "Continuing uses the narrator."
             if needs_review
-            else f"{len(exceptions)} of {len(groups)} voice assignments use a substitute or have a suggested review."
-            if exceptions
-            else "No character voice substitutions. Narrator is shown above."
+            else ""
         )
+        self.voice_route_summary.setVisible(bool(needs_review))
         summary_font = self.voice_route_summary.font()
         summary_font.setBold(bool(needs_review))
         self.voice_route_summary.setFont(summary_font)
+        self.show_all_voice_routes.setVisible(bool(groups))
         visible = exceptions if self.show_all_voice_routes.isChecked() else groups
         show_portraits = bool(groups) and all(
             group.portrait_image and group.portrait_image_sha256 for group in groups
@@ -1853,6 +1859,17 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.voice_routes.setVisible(bool(visible))
         self.voice_routes_header.setVisible(bool(visible))
+        self.voice_routes_empty.setText(
+            "No substitutions or suggestions. Turn off Substitutions only to see all characters."
+            if groups
+            else "No character voices need to be chosen for these stories."
+        )
+        self.voice_routes_empty.setVisible(not visible)
+        self.inspect_character_voice.setVisible(bool(visible))
+        self.more_voice_actions_toggle.setVisible(bool(visible))
+        self.more_voice_actions.setVisible(
+            bool(visible) and self.more_voice_actions_toggle.isChecked()
+        )
         for group in sorted(
             visible,
             key=lambda value: (
@@ -1878,7 +1895,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.voice_routes.setCurrentRow(0)
         self.voice_routes.resize_rows()
         self._show_voice_route_details(self.voice_routes.currentItem())
-        self._update_identity_actions()
+        self._update_voice_route_actions()
 
     def _voice_route_item(
         self, group: VoiceGroup, *, show_portraits: bool, suggested_link: bool
@@ -1929,9 +1946,9 @@ class OfflineAudioPreparationDialog(QDialog):
             if group.route in {"narrator", "needs-audition"} and narrator_missing
             else _voice_resolution_label(group.resolution)
         )
+        reference = self._voice_reference_details(group, candidate, explanation)
         reference_details = (
-            f"{display_role}: "
-            f"{self._voice_reference_details(group, candidate, explanation)}"
+            f"{display_role}: {reference}" if reference else display_role
         )
         item = QListWidgetItem(
             f"{prefix}{display_role} -> {route} | {status} | {lines} "
@@ -1978,13 +1995,17 @@ class OfflineAudioPreparationDialog(QDialog):
     ) -> str:
         if group.route in {"narrator", "needs-audition"}:
             if self.narrator_choice.currentData() is None:
-                return "Reference details need a selected narrator."
+                return ""
             if self.narrator_choice.currentData() != pregeneration_narrator_source_id(
                 self.settings, voice_library=self.voice_library
             ):
-                return "Narrator changed. Update voice routes to refresh its reference details."
+                return ""
             candidate = group.narrator_candidate
-        references = len(group.reference_sha256s)
+            references = (
+                len(candidate.reference_sha256s) if candidate is not None else 0
+            )
+        else:
+            references = len(group.reference_sha256s)
         duration = (
             f", {candidate.reference_duration_seconds:.1f} s total"
             if candidate is not None
@@ -1992,7 +2013,7 @@ class OfflineAudioPreparationDialog(QDialog):
             else ""
         )
         return (
-            f"{references} reference recording{'s' if references != 1 else ''}{duration}. {explanation}"
+            f"{references} reference recording{'s' if references != 1 else ''}{duration}. {explanation}".rstrip()
             if references
             else explanation
         )
@@ -2084,7 +2105,32 @@ class OfflineAudioPreparationDialog(QDialog):
             )
         )
         ready = source_id is not None or not needs_narrator
-        changed = (
+        changed = self._voice_plan_needs_update()
+        if changed:
+            set_labeled_text(
+                self.change_summary,
+                (
+                    (
+                        "Voice changes",
+                        "Apply these changes to review character voices or start generation. Existing recordings stay unchanged.",
+                    ),
+                ),
+            )
+        else:
+            set_labeled_text(self.change_summary, self._changes_rows)
+        self.change_summary.setVisible(bool(self.change_summary.text()))
+        self.continue_button.setText(
+            "Apply voice changes" if changed else "Generate with these voices"
+        )
+        self.continue_button.setEnabled(ready)
+        self._update_voice_route_actions()
+        self.voice_confirmation_status.setText(
+            "Choose a narrator before generation." if not ready else ""
+        )
+
+    def _voice_plan_needs_update(self) -> bool:
+        source_id = self.narrator_choice.currentData()
+        return (
             source_id is not None
             and source_id
             != pregeneration_narrator_source_id(
@@ -2095,26 +2141,6 @@ class OfflineAudioPreparationDialog(QDialog):
             and self._voice_plan.synthesis_backend == "pocket-tts"
             and self._voice_plan.pocket_voice_cloning
             != self.settings.pocket_gated_model_accepted
-        )
-        if changed:
-            set_labeled_text(
-                self.change_summary,
-                (
-                    (
-                        "Voice changes",
-                        "Apply to future speech and preparation; existing recordings stay unchanged. Update routes before generating.",
-                    ),
-                ),
-            )
-        else:
-            set_labeled_text(self.change_summary, self._changes_rows)
-        self.change_summary.setVisible(bool(self.change_summary.text()))
-        self.continue_button.setText(
-            "Update voice routes" if changed else "Generate with these voices"
-        )
-        self.continue_button.setEnabled(ready)
-        self.voice_confirmation_status.setText(
-            "Choose a narrator before generation." if not ready else ""
         )
 
     def _play_narrator_reference(self) -> None:
@@ -2203,7 +2229,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.replanning_voice_decisions = False
             self._show_waiting_phase(
                 "Applying narrator voice",
-                "Updating the visible voice routes before generation...",
+                "Applying your voice choices before generation...",
                 "Cancel stops voice matching. Nothing has been generated yet.",
             )
             self.voice_runner.start(
@@ -4631,7 +4657,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self._fast_voice_choice_pending = True
             self._show_waiting_phase(
                 "Applying selected voice",
-                "Saving the selected voice route...",
+                "Applying the selected character voice...",
                 "The voice choice is saved. Reopen this story to continue if cancelled.",
             )
             self.voice_runner.start(
@@ -5282,16 +5308,9 @@ def _story_type_label(kind: str) -> str:
 def _voice_resolution_label(resolution: str) -> str:
     return {
         "ambiguous-voice-evidence": "Several plausible game voices; choose one to replace Narrator fallback",
-        "automatic-incidental-role": "Best available voice for this minor role",
         "automatic-narrator-fallback": "No usable character voice; using narrator",
-        "exact-source-voice-binding": "Exact game dialogue voice binding",
-        "known-character-voice": "Matching game character voice",
         "linked-reference-needs-preview": "Only a reference under another name is available; preview it before use",
-        "narrator-dialogue": "Narration",
-        "saved-narrator-assignment": "Saved narrator assignment",
-        "saved-player-decision": "Explicitly approved voice",
-        "saved-voice-assignment": "Saved character voice assignment",
-    }.get(resolution, str(resolution).replace("-", " ").capitalize())
+    }.get(resolution, "")
 
 
 def _story_index_was_replaced(error: Exception) -> bool:

@@ -1701,10 +1701,10 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             original_role = first_item.data(Qt.ItemDataRole.UserRole)
             first_item.setData(Qt.ItemDataRole.UserRole, "Narrator")
             dialog.voice_routes.setCurrentRow(0)
-            dialog._update_identity_actions()
+            dialog._update_voice_route_actions()
             self.assertFalse(dialog.link_identity.isEnabled())
             first_item.setData(Qt.ItemDataRole.UserRole, original_role)
-            dialog._update_identity_actions()
+            dialog._update_voice_route_actions()
             for row in range(dialog.voice_routes.count()):
                 item = dialog.voice_routes.item(row)
                 if item.data(Qt.ItemDataRole.UserRole) == "Aderyn":
@@ -1808,7 +1808,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             dialog._voice_plan = replace(
                 plan, person_link_suggestions=(suggestion, second)
             )
-            dialog._update_identity_actions()
+            dialog._update_voice_route_actions()
             with patch(
                 "vntts.pregeneration_ui.QInputDialog.getItem",
                 return_value=("", False),
@@ -1817,7 +1817,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             self.assertEqual(choose.call_args.args[3][0], "")
 
             dialog.voice_library.link_person("Rhiannon", "Gwyndolyn")
-            dialog._update_identity_actions()
+            dialog._update_voice_route_actions()
             with patch(
                 "vntts.pregeneration_ui.QInputDialog.getItem",
                 return_value=("", False),
@@ -1827,7 +1827,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             self.assertEqual(choose.call_args.args[3][0], "Rhiannon")
 
             dialog._job.story_index_sha256 = "stale"
-            dialog._update_identity_actions()
+            dialog._update_voice_route_actions()
             self.assertTrue(dialog.identity_suggestion.isHidden())
 
     def test_voice_plan_hides_icons_when_portrait_coverage_is_sparse(self):
@@ -1880,7 +1880,6 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 pool.tasks.clear()
                 dialog.preparing_inputs = False
                 dialog._show_voice_confirmation(plan)
-                dialog.narrator_choice.setCurrentIndex(1)
                 self.assertNotIn("Marius", dialog.narrator_status.text())
                 for row in range(dialog.voice_routes.count()):
                     if (

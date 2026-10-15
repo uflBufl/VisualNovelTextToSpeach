@@ -36,7 +36,12 @@ class VoicePlanOverviewTest(unittest.TestCase):
         self.root = Path(temporary.name)
         plan, group, _manifest = ambiguous_fixture(self.root / "fixture")
         self.group = group
-        self.plan = replace(plan, synthesis_backend="pocket-tts", groups=(group,))
+        self.plan = replace(
+            plan,
+            synthesis_backend="pocket-tts",
+            pocket_voice_cloning=True,
+            groups=(group,),
+        )
         self.library = VoiceLibrary(self.root / "library")
         self.library.select("Narrator", route="voice", source_id="preset:alba")
         self.dialog = OfflineAudioPreparationDialog(
@@ -80,6 +85,163 @@ class VoicePlanOverviewTest(unittest.TestCase):
             source_character=candidate.source_character,
             reference_sha256s=candidate.reference_sha256s,
             **changes,
+        )
+
+    def test_routine_routes_do_not_repeat_summary_or_assignment_explanation(self):
+        group = self.saved_group()
+        self.show_plan((group,))
+        self.assertTrue(self.dialog.voice_route_summary.isHidden())
+        details = self.dialog.voice_route_details.text()
+        self.assertIn(group.character, details)
+        self.assertIn("reference recording", details)
+        self.assertNotIn("Saved character voice assignment", details)
+        self.show_plan((replace(group, resolution="automatic-character-match"),))
+        self.assertNotIn(
+            "Automatic character match", self.dialog.voice_route_details.text()
+        )
+
+    def test_empty_filter_explains_hidden_characters_without_dead_actions(self):
+        group = replace(
+            self.saved_group(), character=self.group.candidates[0].source_character
+        )
+        self.show_plan((group,))
+        self.dialog.more_voice_actions_toggle.setChecked(True)
+        self.dialog.show_all_voice_routes.setChecked(True)
+        self.assertEqual(self.dialog.voice_routes.count(), 0)
+        self.assertFalse(self.dialog.voice_routes_empty.isHidden())
+        self.assertIn(
+            "Turn off Substitutions only", self.dialog.voice_routes_empty.text()
+        )
+        self.assertTrue(self.dialog.inspect_character_voice.isHidden())
+        self.assertTrue(self.dialog.more_voice_actions_toggle.isHidden())
+        self.assertTrue(self.dialog.more_voice_actions.isHidden())
+        self.dialog.show_all_voice_routes.setChecked(False)
+        self.assertEqual(self.dialog.voice_routes.count(), 1)
+        self.assertTrue(self.dialog.voice_routes_empty.isHidden())
+        self.assertFalse(self.dialog.inspect_character_voice.isHidden())
+        self.assertFalse(self.dialog.more_voice_actions.isHidden())
+
+    def test_narrator_only_plan_explains_absent_character_rows(self):
+        plan = replace(self.plan, groups=(replace(self.group, character="Narrator"),))
+        self.dialog._voice_plan = plan
+        self.dialog._show_voice_confirmation(plan)
+        self.assertEqual(self.dialog.voice_routes.count(), 0)
+        self.assertIn("No character voices", self.dialog.voice_routes_empty.text())
+        self.assertTrue(self.dialog.show_all_voice_routes.isHidden())
+        self.assertTrue(self.dialog.voice_route_summary.isHidden())
+        self.assertTrue(self.dialog.more_voice_actions_toggle.isHidden())
+
+    def test_narrator_reference_count_uses_the_narrator_not_previous_character(self):
+        candidate = replace(self.group.candidates[0], reference_duration_seconds=12.5)
+        self.library.select("Narrator", route="voice", source_id=candidate.source_id)
+        group = replace(
+            self.group,
+            route="narrator",
+            resolution="automatic-narrator-fallback",
+            reference_sha256s=("a" * 64,) * 3,
+            narrator_candidate=candidate,
+        )
+        self.show_plan((group,))
+        details = self.dialog.voice_route_details.text()
+        self.assertIn("1 reference recording, 12.5 s", details)
+        self.assertNotIn("3 reference", details)
+
+    def test_pending_voice_routes_block_stale_editing_and_reenable_after_revert(self):
+        group = self.saved_group()
+        self.library.link_person(group.character, "Another name")
+        self.show_plan(
+            (
+                group,
+                replace(
+                    group, group_id="other", character="Other", routing_role="Other"
+                ),
+            )
+        )
+        self.dialog.voice_panel.start = Mock()
+        self.dialog.game_narrator_chooser = Mock()
+        for control in ("narrator", "cloning"):
+            with self.subTest(control=control):
+                if control == "narrator":
+                    self.dialog.narrator_choice.setCurrentIndex(
+                        self.dialog.narrator_choice.findData("preset:marius")
+                    )
+                else:
+                    self.dialog.pocket_voice_cloning.setChecked(False)
+                self.assertEqual(
+                    self.dialog.continue_button.text(), "Apply voice changes"
+                )
+                self.assertIn(
+                    "review character voices", self.dialog.change_summary.text()
+                )
+                self.dialog.voice_routes.setCurrentRow(1)
+                self.dialog.voice_routes.setCurrentRow(0)
+                self.dialog.show_all_voice_routes.setChecked(True)
+                self.dialog.show_all_voice_routes.setChecked(False)
+                self.dialog.voice_routes.setCurrentRow(
+                    next(
+                        row
+                        for row in range(self.dialog.voice_routes.count())
+                        if self.dialog.voice_routes.item(row).data(
+                            Qt.ItemDataRole.UserRole
+                        )
+                        == group.character
+                    )
+                )
+                for action in (
+                    self.dialog.inspect_character_voice,
+                    self.dialog.choose_character_voice,
+                    self.dialog.link_identity,
+                    self.dialog.unlink_identity,
+                ):
+                    self.assertFalse(action.isEnabled())
+                aliases = self.library.person_aliases()
+                with patch("vntts.pregeneration_ui.QInputDialog.getItem") as picker:
+                    self.dialog._inspect_character_voice()
+                    self.dialog.voice_routes.itemDoubleClicked.emit(
+                        self.dialog.voice_routes.currentItem()
+                    )
+                    self.dialog._choose_character_voice()
+                    self.dialog._link_selected_person()
+                    self.dialog._unlink_selected_person()
+                    picker.assert_not_called()
+                self.assertEqual(self.library.person_aliases(), aliases)
+                self.dialog.voice_panel.start.assert_not_called()
+                self.dialog.game_narrator_chooser.assert_not_called()
+                if control == "narrator":
+                    self.dialog.narrator_choice.setCurrentIndex(
+                        self.dialog.narrator_choice.findData("preset:alba")
+                    )
+                else:
+                    self.dialog.pocket_voice_cloning.setChecked(True)
+                self.assertEqual(
+                    self.dialog.continue_button.text(), "Generate with these voices"
+                )
+                self.assertTrue(self.dialog.inspect_character_voice.isEnabled())
+                self.assertTrue(self.dialog.choose_character_voice.isEnabled())
+                self.assertTrue(self.dialog.unlink_identity.isEnabled())
+
+    def test_unavailable_inspection_keeps_the_character_editor_available(self):
+        group = replace(
+            self.saved_group(),
+            candidate_inventory=(),
+            candidates=(),
+            narrator_candidate=None,
+        )
+        self.show_plan((group,))
+        self.dialog.game_narrator_chooser = Mock(return_value=None)
+        self.dialog._inspect_character_voice()
+        self.assertFalse(self.dialog.auditioning_voices)
+        self.assertTrue(self.dialog._awaiting_voice_confirmation)
+        message = self.dialog.voice_confirmation_status.text()
+        self.assertIn(group.character, message)
+        self.assertIn("More actions > Edit role in Voices", message)
+        self.assertTrue(self.dialog.continue_button.isEnabled())
+        self.dialog.more_voice_actions_toggle.click()
+        self.assertFalse(self.dialog.more_voice_actions.isHidden())
+        self.assertTrue(self.dialog.choose_character_voice.isEnabled())
+        self.dialog.choose_character_voice.click()
+        self.dialog.game_narrator_chooser.assert_called_once_with(
+            self.dialog.settings, self.dialog, character=group.character
         )
 
     def test_choice_uses_saved_binding_provenance(self):
@@ -358,10 +520,10 @@ class VoicePlanOverviewTest(unittest.TestCase):
         details = self.dialog.voice_routes.item(0).data(
             int(Qt.ItemDataRole.UserRole) + 3
         )
-        self.assertIn("update", details.casefold())
-        self.assertIn("route", details.casefold())
+        self.assertEqual(details, group.character)
+        self.assertIn("Apply these changes", self.dialog.change_summary.text())
         self.assertNotIn("3 reference", details)
-        self.assertEqual(self.dialog.continue_button.text(), "Update voice routes")
+        self.assertEqual(self.dialog.continue_button.text(), "Apply voice changes")
 
     def test_review_is_optional_and_names_current_narrator(self):
         self.show_plan()

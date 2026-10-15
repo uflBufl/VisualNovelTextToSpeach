@@ -588,8 +588,8 @@ Planned implementation order after approval:
       in other stories, the correct voice in audition, no assignment selector and
       reachable clear/unlink actions. Existing prepared audio must stay unchanged.
       Change to an imported
-      narrator before Update and listen; require the current narrator's original
-      recording. Retain native screenshots and a screen-reader/audio trace.
+      narrator and listen before Apply voice changes; require the current narrator's
+      original recording. Apply the changes before opening character audition. Retain native screenshots and a screen-reader/audio trace.
 - [ ] Diagnose the Windows Mrs. Owen original-reference silence. Record the
       selected reference checksum and authoring playback queued/started/finished/
       failed states in support bundles without recording audio or dialogue. The

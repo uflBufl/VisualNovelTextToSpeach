@@ -81,6 +81,7 @@ def _voice_overview_story(
     assert plan is not None
     first = plan.groups[0]
     if state.startswith("many"):
+        speech_lines = _catalog_selected_speech_lines(dialog)
         groups = tuple(
             replace(
                 first,
@@ -88,11 +89,11 @@ def _voice_overview_story(
                 character=f"Northern Library Keeper {index + 1}"
                 if index % 4 == 0
                 else f"Traveler {index + 1}",
-                routing_role=f"Traveler {index + 1}",
+                routing_role=None,
                 source_character="The Knight of the Northern Guard"
                 if index % 3 == 0
                 else "Centurion",
-                line_ids=first.line_ids[:1],
+                line_ids=speech_lines[index::24],
                 resolution="saved-player-decision" if index % 2 else first.resolution,
             )
             for index in range(24)
@@ -147,21 +148,68 @@ def _voice_overview_story(
     return dialog
 
 
+def _catalog_selected_speech_lines(
+    dialog: OfflineAudioPreparationDialog,
+) -> tuple[str, ...]:
+    job = dialog._job
+    assert job is not None
+    return tuple(
+        line_id
+        for content in dialog._content
+        for selection in content.selections
+        if selection.selection_id in job.selected_story_ids
+        for line_id in selection.line_ids[selection.original_audio_lines :]
+    )
+
+
+def _narrator_only_overview_story(
+    dialog: OfflineAudioPreparationDialog,
+) -> OfflineAudioPreparationDialog:
+    plan = dialog._voice_plan
+    assert plan is not None
+    dialog._voice_plan = replace(
+        plan,
+        groups=(
+            replace(
+                plan.groups[0],
+                character="Narrator",
+                routing_role="Narrator",
+                route="narrator",
+                source_id="preset:alba",
+                source_character=None,
+                line_ids=_catalog_selected_speech_lines(dialog),
+                reference_sha256s=(),
+                resolution="narrator-dialogue",
+            ),
+        ),
+    )
+    return _voice_overview_story(dialog, "narrator-only")
+
+
+def _voice_overview_inspection_error(
+    dialog: OfflineAudioPreparationDialog,
+) -> OfflineAudioPreparationDialog:
+    plan = dialog._voice_plan
+    assert plan is not None
+    unavailable = replace(
+        plan.groups[0], candidate_inventory=(), candidates=(), narrator_candidate=None
+    )
+    dialog._voice_plan = replace(plan, groups=(unavailable, *plan.groups[1:]))
+    dialog._show_voice_confirmation(dialog._voice_plan)
+    dialog._inspect_character_voice()
+    return dialog
+
+
 def _shared_character_overview_story(
     dialog: OfflineAudioPreparationDialog, state: str
 ) -> OfflineAudioPreparationDialog:
     plan = dialog._voice_plan
     assert plan is not None
     first = plan.groups[0]
-    job = dialog._job
-    assert job is not None
     other_lines = {line_id for group in plan.groups[1:] for line_id in group.line_ids}
     shared_lines = tuple(
         line_id
-        for content in dialog._content
-        for selection in content.selections
-        if selection.selection_id in job.selected_story_ids
-        for line_id in selection.line_ids[selection.original_audio_lines :]
+        for line_id in _catalog_selected_speech_lines(dialog)
         if line_id not in other_lines
     )
     dialog.voice_library.select(
@@ -2513,6 +2561,12 @@ def _render_stories(
         ),
         "offline-preparation.voice-confirmation-compact-last-route": lambda: (
             offline_preparation("confirmation-compact-last-route")
+        ),
+        "offline-preparation.voice-overview-narrator-only": lambda: (
+            _narrator_only_overview_story(offline_preparation("confirmation"))
+        ),
+        "offline-preparation.voice-overview-inspection-error": lambda: (
+            _voice_overview_inspection_error(offline_preparation("confirmation"))
         ),
         "offline-preparation.voice-overview-details": lambda: _voice_overview_story(
             offline_preparation("confirmation"), "details"

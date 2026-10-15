@@ -1133,7 +1133,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertNotIn("character:centurion", choices)
             self.assertIn("preset:alba", choices)
             dialog.pocket_voice_cloning.setChecked(True)
-            self.assertEqual(dialog.continue_button.text(), "Update voice routes")
+            self.assertEqual(dialog.continue_button.text(), "Apply voice changes")
             choices = {
                 dialog.narrator_choice.itemData(index)
                 for index in range(dialog.narrator_choice.count())
