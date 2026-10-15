@@ -2010,6 +2010,71 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(second.job_store.story_statuses(other), {})
             second.close()
 
+    def test_continue_shows_selection_save_failure_and_allows_retry(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            store = PregenerationJobStore(root / "jobs")
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=store,
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.show()
+            dialog.select_all_button.click()
+            self.assertTrue(dialog.continue_button.isEnabled())
+            with patch.object(
+                store, "save_selection", side_effect=OSError("Disk is full")
+            ):
+                dialog.continue_button.click()
+            self.application.processEvents()
+            self.assertIsNone(dialog.job())
+            self.assertTrue(dialog.selection_status.isVisibleTo(dialog))
+            self.assertIn("Disk is full", dialog.selection_status.text())
+            dialog.continue_button.click()
+            self.assertIsNotNone(dialog.job())
+            self.assertFalse(dialog.selection_status.isVisibleTo(dialog))
+            dialog.voice_runner.cancel()
+            dialog.planning_voices = False
+            dialog.close()
+
+    def test_voice_confirmation_failure_is_visible_with_retry_action(self):
+        with TemporaryDirectory() as directory:
+            content = inspect_story_index(
+                write_story_index(Path(directory) / "content")
+            )
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(), discovery=lambda: ContentDiscovery((content,))
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.select_all_button.click()
+            dialog.planning_voices = True
+            dialog._show_waiting_phase(
+                "Matching voices", "Please wait", "Nothing has been generated."
+            )
+            dialog.planning_voices = False
+            dialog.show()
+            with patch.object(
+                dialog,
+                "_voice_choices",
+                side_effect=OSError("Voice data could not be read"),
+            ):
+                dialog._show_voice_confirmation(empty_voice_plan())
+            self.application.processEvents()
+            self.assertTrue(dialog.selection_status.isVisibleTo(dialog))
+            self.assertIn(
+                "Voice data could not be read", dialog.selection_status.text()
+            )
+            self.assertEqual(dialog.continue_button.text(), "Retry voice matching")
+            self.assertTrue(dialog.continue_button.isVisibleTo(dialog))
+            self.assertTrue(dialog.continue_button.isEnabled())
+            self.assertFalse(dialog.progress_panel.isVisibleTo(dialog))
+            self.assertFalse(dialog.content_scroll.isVisibleTo(dialog))
+            dialog.close()
+
     def test_selection_save_failure_keeps_previous_draft_and_allows_retry(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -2030,6 +2095,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 dialog._continue_requested()
                 self.assertIsNone(dialog.job())
                 self.assertIn("Unable to save", dialog.selection_status.text())
+                self.assertTrue(dialog.selection_status.isVisibleTo(dialog))
                 with patch(
                     "vntts.pregeneration_ui.QMessageBox.question",
                     return_value=QMessageBox.StandardButton.Cancel,
@@ -2289,6 +2355,134 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 "all remaining lines are playable from the current line",
                 dialog.progress_story_readiness.topLevelItem(0).toolTip(1),
             )
+
+    def test_progress_groups_chapters_and_retains_expansion_focus_and_totals(self):
+        with TemporaryDirectory() as directory:
+            content, dialog = self._nested_stage_dialog(Path(directory))
+            selected = tuple(chapter.selection_id for chapter in content.selections)
+            first, second = content.selections
+            dialog._job = dialog.job_store.create_or_resume(content, selected)
+            dialog._generation_input = SimpleNamespace(ready_items=3)
+            dialog.generating = True
+            dialog._show_phase(
+                "Generating offline audio", "", "Finished lines are saved."
+            )
+            dialog._progress_snapshot = OfflineGenerationProgress(
+                ready_line_ids=(first.line_ids[0], second.line_ids[0])
+            )
+            dialog._render_progress_story_readiness()
+            tree = dialog.progress_story_readiness
+            self.assertEqual(tree.topLevelItemCount(), 1)
+            parent = tree.topLevelItem(0)
+            self.assertEqual(parent.text(0), "A Story")
+            self.assertEqual(parent.text(1), "2/3")
+            self.assertEqual(parent.text(2), "1 from selected start")
+            self.assertEqual(parent.childCount(), 2)
+            self.assertEqual(parent.child(0).text(0), "Episode 1")
+            self.assertEqual(parent.child(0).text(1), "1/2")
+            self.assertEqual(parent.child(1).text(1), "1/1")
+            self.assertFalse(parent.isExpanded())
+            self.assertIn("1 selected story", dialog.progress_scope.text())
+            self.assertIn("2 selected chapters", dialog.progress_scope.text())
+            dialog.show()
+            tree.setFocus()
+            tree.setCurrentItem(parent)
+            QTest.keyClick(tree, Qt.Key.Key_Right)
+            self.assertTrue(parent.isExpanded())
+            child = parent.child(1)
+            tree.setCurrentItem(child)
+            dialog._progress_snapshot = OfflineGenerationProgress(
+                ready_line_ids=first.line_ids
+            )
+            dialog._render_progress_story_readiness()
+            self.assertIs(tree.topLevelItem(0), parent)
+            self.assertIs(tree.currentItem(), child)
+            self.assertTrue(parent.isExpanded())
+            self.assertEqual(parent.text(2), "2 from selected start")
+            dialog._progress_snapshot = OfflineGenerationProgress(
+                ready_line_ids=second.line_ids
+            )
+            dialog.readingLineObserved.emit(second.line_ids[0], "unused")
+            self.application.processEvents()
+            self.assertEqual(parent.text(2), "1 from current line")
+            parent.setExpanded(False)
+            dialog._render_completed_story_readiness(live=0)
+            self.assertIs(tree.topLevelItem(0), parent)
+            self.assertFalse(parent.isExpanded())
+            self.assertEqual(parent.text(1), "3/3")
+            self.assertEqual(parent.text(2), "All selected lines")
+            self.assertEqual(parent.child(0).text(1), "2/2")
+            dialog.generating = False
+            dialog.close()
+
+    def test_generation_error_keeps_one_progress_view_and_an_explicit_settings_action(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                generator=Mock(),
+                thread_pool=ManualThreadPool(),
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.select_all_button.click()
+            dialog._job = dialog.job_store.create_or_resume(
+                content, dialog.selected_story_ids()
+            )
+            dialog._generation_input = Mock(ready_items=3)
+            dialog.generating = True
+            dialog._start_generation_progress()
+            dialog.progress_timer.stop()
+            dialog.resize(620, 440)
+            dialog.show()
+            dialog._generation_finished(None, OSError("Disk is full"))
+            self.application.processEvents()
+            self.assertFalse(dialog.selection_panel.isVisibleTo(dialog))
+            self.assertTrue(dialog.progress_panel.isVisibleTo(dialog))
+            self.assertTrue(dialog.resume_status.isVisibleTo(dialog))
+            self.assertIn("Disk is full", dialog.resume_status.text())
+            self.assertTrue(
+                dialog.content_scroll.viewport()
+                .rect()
+                .contains(
+                    dialog.resume_status.mapTo(
+                        dialog.content_scroll.viewport(),
+                        dialog.resume_status.rect().bottomRight(),
+                    )
+                )
+            )
+            self.assertTrue(dialog.copy_resume_error.isVisibleTo(dialog))
+            self.assertTrue(dialog.progress_change_selection.isVisibleTo(dialog))
+            self.assertEqual(dialog.continue_button.text(), "Continue preparation")
+            saved_job = dialog.job().job_id
+            dialog.progress_change_selection.click()
+            self.assertTrue(dialog.selection_panel.isVisibleTo(dialog))
+            self.assertFalse(dialog.progress_panel.isVisibleTo(dialog))
+            self.assertIsNone(dialog.generation_input())
+            self.assertEqual(dialog.job().job_id, saved_job)
+            self.assertTrue(dialog.job_store.path_for(saved_job).exists())
+            dialog.close()
+
+    def test_progress_story_totals_include_only_selected_chapters(self):
+        with TemporaryDirectory() as directory:
+            content, dialog = self._nested_stage_dialog(Path(directory))
+            second = content.selections[1]
+            dialog._job = dialog.job_store.create_or_resume(
+                content, (second.selection_id,)
+            )
+            dialog._progress_snapshot = OfflineGenerationProgress(
+                ready_line_ids=second.line_ids
+            )
+            dialog._render_progress_story_readiness()
+            parent = dialog.progress_story_readiness.topLevelItem(0)
+            self.assertEqual(parent.text(1), "1/1")
+            self.assertEqual(parent.childCount(), 1)
+            self.assertEqual(parent.child(0).text(0), "Episode 2")
+            self.assertIn("only the selected chapters", parent.toolTip(1))
 
     def test_scoped_regeneration_keeps_story_scope_and_reuses_voice_decisions(self):
         with TemporaryDirectory() as directory:

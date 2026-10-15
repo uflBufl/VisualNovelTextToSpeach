@@ -965,6 +965,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 settings,
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=PregenerationJobStore(root / "jobs"),
+                generator=Mock(),
+                thread_pool=ManualThreadPool(),
             )
             dialog.engine_choice.setCurrentIndex(
                 dialog.engine_choice.findData("moss-tts")
@@ -976,9 +978,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertIn("Stories:", plain_label_text(dialog.story_context))
             dialog._set_import_controls(False)
             dialog.selection_panel.hide()
-            dialog._show_waiting_phase(
-                "Generating", "Please wait", "Saved work is retained"
-            )
+            dialog._generation_input = Mock(ready_items=2)
+            dialog.generating = True
+            dialog._start_generation_progress()
+            dialog.progress_timer.stop()
             dialog.show()
             self.application.processEvents()
             self.assertFalse(dialog.progress_configuration.isVisibleTo(dialog))
@@ -999,6 +1002,21 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 "Model: selected-model.gguf", self.application.clipboard().text()
             )
             self.assertIn(str(content.story_index), self.application.clipboard().text())
+            self._voice_library.select(
+                "Narrator", route="voice", source_id="preset:marius"
+            )
+            dialog.copy_progress_configuration.click()
+            self.assertIn("Centurion", self.application.clipboard().text())
+            self.assertNotIn("Marius", self.application.clipboard().text())
+            dialog._show_waiting_phase(
+                "Saving offline audio", "Saving the pack", "Finished lines are saved."
+            )
+            self.assertIn("Centurion", plain_label_text(dialog.progress_configuration))
+            dialog.copy_progress_configuration.click()
+            self.assertIn("Centurion", self.application.clipboard().text())
+            self.assertNotIn("Marius", self.application.clipboard().text())
+            dialog.generating = False
+            dialog._stop_generation_progress()
             dialog.reject()
             dialog.deleteLater()
 
