@@ -295,6 +295,11 @@ wheels = [
 ]
 
 [[package]]
+name = "durable-file"
+version = "0.1.0"
+source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=durable-file-v0.1.0#3557679180502da3bf2695dd2646224ef012c6b6" }
+
+[[package]]
 name = "einops"
 version = "0.8.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1859,6 +1864,19 @@ wheels = [
 ]
 
 [[package]]
+name = "vntts-artifacts"
+version = "0.7.2"
+source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=dd0459df41d596d649a5a3e33fb03f93024d5af9#dd0459df41d596d649a5a3e33fb03f93024d5af9" }
+dependencies = [
+    { name = "durable-file" },
+]
+
+[package.optional-dependencies]
+audio = [
+    { name = "numpy" },
+]
+
+[[package]]
 name = "vntts-moss-soundeffect-v2-runtime"
 version = "0.1.0"
 source = { virtual = "." }
@@ -1868,6 +1886,7 @@ dependencies = [
     { name = "torchaudio", version = "2.9.1+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform == 'linux'" },
     { name = "torchcodec", marker = "sys_platform == 'linux'" },
     { name = "torchvision", marker = "sys_platform == 'linux'" },
+    { name = "vntts-artifacts", extra = ["audio"] },
 ]
 
 [package.metadata]
@@ -1877,6 +1896,7 @@ requires-dist = [
     { name = "torchaudio", marker = "sys_platform == 'linux'", specifier = "==2.9.1+cu128", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchcodec", marker = "sys_platform == 'linux'", specifier = "==0.9.1", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchvision", marker = "sys_platform == 'linux'", specifier = "==0.24.1+cu128", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "vntts-artifacts", extras = ["audio"], git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=dd0459df41d596d649a5a3e33fb03f93024d5af9" },
 ]
 
 [[package]]

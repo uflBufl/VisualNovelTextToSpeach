@@ -239,7 +239,10 @@ class RuntimePathsTest(unittest.TestCase):
             tesseract.write_bytes(b"executable")
             language_data.write_bytes(b"language")
 
-            with patch.object(pytesseract.pytesseract, "tesseract_cmd", "tesseract"):
+            with (
+                patch.object(pytesseract.pytesseract, "tesseract_cmd", "tesseract"),
+                patch.dict(os.environ, {}),
+            ):
                 configured = configure_bundled_dependencies(bundle_root)
 
                 self.assertEqual(configured, tesseract)

@@ -180,6 +180,29 @@ class RuntimeSmokeTest(unittest.TestCase):
         self.assertEqual(upload["if"], "always()")
         self.assertEqual(upload["with"]["path"], "runtime-smoke.json")
 
+    def test_dependency_audit_cannot_skip_quality_checks_or_hide_failures(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        )
+        quality = workflow["jobs"]["quality"]
+        audit = workflow["jobs"]["dependency-audit"]
+        self.assertNotIn("needs", quality)
+        self.assertNotIn("continue-on-error", audit)
+        audit_steps = [
+            step
+            for step in audit["steps"]
+            if "scripts/dependency_audit.py" in step.get("run", "")
+        ]
+        self.assertEqual(len(audit_steps), 1)
+        self.assertNotIn("continue-on-error", audit_steps[0])
+        self.assertNotIn("if", audit_steps[0])
+        self.assertFalse(
+            any(
+                "scripts/dependency_audit.py" in step.get("run", "")
+                for step in quality["steps"]
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

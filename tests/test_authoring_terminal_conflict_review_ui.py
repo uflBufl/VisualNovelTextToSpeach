@@ -84,12 +84,16 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
         # QApplication.exec/exit owns process lifetime; keep it out of the
         # application's shared Qt test instance used by later modal dialogs.
         child_key = "VNTTS_TERMINAL_CONFLICT_CLI_TEST"
-        if os.environ.get(child_key) == self.id():
+        test_id = (
+            f"tests.{Path(__file__).stem}."
+            f"{type(self).__qualname__}.{self._testMethodName}"
+        )
+        if os.environ.get(child_key) == test_id:
             return False
         completed = subprocess.run(
-            [sys.executable, "-m", "unittest", self.id()],
+            [sys.executable, "-m", "unittest", test_id],
             cwd=Path(__file__).resolve().parents[1],
-            env={**os.environ, "QT_QPA_PLATFORM": "offscreen", child_key: self.id()},
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen", child_key: test_id},
             capture_output=True,
             text=True,
             timeout=30,

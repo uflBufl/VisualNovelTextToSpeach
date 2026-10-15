@@ -382,20 +382,30 @@ class ProcessInspectionTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             output = Path(directory)
             lease_path = output / ".generation-lease.json"
-            payload = b'{"value":' + b"[" * 100000 + b"0" + b"]" * 100000 + b"}"
+            payload = b'{"value": [0]}'
             lease_path.write_bytes(payload)
+            guard = lease_path.with_suffix(".guard")
+            guard.touch()
             process_checker = Mock(return_value=False)
             lease = GenerationLease(output, "1" * 64, process_checker=process_checker)
-            with self.assertRaisesRegex(
-                BulkGenerationError, "Unable to read generation lease .*nesting"
-            ) as caught:
+            decoder_error = RecursionError("native parser limit")
+            with (
+                patch(
+                    "vntts.json_types.json.loads", side_effect=decoder_error
+                ) as decode,
+                self.assertRaisesRegex(
+                    BulkGenerationError, "Unable to read generation lease .*nesting"
+                ) as caught,
+            ):
                 lease.__enter__()
+            decode.assert_called_once_with(payload.decode("utf-8"))
             cause = caught.exception.__cause__
             self.assertIsInstance(cause, json.JSONDecodeError)
-            self.assertIsInstance(cause.__cause__, RecursionError)
+            self.assertIs(cause.__cause__, decoder_error)
             process_checker.assert_not_called()
             self.assertIsNone(lease.document)
             self.assertEqual(lease_path.read_bytes(), payload)
+            self.assertEqual(set(output.iterdir()), {lease_path, guard})
 
     def test_generation_lease_schema_version_requires_exact_integer(self):
         with TemporaryDirectory() as directory:

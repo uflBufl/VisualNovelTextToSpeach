@@ -9,6 +9,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dependency-audit:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Audit locked dependencies
+        run: python scripts/dependency_audit.py
+
   speech-runtime-smoke:
     name: Runtime ${{ matrix.backend }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -73,9 +86,6 @@ jobs:
 
       - name: Check runtime locks and binary wheels
         run: python scripts/dependency_report.py
-
-      - name: Audit locked dependencies
-        run: python scripts/dependency_audit.py
 
       - name: Install native dependencies
         run: brew install tesseract espeak-ng

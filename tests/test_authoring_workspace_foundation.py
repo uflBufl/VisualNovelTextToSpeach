@@ -3,6 +3,7 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from vntts.authoring.workspace_foundation import (
     contained_path,
@@ -133,19 +134,24 @@ class AuthoringWorkspaceFoundationTest(unittest.TestCase):
     def test_deep_json_uses_domain_errors_without_changing_snapshots(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "document.json"
-            payload = b'{"value":' + b"[" * 100000 + b"0" + b"]" * 100000 + b"}"
+            payload = b'{"value": [0]}'
             path.write_bytes(payload)
             for reader in (load_json_object, load_json_object_snapshot):
+                decoder_error = RecursionError("native parser limit")
                 with (
                     self.subTest(reader=reader.__name__),
+                    patch(
+                        "vntts.json_types.json.loads", side_effect=decoder_error
+                    ) as decode,
                     self.assertRaisesRegex(
                         FoundationError, "^Unable to read document .*nesting"
                     ) as caught,
                 ):
                     reader(path, "document", error_type=FoundationError)
+                decode.assert_called_once_with(payload.decode("utf-8"))
                 cause = caught.exception.__cause__
                 self.assertIsInstance(cause, json.JSONDecodeError)
-                self.assertIsInstance(cause.__cause__, RecursionError)
+                self.assertIs(cause.__cause__, decoder_error)
                 self.assertEqual(path.read_bytes(), payload)
 
     def test_generation_wav_copy_is_checksum_and_collision_bound(self):

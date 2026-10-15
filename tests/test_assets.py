@@ -237,10 +237,15 @@ class ModelAssetManagerTest(unittest.TestCase):
     def test_deep_optional_json_returns_default_without_rewriting(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "cache.json"
-            payload = b"[" * 100000 + b"0" + b"]" * 100000
+            payload = b"[0]"
             path.write_bytes(payload)
             default = object()
-            self.assertIs(assets.read_json(path, default), default)
+            with patch(
+                "vntts.json_types.json.loads",
+                side_effect=RecursionError("native parser limit"),
+            ) as decode:
+                self.assertIs(assets.read_json(path, default), default)
+            decode.assert_called_once_with(payload)
             self.assertEqual(path.read_bytes(), payload)
 
     def test_checksum_manifest_rejects_model_url_without_filename(self):
