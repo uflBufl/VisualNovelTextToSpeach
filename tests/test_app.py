@@ -1103,7 +1103,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray._begin_controller_lifecycle()
             preparation.cancel_button.click()
             self.assertTrue(preparation.voice_cancel_event.is_set())
-            self.assertIn("Cancelling generation", preparation.resume_status.text())
+            self.assertIn("Cancelling generation", preparation.progress_phase.text())
             tray.set_status("Reading is loading")
             self.assertFalse(preparation.cancel_button.isEnabled())
         finally:

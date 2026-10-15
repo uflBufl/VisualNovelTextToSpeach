@@ -2315,7 +2315,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("Failed: 1", updates[-1])
             self.assertEqual(dialog.progress_story_readiness.topLevelItemCount(), 2)
             self.assertEqual(
-                dialog.progress_story_readiness.topLevelItem(0).text(1), "Preparing"
+                dialog.progress_story_readiness.topLevelItem(0).text(1), "-"
             )
             dialog._voice_plan_finished(
                 None, ValueError("No character references. Import the game again.")
@@ -2355,6 +2355,24 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 "all remaining lines are playable from the current line",
                 dialog.progress_story_readiness.topLevelItem(0).toolTip(1),
             )
+
+    def test_unreported_readiness_uses_placeholders_for_stories_and_chapters(self):
+        with TemporaryDirectory() as directory:
+            content, dialog = self._nested_stage_dialog(Path(directory))
+            dialog._job = dialog.job_store.create_or_resume(
+                content, tuple(chapter.selection_id for chapter in content.selections)
+            )
+            dialog.generating = True
+            dialog._show_phase(
+                "Generating offline audio", "", "Finished lines are saved."
+            )
+            parent = dialog.progress_story_readiness.topLevelItem(0)
+            self.assertEqual(parent.text(1), "-")
+            self.assertEqual(parent.child(0).text(1), "-")
+            self.assertEqual(parent.child(0).text(2), "")
+            self.assertIn("not been reported", parent.toolTip(1))
+            dialog.generating = False
+            dialog.close()
 
     def test_progress_groups_chapters_and_retains_expansion_focus_and_totals(self):
         with TemporaryDirectory() as directory:
@@ -3006,9 +3024,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             dialog._start_generation_progress()
             generator.inspect_progress.assert_not_called()
-            self.assertIn(
-                "Loading saved progress", plain_label_text(dialog.progress_counts)
-            )
+            self.assertFalse(dialog.progress_counts.isVisibleTo(dialog))
+            self.assertFalse(dialog.progress_counts.text())
+            self.assertIn("Waiting for progress", dialog.progress_timing.text())
             self.assertEqual(dialog.progress_bar.maximum(), 0)
             dialog._poll_generation_progress()
             self.assertEqual(len(pool.tasks), 1)
@@ -3036,8 +3054,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("confirm CPU/GPU", dialog.progress_runtime.text())
             self.assertIn("Prepared: 2", plain_label_text(dialog.progress_counts))
             self.assertIn("Failed: 1", plain_label_text(dialog.progress_counts))
-            self.assertFalse(dialog.progress_failures.text())
-            self.assertFalse(dialog.progress_failures.isVisible())
             self.assertIn(
                 "only unfinished lines", dialog.progress_cancel_consequence.text()
             )
@@ -3145,13 +3161,138 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._cancel_or_reject()
             dialog.show()
             self.application.processEvents()
-            self.assertTrue(dialog.resume_status.isVisibleTo(dialog))
-            self.assertIn("Cancelling generation", dialog.resume_status.text())
+            self.assertFalse(dialog.resume_status.isVisibleTo(dialog))
+            self.assertIn("Cancelling generation", dialog.progress_phase.text())
+            self.assertEqual(dialog.progress_bar.maximum(), 0)
             self.assertFalse(dialog.cancel_button.isEnabled())
             self.assertNotIn("RTX test", dialog._full_generation_details())
             dialog.generating = False
             dialog._close_after_voice_cancel = False
             dialog.close()
+
+    def test_recovery_does_not_show_generation_completion_as_its_progress(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(), discovery=lambda: ContentDiscovery(()), thread_pool=pool
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog._generation_input = Mock(ready_items=3)
+            dialog.generating = True
+            result = OfflineGenerationResult(
+                root / "output", root / "state.json", root / "manifest.json", 2, 1, 0
+            )
+            dialog._generation_finished(result, None)
+            self.assertEqual(dialog.progress_phase.text(), "Recovering failed lines")
+            self.assertEqual(dialog.progress_bar.maximum(), 0)
+            self.assertFalse(dialog.progress_counts.text())
+
+            dialog._progress_finished(
+                OfflineGenerationProgress(generated=2, failed=1), None
+            )
+
+            self.assertEqual(dialog.progress_bar.maximum(), 0)
+            self.assertEqual(dialog.progress_bar.format(), "")
+            self.assertIn("Failed: 1", dialog.progress_counts.text())
+            dialog.recovering = False
+            dialog.close()
+
+    def test_final_save_replaces_generation_progress_and_explains_retry(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            publisher = Mock()
+            publisher.publish.side_effect = OSError("Disk is full")
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=pool,
+                publisher=publisher,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.select_all_button.click()
+            dialog._job = dialog.job_store.create_or_resume(
+                content, dialog.selected_story_ids()
+            )
+            dialog._generation_input = Mock(ready_items=3)
+            dialog._generation_configuration = dialog._narrator_configuration_values()
+            dialog._progress_snapshot = OfflineGenerationProgress(
+                generated=3, ready_line_ids=("reverse1999:1",)
+            )
+            dialog._render_generation_progress(dialog._progress_snapshot)
+            dialog._set_progress_timing(
+                "Generation processed; final checks may still be needed."
+            )
+            result = OfflineGenerationResult(
+                root / "output", root / "state.json", root / "manifest.json", 3, 0, 0
+            )
+            dialog.show()
+
+            dialog._start_publication(result)
+
+            self.assertEqual(dialog.progress_phase.text(), "Saving offline pack")
+            self.assertEqual(dialog.progress_bar.maximum(), 0)
+            self.assertTrue(dialog.progress_bar.isVisibleTo(dialog))
+            for label in (
+                dialog.progress_counts,
+                dialog.progress_timing,
+            ):
+                self.assertFalse(label.isVisibleTo(dialog))
+                self.assertFalse(label.text())
+            self.assertTrue(dialog.play_ready_button.isEnabled())
+            self.assertIn("1/", dialog.progress_story_readiness.topLevelItem(0).text(1))
+            self.run_next_task(pool)
+
+            self.assertEqual(dialog.progress_phase.text(), "Final save paused")
+            self.assertFalse(dialog.progress_bar.isVisibleTo(dialog))
+            self.assertIn("Disk is full", dialog.resume_status.text())
+            self.assertIn(
+                "retry the final save", dialog.progress_cancel_consequence.text()
+            )
+            self.assertNotIn("Cancel stops", dialog.progress_cancel_consequence.text())
+            self.assertEqual(dialog.cancel_button.text(), "Close")
+            self.assertEqual(dialog.continue_button.text(), "Continue preparation")
+            self.assertTrue(dialog.continue_button.isEnabled())
+            self.assertTrue(dialog.play_ready_button.isEnabled())
+            dialog.close()
+
+    def test_deferred_activation_describes_the_available_action(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                automatic_activation=True,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.select_all_button.click()
+            dialog._job = dialog.job_store.create_or_resume(
+                content, dialog.selected_story_ids()
+            )
+            dialog._pack_result = Mock(spec=OfflinePackResult)
+            dialog._show_final_handoff(
+                original=1, approved=2, live_fallbacks=0, story_lines=3, omissions=0
+            )
+            dialog.defer_activation("Reading settings changed during preparation.")
+            dialog.show()
+            self.application.processEvents()
+
+            self.assertIn("Reading settings changed", dialog.resume_status.text())
+            self.assertIn("replace live voice overrides", dialog.resume_status.text())
+            self.assertNotIn(
+                "Review the saved voice setup", dialog.resume_status.text()
+            )
+            self.assertTrue(dialog.continue_button.isVisibleTo(dialog))
+            self.assertEqual(dialog.continue_button.text(), "Use prepared audio")
+            self.assertFalse(dialog.selection_panel.isVisibleTo(dialog))
+            self.assertFalse(dialog.progress_bar.isVisibleTo(dialog))
+            dialog.continue_button.click()
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
 
     def test_progress_eta_errors_and_stale_results_do_not_mislead(self):
         with (
@@ -3325,7 +3466,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.assertEqual(dialog.continue_button.text(), "Use prepared audio")
             self.assertFalse(dialog.progress_counts.text())
-            self.assertFalse(dialog.progress_failures.text())
             self.assertFalse(dialog.progress_runtime.toolTip())
             self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
             dialog.continue_button.click()
@@ -3500,7 +3640,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.cancel_button.click()
 
             self.assertTrue(dialog.planning_voices)
-            self.assertIn("Cancelling voice", dialog.resume_status.text())
+            self.assertIn("Cancelling voice", dialog.progress_phase.text())
             self.run_next_task(pool)
 
             self.assertFalse(dialog.planning_voices)
@@ -3974,7 +4114,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertTrue(dialog.generating)
 
             dialog.cancel_button.click()
-            self.assertIn("Cancelling generation", dialog.resume_status.text())
+            self.assertIn("Cancelling generation", dialog.progress_phase.text())
             self.run_next_task(pool)
 
             self.assertFalse(dialog.generating)

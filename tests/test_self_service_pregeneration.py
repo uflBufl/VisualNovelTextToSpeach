@@ -281,7 +281,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog._set_import_controls(False)
             dialog.show()
             self.assertFalse(dialog.close())
-            self.assertIn("Cancelling generation", dialog.resume_status.text())
+            self.assertIn("Cancelling generation", dialog.progress_phase.text())
             self._run_tasks(pool, 1)
             self.assertTrue(dialog.isVisible())
             self.assertTrue(dialog.has_pending_work())
