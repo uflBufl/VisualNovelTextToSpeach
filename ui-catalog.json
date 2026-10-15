@@ -24,6 +24,9 @@
       "contracts": ["app-shell", "single-mission", "runtime-controls"],
       "stories": [
         {"id": "dashboard.stories-ready", "title": "Stories ready", "state": "Ready to prepare or open reading"},
+        {"id": "dashboard.reading-empty", "title": "Reading before first dialogue", "state": "One setup action; speaker and audio metadata wait for observed content"},
+        {"id": "dashboard.reading-setup-error", "title": "Reading setup blocked", "state": "Specific permission error remains beside reading controls"},
+        {"id": "dashboard.reading-live-tts", "title": "New speech through Pocket TTS", "state": "The production presenter identifies newly generated speech"},
         {"id": "dashboard.reading-loading", "title": "Reading engine loading", "state": "Loading blocks conflicting controls and names the next step"},
         {"id": "dashboard.reading-active", "title": "Reading active", "state": "Recognized dialogue with one immediate Stop reading control"},
         {"id": "dashboard.auto-advance-off", "title": "Auto advance off", "state": "Reading continues without pressing the configured Right key"},

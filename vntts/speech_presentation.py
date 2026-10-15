@@ -158,8 +158,10 @@ def playback_labels(source: str, voice: str) -> tuple[str, str]:
         return "See playback details", "Game sound, followed by speech"
     if "memory cache" in source or "persistent cache" in source:
         return voice, "Saved preview or cached speech · no generation"
-    if source.startswith("MOSS "):
-        return voice, "MOSS · new speech"
+    if source.startswith(("MOSS ", "Live TTS (")):
+        return voice, "MOSS · new speech" if source.startswith(
+            "MOSS "
+        ) else "New speech"
     if source in {"Not selected", ""}:
         return voice, "No playback information for this capture"
     return voice, "Audio source: see details"

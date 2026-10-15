@@ -621,8 +621,9 @@ class TrayApplicationTest(unittest.TestCase):
         for controls in (tray.dashboard, tray.compact_controller):
             self.assertEqual(controls.status.text(), message)
             self.assertNotIn(message, controls.action_reason.text())
-            self.assertIn("Check readiness", controls.action_reason.text())
             self.assertFalse(controls.live_button.isEnabled())
+        self.assertIn("Set up reading", tray.dashboard.action_reason.text())
+        self.assertIn("Check readiness", tray.compact_controller.action_reason.text())
         self.assertNotIn(message, tray.live_action.toolTip())
         tray.shutdown()
 
@@ -637,6 +638,9 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("Speech model failed to load", tray.dashboard.status.text())
 
         tray.set_status("OCR corrections saved")
+        self.assertEqual(
+            tray.dashboard.prepare_reading_button.text(), "Check readiness"
+        )
 
         for controls in (tray.dashboard, tray.compact_controller):
             self.assertIn("Speech model failed to load", controls.action_reason.text())
@@ -6020,6 +6024,8 @@ class TrayApplicationTest(unittest.TestCase):
                     ):
                         tray.start()
                         self.assertEqual(tray.dashboard.sections.currentIndex(), index)
+                        self.assertTrue(tray.dashboard.status.isHidden())
+                        self.assertTrue(tray.dashboard.copy_status_button.isHidden())
                         with patch.object(
                             tray,
                             "open_pregeneration",

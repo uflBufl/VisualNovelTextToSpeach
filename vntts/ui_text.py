@@ -44,9 +44,9 @@ def make_text_copyable(root: QWidget) -> None:
             | Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
         if label.wordWrap() and label not in captions:
-            label.setSizePolicy(
-                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
-            )
+            policy = label.sizePolicy()
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+            label.setSizePolicy(policy)
 
 
 def set_labeled_text(label: QLabel, rows: Iterable[tuple[object, object]]) -> None:

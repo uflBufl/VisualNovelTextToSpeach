@@ -40,6 +40,34 @@ class SpeechPresentationTest(unittest.TestCase):
         self.assertEqual(voice, "Rhiannon (child)")
         self.assertEqual(playback_labels("MOSS live", "Rhiannon (child)")[0], voice)
 
+    def test_live_tts_is_new_speech_with_engine_kept_in_playback_details(self):
+        for backend in (
+            "pocket-tts",
+            "coqui-xtts",
+            "chatterbox-nano",
+            "qwen-tts",
+            "moss-tts",
+            "moss-tts-delay",
+            "custom-engine",
+        ):
+            with self.subTest(backend=backend):
+                self.assertEqual(
+                    playback_labels(f"Live TTS ({backend})", "Alba"),
+                    ("Alba", "New speech"),
+                )
+
+    def test_moss_cache_is_not_presented_as_new_speech(self):
+        for cache in ("memory cache", "persistent cache"):
+            with self.subTest(cache=cache):
+                self.assertEqual(
+                    playback_labels(f"MOSS {cache} (voice Alba)", "Alba"),
+                    ("Alba", "Saved preview or cached speech · no generation"),
+                )
+        self.assertEqual(
+            playback_labels("MOSS fresh generation (voice Alba)", "Alba"),
+            ("Alba", "MOSS · new speech"),
+        )
+
     def test_saved_voice_identity_is_separate_from_live_defaults_and_hashes(self):
         source = (
             "Generated audio (line opaque-id)\nRecorded with: moss-tts; "

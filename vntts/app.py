@@ -2184,9 +2184,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 configure_macos_launch_at_login(True)
             except OSError as error:
                 self.show_error(f"Unable to configure launch at login: {error}")
-        self.set_status(
-            "Choose stories to prepare, or open Reading to set up playback."
-        )
+        self.set_status("")
         QTimer.singleShot(0, self, self._load_initial_library)
 
     def _load_initial_library(self) -> None:
@@ -4336,6 +4334,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 if self._live_scope_generation is not None
                 else None
             ),
+            needs_readiness_check=bool(self.last_controller_error),
             unavailable_reason=(
                 unavailable_reason
                 or "Speech model and voices are loading. Controls will unlock "
@@ -4347,7 +4346,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 or (
                     f"{self.last_controller_error} Select Check readiness to recover."
                     if self.last_controller_error
-                    else "VNTTS is not ready. Select Check readiness."
+                    else None
                 )
             ),
         )
@@ -4550,7 +4549,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def set_speech_paused(self, paused: bool) -> None:
         self._reported_speech_paused = bool(paused)
-        self.dashboard.set_paused(paused)
         self.compact_controller.set_paused(paused)
         self._apply_runtime_control_state(self._runtime_control_state())
 

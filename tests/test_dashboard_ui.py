@@ -63,7 +63,7 @@ class ControlDashboardTest(unittest.TestCase):
         )
         self.assertFalse(dashboard.auto_advance_check.isEnabled())
         self.assertFalse(dashboard.auto_advance_check.isChecked())
-        self.assertIn("Select a game window", dashboard.auto_advance_reason.text())
+        self.assertIn("game window selected", dashboard.auto_advance_reason.text())
         self.assertIn("selected game window", dashboard.auto_advance_check.toolTip())
         self.assertEqual(requested, [False])
         dashboard.deleteLater()
@@ -229,6 +229,110 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.close()
         dashboard.deleteLater()
 
+    def test_reading_setup_tracks_configuration_and_retains_specific_errors(self):
+        dashboard = ControlDashboard(AppSettings(onboarding_completed=True))
+        dashboard.set_ready(False)
+        self.assertEqual(dashboard.prepare_reading_button.text(), "Load reading engine")
+        self.assertIn("Load reading engine", dashboard.action_reason.text())
+        dashboard.set_ready(
+            False, reason="Speech model failed to load. Check readiness."
+        )
+        dashboard.set_loading(False)
+        self.assertIn("failed to load", dashboard.action_reason.text())
+        requested = []
+        dashboard.readiness_requested.connect(lambda: requested.append("readiness"))
+        dashboard.reading_setup_requested.connect(lambda: requested.append("engine"))
+        dashboard.set_runtime_controls(
+            RuntimeControlState(
+                unavailable_reason="Screen capture permission is missing. Check readiness.",
+                needs_readiness_check=True,
+            )
+        )
+        self.assertEqual(dashboard.prepare_reading_button.text(), "Check readiness")
+        dashboard.prepare_reading_button.click()
+        self.assertEqual(requested, ["readiness"])
+        dashboard.set_configuration(AppSettings(onboarding_completed=False))
+        dashboard.set_ready(False)
+        self.assertEqual(dashboard.prepare_reading_button.text(), "Set up reading")
+        self.assertIn("Set up reading", dashboard.action_reason.text())
+        dashboard.deleteLater()
+
+    def test_empty_reading_card_shows_only_observed_dialogue_and_playback(self):
+        dashboard = ControlDashboard(AppSettings())
+        self.assertTrue(dashboard.speaker.isHidden())
+        self.assertTrue(dashboard.current_audio.isHidden())
+        dashboard.set_diagnostic(DiagnosticSnapshot(None))
+        self.assertTrue(dashboard.current_audio.isHidden())
+        dashboard.set_dialogue("Tennant", "Good evening.")
+        self.assertFalse(dashboard.speaker.isHidden())
+        self.assertTrue(dashboard.current_audio.isHidden())
+        dashboard.set_diagnostic(
+            DiagnosticSnapshot(
+                None,
+                character="Tennant",
+                voice="Tennant",
+                audio_source="Live TTS (pocket-tts)",
+            )
+        )
+        self.assertFalse(dashboard.current_audio.isHidden())
+        self.assertEqual(dashboard.audio_source.text(), "New speech")
+        self.assertNotIn("Reported voice:", dashboard.playback_details.text())
+        self.assertIn("Tennant", dashboard._copy_details())
+        dashboard.set_dialogue("Tennant", "Good evening.")
+        self.assertFalse(dashboard.current_audio.isHidden())
+        # Diagnostics can update the speaker label before the accepted dialogue.
+        dashboard.speaker.setText("Eternity")
+        dashboard.set_dialogue("Eternity", "Good evening.")
+        self.assertTrue(dashboard.current_audio.isHidden())
+        self.assertEqual(dashboard.voice.text(), "")
+        self.assertEqual(dashboard.audio_source.text(), "")
+        self.assertEqual(dashboard.playback_details.text(), "")
+        self.assertNotIn("Tennant", dashboard._copy_details())
+        self.assertNotIn("Live TTS (pocket-tts)", dashboard._copy_details())
+        dashboard.set_diagnostic(
+            DiagnosticSnapshot(
+                None,
+                character="Eternity",
+                voice="Eternity",
+                audio_source="Live TTS (pocket-tts)",
+            )
+        )
+        dashboard.set_dialogue("Eternity", "Hello.")
+        self.assertTrue(dashboard.current_audio.isHidden())
+        self.assertNotIn("Live TTS (pocket-tts)", dashboard._copy_details())
+        dashboard.set_dialogue(None, None)
+        self.assertTrue(dashboard.speaker.isHidden())
+        self.assertIn("will appear here", dashboard.dialogue.text())
+        dashboard.set_ready(True)
+        self.assertIn("Start reading", dashboard.dialogue.text())
+        dashboard.set_live(True)
+        self.assertIn("Waiting for dialogue", dashboard.dialogue.text())
+        dashboard.deleteLater()
+
+    def test_technical_details_add_information_and_copy_standalone_context(self):
+        dashboard = ControlDashboard(
+            AppSettings(
+                speech_backend="pocket-tts",
+                capture_mode="window",
+                game_window_title="Reverse: 1999",
+            )
+        )
+        self.assertNotIn("Narrator", dashboard.speech_details.text())
+        self.assertNotIn("Backend:", dashboard.configuration.text())
+        self.assertNotIn("Capture:", dashboard.configuration.text())
+        details = dashboard._copy_details()
+        self.assertIn("New speech narrator: Alba", details)
+        self.assertIn("Capture: Reverse: 1999", details)
+        self.assertIn("Engine:", details)
+        self.assertNotIn("<b>", details)
+        dashboard.set_status("")
+        self.assertTrue(dashboard.status.isHidden())
+        self.assertTrue(dashboard.copy_status_button.isHidden())
+        dashboard.set_status("Speech model failed to load")
+        self.assertFalse(dashboard.status.isHidden())
+        self.assertFalse(dashboard.copy_status_button.isHidden())
+        dashboard.deleteLater()
+
     def test_missing_window_offers_window_settings(self):
         dashboard = ControlDashboard(AppSettings(onboarding_completed=True))
         requested = []
@@ -307,7 +411,7 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.set_live(True)
         dashboard.set_diagnostic(snapshot)
 
-        self.assertEqual(dashboard.mode.text(), "Reading in game")
+        self.assertTrue(dashboard._live)
         self.assertEqual(dashboard.speaker.text(), "Selone")
         self.assertEqual(
             dashboard.audio_source.text(),
@@ -382,7 +486,7 @@ class ControlDashboardTest(unittest.TestCase):
         )
         self.assertFalse(dashboard.speech_runtime.isVisibleTo(dashboard))
         self.assertEqual(dashboard.speech_runtime.textFormat(), Qt.TextFormat.PlainText)
-        self.assertTrue(dashboard.audio_source.isVisibleTo(dashboard))
+        self.assertFalse(dashboard.audio_source.isVisibleTo(dashboard))
         self.assertIn("Alba", dashboard.speech_configuration.text())
         dashboard.set_diagnostic(
             DiagnosticSnapshot(
@@ -394,7 +498,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertNotIn("Alba", dashboard.voice.text())
         self.assertIn("custom-model", dashboard.audio_source.text())
         self.assertIn("no generation", dashboard.audio_source.text())
-        self.assertIn("Saved recordings", dashboard.reading_help.text())
+        self.assertNotIn("Narrator voice:", dashboard.speech_details.text())
         dashboard.set_configuration(
             AppSettings(capture_mode="window", game_window_title="Reverse: 1999")
         )
@@ -406,9 +510,9 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(dashboard.capture_target.text(), "Capture: <b>Reverse</b>")
         dashboard.set_ready(True)
         self.assertTrue(dashboard.action_reason.isHidden())
-        self.assertFalse(dashboard.reading_help.isVisibleTo(dashboard))
+        self.assertFalse(dashboard.copy_details_button.isVisibleTo(dashboard))
         dashboard.details_toggle.click()
-        self.assertTrue(dashboard.reading_help.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.copy_details_button.isVisibleTo(dashboard))
         self.assertTrue(dashboard.speech_runtime.isVisibleTo(dashboard))
         dashboard.details_toggle.click()
         dashboard.set_ready(False, reason="Select a game window")
@@ -435,7 +539,7 @@ class ControlDashboardTest(unittest.TestCase):
 
         self.assertFalse(dashboard.live_button.isEnabled())
         self.assertIn("Speech model failed to load", dashboard.status.text())
-        self.assertIn("Check readiness", dashboard.action_reason.text())
+        self.assertIn("Set up reading", dashboard.action_reason.text())
         self.assertEqual(
             dashboard.live_button.toolTip(), dashboard.action_reason.text()
         )
@@ -547,7 +651,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.application.processEvents()
 
         self.assertTrue(dashboard.dialogue.isVisibleTo(dashboard))
-        self.assertTrue(dashboard.speaker.isVisibleTo(dashboard))
+        self.assertFalse(dashboard.speaker.isVisibleTo(dashboard))
         self.assertEqual(dashboard.speaker.accessibleName(), "Current dialogue speaker")
         self.assertTrue(dashboard.live_button.isVisibleTo(dashboard))
         controls = next(
@@ -643,9 +747,9 @@ class ControlDashboardTest(unittest.TestCase):
             )
         )
 
-        self.assertIn("Audio policy: Live TTS only", dashboard.configuration.text())
+        self.assertIn("Live TTS only", dashboard.reading_policy.text())
         self.assertIn(
-            "Generated audio: missing; open Settings",
+            "Prepared recordings: missing; open Settings",
             dashboard.configuration.text(),
         )
         dashboard.deleteLater()
@@ -724,7 +828,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertIn("event-41", dashboard.sequence_identity.text())
         self.assertIn("Rhiannon: Canonical text.", dashboard.sequence_canonical.text())
         self.assertEqual(
-            dashboard.sequence_guidance.text(),
+            dashboard.sequence_notice.text(),
             "Set the visible story position to resume.",
         )
         self.assertIn("Generated audio", dashboard.sequence_expected_audio.text())
@@ -750,11 +854,11 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.set_sequence_status(LiveSequenceStatus("off", "off"))
         self.assertEqual(dashboard.sequence_position.text(), "Not located")
         self.assertTrue(dashboard.story_context.isHidden())
-        self.assertTrue(dashboard.recovery_controls.isHidden())
+        self.assertTrue(dashboard.story_actions.isHidden())
         self.assertFalse(dashboard.sequence_expected_button.isEnabled())
         dashboard.deleteLater()
 
-    def test_story_position_controls_live_in_stable_details(self):
+    def test_story_position_recovery_actions_do_not_require_technical_details(self):
         dashboard = ControlDashboard(AppSettings(live_sequence_mode="audio-manual"))
         dashboard.show_reading()
         dashboard.show()
@@ -765,6 +869,7 @@ class ControlDashboardTest(unittest.TestCase):
                 "desynchronized",
                 recovery_required=True,
                 guidance="Current line does not match the saved position.",
+                expected_candidate_count=1,
             )
         )
         self.application.processEvents()
@@ -772,14 +877,19 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertTrue(dashboard.story_actions.isVisibleTo(dashboard))
         self.assertTrue(dashboard.sequence_resync_button.isVisibleTo(dashboard))
         self.assertTrue(dashboard.sequence_resync_button.isEnabled())
-        self.assertFalse(dashboard.recovery_controls.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.sequence_expected_button.isVisibleTo(dashboard))
+        requested = []
+        dashboard.sequence_expected_requested.connect(lambda: requested.append(True))
+        dashboard.sequence_expected_button.click()
+        self.assertEqual(requested, [True])
         dashboard.details_toggle.click()
-        self.assertTrue(dashboard.recovery_controls.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.sequence_expected_button.isVisibleTo(dashboard))
         dashboard.set_sequence_status(LiveSequenceStatus("audio-manual", "locked"))
         self.assertFalse(dashboard.sequence_notice.isVisibleTo(dashboard))
+        self.assertNotIn("needs attention", dashboard._copy_details())
         self.assertTrue(dashboard.story_actions.isVisibleTo(dashboard))
         dashboard.set_sequence_status(LiveSequenceStatus("off", "off"))
-        self.assertFalse(dashboard.recovery_controls.isVisibleTo(dashboard))
+        self.assertFalse(dashboard.sequence_expected_button.isVisibleTo(dashboard))
         self.assertFalse(dashboard.story_actions.isVisibleTo(dashboard))
         self.assertFalse(dashboard.sequence_resync_button.isEnabled())
         dashboard.close()

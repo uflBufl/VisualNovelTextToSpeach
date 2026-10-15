@@ -907,12 +907,48 @@ def _render_stories(
         )
         dashboard.set_live(True)
         dashboard.set_speech_identity(settings, narrator="Centurion")
-        dashboard.voice.setText("Believer IV voice")
-        dashboard.audio_source.setText("Live TTS")
+        dashboard.set_diagnostic(
+            DiagnosticSnapshot(
+                None,
+                character="Believer IV",
+                confidence=97.0,
+                voice="Believer IV voice",
+                audio_source="MOSS fresh generation (voice Believer IV)",
+            )
+        )
         dashboard.speech_runtime.setText("Compute: Apple GPU · model loaded")
         dashboard.moss_runtime_button.setText("Unload OpenMOSS")
         dashboard.moss_runtime_button.setEnabled(False)
         dashboard.show_reading()
+        return dashboard
+
+    def dashboard_empty() -> ControlDashboard:
+        dashboard = ControlDashboard(settings)
+        dashboard.show_reading()
+        dashboard.set_ready(False)
+        return dashboard
+
+    def dashboard_setup_error() -> ControlDashboard:
+        dashboard = dashboard_empty()
+        dashboard.set_runtime_controls(
+            RuntimeControlState(
+                unavailable_reason="Screen capture permission is missing. Select Check readiness.",
+                needs_readiness_check=True,
+            )
+        )
+        return dashboard
+
+    def dashboard_live_tts() -> ControlDashboard:
+        dashboard = dashboard_reading()
+        dashboard.set_configuration(replace(settings, speech_backend="pocket-tts"))
+        dashboard.set_diagnostic(
+            DiagnosticSnapshot(
+                None,
+                character="Believer IV",
+                voice="Alba",
+                audio_source="Live TTS (pocket-tts)",
+            )
+        )
         return dashboard
 
     def dashboard_setup() -> ControlDashboard:
@@ -986,7 +1022,6 @@ def _render_stories(
                 ready=True, live=True, paused=True, queued=True, replayable=True
             )
         )
-        dashboard.set_paused(True)
         return dashboard
 
     def dashboard_stopped() -> ControlDashboard:
@@ -1003,6 +1038,9 @@ def _render_stories(
 
     def dashboard_story_recovery() -> ControlDashboard:
         dashboard = dashboard_reading()
+        dashboard.set_configuration(
+            replace(settings, live_sequence_mode="audio-manual")
+        )
         dashboard.set_sequence_status(
             LiveSequenceStatus(
                 "audio-manual",
@@ -1012,12 +1050,16 @@ def _render_stories(
                 sequence=12,
                 recovery_required=True,
                 guidance="Current line does not match the saved story position.",
+                expected_candidate_count=1,
             )
         )
         return dashboard
 
     def dashboard_story_manual() -> ControlDashboard:
         dashboard = dashboard_reading()
+        dashboard.set_configuration(
+            replace(settings, live_sequence_mode="audio-manual")
+        )
         dashboard.set_sequence_status(
             LiveSequenceStatus(
                 "audio-manual",
@@ -1054,11 +1096,13 @@ def _render_stories(
 
     def dashboard_long_values_scrolled() -> ControlDashboard:
         dashboard = dashboard_long_capture()
-        dashboard.voice.setText(
-            "Believer IV voice from a long user-provided reference recording"
-        )
-        dashboard.audio_source.setText(
-            "Prepared recording for Chapter 7, line 12, with fallback to live speech"
+        dashboard.set_diagnostic(
+            DiagnosticSnapshot(
+                None,
+                character="The Very Long Name of the Fourth Believer from the Northern District",
+                voice="Believer IV voice from a long user-provided reference recording",
+                audio_source="MOSS fresh generation with a long user-provided reference recording",
+            )
         )
         QTimer.singleShot(
             0,
@@ -2510,6 +2554,9 @@ def _render_stories(
         "dashboard.stories-ready": dashboard_stories,
         "dashboard.reading-loading": dashboard_loading,
         "dashboard.reading-active": dashboard_reading,
+        "dashboard.reading-empty": dashboard_empty,
+        "dashboard.reading-setup-error": dashboard_setup_error,
+        "dashboard.reading-live-tts": dashboard_live_tts,
         "dashboard.auto-advance-off": dashboard_auto_advance_off,
         "dashboard.auto-advance-unavailable": dashboard_auto_advance_unavailable,
         "dashboard.auto-advance-manual": dashboard_auto_advance_manual,
