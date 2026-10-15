@@ -400,7 +400,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
             model.mkdir()
             original = source.read_bytes()
 
-            def publish(arguments, _cancel_event):
+            def publish(arguments, _cancel_event, **_options):
                 if "--evidence-output" not in arguments:
                     selected_source = load_story_index_document(
                         Path(arguments[arguments.index("--story-index") + 1])
@@ -504,6 +504,73 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 semantic_arguments[semantic_arguments.index("--chapter") + 1],
                 "314501",
             )
+
+    def test_semantic_worker_caps_default_threads_and_preserves_explicit_environment(
+        self,
+    ):
+        for cpu_count, override, frozen, expected_threads in (
+            (8, {}, False, "4"),
+            (2, {}, False, "2"),
+            (None, {}, False, "1"),
+            (8, {"OMP_NUM_THREADS": "8"}, False, None),
+            (8, {"MKL_NUM_THREADS": "8"}, False, None),
+            (8, {"OMP_NUM_THREADS": ""}, False, None),
+            (8, {}, True, "4"),
+        ):
+            with (
+                self.subTest(cpu_count=cpu_count, override=override, frozen=frozen),
+                TemporaryDirectory() as directory,
+                patch.dict(
+                    os.environ, {"EXISTING": "preserved", **override}, clear=True
+                ),
+                patch(
+                    "vntts.game_content_importer.os.cpu_count", return_value=cpu_count
+                ),
+                patch(
+                    "vntts.game_content_importer.shutil.which", return_value="/worker"
+                ),
+                patch.object(sys, "frozen", frozen, create=True),
+            ):
+                root = Path(directory)
+                popen = Mock(return_value=FinishedProcess())
+                importer = Reverse1999GameImporter(
+                    output_root=root, popen_factory=popen
+                )
+                with patch.object(
+                    importer, "_resolve_asr_model", return_value=root / "model"
+                ):
+                    importer._publish_source_audio_semantics(
+                        root / "timed.jsonl",
+                        root / "semantic.jsonl",
+                        root / "evidence.json",
+                        root / "banks.json",
+                        root / "decoder",
+                        ("314501",),
+                        None,
+                        progress=None,
+                        provision_model=False,
+                        scan_progress=Mock() if frozen else None,
+                    )
+
+                expected_environment = {"EXISTING": "preserved", **override}
+                if expected_threads is not None:
+                    expected_environment.update(
+                        OMP_NUM_THREADS=expected_threads,
+                        MKL_NUM_THREADS=expected_threads,
+                    )
+                self.assertEqual(popen.call_args.kwargs["env"], expected_environment)
+                self.assertEqual(
+                    dict(os.environ), {"EXISTING": "preserved", **override}
+                )
+                if frozen:
+                    self.assertEqual(
+                        popen.call_args.args[0][:3],
+                        (
+                            sys.executable,
+                            "--source-audio-publisher-worker",
+                            "semantics",
+                        ),
+                    )
 
     def test_failed_update_restores_previous_story_catalog(self):
         with TemporaryDirectory() as directory:

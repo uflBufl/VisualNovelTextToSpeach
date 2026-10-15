@@ -740,8 +740,17 @@ class Reverse1999GameImporter:
         ]
         for chapter in chapters:
             semantic_arguments.extend(("--chapter", chapter))
+        environment = dict(os.environ)
+        if (
+            "OMP_NUM_THREADS" not in environment
+            and "MKL_NUM_THREADS" not in environment
+        ):
+            # Short Whisper cues slow down with oversized CPU thread pools.
+            threads = str(min(4, os.cpu_count() or 1))
+            environment["OMP_NUM_THREADS"] = threads
+            environment["MKL_NUM_THREADS"] = threads
         self._run_source_audio_publisher(
-            semantic_arguments, cancel_event, scan_progress
+            semantic_arguments, cancel_event, scan_progress, environment=environment
         )
 
     def _run_source_audio_publisher(
