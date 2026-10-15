@@ -1765,7 +1765,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             dialog.show_all_voice_routes.setChecked(True)
             self.assertEqual(dialog.voice_routes.count(), 2)
             self.assertIn(
-                "Optional voice review: 1 assignment",
+                "Optional voice review: 1 character",
                 dialog.voice_route_summary.text(),
             )
             self.assertTrue(dialog.voice_route_summary.font().bold())

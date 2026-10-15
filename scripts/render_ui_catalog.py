@@ -147,6 +147,36 @@ def _voice_overview_story(
     return dialog
 
 
+def _shared_character_overview_story(
+    dialog: OfflineAudioPreparationDialog, state: str
+) -> OfflineAudioPreparationDialog:
+    plan = dialog._voice_plan
+    assert plan is not None
+    first = plan.groups[0]
+    other = first.candidate_inventory[1]
+    second = replace(
+        first,
+        group_id="shared-character-second",
+        line_ids=("chapter-8:14",),
+        source_id=other.source_id,
+        source_character=other.source_character,
+        source_speaker=other.source_speaker,
+        reference_sha256s=other.reference_sha256s,
+        resolution="saved-player-decision",
+    )
+    if "same-name" in state:
+        second = replace(
+            second, source_character=first.source_character, resolution=first.resolution
+        )
+    dialog._voice_plan = replace(plan, groups=(first, second, *plan.groups[1:]))
+    _voice_overview_story(dialog, state)
+    if state.endswith("-second"):
+        dialog.voice_assignment_choice.setCurrentIndex(
+            dialog.voice_assignment_choice.findData(second.group_id)
+        )
+    return dialog
+
+
 def _prepare_catalog_screenshot(
     widget: QWidget, story_id: str, app: QApplication
 ) -> None:
@@ -161,7 +191,10 @@ def _prepare_catalog_screenshot(
             widget.content_scroll.verticalScrollBar().maximum()
         )
         app.processEvents()
-    if story_id == "offline-preparation.voice-overview-many-compact-details-end":
+    if story_id in {
+        "offline-preparation.voice-overview-many-compact-details-end",
+        "offline-preparation.voice-overview-shared-character-compact-actions",
+    }:
         assert isinstance(widget, OfflineAudioPreparationDialog)
         widget.content_scroll.verticalScrollBar().setValue(
             widget.content_scroll.verticalScrollBar().maximum()
@@ -173,6 +206,7 @@ def _prepare_catalog_screenshot(
         app.processEvents()
     if story_id in {
         "offline-preparation.voice-overview-many-compact-table",
+        "offline-preparation.voice-overview-shared-character-compact-table",
         "offline-preparation.voice-overview-compact-long-narrator-table",
     }:
         assert isinstance(widget, OfflineAudioPreparationDialog)
@@ -2555,6 +2589,41 @@ def _render_stories(
         "offline-preparation.voice-overview-compact-long-narrator-table": lambda: (
             _voice_overview_story(
                 offline_preparation("confirmation"), "compact-long-narrator"
+            )
+        ),
+        "offline-preparation.voice-overview-shared-character": lambda: (
+            _shared_character_overview_story(
+                offline_preparation("confirmation"), "shared-character"
+            )
+        ),
+        "offline-preparation.voice-overview-shared-character-second": lambda: (
+            _shared_character_overview_story(
+                offline_preparation("confirmation"), "shared-character-second"
+            )
+        ),
+        "offline-preparation.voice-overview-shared-character-compact": lambda: (
+            _shared_character_overview_story(
+                offline_preparation("confirmation"), "compact-shared-character"
+            )
+        ),
+        "offline-preparation.voice-overview-shared-character-compact-actions": lambda: (
+            _shared_character_overview_story(
+                offline_preparation("confirmation"), "compact-shared-character-actions"
+            )
+        ),
+        "offline-preparation.voice-overview-shared-character-compact-table": lambda: (
+            _shared_character_overview_story(
+                offline_preparation("confirmation"), "compact-shared-character"
+            )
+        ),
+        "offline-preparation.voice-overview-shared-character-same-name": lambda: (
+            _shared_character_overview_story(
+                offline_preparation("confirmation"), "shared-character-same-name"
+            )
+        ),
+        "offline-preparation.voice-overview-shared-character-same-name-second": lambda: (
+            _shared_character_overview_story(
+                offline_preparation("confirmation"), "shared-character-same-name-second"
             )
         ),
         "offline-preparation.partial-ready": lambda: offline_preparation(
