@@ -148,7 +148,7 @@ jobs:
           if ($testStatus -ne 0) {
             $repoPythonFiles = @(git -C $env:GITHUB_WORKSPACE ls-files -- '*.py')
             $workspacePattern = [regex]::Escape($env:GITHUB_WORKSPACE.TrimEnd([char[]]'\/'))
-            $framePattern = '^\s+File "' + $workspacePattern + '[\\/]([A-Za-z0-9_./\\-]+\.py)", line ([0-9]+), in .*$'
+            $framePattern = '^\s+File "' + $workspacePattern + '[\\/]([A-Za-z0-9_./\\-]+\.py)", line ([0-9]+),? in .*$'
             $exceptionPattern = '^(AssertionError|AttributeError|FileNotFoundError|ImportError|' +
               'IndexError|KeyError|MemoryError|ModuleNotFoundError|OSError|OverflowError|' +
               'PermissionError|RecursionError|RuntimeError|TimeoutError|TypeError|' +
