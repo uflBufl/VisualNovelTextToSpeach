@@ -154,6 +154,20 @@ class VoiceLibraryTest(unittest.TestCase):
             with self.assertRaisesRegex(VoiceLibraryError, "not a WAV file"):
                 library._validate_blob(checksum)
 
+    def test_ogg_reference_error_identifies_character_file_and_recovery(self) -> None:
+        with TemporaryDirectory() as directory:
+            reference = Path(directory) / "lucy.ogg"
+            reference.write_bytes(b"OggS")
+
+            with self.assertRaises(VoiceLibraryError) as caught:
+                VoiceLibrary(Path(directory) / "library").discover("Lucy", reference)
+
+            message = str(caught.exception)
+            self.assertIn("'Lucy'", message)
+            self.assertIn(str(reference), message)
+            self.assertIn("convert this audio to WAV", message)
+            self.assertIsInstance(caught.exception.__cause__, VoiceLibraryError)
+
     def test_batch_selection_is_atomic_when_a_later_choice_is_invalid(self) -> None:
         with TemporaryDirectory() as directory:
             library = VoiceLibrary(Path(directory) / "library")

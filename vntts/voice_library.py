@@ -170,7 +170,18 @@ class VoiceLibrary:
         rollback: VoiceBindingRollback | None = None,
     ) -> VoiceAlternative:
         """Store a WAV alternative; optionally bind it only when no choice exists."""
-        payload = _read_wav(reference)
+        try:
+            payload = _read_wav(reference)
+        except VoiceLibraryError as error:
+            recovery = (
+                " Select a WAV file or convert this audio to WAV."
+                if Path(reference).suffix.casefold() != ".wav"
+                else " Check that the file is a readable WAV reference."
+            )
+            raise VoiceLibraryError(
+                f"Unable to use voice reference for {role!r} from {reference}: "
+                f"{error}.{recovery}"
+            ) from error
         checksum = hashlib.sha256(payload).hexdigest()
         with self._write_transaction():
             document = self._load()
