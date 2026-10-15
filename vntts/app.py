@@ -2169,12 +2169,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.dashboard.set_configuration(self.settings)
         if self._startup_game_pack_errors:
             self.show_dashboard()
-            self.set_ready(False)
-            self.show_error(
+            self.last_controller_error = (
                 "Unable to open the saved game pack. Open Settings to select a "
                 "valid game pack, then restart VNTTS. Your saved paths were kept. "
                 f"{self._startup_game_pack_errors[0]}"
             )
+            self.set_ready(False)
+            self.show_error(self.last_controller_error)
             return
         self.dashboard.show_main_section(self.settings.last_main_section)
         self.show_dashboard()
@@ -2287,7 +2288,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         self._finish_controller_lifecycle()
         if error is not None:
-            self.show_error(f"Unable to initialize controller: {error}")
+            self.last_controller_error = f"Unable to initialize controller: {error}"
+            self.show_error(self.last_controller_error)
             ready = False
         self.signals.ready_changed.emit(ready)
         if ready:
@@ -3253,7 +3255,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 )
             return None
         job = dialog.job()
-        voice_plan = dialog.voice_plan()
         pack_result = dialog.pack_result()
         if not isinstance(pack_result, OfflinePackResult):
             pack_result = None
@@ -3262,17 +3263,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "Offline preparation finished without a validated game pack"
             )
             return None
-        covered_lines = pack_result.story_lines
         status = (
-            f"Offline audio now covers {covered_lines} dialogue lines. "
-            f"{pack_result.approved} have prepared voices; "
-            f"{pack_result.live_fallbacks} will use live voice."
+            f"Prepared audio is active for {pack_result.story_lines} dialogue lines."
         )
-        if voice_plan is not None:
-            status += (
-                f" Matched {len(voice_plan.groups)} voice groups; "
-                f"{voice_plan.narrator_fallback_count} will use narrator."
-            )
         self._start_pregeneration_activation(pack_result, status)
         return job
 
@@ -3367,10 +3360,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             else self.dashboard.prepare_reading_button
         )
         self.set_status(
-            (f"{status} " if status else "")
-            + "Prepared audio is active. Next: open the story in the game and "
-            f"click {next_action.text()}. Saved lines play without generation; only "
-            "uncovered lines use TTS."
+            f"{status or 'Prepared audio is active.'} "
+            f"Next: click {next_action.text()} with the story open in the game."
         )
         next_action.setFocus()
 
@@ -3462,8 +3453,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         profile_name = self._pending_profile_name
         self._pending_profile_name = None
         if error is not None:
+            self.last_controller_error = f"Profile restart failed: {error}"
             self.set_ready(False)
-            self.set_status(f"Profile restart failed: {error}")
             return
         self.set_ready(bool(ready))
         if not ready:
@@ -4225,14 +4216,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.set_status(message)
         self._refresh_speech_runtime()
         self.compact_controller.set_status(message)
-        self._apply_runtime_control_state(
-            self._runtime_control_state(
-                unavailable_reason=(
-                    f"Controls unavailable: {message}. Select Check readiness "
-                    "to recover."
-                )
-            )
-        )
+        self._apply_runtime_control_state(self._runtime_control_state())
 
     def record_audio_route(self, trace: AudioRouteTrace) -> None:
         self.support_log.add(
@@ -4358,7 +4342,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 if self._controller_busy
                 else unavailable_reason or "VNTTS is shutting down."
                 if self._shutting_down
-                else unavailable_reason or "VNTTS is not ready. Select Check readiness."
+                else unavailable_reason
+                or (
+                    f"{self.last_controller_error} Select Check readiness to recover."
+                    if self.last_controller_error
+                    else "VNTTS is not ready. Select Check readiness."
+                )
             ),
         )
 
@@ -4513,6 +4502,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._cancel_diagnostics_refresh()
         self._pregeneration_activation_restore_runtime.clear()
         self._lifecycle_generation = self.session_owner.begin(cancellation)
+        self.last_controller_error = None
         self._controller_busy = True
         self._apply_controller_action_state()
         self._update_auto_advance_action()
@@ -4533,9 +4523,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def set_ready(self, ready: bool) -> None:
         self._controller_ready = bool(ready)
+        if ready:
+            self.last_controller_error = None
         self._apply_controller_action_state()
         if not ready:
-            self.set_status("Unable to start")
+            self.set_status(self.last_controller_error or "Unable to start")
 
     def set_live(self, running: bool) -> None:
         self._reported_live = bool(running)

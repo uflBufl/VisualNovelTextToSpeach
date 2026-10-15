@@ -929,12 +929,6 @@ class ControlDashboard(QMainWindow):
             if len(summary) <= 240
             else summary[:240] + "… Copy status for the full message."
         )
-        if not self._ready and self.loading_panel.isHidden():
-            self._set_action_reason(
-                "Select the game window to continue."
-                if self._window_problem
-                else "Select Check readiness for the next step."
-            )
 
     def set_dialogue(self, speaker: str | None, text: str | None) -> None:
         self.speaker.setText(speaker or "Narrator")
@@ -1288,11 +1282,6 @@ class CompactController(QWidget):
         self.status.setText(message)
         self.status.setStyleSheet("")
         self.setToolTip(message)
-        if not self._ready:
-            self._set_action_reason(
-                f"Controls unavailable: {message}. Select Full controls, then "
-                "Check readiness."
-            )
         self._fit_content()
 
     def set_warning(self, message: str) -> None:

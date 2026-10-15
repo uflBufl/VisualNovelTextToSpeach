@@ -457,6 +457,23 @@ class ControlDashboardTest(unittest.TestCase):
         )
         dashboard.deleteLater()
 
+    def test_status_preserves_specific_reading_blocker_on_both_controls(self):
+        for controls in (
+            ControlDashboard(AppSettings()),
+            CompactController(platform="win32"),
+        ):
+            with self.subTest(controls=type(controls).__name__):
+                reason = "Select the game window to continue."
+                controls.set_ready(False, reason=reason)
+
+                controls.set_status("Prepared audio is active.")
+
+                self.assertEqual(controls.action_reason.text(), reason)
+                self.assertEqual(controls.live_button.toolTip(), reason)
+                self.assertEqual(controls.status.text(), "Prepared audio is active.")
+                self.assertFalse(controls.live_button.isEnabled())
+                controls.deleteLater()
+
     def test_loading_speech_engine_is_obvious_and_blocks_conflicting_actions(self):
         dashboard = ControlDashboard(AppSettings())
         dashboard.show_reading()
@@ -985,7 +1002,11 @@ class ControlDashboardTest(unittest.TestCase):
     def test_compact_disabled_controls_show_recovery_beside_controls(self):
         controller = CompactController(platform="win32")
 
-        controller.set_status("Speech model failed to load")
+        controller.set_ready(
+            False,
+            reason="Speech model failed to load. Select Full controls, then Check readiness.",
+        )
+        controller.set_status("OCR corrections saved")
 
         self.assertFalse(controller.live_button.isEnabled())
         self.assertTrue(controller.full_button.isEnabled())

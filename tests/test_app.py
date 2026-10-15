@@ -608,6 +608,66 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.narrator_dialog = None
         tray_application.shutdown()
 
+    def test_notifications_do_not_become_reading_blockers(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock(is_live_running=False)),
+        )
+        message = "Prepared audio is active for 32 dialogue lines."
+
+        tray.set_status(message)
+
+        for controls in (tray.dashboard, tray.compact_controller):
+            self.assertEqual(controls.status.text(), message)
+            self.assertNotIn(message, controls.action_reason.text())
+            self.assertIn("Check readiness", controls.action_reason.text())
+            self.assertFalse(controls.live_button.isEnabled())
+        self.assertNotIn(message, tray.live_action.toolTip())
+        tray.shutdown()
+
+    def test_controller_failure_remains_specific_after_unrelated_notification(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock(is_live_running=False)),
+        )
+        tray.report_controller_error(RuntimeError("Speech model failed to load"))
+        tray.set_ready(False)
+        self.assertIn("Speech model failed to load", tray.dashboard.status.text())
+
+        tray.set_status("OCR corrections saved")
+
+        for controls in (tray.dashboard, tray.compact_controller):
+            self.assertIn("Speech model failed to load", controls.action_reason.text())
+            self.assertIn("Check readiness", controls.action_reason.text())
+            self.assertEqual(
+                controls.live_button.toolTip(), controls.action_reason.text()
+            )
+        self.assertIn("Speech model failed to load", tray.live_action.toolTip())
+        tray.set_ready(True)
+        tray.set_ready(False)
+        self.assertNotIn(
+            "Speech model failed to load", tray.dashboard.action_reason.text()
+        )
+        tray.shutdown()
+
+    def test_failed_initialization_keeps_error_in_both_reading_controls(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock(is_live_running=False)),
+        )
+        tray._initial_start_generation = tray._begin_controller_lifecycle()
+
+        tray._initial_start_finished(None, RuntimeError("model file is missing"))
+
+        self.assertIn("model file is missing", tray.dashboard.status.text())
+        for controls in (tray.dashboard, tray.compact_controller):
+            self.assertIn("model file is missing", controls.action_reason.text())
+            self.assertIn("Check readiness", controls.action_reason.text())
+        tray.shutdown()
+
     def test_tray_non_action_text_is_bounded_without_losing_full_tooltip(self):
         tray_application = TrayApplication(
             self.application,
@@ -874,11 +934,7 @@ class TrayApplicationTest(unittest.TestCase):
         start_activation.assert_called_once()
         self.assertIs(start_activation.call_args.args[0], pack_result)
         status = start_activation.call_args.args[1]
-        self.assertIn("covers 42 dialogue lines", status)
-        self.assertIn("Matched 3 voice groups", status)
-        self.assertIn("1 will use narrator", status)
-        self.assertIn("38 have prepared voices", status)
-        self.assertIn("1 will use live voice", status)
+        self.assertEqual(status, "Prepared audio is active for 42 dialogue lines.")
         tray_application.shutdown()
 
     def test_valid_saved_pack_activates_without_generation_transients(self):
@@ -916,7 +972,10 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIsNone(result)
         start_activation.assert_called_once()
         self.assertIs(start_activation.call_args.args[0], pack_result)
-        self.assertIn("covers 12 dialogue lines", start_activation.call_args.args[1])
+        self.assertEqual(
+            start_activation.call_args.args[1],
+            "Prepared audio is active for 12 dialogue lines.",
+        )
         dialog.generation_input.assert_not_called()
         dialog.generation_result.assert_not_called()
         tray_application.shutdown()
@@ -6261,6 +6320,9 @@ class TrayApplicationTest(unittest.TestCase):
                 candidate = original.updated(audio_source_policy="prefer-generated")
                 tray._save_settings_candidate(candidate)
 
+                tray._pregeneration_activation_status = (
+                    "Prepared audio is active for 32 dialogue lines."
+                )
                 tray._pregeneration_activation_finished(
                     OfflinePackActivationResult(candidate, path, False), None
                 )
@@ -6271,7 +6333,16 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertIs(
                     tray.dashboard.focusWidget(), tray.dashboard.prepare_reading_button
                 )
-                self.assertIn("click Set up reading", tray.status_action.text())
+                status = tray.dashboard.status.text()
+                self.assertEqual(
+                    status,
+                    "Prepared audio is active for 32 dialogue lines. "
+                    "Next: click Set up reading with the story open in the game.",
+                )
+                self.assertEqual(tray.compact_controller.status.text(), status)
+                for controls in (tray.dashboard, tray.compact_controller):
+                    self.assertNotIn("Prepared audio", controls.action_reason.text())
+                    self.assertFalse(controls.live_button.isEnabled())
                 controller.toggle_live.assert_not_called()
                 tray.shutdown()
 
