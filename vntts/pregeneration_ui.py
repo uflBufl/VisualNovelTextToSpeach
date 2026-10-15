@@ -437,6 +437,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._narrator_player = preview_player
 
     def _configure_window(self) -> None:
+        self._voice_plan_window_size: QSize | None = None
         self.setWindowTitle("Prepare offline audio")
         self.setMinimumSize(620, 440)
         self.resize(860, 720)
@@ -1084,6 +1085,10 @@ class OfflineAudioPreparationDialog(QDialog):
         assert continue_button is not None
         self.cancel_button = cancel_button
         self.continue_button = continue_button
+        self.buttons.addButton(
+            self.voice_panel.a_use, QDialogButtonBox.ButtonRole.AcceptRole
+        )
+        self.voice_panel.a_use.hide()
         self.continue_button.setDefault(True)
         self.continue_button.setAccessibleDescription(
             "Save this selection and continue or resume offline audio preparation"
@@ -1256,6 +1261,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 "Choose another voice through More actions > Edit role in Voices."
             )
             return
+        self._voice_plan_window_size = self.size()
         self._awaiting_voice_confirmation = False
         self.step.setText("Step 2 of 4 - Inspect selected voice")
         self.voice_confirmation.hide()
@@ -1263,6 +1269,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.inspecting_voice_plan = True
         self.cancel_button.setText("Back to voice plan")
         self.cancel_button.setAutoDefault(False)
+        self.voice_panel.a_use.show()
         self.voice_panel.a_use.setDefault(True)
         self.cancel_button.setToolTip(
             "Return to the voice plan. An unsaved candidate is not applied; "
@@ -1271,6 +1278,24 @@ class OfflineAudioPreparationDialog(QDialog):
         self.continue_button.hide()
         self.selection_panel.hide()
         self.voice_panel.voice_reference.setFocus()
+        QTimer.singleShot(0, self, self._fit_voice_audition_window)
+
+    def _fit_voice_audition_window(self) -> None:
+        if not self.inspecting_voice_plan or self.isMaximized():
+            return
+        content = self.content_scroll.widget()
+        assert content is not None
+        height = content.sizeHint().height()
+        chrome = self.height() - self.content_scroll.viewport().height()
+        self.resize(
+            self.width(), max(self.minimumHeight(), min(self.height(), height + chrome))
+        )
+
+    def _restore_voice_plan_window(self) -> None:
+        self.voice_panel.a_use.hide()
+        if self._voice_plan_window_size is not None:
+            self.resize(self._voice_plan_window_size)
+            self._voice_plan_window_size = None
 
     def _selected_routing_role(self) -> str | None:
         item = self.voice_routes.currentItem()
@@ -4439,6 +4464,7 @@ class OfflineAudioPreparationDialog(QDialog):
             manifest_path=manifest,
             cancellation=self.voice_cancel_event,
             ignore_decisions=ignore_decisions,
+            reference_qualifier=self._qualify_story_references,
         )
         record_background_operation(
             "pregeneration-voice-plan-store",
@@ -4462,6 +4488,37 @@ class OfflineAudioPreparationDialog(QDialog):
         ):
             job = self.job_store.create_or_resume(content, job.selected_story_ids)
         return job, content
+
+    def _qualify_story_references(self, plan: VoicePlan) -> dict[str, str]:
+        from vntts.pregeneration_audition import VoiceAuditionPreviewService
+        from vntts.story_reference_qualification import (
+            ReferencePreviewer,
+            qualify_story_references,
+        )
+
+        previewer = self.voice_panel.preview_service
+        new_session = getattr(previewer, "new_session", None)
+        planning_previewer = None
+        if getattr(previewer, "supports_prefetch", False) is True and callable(
+            new_session
+        ):
+            planning_previewer = cast(ReferencePreviewer, new_session())
+        elif isinstance(previewer, VoiceAuditionPreviewService):
+            planning_previewer = VoiceAuditionPreviewService(
+                previewer.root, backend_factory=previewer.backend_factory
+            )
+        try:
+            return qualify_story_references(
+                plan,
+                preview_service=planning_previewer
+                or cast(ReferencePreviewer, previewer),
+                content_advisor=self.voice_panel.content_advisor,
+                cancellation=self.voice_cancel_event,
+                progress=self.decoderProgress.emit,
+            )
+        finally:
+            if planning_previewer is not None:
+                planning_previewer.close()
 
     def _decoder_progress(self, message: str) -> None:
         if self.planning_voices and not self._close_after_voice_cancel:
@@ -4635,6 +4692,7 @@ class OfflineAudioPreparationDialog(QDialog):
         return None
 
     def _voice_auditions_completed(self) -> None:
+        self._restore_voice_plan_window()
         fast_choice = (
             self.voice_panel.saved_inspection_choice
             if self.inspecting_voice_plan
@@ -4681,6 +4739,7 @@ class OfflineAudioPreparationDialog(QDialog):
         )
 
     def _voice_auditions_cancelled(self) -> None:
+        self._restore_voice_plan_window()
         self.auditioning_voices = False
         if self.inspecting_voice_plan:
             self.inspecting_voice_plan = False

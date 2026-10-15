@@ -496,7 +496,7 @@
       "path": "vntts/pregeneration_voices.py",
       "scope": "VoicePlanStore._resolve_group",
       "count": 1,
-      "maximum": 31
+      "maximum": 28
     },
     {
       "code": "C901",
@@ -902,7 +902,7 @@
       "path": "vntts/pregeneration_voices.py",
       "scope": "VoicePlanStore._resolve_group",
       "count": 1,
-      "maximum": 34
+      "maximum": 30
     },
     {
       "code": "PLR0912",
@@ -1154,7 +1154,7 @@
       "path": "vntts/app.py",
       "scope": "TrayApplication.shutdown",
       "count": 1,
-      "maximum": 57
+      "maximum": 52
     },
     {
       "code": "PLR0915",
@@ -1357,7 +1357,7 @@
       "path": "vntts/pregeneration_audition_ui.py",
       "scope": "VoiceAuditionPanel.__init__",
       "count": 1,
-      "maximum": 112
+      "maximum": 106
     },
     {
       "code": "PLR0915",
@@ -1371,7 +1371,7 @@
       "path": "vntts/pregeneration_voices.py",
       "scope": "VoicePlanStore._resolve_group",
       "count": 1,
-      "maximum": 110
+      "maximum": 103
     },
     {
       "code": "PLR0915",

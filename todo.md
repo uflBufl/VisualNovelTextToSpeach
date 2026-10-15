@@ -610,10 +610,20 @@ Planned implementation order after approval:
       route matches that choice. Repeat the flow by keyboard and screen reader.
       At minimum width and 200% text, open both source and phrase dropdowns near
       the display edges; require visible options and a keyboard return to the
-      selected control. Retain real desktop screenshots on both OSes; virtual Qt
+      selected control. Browse all 18 references, compare Ready with speech-check
+      warnings, copy a long status/error, and verify Play/Stop labels and control
+      positions at enlarged text. Retain real desktop screenshots on both OSes; virtual Qt
       geometry alone does not establish native screen-edge behavior.
 
 ## Active - Offline preparation hardware acceptance
+
+- [ ] On supported macOS and Windows model runtimes, start one-shot and live
+      Reading while a speculative reference preview is queued and while it is
+      rendering. Require cancellation to be requested before reading starts,
+      queued work to be removed, no background restart during startup, speech,
+      pause or stopping, and eventual model release without blocking the window.
+      Retain runtime cancellation/timing logs and audible playback evidence;
+      coordinator regression tests use a controlled renderer, not the real model.
 
 - [ ] On supported macOS and Windows hardware, start Reading while generation is
       incomplete, cross a prepared boundary, cancel and resume after restart, and
@@ -622,6 +632,18 @@ Planned implementation order after approval:
       and the minimum-width layout with increased text scaling.
 
 ## Investigate intermittent macOS Qt test crash
+
+- [ ] Isolate the Python 3.14.6 / PySide6 6.11.2 catalog SIGSEGV in
+      `OfflineAudioPreparationDialog._render_voice_routes` at `voice_routes.clear()`.
+      The October 15 faulthandler trace reaches the `voice-overview-missing` story;
+      native frames are `Shiboken::Object::destroy` and `QListWidgetItemWrapper`.
+      Enable faulthandler in catalog subprocesses, retain the preceding story
+      marker and narrow the item/currentItemChanged ownership sequence before
+      changing rebuild signals. Evidence: `.codex/investigations/reference-editor-ui/compact-footer-final-render.log`
+      and `combined-final-selector.log`; 16 current renders, 1500 rebuilds and 8
+      archived-main renders passed, which does not resolve the observed crash.
+      Gate: reproduce a bounded sequence and prove a lifetime fix with regression
+      coverage; do not treat a successful retry as a fix.
 
 - [ ] Reproduce/bisect the October 8 remainder SIGSEGV at `tests.test_history.DialogueHistoryDialogTest.test_slow_replay_keeps_qt_responsive_and_reports_completion` after the preceding exact full-discovery prefix. The October 9 portrait audit selector (196modules) reproduced the same slow-history-replay SIGSEGV; preserve `.codex/investigations/portrait-oct09-local.log` with the prior prefix. Preserve the latest 3565-selected-test crash prefix in `.codex/investigations/model-quality-oct08-local-complete.log` and the prior `.codex/investigations/queue-oct08-local-verified.log`; identical branch selection and an earlier local selection passed, so causality is not established. Gate: narrowed repeatable Qt/pooled-thread owner sequence and a deterministic lifetime regression; a successful retry does not resolve it. The October 9 task/command full-run remainder twice crashed at tests.test_replay_shutdown.ReplayShutdownTest.test_failed_stop_retains_real_snapshots_until_workers_finish in Shiboken mainThreadDeletionHandler after all five Qt shards passed; preserve .codex/investigations/task-command-oct09-local.log and task-command-oct09-local-verified.log with their exact prefixes. Unchanged main passed full3853; isolated replay, readiness/replay and preceding Qt prefixes passed. Readiness fixture ownership is now separately qualified on successful and failing assertions, and final local/fresh-main branch full3863 pass, but SIGSEGV causality remains unestablished. Narrow the owner sequence if it recurs; passing retries do not close this gate.
 

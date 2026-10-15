@@ -116,6 +116,7 @@ from vntts.pregeneration_activation import (
     OfflinePackActivator,
 )
 from vntts.pregeneration_audition import VoiceAuditionPreviewService
+from vntts.pregeneration_audition_queue import VoiceAuditionCoordinator
 from vntts.pregeneration_generation import OfflineGenerationWorker
 from vntts.pregeneration_pack import OfflinePackResult
 from vntts.pregeneration_setup import GameContent, PregenerationJob
@@ -1719,6 +1720,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self.moss_runtime = moss_runtime or RetainedMossRuntime()
         self.pocket_runtime = pocket_runtime or RetainedWorkerRuntime("pocket-tts")
+        self.voice_auditions = VoiceAuditionCoordinator(
+            VoiceAuditionPreviewService(
+                backend_factory=self.moss_runtime.benchmark_backend
+            ),
+            background_available=self._voice_audition_background_available,
+        )
         self.controller = controller_factory(
             self.settings,
             profile_store=self.profile_store,
@@ -2051,10 +2058,23 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.moss_runtime_button.setEnabled(enabled)
         self.moss_runtime_action.setEnabled(enabled)
 
+    def _voice_audition_background_available(self) -> bool:
+        dialog = self.pregeneration_dialog
+        reading = self._runtime_control_state()
+        return not (
+            self._shutting_down
+            or self._controller_busy
+            or reading.active
+            or reading.transition is not None
+            or dialog is not None
+            and (dialog.generating or dialog.recovering)
+        )
+
     def toggle_moss_runtime(self) -> None:
         if self.settings.speech_backend != "moss-tts" or self._shutting_down:
             return
         if self.moss_runtime.loaded:
+            self.voice_auditions.suspend()
             self.moss_runtime.unload()
             self.set_status("OpenMOSS unloaded. It will load again on the next speech.")
             self._refresh_speech_runtime()
@@ -2218,6 +2238,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
             self.dashboard.show_stories()
             return
+        self.voice_auditions.suspend()
         self._show_preparation_reading(runtime_settings)
         if not self.settings.onboarding_completed:
             self.run_onboarding()
@@ -2330,6 +2351,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             or not self._runtime_control_state().can_read
         ):
             return
+        self.voice_auditions.suspend()
         self.controller.read_once()
 
     def toggle_live(self) -> bool:
@@ -2436,6 +2458,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _toggle_controller_live(self) -> bool:
+        self.voice_auditions.suspend()
         running = self.controller.toggle_live()
         self.signals.live_changed.emit(running)
         return running
@@ -2468,6 +2491,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "is unavailable"
             )
             return False
+        self.voice_auditions.suspend()
         self._live_scope_generation = self._lifecycle_generation
         self.set_status("Identifying the current story chapter...")
         self.live_scope_runner.start(identify)
@@ -2541,6 +2565,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         prompt.exec()
         if prompt.clickedButton() is continue_button:
+            self.voice_auditions.suspend()
             running = bool(self.controller.start_live_from_ocr())
             self.signals.live_changed.emit(running)
             self.set_status(
@@ -3128,9 +3153,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return None
         dialog = OfflineAudioPreparationDialog(
             self.settings,
-            audition_service=VoiceAuditionPreviewService(
-                backend_factory=self.moss_runtime.benchmark_backend
-            ),
+            audition_service=self.voice_auditions.session(),
             generator=OfflineGenerationWorker(
                 backend_factory=self.moss_runtime.benchmark_backend
             ),
@@ -4559,11 +4582,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.tray.deleteLater()
         self.menu.deleteLater()
 
+    def _close_retained_runtimes(self) -> None:
+        self.controller.shutdown_complete.wait()
+        self.voice_auditions.close()
+        self.moss_runtime.shutdown()
+        self.pocket_runtime.shutdown()
+
     def shutdown(self) -> None:
         if self._shutting_down:
             return
         self.speech_runtime_timer.stop()
         self._shutting_down = True
+        self.voice_auditions.suspend()
         if self.narrator_dialog is not None:
             self.narrator_dialog.close()
         if self.pregeneration_dialog is not None:
@@ -4608,19 +4638,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.hotkey_listener.stop()
             self.hotkey_listener = None
         shutdown_complete = self.controller.shutdown_complete
-        moss_runtime = self.moss_runtime
-        pocket_runtime = self.pocket_runtime
-
-        def close_retained_runtimes() -> None:
-            shutdown_complete.wait()
-            moss_runtime.shutdown()
-            pocket_runtime.shutdown()
-
         if shutdown_complete.is_set():
-            close_retained_runtimes()
+            self._close_retained_runtimes()
         else:
             Thread(
-                target=close_retained_runtimes,
+                target=self._close_retained_runtimes,
                 name="retained-runtime-shutdown",
                 daemon=True,
             ).start()

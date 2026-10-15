@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
     from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
     from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
+    from vntts.pregeneration_audition_ui import VoiceAuditionPanel
     from vntts.pregeneration_queue import PregenerationInput
     from vntts.pregeneration_setup import GameContent, PregenerationJob
     from vntts.pregeneration_ui import OfflineAudioPreparationDialog
@@ -360,7 +361,6 @@ def _voice_audition_story(
     resources: ExitStack,
     write_sample: Callable[[Path], None],
 ) -> OfflineAudioPreparationDialog:
-    from vntts.document_identity import sha256_file
 
     if state.startswith("compact"):
         _compact_voice_audition(dialog)
@@ -388,7 +388,9 @@ def _voice_audition_story(
     panel = dialog.voice_panel
     actions = {
         "alternate": lambda: panel.voice_reference.setCurrentIndex(1),
-        "alternate-phrase": lambda: panel.preview_phrase.setCurrentIndex(1),
+        "alternate-phrase": lambda: panel.preview_phrase.setCurrentIndex(
+            panel.preview_phrase.findData(panel.current_group().alternate_sample_text)
+        ),
         "original-playing": panel.a_original.click,
         "preview-generating": panel.a_play.click,
         "details": lambda: panel.reference_details_toggle.setChecked(True),
@@ -396,23 +398,9 @@ def _voice_audition_story(
     if action := actions.get(state):
         action()
     elif state in {"preview-ready", "preview-playing"}:
-        preview = (
-            Path(
-                resources.enter_context(temporary_directory(prefix="vntts-ui-catalog-"))
-            )
-            / "preview.wav"
-        )
-        write_sample(preview)
-        panel.a_play.click()
-        panel.preview_runner._task_finished(
-            panel.preview_runner._serial,
-            SimpleNamespace(path=preview, audio_sha256=sha256_file(preview)),
-            None,
-        )
-        assert panel.a_play.isEnabled()
-        assert panel.a_play.text() == "Stop preview"
-        if state == "preview-ready":
-            panel.a_play.click()
+        _voice_preview_playback_story(panel, state, resources, write_sample)
+    elif state in {"content-warning", "content-details"}:
+        _voice_content_check_story(panel, state, resources, write_sample)
     elif state == "preview-failure":
         panel.a_play.click()
         with patch("vntts.support.record_game_import"):
@@ -435,6 +423,86 @@ def _voice_audition_story(
             assert not panel.active
             assert panel.retry_save_button.isEnabled()
     return dialog
+
+
+def _voice_preview_playback_story(
+    panel: VoiceAuditionPanel,
+    state: str,
+    resources: ExitStack,
+    write_sample: Callable[[Path], None],
+) -> None:
+    from vntts.document_identity import sha256_file
+
+    preview = (
+        Path(resources.enter_context(temporary_directory(prefix="vntts-ui-catalog-")))
+        / "preview.wav"
+    )
+    write_sample(preview)
+    panel.a_play.click()
+    panel.preview_runner._task_finished(
+        panel.preview_runner._serial,
+        SimpleNamespace(path=preview, audio_sha256=sha256_file(preview)),
+        None,
+    )
+    assert panel.a_play.isEnabled()
+    assert panel.a_play.text() == "Stop preview"
+    if state == "preview-ready":
+        panel.a_play.click()
+
+
+def _voice_content_check_story(
+    panel: VoiceAuditionPanel,
+    state: str,
+    resources: ExitStack,
+    write_sample: Callable[[Path], None],
+) -> None:
+    from vntts.document_identity import sha256_file
+    from vntts.pregeneration_audition import VoiceAuditionPreview, preview_identity
+    from vntts.preview_content_advisor import PreviewContentCheck
+    from vntts.speech_content_advice import assess_speech_content
+
+    plan, group = panel._require_plan(), panel.current_group()
+    candidate = panel._current_entry()[0]
+    text = panel.preview_phrase.currentData()
+    preview_path = (
+        Path(resources.enter_context(temporary_directory(prefix="vntts-ui-catalog-")))
+        / "preview.wav"
+    )
+    write_sample(preview_path)
+    prepared_preview = VoiceAuditionPreview(
+        identity=preview_identity(
+            candidate,
+            text,
+            backend=plan.synthesis_backend,
+            model=plan.synthesis_model,
+            language=plan.synthesis_language,
+            profile=plan.synthesis_profile,
+        ),
+        group_id=group.group_id,
+        candidate_source_id=candidate.source_id,
+        text=text,
+        backend=plan.synthesis_backend,
+        model=plan.synthesis_model,
+        generation_profile=plan.synthesis_profile,
+        seed=0,
+        path=preview_path,
+        audio_sha256=sha256_file(preview_path),
+        sample_rate=24000,
+        duration_seconds=1.0,
+        reused=True,
+    )
+    panel._previews[panel._preview_key(candidate)] = prepared_preview
+    panel._content_checks[candidate.source_id] = PreviewContentCheck(
+        source_id=candidate.source_id,
+        preview_identity=prepared_preview.identity,
+        audio_sha256=prepared_preview.audio_sha256,
+        text=text,
+        seed=0,
+        advice=assess_speech_content(text, text + " Wait."),
+    )
+    panel._show_current_candidate()
+    if state == "content-details":
+        panel.reference_details_toggle.setChecked(True)
 
 
 def _catalog_support_log(state: str) -> RuntimeSupportLog:
@@ -2681,6 +2749,8 @@ def _render_stories(
         "offline-preparation.failure": lambda: offline_preparation("failure"),
         "offline-preparation.completed": lambda: offline_preparation("completed"),
         "voice-audition.reference": lambda: voice_audition("reference"),
+        "voice-audition.content-warning": lambda: voice_audition("content-warning"),
+        "voice-audition.content-details": lambda: voice_audition("content-details"),
         "voice-audition.anonymous-source": lambda: voice_audition("anonymous-source"),
         "voice-audition.original-playing": lambda: voice_audition("original-playing"),
         "voice-audition.preview-generating": lambda: voice_audition(

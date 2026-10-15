@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 from shiboken6 import isValid  # noqa: E402
 
+from tests.pregeneration_fixtures import ambiguous_fixture  # noqa: E402
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.app import (  # noqa: E402
     SettingsDialog,
@@ -50,6 +51,7 @@ from vntts.ocr import DialogRegion  # noqa: E402
 from vntts.ocr_corrections import OCRCorrectionStore  # noqa: E402
 from vntts.onboarding import DiagnosticResult  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivationResult  # noqa: E402
+from vntts.pregeneration_audition import VoiceAuditionCancelled  # noqa: E402
 from vntts.pregeneration_pack import OfflinePackResult  # noqa: E402
 from vntts.pregeneration_setup import ContentDiscovery  # noqa: E402
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
@@ -2091,6 +2093,191 @@ class TrayApplicationTest(unittest.TestCase):
         controller.emergency_stop.assert_called_once_with()
         controller.toggle_live.assert_not_called()
         tray_application.shutdown()
+
+    def test_reading_start_cancels_active_and_queued_background_auditions(self):
+        for start in ("read_once", "toggle_live", "identify_scope"):
+            for active in (False, True):
+                with (
+                    self.subTest(start=start, active=active),
+                    TemporaryDirectory() as directory,
+                ):
+                    self._assert_background_audition_cancelled(
+                        start, active, Path(directory)
+                    )
+
+    def _background_audition_blocker(self, owner, service, active):
+        entered, release = Event(), Event()
+        cancellation = []
+
+        def generate(*_args, cancel_event, **_kwargs):
+            cancellation.append(cancel_event)
+            entered.set()
+            if not cancel_event.wait(5):
+                raise AssertionError("Reading did not cancel the preview")
+            raise VoiceAuditionCancelled("Reading has priority")
+
+        def block_queue():
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("Preview queue was not released")
+
+        service.generate.side_effect = generate
+        if not active:
+            owner._pool.submit(block_queue)
+        return entered, release, cancellation
+
+    def _assert_background_audition_cancelled(self, start, active, root):
+        controller = Mock(
+            is_ready=True,
+            is_live_running=False,
+            is_one_shot_read_running=False,
+        )
+        controller.live_reader.runtime_control_snapshot.return_value = {}
+        controller.unresolved_live_speakers.return_value = (
+            None if start == "identify_scope" else ()
+        )
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray._controller_ready = True
+        tray.live_scope_runner = Mock(active=False)
+        owner = tray.voice_auditions
+        service = Mock(root=root / "previews")
+        service.authorization_stamp.return_value = ()
+        service.lookup.return_value = None
+        owner.service = service
+        session = owner.session()
+        plan, group, _manifest = ambiguous_fixture(root)
+        source = group.candidates[0].source_id
+        entered, release, cancellation = self._background_audition_blocker(
+            owner, service, active
+        )
+        try:
+            session.prefetch(plan, ((group, source, None),), automatic=True)
+            self.assertTrue(entered.wait(5))
+            self.assertEqual(
+                session.preparation_state(plan, group, source),
+                "preparing" if active else "queued",
+            )
+
+            def start_reading():
+                self.assertFalse(session.preparing)
+                if active:
+                    self.assertTrue(cancellation[0].is_set())
+                else:
+                    self.assertEqual(owner._pending, [])
+                return True
+
+            controller.read_once.side_effect = start_reading
+            controller.toggle_live.side_effect = start_reading
+            tray.live_scope_runner.start.side_effect = lambda _identify: start_reading()
+            if start == "read_once":
+                tray.read_once()
+                controller.read_once.assert_called_once_with()
+            else:
+                tray.toggle_live()
+                if start == "identify_scope":
+                    tray.live_scope_runner.start.assert_called_once_with(
+                        controller.identify_live_scope
+                    )
+                else:
+                    controller.toggle_live.assert_called_once_with()
+            self.assertTrue(owner._suspended)
+        finally:
+            owner.suspend()
+            release.set()
+            owner._pool.submit(lambda: None).result(timeout=5)
+        if not active:
+            service.generate.assert_not_called()
+        tray.shutdown()
+
+    def test_background_auditions_wait_for_all_reading_states(self):
+        controller = Mock(
+            is_ready=True, is_live_running=False, is_one_shot_read_running=False
+        )
+        controller.live_reader.runtime_control_snapshot.return_value = {}
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.live_stop_runner = Mock(active=False)
+        for state in (
+            "idle",
+            "live",
+            "one-shot",
+            "starting",
+            "stopping",
+            "speaking",
+            "queued",
+            "paused",
+            "busy",
+            "shutting-down",
+        ):
+            with self.subTest(state=state):
+                controller.is_live_running = state == "live"
+                controller.is_one_shot_read_running = state == "one-shot"
+                controller.live_reader.runtime_control_snapshot.return_value = {
+                    flag: state == flag for flag in ("speaking", "queued", "paused")
+                }
+                tray._live_scope_generation = 0 if state == "starting" else None
+                tray.live_stop_runner.active = state == "stopping"
+                tray._controller_busy = state == "busy"
+                tray._shutting_down = state == "shutting-down"
+                self.assertEqual(
+                    tray._voice_audition_background_available(), state == "idle"
+                )
+        tray._shutting_down = False
+        tray._controller_busy = False
+        tray.shutdown()
+
+    def test_blocked_reading_does_not_suspend_background_auditions(self):
+        controller = Mock(
+            is_ready=True, is_live_running=False, is_one_shot_read_running=False
+        )
+        controller.live_reader.runtime_control_snapshot.return_value = {}
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray._controller_ready = True
+        for blocked in ("busy", "modal", "narrator", "shutting-down"):
+            with (
+                self.subTest(blocked=blocked),
+                patch.object(tray.voice_auditions, "suspend") as suspend,
+                patch(
+                    "vntts.app.QApplication.activeModalWidget",
+                    return_value=object() if blocked == "modal" else None,
+                ),
+            ):
+                tray._controller_busy = blocked == "busy"
+                tray._shutting_down = blocked == "shutting-down"
+                tray.narrator_dialog = Mock() if blocked == "narrator" else None
+                tray.read_once()
+                self.assertFalse(tray.toggle_live())
+                suspend.assert_not_called()
+        tray._shutting_down = False
+        tray.narrator_dialog = None
+        controller.read_once.assert_not_called()
+        controller.toggle_live.assert_not_called()
+        tray.pregeneration_dialog = Mock()
+        tray.pregeneration_dialog.has_pending_work.return_value = True
+        with (
+            patch.object(tray.voice_auditions, "suspend") as suspend,
+            patch.object(tray, "_preparation_runtime_settings", return_value=None),
+        ):
+            tray.prepare_reading()
+            suspend.assert_not_called()
+        tray.pregeneration_dialog = None
+        controller.unresolved_live_speakers.return_value = None
+        controller.identify_live_scope = None
+        with patch.object(tray.voice_auditions, "suspend") as suspend:
+            self.assertFalse(tray.toggle_live())
+            suspend.assert_not_called()
+        tray.shutdown()
 
     def test_stop_reading_cancels_live_and_one_time_speech(self):
         controller = Mock(is_live_running=True)

@@ -6,12 +6,14 @@ import hashlib
 import json
 import os
 import secrets
+import sys
 import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from io import BytesIO
 from pathlib import Path
+from stat import S_ISREG
 from time import monotonic
 from typing import BinaryIO, NamedTuple, Protocol, TypeAlias
 
@@ -65,6 +67,8 @@ from vntts.synthesis import (
 from vntts.tts_benchmark import create_backend
 from vntts.voices import CharacterVoiceRegistry
 
+COMPARISON_PREVIEW_TEXT = "The storm has passed. We can continue our journey."
+
 
 class VoiceAuditionError(RuntimeError):
     """An exact player voice audition could not be rendered safely."""
@@ -76,6 +80,10 @@ class VoiceAuditionCancelled(VoiceAuditionError):
 
 class VoiceAuditionIncomplete(VoiceAuditionError):
     """The provider stopped without producing a complete audition."""
+
+
+class VoiceAuditionRejected(VoiceAuditionError):
+    """Reference or generated audio failed an objective audio check."""
 
 
 class _Cancellation(Protocol):
@@ -179,6 +187,83 @@ class VoiceAuditionPreviewService:
         """The currently loaded preview engine, for read-only UI status."""
         return self._backend
 
+    def can_prefetch(self, plan: VoicePlan) -> bool:
+        """Speculation may reuse an explicitly started engine, never start one."""
+        return (
+            not self._closed
+            and self._backend is not None
+            and self._backend_config == _backend_config(plan)
+        )
+
+    def lookup(
+        self,
+        plan: VoicePlan,
+        group: VoiceGroup,
+        candidate_source_id: str,
+        *,
+        text: str | None = None,
+        cancel_event: _Cancellation | None = None,
+    ) -> VoiceAuditionPreview | None:
+        """Validate a saved preview without acquiring the model/render lock."""
+        if self._closed:
+            raise VoiceAuditionError("Voice audition service is closed")
+        candidate = _validate_request(plan, group, candidate_source_id)
+        preview_text = _preview_text(group, text)
+        identity = preview_identity(
+            candidate,
+            preview_text,
+            backend=plan.synthesis_backend,
+            model=plan.synthesis_model,
+            language=plan.synthesis_language,
+            profile=plan.synthesis_profile,
+        )
+        target = self.root / f"{identity}.wav"
+        if not target.exists():
+            _raise_if_cancelled(_CombinedCancellation(cancel_event))
+            return None
+        _preflight_preview(plan, candidate, _CombinedCancellation(cancel_event))
+        try:
+            with exclusive_advisory_lock(self.root / f"{identity}.lock"):
+                preview, _seed = _cached_preview_for_request(
+                    target,
+                    identity,
+                    plan,
+                    group,
+                    candidate,
+                    preview_text,
+                    lambda _message: None,
+                )
+        except AdvisoryLockBusyError:
+            return None
+        _raise_if_cancelled(_CombinedCancellation(cancel_event))
+        return preview
+
+    def authorization_stamp(
+        self, plan: VoicePlan, group: VoiceGroup, candidate_source_id: str
+    ) -> tuple[tuple[object, ...], ...]:
+        """Cheap change detection after checksum admission, never an admission check."""
+        candidate = _validate_request(plan, group, candidate_source_id)
+        registry = (
+            CharacterVoiceRegistry.from_file(plan.voice_manifest)
+            if plan.voice_manifest
+            else CharacterVoiceRegistry()
+        )
+        voice = registry.resolve_source(candidate.source_id)
+        if voice is None:
+            raise VoiceAuditionError("Voice candidate is unavailable")
+        paths = ([Path(plan.voice_manifest)] if plan.voice_manifest else []) + [
+            Path(path) for path in voice.references
+        ]
+        return _file_stamps(paths)
+
+    def authorization_unchanged(self, stamp: tuple[tuple[object, ...], ...]) -> bool:
+        return stamp == _file_stamps([Path(str(entry[0])) for entry in stamp])
+
+    def audio_stamp(
+        self, preview: VoiceAuditionPreview
+    ) -> tuple[tuple[object, ...], ...]:
+        return _file_stamps([preview.path, _preview_manifest_path(preview.path)])
+
     def generate(
         self,
         plan: VoicePlan,
@@ -199,7 +284,14 @@ class VoiceAuditionPreviewService:
             _raise_if_cancelled(cancellation)
             candidate = _validate_request(plan, group, candidate_source_id)
             preview_text = _preview_text(group, text)
-            identity = _preview_identity(plan, group, candidate, preview_text)
+            identity = preview_identity(
+                candidate,
+                preview_text,
+                backend=plan.synthesis_backend,
+                model=plan.synthesis_model,
+                language=plan.synthesis_language,
+                profile=plan.synthesis_profile,
+            )
             target = self.root / f"{identity}.wav"
             native_context = self._native_preview_context(plan, identity)
             from vntts.support import native_speech_context
@@ -360,14 +452,7 @@ class VoiceAuditionPreviewService:
         progress: ProgressReporter | None,
         notify: ProgressReporter,
     ) -> None:
-        config = BackendConfig(
-            backend=plan.synthesis_backend,
-            model=plan.synthesis_model,
-            language=plan.synthesis_language,
-            profile=plan.synthesis_profile,
-            pocket_voice_cloning=plan.pocket_voice_cloning,
-            xtts_terms_accepted=plan.xtts_terms_accepted,
-        )
+        config = _backend_config(plan)
         if self._backend is not None and self._backend_config == config:
             self._backend.registry = registry
             return
@@ -694,7 +779,8 @@ def _preview_text(group: VoiceGroup, text: str | None) -> str:
     if (
         not isinstance(selected, str)
         or not selected.strip()
-        or selected not in {group.sample_text, group.alternate_sample_text}
+        or selected
+        not in {COMPARISON_PREVIEW_TEXT, group.sample_text, group.alternate_sample_text}
     ):
         raise VoiceAuditionError("Voice audition text is invalid")
     return selected
@@ -755,30 +841,132 @@ def _load_candidate_registry(
     return CharacterVoiceRegistry((voice,))
 
 
-def _preview_identity(
-    plan: VoicePlan, group: VoiceGroup, candidate: VoiceCandidate, text: str
+def preview_identity(
+    candidate: VoiceCandidate,
+    text: str,
+    *,
+    backend: str,
+    model: str | None,
+    language: str | None,
+    profile: str,
 ) -> str:
+    """Bind preview and advisory evidence to the exact synthesis inputs."""
     document = {
-        "group_id": group.group_id,
-        "decision_context_sha256": group.decision_context_sha256,
-        "candidate": candidate.to_document(),
+        "version": 2,
+        "references": candidate.reference_sha256s,
+        "speaker": candidate.source_speaker
+        if not candidate.reference_sha256s or backend == "coqui-xtts"
+        else None,
+        "reference_transcript": candidate.reference_transcript,
         "text": text,
-        "backend": plan.synthesis_backend,
-        "model": plan.synthesis_model,
-        "language": plan.synthesis_language,
-        "profile": plan.synthesis_profile,
-        "controls": plan.synthesis_controls_sha256,
-        "seed": None if plan.synthesis_backend == "pocket-tts" else 0,
+        "backend": backend,
+        "model": model,
+        "language": language,
+        "profile": profile,
+        "seed": None if backend == "pocket-tts" else 0,
     }
-    if plan.synthesis_backend == "moss-tts":
+    from vntts.runtime_paths import (
+        RUNTIME_ENVIRONMENT_VARIABLES,
+        source_runtime_project,
+    )
+
+    runtime_project = source_runtime_project(backend)
+    if runtime_project is not None:
+        document["runtime_recipe"] = [
+            sha256_file(runtime_project / name)
+            for name in ("pyproject.toml", "uv.lock")
+        ]
+    runtime_variable = RUNTIME_ENVIRONMENT_VARIABLES.get(backend)
+    document["runtime_override"] = (
+        os.environ.get(runtime_variable, "") if runtime_variable else None
+    )
+    if backend == "qwen-tts":
+        from vntts.qwen_backend import (
+            QWEN_CUDA_MODEL,
+            QWEN_CUDA_REVISION,
+            QWEN_MODEL,
+            QWEN_REVISION,
+        )
+
+        document["model"] = (
+            (QWEN_CUDA_MODEL, QWEN_CUDA_REVISION)
+            if sys.platform == "win32"
+            else (QWEN_MODEL, QWEN_REVISION)
+        )
+    if backend == "moss-tts":
         from vntts.moss_cpp_backend import (
             NATIVE_GENERATION_CONTRACT,
             moss_cpp_requested,
         )
 
-        if moss_cpp_requested(plan.synthesis_model):
+        if moss_cpp_requested(model):
             document["native_generation_contract"] = NATIVE_GENERATION_CONTRACT
+            from vntts.moss_cpp_installation import configured_paths
+            from vntts.speech_backend_runtime import _source_identity
+
+            document["native_files"] = [
+                _source_identity(path) for path in configured_paths(model)
+            ]
+            document["native_controls"] = {
+                name: os.environ.get(name)
+                for name in (
+                    "VNTTS_MOSS_GPU_LAYERS",
+                    "VNTTS_MOSS_AUX_CPU",
+                    "VNTTS_MOSS_CONTEXT",
+                    "VNTTS_MOSS_AUX_CPU_THREADS",
+                    "VNTTS_MOSS_QUALIFY_ADAPTIVE",
+                )
+            }
+        else:
+            from vntts.speech_backend import default_moss_tts_model
+
+            document["model"] = (
+                model or os.environ.get("VNTTS_MOSS_MODEL") or default_moss_tts_model
+            )
+            from huggingface_hub import try_to_load_from_cache
+
+            model = str(document["model"])
+            cached = (
+                try_to_load_from_cache(model, "config.json")
+                if not Path(model).is_dir()
+                else str(Path(model) / "config.json")
+            )
+            if isinstance(cached, str) and Path(cached).is_file():
+                document["model_snapshot"] = (
+                    str(Path(cached).parent),
+                    sha256_file(cached),
+                )
     return canonical_document_sha256(document)
+
+
+def _file_stamps(paths: list[Path]) -> tuple[tuple[object, ...], ...]:
+    stamps = []
+    for path in paths:
+        stat = path.stat(follow_symlinks=False)
+        if not S_ISREG(stat.st_mode) or path.is_junction():
+            raise VoiceAuditionError("Voice input is no longer a regular file")
+        stamps.append(
+            (
+                str(path),
+                stat.st_dev,
+                stat.st_ino,
+                stat.st_size,
+                stat.st_mtime_ns,
+                stat.st_ctime_ns,
+            )
+        )
+    return tuple(stamps)
+
+
+def _backend_config(plan: VoicePlan) -> BackendConfig:
+    return BackendConfig(
+        plan.synthesis_backend,
+        plan.synthesis_model,
+        plan.synthesis_language,
+        plan.synthesis_profile,
+        plan.pocket_voice_cloning,
+        plan.xtts_terms_accepted,
+    )
 
 
 def _native_moss_preview(plan: VoicePlan) -> bool:
@@ -869,7 +1057,7 @@ def _preflight_candidate_references(
         try:
             report = analyze_reference(reference)
         except ValueError as error:
-            raise VoiceAuditionError(
+            raise VoiceAuditionRejected(
                 f"Voice reference {index + 1} failed objective preflight: {error}"
             ) from error
         if report["sha256"] != candidate.reference_sha256s[index]:
@@ -878,7 +1066,7 @@ def _preflight_candidate_references(
             )
         if report["objective_preflight"] != "pass":
             reasons = ", ".join(report["rejection_reasons"])
-            raise VoiceAuditionError(
+            raise VoiceAuditionRejected(
                 f"Voice reference {index + 1} failed objective preflight: {reasons}"
             )
 
@@ -897,7 +1085,7 @@ def _inspect_preview(path: Path | BinaryIO, text: str) -> AudioQuality:
         _record_preview_quality(
             "rejected", "speech-silence", audio_quality, error.quality
         )
-        raise VoiceAuditionError(
+        raise VoiceAuditionRejected(
             f"Generated voice preview failed objective preflight: {error}"
         ) from error
     except BulkGenerationError as error:
@@ -906,7 +1094,7 @@ def _inspect_preview(path: Path | BinaryIO, text: str) -> AudioQuality:
             "wav-validation" if audio_quality is None else "invalid-wav",
             audio_quality,
         )
-        raise VoiceAuditionError(
+        raise VoiceAuditionRejected(
             f"Generated voice preview failed objective preflight: {error}"
         ) from error
     _record_preview_quality("accepted", "accepted", audio_quality, speech_quality)
@@ -1032,9 +1220,12 @@ def _raise_if_cancelled(cancellation: _Cancellation) -> None:
 
 
 __all__ = [
+    "COMPARISON_PREVIEW_TEXT",
     "VoiceAuditionCancelled",
     "VoiceAuditionError",
     "VoiceAuditionIncomplete",
+    "VoiceAuditionRejected",
     "VoiceAuditionPreview",
     "VoiceAuditionPreviewService",
+    "preview_identity",
 ]

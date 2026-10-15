@@ -3621,7 +3621,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             pool = ManualThreadPool()
             voice_plan_store = Mock()
 
-            def create(_job, _settings, *, cancellation, ignore_decisions=False):
+            def create(
+                _job, _settings, *, cancellation, ignore_decisions=False, **_options
+            ):
                 self.assertFalse(ignore_decisions)
                 self.assertTrue(cancellation.is_set())
                 raise PregenerationVoiceCancelled("cancelled")

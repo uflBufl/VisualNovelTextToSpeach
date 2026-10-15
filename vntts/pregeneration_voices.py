@@ -551,6 +551,7 @@ class VoicePlanStore:
         manifest_path: str | Path | None = None,
         cancellation: Cancellation | None = None,
         ignore_decisions: bool = False,
+        reference_qualifier: Callable[[VoicePlan], Mapping[str, str]] | None = None,
     ) -> VoicePlan:
         rollback = (
             self.voice_library.binding_rollback()
@@ -565,6 +566,7 @@ class VoicePlanStore:
                 cancellation=cancellation,
                 ignore_decisions=ignore_decisions,
                 rollback=rollback,
+                reference_qualifier=reference_qualifier,
             )
         except Exception as error:
             if self.voice_library is not None and rollback is not None:
@@ -607,6 +609,7 @@ class VoicePlanStore:
         cancellation: Cancellation | None = None,
         ignore_decisions: bool = False,
         rollback: VoiceBindingRollback | None = None,
+        reference_qualifier: Callable[[VoicePlan], Mapping[str, str]] | None = None,
     ) -> VoicePlan:
         _raise_if_cancelled(cancellation)
         phase_started, cpu_started = perf_counter(), process_time()
@@ -703,6 +706,7 @@ class VoicePlanStore:
                     saved_groups,
                     person_aliases,
                     rollback,
+                    reference_qualifier is not None,
                 )
             )
             if self.voice_library is not None:
@@ -733,7 +737,85 @@ class VoicePlanStore:
                 records.values(), person_aliases
             ),
         )
+        if reference_qualifier is not None:
+            selections = reference_qualifier(plan)
+            _raise_if_cancelled(cancellation)
+            plan = self._apply_automatic_references(
+                plan, selections, registry, controls, rollback, cancellation
+            )
+        _raise_if_cancelled(cancellation)
         return self._persist_plan(job, plan)
+
+    def _apply_automatic_references(
+        self,
+        plan: VoicePlan,
+        selections: Mapping[str, str],
+        registry: CharacterVoiceRegistry,
+        controls: SynthesisControls,
+        rollback: VoiceBindingRollback | None,
+        cancellation: Cancellation | None,
+    ) -> VoicePlan:
+        groups: list[VoiceGroup] = []
+        for group in plan.groups:
+            _raise_if_cancelled(cancellation)
+            source_id = selections.get(group.group_id)
+            if source_id is None or group.resolution.startswith("saved-"):
+                groups.append(group)
+                continue
+            candidate = next(
+                (value for value in group.candidates if value.source_id == source_id),
+                None,
+            )
+            selected = _candidate_from_source(source_id, registry)
+            identity = _candidate_identity((source_id, selected)) if selected else None
+            if (
+                candidate is None
+                or selected is None
+                or identity is None
+                or (tuple(identity["references"]) != candidate.reference_sha256s)
+            ):
+                raise PregenerationVoiceError("Qualified voice reference changed")
+            resolution = (
+                "automatic-content-suggestion"
+                if source_id != group.candidates[0].source_id
+                else "automatic-reference-selection"
+            )
+            if self.voice_library is not None:
+                binding = remember_voice_binding(
+                    self.voice_library,
+                    registry,
+                    group.character,
+                    source_id,
+                    variant_key=group.variant_key,
+                    method="automatic",
+                    evidence={"resolution": resolution},
+                    algorithm="voice-plan-v3-qualified",
+                    only_if_unbound=True,
+                    rollback=rollback,
+                )
+                if (
+                    binding.provenance.get("method") != "automatic"
+                    or binding.source_sha256s != candidate.reference_sha256s
+                    or (not binding.source_sha256s and binding.source_id != source_id)
+                ):
+                    raise PregenerationVoiceError(
+                        "Saved voice choice changed during voice planning; retry matching"
+                    )
+            groups.append(
+                replace(
+                    group,
+                    route="voice",
+                    source_id=source_id,
+                    source_character=selected.source_character or selected.character,
+                    source_speaker=selected.speaker,
+                    reference_sha256s=tuple(identity["references"]),
+                    control_sha256=_digest(
+                        {"controls": controls, "selected": identity}
+                    ),
+                    resolution=resolution,
+                )
+            )
+        return replace(plan, groups=tuple(groups))
 
     def _group_selected_lines(
         self,
@@ -1017,6 +1099,7 @@ class VoicePlanStore:
         saved_groups: Sequence[JsonObject],
         person_aliases: Mapping[str, str],
         rollback: VoiceBindingRollback | None,
+        defer_automatic_bindings: bool = False,
     ) -> VoiceGroup:
         records = tuple(value.record for value in values)
         character = values[0].character
@@ -1220,7 +1303,9 @@ class VoicePlanStore:
             selected_candidate = eligible_candidates[0]
             source_id = selected_candidate.source_id
             candidate = _candidate_from_source(source_id, registry)
-            if _requires_audition(eligible_candidates, records):
+            if assignment_source is None and _requires_audition(
+                eligible_candidates, records
+            ):
                 route = "needs-audition"
                 resolution = (
                     "linked-reference-needs-preview"
@@ -1234,14 +1319,13 @@ class VoicePlanStore:
                     candidate = _candidate_from_source(source_id, registry)
             else:
                 route = "voice"
-                if assignment_source:
-                    resolution = "saved-voice-assignment"
-                elif bound_source == source_id:
-                    resolution = "exact-source-voice-binding"
-                elif len(records) == 1 and len(eligible_candidates) > 1:
-                    resolution = "automatic-incidental-role"
-                else:
-                    resolution = "known-character-voice"
+                resolution = _selected_reference_resolution(
+                    selected_candidate,
+                    eligible_candidates,
+                    assignment_source,
+                    bound_source,
+                    len(records),
+                )
         else:
             route = "narrator"
             resolution = "automatic-narrator-fallback"
@@ -1252,7 +1336,7 @@ class VoicePlanStore:
                 else None
             )
         if self.voice_library is not None and assignment_source is None:
-            if route == "voice":
+            if route == "voice" and not defer_automatic_bindings:
                 remember_voice_binding(
                     self.voice_library,
                     registry,
@@ -1261,7 +1345,7 @@ class VoicePlanStore:
                     variant_key=variant_key,
                     method="automatic",
                     evidence={"resolution": resolution},
-                    algorithm="voice-plan-v1",
+                    algorithm="voice-plan-v2-advisory",
                     only_if_unbound=True,
                     rollback=rollback,
                 )
@@ -1895,6 +1979,24 @@ def _matching_independent_choice(
         ):
             return source, context
     return None
+
+
+def _selected_reference_resolution(
+    selected: VoiceCandidate,
+    candidates: tuple[VoiceCandidate, ...],
+    assignment_source: str | None,
+    bound_source: str | None,
+    line_count: int,
+) -> str:
+    if selected != candidates[0]:
+        return "automatic-content-suggestion"
+    if assignment_source:
+        return "saved-voice-assignment"
+    if bound_source == selected.source_id:
+        return "exact-source-voice-binding"
+    if line_count == 1 and len(candidates) > 1:
+        return "automatic-incidental-role"
+    return "known-character-voice"
 
 
 def _requires_audition(
