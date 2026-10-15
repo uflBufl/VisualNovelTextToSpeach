@@ -2828,7 +2828,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertTrue(dialog.progress_runtime.isVisible())
             dialog.progress_details_toggle.click()
             self.assertFalse(dialog.progress_runtime.isVisible())
-            self.assertEqual(dialog.play_ready_button.text(), "Start reading (1 ready)")
+            self.assertEqual(dialog.play_ready_button.text(), "Start reading")
             self.assertTrue(dialog.play_ready_button.isEnabled())
             dialog.play_ready_button.click()
             reading.assert_called_once_with()
@@ -2986,13 +2986,14 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.generating = True
             dialog._start_generation_progress()
             self.run_next_task(pool)
-            self.assertIn("Estimating", plain_label_text(dialog.progress_timing))
+            self.assertTrue(dialog.progress_timing.isHidden())
             self.assertNotIn(
                 "Last progress change", plain_label_text(dialog.progress_timing)
             )
             clock.return_value = 31
             dialog._refresh_progress_timing()
             self.assertIn("31s ago", plain_label_text(dialog.progress_timing))
+            self.assertFalse(dialog.progress_timing.isHidden())
             clock.return_value = 60
             dialog._poll_generation_progress()
             self.run_next_task(pool)

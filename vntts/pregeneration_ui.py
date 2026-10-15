@@ -713,7 +713,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_coverage.setAccessibleName("Final offline audio coverage")
         self.progress_coverage.setWordWrap(True)
         self._build_progress_story_readiness()
-        self.play_ready_button = QPushButton("Start reading ready dialogue")
+        self.play_ready_button = QPushButton("Start reading")
         self.play_ready_button.setAccessibleDescription(
             "Start the selected story while preparation continues in the background"
         )
@@ -2435,6 +2435,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._set_progress_visible(True)
         self.continue_button.setVisible(not self.has_pending_work())
         self.progress_phase.setText(phase)
+        self.progress_bar.show()
         settings, narrator = self._narrator_configuration_values()
         set_labeled_text(
             self.progress_configuration,
@@ -2587,7 +2588,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_coverage.clear()
         self.play_ready_button.show()
         self.play_ready_button.setEnabled(False)
-        self.play_ready_button.setText("Waiting for the first ready dialogue...")
         self._poll_generation_progress()
         self.progress_timer.start()
 
@@ -2644,10 +2644,8 @@ class OfflineAudioPreparationDialog(QDialog):
                 f"Waiting for progress ({age}s). Model loading may take time."
             )
             return
-        estimate = "Estimating remaining time..."
-        if self.recovering:
-            estimate = "Recovery time varies by failure."
-        elif self._progress_baseline is not None:
+        estimate = ""
+        if not self.recovering and self._progress_baseline is not None:
             started, baseline = self._progress_baseline
             completed = progress.completed - baseline
             remaining = max(0, self._generation_input.ready_items - progress.completed)
@@ -2663,7 +2661,9 @@ class OfflineAudioPreparationDialog(QDialog):
             f"Last progress change {age}s ago. " + self.progress_timing.toolTip()
         )
         self._set_progress_timing(
-            f"Last progress change {age}s ago. {estimate}" if age >= 30 else estimate
+            f"Last progress change {age}s ago. {estimate}".rstrip()
+            if age >= 30
+            else estimate
         )
 
     def _stop_generation_progress(self) -> None:
@@ -2711,11 +2711,6 @@ class OfflineAudioPreparationDialog(QDialog):
             for line_id in selection.line_ids
         )
         self.play_ready_button.setEnabled(ready_count > 0)
-        self.play_ready_button.setText(
-            f"Start reading ({ready_count} ready)"
-            if ready_count
-            else "Waiting for the first ready dialogue..."
-        )
         if self.recovering:
             self._set_recovery_status(
                 "Automatic recovery is working on the current dialogue."
@@ -2754,9 +2749,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_panel.hide()
         if self._generation_result is not None:
             self._render_generation_result(self._generation_result)
-        self.progress_bar.setRange(0, 1)
-        self.progress_bar.setValue(1)
-        self.progress_bar.setFormat("Audio saved")
         self.progress_counts.clear()
         self.progress_counts.hide()
         self._set_progress_runtime("")
@@ -2779,6 +2771,7 @@ class OfflineAudioPreparationDialog(QDialog):
             "Close leaves the current audio setup unchanged; the saved pack can be "
             "activated by reopening this preparation later.",
         )
+        self.progress_bar.hide()
         self._render_completed_story_readiness(live=live_fallbacks)
         coverage_rows = [
             ("Original game audio", f"{original} in this selection"),
