@@ -1528,6 +1528,8 @@ class MainTest(unittest.TestCase):
         reader.wait.side_effect = TimeoutError("reader did not stop")
         controller.live_reader = reader
         executor = ThreadPoolExecutor(max_workers=1)
+        self.addCleanup(executor.shutdown, wait=True)
+        self.addCleanup(release.set)
         controller.speech_executor = executor
 
         def blocked_worker():
@@ -1588,6 +1590,8 @@ class MainTest(unittest.TestCase):
         controller = AppController(AppSettings())
         controller.live_reader = Mock()
         executor = ThreadPoolExecutor(max_workers=1)
+        self.addCleanup(executor.shutdown, wait=True)
+        self.addCleanup(release.set)
         controller.speech_executor = executor
         executor.submit(lambda: (started.set(), release.wait()))
         self.assertTrue(started.wait(1))
