@@ -3036,7 +3036,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("confirm CPU/GPU", dialog.progress_runtime.text())
             self.assertIn("Prepared: 2", plain_label_text(dialog.progress_counts))
             self.assertIn("Failed: 1", plain_label_text(dialog.progress_counts))
-            self.assertIn("repaired before the next", dialog.progress_failures.text())
+            self.assertFalse(dialog.progress_failures.text())
+            self.assertFalse(dialog.progress_failures.isVisible())
             self.assertIn(
                 "only unfinished lines", dialog.progress_cancel_consequence.text()
             )
@@ -3339,9 +3340,23 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=ManualThreadPool(),
+                generator=Mock(),
+            )
+            dialog.select_all_button.click()
+            dialog._job = dialog.job_store.create_or_resume(
+                content, dialog.selected_story_ids()
             )
             dialog._generation_input = Mock(ready_items=3)
             dialog.recovering = True
+            dialog._start_generation_progress()
+            dialog._progress_finished(
+                OfflineGenerationProgress(
+                    generated=2, failed=1, ready_line_ids=("reverse1999:1",)
+                ),
+                None,
+            )
+            self.assertTrue(dialog.play_ready_button.isEnabled())
             generation = OfflineGenerationResult(
                 root / "output",
                 root / "state.json",
@@ -3364,6 +3379,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("not complete", dialog.resume_status.text())
             self.assertEqual(dialog.progress_bar.value(), 2)
             self.assertFalse(dialog.publishing_pack)
+            self.assertTrue(dialog.play_ready_button.isEnabled())
+            reading = Mock()
+            dialog.readingRequested.connect(reading)
+            dialog.play_ready_button.click()
+            reading.assert_called_once_with()
             dialog.deleteLater()
 
     def test_missing_content_has_one_plain_recovery_action(self):

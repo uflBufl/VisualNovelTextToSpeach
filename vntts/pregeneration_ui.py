@@ -652,6 +652,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.selection_status.setStyleSheet("font-weight: 600;")
         self.selection_status.hide()
         self.resume_status = QLabel()
+        self.resume_status.setTextFormat(Qt.TextFormat.PlainText)
         self.resume_status.setWordWrap(True)
         self.resume_status.setSizePolicy(
             QSizePolicy.Policy.Ignored,
@@ -665,7 +666,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.copy_resume_error.hide()
 
     def _build_progress_panel(self) -> None:
-        self.progress_panel = QGroupBox("Preparation progress")
+        self.progress_panel = QWidget()
         self.progress_panel.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Maximum,
@@ -765,6 +766,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _layout_progress_panel(self) -> None:
         progress_layout = QVBoxLayout(self.progress_panel)
+        progress_layout.setContentsMargins(8, 8, 8, 8)
         progress_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         progress_layout.addWidget(self.progress_phase)
         progress_layout.addWidget(self.resume_status)
@@ -2473,7 +2475,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_configuration.setToolTip(
             speech_configuration_label(settings, narrator=narrator)
         )
-        self.story_context.show()
         self._set_phase_detail(detail)
         self.progress_cancel_consequence.setText(cancel_consequence)
         self.progress_cancel_consequence.setVisible(bool(cancel_consequence))
@@ -2771,10 +2772,6 @@ class OfflineAudioPreparationDialog(QDialog):
             self._set_recovery_status(
                 "Automatic recovery is working on the current dialogue."
             )
-        elif progress.failed:
-            self._set_recovery_status(
-                "Each failed dialogue is repaired before the next starts."
-            )
         else:
             self._set_recovery_status("")
         self._refresh_story_statuses()
@@ -2785,7 +2782,14 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         self._render_generation_progress(
             OfflineGenerationProgress(
-                result.generated, result.failed, result.other_terminal
+                result.generated,
+                result.failed,
+                result.other_terminal,
+                ready_line_ids=(
+                    self._progress_snapshot.ready_line_ids
+                    if self._progress_snapshot is not None
+                    else ()
+                ),
             )
         )
 

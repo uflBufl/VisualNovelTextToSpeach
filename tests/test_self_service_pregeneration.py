@@ -370,12 +370,16 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 discovery=lambda: ContentDiscovery(()),
                 job_store=PregenerationJobStore(root / "jobs"),
             )
-            error = RuntimeError("C:\\models\\" + "mlx-model-segment-" * 20)
+            error = RuntimeError(
+                "<b>model.bin</b> &lt;missing&gt; C:\\models\\"
+                + "mlx-model-segment-" * 20
+            )
 
             dialog._generation_finished(None, error)
 
             details = f"Unable to generate offline audio: {error}"
             self.assertEqual(dialog.resume_status.text(), details)
+            self.assertEqual(dialog.resume_status.textFormat(), Qt.TextFormat.PlainText)
             dialog.copy_resume_error.click()
             self.assertEqual(self.application.clipboard().text(), details)
             self.assertEqual(
@@ -989,7 +993,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog.progress_details_toggle.click()
             self.application.processEvents()
             self.assertTrue(dialog.progress_configuration.isVisibleTo(dialog))
-            self.assertTrue(dialog.story_context.isVisibleTo(dialog))
+            self.assertFalse(dialog.story_context.isVisibleTo(dialog))
             self.assertFalse(dialog.engine_choice.isEnabled())
             self.assertFalse(dialog.model_choice.isEnabled())
             self.assertFalse(dialog.game_narrator_button.isEnabled())
