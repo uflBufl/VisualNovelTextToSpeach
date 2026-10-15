@@ -139,13 +139,24 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $false
           $testLog = Join-Path $env:RUNNER_TEMP "windows-unit-tests.log"
           uv run --frozen python scripts/run_ci_unittests.py discover -s tests *> $testLog
-          $testStatus = $LASTEXITCODE
-          $testOutput = [string](Get-Content -LiteralPath $testLog -Raw)
-          $logToken = [guid]::NewGuid().ToString('N')
-          Write-Output "::stop-commands::$logToken"
-          Write-Output $testOutput
-          Write-Output "::${logToken}::"
-          if ($testStatus -ne 0) {
+          exit $LASTEXITCODE
+
+      - name: Report Windows unit test failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $stage = 'read-log'
+          try {
+            $testLog = Join-Path $env:RUNNER_TEMP "windows-unit-tests.log"
+            $testOutput = [string](Get-Content -LiteralPath $testLog -Raw)
+            $logToken = [guid]::NewGuid().ToString('N')
+            Write-Output "::stop-commands::$logToken"
+            try {
+              Write-Output $testOutput
+            } finally {
+              Write-Output "::${logToken}::"
+            }
+            $stage = 'collect-context'
             $repoPythonFiles = @(git -C $env:GITHUB_WORKSPACE ls-files -- '*.py')
             $workspacePattern = [regex]::Escape($env:GITHUB_WORKSPACE.TrimEnd([char[]]'\/'))
             $framePattern = '^\s+File "' + $workspacePattern + '[\\/]([A-Za-z0-9_./\\-]+\.py)", line ([0-9]+),? in .*$'
@@ -159,7 +170,9 @@ jobs:
                 $repoPath = $Matches[1].Replace('\', '/')
                 $lineNumber = 0
                 if (($repoPythonFiles -contains $repoPath) -and [int]::TryParse($Matches[2], [ref]$lineNumber)) {
+                  $stage = 'read-source'
                   $sourceLines = @(Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $repoPath)).Count
+                  $stage = 'collect-context'
                   if ($lineNumber -ge 1 -and $lineNumber -le $sourceLines) {
                     $context.Add("${repoPath}:${lineNumber}")
                   }
@@ -176,9 +189,17 @@ jobs:
               'no structured failure context'
             }
             $summary = $summary.Substring(0, [Math]::Min(3500, $summary.Length))
-            Write-Output "::error title=Windows unit tests failed::Runner exited with code ${testStatus}. ${summary}"
+            $stage = 'report'
+            Write-Output "::error title=Windows unit tests failed::${summary}"
+          } catch {
+            $category = 'Other'
+            if ($_.CategoryInfo.Category -in @('ObjectNotFound', 'PermissionDenied', 'ReadError', 'InvalidData', 'InvalidOperation', 'OperationStopped')) {
+              $category = [string]$_.CategoryInfo.Category
+            }
+            $scriptLine = $_.InvocationInfo.ScriptLineNumber
+            Write-Output "::error title=Windows unit test diagnostics failed::stage=${stage}; script line=${scriptLine}; category=${category}"
+            exit 1
           }
-          exit $testStatus
 
   linux-x11-unit-tests:
     runs-on: ubuntu-latest

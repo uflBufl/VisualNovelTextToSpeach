@@ -1,5 +1,10 @@
 # TODO
 
+## Repair current GitHub CI failures
+
+- [ ] Preserve Windows failure diagnostics in a separate failure step, including abrupt termination of the primary PowerShell process; verify source-only annotations and run the affected-test selector before additional checks.
+- [ ] Diagnose the remaining Windows failure from the preserved log, fix its cause, and verify all 13 non-audit GitHub jobs on the temporary branch `codex/ci-verification-7f4e78be`. Keep the deferred dependency-audit failure unchanged and delete the temporary remote branch after verification.
+
 ## Follow the system audio output during playback
 
 - [ ] Verify hotplug on real macOS and Windows headphones while Reading, sample playback and headless CLI playback are active, including disconnect/reconnect and recovery after no output is available.
