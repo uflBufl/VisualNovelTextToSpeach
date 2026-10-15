@@ -147,7 +147,7 @@ def _run_shard(system: str, name: str, inventory: Path) -> int:
         name,
         str(inventory),
     ]
-    transcript = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+    transcript = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
     with cleanup_on_exit(transcript.close, description="Unittest transcript cleanup"):
         try:
             completed = subprocess.run(

@@ -113,6 +113,7 @@ jobs:
     timeout-minutes: 60
     env:
       QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
 
     steps:
       - uses: actions/checkout@v5

@@ -1,8 +1,9 @@
 import json
+import os
 import subprocess
 import sys
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory, TemporaryFile
@@ -12,6 +13,7 @@ from scripts.run_ci_unittests import (
     _flatten_suite,
     _isolate_pregeneration_tests,
     _run_exact_test_file,
+    _run_shard,
     _run_sharded_full_discovery,
     main,
     partition_ui_test_ids,
@@ -252,6 +254,38 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             run.call_args.args[0][-3:-1],
             ["--shard", "qt-app"],
         )
+
+    def test_non_utf8_shard_output_preserves_failure_status_and_annotation(self):
+        for timed_out, status, outcome in (
+            (False, 1, "failed"),
+            (True, 124, "timed out"),
+        ):
+            with self.subTest(outcome=outcome):
+                output = StringIO()
+                errors = StringIO()
+
+                def run(command, *, stdout, **_kwargs):
+                    os.write(stdout.fileno(), b"FAIL: test_cp1252\ncaf\xe9\n")
+                    if timed_out:
+                        raise subprocess.TimeoutExpired(command, 60)
+                    return subprocess.CompletedProcess(command, 1)
+
+                with (
+                    patch("scripts.run_ci_unittests.subprocess.run", side_effect=run),
+                    patch.dict(os.environ, {"GITHUB_ACTIONS": "1"}),
+                    redirect_stdout(output),
+                    redirect_stderr(errors),
+                ):
+                    self.assertEqual(
+                        _run_shard("Windows", "qt-assets", Path("inventory.json")),
+                        status,
+                    )
+                self.assertEqual(output.getvalue(), "FAIL: test_cp1252\ncaf\ufffd\n")
+                self.assertIn(
+                    f"::error title=Windows qt-assets tests {outcome}::",
+                    errors.getvalue(),
+                )
+                self.assertIn("caf\ufffd", errors.getvalue())
 
     def test_selected_module_runs_only_its_macos_shard(self):
         test_ids = (
