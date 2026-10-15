@@ -54,13 +54,21 @@ class DialogRegionTest(unittest.TestCase):
     def test_deep_region_json_reports_load_error_without_rewriting(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "region.json"
-            payload = b"[" * 100000 + b"0" + b"]" * 100000
+            payload = b"[0]"
             path.write_bytes(payload)
-            with self.assertRaisesRegex(
-                ValueError, "Unable to load dialog region"
-            ) as caught:
+            decoder_error = RecursionError("native parser limit")
+            with (
+                patch(
+                    "vntts.json_types.json.loads", side_effect=decoder_error
+                ) as decode,
+                self.assertRaisesRegex(
+                    ValueError, "Unable to load dialog region"
+                ) as caught,
+            ):
                 load_dialog_region(path)
+            decode.assert_called_once_with(payload.decode("utf-8"))
             self.assertIsInstance(caught.exception.__cause__, json.JSONDecodeError)
+            self.assertIs(caught.exception.__cause__.__cause__, decoder_error)
             self.assertEqual(path.read_bytes(), payload)
 
     def test_non_finite_coordinates_are_rejected_before_cropping(self):

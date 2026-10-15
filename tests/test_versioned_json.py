@@ -3,7 +3,7 @@ import unittest
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from durable_file import atomic_write_bytes, atomic_write_json
 
@@ -158,18 +158,20 @@ class VersionedJsonTest(unittest.TestCase):
             self.assertEqual(revision, sha256(original).digest())
 
     def test_nested_json_uses_parse_errors_and_fresh_fallbacks(self):
-        with TemporaryDirectory() as directory:
+        decoder_error = RecursionError("native parser limit")
+        with (
+            TemporaryDirectory() as directory,
+            patch("vntts.json_types.json.loads", side_effect=decoder_error) as decode,
+        ):
             path = Path(directory) / "document.json"
-            payload = (
-                '{"schema_version":1,"value":' + "[" * 100000 + "0" + "]" * 100000 + "}"
-            )
+            payload = '{"schema_version":1,"value":[0]}'
             path.write_text(payload, encoding="utf-8")
             before = path.read_bytes()
             with self.assertRaisesRegex(json.JSONDecodeError, "nesting") as caught:
                 read_versioned_json(
                     path, schema_version=1, document_name="test document"
                 )
-            self.assertIsInstance(caught.exception.__cause__, RecursionError)
+            self.assertIs(caught.exception.__cause__, decoder_error)
             warnings = []
             revisions = []
             decoded = []
@@ -191,6 +193,7 @@ class VersionedJsonTest(unittest.TestCase):
             self.assertEqual(revisions, [])
             self.assertEqual(len(warnings), 2)
             self.assertTrue(all("nesting" in warning for warning in warnings))
+            self.assertEqual(decode.call_args_list, [call(before)] * 3)
             self.assertEqual(path.read_bytes(), before)
 
     def test_legacy_reader_delegates_to_snapshot_payload(self):
