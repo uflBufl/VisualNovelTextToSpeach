@@ -2,6 +2,7 @@ import json
 import os
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, get_ident
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QLabel,
     QMessageBox,
     QSizePolicy,
+    QWidget,
 )
 from shiboken6 import isValid  # noqa: E402
 
@@ -92,6 +94,95 @@ class TrayApplicationTest(unittest.TestCase):
         )
         environment.start()
         self.addCleanup(environment.stop)
+        self.trays = []
+        self.settings_dialogs = []
+        original_tray_init = TrayApplication.__init__
+        original_settings_init = SettingsDialog.__init__
+
+        def initialize_tray(tray, *args, **kwargs):
+            original_tray_init(tray, *args, **kwargs)
+            self.trays.append(tray)
+
+        def initialize_settings(dialog, *args, **kwargs):
+            original_settings_init(dialog, *args, **kwargs)
+            self.settings_dialogs.append(dialog)
+
+        self.enterContext(patch.object(TrayApplication, "__init__", initialize_tray))
+        self.enterContext(patch.object(SettingsDialog, "__init__", initialize_settings))
+        self.addCleanup(self._delete_qt_objects)
+        self.addCleanup(self._drain_qt_workers)
+        self.addCleanup(self._shutdown_trays)
+
+    def _shutdown_trays(self):
+        with ExitStack() as cleanup:
+            for tray in self.trays:
+                if isValid(tray):
+                    cleanup.callback(tray.shutdown)
+
+    def _drain_qt_workers(self):
+        self.assertTrue(QThreadPool.globalInstance().waitForDone(3000))
+        self.application.processEvents()
+
+    def _delete_qt_objects(self):
+        objects = [*self.settings_dialogs]
+        for tray in self.trays:
+            objects.extend(
+                value for value in vars(tray).values() if isinstance(value, QWidget)
+            )
+        objects.extend(self.trays)
+        for value in objects:
+            if isValid(value):
+                if isinstance(value, QWidget):
+                    value.close()
+                value.deleteLater()
+                QCoreApplication.sendPostedEvents(value, QEvent.Type.DeferredDelete)
+
+    def test_completed_and_failed_cases_delete_owned_qt_objects_on_gui_thread(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail):
+                case = TrayApplicationTest(
+                    "test_saved_backend_retry_reloads_restored_runtime"
+                )
+                destroyed = []
+                original_delete = case._delete_qt_objects
+
+                def observe_deletion():
+                    for tray in case.trays:
+                        for value in (tray.dashboard, tray.compact_controller, tray):
+                            value.destroyed.connect(
+                                lambda: destroyed.append(get_ident()),
+                                Qt.ConnectionType.DirectConnection,
+                            )
+                    original_delete()
+
+                case._delete_qt_objects = observe_deletion
+                if fail:
+                    original_wait = case.wait_until
+
+                    def fail_after_worker(*args, **kwargs):
+                        original_wait(*args, **kwargs)
+                        raise AssertionError("injected failure after tray worker")
+
+                    case.wait_until = fail_after_worker
+                result = unittest.TestResult()
+                case.run(result)
+                self.assertEqual(result.errors, [])
+                self.assertEqual(bool(result.failures), fail)
+                self.assertTrue(
+                    all(
+                        "injected failure" in failure
+                        for _test, failure in result.failures
+                    )
+                )
+                self.assertTrue(case.trays)
+                self.assertEqual(destroyed, [get_ident()] * (3 * len(case.trays)))
+                self.assertTrue(
+                    all(
+                        not isValid(value)
+                        for tray in case.trays
+                        for value in (tray.dashboard, tray.compact_controller, tray)
+                    )
+                )
 
     def wait_until(self, predicate, *, timeout_ms=2000):
         for _ in range(max(1, timeout_ms // 5)):
@@ -188,6 +279,8 @@ class TrayApplicationTest(unittest.TestCase):
         controller.live_reader = Mock()
         controller.live_reader.wait.side_effect = TimeoutError("reader did not stop")
         executor = ThreadPoolExecutor(max_workers=1)
+        self.addCleanup(executor.shutdown, wait=True)
+        self.addCleanup(release.set)
         controller.speech_executor = executor
 
         def blocked_worker():

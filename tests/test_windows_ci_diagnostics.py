@@ -154,6 +154,25 @@ class WindowsCiDiagnosticsTest(unittest.TestCase):
             "stage=read-log; script line=[1-9][0-9]*; category=ObjectNotFound$",
         )
 
+    def test_timeout_without_traceback_reports_only_fixed_shard_labels(self):
+        self.log.write_text(
+            "Running Windows unittest shard qt-app: 100 tests\n"
+            "Running Windows unittest shard remainder: 4000 tests\n"
+            "Windows unittest shard remainder exceeded 900 seconds\n"
+            f"Running Windows unittest shard {CANARY}: 1 tests\n"
+            f"Windows unittest shard {CANARY} exceeded 900 seconds\n"
+            f"Running Windows unittest shard qt-app: {CANARY} tests\n"
+            f"Windows unittest shard remainder exceeded {CANARY} seconds\n",
+            encoding="utf-8",
+        )
+        report = self._run(self.collector)
+        self.assertEqual(report.returncode, 0)
+        self.assertEqual(
+            self._active_annotation(report.stdout),
+            "::error title=Windows unit tests failed::"
+            "shard=qt-app; shard=remainder; timeout=remainder",
+        )
+
     def test_unreadable_source_reports_only_fixed_collector_failure(self):
         self.log.write_text(self.payload, encoding="utf-8")
         prefix = (

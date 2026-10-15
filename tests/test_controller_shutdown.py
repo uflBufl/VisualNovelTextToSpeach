@@ -66,6 +66,8 @@ class ControllerShutdownTest(unittest.TestCase):
         failed.shutdown.side_effect = [None, primary]
         controller.capture_executor = failed
         worker = ThreadPoolExecutor(max_workers=1)
+        self.addCleanup(worker.shutdown, wait=True)
+        self.addCleanup(release.set)
         controller.speech_executor = worker
         worker.submit(
             lambda: (

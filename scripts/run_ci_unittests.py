@@ -249,6 +249,17 @@ def _run_sharded_full_discovery(
     return 0
 
 
+def _run_child_shard(timeout: int, inventory: str) -> int:
+    faulthandler.enable()
+    faulthandler.dump_traceback_later(timeout * 0.8)
+    try:
+        return _run_exact_test_file(inventory)
+    finally:
+        # CLI shutdown can still block on surviving non-daemon workers.
+        if __name__ != "__main__":
+            faulthandler.cancel_dump_traceback_later()
+
+
 def main(arguments: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if arguments is None else arguments
     if arguments[:1] == ["--shard"]:
@@ -257,12 +268,7 @@ def main(arguments: list[str] | None = None) -> int:
         timeout = SHARD_TIMEOUTS.get(platform.system(), {}).get(arguments[1])
         if timeout is None:
             return 2
-        faulthandler.enable()
-        faulthandler.dump_traceback_later(timeout * 0.8)
-        try:
-            return _run_exact_test_file(arguments[2])
-        finally:
-            faulthandler.cancel_dump_traceback_later()
+        return _run_child_shard(timeout, arguments[2])
     if arguments[:1] == ["--exact-test-ids-file"]:
         if len(arguments) != 2:
             return 2

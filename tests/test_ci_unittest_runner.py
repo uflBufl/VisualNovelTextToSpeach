@@ -389,6 +389,49 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                 faults.dump_traceback_later.assert_called_once_with(144)
                 faults.cancel_dump_traceback_later.assert_called_once_with()
 
+    def test_cli_shard_watchdog_covers_interpreter_worker_shutdown(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "shutdown_probe.py").write_text(
+                "import faulthandler, threading, unittest\n"
+                "def blocked_worker():\n    threading.Event().wait()\n"
+                "class ShutdownProbe(unittest.TestCase):\n"
+                "    def test_worker(self):\n"
+                "        threading.Thread(target=blocked_worker, daemon=False).start()\n"
+                "        faulthandler.dump_traceback_later(0.2)\n",
+                encoding="utf-8",
+            )
+            inventory = root / "tests.json"
+            inventory.write_text(
+                json.dumps(["shutdown_probe.ShutdownProbe.test_worker"]),
+                encoding="utf-8",
+            )
+            script = (
+                "import platform, runpy, sys\n"
+                "platform.system = lambda: 'Windows'\n"
+                "sys.argv = ['runner', '--shard', 'qt-assets', sys.argv[1]]\n"
+                "try:\n"
+                "    runpy.run_module('scripts.run_ci_unittests', run_name='__main__')\n"
+                "except SystemExit as result:\n"
+                "    print('SHARD_MAIN_RETURNED:', result.code, flush=True)\n"
+            )
+            with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                subprocess.run(
+                    [sys.executable, "-u", "-c", script, str(inventory)],
+                    cwd=Path(__file__).resolve().parents[1],
+                    env={**os.environ, "PYTHONPATH": str(root), "PYTHONUTF8": "1"},
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    timeout=10,
+                    check=False,
+                )
+        output = caught.exception.stdout.decode("utf-8")
+        self.assertIn("SHARD_MAIN_RETURNED: 0", output)
+        self.assertIn("OK", output.splitlines())
+        self.assertIn("Timeout (", output)
+        self.assertIn("blocked_worker", output)
+        self.assertIn("_shutdown", output)
+
 
 if __name__ == "__main__":
     unittest.main()
