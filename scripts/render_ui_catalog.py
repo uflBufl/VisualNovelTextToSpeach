@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
     from vntts.pregeneration_queue import PregenerationInput
     from vntts.pregeneration_setup import GameContent, PregenerationJob
+    from vntts.pregeneration_ui import OfflineAudioPreparationDialog
     from vntts.support import RuntimeSupportLog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -93,6 +94,24 @@ def _prepare_catalog_screenshot(
             widget.voice_routes.verticalScrollBar().maximum()
         )
         app.processEvents()
+    if story_id in {
+        "voice-audition.compact-preview",
+        "voice-audition.compact-details",
+        "voice-audition.compact-preview-playing",
+        "voice-audition.compact-preview-failure",
+        "voice-audition.compact-save-waiting",
+        "voice-audition.compact-save-failure",
+    }:
+        assert isinstance(widget, OfflineAudioPreparationDialog)
+        target = (
+            widget.voice_panel.reference_details
+            if story_id.endswith("details")
+            else widget.voice_panel.status
+            if story_id.endswith(("failure", "waiting"))
+            else widget.voice_panel.preview_box
+        )
+        widget.content_scroll.ensureWidgetVisible(target)
+        app.processEvents()
     if story_id == "authoring-workbench.review-play-focus":
         assert isinstance(widget, AuthoringWorkbenchDialog)
         widget.review_play.setFocus()
@@ -113,6 +132,118 @@ def _close_catalog_widget(widget: QWidget) -> None:
     widget.deleteLater()
     QCoreApplication.sendPostedEvents(widget, QEvent.Type.DeferredDelete)
     QApplication.processEvents()
+
+
+def _compact_voice_audition(dialog: OfflineAudioPreparationDialog) -> None:
+    assert dialog._voice_plan is not None
+    first = dialog._voice_plan.groups[0]
+    long_text = (
+        "The storm has passed, but we cannot leave before dawn. "
+        "We must find every missing traveller before the northern road closes again."
+    )
+    candidate = replace(
+        first.candidate_inventory[0],
+        source_character="The Keeper of the Northern Library",
+        source_excerpts=(long_text,),
+    )
+    first = replace(
+        first,
+        character="The Traveling Hotelier of the Northern Province",
+        candidate_inventory=(candidate, *first.candidate_inventory[1:]),
+        candidates=(candidate, *first.candidates[1:]),
+        sample_text=long_text,
+    )
+    dialog._voice_plan = replace(
+        dialog._voice_plan, groups=(first, *dialog._voice_plan.groups[1:])
+    )
+    dialog._show_voice_confirmation(dialog._voice_plan)
+    font = dialog.font()
+    font.setPointSizeF(font.pointSizeF() * 2)
+    dialog.setFont(font)
+    dialog.resize(620, 440)
+
+
+def _voice_audition_story(
+    state: str,
+    dialog: OfflineAudioPreparationDialog,
+    resources: ExitStack,
+    write_sample: Callable[[Path], None],
+) -> OfflineAudioPreparationDialog:
+    from vntts.document_identity import sha256_file
+
+    if state.startswith("compact"):
+        _compact_voice_audition(dialog)
+        state = state.removeprefix("compact-")
+    if state == "anonymous-source":
+        assert dialog._voice_plan is not None
+        group = dialog._voice_plan.groups[0]
+        candidate = replace(
+            group.candidate_inventory[0],
+            source_character="Player candidate Rhiannon abcdef123456",
+        )
+        group = replace(
+            group,
+            candidate_inventory=(candidate, *group.candidate_inventory[1:]),
+            candidates=(candidate, *group.candidates[1:]),
+        )
+        dialog._voice_plan = replace(
+            dialog._voice_plan, groups=(group, *dialog._voice_plan.groups[1:])
+        )
+    dialog._inspect_character_voice()
+    from PySide6.QtWidgets import QApplication
+
+    dialog.show()
+    QApplication.processEvents()
+    panel = dialog.voice_panel
+    actions = {
+        "alternate": lambda: panel.voice_reference.setCurrentIndex(1),
+        "alternate-phrase": lambda: panel.preview_phrase.setCurrentIndex(1),
+        "original-playing": panel.a_original.click,
+        "preview-generating": panel.a_play.click,
+        "details": lambda: panel.reference_details_toggle.setChecked(True),
+    }
+    if action := actions.get(state):
+        action()
+    elif state in {"preview-ready", "preview-playing"}:
+        preview = (
+            Path(
+                resources.enter_context(temporary_directory(prefix="vntts-ui-catalog-"))
+            )
+            / "preview.wav"
+        )
+        write_sample(preview)
+        panel.a_play.click()
+        panel.preview_runner._task_finished(
+            panel.preview_runner._serial,
+            SimpleNamespace(path=preview, audio_sha256=sha256_file(preview)),
+            None,
+        )
+        assert panel.a_play.isEnabled()
+        assert panel.a_play.text() == "Stop preview"
+        if state == "preview-ready":
+            panel.a_play.click()
+    elif state == "preview-failure":
+        panel.a_play.click()
+        with patch("vntts.support.record_game_import"):
+            panel.preview_runner._task_finished(
+                panel.preview_runner._serial,
+                None,
+                RuntimeError("The speech engine stopped before producing audio."),
+            )
+    elif state in {"saving", "save-failure", "save-waiting"}:
+        panel.a_original.click()
+        panel.a_use.click()
+        if state == "save-waiting":
+            dialog.cancel_button.click()
+        if state == "save-failure":
+            panel.decision_runner._task_finished(
+                panel.decision_runner._serial,
+                None,
+                OSError("Application data is read-only."),
+            )
+            assert not panel.active
+            assert panel.retry_save_button.isEnabled()
+    return dialog
 
 
 def _catalog_support_log(state: str) -> RuntimeSupportLog:
@@ -1274,9 +1405,12 @@ def _render_stories(
                 "character:centurion",
                 "Centurion",
                 "centurion-v1",
-                ("1" * 64,),
+                (sha256_file(original_reference),),
                 94,
                 "Closest character voice in the selected stories",
+                source_excerpts=(
+                    "The storm has passed, but the northern road is still closed.",
+                ),
                 source_line_ids=("chapter-7:10",),
                 reference_duration_seconds=12.5,
             )
@@ -1284,9 +1418,10 @@ def _render_stories(
                 "character:knight",
                 "A Knight",
                 "knight-v2",
-                ("2" * 64,),
+                (sha256_file(original_reference),),
                 88,
                 "Second-best character voice match",
+                source_excerpts=("We should reach the next village before nightfall.",),
                 source_line_ids=("chapter-8:3",),
                 reference_duration_seconds=8.7,
             )
@@ -1454,41 +1589,9 @@ def _render_stories(
         return dialog
 
     def voice_audition(state: str) -> OfflineAudioPreparationDialog:
-        dialog = offline_preparation("confirmation")
-        dialog._inspect_character_voice()
-        panel = dialog.voice_panel
-        if state == "alternate":
-            panel.voice_reference.setCurrentIndex(1)
-        elif state == "alternate-phrase":
-            panel.preview_phrase.setCurrentIndex(1)
-        elif state == "preview-ready":
-            preview = (
-                Path(
-                    resources.enter_context(
-                        temporary_directory(prefix="vntts-ui-catalog-")
-                    )
-                )
-                / "preview.wav"
-            )
-            write_silent_wav(preview)
-            panel._preview_finished(
-                SimpleNamespace(path=preview, audio_sha256=sha256_file(preview)), None
-            )
-            panel._set_playing_source(None)
-            panel.status.setText("Generated preview ready. Use this voice if suitable.")
-        elif state == "preview-failure":
-            with patch("vntts.support.record_game_import"):
-                panel._preview_finished(
-                    SimpleNamespace(path=Path("unused.wav")),
-                    RuntimeError("The speech engine stopped before producing audio."),
-                )
-        elif state == "save-failure":
-            _candidate, choice, _narrator = panel._current_entry()
-            panel._accepted_choice = choice
-            panel.a_use.setEnabled(True)
-            panel.use_a()
-            panel._decision_finished(None, OSError("Application data is read-only."))
-        return dialog
+        return _voice_audition_story(
+            state, offline_preparation("confirmation"), resources, write_silent_wav
+        )
 
     def ocr_review(state: str) -> QDialog:
         temporary = resources.enter_context(temporary_directory())
@@ -2274,6 +2377,29 @@ def _render_stories(
         "offline-preparation.failure": lambda: offline_preparation("failure"),
         "offline-preparation.completed": lambda: offline_preparation("completed"),
         "voice-audition.reference": lambda: voice_audition("reference"),
+        "voice-audition.anonymous-source": lambda: voice_audition("anonymous-source"),
+        "voice-audition.original-playing": lambda: voice_audition("original-playing"),
+        "voice-audition.preview-generating": lambda: voice_audition(
+            "preview-generating"
+        ),
+        "voice-audition.saving": lambda: voice_audition("saving"),
+        "voice-audition.save-waiting": lambda: voice_audition("save-waiting"),
+        "voice-audition.preview-playing": lambda: voice_audition("preview-playing"),
+        "voice-audition.compact": lambda: voice_audition("compact"),
+        "voice-audition.compact-preview-playing": lambda: voice_audition(
+            "compact-preview-playing"
+        ),
+        "voice-audition.compact-preview-failure": lambda: voice_audition(
+            "compact-preview-failure"
+        ),
+        "voice-audition.compact-save-waiting": lambda: voice_audition(
+            "compact-save-waiting"
+        ),
+        "voice-audition.compact-save-failure": lambda: voice_audition(
+            "compact-save-failure"
+        ),
+        "voice-audition.compact-preview": lambda: voice_audition("compact-preview"),
+        "voice-audition.compact-details": lambda: voice_audition("compact-details"),
         "voice-audition.alternate": lambda: voice_audition("alternate"),
         "voice-audition.alternate-phrase": lambda: voice_audition("alternate-phrase"),
         "voice-audition.preview-ready": lambda: voice_audition("preview-ready"),

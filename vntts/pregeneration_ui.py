@@ -1162,12 +1162,16 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_confirmation.hide()
         self.auditioning_voices = True
         self.inspecting_voice_plan = True
-        self.cancel_button.setText("Back without choosing")
+        self.cancel_button.setText("Back to voice plan")
+        self.cancel_button.setAutoDefault(False)
+        self.voice_panel.a_use.setDefault(True)
         self.cancel_button.setToolTip(
-            "None of these voices? Return without saving one; choose another source or narrator in the voice plan."
+            "Return to the voice plan. An unsaved candidate is not applied; "
+            "a voice choice already being saved finishes before returning."
         )
         self.continue_button.hide()
         self.selection_panel.hide()
+        self.voice_panel.voice_reference.setFocus()
 
     def _selected_routing_role(self) -> str | None:
         item = self.voice_routes.currentItem()
@@ -1367,6 +1371,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._prepared_voice_job = None
         self._generation_input = None
         self._changes_rows = ()
+        self._refresh_narrator_status()
         self.voice_panel.hide()
         self.voice_confirmation.hide()
         self._set_progress_visible(False)
@@ -1515,8 +1520,11 @@ class OfflineAudioPreparationDialog(QDialog):
                     speech_backend=plan.synthesis_backend,
                     tts_model=plan.synthesis_model,
                 )
-            if self.narrator_choice.currentData() is not None:
-                narrator = self.narrator_choice.currentText()
+            narrator = (
+                self.narrator_choice.currentText()
+                if self.narrator_choice.currentData() is not None
+                else "Not selected for this preparation"
+            )
         return settings, narrator
 
     def _narrator_configuration(self, *, compact: bool = False) -> str:
@@ -1568,6 +1576,8 @@ class OfflineAudioPreparationDialog(QDialog):
         return tuple(choices)
 
     def _show_voice_confirmation(self, plan: VoicePlan) -> None:
+        self.continue_button.setDefault(True)
+        self.cancel_button.setAutoDefault(True)
         self.step.setText("Step 2 of 4 - Choose and confirm voices")
         local_voice_controls = self.game_narrator_chooser is None
         show_terms = (
@@ -1734,12 +1744,15 @@ class OfflineAudioPreparationDialog(QDialog):
             else group.character
         )
         lines = len(group.line_ids)
+        narrator_missing = self.narrator_choice.currentData() is None
         if group.route == "needs-audition":
             route = "Narrator fallback until reviewed"
         elif group.route == "narrator":
             source = self.narrator_choice.currentText()
             route = (
-                source
+                "Narrator required"
+                if narrator_missing
+                else source
                 if group.character == "Narrator"
                 else f"Narrator voice ({source})"
             )
@@ -1781,11 +1794,16 @@ class OfflineAudioPreparationDialog(QDialog):
             if suggested_link
             else ""
         )
+        explanation = (
+            "Choose a narrator voice before generation"
+            if group.route == "narrator" and narrator_missing
+            else _voice_resolution_label(group.resolution)
+        )
         item = QListWidgetItem(
             f"{prefix}{display_role} -> {route} | {status} | {lines} "
             f"line{'s' if lines != 1 else ''} | {references} reference"
             f"{'s' if references != 1 else ''}{duration}\n"
-            f"{_voice_resolution_label(group.resolution)}"
+            f"{explanation}"
         )
         if prefix:
             font = item.font()
@@ -1810,7 +1828,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 status,
                 f"{lines} line{'s' if lines != 1 else ''}; "
                 f"{references} reference{'s' if references != 1 else ''}{duration}",
-                _voice_resolution_label(group.resolution),
+                explanation,
             ),
         )
         if show_portraits and group.portrait_image and group.portrait_image_sha256:
@@ -4352,6 +4370,8 @@ class OfflineAudioPreparationDialog(QDialog):
             return True
         if error is None:
             return False
+        self._awaiting_voice_confirmation = False
+        self._refresh_narrator_status()
         self.cancel_button.setText("Cancel")
         self.cancel_button.setEnabled(True)
         self._set_progress_visible(False)
@@ -4397,6 +4417,8 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.auditioning_voices = False
         self.inspecting_voice_plan = False
+        self.continue_button.setDefault(True)
+        self.cancel_button.setAutoDefault(True)
         self.replanning_voice_decisions = True
         self.planning_voices = True
         self.voice_confirmation.hide()

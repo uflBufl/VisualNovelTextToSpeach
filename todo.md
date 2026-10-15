@@ -597,6 +597,10 @@ Planned implementation order after approval:
       and inject a delayed save failure while pressing Back. Gate: stale audio stops,
       Back waits for persistence, Retry saves the same visible choice, and the replanned
       route matches that choice. Repeat the flow by keyboard and screen reader.
+      At minimum width and 200% text, open both source and phrase dropdowns near
+      the display edges; require visible options and a keyboard return to the
+      selected control. Retain real desktop screenshots on both OSes; virtual Qt
+      geometry alone does not establish native screen-edge behavior.
 
 ## Active - Offline preparation hardware acceptance
 
