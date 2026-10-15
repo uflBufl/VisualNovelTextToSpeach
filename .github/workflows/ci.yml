@@ -114,6 +114,7 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
       PYTHONUTF8: "1"
+      PYTHONFAULTHANDLER: "1"
 
     steps:
       - uses: actions/checkout@v5
@@ -133,7 +134,51 @@ jobs:
         run: uv run --frozen python -c "from vntts.game_audio_decoder import ensure_game_decoder; ensure_game_decoder(progress=print)"
 
       - name: Run Windows unit tests
-        run: uv run --frozen python scripts/run_ci_unittests.py discover -s tests
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $testLog = Join-Path $env:RUNNER_TEMP "windows-unit-tests.log"
+          uv run --frozen python scripts/run_ci_unittests.py discover -s tests *> $testLog
+          $testStatus = $LASTEXITCODE
+          $testOutput = [string](Get-Content -LiteralPath $testLog -Raw)
+          $logToken = [guid]::NewGuid().ToString('N')
+          Write-Output "::stop-commands::$logToken"
+          Write-Output $testOutput
+          Write-Output "::${logToken}::"
+          if ($testStatus -ne 0) {
+            $repoPythonFiles = @(git -C $env:GITHUB_WORKSPACE ls-files -- '*.py')
+            $workspacePattern = [regex]::Escape($env:GITHUB_WORKSPACE.TrimEnd([char[]]'\/'))
+            $framePattern = '^\s+File "' + $workspacePattern + '[\\/]([A-Za-z0-9_./\\-]+\.py)", line ([0-9]+), in .*$'
+            $exceptionPattern = '^(AssertionError|AttributeError|FileNotFoundError|ImportError|' +
+              'IndexError|KeyError|MemoryError|ModuleNotFoundError|OSError|OverflowError|' +
+              'PermissionError|RecursionError|RuntimeError|TimeoutError|TypeError|' +
+              'UnicodeDecodeError|UnicodeEncodeError|ValueError|ZeroDivisionError)(:|$)'
+            $context = [Collections.Generic.List[string]]::new()
+            foreach ($line in ($testOutput -split '\r?\n')) {
+              if ($line -match $framePattern) {
+                $repoPath = $Matches[1].Replace('\', '/')
+                $lineNumber = 0
+                if (($repoPythonFiles -contains $repoPath) -and [int]::TryParse($Matches[2], [ref]$lineNumber)) {
+                  $sourceLines = @(Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $repoPath)).Count
+                  if ($lineNumber -ge 1 -and $lineNumber -le $sourceLines) {
+                    $context.Add("${repoPath}:${lineNumber}")
+                  }
+                }
+              } elseif ($line -match $exceptionPattern) {
+                $context.Add($Matches[1])
+              } elseif ($line -match '^(?:Fatal Python error|Windows fatal exception): (Aborted|Segmentation fault|Access violation)$') {
+                $context.Add($Matches[1])
+              }
+            }
+            $summary = if ($context.Count) {
+              ($context | Select-Object -Unique) -join '; '
+            } else {
+              'no structured failure context'
+            }
+            $summary = $summary.Substring(0, [Math]::Min(3500, $summary.Length))
+            Write-Output "::error title=Windows unit tests failed::Runner exited with code ${testStatus}. ${summary}"
+          }
+          exit $testStatus
 
   linux-x11-unit-tests:
     runs-on: ubuntu-latest
