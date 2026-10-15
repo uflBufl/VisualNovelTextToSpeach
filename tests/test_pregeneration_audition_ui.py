@@ -10,7 +10,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QKeySequence, QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+)
+from shiboken6 import isValid  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
 from tests.pregeneration_fixtures import (  # noqa: E402
@@ -1794,6 +1800,38 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             voice_library=library,
         )
         return dialog, pool, plan, group, decisions, voice_plan_store
+
+    def test_audition_footer_invalidates_the_original_button_layout_item(self):
+        build_buttons = OfflineAudioPreparationDialog._build_buttons
+        previous_items = []
+
+        def inspect_button_transfer(dialog):
+            panel = dialog.voice_panel
+            layout = next(
+                layout
+                for layout in panel.findChildren(QHBoxLayout)
+                if layout.indexOf(panel.a_use) >= 0
+            )
+            item = layout.itemAt(layout.indexOf(panel.a_use))
+            self.assertTrue(isValid(item))
+            previous_items.append(item)
+            build_buttons(dialog)
+
+        with TemporaryDirectory() as directory:
+            with patch.object(
+                OfflineAudioPreparationDialog, "_build_buttons", inspect_button_transfer
+            ):
+                dialog, _pool, _plan, _group, _decisions, _store = (
+                    self._inspected_voice_dialog(Path(directory))
+                )
+            self.addCleanup(dialog.deleteLater)
+            self.addCleanup(dialog.voice_panel.shutdown)
+            self.assertEqual(len(previous_items), 1)
+            self.assertFalse(isValid(previous_items[0]))
+            self.assertTrue(dialog.buttons.isAncestorOf(dialog.voice_panel.a_use))
+            self.assertEqual(
+                dialog.voice_panel.outcome_actions.indexOf(dialog.voice_panel.a_use), -1
+            )
 
     def test_audition_footer_and_compact_height_restore_on_return(self):
         for width, height in ((1040, 760), (620, 440)):

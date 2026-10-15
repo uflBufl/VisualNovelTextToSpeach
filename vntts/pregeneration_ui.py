@@ -1085,6 +1085,8 @@ class OfflineAudioPreparationDialog(QDialog):
         assert continue_button is not None
         self.cancel_button = cancel_button
         self.continue_button = continue_button
+        # Invalidate the old layout item before Qt reparents the button.
+        self.voice_panel.outcome_actions.removeWidget(self.voice_panel.a_use)
         self.buttons.addButton(
             self.voice_panel.a_use, QDialogButtonBox.ButtonRole.AcceptRole
         )
