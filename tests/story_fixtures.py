@@ -20,7 +20,11 @@ from vntts_artifacts.story_index import (
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
 from vntts.document_identity import canonical_document_sha256, sha256_file
-from vntts.source_audio_semantics import SEMANTIC_EVIDENCE_METHOD, semantic_text_sha256
+from vntts.source_audio_semantics import (
+    SEMANTIC_EVIDENCE_METHOD,
+    SEMANTIC_EVIDENCE_PREPROCESSING,
+    semantic_text_sha256,
+)
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,7 @@ def semantic_evidence_document(
     source_story_index_sha256: str = "c" * 64,
     snapshot: str = "synthetic",
     generated_at: str = "2026-09-14T00:00:00+00:00",
+    preprocessing: str | None = SEMANTIC_EVIDENCE_PREPROCESSING,
 ) -> tuple[dict[str, object], str]:
     evidence: dict[str, object] = {
         "schema": "r1999.source-audio-semantic-evidence",
@@ -79,6 +84,7 @@ def semantic_evidence_document(
             "sha256": model_sha256,
             "device": "cpu",
             "decoding": "deterministic_greedy_default",
+            **({"preprocessing": preprocessing} if preprocessing is not None else {}),
         },
         "entries": entries,
     }
@@ -99,6 +105,7 @@ def write_source_audio_semantic_evidence(
     source_story_index_sha256: str = "c" * 64,
     snapshot: str = "synthetic",
     generated_at: str = "2026-09-14T00:00:00+00:00",
+    preprocessing: str | None = SEMANTIC_EVIDENCE_PREPROCESSING,
 ) -> PublishedSemanticEvidence:
     entry, entry_id = semantic_evidence_entry(
         line_id=line_id,
@@ -114,6 +121,7 @@ def write_source_audio_semantic_evidence(
         source_story_index_sha256=source_story_index_sha256,
         snapshot=snapshot,
         generated_at=generated_at,
+        preprocessing=preprocessing,
     )
     atomic_write_json(path, evidence, sort_keys=True)
     return PublishedSemanticEvidence(evidence_id, entry_id, sha256_file(path))

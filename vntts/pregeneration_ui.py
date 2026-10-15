@@ -114,6 +114,7 @@ from vntts.qt_audio import QtPcmPlayer
 from vntts.release_backends import speech_backend_options
 from vntts.settings import AppSettings
 from vntts.source_audio_progress import SourceAudioProgress
+from vntts.source_audio_semantics import source_audio_semantics_need_migration
 from vntts.speech_presentation import (
     compact_runtime_label,
     speech_configuration_label,
@@ -4135,7 +4136,9 @@ class OfflineAudioPreparationDialog(QDialog):
         started, cpu_started = monotonic(), process_time()
         settings = resolve_pregeneration_settings(self.settings)
         job, selected_content = self._prepare_selected_voice_job(job)
-        if semantic_enabled:
+        if semantic_enabled or source_audio_semantics_need_migration(
+            selected_content.story_index
+        ):
             try:
                 semantic_content = self.importer.prepare_source_audio_semantics(
                     job,

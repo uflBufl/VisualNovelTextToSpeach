@@ -95,6 +95,7 @@ from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
     merge_source_audio_semantics,
+    source_audio_semantics_need_migration,
 )
 from vntts.support import record_background_operation
 from vntts.voices import load_voice_manifest
@@ -1090,6 +1091,18 @@ def _load_incremental_base(
         for record in base_story.records
     ):
         return None, None
+    selected_ids = {record.line_id for record in selected_story.records}
+    if source_audio_semantics_need_migration(base_story) and any(
+        record.line_id not in selected_ids
+        and record.document.get("source_audio_completeness") == "full"
+        and record.document.get("source_audio_semantic_evidence_entry_id") is not None
+        for record in base_story.records
+    ):
+        raise OfflinePackError(
+            "The existing pack has older source-audio verification for other stories. "
+            "Select the previously prepared stories together with the new stories "
+            "and prepare again. Your existing pack remains unchanged."
+        )
     return imported, source
 
 

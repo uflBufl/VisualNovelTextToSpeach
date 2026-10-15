@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.game_pack import GamePackError
+from vntts_artifacts.game_pack import GamePackError, write_game_pack
 from vntts_artifacts.generated_audio import load_generated_audio_document
 from vntts_artifacts.live_sequence import (
     load_live_sequence_plan,
@@ -30,6 +30,7 @@ from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_mani
 from tests.authoring_fixtures import tree_hashes
 from tests.pregeneration_fixtures import fixture
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from tests.story_fixtures import write_source_audio_semantic_evidence
 from vntts import pregeneration_pack as pack_module
 from vntts.authoring.bulk_generation import BulkGenerationError
 from vntts.authoring.generation_state import load_generation_state_from_snapshot
@@ -43,6 +44,7 @@ from vntts.pregeneration_pack import (
     _copy_prepared_file,
     _ensure_pack_disk_space,
     _link_verified_file,
+    _load_incremental_base,
     _load_terminal_generation,
     _optional_sequence_snapshot,
     _portable_generated_record,
@@ -59,7 +61,10 @@ from vntts.pregeneration_setup import (
     _cached_story_index_document,
     inspect_story_index,
 )
-from vntts.source_audio_semantics import SourceAudioSemanticEvidenceError
+from vntts.source_audio_semantics import (
+    SEMANTIC_EVIDENCE_METHOD,
+    SourceAudioSemanticEvidenceError,
+)
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.versioned_json import write_versioned_json
 
@@ -80,6 +85,108 @@ class SavedStoryPackSelectionTest(unittest.TestCase):
 
 
 class OfflinePackPublisherTest(unittest.TestCase):
+    def test_legacy_original_base_requires_repreparing_preserved_stories(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_job, base_input, base_result, _ = fixture(root / "base")
+            base = OfflinePackPublisher().publish(base_job, base_input, base_result)
+            old = load_story_index_document(base.imported.story_index)
+            original = old.records[0].to_record() | {
+                "line_id": "pack:original",
+                "text_sha256": old.records[0].text_sha256,
+                "sequence": 3,
+                "source_audio_status": "available",
+                "source_audio_duration_seconds": 1.0,
+                "source_audio_duration_media_id": 7,
+                "source_audio_duration_media_sha256": "a" * 64,
+                "source_audio_duration_sample_rate": 24000,
+                "source_audio_duration_sample_count": 24000,
+                "source_audio_duration_decoder": "synthetic",
+                "source_audio_completeness": "full",
+                "source_audio_completeness_reason": "exact-normalized-asr-transcript",
+            }
+            sidecar = old.path.parent / "source-audio-semantic-evidence.json"
+            evidence = write_source_audio_semantic_evidence(
+                sidecar,
+                line_id=original["line_id"],
+                text=original["text"],
+                media_id=7,
+                preprocessing=None,
+            )
+            original.update(
+                source_audio_semantic_evidence_id=evidence.evidence_id,
+                source_audio_semantic_evidence_entry_id=evidence.entry_id,
+            )
+            base_records = [r.to_record() for r in old.records] + [original]
+            write_story_index_document(
+                old.path,
+                old.metadata
+                | {
+                    "source_audio_completion": "verified-media-duration-seconds",
+                    "source_audio_semantics": {
+                        "evidence_id": evidence.evidence_id,
+                        "evidence_sha256": evidence.sha256,
+                        "method": SEMANTIC_EVIDENCE_METHOD,
+                        "applied_count": 1,
+                    },
+                },
+                base_records,
+            )
+            write_game_pack(
+                base.manifest,
+                {
+                    "game": {"id": old.game, "version": base_job.game_version},
+                    "producers": [{"name": "test", "version": "1"}],
+                    "created_at": "2026-10-15T00:00:00+00:00",
+                    "vntts.self-service": {"identity": base.identity},
+                    "vntts.authoring": {
+                        "source_audio_semantic_evidence": {
+                            "path": "story/source-audio-semantic-evidence.json",
+                            "sha256": evidence.sha256,
+                            "evidence_id": evidence.evidence_id,
+                            "entry_count": 1,
+                        }
+                    },
+                },
+                {
+                    "story_index": old.path,
+                    "voice_manifest": base.imported.voice_manifest,
+                    "generated_audio": base.imported.generated_audio_manifest,
+                },
+            )
+            job, prepared, generated, _ = fixture(
+                root / "current", names=("new", "next")
+            )
+            current = load_story_index_document(prepared.story_index)
+            catalog = root / "catalog.jsonl"
+            write_story_index_document(
+                catalog,
+                current.metadata,
+                base_records + [r.to_record() for r in current.records],
+            )
+            job = replace(
+                job, story_index=str(catalog), story_index_sha256=sha256_file(catalog)
+            )
+            before = tree_hashes(root)
+            publisher = OfflinePackPublisher(base_pack=base.manifest)
+            for operation in (
+                lambda: publisher.inspect_changes(job, prepared),
+                lambda: publisher.publish(job, prepared, generated),
+            ):
+                with self.assertRaisesRegex(
+                    OfflinePackError, "Select the previously prepared stories"
+                ):
+                    operation()
+                self.assertEqual(tree_hashes(root), before)
+            # Selecting all old lines allows corrected current owners to replace them.
+            all_selected = write_story_index_document(
+                root / "all-selected.jsonl",
+                current.metadata,
+                base_records + [r.to_record() for r in current.records],
+            )
+            imported, _ = _load_incremental_base(base.manifest, job, all_selected)
+            self.assertEqual(imported.pack.manifest_path, base.manifest)
+
     def test_publication_reuses_the_generation_result_identity_contract(self):
         with TemporaryDirectory() as directory:
             job, prepared, generated, _items = fixture(Path(directory))

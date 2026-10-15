@@ -61,6 +61,8 @@ from vntts.source_audio_progress import SourceAudioProgress, read_source_audio_p
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
+    reset_stale_source_audio_semantics,
+    semantic_preprocessing_is_current,
 )
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.subprocess_utils import last_output_line, terminate_running_process
@@ -622,8 +624,17 @@ class Reverse1999GameImporter:
                 job.selected_story_ids,
                 self._semantic_output_root(job) / "selected",
             )
-            return load_verified_story_index_document(source, sha256_file(source))
-        except (OSError, StoryIndexError, ValueError) as error:
+            document = load_verified_story_index_document(source, sha256_file(source))
+            return reset_stale_source_audio_semantics(
+                document,
+                self._semantic_output_root(job) / "input" / "story-index.jsonl",
+            )
+        except (
+            OSError,
+            StoryIndexError,
+            SourceAudioSemanticEvidenceError,
+            ValueError,
+        ) as error:
             raise GameContentImportError(
                 f"Unable to inspect selected source audio: {error}"
             ) from error
@@ -832,7 +843,13 @@ class Reverse1999GameImporter:
         return (sys.executable, "-m", module) if module_available else None
 
     def _semantic_output_root(self, job: PregenerationJob) -> Path:
-        return self.output_root / "reverse1999" / "source-audio-semantics" / job.job_id
+        return (
+            self.output_root
+            / "reverse1999"
+            / "source-audio-semantics"
+            / job.job_id
+            / "asr16k-v1"
+        )
 
     @staticmethod
     def _semantic_evidence_is_current(
@@ -840,8 +857,10 @@ class Reverse1999GameImporter:
     ) -> bool:
         evidence = story.parent / "source-audio-semantic-evidence.json"
         try:
-            load_source_audio_semantic_evidence(evidence, document)
+            authority = load_source_audio_semantic_evidence(evidence, document)
         except OSError, SourceAudioSemanticEvidenceError, ValueError:
+            return False
+        if not semantic_preprocessing_is_current(authority):
             return False
         selected_source_records = tuple(
             record

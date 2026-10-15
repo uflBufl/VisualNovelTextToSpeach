@@ -20,6 +20,7 @@ from tests.story_fixtures import (
     write_story_index,
 )
 from tests.symlink_support import symlink_or_skip
+from vntts.document_identity import canonical_document_sha256
 from vntts.game_content_importer import (
     GameContentImportCancelled,
     GameContentImportError,
@@ -29,7 +30,10 @@ from vntts.game_content_importer import (
 )
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
 from vntts.source_audio_progress import SourceAudioProgress
-from vntts.source_audio_semantics import SEMANTIC_EVIDENCE_METHOD
+from vntts.source_audio_semantics import (
+    SEMANTIC_EVIDENCE_METHOD,
+    SEMANTIC_EVIDENCE_PREPROCESSING,
+)
 
 
 class FinishedProcess:
@@ -405,6 +409,11 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     selected_source = load_story_index_document(
                         Path(arguments[arguments.index("--story-index") + 1])
                     )
+                    self.assertNotIn("source_audio_semantics", selected_source.metadata)
+                    self.assertNotIn(
+                        "source_audio_semantic_evidence_entry_id",
+                        selected_source.records[0].to_record(),
+                    )
                     record = {
                         **selected_source.records[0].to_record(),
                         "source_audio_duration_seconds": 1.0,
@@ -482,6 +491,17 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 patch.object(importer, "_run", side_effect=publish) as run,
             ):
                 successor = importer.prepare_source_audio_semantics(job)
+                cached = importer.prepare_source_audio_semantics(job)
+                self.assertEqual(
+                    cached.story_index_sha256, successor.story_index_sha256
+                )
+                self.assertEqual(run.call_count, 2)
+
+                self._assert_legacy_semantics_migrate(
+                    root, successor, job, importer, run
+                )
+
+            self.assertEqual(successor.story_index.parent.name, "asr16k-v1")
 
             self.assertEqual(source.read_bytes(), original)
             self.assertNotEqual(successor.story_index, source)
@@ -504,6 +524,53 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 semantic_arguments[semantic_arguments.index("--chapter") + 1],
                 "314501",
             )
+
+    def _assert_legacy_semantics_migrate(self, root, successor, job, importer, run):
+        previous_calls = run.call_count
+        legacy = root / "legacy" / "story-index.jsonl"
+        legacy.parent.mkdir()
+        previous = load_story_index_document(successor.story_index)
+        authority = json.loads(
+            successor.story_index.with_name(
+                "source-audio-semantic-evidence.json"
+            ).read_text()
+        )
+        authority["model"].pop("preprocessing")
+        authority["evidence_id"] = canonical_document_sha256(
+            {
+                k: v
+                for k, v in authority.items()
+                if k not in {"generated_at", "evidence_id"}
+            }
+        )
+        sidecar = legacy.with_name("source-audio-semantic-evidence.json")
+        atomic_write_json(sidecar, authority, sort_keys=True)
+        metadata = previous.metadata
+        metadata["source_audio_semantics"].update(
+            evidence_id=authority["evidence_id"],
+            evidence_sha256=sha256_file(sidecar),
+        )
+        records = [record.to_record() for record in previous.records]
+        records[0]["source_audio_semantic_evidence_id"] = authority["evidence_id"]
+        write_story_index_document(legacy, metadata, records)
+        legacy_bytes, sidecar_bytes = legacy.read_bytes(), sidecar.read_bytes()
+        legacy_content = inspect_story_index(legacy, provider_id="reverse1999")
+        legacy_job = PregenerationJobStore(root / "jobs").create_or_resume(
+            legacy_content, job.selected_story_ids
+        )
+        upgraded = importer.prepare_source_audio_semantics(legacy_job)
+        repeated = importer.prepare_source_audio_semantics(legacy_job)
+        self.assertEqual(run.call_count, previous_calls + 2)
+        self.assertEqual(upgraded.story_index_sha256, repeated.story_index_sha256)
+        self.assertEqual(legacy.read_bytes(), legacy_bytes)
+        self.assertEqual(sidecar.read_bytes(), sidecar_bytes)
+
+    def test_source_asr_preprocessing_contract_matches_extractor(self):
+        from r1999extractor.source_audio_semantics import (
+            SEMANTIC_EVIDENCE_PREPROCESSING as recipe,
+        )
+
+        self.assertEqual(SEMANTIC_EVIDENCE_PREPROCESSING, recipe)
 
     def test_semantic_worker_caps_default_threads_and_preserves_explicit_environment(
         self,

@@ -1336,6 +1336,34 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             dialog.reject()
 
+    def test_rematching_migrates_stale_semantics_when_semantic_flag_is_disabled(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_content(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            importer, plans = Mock(), Mock()
+            importer.availability.return_value = Mock(
+                available=True, message="Available"
+            )
+            importer.prepare_source_audio_semantics.return_value = None
+            importer.prepare_voice_candidates.return_value = None
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                importer=importer,
+                voice_plan_store=plans,
+            )
+            self.addCleanup(dialog.reject)
+            job = jobs.create_or_resume(content, ("story",))
+            with patch(
+                "vntts.pregeneration_ui.source_audio_semantics_need_migration",
+                return_value=True,
+            ):
+                dialog._create_voice_plan(job, semantic_enabled=False)
+            importer.prepare_source_audio_semantics.assert_called_once()
+            plans.create.assert_called_once()
+
     def _prepared_synthetic_live_fallback_pack(self, root):
         content = inspect_story_index(write_story_index(root / "content"))
         jobs = PregenerationJobStore(root / "jobs")

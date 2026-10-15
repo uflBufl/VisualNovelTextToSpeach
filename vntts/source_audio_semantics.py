@@ -15,6 +15,7 @@ from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
     load_story_index_document,
+    write_story_index_document,
 )
 
 from vntts.document_identity import (
@@ -29,6 +30,7 @@ from vntts.path_safety import read_regular_bytes
 SEMANTIC_EVIDENCE_SCHEMA = "r1999.source-audio-semantic-evidence"
 SEMANTIC_EVIDENCE_VERSION = 1
 SEMANTIC_EVIDENCE_METHOD = "local-asr-exact-normalized-transcript"
+SEMANTIC_EVIDENCE_PREPROCESSING = "mono-pcm16-resample-poly-16000-v1"
 WORD_PATTERN = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", flags=re.UNICODE)
 
 JsonDocument: TypeAlias = dict[str, object]
@@ -52,6 +54,7 @@ class SourceAudioSemanticEvidenceEntry(TypedDict):
 class SourceAudioSemanticEvidence(TypedDict):
     evidence_id: str
     generated_at: str
+    model: JsonDocument
     entries: list[SourceAudioSemanticEvidenceEntry]
 
 
@@ -101,6 +104,123 @@ def load_source_audio_semantic_evidence(
         hashlib.sha256(payload).hexdigest(),
         document,
     )
+
+
+def semantic_preprocessing_is_current(evidence: SourceAudioSemanticEvidence) -> bool:
+    return evidence["model"].get("preprocessing") == SEMANTIC_EVIDENCE_PREPROCESSING
+
+
+def _bound_semantic_evidence(
+    document: StoryIndexDocument,
+) -> SourceAudioSemanticEvidence | None:
+    if "source_audio_semantics" not in document.metadata:
+        if any(
+            record.document.get("source_audio_semantic_evidence_entry_id") is not None
+            or record.document.get("source_audio_semantic_evidence_id") is not None
+            for record in document.records
+        ):
+            raise SourceAudioSemanticEvidenceError(
+                "Story semantic annotations have no evidence binding"
+            )
+        return None
+    return load_source_audio_semantic_evidence(
+        document.path.parent / "source-audio-semantic-evidence.json", document
+    )
+
+
+def source_audio_semantics_need_migration(
+    story: str | Path | StoryIndexDocument,
+) -> bool:
+    document = (
+        story
+        if isinstance(story, StoryIndexDocument)
+        else load_story_index_document(story)
+    )
+    evidence = _bound_semantic_evidence(document)
+    return evidence is not None and not semantic_preprocessing_is_current(evidence)
+
+
+def _clear_semantic_verdict(record: JsonDocument) -> None:
+    if record.get("source_audio_semantic_evidence_entry_id") is None:
+        return
+    record["source_audio_completeness"] = "unknown"
+    for key in (
+        "source_audio_completeness_reason",
+        "source_audio_semantic_evidence_id",
+        "source_audio_semantic_evidence_entry_id",
+    ):
+        record.pop(key, None)
+
+
+def reset_stale_source_audio_semantics(
+    document: StoryIndexDocument, destination: str | Path
+) -> StoryIndexDocument:
+    """Expire validated ASR verdicts in a private successor, retaining native timing."""
+    source_sha256 = sha256_file(document.path)
+    evidence_path = document.path.parent / "source-audio-semantic-evidence.json"
+    evidence_payload = (
+        read_regular_bytes(evidence_path)
+        if "source_audio_semantics" in document.metadata
+        else None
+    )
+    evidence = (
+        load_source_audio_semantic_evidence(
+            evidence_path, document, payload=evidence_payload
+        )
+        if evidence_payload is not None
+        else _bound_semantic_evidence(document)
+    )
+
+    def assert_unchanged() -> None:
+        if sha256_file(document.path) != source_sha256 or (
+            evidence_payload is not None
+            and read_regular_bytes(evidence_path) != evidence_payload
+        ):
+            raise SourceAudioSemanticEvidenceError(
+                "Semantic migration source or evidence changed while read"
+            )
+
+    assert_unchanged()
+    if evidence is None or semantic_preprocessing_is_current(evidence):
+        return document
+    destination = Path(destination).expanduser()
+    if destination.is_symlink():
+        raise SourceAudioSemanticEvidenceError(
+            "Semantic migration destination must not be a symlink"
+        )
+    destination = destination.resolve()
+    origins = [document.path, evidence_path]
+    origin = document.metadata.get("selection_origin")
+    if isinstance(origin, dict) and isinstance(origin.get("story_index"), str):
+        origin_story = Path(origin["story_index"])
+        origins.extend(
+            [origin_story, origin_story.parent / "source-audio-semantic-evidence.json"]
+        )
+    if any(
+        destination == source.resolve()
+        or destination.exists()
+        and source.exists()
+        and destination.samefile(source)
+        for source in origins
+    ):
+        raise SourceAudioSemanticEvidenceError(
+            "Semantic migration must publish a new story-index destination"
+        )
+    metadata = deepcopy(document.metadata)
+    metadata.pop("source_audio_semantics", None)
+    records = [record.to_record() for record in document.records]
+    for record in records:
+        _clear_semantic_verdict(record)
+
+    assert_unchanged()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    successor = write_story_index_document(destination, metadata, records)
+    try:
+        assert_unchanged()
+    except OSError, SourceAudioSemanticEvidenceError:
+        destination.unlink(missing_ok=True)
+        raise
+    return successor
 
 
 def validate_source_audio_semantic_evidence(
@@ -401,10 +521,9 @@ def _collect_cumulative_semantic_entries(
     evidence_by_owner = {}
     entries_by_owner = {}
     for story in stories:
-        if isinstance(story.metadata.get("source_audio_semantics"), dict):
-            evidence_by_owner[id(story)] = load_source_audio_semantic_evidence(
-                story.path.parent / "source-audio-semantic-evidence.json", story
-            )
+        evidence = _bound_semantic_evidence(story)
+        if evidence is not None:
+            evidence_by_owner[id(story)] = evidence
             entries_by_owner[id(story)] = {
                 entry["entry_id"]: entry
                 for entry in evidence_by_owner[id(story)]["entries"]
@@ -425,6 +544,9 @@ def _collect_cumulative_semantic_entries(
             raise SourceAudioSemanticEvidenceError(
                 "Cumulative dialogue lost its semantic owner"
             )
+        if not semantic_preprocessing_is_current(evidence):
+            _clear_semantic_verdict(record)
+            continue
         if template is not None and (
             evidence.get("model") != template.get("model")
             or evidence.get("locale") != template.get("locale")
@@ -455,6 +577,7 @@ def merge_source_audio_semantics(
     ):
         raise SourceAudioSemanticEvidenceError("Cumulative source catalog changed")
     metadata = deepcopy(catalog.metadata)
+    records = deepcopy(records)
     metadata.pop("selection_origin", None)
     metadata.pop("source_audio_semantics", None)
     for story in stories:
