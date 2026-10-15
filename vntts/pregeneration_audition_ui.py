@@ -566,13 +566,12 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self.character.setText(group.character)
         self._show_portrait(group)
-        identity = (normalize_character_name(group.character), group.variant_key)
+        identity = normalize_character_name(group.character)
         count = len(
             {
                 line_id
                 for item in self._require_plan().groups
-                if (normalize_character_name(item.character), item.variant_key)
-                == identity
+                if normalize_character_name(item.character) == identity
                 for line_id in item.line_ids
             }
         )

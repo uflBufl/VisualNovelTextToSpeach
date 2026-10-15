@@ -2185,25 +2185,105 @@ class MainTest(unittest.TestCase):
         self.addCleanup(voice_root.cleanup)
         library = VoiceLibrary(Path(voice_root.name) / "voices")
         library.link_person("Rhiannon", "Aderyn")
+        library.link_person("Rhiannon", "Gwyndolyn")
         controller = AppController(
             AppSettings(speech_backend="pocket-tts"),
             tts_factory=Mock(),
             voice_library=library,
         )
         controller.live_reader = Mock(is_running=False)
-        controller.voice_router = Mock(registry=CharacterVoiceRegistry())
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("Rhiannon", "adult"), CharacterVoice("Aderyn", "child")]
+        )
+        registry.assignments["unavailable"] = None
+        controller.voice_router = Mock(registry=registry)
 
         controller.assign_voice("Aderyn", "preset:alba")
 
         self.assertEqual(library.binding("Aderyn").source_id, "preset:alba")
         self.assertEqual(library.binding("Rhiannon").source_id, "preset:alba")
         self.assertEqual(controller.voice_assignment_for("Aderyn"), "preset:alba")
+        self.assertIs(controller.voice_router.registry, registry)
+        for role in ("Aderyn", "Rhiannon", "Gwyndolyn"):
+            self.assertEqual(registry.resolve(role).speaker, "alba")
         rebuilt = registry_with_voice_library(CharacterVoiceRegistry(), library)
         self.assertEqual(rebuilt.resolve("Aderyn").speaker, "alba")
         self.assertEqual(rebuilt.resolve("Rhiannon").speaker, "alba")
+        controller.assign_voice("Rhiannon", "preset:marius")
+        for role in ("Aderyn", "Rhiannon", "Gwyndolyn"):
+            self.assertEqual(registry.resolve(role).speaker, "marius")
         controller.clear_voice_assignment("Aderyn")
         self.assertIsNone(library.binding("Aderyn"))
         self.assertIsNone(library.binding("Rhiannon"))
+        for role in ("Aderyn", "Rhiannon", "Gwyndolyn"):
+            self.assertEqual(registry.resolve(role).speaker, "adult")
+        self.assertNotIn("rhiannon", registry.assignments)
+        self.assertIsNone(registry.assignments["unavailable"])
+
+    def test_live_voice_changes_preserve_unrelated_unavailable_saved_sources(self):
+        voice_root = TemporaryDirectory()
+        self.addCleanup(voice_root.cleanup)
+        library = VoiceLibrary(Path(voice_root.name) / "voices")
+        library.select("Unavailable", route="voice", source_id="character:missing")
+        library.select(
+            "Narrator", route="voice", source_id="character:missing-narrator"
+        )
+        library.link_person("Rhiannon", "Aderyn")
+        controller = AppController(
+            AppSettings(speech_backend="pocket-tts"),
+            tts_factory=Mock(),
+            voice_library=library,
+        )
+        controller.live_reader = Mock(is_running=False)
+        registry = CharacterVoiceRegistry([CharacterVoice("Rhiannon", "alba")])
+        registry.assignments["unavailable"] = None
+        registry.assignments["narrator"] = None
+        controller.voice_router = Mock(registry=registry)
+
+        controller.assign_voice("Aderyn", "preset:marius")
+        for role in ("Rhiannon", "Aderyn"):
+            self.assertEqual(registry.resolve(role).speaker, "marius")
+        controller.clear_voice_assignment("Aderyn")
+
+        self.assertIs(controller.voice_router.registry, registry)
+        for role in ("Rhiannon", "Aderyn"):
+            self.assertEqual(registry.resolve(role).speaker, "alba")
+        self.assertIsNone(registry.assignments["unavailable"])
+        self.assertIsNone(registry.assignments["narrator"])
+        self.assertEqual(library.binding("Unavailable").source_id, "character:missing")
+
+    def test_live_narrator_changes_refresh_dependent_character_names(self):
+        voice_root = TemporaryDirectory()
+        self.addCleanup(voice_root.cleanup)
+        library = VoiceLibrary(Path(voice_root.name) / "voices")
+        library.select("Rhiannon", route="narrator")
+        library.link_person("Rhiannon", "Aderyn")
+        library.select("Unavailable", route="voice", source_id="character:missing")
+        controller = AppController(
+            AppSettings(speech_backend="pocket-tts"),
+            tts_factory=Mock(),
+            voice_library=library,
+        )
+        controller.live_reader = Mock(is_running=False)
+        registry = CharacterVoiceRegistry()
+        registry.assignments["unavailable"] = None
+        controller.voice_router = Mock(registry=registry)
+
+        for preset in ("alba", "marius"):
+            controller.assign_voice("Narrator", f"preset:{preset}")
+            for role in ("Narrator", "Rhiannon", "Aderyn"):
+                self.assertEqual(registry.resolve(role).speaker, preset)
+        controller.assign_voice("Aderyn", "preset:alba")
+        controller.assign_voice("Aderyn", "default")
+        for role in ("Rhiannon", "Aderyn"):
+            self.assertEqual(registry.resolve(role).speaker, "marius")
+        controller.clear_voice_assignment("Narrator")
+
+        self.assertIs(controller.voice_router.registry, registry)
+        for role in ("Narrator", "Rhiannon", "Aderyn"):
+            self.assertIsNone(registry.resolve(role))
+        self.assertIsNone(registry.assignments["unavailable"])
+        self.assertEqual(library.binding("Rhiannon").route, "narrator")
 
     def test_narrator_fallback_voice_and_force_live_are_independent(self):
         voice_root = TemporaryDirectory()

@@ -934,7 +934,7 @@ class VoiceLibraryTest(unittest.TestCase):
 
             self.assertEqual(library.binding("Role").source_sha256, alternative.sha256)
 
-    def test_explicit_routes_replace_one_variant_binding_and_support_presets(
+    def test_explicit_routes_replace_canonical_binding_and_support_presets(
         self,
     ) -> None:
         with TemporaryDirectory() as directory:
@@ -967,12 +967,14 @@ class VoiceLibraryTest(unittest.TestCase):
             self.assertIsNone(library.resolve_source_path("Sonetto", variant_key="old"))
             self.assertEqual(library.binding("Narrator").route, "narrator")
             self.assertEqual(library.binding("Unknown").route, "live-fallback")
-            self.assertEqual(len(library.bindings()), 4)
+            self.assertEqual(len(library.bindings()), 3)
             self.assertTrue(library.clear("Unknown"))
             self.assertIsNone(library.binding("Unknown"))
             self.assertFalse(library.clear("Unknown"))
 
-    def test_linked_person_shares_bindings_without_merging_variants(self) -> None:
+    def test_linked_person_shares_binding_and_retains_variant_alternatives(
+        self,
+    ) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
             adult, child = root / "adult.wav", root / "child.wav"
@@ -997,8 +999,14 @@ class VoiceLibraryTest(unittest.TestCase):
             library.link_person("Rhiannon", "Aderyn")
 
             self.assertEqual(library.canonical_role("Aderyn"), "Rhiannon")
-            self.assertIsNone(library.binding("Aderyn", variant_key="adult"))
-            self.assertIsNone(library.binding("Aderyn", variant_key="child"))
+            self.assertEqual(
+                library.binding("Aderyn", variant_key="adult"),
+                library.binding("Rhiannon"),
+            )
+            self.assertEqual(
+                library.binding("Aderyn", variant_key="child"),
+                library.binding("Rhiannon"),
+            )
             self.assertEqual(
                 library.binding("Rhiannon", variant_key="child").source_sha256,
                 child_choice.sha256,
@@ -1007,7 +1015,7 @@ class VoiceLibraryTest(unittest.TestCase):
             self.assertIsNone(library.binding("Aderyn", variant_key="adult"))
             self.assertEqual(
                 library.binding("Rhiannon", variant_key="adult").source_sha256,
-                adult_choice.sha256,
+                child_choice.sha256,
             )
 
     def test_linked_names_share_active_voice_and_restore_prior_choice_on_unlink(
@@ -1047,11 +1055,11 @@ class VoiceLibraryTest(unittest.TestCase):
                 library.binding(
                     "Rhiannon", variant_key="story-name:aderyn"
                 ).source_sha256,
-                child_choice.sha256,
+                adult_choice.sha256,
             )
             self.assertEqual(
                 library.binding("Aderyn", variant_key="child").source_sha256,
-                child_variant.sha256,
+                adult_choice.sha256,
             )
             self.assertTrue(library.unlink_person("Aderyn"))
             self.assertEqual(
@@ -1076,6 +1084,391 @@ class VoiceLibraryTest(unittest.TestCase):
 
             self.assertEqual(library.binding("Aderyn").role, "Aderyn")
             self.assertEqual(library.alternatives("Aderyn")[0].role, "Aderyn")
+
+    def test_old_variants_migrate_once_with_manual_choice_and_stay_cleared(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            library.select("Role", route="voice", source_id="manual")
+            document = json.loads(library.path.read_text())
+            manual = document["bindings"].pop("role:")
+            manual["variant_key"] = "young"
+            manual["provenance"]["timestamp"] = "2020-01-01T00:00:00+00:00"
+            automatic = json.loads(json.dumps(manual))
+            automatic["variant_key"] = "old"
+            automatic["source_id"] = "automatic"
+            automatic["provenance"].update(
+                method="automatic", timestamp="2030-01-01T00:00:00+00:00"
+            )
+            document.update(
+                version=3, bindings={"role:young": manual, "role:old": automatic}
+            )
+            document.pop("archived_bindings")
+            library.path.write_text(json.dumps(document))
+            original = library.path.read_bytes()
+
+            self.assertEqual(
+                library.binding("Role", variant_key="old").source_id, "manual"
+            )
+            self.assertEqual(library.path.read_bytes(), original)
+            self.assertEqual(len(library.bindings()), 1)
+            self.assertTrue(library.clear("Role", variant_key="young"))
+            self.assertIsNone(
+                VoiceLibrary(directory).binding("Role", variant_key="old")
+            )
+            migrated = json.loads(library.path.read_text())
+            self.assertEqual(migrated["version"], voice_library.VOICE_LIBRARY_VERSION)
+            self.assertEqual(len(migrated["archived_bindings"]), 2)
+            library.select("Other", route="narrator")
+            self.assertEqual(
+                json.loads(library.path.read_text())["archived_bindings"],
+                migrated["archived_bindings"],
+            )
+
+    def test_legacy_canonical_base_beats_newer_manual_variant(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            library.select("Role", route="voice", source_id="base", method="automatic")
+            document = json.loads(library.path.read_text())
+            variant = json.loads(json.dumps(document["bindings"]["role:"]))
+            variant["variant_key"] = "young"
+            variant["source_id"] = "variant"
+            variant["provenance"].update(method="manual", timestamp="2999-01-01")
+            document["bindings"]["role:young"] = variant
+            document["version"] = 3
+            document.pop("archived_bindings")
+            library.path.write_text(json.dumps(document))
+
+            self.assertEqual(
+                library.binding("Role", variant_key="young").source_id, "base"
+            )
+            library.select("Role", variant_key="young", route="voice", source_id="new")
+            self.assertEqual(library.binding("Role").source_id, "new")
+            self.assertEqual(len(library.bindings()), 1)
+
+    def test_same_person_variants_share_selection_clear_and_guarded_rollback(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            library.select(
+                "Role", variant_key="young", route="voice", source_id="manual"
+            )
+            library.link_person("Role", "Alias")
+            kept = library.select(
+                "Alias",
+                variant_key="old",
+                route="narrator",
+                only_if_unbound=True,
+                method="automatic",
+            )
+            self.assertEqual(kept.source_id, "manual")
+            rollback = library.binding_rollback()
+            library.clear("Alias", variant_key="old", rollback=rollback)
+            self.assertIsNone(library.binding("Role", variant_key="young"))
+            self.assertTrue(library.rollback_bindings(rollback))
+            self.assertEqual(library.binding("Alias").source_id, "manual")
+            rollback = library.binding_rollback()
+            library.select(
+                "Role", variant_key="young", route="narrator", rollback=rollback
+            )
+            VoiceLibrary(directory).select(
+                "Alias", variant_key="old", route="live-fallback"
+            )
+            self.assertFalse(library.rollback_bindings(rollback))
+            self.assertEqual(library.binding("Role").route, "live-fallback")
+
+    def test_wavs_from_all_variants_and_linked_archives_are_selectable(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "voice.wav"
+            write_wav(reference, b"\x01\x00")
+            library = VoiceLibrary(root / "library")
+            alternative = library.discover(
+                "Alias", reference, variant_key="young", bind_if_missing=True
+            )
+            library.select("Role", route="narrator")
+            library.link_person("Role", "Alias")
+            self.assertEqual(len(library.bindings()), 1)
+            self.assertEqual(
+                library.binding("Alias", variant_key="young").route, "narrator"
+            )
+            self.assertEqual(
+                library.binding("Role", variant_key="story-name:alias:young").route,
+                "narrator",
+            )
+            library.select(
+                "Alias",
+                variant_key="other-story",
+                route="voice",
+                source_sha256=alternative.sha256,
+            )
+            self.assertEqual(library.resolve_source_paths("Role"), (alternative.path,))
+            library.validate()
+            self.assertTrue(library.unlink_person("Alias"))
+            self.assertEqual(library.binding("Alias").source_sha256, alternative.sha256)
+            self.assertEqual(library.binding("Role").source_sha256, alternative.sha256)
+            self.assertEqual(
+                library.alternatives("Alias", variant_key="young")[0].sha256,
+                alternative.sha256,
+            )
+            library.validate()
+
+    def test_discovery_only_binds_one_canonical_choice_across_variants(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, second = root / "first.wav", root / "second.wav"
+            write_wav(first, b"\x00\x00")
+            write_wav(second, b"\x01\x00")
+            library = VoiceLibrary(root / "library")
+            chosen = library.discover(
+                "Role", first, variant_key="young", bind_if_missing=True
+            )
+            library.link_person("Role", "Alias")
+            discovered = library.discover(
+                "Alias", second, variant_key="old", bind_if_missing=True
+            )
+            self.assertNotEqual(chosen.sha256, discovered.sha256)
+            self.assertEqual(
+                library.binding("Alias", variant_key="old").source_sha256, chosen.sha256
+            )
+            self.assertEqual(len(library.bindings()), 1)
+            self.assertIsNone(library.bindings()[0].variant_key)
+            library.select("Role", route="voice", source_sha256=discovered.sha256)
+            self.assertEqual(library.binding("Alias").source_sha256, discovered.sha256)
+
+    def test_linked_variant_discovery_retains_inventory_and_unlinks_without_collision(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, second = root / "first.wav", root / "second.wav"
+            write_wav(first, b"\x00\x00")
+            write_wav(second, b"\x01\x00")
+            library = VoiceLibrary(root / "library")
+            previous = library.discover("Alias", first, variant_key="young")
+            library.link_person("Role", "Alias")
+            self.assertEqual(
+                library.alternatives("Alias", variant_key="young")[0].sha256,
+                previous.sha256,
+            )
+            discovered = library.discover("Alias", second, variant_key="young")
+            new_variant = library.discover("Alias", second, variant_key="old")
+            self.assertTrue(library.unlink_person("Alias"))
+            self.assertEqual(
+                {
+                    item.sha256
+                    for item in library.alternatives("Alias", variant_key="young")
+                },
+                {previous.sha256, discovered.sha256},
+            )
+            self.assertEqual(
+                library.alternatives("Alias", variant_key="old")[0].sha256,
+                new_variant.sha256,
+            )
+            library.validate()
+
+    def test_legacy_variant_wav_promotes_selected_metadata_without_losing_inventory(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "voice.wav"
+            write_wav(reference, b"\x01\x00")
+            library = VoiceLibrary(root / "library")
+            choice = library.discover(
+                "Role", reference, variant_key="young", bind_if_missing=True
+            )
+            document = json.loads(library.path.read_text())
+            binding = document["bindings"].pop("role:")
+            binding["variant_key"] = "young"
+            document["bindings"]["role:young"] = binding
+            del document["alternatives"]["role:"]
+            document["version"] = 3
+            document.pop("archived_bindings")
+            library.path.write_text(json.dumps(document))
+
+            self.assertEqual(library.resolve_source_paths("Role"), (choice.path,))
+            self.assertEqual(
+                library.alternatives("Role", variant_key="young")[0].sha256,
+                choice.sha256,
+            )
+            self.assertEqual(library.alternatives("Role")[0].sha256, choice.sha256)
+            library.select("Other", route="narrator")
+            library.validate()
+            self.assertEqual(
+                len(json.loads(library.path.read_text())["archived_bindings"]), 1
+            )
+            self.assertEqual(list(library.blobs_path.glob("*.wav")), [choice.path])
+
+    def test_legacy_linked_alias_inventory_remains_visible_after_rediscovery(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, second = root / "first.wav", root / "second.wav"
+            write_wav(first, b"\x00\x00")
+            write_wav(second, b"\x01\x00")
+            library = VoiceLibrary(root / "library")
+            previous = library.discover("Alias", first, variant_key="young")
+            document = json.loads(library.path.read_text())
+            document["version"] = 3
+            document.pop("archived_bindings")
+            document["person_aliases"] = {"alias": "Role"}
+            document.pop("person_link_restores")
+            document["person_link_migrations"] = {
+                "alias": [
+                    {
+                        "role": "Alias",
+                        "variant_key": None,
+                        "linked_variant_key": "story-name:alias",
+                    }
+                ]
+            }
+            library.path.write_text(json.dumps(document))
+            discovered = library.discover("Alias", second, variant_key="young")
+            self.assertEqual(
+                {
+                    item.sha256
+                    for item in library.alternatives("Alias", variant_key="young")
+                },
+                {previous.sha256, discovered.sha256},
+            )
+            self.assertTrue(library.unlink_person("Alias"))
+            self.assertEqual(len(library.alternatives("Alias", variant_key="young")), 2)
+            library.validate()
+
+    def test_archived_reference_inventory_is_inert_validated_and_survives_unlink(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference, foreign = root / "voice.wav", root / "foreign.wav"
+            write_wav(reference, b"\x00\x00")
+            write_wav(foreign, b"\x01\x00")
+            library = VoiceLibrary(root / "library")
+            chosen = library.discover("Alias", reference, bind_if_missing=True)
+            library.select("Role", route="narrator")
+            library.link_person("Role", "Alias")
+            archived = library.archived_bindings("Alias")
+            self.assertEqual(archived, library.archived_bindings("Role"))
+            self.assertEqual(archived, library.archived_bindings())
+            self.assertEqual(library.archived_bindings("Other"), ())
+            self.assertEqual(library.reference_paths(archived[0]), (chosen.path,))
+            library.clear("Role")
+            self.assertEqual(library.bindings(), ())
+            self.assertEqual(library.reference_paths(archived[0]), (chosen.path,))
+            self.assertTrue(library.unlink_person("Alias"))
+            self.assertEqual(library.archived_bindings("Role"), ())
+            self.assertEqual(library.reference_paths(archived[0]), (chosen.path,))
+            foreign_checksum = hashlib.sha256(foreign.read_bytes()).hexdigest()
+            library._blob_path(foreign_checksum).write_bytes(foreign.read_bytes())
+            foreign_binding = voice_library.VoiceBinding(
+                "Alias", None, "voice", (foreign_checksum,), None, {}
+            )
+            with self.assertRaisesRegex(VoiceLibraryError, "not recorded"):
+                library.reference_paths(foreign_binding)
+            chosen.path.write_bytes(b"corrupt")
+            with self.assertRaisesRegex(VoiceLibraryError, "checksum failed"):
+                library.reference_paths(archived[0])
+
+    def test_legacy_variant_timestamp_order_normalizes_offsets_and_falls_back_stably(
+        self,
+    ):
+        for first_timestamp, second_timestamp, expected in (
+            ("2026-10-15T10:00:00+03:00", "2026-10-15T08:30:00+00:00", "second"),
+            ("2026-10-15T10:00:00+03:00", "2026-10-15T07:00:00Z", "second"),
+            ("2026-10-15T10:00:00", "2026-10-15T08:30:00", "first"),
+            ("earlier", "later", "second"),
+        ):
+            with (
+                self.subTest(first=first_timestamp, second=second_timestamp),
+                TemporaryDirectory() as directory,
+            ):
+                library = VoiceLibrary(directory)
+                library.select("Role", route="voice", source_id="first")
+                document = json.loads(library.path.read_text())
+                first = document["bindings"].pop("role:")
+                first["variant_key"] = "first"
+                first["provenance"]["timestamp"] = first_timestamp
+                second = json.loads(json.dumps(first))
+                second["variant_key"] = "second"
+                second["source_id"] = "second"
+                second["provenance"]["timestamp"] = second_timestamp
+                document.update(
+                    version=3, bindings={"role:first": first, "role:second": second}
+                )
+                document.pop("archived_bindings")
+                library.path.write_text(json.dumps(document))
+                self.assertEqual(library.binding("Role").source_id, expected)
+                self.assertEqual(len(library.archived_bindings("Role")), 2)
+
+    def test_repeated_links_restore_only_the_choice_captured_by_that_link(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            library.select("Alias", route="voice", source_id="preset:alba")
+            library.select("Role", route="voice", source_id="preset:marius")
+            library.link_person("Role", "Alias")
+            library.unlink_person("Alias")
+            self.assertEqual(library.binding("Alias").source_id, "preset:alba")
+            library.clear("Alias")
+            library.link_person("Role", "Alias")
+            library.select("Alias", route="voice", source_id="preset:anna")
+            library.unlink_person("Alias")
+            self.assertIsNone(library.binding("Alias"))
+            self.assertEqual(library.binding("Role").source_id, "preset:anna")
+            archive_count = len(library.archived_bindings())
+            library.link_person("Role", "Alias")
+            library.unlink_person("Alias")
+            self.assertIsNone(library.binding("Alias"))
+            self.assertEqual(len(library.archived_bindings()), archive_count)
+            library.select("Alias", route="voice", source_id="preset:jean")
+            library.link_person("Role", "Alias")
+            library.select("Role", route="voice", source_id="preset:cosette")
+            library.unlink_person("Alias")
+            self.assertEqual(library.binding("Alias").source_id, "preset:jean")
+            self.assertEqual(library.binding("Role").source_id, "preset:cosette")
+
+    def test_rollback_does_not_restore_an_alias_after_it_became_linked(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            library.select("Alias", route="voice", source_id="preset:alba")
+            library.select("Role", route="voice", source_id="preset:marius")
+            rollback = library.binding_rollback()
+            library.clear("Alias", rollback=rollback)
+            VoiceLibrary(directory).link_person("Role", "Alias")
+            self.assertFalse(library.rollback_bindings(rollback))
+            self.assertEqual(library.binding("Alias").source_id, "preset:marius")
+            library.unlink_person("Alias")
+            self.assertIsNone(library.binding("Alias"))
+
+    def test_legacy_current_link_restore_is_inferred_without_old_history(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            library.select("Alias", route="voice", source_id="preset:alba")
+            library.select("Role", route="voice", source_id="preset:marius")
+            library.link_person("Role", "Alias")
+            document = json.loads(library.path.read_text())
+            document["version"] = 3
+            document.pop("person_link_restores")
+            archived = document.pop("archived_bindings")
+            document["bindings"]["role:storynamealias"] = archived[0]
+            library.path.write_text(json.dumps(document))
+            self.assertTrue(library.unlink_person("Alias"))
+            self.assertEqual(library.binding("Alias").source_id, "preset:alba")
+            library.clear("Alias")
+            library.link_person("Role", "Alias")
+            library.unlink_person("Alias")
+            self.assertIsNone(library.binding("Alias"))
+
+    def test_invalid_current_link_restore_is_rejected_without_rewriting(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            library.select("Alias", route="voice", source_id="preset:alba")
+            library.link_person("Role", "Alias")
+            original = json.loads(library.path.read_text())
+            for index in (True, -1, 100, "0"):
+                with self.subTest(index=index):
+                    document = json.loads(json.dumps(original))
+                    document["person_link_restores"]["alias"] = index
+                    library.path.write_text(json.dumps(document))
+                    before = library.path.read_bytes()
+                    with self.assertRaisesRegex(VoiceLibraryError, "restore"):
+                        library.unlink_person("Alias")
+                    self.assertEqual(library.path.read_bytes(), before)
 
     def test_composite_selection_keeps_all_selected_references_in_order(self) -> None:
         with TemporaryDirectory() as directory:

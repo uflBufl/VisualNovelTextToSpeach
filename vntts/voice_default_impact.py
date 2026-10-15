@@ -163,7 +163,7 @@ def _impact_for_pack(
     old_groups: dict[str, VoiceGroup],
     new_groups: dict[str, VoiceGroup],
     proposed: AppSettings,
-    role: str,
+    roles: frozenset[str],
     narrator: bool,
     cancellation: Cancellation | None,
 ) -> StoryVoiceImpact:
@@ -179,7 +179,7 @@ def _impact_for_pack(
         old_group = old_groups.get(line_id)
         if group is None:
             continue
-        if not _matches_role(group, old_group, role, narrator):
+        if not _matches_role(group, old_group, roles, narrator):
             continue
         if group.route == "needs-audition":
             needs_choice += 1
@@ -211,15 +211,17 @@ def _impact_for_pack(
 def _matches_role(
     group: VoiceGroup,
     old_group: VoiceGroup | None,
-    role: str,
+    roles: frozenset[str],
     narrator: bool,
 ) -> bool:
-    return normalize_character_name(group.character) == role or (
-        narrator
-        and any(
-            value is not None and value.route == "narrator"
-            for value in (old_group, group)
+    return any(
+        value is not None
+        and (
+            normalize_character_name(value.character) in roles
+            or normalize_character_name(value.routing_role or value.character) in roles
+            or (narrator and value.route == "narrator")
         )
+        for value in (old_group, group)
     )
 
 
@@ -296,7 +298,15 @@ def inspect_voice_default_impact(
         line_id: group for group in new_plan.groups for line_id in group.line_ids
     }
     narrator = is_narrator(role)
-    role = normalize_character_name(role)
+    roles = {normalize_character_name(role)}
+    for library in (current_voice_library, proposed_voice_library):
+        canonical = normalize_character_name(library.canonical_role(role))
+        roles.add(canonical)
+        roles.update(
+            alias
+            for alias, target in library.person_aliases().items()
+            if normalize_character_name(target) == canonical
+        )
     return tuple(
         _impact_for_pack(
             pack,
@@ -304,7 +314,7 @@ def inspect_voice_default_impact(
             old_groups,
             new_groups,
             settings,
-            role,
+            frozenset(roles),
             narrator,
             cancellation,
         )

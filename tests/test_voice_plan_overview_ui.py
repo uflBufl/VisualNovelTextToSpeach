@@ -3,7 +3,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -115,10 +115,11 @@ class VoicePlanOverviewTest(unittest.TestCase):
         self.show_plan((replace(group, resolution="saved-player-decision"),))
         self.assertEqual(self.row_values()[2], "chosen by you")
 
-    def test_choice_uses_routing_role_and_variant_then_role_fallback(self):
+    def test_alias_choice_uses_canonical_provenance(self):
         group = self.saved_group(
             character="Canonical person", routing_role="Story alias", variant_key="v1"
         )
+        self.library.link_person(group.character, group.routing_role)
         self.library.select(
             group.character,
             route="voice",
@@ -144,186 +145,50 @@ class VoicePlanOverviewTest(unittest.TestCase):
         self.show_plan((group,))
         self.assertEqual(self.row_values()[2], "chosen by you")
 
-    def test_character_appears_once_across_stories_with_unique_line_count(self):
-        first = self.saved_group(character="Rhiannon")
-        first = replace(first, line_ids=("story-one:line", "shared-line"))
-        second = replace(
-            first,
-            character="RHIANNON",
-            group_id="f" * 64,
-            line_ids=("story-two:line", "shared-line"),
+    def test_one_character_voice_applies_to_all_selected_story_lines(self):
+        group = replace(
+            self.saved_group(), line_ids=("story-one:line", "story-two:line")
         )
-        plan = self.show_plan((first, second))
-        self.assertEqual(self.dialog.voice_routes.count(), 1)
-        self.assertEqual(self.row_values()[0], "Rhiannon")
-        self.assertEqual(self.row_values()[3], "3")
-        self.assertEqual(
-            set(
-                self.dialog.voice_routes.item(0).data(int(Qt.ItemDataRole.UserRole) + 4)
-            ),
-            {first.group_id, second.group_id},
-        )
-        self.assertTrue(self.dialog.voice_assignment_controls.isHidden())
-        self.assertEqual(plan.groups, (first, second))
-
-    def test_character_assignments_remain_visible_and_inspect_exact_variant(self):
-        first = self.saved_group()
-        other_voice = replace(
-            self.group.candidates[0],
-            source_id="character:other-reference",
-            source_character="Another game reference",
-            reference_sha256s=("b" * 64,),
-        )
-        second = replace(
-            first,
-            group_id="f" * 64,
-            routing_role="Story alias",
-            variant_key="child",
-            source_id=other_voice.source_id,
-            source_character=other_voice.source_character,
-            reference_sha256s=other_voice.reference_sha256s,
-            candidates=(other_voice,),
-            candidate_inventory=(other_voice,),
-            line_ids=("other-story:line",),
-        )
-        self.library.select(
-            first.routing_role or first.character,
-            route="voice",
-            source_id=first.source_id,
-            method="automatic",
-        )
-        self.library.select(
-            second.routing_role,
-            variant_key=second.variant_key,
-            route="voice",
-            source_id=second.source_id,
-            method="manual",
-        )
-        plan = self.show_plan((first, second))
-        self.assertEqual(self.dialog.voice_routes.count(), 1)
-        self.assertIn(first.source_character, self.row_values()[1])
-        self.assertIn(second.source_character, self.row_values()[1])
-        self.assertIn("automatic", self.row_values()[2])
-        self.assertIn("chosen by you", self.row_values()[2])
-        self.assertFalse(self.dialog.voice_assignment_controls.isHidden())
-        choice = self.dialog.voice_assignment_choice
-        self.assertEqual(choice.count(), 2)
-        choice.setCurrentIndex(choice.findData(second.group_id))
-        item = self.dialog.voice_routes.currentItem()
-        self.assertEqual(item.data(int(Qt.ItemDataRole.UserRole)), second.routing_role)
-        self.assertEqual(item.data(int(Qt.ItemDataRole.UserRole) + 1), second.group_id)
-        self.assertEqual(
-            set(item.data(int(Qt.ItemDataRole.UserRole) + 4)),
-            {first.group_id, second.group_id},
-        )
-        self.dialog.voice_routes.setCurrentRow(0)
-        self.dialog._render_voice_routes(plan)
-        self.assertEqual(choice.currentData(), second.group_id)
-        self.assertEqual(
-            self.dialog.voice_routes.currentItem().data(
-                int(Qt.ItemDataRole.UserRole) + 1
-            ),
-            second.group_id,
-        )
-
-        self.dialog.voice_panel.start = Mock()
-        self.dialog._inspect_character_voice()
-        self.dialog.voice_panel.start.assert_called_once_with(
-            plan, group_id=second.group_id
-        )
-        self.assertEqual(plan.groups, (first, second))
-
-    def test_substitution_filter_retains_every_assignment_of_character(self):
-        direct = self.saved_group()
-        direct = replace(
-            direct,
-            character=direct.source_character,
-            routing_role=direct.source_character,
-            line_ids=("direct-line",),
-        )
-        fallback = replace(
-            direct,
-            group_id="f" * 64,
-            routing_role="Story alias",
-            variant_key="child",
-            route="narrator",
-            resolution="automatic-narrator-fallback",
-            line_ids=("fallback-line",),
-        )
-        other = replace(
-            direct,
-            group_id="e" * 64,
-            character="Other character",
-            routing_role="Other character",
-            source_character="Other character",
-            line_ids=("other-line",),
-        )
-        self.show_plan((direct, fallback, other))
-        self.assertEqual(self.dialog.voice_routes.count(), 2)
-        self.dialog.show_all_voice_routes.setChecked(True)
+        plan = self.show_plan((group,))
         self.assertEqual(self.dialog.voice_routes.count(), 1)
         self.assertEqual(self.row_values()[3], "2")
-        self.assertIn(direct.source_character, self.row_values()[1])
-        self.assertIn("Alba", self.row_values()[1])
-        self.assertEqual(
-            set(
-                self.dialog.voice_routes.item(0).data(int(Qt.ItemDataRole.UserRole) + 4)
-            ),
-            {direct.group_id, fallback.group_id},
+        self.assertFalse(hasattr(self.dialog, "voice_assignment_choice"))
+        self.assertTrue(
+            self.dialog.voice_route_details.text().startswith(f"{group.character}: ")
         )
-        self.assertEqual(self.dialog.voice_assignment_choice.count(), 2)
-
-    def test_same_voice_name_distinguishes_reference_sets_for_inspection(self):
-        first = self.saved_group()
-        second = replace(
-            first,
-            group_id="f" * 64,
-            source_id="character:another-reference",
-            reference_sha256s=("b" * 64,),
-            line_ids=("other-story:line",),
-        )
-        plan = self.show_plan((first, second))
-        self.assertEqual(self.dialog.voice_routes.count(), 1)
-        self.assertIn("reference set 1", self.row_values()[1])
-        self.assertIn("reference set 2", self.row_values()[1])
-        choice = self.dialog.voice_assignment_choice
-        self.assertEqual(choice.count(), 2)
-        first_index = choice.findData(first.group_id)
-        second_index = choice.findData(second.group_id)
-        self.assertGreaterEqual(first_index, 0)
-        self.assertGreaterEqual(second_index, 0)
-        self.assertIn("reference set 1", choice.itemText(first_index))
-        self.assertIn("reference set 2", choice.itemText(second_index))
-        choice.setCurrentIndex(second_index)
         self.dialog.voice_panel.start = Mock()
         self.dialog._inspect_character_voice()
         self.dialog.voice_panel.start.assert_called_once_with(
-            plan, group_id=second.group_id
+            plan, group_id=group.group_id
         )
-        self.assertEqual(plan.groups, (first, second))
 
-    def test_assignment_change_clears_previous_accessible_action_hint(self):
-        review = replace(self.group, line_ids=("review-story:line",))
-        saved = self.saved_group(routing_role="Story alias", variant_key="child")
-        saved = replace(saved, group_id="f" * 64, line_ids=("saved-story:line",))
-        self.show_plan((review, saved))
-        item = self.dialog.voice_routes.currentItem()
+    def test_canonical_row_can_unlink_its_other_name(self):
+        group = self.saved_group()
+        self.library.link_person(group.character, "Other name")
+        self.show_plan((group,))
+        self.dialog._voice_auditions_completed = Mock()
+        self.assertTrue(self.dialog.unlink_identity.isEnabled())
+        self.assertFalse(self.dialog.link_identity.isEnabled())
         self.assertEqual(
-            self.dialog.voice_assignment_choice.currentData(), review.group_id
+            self.dialog.identity_suggestion.text(), "Linked names: othername"
         )
-        self.assertIn(
-            "Continuing without a choice uses Narrator",
-            item.data(Qt.ItemDataRole.AccessibleDescriptionRole),
-        )
-        summary = item.data(Qt.ItemDataRole.AccessibleTextRole)
-        self.assertIn("2 lines", summary)
-        self.assertIn("Alba", summary)
-        self.assertIn(saved.source_character, summary)
+        self.dialog.unlink_identity.click()
+        self.assertEqual(self.library.person_aliases(), {})
+        self.dialog._voice_auditions_completed.assert_called_once()
 
-        choice = self.dialog.voice_assignment_choice
-        choice.setCurrentIndex(choice.findData(saved.group_id))
-        self.assertEqual(item.data(Qt.ItemDataRole.AccessibleDescriptionRole), "")
-        self.assertEqual(item.data(Qt.ItemDataRole.AccessibleTextRole), summary)
+    def test_canonical_row_can_choose_which_name_to_unlink(self):
+        group = self.saved_group()
+        self.library.link_person(group.character, "Other name")
+        self.library.link_person(group.character, "Second name")
+        self.show_plan((group,))
+        self.dialog._voice_auditions_completed = Mock()
+        with patch(
+            "vntts.pregeneration_ui.QInputDialog.getItem",
+            return_value=("secondname", True),
+        ):
+            self.dialog.unlink_identity.click()
+        self.assertEqual(set(self.library.person_aliases()), {"othername"})
+        self.dialog._voice_auditions_completed.assert_called_once()
 
     def test_substitution_filter_keeps_valid_selection_and_restores_all_rows(self):
         direct = self.saved_group()

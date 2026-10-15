@@ -515,7 +515,6 @@ def _voice_library_selection(
     references = selected.reference_sha256s if selected is not None else ()
     return VoiceSelection(
         role=group.character,
-        variant_key=group.variant_key,
         route="narrator" if source_id == default_voice_choice_id else "voice",
         source_sha256s=references,
         source_id=None
@@ -597,7 +596,6 @@ class VoicePlanStore:
                 settings,
                 library.canonical_role(role),
                 library=library,
-                variant_key=library.linked_variant_key(role),
             )
 
     def _create(
@@ -748,35 +746,31 @@ class VoicePlanStore:
     ) -> dict[str, list[GroupValue]]:
         portrait_snapshots: dict[str, PortraitSnapshot] = {}
         grouped: dict[str, list[GroupValue]] = {}
-        role_cache: dict[str, tuple[str, str | None, str | None]] = {}
+        role_cache: dict[str, tuple[str, str | None]] = {}
         for line_id in job.selected_line_ids:
             record = records[line_id]
             if not record.speakable or _has_authoritative_source_audio(
                 record, source_completion, authoritative_source_lines
             ):
                 continue
-            routing_role = synthesis_character_for_line(
-                record.speaker, record.voice_character
-            )
-            role_values = role_cache.get(routing_role)
+            role = synthesis_character_for_line(record.speaker, record.voice_character)
+            role_values = role_cache.get(role)
             if role_values is None:
-                character = routing_role
-                variant_key = None
-                if self.voice_library is not None:
-                    character = self.voice_library.canonical_role(routing_role)
-                    variant_key = self.voice_library.linked_variant_key(routing_role)
-                assignment_source = _effective_assignment_source(
-                    settings,
-                    routing_role,
-                    library=self.voice_library,
-                    variant_key=variant_key,
+                character = (
+                    self.voice_library.canonical_role(role)
+                    if self.voice_library is not None
+                    else role
                 )
-                role_values = character, variant_key, assignment_source
-                role_cache[routing_role] = role_values
-            character, variant_key, assignment_source = role_values
+                assignment = _effective_assignment_source(
+                    settings, character, library=self.voice_library
+                )
+                role_values = character, assignment
+                role_cache[role] = role_values
+            character, assignment = role_values
             evidence = _variant_evidence(record)
-            line_source = _bound_source_for_record(record, queue_bindings)
-            bound_source = assignment_source or (None if variant_key else line_source)
+            bound_source = assignment or _bound_source_for_record(
+                record, queue_bindings
+            )
             portrait_image, portrait_image_sha256 = _portrait_snapshot(
                 Path(job.story_index).expanduser().resolve().parent,
                 evidence.portrait,
@@ -784,8 +778,8 @@ class VoicePlanStore:
             )
             identity = [
                 normalize_character_name(character),
-                normalize_character_name(routing_role),
-                None if variant_key else line_source,
+                normalize_character_name(character),
+                None,
             ]
             group_id = _digest(identity)
             grouped.setdefault(group_id, []).append(
@@ -793,8 +787,8 @@ class VoicePlanStore:
                     record=record,
                     character=character,
                     evidence=evidence,
-                    routing_role=routing_role,
-                    variant_key=variant_key,
+                    routing_role=character,
+                    variant_key=None,
                     bound_source=bound_source,
                     portrait_image=portrait_image,
                     portrait_image_sha256=portrait_image_sha256,
@@ -931,7 +925,14 @@ class VoicePlanStore:
         ):
             raise PregenerationVoiceError("Selected voice reference changed")
         route = "narrator" if source_id == default_voice_choice_id else "voice"
-        identity_key = (normalize_character_name(group.character), group.variant_key)
+        aliases = (
+            self.voice_library.person_aliases()
+            if self.voice_library is not None
+            else {}
+        )
+        identity_key = normalize_character_name(
+            aliases.get(normalize_character_name(group.character), group.character)
+        )
         groups = tuple(
             replace(
                 value,
@@ -957,7 +958,9 @@ class VoicePlanStore:
                     else (*value.candidate_inventory, candidate)
                 ),
             )
-            if (normalize_character_name(value.character), value.variant_key)
+            if normalize_character_name(
+                aliases.get(normalize_character_name(value.character), value.character)
+            )
             == identity_key
             else value
             for value in plan.groups
@@ -1027,7 +1030,8 @@ class VoicePlanStore:
             source_bank = None
         if any(value.evidence.source_voice_id != source_voice_id for value in values):
             source_voice_id = None
-        bound_source = values[0].bound_source
+        bound_sources = {value.bound_source for value in values}
+        bound_source = next(iter(bound_sources)) if len(bound_sources) == 1 else None
         portrait_value = next(
             (value for value in values if value.portrait_image), values[0]
         )
@@ -1041,10 +1045,9 @@ class VoicePlanStore:
             settings,
             routing_role,
             library=self.voice_library,
-            variant_key=variant_key,
         )
         binding = (
-            self.voice_library.binding(routing_role, variant_key=variant_key)
+            self.voice_library.binding(character)
             if self.voice_library is not None
             else None
         )
@@ -1076,11 +1079,8 @@ class VoicePlanStore:
         )
         archived_sources: list[str] = []
         if self.voice_library is not None:
-            for alias in linked_names[1:]:
-                archived = self.voice_library.binding(
-                    character, variant_key=f"story-name:{alias}"
-                )
-                if archived is not None and archived.route == "voice":
+            for archived in self.voice_library.archived_bindings(character):
+                if archived.route == "voice":
                     source_id = voice_binding_source_id(archived)
                     if source_id is not None:
                         archived_sources.append(source_id)
@@ -1587,7 +1587,7 @@ def _candidate_inventory(
     if bound_source:
         add(bound_source, 120, "Exact voice binding for this dialogue")
 
-    for source_id in archived_sources:
+    for source_id in _available_archived_sources(archived_sources, registry):
         add(source_id, 60, "Earlier voice under another name; preview before choosing")
 
     exact = _candidate_for(
@@ -1672,12 +1672,9 @@ def _effective_assignment_source(
     character: str,
     *,
     library: VoiceLibrary | None = None,
-    variant_key: str | None = None,
 ) -> str | None:
     if library is not None:
-        binding = library.binding(character, variant_key=variant_key)
-        if binding is None and variant_key is not None:
-            binding = library.binding(character)
+        binding = library.binding(character)
         if (
             binding is not None
             and binding.route == "narrator"
@@ -2271,6 +2268,18 @@ def _bound_source_for_record(
     if not voice_character:
         return None
     return f"character:{normalize_character_name(voice_character)}"
+
+
+def _available_archived_sources(
+    sources: Sequence[str], registry: CharacterVoiceRegistry
+) -> tuple[str, ...]:
+    return tuple(
+        source_id
+        for source_id in sources
+        if not source_id.startswith("character:")
+        or normalize_character_name(source_id.removeprefix("character:"))
+        in registry.voices
+    )
 
 
 def _candidate_from_source(

@@ -400,10 +400,42 @@ def remember_voice_binding(
 def registry_with_voice_library(
     registry: CharacterVoiceRegistry,
     library: VoiceLibrary,
+    *,
+    role: str | None = None,
 ) -> CharacterVoiceRegistry:
     """Project authoritative bindings into the in-memory routing registry."""
     bindings = library.bindings()
+    aliases = library.person_aliases()
+    archives = library.archived_bindings(role)
+    if role is not None:
+        canonical = normalize_character_name(
+            aliases.get(normalize_character_name(role), role)
+        )
+        roles = {canonical}
+        if canonical == "narrator":
+            roles.update(
+                normalize_character_name(binding.role)
+                for binding in bindings
+                if binding.route == "narrator"
+            )
+        elif any(
+            normalize_character_name(binding.role) == canonical
+            and binding.route == "narrator"
+            for binding in bindings
+        ):
+            roles.add("narrator")
+        bindings = tuple(
+            binding
+            for binding in bindings
+            if normalize_character_name(binding.role) in roles
+        )
+        aliases = {
+            alias: target
+            for alias, target in aliases.items()
+            if normalize_character_name(target) in roles
+        }
     voices = list(registry.unique_voices())
+    _project_library_voices(library, archives, voices)
     sources = _project_library_voices(library, bindings, voices)
     projected = CharacterVoiceRegistry(voices)
     narrator_source = sources.get(("narrator", None))
@@ -416,7 +448,7 @@ def registry_with_voice_library(
                 narrator_source,
                 binding.role,
             )
-    for alias, canonical in library.person_aliases().items():
+    for alias, canonical in aliases.items():
         alias_binding = library.binding(alias)
         if alias_binding is not None:
             _project_binding(
@@ -454,9 +486,7 @@ def _project_library_voices(
         if binding.source_id is not None:
             sources[key] = binding.source_id
             continue
-        references = library.resolve_source_paths(
-            binding.role, variant_key=binding.variant_key
-        )
+        references = library.reference_paths(binding)
         source_id = voice_binding_source_id(binding)
         if source_id is None:
             continue

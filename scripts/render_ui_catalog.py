@@ -153,28 +153,33 @@ def _shared_character_overview_story(
     plan = dialog._voice_plan
     assert plan is not None
     first = plan.groups[0]
-    other = first.candidate_inventory[1]
-    second = replace(
-        first,
-        group_id="shared-character-second",
-        line_ids=("chapter-8:14",),
-        source_id=other.source_id,
-        source_character=other.source_character,
-        source_speaker=other.source_speaker,
-        reference_sha256s=other.reference_sha256s,
-        resolution="saved-player-decision",
+    job = dialog._job
+    assert job is not None
+    other_lines = {line_id for group in plan.groups[1:] for line_id in group.line_ids}
+    shared_lines = tuple(
+        line_id
+        for content in dialog._content
+        for selection in content.selections
+        if selection.selection_id in job.selected_story_ids
+        for line_id in selection.line_ids[selection.original_audio_lines :]
+        if line_id not in other_lines
     )
-    if "same-name" in state:
-        second = replace(
-            second, source_character=first.source_character, resolution=first.resolution
-        )
-    dialog._voice_plan = replace(plan, groups=(first, second, *plan.groups[1:]))
-    _voice_overview_story(dialog, state)
-    if state.endswith("-second"):
-        dialog.voice_assignment_choice.setCurrentIndex(
-            dialog.voice_assignment_choice.findData(second.group_id)
-        )
-    return dialog
+    dialog.voice_library.select(
+        first.character, route="voice", source_id=first.source_id, method="manual"
+    )
+    dialog.voice_library.link_person(first.character, "Another name")
+    dialog._voice_plan = replace(
+        plan,
+        groups=(
+            replace(
+                first,
+                line_ids=shared_lines,
+                resolution="saved-voice-assignment",
+            ),
+            *plan.groups[1:],
+        ),
+    )
+    return _voice_overview_story(dialog, state)
 
 
 def _prepare_catalog_screenshot(
@@ -2596,19 +2601,9 @@ def _render_stories(
                 offline_preparation("confirmation"), "shared-character"
             )
         ),
-        "offline-preparation.voice-overview-shared-character-second": lambda: (
-            _shared_character_overview_story(
-                offline_preparation("confirmation"), "shared-character-second"
-            )
-        ),
         "offline-preparation.voice-overview-shared-character-compact": lambda: (
             _shared_character_overview_story(
                 offline_preparation("confirmation"), "compact-shared-character"
-            )
-        ),
-        "offline-preparation.voice-overview-shared-character-compact-actions": lambda: (
-            _shared_character_overview_story(
-                offline_preparation("confirmation"), "compact-shared-character-actions"
             )
         ),
         "offline-preparation.voice-overview-shared-character-compact-table": lambda: (
@@ -2616,14 +2611,14 @@ def _render_stories(
                 offline_preparation("confirmation"), "compact-shared-character"
             )
         ),
-        "offline-preparation.voice-overview-shared-character-same-name": lambda: (
+        "offline-preparation.voice-overview-shared-character-compact-actions": lambda: (
             _shared_character_overview_story(
-                offline_preparation("confirmation"), "shared-character-same-name"
+                offline_preparation("confirmation"), "compact-shared-character"
             )
         ),
-        "offline-preparation.voice-overview-shared-character-same-name-second": lambda: (
+        "offline-preparation.voice-overview-shared-character-details": lambda: (
             _shared_character_overview_story(
-                offline_preparation("confirmation"), "shared-character-same-name-second"
+                offline_preparation("confirmation"), "shared-character-details"
             )
         ),
         "offline-preparation.partial-ready": lambda: offline_preparation(

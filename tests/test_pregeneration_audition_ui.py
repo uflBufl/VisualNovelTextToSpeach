@@ -157,7 +157,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertNotIn("Greeting:", panel.a_reason.text())
             panel.cancel()
 
-    def test_scope_covers_canonical_aliases_but_not_another_variant(self):
+    def test_scope_covers_all_canonical_character_variants(self):
         with TemporaryDirectory() as directory:
             plan, group, _manifest = ambiguous_fixture(Path(directory))
             group = replace(group, line_ids=("one", "two"))
@@ -174,7 +174,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel = VoiceAuditionPanel(Mock(), preview_service=Mock())
             self.addCleanup(panel.deleteLater)
             panel.start(plan, group_id=group.group_id)
-            self.assertIn("Used for 3 selected lines", panel.scope.text())
+            self.assertIn("Used for 4 selected lines", panel.scope.text())
             self.assertIn("future speech and preparation", panel.scope.text())
             panel.cancel()
 
@@ -1765,7 +1765,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             dialog.show_all_voice_routes.setChecked(True)
             self.assertEqual(dialog.voice_routes.count(), 2)
             self.assertIn(
-                "Optional voice review: 1 character",
+                "Optional voice review: 1 assignment",
                 dialog.voice_route_summary.text(),
             )
             self.assertTrue(dialog.voice_route_summary.font().bold())

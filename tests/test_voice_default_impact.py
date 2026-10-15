@@ -154,6 +154,57 @@ class VoiceDefaultImpactTest(unittest.TestCase):
                 result[1].changed_line_ids, ("fallback", "unknown-speaker")
             )
 
+    def test_linked_voice_change_includes_all_names_and_keeps_saved_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content, jobs, decisions, settings, _pack, library = voice_impact_fixture(
+                root
+            )
+            library.link_person("Rhiannon", "Centurion")
+            proposed = library.copy_to(root / "proposed-library")
+            proposed.select("Centurion", route="voice", source_id="preset:marius")
+            before = tree_hashes(root)
+            for role in ("Rhiannon", "Centurion"):
+                with self.subTest(role=role):
+                    result = inspect_voice_default_impact(
+                        content,
+                        jobs,
+                        decisions,
+                        settings,
+                        role,
+                        current_voice_library=library,
+                        proposed_voice_library=proposed,
+                    )
+                    self.assertEqual(result[0].changed_line_ids, ("changed",))
+                    self.assertEqual(result[1].changed_line_ids, ("other",))
+            self.assertEqual(tree_hashes(root), before)
+
+    def test_link_changes_compare_the_old_and_new_canonical_families(self):
+        for linked_in in ("current", "proposed"):
+            with self.subTest(linked_in=linked_in), TemporaryDirectory() as directory:
+                root = Path(directory)
+                content, jobs, decisions, settings, _pack, library = (
+                    voice_impact_fixture(root)
+                )
+                proposed = library.copy_to(root / "proposed-library")
+                linked = library if linked_in == "current" else proposed
+                linked.link_person("Rhiannon", "Centurion")
+                proposed.select("Rhiannon", route="voice", source_id="preset:marius")
+                result = inspect_voice_default_impact(
+                    content,
+                    jobs,
+                    decisions,
+                    settings,
+                    "Centurion",
+                    current_voice_library=library,
+                    proposed_voice_library=proposed,
+                )
+                self.assertEqual(result[0].changed_line_ids, ("changed",))
+                self.assertEqual(
+                    result[1].changed_line_ids,
+                    ("other",) if linked_in == "proposed" else (),
+                )
+
     def test_damaged_recording_cannot_be_reported_as_a_reusable_voice(self):
         with TemporaryDirectory() as directory:
             content, jobs, decisions, settings, pack, library = voice_impact_fixture(

@@ -1,7 +1,7 @@
 """Guided player UI for selecting content to prepare for offline speech."""
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
 from time import monotonic, process_time
@@ -219,38 +219,6 @@ class _StoryTree(QTreeWidget):
             for row in range(item.childCount())
             for story in self.story_descendants(item.child(row))
         ]
-
-
-@dataclass(frozen=True)
-class _VoiceRouteAssignment:
-    group_id: str
-    role: str
-    voice: str
-    selected_by: str
-    details: str
-    accessible_description: str
-    source_id: str
-    reference_sha256s: tuple[str, ...]
-
-
-def _distinguish_voice_references(
-    choices: tuple[_VoiceRouteAssignment, ...],
-) -> tuple[_VoiceRouteAssignment, ...]:
-    references: dict[str, dict[tuple[str, tuple[str, ...]], int]] = {}
-    for choice in choices:
-        versions = references.setdefault(choice.voice, {})
-        versions.setdefault(
-            (choice.source_id, choice.reference_sha256s), len(versions) + 1
-        )
-    return tuple(
-        replace(
-            choice,
-            voice=f"{choice.voice} (reference set {references[choice.voice][choice.source_id, choice.reference_sha256s]})",
-        )
-        if len(references[choice.voice]) > 1
-        else choice
-        for choice in choices
-    )
 
 
 class _VoiceRouteList(QListWidget):
@@ -965,7 +933,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_route_details.setTextFormat(Qt.TextFormat.PlainText)
         self.voice_route_details.setWordWrap(True)
         self.voice_route_details.setAccessibleName("Selected voice reference details")
-        self._build_voice_assignment_controls()
         self.voice_routes.currentItemChanged.connect(self._show_voice_route_details)
         self.voice_route_summary = QLabel()
         self.voice_route_summary.setWordWrap(True)
@@ -1002,21 +969,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.show_all_voice_routes.toggled.connect(
             lambda: self._render_voice_routes(self._voice_plan)
         )
-
-    def _build_voice_assignment_controls(self) -> None:
-        self.voice_assignment_choice = QComboBox()
-        self.voice_assignment_choice.setAccessibleName(
-            "Voice assignment for selected character"
-        )
-        self.voice_assignment_choice.currentIndexChanged.connect(
-            self._voice_assignment_changed
-        )
-        self.voice_assignment_controls = QWidget()
-        assignment_layout = QVBoxLayout(self.voice_assignment_controls)
-        assignment_layout.setContentsMargins(0, 0, 0, 0)
-        assignment_layout.addWidget(QLabel("Voice to inspect"))
-        assignment_layout.addWidget(self.voice_assignment_choice, 1)
-        self.voice_assignment_controls.hide()
 
     def _build_voice_route_header(self) -> None:
         self.voice_routes_header = QWidget()
@@ -1078,7 +1030,6 @@ class OfflineAudioPreparationDialog(QDialog):
         confirmation_layout.addWidget(self.show_all_voice_routes)
         confirmation_layout.addWidget(self.voice_routes_header)
         confirmation_layout.addWidget(self.voice_routes, 1)
-        confirmation_layout.addWidget(self.voice_assignment_controls)
         confirmation_layout.addWidget(self.voice_route_details)
         actions = QHBoxLayout()
         actions.addWidget(self.back_to_story_selection)
@@ -1210,8 +1161,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def _configure_text_accessibility(self) -> None:
         make_text_copyable(self)
         self.voice_route_details.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setTabOrder(self.voice_routes, self.voice_assignment_choice)
-        self.setTabOrder(self.voice_assignment_choice, self.voice_route_details)
+        self.setTabOrder(self.voice_routes, self.voice_route_details)
         self.setTabOrder(self.voice_route_details, self.back_to_story_selection)
         self.setTabOrder(self.back_to_story_selection, self.inspect_character_voice)
         self.setTabOrder(self.inspect_character_voice, self.more_voice_actions_toggle)
@@ -1330,8 +1280,9 @@ class OfflineAudioPreparationDialog(QDialog):
         if role and normalize_character_name(role) == "narrator":
             role = None
         linked = bool(role and self.voice_library.linked_variant_key(role))
-        self.link_identity.setEnabled(bool(role) and not linked)
-        self.unlink_identity.setEnabled(linked)
+        aliases = self._linked_person_aliases(role)
+        self.link_identity.setEnabled(bool(role) and not linked and not aliases)
+        self.unlink_identity.setEnabled(linked or bool(aliases))
         suggestions = self._suggested_person_links(role) if not linked else ()
         if suggestions:
             matches = ", ".join(
@@ -1342,11 +1293,27 @@ class OfflineAudioPreparationDialog(QDialog):
             )
             self.identity_suggestion.setText(
                 f"Possible same person: {matches}. Confirm before linking; "
-                "the voice will not change automatically."
+                "Linking shares one voice across both names."
             )
-        self.identity_suggestion.setVisible(bool(suggestions))
+        elif aliases:
+            self.identity_suggestion.setText(f"Linked names: {', '.join(aliases)}")
+        self.identity_suggestion.setAccessibleName(
+            "Linked character names" if aliases else "Possible same-person match"
+        )
+        self.identity_suggestion.setVisible(bool(suggestions or aliases))
         self.more_voice_actions_toggle.setText(
             "More actions (possible same person)" if suggestions else "More actions"
+        )
+
+    def _linked_person_aliases(self, role: str | None) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                alias
+                for alias, canonical in self.voice_library.person_aliases().items()
+                if role is not None
+                and normalize_character_name(canonical)
+                == normalize_character_name(role)
+            )
         )
 
     def _suggested_person_links(
@@ -1502,6 +1469,22 @@ class OfflineAudioPreparationDialog(QDialog):
         if role is None or self.has_pending_work():
             return
         try:
+            if not self.voice_library.linked_variant_key(role):
+                aliases = self._linked_person_aliases(role)
+                if not aliases:
+                    return
+                role = aliases[0]
+                if len(aliases) > 1:
+                    role, accepted = QInputDialog.getItem(
+                        self,
+                        "Unlink character name",
+                        "Name to separate from this character:",
+                        aliases,
+                        0,
+                        False,
+                    )
+                    if not accepted:
+                        return
             if not self.voice_library.unlink_person(role):
                 return
         except (OSError, VoiceLibraryError) as error:
@@ -1846,37 +1829,19 @@ class OfflineAudioPreparationDialog(QDialog):
                 )
             )
         ]
-        characters: dict[str, list[VoiceGroup]] = {}
-        for group in groups:
-            characters.setdefault(normalize_character_name(group.character), []).append(
-                group
-            )
-        exception_characters = {
-            normalize_character_name(group.character) for group in exceptions
-        }
-        needs_review = len(
-            {
-                normalize_character_name(group.character)
-                for group in groups
-                if group.route == "needs-audition"
-            }
-        )
+        needs_review = sum(group.route == "needs-audition" for group in groups)
         self.voice_route_summary.setText(
-            f"Optional voice review: {needs_review} character{'s' if needs_review != 1 else ''}. "
+            f"Optional voice review: {needs_review} assignment{'s' if needs_review != 1 else ''}. "
             "Continuing uses the narrator."
             if needs_review
-            else f"{len(exception_characters)} of {len(characters)} characters use a substitute or have a suggested review."
+            else f"{len(exceptions)} of {len(groups)} voice assignments use a substitute or have a suggested review."
             if exceptions
             else "No character voice substitutions. Narrator is shown above."
         )
         summary_font = self.voice_route_summary.font()
         summary_font.setBold(bool(needs_review))
         self.voice_route_summary.setFont(summary_font)
-        visible = [
-            members
-            for key, members in characters.items()
-            if not self.show_all_voice_routes.isChecked() or key in exception_characters
-        ]
+        visible = exceptions if self.show_all_voice_routes.isChecked() else groups
         show_portraits = bool(groups) and all(
             group.portrait_image and group.portrait_image_sha256 for group in groups
         )
@@ -1888,37 +1853,16 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.voice_routes.setVisible(bool(visible))
         self.voice_routes_header.setVisible(bool(visible))
-        for members in sorted(
+        for group in sorted(
             visible,
-            key=lambda values: (
-                not any(value.route == "needs-audition" for value in values),
-                -len({line_id for value in values for line_id in value.line_ids}),
-                values[0].character.casefold(),
+            key=lambda value: (
+                value.route != "needs-audition",
+                -len(value.line_ids),
+                value.character.casefold(),
+                value.group_id,
             ),
         ):
-            item = self._character_voice_item(members, show_portraits, suggested_roles)
-
-            self.voice_routes.addItem(item)
-            self._set_voice_route_card(item)
-            if selected_character in item.data(int(Qt.ItemDataRole.UserRole) + 4):
-                item.setData(int(Qt.ItemDataRole.UserRole) + 1, selected_character)
-                self.voice_routes.setCurrentItem(item)
-        if self.voice_routes.currentItem() is None and self.voice_routes.count():
-            self.voice_routes.setCurrentRow(0)
-        self.voice_routes.resize_rows()
-        self._show_voice_route_details(self.voice_routes.currentItem())
-        self._update_identity_actions()
-
-    def _character_voice_item(
-        self, groups: list[VoiceGroup], show_portraits: bool, suggested_roles: set[str]
-    ) -> QListWidgetItem:
-        assignments: dict[tuple[object, ...], _VoiceRouteAssignment] = {}
-        explanations: list[str] = []
-        item = None
-        for group in sorted(
-            groups, key=lambda value: (value.route != "needs-audition", value.group_id)
-        ):
-            member = self._voice_route_item(
+            item = self._voice_route_item(
                 group,
                 show_portraits=show_portraits,
                 suggested_link=normalize_character_name(
@@ -1926,66 +1870,15 @@ class OfflineAudioPreparationDialog(QDialog):
                 )
                 in suggested_roles,
             )
-            if item is None:
-                item = member
-            values = member.data(int(Qt.ItemDataRole.UserRole) + 2)
-            explanations.append(values[4])
-            assignment = _VoiceRouteAssignment(
-                group.group_id,
-                group.routing_role or group.character,
-                values[1],
-                values[2],
-                member.data(int(Qt.ItemDataRole.UserRole) + 3),
-                member.data(Qt.ItemDataRole.AccessibleDescriptionRole) or "",
-                group.source_id,
-                group.reference_sha256s,
-            )
-            key = (
-                group.routing_role,
-                group.variant_key,
-                group.route,
-                group.source_id,
-                group.reference_sha256s,
-                assignment.selected_by,
-            )
-            assignments.setdefault(key, assignment)
-        assert item is not None
-        choices = _distinguish_voice_references(tuple(assignments.values()))
-        lines = len({line_id for group in groups for line_id in group.line_ids})
-        character = groups[0].character
-        voices = "\n".join(dict.fromkeys(choice.voice for choice in choices))
-        provenance = "\n".join(dict.fromkeys(choice.selected_by for choice in choices))
-        item.setData(
-            int(Qt.ItemDataRole.UserRole) + 2,
-            (
-                character,
-                voices,
-                provenance,
-                str(lines),
-                "; ".join(dict.fromkeys(explanations)),
-            ),
-        )
-        item.setData(
-            int(Qt.ItemDataRole.UserRole) + 4, tuple(group.group_id for group in groups)
-        )
-        item.setData(int(Qt.ItemDataRole.UserRole) + 5, choices)
-        prefix = (
-            "REVIEW VOICE: "
-            if any(group.route == "needs-audition" for group in groups)
-            else "POSSIBLE SAME PERSON: "
-            if any(
-                normalize_character_name(group.routing_role or group.character)
-                in suggested_roles
-                for group in groups
-            )
-            else ""
-        )
-        summary = f"{prefix}{character}: {lines} lines. " + "; ".join(
-            f"{choice.voice}, {choice.selected_by}. {choice.details}"
-            for choice in choices
-        )
-        item.setText(summary)
-        return item
+            self.voice_routes.addItem(item)
+            self._set_voice_route_card(item)
+            if item.data(int(Qt.ItemDataRole.UserRole) + 1) == selected_character:
+                self.voice_routes.setCurrentItem(item)
+        if self.voice_routes.currentItem() is None and self.voice_routes.count():
+            self.voice_routes.setCurrentRow(0)
+        self.voice_routes.resize_rows()
+        self._show_voice_route_details(self.voice_routes.currentItem())
+        self._update_identity_actions()
 
     def _voice_route_item(
         self, group: VoiceGroup, *, show_portraits: bool, suggested_link: bool
@@ -2036,7 +1929,10 @@ class OfflineAudioPreparationDialog(QDialog):
             if group.route in {"narrator", "needs-audition"} and narrator_missing
             else _voice_resolution_label(group.resolution)
         )
-        reference_details = self._voice_reference_details(group, candidate, explanation)
+        reference_details = (
+            f"{display_role}: "
+            f"{self._voice_reference_details(group, candidate, explanation)}"
+        )
         item = QListWidgetItem(
             f"{prefix}{display_role} -> {route} | {status} | {lines} "
             f"line{'s' if lines != 1 else ''}\n{reference_details}"
@@ -2108,10 +2004,7 @@ class OfflineAudioPreparationDialog(QDialog):
             return "chosen by you"
         if not group.resolution.startswith("saved-"):
             return "automatic"
-        role = group.routing_role or group.character
-        binding = self.voice_library.binding(role, variant_key=group.variant_key)
-        if binding is None and group.variant_key is not None:
-            binding = self.voice_library.binding(role)
+        binding = self.voice_library.binding(group.character)
         if binding is None or not (
             voice_binding_source_id(binding) == group.source_id
             or (
@@ -2132,83 +2025,20 @@ class OfflineAudioPreparationDialog(QDialog):
     def _show_voice_route_details(
         self, item: QListWidgetItem | None, _previous: QListWidgetItem | None = None
     ) -> None:
-        self.voice_assignment_choice.blockSignals(True)
-        self.voice_assignment_choice.clear()
-        choices = (
-            item.data(int(Qt.ItemDataRole.UserRole) + 5) if item is not None else ()
+        self.voice_route_details.setText(
+            item.data(int(Qt.ItemDataRole.UserRole) + 3) if item is not None else ""
         )
-        character = (
-            item.data(int(Qt.ItemDataRole.UserRole) + 2)[0] if item is not None else ""
-        )
-        for choice in choices:
-            role = (
-                f"{choice.role}: "
-                if normalize_character_name(choice.role)
-                != normalize_character_name(character)
-                else ""
-            )
-            self.voice_assignment_choice.addItem(
-                f"{role}{choice.voice} ({choice.selected_by})", choice.group_id
-            )
-        selected = (
-            self.voice_assignment_choice.findData(
-                item.data(int(Qt.ItemDataRole.UserRole) + 1)
-            )
-            if item is not None
-            else -1
-        )
-        self.voice_assignment_choice.setCurrentIndex(max(0, selected))
-        self.voice_assignment_choice.blockSignals(False)
-        self.voice_assignment_controls.setVisible(len(choices) > 1)
         self.voice_route_details.setVisible(item is not None)
-        self._voice_assignment_changed()
-
-    def _voice_assignment_changed(self, _index: int = 0) -> None:
-        item = self.voice_routes.currentItem()
-        choices = (
-            item.data(int(Qt.ItemDataRole.UserRole) + 5) if item is not None else ()
-        )
-        choice = next(
-            (
-                value
-                for value in choices
-                if value.group_id == self.voice_assignment_choice.currentData()
-            ),
-            None,
-        )
-        self.voice_route_details.setText(choice.details if choice is not None else "")
-        self.voice_assignment_choice.setToolTip(
-            self.voice_assignment_choice.currentText()
-        )
-        if choice is not None:
-            item.setData(Qt.ItemDataRole.UserRole, choice.role)
-            item.setData(int(Qt.ItemDataRole.UserRole) + 1, choice.group_id)
-            item.setData(int(Qt.ItemDataRole.UserRole) + 3, choice.details)
-            item.setData(
-                Qt.ItemDataRole.AccessibleDescriptionRole, choice.accessible_description
-            )
-        self._update_identity_actions()
 
     def _set_voice_route_card(self, item: QListWidgetItem) -> None:
-        role, _voice, _status, coverage, _explanation = item.data(
+        role, voice, status, coverage, _explanation = item.data(
             int(Qt.ItemDataRole.UserRole) + 2
         )
         card = QWidget()
         card.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout = QGridLayout(card)
         layout.setContentsMargins(8, 6, 8, 6)
-        choices = item.data(int(Qt.ItemDataRole.UserRole) + 5)
-        voice_rows = tuple(
-            dict.fromkeys((choice.voice, choice.selected_by) for choice in choices)
-        )
-        cells = [(0, 0, len(voice_rows), role)]
-        cells.extend(
-            (row, column, 1, value)
-            for row, values in enumerate(voice_rows)
-            for column, value in enumerate(values, 1)
-        )
-        cells.append((0, 3, len(voice_rows), coverage))
-        for row, column, span, value in cells:
+        for column, value in enumerate((role, voice, status, coverage)):
             label = QLabel(value)
             label.setTextFormat(Qt.TextFormat.PlainText)
             label.setWordWrap(True)
@@ -2223,7 +2053,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 font = label.font()
                 font.setBold(True)
                 label.setFont(font)
-            layout.addWidget(label, row, column, span, 1)
+            layout.addWidget(label, 0, column)
         for column, stretch in enumerate((3, 3, 2, 1)):
             layout.setColumnStretch(column, stretch)
         item.setSizeHint(card.sizeHint())

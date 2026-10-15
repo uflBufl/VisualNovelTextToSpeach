@@ -55,6 +55,7 @@ from vntts.voices import (
     is_narrator,
     normalize_character_name,
     pocket_tts_preset_voices,
+    registry_with_voice_library,
     remember_voice_binding,
     voice_binding_source_id,
 )
@@ -1115,10 +1116,7 @@ class VoiceAssignmentComponent:
 
     def assignment_for(self, character: str) -> str | None:
         controller = self.controller
-        binding = controller.voice_library.binding(
-            character,
-            variant_key=controller.voice_library.linked_variant_key(character),
-        )
+        binding = controller.voice_library.binding(character)
         return str(voice_binding_source_id(binding)) if binding is not None else None
 
     def preview_choice(self, source_id: str, text: str) -> _ExecutorFuture:
@@ -1189,12 +1187,11 @@ class VoiceAssignmentComponent:
             voice_router.registry,
             character,
             source_id,
-            variant_key=controller.voice_library.linked_variant_key(character),
             method="manual",
             evidence={"selected_in": "live-voice-controls"},
             algorithm="live-voice-controls-v1",
         )
-        voice_router.registry.set_assignment(character, source_id)
+        self._refresh_saved_assignments(voice_router.registry, character)
         controller.settings = updated_settings
         if character_key == "narrator":
             controller._apply_narrator_voice(
@@ -1206,6 +1203,36 @@ class VoiceAssignmentComponent:
         controller.narrator_fallback_speakers.discard(character_key)
         controller.status_handler(f"{choice.label} assigned to {character}")
         return controller.settings
+
+    def _refresh_saved_assignments(
+        self, registry: CharacterVoiceRegistry, character: str
+    ) -> None:
+        library = self.controller.voice_library
+        canonical = library.canonical_role(character)
+        canonical_key = normalize_character_name(canonical)
+        roles = [canonical]
+        if canonical_key == "narrator":
+            roles.extend(
+                binding.role
+                for binding in library.bindings()
+                if binding.route == "narrator"
+            )
+        canonical_keys = {normalize_character_name(role) for role in roles}
+        roles.extend(
+            alias
+            for alias, role in library.person_aliases().items()
+            if normalize_character_name(role) in canonical_keys
+        )
+        projected = registry_with_voice_library(registry, library, role=canonical)
+        registry.voices = projected.voices
+        registry.voice_names = projected.voice_names
+        for role in roles:
+            key = normalize_character_name(role)
+            registry.assignments.pop(key, None)
+            registry.assignment_names.pop(key, None)
+            if key in projected.assignments:
+                registry.assignments[key] = projected.assignments[key]
+                registry.assignment_names[key] = projected.assignment_names[key]
 
     def clear(
         self,
@@ -1231,11 +1258,8 @@ class VoiceAssignmentComponent:
             updated_settings = controller.settings
         if commit_settings is not None:
             commit_settings(updated_settings)
-        controller.voice_library.clear(
-            character,
-            variant_key=controller.voice_library.linked_variant_key(character),
-        )
-        voice_router.registry.assignments.pop(character_key, None)
+        controller.voice_library.clear(character)
+        self._refresh_saved_assignments(voice_router.registry, character)
         controller.settings = updated_settings
         if character_key == "narrator":
             controller._apply_narrator_voice(None)

@@ -583,9 +583,10 @@ Planned implementation order after approval:
       overview at minimum width and 200% text with keyboard and VoiceOver/NVDA.
       Traverse the table, selected reference details, More actions and Preparation
       details; require full values/actions to be reachable, the selected group to
-      remain announced, and Copy to preserve complete details. For a character with
-      several assignments, switch Voice to inspect and require the exact selected
-      voice to open, including same-name reference sets and current action hints.
+      remain announced, and Copy to preserve complete details. Choose a voice through
+      a canonical character and through a linked name; require one shared choice
+      in other stories, the correct voice in audition, no assignment selector and
+      reachable clear/unlink actions. Existing prepared audio must stay unchanged.
       Change to an imported
       narrator before Update and listen; require the current narrator's original
       recording. Retain native screenshots and a screen-reader/audio trace.

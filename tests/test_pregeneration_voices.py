@@ -491,33 +491,17 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
 
             groups = [value for value in plan.groups if value.character == "Rhiannon"]
+            self.assertEqual(len(groups), 1)
+            self.assertEqual(groups[0].routing_role, "Rhiannon")
+            self.assertEqual(groups[0].source_id, "character:rhiannon")
             self.assertEqual(
-                {group.routing_role for group in groups}, {"Aderyn", "Rhiannon"}
+                set(groups[0].line_ids), {"line:rhiannon:1", "line:rhiannon:2"}
             )
-            self.assertEqual(
-                next(
-                    group.source_id
-                    for group in groups
-                    if group.routing_role == "Aderyn"
-                ),
-                "character:rhiannon",
+            archived = next(
+                binding
+                for binding in library.archived_bindings("Rhiannon")
+                if binding.variant_key == "story-name:aderyn"
             )
-            self.assertEqual(
-                next(
-                    group.source_id
-                    for group in groups
-                    if group.routing_role == "Rhiannon"
-                ),
-                "character:rhiannon",
-            )
-            self.assertEqual(
-                *(
-                    group.source_id
-                    for group in groups
-                    if group.routing_role in {"Aderyn", "Rhiannon"}
-                ),
-            )
-            archived = library.binding("Rhiannon", variant_key="story-name:aderyn")
             self.assertIn(
                 voice_binding_source_id(archived),
                 {candidate.source_id for candidate in groups[0].candidate_inventory},
@@ -540,7 +524,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             aderyn = next(
                 group
                 for group in no_canonical_reference.groups
-                if group.routing_role == "Aderyn"
+                if group.routing_role == "Rhiannon"
             )
             self.assertEqual(aderyn.route, "needs-audition")
             self.assertEqual(aderyn.resolution, "linked-reference-needs-preview")
@@ -580,12 +564,14 @@ class VoicePlanStoreTest(unittest.TestCase):
                 for group in plan.groups
                 if group.character == "Rhiannon"
             }
-            self.assertEqual(set(groups), {"Aderyn", "Rhiannon"})
-            self.assertEqual(groups["Aderyn"].source_id, groups["Rhiannon"].source_id)
+            self.assertEqual(set(groups), {"Rhiannon"})
+            self.assertEqual(
+                set(groups["Rhiannon"].line_ids), {"line:rhiannon:1", "line:rhiannon:2"}
+            )
             self.assertEqual(
                 {
                     candidate.source_id
-                    for candidate in groups["Aderyn"].candidate_inventory
+                    for candidate in groups["Rhiannon"].candidate_inventory
                 },
                 {
                     "character:playercandidaterhiannon1",
@@ -604,7 +590,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 manifest_path=manifest,
             )
             aderyn = next(
-                group for group in alias_only.groups if group.routing_role == "Aderyn"
+                group for group in alias_only.groups if group.routing_role == "Rhiannon"
             )
             self.assertEqual(aderyn.route, "needs-audition")
             self.assertEqual(aderyn.resolution, "linked-reference-needs-preview")
@@ -1576,7 +1562,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 _generation_input_identity(job, replanned),
             )
 
-    def test_saved_inspection_choice_updates_same_role_but_not_another_variant(self):
+    def test_saved_inspection_choice_updates_all_character_variants(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
@@ -1602,7 +1588,10 @@ class VoicePlanStoreTest(unittest.TestCase):
                 updated.groups[-2].source_id, group.candidates[1].source_id
             )
             self.assertEqual(updated.groups[-2].route, "voice")
-            self.assertEqual(updated.groups[-1], other_variant)
+            self.assertEqual(
+                updated.groups[-1].source_id, group.candidates[1].source_id
+            )
+            self.assertEqual(updated.groups[-1].route, "voice")
 
     def test_saved_inspection_choice_rejects_changed_reference_without_rewriting_plan(
         self,
