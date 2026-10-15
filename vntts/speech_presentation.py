@@ -156,7 +156,7 @@ def playback_labels(source: str, voice: str) -> tuple[str, str]:
     if source.startswith("MOSS "):
         return voice, "MOSS · new speech"
     if source in {"Not selected", ""}:
-        return voice, "No audio yet"
+        return voice, "No playback information for this capture"
     return voice, "Audio source: see details"
 
 

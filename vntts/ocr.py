@@ -421,7 +421,8 @@ def preprocess_dialog_image(
 ) -> Image.Image:
     profile = profile or default_ocr_profiles[0]
     image = ImageOps.grayscale(image)
-    image = ImageOps.autocontrast(image, cutoff=1)
+    # A short line can occupy less than 1% of the crop; clipping loses its glyphs.
+    image = ImageOps.autocontrast(image)
     image = ImageEnhance.Contrast(image).enhance(profile.contrast)
     scale = max(1.0, min(2.0, 600 / max(1, image.height)))
     if scale > 1:

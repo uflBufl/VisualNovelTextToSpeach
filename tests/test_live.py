@@ -1822,6 +1822,132 @@ class LiveDialogReaderTest(unittest.TestCase):
             events,
         )
 
+    def test_transient_preparation_failure_retries_before_one_queued_playback(self):
+        speech_executor, playback_executor = QueuedExecutor(), QueuedExecutor()
+        error = RuntimeError("Temporary audio preparation failure")
+        prepare = Mock(side_effect=[error, "audio"])
+        play, report_error, events = Mock(), Mock(), []
+        reader = self.create_reader(
+            speech_executor=speech_executor,
+            playback_executor=playback_executor,
+            prepare_chunk=prepare,
+            play_prepared=play,
+            report_error=report_error,
+            pipeline_event_handler=lambda stage, generation, occurred_at, **details: (
+                events.append((stage, generation, details))
+            ),
+        )
+        reader.active_generation = 1
+        chunk = SpeechChunk(1, "Alice", "Hello.", ordinal=1)
+
+        reader._schedule([chunk])
+        speech_executor.run_next()
+        play.assert_not_called()
+        self.assertEqual(len(playback_executor.jobs), 1)
+        playback_executor.run_next()
+        reader._schedule([chunk])
+        speech_executor.run_next()
+
+        self.assertEqual(prepare.call_args_list, [call(chunk), call(chunk)])
+        play.assert_called_once_with(chunk, "audio")
+        report_error.assert_called_once_with(error)
+        self.assertEqual(len(playback_executor.jobs), 0)
+        self.assertTrue(
+            any(details.get("outcome") == "retrying" for _, _, details in events)
+        )
+
+    def test_persistent_preparation_failure_blocks_advance_and_releases_claim(self):
+        speech_executor, playback_executor = QueuedExecutor(), QueuedExecutor()
+        prepare = Mock(side_effect=RuntimeError("Audio unavailable"))
+        advance, state_changed, events = Mock(), Mock(), []
+        reader = self.create_reader(
+            speech_executor=speech_executor,
+            playback_executor=playback_executor,
+            prepare_chunk=prepare,
+            auto_advance=advance,
+            auto_advance_state_changed=state_changed,
+            pipeline_event_handler=lambda stage, generation, occurred_at, **details: (
+                events.append((stage, generation, details))
+            ),
+        )
+        tracker = IncrementalDialogTracker()
+        chunks = tracker.observe_canonical("Alice", "Hello.", "story:1")
+        chunk = chunks[0]
+
+        with patch("vntts.live.Timer") as timer:
+            reader._schedule_tracked_chunks(tracker, chunks)
+            speech_executor.run_next()
+            reader._schedule_tracked_chunks(
+                tracker, tracker.observe_canonical("Alice", "Hello.", "story:1")
+            )
+
+        self.assertEqual(prepare.call_count, 2)
+        self.assertEqual(len(playback_executor.jobs), 0)
+        advance.assert_not_called()
+        timer.assert_not_called()
+        self.assertEqual(reader.auto_advance_blocked_generation, chunk.generation)
+        self.assertIn("Audio preparation failed", reader.auto_advance_block_reason)
+        self.assertNotIn(chunk.chunk_id, reader.prepared_chunk_ids)
+        state_changed.assert_called_once_with("preparation-failed", 1, 2)
+        self.assertTrue(
+            any(
+                stage == "auto-advance-withheld"
+                and details.get("reason") == "audio-preparation-failed"
+                for stage, _, details in events
+            )
+        )
+        prepare.side_effect = None
+        prepare.return_value = "recovered audio"
+        self.assertEqual(reader._prepare_if_current(chunk), "recovered audio")
+
+    def test_replacement_after_preparation_failure_does_not_retry_stale_chunk(self):
+        reader = self.create_reader()
+        reader.active_generation = 1
+        chunk = SpeechChunk(1, "Alice", "Old line.", ordinal=1)
+        successor = SpeechChunk(2, "Bob", "New line.", ordinal=1)
+
+        def replace_dialogue(_chunk):
+            reader._set_generation(2)
+            reader.prepared_chunk_ids.add(successor.chunk_id)
+            raise RuntimeError("Stale preparation failed")
+
+        prepare = Mock(side_effect=replace_dialogue)
+        reader.prepare_chunk = prepare
+
+        self.assertIsNone(reader._prepare_if_current(chunk))
+
+        prepare.assert_called_once_with(chunk)
+        self.assertEqual(reader.prepared_chunk_ids, {successor.chunk_id})
+        self.assertIsNone(reader.auto_advance_blocked_generation)
+
+    def test_emergency_stop_after_preparation_failure_prevents_retry(self):
+        reader = self.create_reader()
+        reader.active_generation = 1
+        chunk = SpeechChunk(1, "Alice", "Stopped line.", ordinal=1)
+
+        def stop_preparation(_chunk):
+            reader.emergency_stop()
+            raise RuntimeError("Preparation interrupted")
+
+        prepare = Mock(side_effect=stop_preparation)
+        reader.prepare_chunk = prepare
+
+        self.assertIsNone(reader._prepare_if_current(chunk))
+
+        prepare.assert_called_once_with(chunk)
+        self.assertNotIn(chunk.chunk_id, reader.prepared_chunk_ids)
+
+    def test_intentional_preparation_no_result_is_not_retried(self):
+        prepare = Mock(return_value=None)
+        reader = self.create_reader(prepare_chunk=prepare)
+        reader.active_generation = 1
+        chunk = SpeechChunk(1, "Alice", "No result.", ordinal=1)
+
+        self.assertIsNone(reader._prepare_if_current(chunk))
+
+        prepare.assert_called_once_with(chunk)
+        self.assertIsNone(reader.auto_advance_blocked_generation)
+
     def test_streaming_backend_records_first_pcm_from_backend_callback(self):
         reader = self.create_reader(first_pcm_on_prepare=False)
 

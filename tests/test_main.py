@@ -37,6 +37,7 @@ from vntts.live import (
     AdaptiveSpeechBackpressure,
     CanonicalDialogRoute,
     IncrementalDialogTracker,
+    LiveDialogReader,
     SilentDialogRoute,
     SpeechChunk,
 )
@@ -6210,6 +6211,40 @@ class MainTest(unittest.TestCase):
         self.assertFalse(controller.set_auto_advance_enabled(False))
 
         controller.live_reader.set_auto_advance.assert_called_once_with(None)
+
+    def test_preparation_failure_remains_visible_after_focus_returns(self):
+        statuses = []
+        controller = AppController(AppSettings(), status_handler=statuses.append)
+        reader = LiveDialogReader(
+            capture_executor=Mock(),
+            ocr_executor=Mock(),
+            speech_executor=Mock(),
+            playback_executor=Mock(),
+            capture_frame=lambda: None,
+            recognize_frame=lambda _frame: ("Cornerstone", "Hello."),
+            prepare_chunk=lambda _chunk: None,
+            play_prepared=lambda _chunk, _audio: None,
+            report_error=Mock(),
+        )
+        controller.live_reader = reader
+        reader._set_generation(1)
+        reader.block_auto_advance_for_generation(
+            1, "Audio preparation failed after retry"
+        )
+        controller._auto_advance_state_changed("preparation-failed", 1, 2)
+        self.assertIn("not played", statuses[-1])
+        controller._capture_state_changed(False, 1)
+        self.assertIn("Audio preparation failed", statuses[-1])
+        controller._capture_state_changed(True, 0.2)
+        self.assertIn("Audio preparation failed", statuses[-1])
+        self.assertNotIn("resumed", statuses[-1])
+        reader._set_generation(2)
+        status_count = len(statuses)
+        controller._auto_advance_state_changed("preparation-failed", 1, 2)
+        self.assertEqual(len(statuses), status_count)
+        controller._capture_state_changed(False, 1)
+        controller._capture_state_changed(True, 0.2)
+        self.assertIn("resumed", statuses[-1])
 
     def test_diagnostic_does_not_scrape_legacy_backend_metrics(self):
         diagnostics = []

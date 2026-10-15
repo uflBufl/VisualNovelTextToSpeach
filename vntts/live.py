@@ -1517,11 +1517,44 @@ class LiveDialogReader:
         with self.state_lock:
             self._record_speech_metrics_locked(generation_started=True)
         self._report_pipeline_event("generation-start", chunk.generation, monotonic())
-        try:
-            return self.prepare_chunk(chunk)
-        except Exception as error:
-            self.report_error(error)
+        for attempt in (1, 2):
+            try:
+                return self.prepare_chunk(chunk)
+            except Exception as error:
+                self.report_error(error)
+            if attempt == 1 and self.wait_until_playable(chunk):
+                self._report_pipeline_event(
+                    "generation-start",
+                    chunk.generation,
+                    attempt=2,
+                    outcome="retrying",
+                    chunk_id=chunk.chunk_id,
+                )
+                continue
+            with self.state_lock:
+                if chunk.generation == self.active_generation:
+                    self.prepared_chunk_ids.discard(chunk.chunk_id)
+            reason = (
+                "Audio preparation failed after retry; restart reading to retry "
+                "this dialogue"
+            )
+            if attempt == 2 and self.block_auto_advance_for_generation(
+                chunk.generation, reason
+            ):
+                self._report_pipeline_event(
+                    "auto-advance-withheld",
+                    chunk.generation,
+                    attempt=2,
+                    outcome="failed",
+                    reason="audio-preparation-failed",
+                    chunk_id=chunk.chunk_id,
+                )
+                self._report_auto_advance_state(
+                    "preparation-failed", chunk.generation, 2
+                )
             return None
+
+        return None
 
     def _preparation_finished(self, future: Future[object | None]) -> None:
         with self.state_lock:

@@ -7,12 +7,13 @@ from tempfile import TemporaryDirectory
 from types import MappingProxyType
 from unittest.mock import Mock, patch
 
-from PIL import Image
+from PIL import Image, ImageDraw
 from pytesseract import pytesseract as pytesseract_runtime
 
 from vntts.ocr import (
     DialogRegion,
     OCRPreprocessingProfile,
+    OCRRegions,
     OCRResult,
     UncertainFrameRecorder,
     calculate_ocr_confidence,
@@ -20,15 +21,67 @@ from vntts.ocr import (
     clean_dialog_lines_from_data,
     crop_dialog_text,
     default_dialog_region,
+    default_ocr_profiles,
     load_dialog_region,
     parse_dialog_region,
     parse_recognized_dialog,
+    preprocess_dialog_image,
     recognize_dialog_image,
     recognize_dialog_image_result,
     recognize_speaker_from_data,
     save_dialog_region,
 )
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
+
+
+class OCRPreprocessingTest(unittest.TestCase):
+    @staticmethod
+    def _short_dialogue(text="Hmm?", *, light_background=False):
+        background, scenery, foreground = (
+            (200, 220, 30) if light_background else (30, 55, 230)
+        )
+        image = Image.new("L", (1000, 100), background)
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((400, 0, 800, 99), fill=scenery)
+        draw.text((15, 15), text, fill=foreground, font_size=20)
+        return image
+
+    def test_sparse_short_text_retains_contrast_without_promoting_scenery(self):
+        for text in ("Hmm?", "I", "?"):
+            for light_background in (False, True):
+                image = self._short_dialogue(text, light_background=light_background)
+                for profile in default_ocr_profiles:
+                    with self.subTest(
+                        text=text,
+                        light_background=light_background,
+                        profile=profile.name,
+                    ):
+                        processed = preprocess_dialog_image(image, profile)
+                        background = 255 if light_background else 0
+                        self.assertEqual(
+                            processed.crop((900, 20, 1400, 160)).getextrema(),
+                            (background, background),
+                        )
+                        self.assertEqual(
+                            processed.crop((20, 20, 150, 90)).getextrema(), (0, 255)
+                        )
+
+    @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
+    def test_real_ocr_reads_sparse_interjection_over_bright_scenery(self):
+        dialogue = self._short_dialogue()
+        image = Image.new("L", (1000, 150))
+        image.paste(dialogue, (0, 50))
+        ImageDraw.Draw(image).text((15, 10), "Everecho", fill=230, font_size=20)
+        result = recognize_dialog_image_result(
+            image,
+            ocr_regions=OCRRegions(
+                DialogRegion(0, 0, 1, 1 / 3),
+                DialogRegion(0, 1 / 3, 1, 2 / 3),
+            ),
+        )
+        self.assertEqual((result.character, result.text), ("Everecho", "Hmm?"))
+        self.assertTrue(result.is_confident())
+        self.assertEqual(result.attempts, 1)
 
 
 class DialogRegionTest(unittest.TestCase):

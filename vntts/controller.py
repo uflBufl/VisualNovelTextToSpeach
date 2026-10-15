@@ -3039,6 +3039,8 @@ class AppController:
             self.status_handler(
                 "Auto advance is waiting; focus the selected game window"
             )
+        elif state == "preparation-failed":
+            self._report_preparation_failure(_generation)
         elif state == "visual-wait":
             self.status_handler(
                 "Auto advance is waiting for the current line to finish rendering"
@@ -3075,6 +3077,20 @@ class AppController:
         elif state == "confirmed":
             self.status_handler("Auto advance confirmed by new dialogue")
 
+    def _report_preparation_failure(self, generation: int) -> None:
+        reader = self.live_reader
+        if reader is None:
+            return
+        with reader.state_lock:
+            if (
+                generation == reader.active_generation
+                and generation == reader.auto_advance_blocked_generation
+            ):
+                self.status_handler(
+                    "Audio preparation failed after retry; this dialogue was not played. "
+                    "Check Support and logs, or restart reading to retry."
+                )
+
     def _capture_state_changed(self, focused: bool, interval_seconds: float) -> None:
         lost_focus = self.game_focused and not focused
         regained_focus = not self.game_focused and focused
@@ -3091,10 +3107,21 @@ class AppController:
                 self.last_diagnostic = snapshot
         if snapshot is not None:
             self.diagnostic_handler(snapshot)
+        blocked_reason = None
+        reader = self.live_reader
+        if isinstance(reader, LiveDialogReader):
+            with reader.state_lock:
+                if reader.auto_advance_blocked_generation == reader.active_generation:
+                    blocked_reason = reader.auto_advance_block_reason
         if lost_focus:
-            self.status_handler("Game focus lost; live capture and auto advance paused")
+            self.status_handler(
+                "Game focus lost; live capture and auto advance paused"
+                + (f". {blocked_reason}" if blocked_reason else "")
+            )
         elif regained_focus:
-            self.status_handler("Game focus restored; live reading resumed")
+            self.status_handler(
+                blocked_reason or "Game focus restored; live reading resumed"
+            )
 
     def _publish_diagnostic(
         self,
