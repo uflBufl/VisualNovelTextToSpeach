@@ -4611,7 +4611,9 @@ class OfflineAudioPreparationDialog(QDialog):
             self._prepared_voice_manifest = None
             self._prepared_voice_job = job.job_id
         manifest = self._prepared_voice_manifest
-        if manifest is not None and not player_voice_catalog_is_current(manifest):
+        if manifest is not None and not player_voice_catalog_is_current(
+            manifest, speech_backend=settings.speech_backend
+        ):
             manifest = None
             self._prepared_voice_manifest = None
         if manifest is None:
@@ -4619,6 +4621,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 manifest = self.importer.prepare_voice_candidates(
                     job,
                     self.voice_cancel_event,
+                    speech_backend=settings.speech_backend,
                     progress=self.decoderProgress.emit,
                     scan_progress=self.sourceAudioProgress.emit,
                 )

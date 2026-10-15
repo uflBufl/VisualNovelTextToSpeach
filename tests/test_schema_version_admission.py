@@ -162,7 +162,12 @@ class SchemaVersionAdmissionTest(unittest.TestCase):
             ):
                 path.write_text(
                     json.dumps(
-                        {PLAYER_VOICE_CANDIDATES_FIELD: {"schema_version": version}}
+                        {
+                            PLAYER_VOICE_CANDIDATES_FIELD: {
+                                "schema_version": version,
+                                "reference_admission_policy": "transcript-bound",
+                            }
+                        }
                     ),
                     encoding="utf-8",
                 )

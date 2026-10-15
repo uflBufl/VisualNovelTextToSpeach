@@ -67,7 +67,11 @@ from vntts.source_audio_semantics import (
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.subprocess_utils import last_output_line, terminate_running_process
 from vntts.voice_candidate_cache import voice_candidate_cache_guard
-from vntts.voices import is_narrator, synthesis_character_for_line
+from vntts.voices import (
+    is_narrator,
+    reference_admission_policy,
+    synthesis_character_for_line,
+)
 
 
 class GameContentImportError(PregenerationSetupError):
@@ -504,6 +508,7 @@ class Reverse1999GameImporter:
         job: PregenerationJob,
         cancel_event: Cancellation | None = None,
         *,
+        speech_backend: str = "",
         progress: ProgressCallback | None = None,
         scan_progress: Callable[[SourceAudioProgress], None] | None = None,
     ) -> Path | None:
@@ -518,6 +523,7 @@ class Reverse1999GameImporter:
         return self.prepare_voice_roles(
             roles,
             cancel_event,
+            speech_backend=speech_backend,
             progress=progress,
             target_story_index=job.story_index,
             scan_progress=scan_progress,
@@ -1078,6 +1084,7 @@ class Reverse1999GameImporter:
         roles: Sequence[str],
         cancel_event: Cancellation | None = None,
         *,
+        speech_backend: str = "",
         progress: ProgressCallback | None = None,
         narrator: bool = False,
         narrator_line_id: str | None = None,
@@ -1108,6 +1115,7 @@ class Reverse1999GameImporter:
             narrator_line_id,
             target_story_index,
             scan_progress,
+            reference_admission_policy(speech_backend),
         )
 
     def _prepare_narrator_voice(
@@ -1142,6 +1150,7 @@ class Reverse1999GameImporter:
         narrator_line_id: str | None,
         target_story_index: PathInput | None,
         scan_progress: Callable[[SourceAudioProgress], None] | None = None,
+        admission_policy: str = "transcript-bound",
     ) -> Path:
         environment = dict(os.environ)
         environment["PATH"] = os.pathsep.join(
@@ -1154,6 +1163,8 @@ class Reverse1999GameImporter:
             "--data-directory",
             str(self.output_root),
             "--prepare-voice-candidates-only",
+            "--reference-admission-policy",
+            admission_policy,
         ]
         if target_story_index is not None:
             arguments.extend(("--target-story-index", str(target_story_index)))

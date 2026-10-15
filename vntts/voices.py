@@ -57,6 +57,11 @@ pocket_tts_preset_voices = (
 )
 
 
+def reference_admission_policy(speech_backend: str) -> str:
+    """MOSS generation conditions on audio without a reference transcript."""
+    return "audio-only" if speech_backend == "moss-tts" else "transcript-bound"
+
+
 @dataclass(frozen=True)
 class VoiceChoice:
     id: str

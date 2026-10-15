@@ -980,8 +980,12 @@ class GameNarratorTest(unittest.TestCase):
         return importer
 
     @staticmethod
-    def player_candidate_manifest(root, *, media_ids=("562400954", "599773947")):
-        manifest = write_player_candidate_manifest(root, "a" * 64)
+    def player_candidate_manifest(
+        root, *, media_ids=("562400954", "599773947"), admission_policy="audio-only"
+    ):
+        manifest = write_player_candidate_manifest(
+            root, "a" * 64, admission_policy=admission_policy
+        )
         document = json.loads(manifest.read_text())
         originals = []
         for entry, variant, media_id, duration, origin in zip(
@@ -2176,7 +2180,9 @@ class GameNarratorTest(unittest.TestCase):
 
     def test_global_engine_is_preserved_while_consent_is_staged_for_save(self):
         with TemporaryDirectory() as directory:
-            manifest, _originals = self.player_candidate_manifest(Path(directory))
+            manifest, _originals = self.player_candidate_manifest(
+                Path(directory), admission_policy="transcript-bound"
+            )
             importer = Mock()
             importer.narrator_characters.return_value = ("Mrs. Owen",)
             importer.prepare_voice_roles.return_value = manifest

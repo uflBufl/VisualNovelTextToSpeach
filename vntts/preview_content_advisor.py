@@ -114,6 +114,16 @@ class PreviewContentAdvisor:
         self._model_resolver = model_resolver or resolve_managed_asr_model
         self._model_installer = model_installer or install_managed_asr_model
         self._model_status = model_status or managed_asr_status
+        # Injected hooks may own in-process state and cannot safely cross spawn.
+        self._isolated = all(
+            dependency is None
+            for dependency in (
+                transcriber_factory,
+                model_resolver,
+                model_installer,
+                model_status,
+            )
+        )
 
     @staticmethod
     def _analyzer() -> dict[str, object]:
@@ -294,6 +304,25 @@ class PreviewContentAdvisor:
             blocking=True,
             check_cancelled=lambda: _raise_if_cancelled(cancel_event),
         ):
+            if self._isolated:
+                cached = tuple(self.lookup(preview) for preview in previews)
+                _raise_if_cancelled(cancel_event)
+                if all(result is not None for result in cached):
+                    return cast(tuple[PreviewContentCheck, ...], cached)
+                from vntts.preview_content_worker import check_in_process
+
+                saved = tuple(
+                    _SavedPreview(
+                        preview.identity,
+                        preview.candidate_source_id,
+                        preview.text,
+                        preview.audio_sha256,
+                        preview.path,
+                        preview.seed,
+                    )
+                    for preview in previews
+                )
+                return check_in_process(self.root, saved, install_model, cancel_event)
             return self._check_batch(previews, install_model, cancel_event)
 
     def _check_batch(

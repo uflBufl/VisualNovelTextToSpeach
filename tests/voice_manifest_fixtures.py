@@ -176,6 +176,7 @@ def write_player_candidate_manifest(
     *,
     portrait_image_sha256: str | None = None,
     quality_scores: Sequence[int] = (99, 98),
+    admission_policy: str = "transcript-bound",
 ) -> Path:
     references = root / "references"
     references.mkdir(parents=True, exist_ok=True)
@@ -232,6 +233,7 @@ def write_player_candidate_manifest(
                 PLAYER_VOICE_CANDIDATES_FIELD: {
                     "schema": "vntts.player-voice-candidates",
                     "schema_version": PLAYER_VOICE_CANDIDATES_VERSION,
+                    "reference_admission_policy": admission_policy,
                     "story_index_sha256": story_index_sha256,
                     "candidate_report": report.name,
                     "candidate_report_sha256": sha256_file(report),

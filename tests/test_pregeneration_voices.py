@@ -52,6 +52,44 @@ from vntts.voices import (
 
 
 class VoicePlanStoreTest(unittest.TestCase):
+    def test_player_catalog_policy_matches_backend_for_cache_and_direct_admission(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs = self.create_fixture(root)
+            for policy in ("transcript-bound", "audio-only"):
+                manifest = write_player_candidate_manifest(
+                    root / policy, job.story_index_sha256, admission_policy=policy
+                )
+                for backend in ("moss-tts", "qwen-tts", "pocket-tts"):
+                    with self.subTest(policy=policy, backend=backend):
+                        compatible = (policy == "audio-only") == (backend == "moss-tts")
+                        self.assertEqual(
+                            player_voice_catalog_is_current(
+                                manifest, speech_backend=backend
+                            ),
+                            compatible,
+                        )
+                        if compatible:
+                            _, variants = validated_player_voice_candidates(
+                                manifest, speech_backend=backend
+                            )
+                            self.assertEqual(len(variants), 2)
+                            continue
+                        with self.assertRaisesRegex(
+                            PregenerationVoiceError, "refreshing.*speech engine"
+                        ):
+                            validated_player_voice_candidates(
+                                manifest, speech_backend=backend
+                            )
+                        with self.assertRaisesRegex(
+                            PregenerationVoiceError, "refreshing.*speech engine"
+                        ):
+                            VoicePlanStore(jobs).create(
+                                job,
+                                AppSettings(speech_backend=backend),
+                                manifest_path=manifest,
+                            )
+
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )
@@ -1206,7 +1244,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(selected.reference_sha256s, binding.source_sha256s)
 
     def test_old_player_catalog_requires_refresh_before_planning(self):
-        for version in (3, 4):
+        for version in (3, 4, 5, 6):
             with self.subTest(version=version):
                 self.assert_old_player_catalog_requires_refresh(version)
 

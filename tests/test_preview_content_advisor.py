@@ -105,6 +105,51 @@ class PreviewContentAdvisorTest(unittest.TestCase):
         self.assertEqual(document["observed_text"], "Wait what Wine")
         self.assertNotIn("status", document)
 
+    def test_default_checker_sends_a_snapshot_to_an_isolated_batch(self):
+        advisor = PreviewContentAdvisor(self.root)
+        with patch(
+            "vntts.preview_content_worker.check_in_process", return_value=()
+        ) as check:
+            self.assertEqual(advisor.check((self.preview,), install_model=True), ())
+        root, previews, install, cancellation = check.call_args.args
+        self.assertEqual(root, self.root.resolve())
+        self.assertEqual(previews[0].identity, self.preview.identity)
+        self.assertEqual(previews[0].path, self.preview.path)
+        self.assertEqual(previews[0].audio_sha256, self.preview.audio_sha256)
+        self.assertIsNot(previews[0], self.preview)
+        self.assertTrue(install)
+        self.assertIsNone(cancellation)
+        self.factory.assert_not_called()
+
+    def test_cached_and_empty_default_batches_never_start_a_process(self):
+        expected = self.advisor.check((self.preview,))
+        with patch(
+            "vntts.preview_content_worker.check_in_process",
+            side_effect=AssertionError("cached advice must not start a worker"),
+        ):
+            advisor = PreviewContentAdvisor(self.root)
+            self.assertEqual(advisor.check((self.preview,)), expected)
+            self.assertEqual(advisor.check(()), ())
+
+    def test_each_injected_hook_keeps_the_batch_in_process(self):
+        for name in (
+            "transcriber_factory",
+            "model_resolver",
+            "model_installer",
+            "model_status",
+        ):
+            with self.subTest(hook=name):
+                advisor = PreviewContentAdvisor(self.root, **{name: Mock()})
+                with (
+                    patch.object(advisor, "_check_batch", return_value=()) as local,
+                    patch(
+                        "vntts.preview_content_worker.check_in_process",
+                        side_effect=AssertionError("injected hooks must remain local"),
+                    ),
+                ):
+                    self.assertEqual(advisor.check((self.preview,)), ())
+                local.assert_called_once_with((self.preview,), False, None)
+
     def test_lookup_recomputes_advice_from_raw_transcript(self):
         self.advisor.check((self.preview,))
         current = SpeechContentAdvice("expected", "raw", "uncertain_recognition", ())

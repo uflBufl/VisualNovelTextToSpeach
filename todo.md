@@ -663,3 +663,7 @@ Planned implementation order after approval:
 ## Active - Offline generation retry deadlock
 
 - [ ] Verify on the reported Windows/GPU setup that a frame-limited phrase reaches its bounded retry result and Cancel finishes. Incomplete audio must remain unpublished. Local Python 3.14.2 HTTP-fixture and retained-frame regressions pass; actual model EOS quality remains a separate hardware gate.
+
+## Qualify packaged preview ASR isolation
+
+- [ ] Before shipping frozen macOS/Windows builds, smoke-test preview ASR spawn from the packaged entrypoint: start checking during playback, play ready audio during checking, cancel/close and reopen. Confirm no second desktop window, no surviving ASR worker and continued prefetch. Source-mode Mac qualification and early-dispatch unit tests do not establish bundled behavior; retained evidence is in `.codex/investigations/preview-asr-isolation-20261016/`.

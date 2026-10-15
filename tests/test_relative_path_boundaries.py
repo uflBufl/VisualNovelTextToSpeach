@@ -106,6 +106,7 @@ class RelativePathBoundariesTest(unittest.TestCase):
                 pregeneration_voices.PLAYER_VOICE_CANDIDATES_FIELD: {
                     "schema": pregeneration_voices.PLAYER_VOICE_CANDIDATES_SCHEMA,
                     "schema_version": pregeneration_voices.PLAYER_VOICE_CANDIDATES_VERSION,
+                    "reference_admission_policy": "transcript-bound",
                     "story_index_sha256": "a" * 64,
                     "candidate_report": "evidence/bad\x00.json",
                     "candidate_report_sha256": "b" * 64,

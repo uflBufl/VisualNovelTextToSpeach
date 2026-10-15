@@ -8,6 +8,10 @@ from pathlib import Path
 from threading import Event, Lock, Thread
 from time import perf_counter
 
+# Frozen multiprocessing children must dispatch before importing the desktop UI.
+if getattr(sys, "frozen", False):
+    freeze_support()
+
 from PIL import Image
 from pynput import keyboard
 from PySide6.QtCore import (

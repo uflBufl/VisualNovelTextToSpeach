@@ -75,6 +75,7 @@ from vntts.voices import (
     is_narrator,
     pocket_tts_preset_voices,
     read_voice_reference_bytes,
+    reference_admission_policy,
     registry_with_voice_library,
     remember_voice_binding,
     synthesis_character_for_line,
@@ -130,7 +131,7 @@ voice_plan_schema_version = 5
 voice_decisions_schema_version = 1
 PLAYER_VOICE_CANDIDATES_FIELD = "vntts.player.voice_candidates"
 PLAYER_VOICE_CANDIDATES_SCHEMA = "vntts.player-voice-candidates"
-PLAYER_VOICE_CANDIDATES_VERSION = 5
+PLAYER_VOICE_CANDIDATES_VERSION = 7
 UNLINKED_BANK_MEDIA = "exact_bank_unrouted_media"
 STORY_LINE_ROUTE = "story_line_route"
 UNLINKED_BANK_LABEL = "Unlinked game-bank audio; spoken text unknown"
@@ -655,6 +656,7 @@ class VoicePlanStore:
             registry,
             manifest_path,
             job.story_index_sha256,
+            speech_backend=settings.speech_backend,
         )
         if self.voice_library is not None:
             manifest_path = _materialize_voice_catalog(
@@ -2213,6 +2215,8 @@ def _manifest_candidate_variants(
     registry: CharacterVoiceRegistry,
     manifest_path: Path | None,
     story_index_sha256: str,
+    *,
+    speech_backend: str = "",
 ) -> tuple[JsonObject, ...]:
     bindings = manifest_document.get(SOURCE_REFERENCE_BINDINGS_FIELD, {})
     variants = list(
@@ -2221,11 +2225,14 @@ def _manifest_candidate_variants(
     player = manifest_document.get(PLAYER_VOICE_CANDIDATES_FIELD)
     if player is None:
         return tuple(variants)
-    if isinstance(player, dict) and not has_schema_version(
-        player, PLAYER_VOICE_CANDIDATES_VERSION
+    if isinstance(player, dict) and (
+        not has_schema_version(player, PLAYER_VOICE_CANDIDATES_VERSION)
+        or player.get("reference_admission_policy")
+        != reference_admission_policy(speech_backend)
     ):
         raise PregenerationVoiceError(
-            "Game voice references need refreshing before automatic selection"
+            "Game voice references need refreshing before automatic selection "
+            "for the selected speech engine"
         )
     expected_fields = {
         "schema",
@@ -2234,6 +2241,7 @@ def _manifest_candidate_variants(
         "candidate_report",
         "candidate_report_sha256",
         "variants",
+        "reference_admission_policy",
     }
     if (
         not isinstance(player, dict)
@@ -2303,7 +2311,9 @@ def _manifest_candidate_variants(
     return tuple(variants)
 
 
-def player_voice_catalog_is_current(manifest_path: Path | str) -> bool:
+def player_voice_catalog_is_current(
+    manifest_path: Path | str, *, speech_backend: str = ""
+) -> bool:
     """Return whether a cached catalog uses the current candidate-admission policy."""
     try:
         document = decode_json(read_regular_text(Path(manifest_path), encoding="utf-8"))
@@ -2315,11 +2325,15 @@ def player_voice_catalog_is_current(manifest_path: Path | str) -> bool:
     return player is None or (
         isinstance(player, dict)
         and has_schema_version(player, PLAYER_VOICE_CANDIDATES_VERSION)
+        and player.get("reference_admission_policy")
+        == reference_admission_policy(speech_backend)
     )
 
 
 def validated_player_voice_candidates(
     manifest_path: Path,
+    *,
+    speech_backend: str = "",
 ) -> tuple[CharacterVoiceRegistry, tuple[JsonObject, ...]]:
     """Read the same checksum-validated candidates used by story preparation."""
     registry, _digest, document = _load_registry(manifest_path)
@@ -2332,7 +2346,7 @@ def validated_player_voice_candidates(
             "Player voice candidate story checksum is invalid"
         )
     return registry, _manifest_candidate_variants(
-        document, registry, manifest_path, story_sha256
+        document, registry, manifest_path, story_sha256, speech_backend=speech_backend
     )
 
 

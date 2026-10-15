@@ -3866,6 +3866,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             importer.prepare_voice_candidates.assert_called_once_with(
                 result.job,
                 dialog.voice_cancel_event,
+                speech_backend=effective_settings.speech_backend,
                 progress=dialog.decoderProgress.emit,
                 scan_progress=dialog.sourceAudioProgress.emit,
             )

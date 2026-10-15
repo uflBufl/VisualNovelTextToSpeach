@@ -414,6 +414,38 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 self.assertGreater(f.player.stop.call_count, stops)
                 self.assertTrue(f.panel.a_use.isEnabled())
 
+    def test_ready_play_and_prefetch_remain_available_in_both_check_orders(self):
+        for check_first in (False, True):
+            with (
+                self.subTest(check_first=check_first),
+                TemporaryDirectory() as directory,
+            ):
+                f = self.fixture(Path(directory))
+                f.panel.start(f.plan)
+                self.drain(f)
+                f.ready.update(f.previews)
+                f.service.preparing = True
+                if check_first:
+                    f.panel._refresh_runtime()
+                    self.assertTrue(f.panel.advice_runner.active)
+
+                f.panel.play_a()
+                f.player.play_bytes.assert_called_once()
+                self.assertEqual(f.panel._playing_source, "preview")
+                f.panel._refresh_runtime()
+                self.assertTrue(f.panel.advice_runner.active)
+                self.assertTrue(f.panel.a_play.isEnabled())
+                self.assertTrue(f.panel.voice_reference.isEnabled())
+                f.service.prefetch.assert_called()
+                f.service.cancel.assert_not_called()
+                f.transcript.assert_not_called()
+
+                stops = f.player.stop.call_count
+                self.drain(f)
+                self.assertEqual(f.transcript.call_count, 2)
+                self.assertEqual(f.player.stop.call_count, stops)
+                self.assertEqual(f.panel._playing_source, "preview")
+
     def test_cached_checks_do_not_reselect_saved_choice(self):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))

@@ -1336,11 +1336,16 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 "vntts.game_content_importer.ensure_game_decoder",
                 return_value=root / "tools" / "vgmstream-cli",
             ):
-                result = importer.prepare_voice_candidates(job)
+                result = importer.prepare_voice_candidates(
+                    job, speech_backend="moss-tts"
+                )
 
         arguments = popen.call_args.args[0]
         self.assertEqual(result, manifest.resolve())
         self.assertIn("--prepare-voice-candidates-only", arguments)
+        self.assertEqual(
+            arguments[arguments.index("--reference-admission-policy") + 1], "audio-only"
+        )
         self.assertEqual(
             arguments[arguments.index("--target-story-index") + 1],
             str(job.story_index),
@@ -1470,6 +1475,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     prepare.assert_called_once_with(
                         ("Rhiannon",),
                         None,
+                        speech_backend="",
                         progress=None,
                         target_story_index=job.story_index,
                         scan_progress=None,

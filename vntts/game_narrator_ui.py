@@ -1528,6 +1528,7 @@ class GameNarratorDialog(QDialog):
                 self.cancellation,
                 progress=self.decoderProgress.emit,
                 narrator=False,
+                speech_backend=self.settings_value.speech_backend,
             ),
         )
 
@@ -1584,7 +1585,9 @@ class GameNarratorDialog(QDialog):
     def _show_character_candidates(self, manifest: Path | str) -> None:
         """List the validated global sources when no story plan is available."""
         manifest_path = Path(manifest)
-        registry, variants = validated_player_voice_candidates(manifest_path)
+        registry, variants = validated_player_voice_candidates(
+            manifest_path, speech_backend=self.settings_value.speech_backend
+        )
         candidate_details: list[tuple[str, dict[str, object]]] = []
         for variant in variants:
             if normalize_character_name(
