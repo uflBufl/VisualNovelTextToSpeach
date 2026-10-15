@@ -1577,7 +1577,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))
             dialog.story_search.clear()
             dialog.story_filter.setCurrentIndex(
-                dialog.story_filter.findData("in_progress")
+                dialog.story_filter.findData("unchecked")
             )
             self.assertTrue(dialog.stories.item(0).isHidden())
             self.assertFalse(dialog.stories.item(1).isHidden())
@@ -1594,7 +1594,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.story_filter.setCurrentIndex(dialog.story_filter.findData(None))
             dialog.select_all_button.click()
             dialog.story_filter.setCurrentIndex(
-                dialog.story_filter.findData("in_progress")
+                dialog.story_filter.findData("unchecked")
             )
             self.assertEqual(dialog.selected_story_ids(), ("main-1", "rhiannon"))
             self.assertIn("0/2 shown", dialog.story_filter_status.text())
@@ -2193,6 +2193,80 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn(str(error), dialog.resume_status.text())
             self.assertNotIn("Saved audio needs attention", dialog.summary.text())
 
+    def test_restored_ready_selection_is_checked_after_discovery_becomes_visible(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            jobs.mark_prepared(jobs.create_or_resume(content, ("main-1",)))
+            pool = ManualThreadPool()
+            active_path = root / "active-game-pack.json"
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(
+                    game_pack=str(active_path), audio_source_policy="prefer-generated"
+                ),
+                discovery=lambda: ContentDiscovery(()),
+                job_store=jobs,
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.show()
+            dialog._set_discovery_loading(True)
+            ready = StoryAudioCoverage("Main Story 1", active_path, generated=2)
+            with patch.object(
+                dialog, "_inspect_story_audio", return_value=(ready, ready, ())
+            ):
+                dialog._discovery_finished(ContentDiscovery((content,)), None)
+                self.assertFalse(dialog.selection_panel.isHidden())
+                self.assertEqual(dialog.stories.item(0).text(1), "Not checked")
+                self.assertEqual(len(pool.tasks), 1)
+                self.assertFalse(dialog.continue_button.isEnabled())
+                self.run_next_task(pool)
+            self.assertEqual(dialog.stories.item(0).text(1), "Ready")
+            self.assertEqual(dialog.continue_button.text(), "Start reading")
+            self.assertTrue(dialog.continue_button.isEnabled())
+            self.assertFalse(dialog.play_ready_button.isVisibleTo(dialog))
+            opened = Mock()
+            dialog.readingRequested.connect(opened)
+            dialog.continue_button.setFocus()
+            QTest.keyClick(dialog.continue_button, Qt.Key.Key_Return)
+            opened.assert_called_once_with()
+            self.assertEqual(pool.tasks, [])
+            dialog.close()
+
+    def test_saved_job_does_not_prove_partial_audio_coverage(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            jobs.create_or_resume(content, ("main-1",))
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                job_store=jobs,
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            empty = StoryAudioCoverage("Main Story 1", None, missing=2)
+            with patch.object(
+                dialog, "_inspect_story_audio", return_value=(empty, None, ())
+            ):
+                dialog._apply_discovery(ContentDiscovery((content,)))
+                self.assertEqual(dialog.stories.item(0).text(1), "Not checked")
+                dialog.stories.setCurrentRow(0)
+                dialog.check_story_audio.click()
+                self.run_next_task(pool)
+            self.assertEqual(dialog.stories.item(0).text(1), "Not prepared")
+            partial = replace(empty, generated=1, missing=1)
+            dialog.stories.setCurrentRow(0)
+            with patch.object(
+                dialog, "_inspect_story_audio", return_value=(partial, None, ())
+            ):
+                dialog.check_story_audio.click()
+                self.run_next_task(pool)
+            self.assertEqual(dialog.stories.item(0).text(1), "Partially prepared")
+
     def test_checked_story_readiness_updates_list_and_primary_without_preparing(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2210,7 +2284,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 thread_pool=pool,
             )
             self.addCleanup(dialog.deleteLater)
-            self.assertIn("Partially prepared", dialog.stories.item(0).text(1))
+            self.assertIn("Not checked", dialog.stories.item(0).text(1))
             self.assertEqual(dialog.continue_button.text(), "Checking saved audio...")
             self.assertFalse(dialog.continue_button.isEnabled())
             dialog.stories.setCurrentRow(0)
@@ -2282,7 +2356,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("Saved audio damaged", dialog.story_audio_status.text())
             self.assertEqual(dialog.continue_button.text(), "Continue preparation")
             dialog.refresh()
-            self.assertEqual(dialog.stories.item(0).text(1), "Partially prepared")
+            self.assertEqual(dialog.stories.item(0).text(1), "Not checked")
 
     def test_active_preparation_and_shared_progress_report_saved_counts_and_failure(
         self,
@@ -2321,7 +2395,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 None, ValueError("No character references. Import the game again.")
             )
             self.application.processEvents()
-            self.assertIn("Partially prepared", dialog.stories.item(0).text(1))
+            self.assertIn("Not checked", dialog.stories.item(0).text(1))
             self.assertIn("No character references", updates[-1])
             self.assertEqual(dialog.continue_button.text(), "Continue preparation")
             dialog.voice_runner.cancel()
@@ -2856,7 +2930,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.stories.count(), 2)
             self.assertIn("Not prepared", dialog.stories.item(0).text(1))
             self.assertIn(
-                "Partially prepared",
+                "Not checked",
                 dialog.stories.item(1).text(1),
             )
             dialog.close()
@@ -2988,7 +3062,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertEqual(dialog.source.count(), 1)
             self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))
-            self.assertIn("Partially prepared", dialog.stories.item(1).text(1))
+            self.assertIn("Not checked", dialog.stories.item(1).text(1))
             dialog.deleteLater()
 
     def test_progress_card_polls_durable_counts_during_slow_generation(self):
@@ -3050,8 +3124,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertEqual(dialog.progress_bar.value(), 3)
             self.assertEqual(dialog.progress_phase.text(), "Checking generated audio")
-            self.assertNotIn("RTX 2070 SUPER", dialog.progress_runtime.text())
-            self.assertIn("confirm CPU/GPU", dialog.progress_runtime.text())
+            self.assertIn(
+                "Last confirmed compute: GPU: RTX 2070 SUPER",
+                dialog.progress_runtime.text(),
+            )
             self.assertIn("Prepared: 2", plain_label_text(dialog.progress_counts))
             self.assertIn("Failed: 1", plain_label_text(dialog.progress_counts))
             self.assertIn(
@@ -3061,6 +3137,78 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.progress_timer.stop()
             dialog.close()
             dialog.deleteLater()
+
+    def test_runtime_history_survives_per_line_workers_and_resets_with_session(self):
+        dialog = OfflineAudioPreparationDialog(
+            AppSettings(),
+            discovery=lambda: ContentDiscovery(()),
+            thread_pool=ManualThreadPool(),
+            generator=Mock(),
+        )
+        self.addCleanup(dialog.deleteLater)
+        dialog._generation_input = SimpleNamespace(ready_items=32)
+        dialog.generating = True
+        dialog._start_generation_progress()
+        dialog.progress_timer.stop()
+
+        def report(runtime=None, *, phase=None):
+            dialog._progress_finished(
+                OfflineGenerationProgress(
+                    generated=12, runtime_status=runtime, active_phase=phase
+                ),
+                None,
+            )
+
+        report()
+        self.assertIn("confirm CPU/GPU", dialog.progress_runtime.text())
+        for unconfirmed in (
+            "Loading MOSS Local v1.5: GPU backbone; audio model/codec on CPU.",
+            "Compute device: unknown (not reported by the engine yet).",
+            "Compute: engine not running (or still loading).",
+            "MOSS C++: managed placement unconfirmed",
+        ):
+            with self.subTest(unconfirmed=unconfirmed):
+                report(unconfirmed)
+                self.assertEqual(dialog.progress_runtime.text(), unconfirmed)
+                report()
+                self.assertIn("confirm CPU/GPU", dialog.progress_runtime.text())
+
+        # Real Qwen state alternates METAL, active=None, then a new worker PID.
+        report("Compute: METAL", phase="generating")
+        expected = "Last confirmed compute: METAL"
+        self.assertEqual(dialog.progress_runtime.text(), expected)
+        report()
+        self.assertEqual(dialog.progress_runtime.text(), expected)
+        report(phase="generating")
+        self.assertEqual(dialog.progress_runtime.text(), expected)
+        report("Compute: CPU (fallback: GPU allocation failed)")
+        self.assertEqual(
+            dialog.progress_runtime.text(),
+            "Last confirmed compute: CPU (fallback: GPU allocation failed)",
+        )
+        report()
+        self.assertIn("fallback: GPU allocation failed", dialog.progress_runtime.text())
+        dialog._progress_finished(None, OSError("cannot read current progress"))
+        self.assertEqual(
+            dialog.progress_runtime.text(), "Generation device: report unavailable."
+        )
+        report()
+        self.assertIn("confirm CPU/GPU", dialog.progress_runtime.text())
+
+        report("GPU: RTX test (37 GPU layers); auxiliary: CPU")
+        self.assertNotIn("37 GPU layers", dialog.progress_runtime.text())
+        self.assertIn("37 GPU layers", dialog.progress_runtime.toolTip())
+        dialog._stop_generation_progress()
+        self.assertFalse(dialog.progress_runtime.text())
+        dialog._generation_input = SimpleNamespace(ready_items=4)
+        dialog._start_generation_progress()
+        dialog.progress_timer.stop()
+        report()
+        self.assertIn("confirm CPU/GPU", dialog.progress_runtime.text())
+        self.assertNotIn("RTX test", dialog.progress_runtime.text())
+        dialog.generating = False
+        dialog._stop_generation_progress()
+        dialog.close()
 
     def test_eight_story_progress_keeps_reading_and_stop_actions_visible(self):
         with TemporaryDirectory() as directory:
@@ -3372,10 +3520,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))
             self.assertIn("Saved offline audio found", dialog.resume_status.text())
             self.assertIn(
-                "Partially prepared",
+                "Not checked",
                 dialog.stories.item(1).text(1),
             )
-            self.assertIn("Partially prepared", dialog.stories.item(0).text(1))
+            self.assertIn("Not checked", dialog.stories.item(0).text(1))
             dialog.deleteLater()
 
     def test_each_dialogue_is_recovered_before_pack_publication(self):
@@ -3443,7 +3591,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.job().status, "prepared")
             self.assertTrue(
                 all(
-                    "Partially prepared" in dialog.stories.item(row).text(1)
+                    "Not checked" in dialog.stories.item(row).text(1)
                     for row in range(dialog.stories.count())
                 )
             )
@@ -3663,7 +3811,17 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             manifest = root / "candidate-manifest.json"
             importer = Mock()
             importer.availability.return_value = ImporterAvailability(True, "Ready")
-            importer.prepare_voice_candidates.return_value = manifest
+
+            def prepare_candidates(*_args, scan_progress, **_kwargs):
+                from vntts.source_audio_progress import SourceAudioProgress
+
+                scan_progress(SourceAudioProgress("portraits", 1, 1, "publishing"))
+                self.assertEqual(
+                    dialog.progress_phase.text(), "Finding character portraits"
+                )
+                return manifest
+
+            importer.prepare_voice_candidates.side_effect = prepare_candidates
             voice_plan = Mock()
             voice_plan_store = Mock()
             voice_plan_store.create.return_value = voice_plan
@@ -3675,6 +3833,16 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 voice_plan_store=voice_plan_store,
             )
 
+            dialog.planning_voices = True
+
+            def match_voices(*_args, **_kwargs):
+                dialog.decoderProgress.emit("Checking preview speech for Tennant...")
+                self.assertEqual(
+                    dialog.progress_phase.text(), "Matching character voices"
+                )
+                return voice_plan
+
+            voice_plan_store.create.side_effect = match_voices
             effective_settings = AppSettings(
                 speech_backend="pocket-tts", tts_profile="default"
             )
@@ -3870,6 +4038,71 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertTrue(dialog.change_voices.isChecked())
             self.assertIn("candidate import failed", dialog.resume_status.text())
             dialog.deleteLater()
+
+    def test_offline_qwen_confirmation_uses_saved_narrator_with_live_public_pocket(
+        self,
+    ):
+        from tests.voice_manifest_fixtures import write_manifest
+        from vntts.pregeneration_voices import (
+            VoicePlanStore,
+            resolve_pregeneration_settings,
+        )
+        from vntts.voices import CharacterVoiceRegistry, remember_voice_binding
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("main-1", "rhiannon"))
+            manifest = write_manifest(root / "voices")
+            library = VoiceLibrary(root / "library")
+            remember_voice_binding(
+                library,
+                CharacterVoiceRegistry.from_file(manifest),
+                "Narrator",
+                "character:centurion",
+            )
+            settings = AppSettings(
+                voice_manifest=str(manifest),
+                speech_backend="pocket-tts",
+                offline_speech_backend="qwen-tts",
+                pocket_gated_model_accepted=False,
+            )
+            plans = VoicePlanStore(jobs, voice_library=library)
+            plan = plans.create(
+                job, resolve_pregeneration_settings(settings), manifest_path=manifest
+            )
+            dialog = OfflineAudioPreparationDialog(
+                settings,
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                voice_plan_store=plans,
+                voice_library=library,
+                thread_pool=ManualThreadPool(),
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog._job = job
+            dialog._voice_plan = plan
+            dialog.show()
+            dialog.content_scroll.show()
+            dialog._show_voice_confirmation(plan)
+
+            self.assertTrue(dialog.voice_confirmation.isVisible())
+            self.assertIn("Centurion", dialog.confirmed_narrator.text())
+            self.assertIn("Qwen", dialog.voice_engine_details.text())
+            self.assertIsNotNone(dialog.narrator_choice.currentData())
+            self.assertGreater(dialog.voice_routes.count(), 0)
+            self.assertTrue(dialog.voice_routes.isVisible())
+            self.assertFalse(dialog._voice_plan_needs_update())
+            self.assertTrue(dialog.continue_button.isEnabled())
+            self.assertEqual(
+                dialog.continue_button.text(), "Generate with these voices"
+            )
+            with patch.object(dialog, "_start_generation_input") as prepare_input:
+                dialog.continue_button.click()
+            prepare_input.assert_called_once_with(plan)
+            self.assertEqual(dialog.settings.speech_backend, "pocket-tts")
+            self.assertFalse(dialog.settings.pocket_gated_model_accepted)
 
     def test_narrator_draft_stays_visible_and_rolls_back_when_replan_fails(self):
         from tests.voice_manifest_fixtures import write_manifest

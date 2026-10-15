@@ -388,6 +388,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._reading_line_id: str | None = None
         self._progress_changed_at = monotonic()
         self._progress_error: str | None = None
+        self._last_confirmed_runtime_status: str | None = None
         self.import_cancel_event = Event()
         self.voice_cancel_event = Event()
         self.importing = False
@@ -625,6 +626,7 @@ class OfflineAudioPreparationDialog(QDialog):
             ("All stories", None),
             ("Not prepared", "not_started"),
             ("Preparing", "preparing"),
+            ("Not checked", "unchecked"),
             ("Partially prepared", "in_progress"),
             ("Ready", "ready"),
             ("Needs attention", "attention"),
@@ -749,7 +751,6 @@ class OfflineAudioPreparationDialog(QDialog):
             "Start the selected story while preparation continues in the background"
         )
         self.play_ready_button.clicked.connect(self.readingRequested.emit)
-        self.play_ready_button.hide()
         self._layout_progress_panel()
 
     def _build_progress_story_readiness(self) -> None:
@@ -1075,6 +1076,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.buttons.addButton(
             self.play_ready_button, QDialogButtonBox.ButtonRole.ActionRole
         )
+        self.play_ready_button.hide()
         cancel_button = self.buttons.addButton(
             "Cancel", QDialogButtonBox.ButtonRole.RejectRole
         )
@@ -1812,7 +1814,8 @@ class OfflineAudioPreparationDialog(QDialog):
                 Qt.ItemDataRole.ToolTipRole,
             )
         current = pregeneration_narrator_source_id(
-            self.settings, voice_library=self.voice_library
+            resolve_pregeneration_settings(self.settings),
+            voice_library=self.voice_library,
         )
         selected = self.narrator_choice.findData(current)
         self.narrator_choice.setCurrentIndex(max(0, selected))
@@ -2024,7 +2027,8 @@ class OfflineAudioPreparationDialog(QDialog):
             if self.narrator_choice.currentData() is None:
                 return ""
             if self.narrator_choice.currentData() != pregeneration_narrator_source_id(
-                self.settings, voice_library=self.voice_library
+                resolve_pregeneration_settings(self.settings),
+                voice_library=self.voice_library,
             ):
                 return ""
             candidate = group.narrator_candidate
@@ -2161,7 +2165,8 @@ class OfflineAudioPreparationDialog(QDialog):
             source_id is not None
             and source_id
             != pregeneration_narrator_source_id(
-                self.settings, voice_library=self.voice_library
+                resolve_pregeneration_settings(self.settings),
+                voice_library=self.voice_library,
             )
         ) or (
             self._voice_plan is not None
@@ -2213,7 +2218,8 @@ class OfflineAudioPreparationDialog(QDialog):
             self._narrator_player.stop()
         source_id = self.narrator_choice.currentData()
         current = pregeneration_narrator_source_id(
-            self.settings, voice_library=self.voice_library
+            resolve_pregeneration_settings(self.settings),
+            voice_library=self.voice_library,
         )
         assert self._voice_plan is not None
         planned_cloning = self._voice_plan.pocket_voice_cloning
@@ -2439,11 +2445,10 @@ class OfflineAudioPreparationDialog(QDialog):
         self.content_scroll.setVisible(loading)
         self.selection_panel.setEnabled(not loading)
         self.continue_button.show()
-        self.continue_button.setEnabled(
-            not loading
-            and bool(self.selected_story_ids())
-            and self._generation_engine_available()
-        )
+        if loading:
+            self.continue_button.setEnabled(False)
+        else:
+            self._selection_changed()
 
     def _apply_discovery(self, discovery: ContentDiscovery) -> None:
         previous = self.current_content()
@@ -2480,6 +2485,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self._populate_stories(None)
         self.content_scroll.hide()
         self.selection_panel.show()
+        self._selection_changed()
 
     def _update_import_options(self, _checked: bool | None = None) -> None:
         has_content = bool(self._content)
@@ -2924,14 +2930,35 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         if error is not None or not isinstance(progress, OfflineGenerationProgress):
             self._progress_error = str(error or "Invalid progress response")
+            self._last_confirmed_runtime_status = None
             self._set_progress_runtime("Generation device: report unavailable.")
         else:
             self._progress_error = None
-            runtime = (
-                progress.runtime_status
+            runtime = progress.runtime_status
+            if (
+                runtime
+                and runtime.startswith(("Compute: ", "GPU:", "CPU:", "MOSS C++:"))
+                and not any(
+                    unknown in runtime.lower()
+                    for unknown in (
+                        "unconfirmed",
+                        "unknown",
+                        "not running",
+                        "not loaded",
+                        "still loading",
+                    )
+                )
+            ):
+                # Each line may use a new worker; report its last confirmed placement.
+                self._last_confirmed_runtime_status = (
+                    "Last confirmed compute: " + runtime.removeprefix("Compute: ")
+                )
+                runtime = self._last_confirmed_runtime_status
+            self._set_progress_runtime(
+                runtime
+                or self._last_confirmed_runtime_status
                 or "Generation device: waiting for the worker to confirm CPU/GPU use."
             )
-            self._set_progress_runtime(runtime)
             now = monotonic()
             if progress != self._progress_snapshot:
                 self._progress_changed_at = now
@@ -2984,6 +3011,7 @@ class OfflineAudioPreparationDialog(QDialog):
         )
 
     def _stop_generation_progress(self) -> None:
+        self._last_confirmed_runtime_status = None
         self.progress_timer.stop()
         self.progress_runner.cancel()
         self.progress_timing.clear()
@@ -3146,7 +3174,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 f"Story details: {item.toolTip(0)} "
                 f"({item.data(0, Qt.ItemDataRole.UserRole + 5)} lines)\n"
                 f"{item.text(1)}: {item.data(0, Qt.ItemDataRole.UserRole + 4)}\n"
-                "Saved audio is checked automatically. You can also recheck this story."
+                "Saved audio can be verified with Check story audio."
             )
         if item is not None:
             checked = self._story_audio_checks.get(
@@ -3408,6 +3436,7 @@ class OfflineAudioPreparationDialog(QDialog):
                     status, detail = self._preparation_story_status(selection)
                 label = {
                     "not_started": "Not prepared",
+                    "unchecked": "Not checked",
                     "preparing": "Preparing",
                     "in_progress": "Partially prepared",
                     "ready": "Ready",
@@ -3611,11 +3640,9 @@ class OfflineAudioPreparationDialog(QDialog):
         saved_status: str | None,
         checked: StoryAudioCheck | None,
     ) -> tuple[str, str, StoryAudioCoverage | None]:
-        status = "in_progress" if saved_status else "not_started"
+        status = "unchecked" if saved_status else "not_started"
         detail = (
-            "checking saved audio"
-            if saved_status == "ready"
-            else "saved progress; continue to finish"
+            "saved preparation found; audio has not been checked yet"
             if saved_status
             else f"{selection.generation_lines} lines need speech"
         )
@@ -3628,9 +3655,7 @@ class OfflineAudioPreparationDialog(QDialog):
             coverage = active
         assert coverage is not None
         status = "in_progress" if coverage.missing else "ready"
-        if coverage.missing and not (
-            coverage.generated or coverage.original or saved_status
-        ):
+        if coverage.missing and not (coverage.generated or coverage.original):
             status = "not_started"
         detail = ", ".join(
             f"{count} {label}"
@@ -4460,6 +4485,7 @@ class OfflineAudioPreparationDialog(QDialog):
             cpu_ms=(process_time() - cpu_started) * 1000,
         )
         started, cpu_started = monotonic(), process_time()
+        self.decoderProgress.emit("Matching character voices...")
         plan = self.voice_plan_store.create(
             job,
             settings,
