@@ -72,12 +72,116 @@ def _set_long_authoring_review(dialog: AuthoringWorkbenchDialog, state: str) -> 
         dialog.review_table.setCurrentCell(1, 7)
 
 
+def _voice_overview_story(
+    dialog: OfflineAudioPreparationDialog, state: str
+) -> OfflineAudioPreparationDialog:
+    compact = state.startswith(("compact-", "many-compact"))
+    state = state.removeprefix("compact-").removesuffix("-actions")
+    plan = dialog._voice_plan
+    assert plan is not None
+    first = plan.groups[0]
+    if state.startswith("many"):
+        groups = tuple(
+            replace(
+                first,
+                group_id=f"overview-{index}",
+                character=f"Northern Library Keeper {index + 1}"
+                if index % 4 == 0
+                else f"Traveler {index + 1}",
+                routing_role=f"Traveler {index + 1}",
+                source_character="The Knight of the Northern Guard"
+                if index % 3 == 0
+                else "Centurion",
+                line_ids=first.line_ids[:1],
+                resolution="saved-player-decision" if index % 2 else first.resolution,
+            )
+            for index in range(24)
+        )
+        plan = replace(plan, groups=groups)
+    if state in {"draft", "missing", "review", "long-narrator"}:
+        dialog.game_narrator_chooser = None
+        dialog.narrator_controls.show()
+        dialog.confirmed_narrator.hide()
+        dialog.edit_confirmed_narrator.hide()
+    if state == "review":
+        plan = replace(
+            plan,
+            groups=(
+                replace(
+                    first,
+                    route="needs-audition",
+                    resolution="ambiguous-voice-evidence",
+                    source_id="preset:alba",
+                    reference_sha256s=(),
+                    narrator_candidate=None,
+                ),
+                *plan.groups[1:],
+            ),
+        )
+    if state == "empty-filter":
+        plan = replace(plan, groups=(replace(first, character="Centurion"),))
+    dialog._voice_plan = plan
+    dialog._show_voice_confirmation(plan)
+    if state in {"draft", "missing"}:
+        dialog.narrator_choice.setCurrentIndex(
+            dialog.narrator_choice.findData("preset:marius") if state == "draft" else 0
+        )
+        dialog.voice_routes.setCurrentRow(dialog.voice_routes.count() - 1)
+    if state == "long-narrator":
+        dialog.narrator_choice.addItem(
+            "The Narrator of the Northern Library and Traveling Company",
+            "character:long-narrator",
+        )
+        dialog.narrator_choice.setCurrentIndex(dialog.narrator_choice.count() - 1)
+        dialog.voice_routes.setCurrentRow(dialog.voice_routes.count() - 1)
+    if state == "empty-filter":
+        dialog.show_all_voice_routes.setChecked(True)
+    if state.endswith("details"):
+        dialog.preparation_details_toggle.setChecked(True)
+        dialog.more_voice_actions_toggle.setChecked(True)
+    if compact:
+        font = dialog.font()
+        font.setPointSize(max(20, font.pointSize() * 2))
+        dialog.setFont(font)
+        dialog.resize(620, 440)
+    return dialog
+
+
 def _prepare_catalog_screenshot(
     widget: QWidget, story_id: str, app: QApplication
 ) -> None:
     from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
     from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 
+    if story_id.startswith(
+        "offline-preparation.voice-overview-compact-"
+    ) and story_id.endswith("-actions"):
+        assert isinstance(widget, OfflineAudioPreparationDialog)
+        widget.content_scroll.verticalScrollBar().setValue(
+            widget.content_scroll.verticalScrollBar().maximum()
+        )
+        app.processEvents()
+    if story_id == "offline-preparation.voice-overview-many-compact-details-end":
+        assert isinstance(widget, OfflineAudioPreparationDialog)
+        widget.content_scroll.verticalScrollBar().setValue(
+            widget.content_scroll.verticalScrollBar().maximum()
+        )
+        app.processEvents()
+    if story_id == "offline-preparation.voice-overview-many-compact-more-actions":
+        assert isinstance(widget, OfflineAudioPreparationDialog)
+        widget.content_scroll.ensureWidgetVisible(widget.more_voice_actions)
+        app.processEvents()
+    if story_id in {
+        "offline-preparation.voice-overview-many-compact-table",
+        "offline-preparation.voice-overview-compact-long-narrator-table",
+    }:
+        assert isinstance(widget, OfflineAudioPreparationDialog)
+        widget.content_scroll.ensureWidgetVisible(widget.voice_routes)
+        app.processEvents()
+    if story_id == "offline-preparation.voice-overview-many-compact-details":
+        assert isinstance(widget, OfflineAudioPreparationDialog)
+        widget.content_scroll.ensureWidgetVisible(widget.voice_engine_details)
+        app.processEvents()
     if story_id == "offline-preparation.voice-confirmation-compact-scrolled":
         assert isinstance(widget, OfflineAudioPreparationDialog)
         widget.content_scroll.verticalScrollBar().setValue(
@@ -2370,6 +2474,88 @@ def _render_stories(
         ),
         "offline-preparation.voice-confirmation-compact-last-route": lambda: (
             offline_preparation("confirmation-compact-last-route")
+        ),
+        "offline-preparation.voice-overview-details": lambda: _voice_overview_story(
+            offline_preparation("confirmation"), "details"
+        ),
+        "offline-preparation.voice-overview-many": lambda: _voice_overview_story(
+            offline_preparation("confirmation"), "many"
+        ),
+        "offline-preparation.voice-overview-many-compact": lambda: (
+            _voice_overview_story(offline_preparation("confirmation"), "many-compact")
+        ),
+        "offline-preparation.voice-overview-many-compact-table": lambda: (
+            _voice_overview_story(
+                offline_preparation("confirmation"), "many-compact-table"
+            )
+        ),
+        "offline-preparation.voice-overview-many-compact-details": lambda: (
+            _voice_overview_story(
+                offline_preparation("confirmation"), "many-compact-details"
+            )
+        ),
+        "offline-preparation.voice-overview-draft": lambda: _voice_overview_story(
+            offline_preparation("confirmation"), "draft"
+        ),
+        "offline-preparation.voice-overview-missing": lambda: _voice_overview_story(
+            offline_preparation("confirmation"), "missing"
+        ),
+        "offline-preparation.voice-overview-review": lambda: _voice_overview_story(
+            offline_preparation("confirmation"), "review"
+        ),
+        "offline-preparation.voice-overview-empty-filter": lambda: (
+            _voice_overview_story(offline_preparation("confirmation"), "empty-filter")
+        ),
+        "offline-preparation.voice-overview-compact-draft": lambda: (
+            _voice_overview_story(offline_preparation("confirmation"), "compact-draft")
+        ),
+        "offline-preparation.voice-overview-compact-missing": lambda: (
+            _voice_overview_story(
+                offline_preparation("confirmation"), "compact-missing"
+            )
+        ),
+        "offline-preparation.voice-overview-compact-review": lambda: (
+            _voice_overview_story(offline_preparation("confirmation"), "compact-review")
+        ),
+        "offline-preparation.voice-overview-compact-draft-actions": lambda: (
+            _voice_overview_story(
+                offline_preparation("confirmation"), "compact-draft-actions"
+            )
+        ),
+        "offline-preparation.voice-overview-compact-missing-actions": lambda: (
+            _voice_overview_story(
+                offline_preparation("confirmation"), "compact-missing-actions"
+            )
+        ),
+        "offline-preparation.voice-overview-compact-review-actions": lambda: (
+            _voice_overview_story(
+                offline_preparation("confirmation"), "compact-review-actions"
+            )
+        ),
+        "offline-preparation.voice-overview-compact-long-narrator": lambda: (
+            _voice_overview_story(
+                offline_preparation("confirmation"), "compact-long-narrator"
+            )
+        ),
+        "offline-preparation.voice-overview-compact-long-narrator-actions": lambda: (
+            _voice_overview_story(
+                offline_preparation("confirmation"), "compact-long-narrator-actions"
+            )
+        ),
+        "offline-preparation.voice-overview-many-compact-details-end": lambda: (
+            _voice_overview_story(
+                offline_preparation("confirmation"), "many-compact-details"
+            )
+        ),
+        "offline-preparation.voice-overview-many-compact-more-actions": lambda: (
+            _voice_overview_story(
+                offline_preparation("confirmation"), "many-compact-details"
+            )
+        ),
+        "offline-preparation.voice-overview-compact-long-narrator-table": lambda: (
+            _voice_overview_story(
+                offline_preparation("confirmation"), "compact-long-narrator"
+            )
         ),
         "offline-preparation.partial-ready": lambda: offline_preparation(
             "partial-ready"

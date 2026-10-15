@@ -579,6 +579,13 @@ Planned implementation order after approval:
       unsupported effects remain explicit omissions.
 ## Active - Voice-picker accessibility verification
 
+- [ ] On supported macOS and Windows desktops, exercise the selected-story voice
+      overview at minimum width and 200% text with keyboard and VoiceOver/NVDA.
+      Traverse the table, selected reference details, More actions and Preparation
+      details; require full values/actions to be reachable, the selected group to
+      remain announced, and Copy to preserve complete details. Change to an imported
+      narrator before Update and listen; require the current narrator's original
+      recording. Retain native screenshots and a screen-reader/audio trace.
 - [ ] Diagnose the Windows Mrs. Owen original-reference silence. Record the
       selected reference checksum and authoring playback queued/started/finished/
       failed states in support bundles without recording audio or dialogue. The

@@ -1579,9 +1579,9 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             assert card is not None
             labels = [label.text() for label in card.findChildren(QLabel)]
             self.assertEqual(labels[0], group.character)
-            self.assertEqual(labels[1], "Narrator fallback until reviewed")
-            self.assertEqual(labels[2], "voice choice needed")
-            self.assertIn("lines", labels[3])
+            self.assertEqual(labels[1], "Narrator required")
+            self.assertEqual(labels[2], "automatic (review optional)")
+            self.assertEqual(labels[3], str(len(group.line_ids)))
             self.assertEqual(item.text(), "")
             self.assertIn(
                 group.character,
@@ -1601,7 +1601,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 dialog._voice_route_item(
                     narrator_fallback, show_portraits=False, suggested_link=False
                 ).data(int(Qt.ItemDataRole.UserRole) + 2)[2],
-                "automatic fallback",
+                "automatic",
             )
             self.assertEqual(
                 dialog._voice_route_item(
@@ -1765,19 +1765,19 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             dialog.show_all_voice_routes.setChecked(True)
             self.assertEqual(dialog.voice_routes.count(), 2)
             self.assertIn(
-                "1 voice uses Narrator until reviewed",
+                "Optional voice review: 1 assignment",
                 dialog.voice_route_summary.text(),
             )
-            self.assertIn("font-weight: 600", dialog.voice_route_summary.styleSheet())
+            self.assertTrue(dialog.voice_route_summary.font().bold())
             for row in range(dialog.voice_routes.count()):
                 item = dialog.voice_routes.item(row)
                 accessible_text = item.data(Qt.ItemDataRole.AccessibleTextRole)
                 if item.data(Qt.ItemDataRole.UserRole) == "Rhiannon":
                     self.assertTrue(accessible_text.startswith("REVIEW VOICE: "))
-                    self.assertIn("Narrator fallback until reviewed", accessible_text)
+                    self.assertIn("Narrator required", accessible_text)
                     self.assertTrue(item.font().bold())
                     self.assertIn(
-                        "Inspect selected voice",
+                        "Listen or change voice",
                         item.data(Qt.ItemDataRole.AccessibleDescriptionRole),
                     )
                 if item.data(Qt.ItemDataRole.UserRole) == "Aderyn":
