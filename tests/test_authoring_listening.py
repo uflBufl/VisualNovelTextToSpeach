@@ -1458,9 +1458,10 @@ class AuthoringListeningDialogTest(unittest.TestCase):
 
     def create_dialog(self, root, **kwargs):
         item_count = kwargs.pop("item_count", 1)
-        kwargs.setdefault("confirmer", lambda _preference: True)
         session = create_listening_session_from_reports(
-            write_model_reports(root, item_count=item_count), root / "session"
+            write_model_reports(root, item_count=item_count),
+            root / "session",
+            evaluation_goal=kwargs.pop("evaluation_goal", "synthesis-quality"),
         )
         playback = FakePlayback()
         dialog = ModelListeningDialog(
@@ -1490,8 +1491,9 @@ class AuthoringListeningDialogTest(unittest.TestCase):
 
             self.assertEqual(load_listening_session(session)["completed_count"], 1)
             self.assertIsNone(dialog.current_trial)
-            self.assertEqual(dialog.progress.text(), "Completed 1 of 1 | Remaining 0")
-            self.assertEqual(dialog.trial_heading.text(), "All 1 trials reviewed")
+            self.assertEqual(dialog.progress.text(), "1 / 1 rated")
+            self.assertTrue(dialog.current_trial_card.isHidden())
+            self.assertEqual(dialog.status.text(), "Session complete. Results saved.")
             self.assertTrue(session.with_name("report.json").is_file())
             self.assertTrue(dialog.play_a.isHidden())
             self.assertTrue(dialog.prefer_a.isHidden())
@@ -1516,8 +1518,8 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             dialog.activateWindow()
             self.application.processEvents()
 
-            self.assertEqual(dialog.progress.text(), "Completed 0 of 3 | Remaining 3")
-            self.assertEqual(dialog.trial_heading.text(), "Trial 1 of 3 | line-0")
+            self.assertEqual(dialog.progress.text(), "Comparison 1 of 3")
+            self.assertIn("Line: line-0", dialog.decision_context.technical.text())
             self.assertIn(
                 "blind comparison",
                 dialog.decision_context.values["model"],
@@ -1529,7 +1531,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertEqual(
                 dialog.dialogue.toPlainText(), "Shared listening line 0 ..."
             )
-            self.assertIn("Decision locked", dialog.decision_reason.text())
+            self.assertIn("Listen to A and B", dialog.decision_reason.text())
             self.assertEqual(dialog.play_a.shortcut().toString(), "Ctrl+1")
             self.assertEqual(dialog.play_b.shortcut().toString(), "Ctrl+2")
             self.assertEqual(dialog.neither.shortcut().toString(), "Ctrl+Shift+N")
@@ -1537,7 +1539,6 @@ class AuthoringListeningDialogTest(unittest.TestCase):
                 dialog.progress,
                 dialog.context_toggle,
                 dialog.review_scroll,
-                dialog.trial_heading,
                 dialog.dialogue,
                 dialog.current_trial_card,
                 dialog.now_playing,
@@ -1552,6 +1553,10 @@ class AuthoringListeningDialogTest(unittest.TestCase):
                 dialog.neither,
                 dialog.decision_reason,
                 dialog.status,
+                dialog.goal_guidance,
+                dialog.goal_card,
+                dialog.goal_title,
+                dialog.goal_summary,
             ):
                 self.assertTrue(widget.accessibleName(), type(widget).__name__)
 
@@ -1564,7 +1569,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             dialog.playback.finish()
             dialog.poll_playback()
             self.assertTrue(dialog.prefer_a.isEnabled())
-            self.assertIn("Decision ready", dialog.decision_reason.text())
+            self.assertEqual(dialog.decision_reason.text(), "Choose a result.")
             dialog.save_preference = Mock()
             dialog.prefer_a.setFocus()
             QTest.keyClick(dialog.prefer_a, Qt.Key.Key_Return)
@@ -1590,6 +1595,12 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertTrue(dialog.dialogue.isVisibleTo(dialog))
             self.assertTrue(dialog.play_a.isVisibleTo(dialog))
             self.assertTrue(dialog.play_b.isVisibleTo(dialog))
+            self.assertEqual(
+                dialog.goal_summary.fontMetrics().height(),
+                dialog.fontMetrics().height(),
+            )
+            dialog.play_a.setFocus()
+            self.application.processEvents()
             self.assertLessEqual(
                 dialog.play_a.mapTo(dialog.review_scroll.viewport(), QPoint(0, 0)).y()
                 + dialog.play_a.height(),
@@ -1620,6 +1631,79 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             )
             dialog.close()
 
+    def test_short_goal_stays_visible_and_detailed_instructions_start_collapsed(self):
+        with TemporaryDirectory() as directory:
+            _session, dialog = self.create_dialog(Path(directory))
+            dialog.show()
+            self.application.processEvents()
+
+            self.assertEqual(
+                dialog.goal_title.text(), "Evaluation goal: Synthesis quality"
+            )
+            self.assertEqual(
+                dialog.goal_summary.text(), "Natural speech without audible defects."
+            )
+            self.assertTrue(dialog.goal_card.isVisibleTo(dialog))
+            self.assertFalse(dialog.context_toggle.isChecked())
+            self.assertFalse(dialog.goal_guidance.isVisibleTo(dialog))
+            self.assertNotIn("Both acceptable", dialog.goal_summary.text())
+            dialog.context_toggle.click()
+            self.assertTrue(dialog.goal_guidance.isVisibleTo(dialog))
+            dialog.context_toggle.setFocus()
+            QTest.keyClick(dialog.context_toggle, Qt.Key.Key_Tab)
+            self.assertTrue(dialog.goal_guidance.hasFocus())
+            for criterion in (
+                "Extra or missing words",
+                "cut-off speech",
+                "repetitions",
+                "Noise",
+                "distortion",
+                "Different voice timbres can be equally good",
+                "Both acceptable",
+                "Neither acceptable",
+            ):
+                self.assertIn(criterion, dialog.goal_guidance.text())
+            dialog.context_toggle.setFocus()
+            QTest.keyClick(dialog.context_toggle, Qt.Key.Key_Space)
+            self.assertFalse(dialog.goal_guidance.isVisibleTo(dialog))
+            dialog.resize(640, 400)
+            self.application.processEvents()
+            self.assertTrue(dialog.goal_card.isVisibleTo(dialog))
+            self.assertLess(
+                dialog.goal_card.geometry().bottom(), dialog.decision_reason.y()
+            )
+            dialog.close()
+
+    def test_overall_preference_session_shows_its_own_criterion(self):
+        with TemporaryDirectory() as directory:
+            _session, dialog = self.create_dialog(
+                Path(directory), evaluation_goal="overall-preference"
+            )
+            self.assertIn("Overall preference", dialog.goal_title.text())
+            self.assertIn("voice you prefer overall", dialog.goal_summary.text())
+            self.assertIn("voice you prefer overall", dialog.goal_guidance.text())
+            self.assertEqual(
+                dialog.decision_context.values["purpose"], "Overall preference"
+            )
+            dialog.close()
+
+    def test_session_without_recorded_goal_is_not_relabelled_as_quality(self):
+        with TemporaryDirectory() as directory:
+            session, initial = self.create_dialog(Path(directory))
+            initial.close()
+            document = json.loads(session.read_text())
+            document.pop("evaluation_goal")
+            session.write_text(json.dumps(document))
+            before = session.read_bytes()
+            dialog = ModelListeningDialog(
+                session, auto_play=False, playback_factory=FakePlayback
+            )
+
+            self.assertIn("Not recorded", dialog.goal_title.text())
+            self.assertIn("did not record", dialog.goal_guidance.text())
+            self.assertEqual(session.read_bytes(), before)
+            dialog.close()
+
     def test_complete_report_stays_visible_with_large_text(self):
         with TemporaryDirectory() as directory:
             session, dialog = self.create_dialog(Path(directory))
@@ -1631,13 +1715,11 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             dialog.show()
             self.application.processEvents()
 
-            viewport = dialog.review_scroll.viewport()
-            status_bottom = dialog.status.mapTo(viewport, QPoint(0, 0)).y()
-            status_bottom += dialog.status.height()
-            report_bottom = dialog.open_report.mapTo(viewport, QPoint(0, 0)).y()
-            report_bottom += dialog.open_report.height()
-            self.assertLessEqual(status_bottom, viewport.height())
-            self.assertLessEqual(report_bottom, viewport.height())
+            for widget in (dialog.status, dialog.open_report):
+                self.assertTrue(widget.isVisibleTo(dialog))
+                self.assertLessEqual(
+                    widget.geometry().bottom(), dialog.contentsRect().bottom()
+                )
             dialog.close()
 
     def test_neither_acceptable_button_persists_distinct_verdict(self):
@@ -1649,32 +1731,84 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.wait_for(lambda: not dialog._preference_active)
 
             rating = load_listening_session(session)["trials"][0]["rating"]
-            self.assertIn("No preference leader", dialog.status.text())
+            self.assertEqual(dialog.status.text(), "Session complete. Results saved.")
 
         self.assertEqual(rating["preference"], "tie")
         self.assertEqual(rating["acceptability"], "neither")
 
-    def test_equal_preference_result_does_not_claim_single_leader(self):
+    def test_completion_keeps_model_ranking_in_the_report(self):
         with TemporaryDirectory() as directory:
             session, dialog = self.create_dialog(Path(directory))
             record_trial_preference(session, dialog.current_trial["trial_id"], "tie")
             dialog.load_next_trial()
 
-            self.assertIn("Top preference is tied", dialog.status.text())
+            self.assertEqual(dialog.status.text(), "Session complete. Results saved.")
+            report = json.loads(session.with_name("report.json").read_text())
+            for model in report["models"]:
+                self.assertNotIn(model["model_id"], dialog.status.text())
+                self.assertEqual(model["preference"]["ties"], 1)
             dialog.close()
 
-    def test_irreversible_preference_can_be_cancelled(self):
+    def test_each_choice_saves_directly_without_modal_confirmation(self):
+        for choice in ("a", "b", "tie", "neither"):
+            with self.subTest(choice=choice), TemporaryDirectory() as directory:
+                session, dialog = self.create_dialog(Path(directory))
+                self.assertEqual(
+                    dialog.decision_notice.accessibleName(),
+                    "Blind decision permanence",
+                )
+                self.assertIn("no undo", dialog.decision_notice.text())
+                self.assertIn(
+                    "cannot be changed", dialog.decision_notice.accessibleDescription()
+                )
+                for side in ("a", "b"):
+                    dialog.play(side)
+                    dialog.playback.finish()
+                    dialog.poll_playback()
+                button = {
+                    "a": dialog.prefer_a,
+                    "b": dialog.prefer_b,
+                    "tie": dialog.tie,
+                    "neither": dialog.neither,
+                }[choice]
+                with patch(
+                    "vntts.authoring.listening_ui.QMessageBox.question",
+                    side_effect=AssertionError("Unexpected choice confirmation"),
+                ):
+                    button.click()
+                    self.wait_for(lambda: not dialog._preference_active)
+                rating = load_listening_session(session)["trials"][0]["rating"]
+                self.assertEqual(
+                    rating["preference"], "tie" if choice == "neither" else choice
+                )
+                if choice == "neither":
+                    self.assertEqual(rating["acceptability"], "neither")
+                self.assertIsNone(dialog.current_trial)
+                self.assertTrue(dialog.decision_notice.isHidden())
+                dialog.deleteLater()
+
+    def test_normal_playback_has_one_state_and_one_action_hint(self):
         with TemporaryDirectory() as directory:
-            _session, dialog = self.create_dialog(
-                Path(directory), confirmer=lambda _preference: False
+            _session, dialog = self.create_dialog(Path(directory))
+            self.assertTrue(dialog.status.isHidden())
+            self.assertTrue(dialog.now_playing.isHidden())
+            dialog.play("a")
+            self.assertEqual(dialog.now_playing.text(), "Loading A...")
+            self.assertEqual(dialog.play_a.text(), "Play A")
+            self.assertTrue(dialog.status.isHidden())
+            dialog.playback.finish()
+            dialog.poll_playback()
+            self.assertEqual(
+                dialog.decision_reason.text(), "Listen to B in full to rate."
             )
-            dialog.completed_sides = {"a", "b"}
-
-            dialog.save_preference("a")
-
-            self.assertFalse(dialog._preference_active)
-            self.assertIn("cancelled", dialog.status.text())
-            dialog.deleteLater()
+            self.assertTrue(dialog.now_playing.isHidden())
+            dialog.play("b")
+            dialog.playback.finish()
+            dialog.poll_playback()
+            self.assertEqual(dialog.decision_reason.text(), "Choose a result.")
+            self.assertTrue(dialog.status.isHidden())
+            self.assertTrue(dialog.now_playing.isHidden())
+            dialog.close()
 
     def test_autoplays_a_then_b_and_tracks_controls(self):
         with TemporaryDirectory() as directory:
@@ -1731,9 +1865,9 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             QTest.mouseClick(
                 dialog.seek,
                 Qt.MouseButton.LeftButton,
-                pos=QPoint(dialog.seek.width() * 3 // 4, dialog.seek.height() // 2),
+                pos=QPoint(dialog.seek.width() // 2, dialog.seek.height() // 2),
             )
-            self.assertAlmostEqual(dialog.seek.value(), 90_000, delta=2_000)
+            self.assertAlmostEqual(dialog.seek.value(), 60_000, delta=2_000)
             dialog.deleteLater()
 
     def test_rapid_switch_reuses_one_persistent_playback_stream(self):
@@ -1757,9 +1891,10 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             dialog.playback.finish(underflowed=True)
             dialog.poll_playback()
             self.assertNotIn("b", dialog.completed_sides)
-            self.assertIn("underflowed", dialog.status.text())
-
-            dialog.play("b")
+            self.assertIn("interrupted", dialog.status.text())
+            self.assertEqual(dialog.stop.text(), "Replay")
+            dialog.toggle_playback()
+            self.assertTrue(dialog.status.isHidden())
             dialog.playback.finish()
             dialog.poll_playback()
             self.assertIn("b", dialog.completed_sides)
@@ -1783,13 +1918,15 @@ class AuthoringListeningDialogTest(unittest.TestCase):
 
             self.assertNotIn("a", dialog.completed_sides)
             self.assertFalse(dialog.prefer_a.isEnabled())
-            self.assertIn("without seeking", dialog.decision_reason.text())
+            self.assertIn("without skipping", dialog.decision_reason.text())
 
             dialog.play("a")
             dialog.playback.finish()
             dialog.poll_playback()
             self.assertEqual(dialog.completed_sides, {"a"})
-            self.assertIn("sample B", dialog.decision_reason.text())
+            self.assertEqual(
+                dialog.decision_reason.text(), "Listen to B in full to rate."
+            )
 
             dialog.play("b")
             dialog.playback.finish()
@@ -1856,7 +1993,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
                     self.assertEqual("a" in dialog.completed_sides, not underflow)
                     self.assertFalse(dialog.prefer_a.isEnabled())
                     if underflow:
-                        self.assertIn("underflowed", dialog.status.text())
+                        self.assertIn("interrupted", dialog.status.text())
                     dialog.play("a")
                     audio.stream.pump(800)
                     audio.stream.time += audio.latency
@@ -1907,9 +2044,9 @@ class AuthoringListeningDialogTest(unittest.TestCase):
                     dialog.neither,
                 ):
                     self.assertFalse(button.isEnabled())
-                    self.assertIn("Decision saving", button.accessibleDescription())
-                self.assertIn("Decision saving", dialog.decision_reason.text())
-                self.assertIn("Decision saving", dialog.status.text())
+                    self.assertIn("Saving choice", button.accessibleDescription())
+                self.assertIn("Saving choice", dialog.decision_reason.text())
+                self.assertTrue(dialog.status.isHidden())
                 dialog.save_preference("b")
                 self.assertEqual(attempts, 1)
             finally:
@@ -1949,13 +2086,14 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertTrue(dialog._preference_active)
             self.assertFalse(dialog.prefer_a.isEnabled())
             self.assertTrue(dialog.play_a.isEnabled())
-            self.assertIn("Saving preference", dialog.status.text())
+            self.assertIn("Saving choice", dialog.decision_reason.text())
+            self.assertTrue(dialog.status.isHidden())
             close_event = QCloseEvent()
             dialog.closeEvent(close_event)
             self.assertFalse(close_event.isAccepted())
             dialog.reject()
             self.assertTrue(dialog._close_pending)
-            self.assertIn("Close is deferred", dialog.status.text())
+            self.assertIn("before closing", dialog.status.text())
 
             release.set()
             self.wait_for(lambda: not dialog._preference_active)
@@ -1984,6 +2122,11 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertTrue(dialog.prefer_a.isEnabled())
             self.assertEqual(load_listening_session(session)["completed_count"], 0)
 
+            dialog.play("b")
+            dialog.playback.finish()
+            dialog.poll_playback()
+            self.assertIn("Choose again to retry", dialog.status.text())
+            self.assertFalse(dialog.status.isHidden())
             dialog.save_preference("a")
             self.wait_for(lambda: not dialog._preference_active)
             self.assertEqual(load_listening_session(session)["completed_count"], 1)

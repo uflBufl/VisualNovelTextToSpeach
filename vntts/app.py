@@ -3635,6 +3635,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog = GameNarratorDialog(
             settings,
             self.dashboard,
+            preview_service=self.voice_auditions.session(),
             use_offline_engine=for_preparation,
         )
         if for_preparation and self.pregeneration_dialog is not None:

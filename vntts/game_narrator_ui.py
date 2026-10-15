@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from functools import partial
+from hashlib import sha256
 from pathlib import Path
 from threading import Event
 from traceback import format_exception
-from typing import TypeGuard
+from typing import TypeGuard, cast
 
-from PySide6.QtCore import QSignalBlocker, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QPixmap, QStandardItemModel
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
@@ -31,7 +32,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from vntts_artifacts.voice_manifest import VoiceManifestError
+from vntts_artifacts.voice_manifest import VoiceManifestError, write_voice_manifest
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.cleanup import temporary_directory
@@ -44,10 +45,13 @@ from vntts.game_narrator import (
     load_original_reference,
     narrator_preview_plan,
 )
+from vntts.path_safety import read_regular_bytes
 from vntts.pregeneration_audition import (
+    COMPARISON_PREVIEW_TEXT,
     VoiceAuditionPreview,
     VoiceAuditionPreviewService,
 )
+from vntts.pregeneration_audition_queue import VoiceAuditionSession
 from vntts.pregeneration_setup import GameContent, PregenerationJobStore
 from vntts.pregeneration_voices import (
     UNLINKED_BANK_LABEL,
@@ -80,6 +84,8 @@ from vntts.voices import (
     is_narrator,
     normalize_character_name,
     pocket_tts_preset_voices,
+    read_voice_reference_bytes,
+    registry_with_voice_library,
     remember_voice_binding,
 )
 
@@ -118,7 +124,9 @@ class GameNarratorDialog(QDialog):
         parent: QWidget | None = None,
         *,
         importer: Reverse1999GameImporter | None = None,
-        preview_service: VoiceAuditionPreviewService | None = None,
+        preview_service: VoiceAuditionPreviewService
+        | VoiceAuditionSession
+        | None = None,
         thread_pool: QThreadPool | None = None,
         player: QtPcmPlayer | None = None,
         binder: Binder = bind_voice_library_selection,
@@ -150,7 +158,7 @@ class GameNarratorDialog(QDialog):
         self,
         settings: AppSettings,
         importer: Reverse1999GameImporter | None,
-        preview_service: VoiceAuditionPreviewService | None,
+        preview_service: VoiceAuditionPreviewService | VoiceAuditionSession | None,
         binder: Binder,
         player: QtPcmPlayer | None,
         thread_pool: QThreadPool | None,
@@ -188,9 +196,13 @@ class GameNarratorDialog(QDialog):
         self._warming_reference: str | None = None
         self._queued_action: str | None = None
         self._playback_requested = False
+        self._playback_ready = False
         self._closing = False
         self._closed = False
         self._preview_reused = False
+        self._preview_identity: tuple[object, ...] | None = None
+        self._prefetch_identity: tuple[object, ...] | None = None
+        self._prefetch_plan: VoicePlan | None = None
         self._catalog_manifest = (
             settings.voice_manifest or find_default_voice_manifest()
         )
@@ -383,16 +395,16 @@ class GameNarratorDialog(QDialog):
 
     def _build_preview_controls(self) -> None:
         form = self.form
-        self.text = QPlainTextEdit("The storm has passed. We can continue our journey.")
+        self.text = QPlainTextEdit(COMPARISON_PREVIEW_TEXT)
         self.text.setAccessibleName("Text to generate with the selected voice")
         self.text.setTabChangesFocus(True)
         line_height = self.text.fontMetrics().lineSpacing()
         self.text.setMinimumHeight(line_height * 3 + 16)
         self.text.setMaximumHeight(line_height * 5 + 20)
-        self.preview_button = QPushButton("Generate preview")
-        self.preview_button.setAccessibleName("Generate and play voice preview")
+        self.preview_button = QPushButton("Play preview")
+        self.preview_button.setAccessibleName("Play voice preview")
         self.preview_button.setToolTip(
-            "Generate speech for this candidate, or replay its saved preview."
+            "Play the saved preview, or prepare it if this voice and text are new."
         )
         self.preview_button.clicked.connect(self._preview)
         action_width = max(
@@ -540,6 +552,9 @@ class GameNarratorDialog(QDialog):
         self.catalog_choice.currentIndexChanged.connect(self._settings_choice_changed)
         self.catalog_choice.currentIndexChanged.connect(self._catalog_reference_changed)
         self.consent.toggled.connect(self._settings_choice_changed)
+        self.consent.toggled.connect(self._stop_audio)
+        self.text.textChanged.connect(self._stop_audio)
+        self.exact_transcript.textChanged.connect(self._stop_audio)
         self.references.currentIndexChanged.connect(self._reference_choice_changed)
         tab_order = (
             self.role,
@@ -576,7 +591,11 @@ class GameNarratorDialog(QDialog):
         for label in labels:
             label.setMinimumWidth(label_width)
         self._update()
-        QTimer.singleShot(0, self, self._source_changed)
+        QTimer.singleShot(0, self, self._initialize_source)
+
+    def _initialize_source(self) -> None:
+        if self._operation is None:
+            self._source_changed()
 
     def select_role(self, role: str) -> bool:
         """Select a trusted application-provided role without enabling free-form UI."""
@@ -1074,12 +1093,22 @@ class GameNarratorDialog(QDialog):
                 "This engine is not included in this package. "
                 "Choose an available engine in Settings."
             )
-        if self.source.currentData() == "preset" and backend != "pocket-tts":
+        if (
+            self.source.currentData() == "preset" or self._narrator_uses_preset()
+        ) and backend != "pocket-tts":
             return (
                 "Built-in voices require Pocket TTS. "
                 "Choose a game voice or change the engine in Settings."
             )
         return ""
+
+    def _narrator_uses_preset(self) -> bool:
+        return self.source.currentData() == "narrator" and (
+            pregeneration_narrator_source_id(
+                self._settings().updated(pocket_gated_model_accepted=True),
+                voice_library=self.voice_library,
+            ).startswith("preset:")
+        )
 
     def _source_changed(self) -> None:
         if self._closing or self._closed:
@@ -1099,21 +1128,24 @@ class GameNarratorDialog(QDialog):
             )
         if catalog and self.settings_value.speech_backend == "qwen-tts":
             self._catalog_reference_changed()
-        self.form.setRowVisible(self.preview_row, not policy)
+        self.form.setRowVisible(
+            self.preview_row, self.source.currentData() != "automatic"
+        )
         self.status.setText(
             "Save to restore automatic character matching. Existing recordings keep priority."
             if self.source.currentData() == "automatic"
-            else "Missing recordings will use your saved narrator. Select Narrator above to preview that voice."
+            else "Missing recordings will use your saved narrator. Play its preview before saving."
             if policy
-            else "Choose an imported voice. Play its original or generate a preview before saving."
+            else "Choose an imported voice. Play its original or preview before saving."
             if catalog
-            else "Built-in voices need no game references or Hugging Face account. Generate a preview, then save."
+            else "Built-in voices need no game references or Hugging Face account. Play a preview, then save."
             if preset
             else "Choose a game character and load an original reference."
         )
         self._update()
         if not self._engine_available() or (
-            preset and self.settings_value.speech_backend != "pocket-tts"
+            (preset or self._narrator_uses_preset())
+            and self.settings_value.speech_backend != "pocket-tts"
         ):
             self.status.setText(self._engine_guidance_text())
         if (
@@ -1137,6 +1169,7 @@ class GameNarratorDialog(QDialog):
         preset = self.source.currentData() == "preset"
         catalog = self.source.currentData() == "catalog"
         policy = self.source.currentData() in {"automatic", "narrator"}
+        narrator_preset = self._narrator_uses_preset()
         available = self._engine_available()
         allowed = (
             policy
@@ -1149,32 +1182,58 @@ class GameNarratorDialog(QDialog):
             else preset or policy or bool(self.references.currentData())
         )
         idle = not self.runner.active and not self._closed and not self._closing
+        browsing = idle or (
+            self.runner.active
+            and self._operation == "preview"
+            and not self._closed
+            and not self._closing
+        )
         warming = self.runner.active and self._operation == "warm"
-        self.role.setEnabled(idle)
-        self.catalog_choice.setEnabled(idle)
+        self.role.setEnabled(browsing)
+        self.catalog_choice.setEnabled(browsing)
         model = self.source.model()
         if isinstance(model, QStandardItemModel):
             model.item(self.source.findData("preset")).setEnabled(pocket)
-        self.presets.setEnabled(idle)
-        self.consent.setEnabled(idle)
-        self.text.setEnabled(idle)
-        self.terms.setVisible(pocket and not preset and not policy)
-        self.consent.setVisible(pocket and not preset and not policy)
-        self.characters.setEnabled(idle)
-        self.source.setEnabled(idle)
+        self.presets.setEnabled(browsing)
+        self.consent.setEnabled(browsing)
+        self.text.setEnabled(browsing)
+        cloning = (
+            pocket
+            and not preset
+            and not narrator_preset
+            and (self.source.currentData() != "automatic")
+        )
+        self.terms.setVisible(cloning)
+        self.consent.setVisible(cloning)
+        self.characters.setEnabled(browsing)
+        self.source.setEnabled(browsing)
         self.discover_button.setEnabled(idle)
         self.folder_button.setEnabled(idle)
         self.original_button.setEnabled(
-            ready and not preset and not policy and (idle or warming)
+            ready and not preset and not policy and (browsing or warming)
         )
         self.original_button.setToolTip(
             "Built-in voices have no original game reference."
             if preset
             else "Play the original recording, not generated speech."
         )
-        self.catalog_original_button.setEnabled(catalog and ready and idle)
+        self.catalog_original_button.setEnabled(catalog and ready and browsing)
         self.preview_button.setEnabled(
-            ready and allowed and not policy and (idle or warming)
+            ready
+            and available
+            and (pocket or not (preset or narrator_preset))
+            and (not pocket or preset or narrator_preset or self.consent.isChecked())
+            and self.source.currentData() != "automatic"
+            and (browsing or warming)
+        )
+        self.preview_button.setText(
+            "Play narrator preview"
+            if self.source.currentData() == "narrator"
+            else "Play preview"
+        )
+        self.preview_button.setToolTip(
+            self._engine_guidance_text()
+            or "Play the saved preview, or prepare it if this voice and text are new."
         )
         self.save_button.setEnabled(
             ready
@@ -1355,17 +1414,21 @@ class GameNarratorDialog(QDialog):
         self._save()
 
     def _refresh_runtime(self) -> None:
+        self._prefetch_selected()
+        background_preparing = getattr(self.previews, "preparing", False) is True
         if self._operation == "preview":
             message = (
                 "Saved preview: no generation for this playback."
                 if self._preview_reused
                 else speech_runtime_label(getattr(self.previews, "backend", None))
             )
+        elif background_preparing:
+            message = "Preparing voice samples in the background. You can browse and play ready samples."
         else:
             message = "No preview generation. Original recordings play without TTS."
         self.runtime.setText(compact_runtime_label(message))
         self.runtime.setToolTip(message)
-        self.runtime.setVisible(self._operation == "preview")
+        self.runtime.setVisible(self._operation == "preview" or background_preparing)
 
     def _start(
         self,
@@ -1377,14 +1440,20 @@ class GameNarratorDialog(QDialog):
         if self.runner.active:
             return
         self.player.stop()
-        self.cancellation.clear()
+        self.cancellation = Event()
         self._operation = operation
+        self._preview_identity = (
+            self._current_preview_identity() if operation == "preview" else None
+        )
         self._preview_reused = False
+        self._playback_ready = False
         self.status.setText(message)
-        self.controls.setEnabled(operation == "warm")
+        self.controls.setEnabled(operation in {"warm", "preview"})
         self.progress.show()
         self.cancel_button.setText("Cancel and close")
         self.cancel_button.adjustSize()
+        if operation == "preview":
+            arguments = (*arguments, self.cancellation)
         self.runner.start(function, *arguments)
         self._update()
 
@@ -1659,6 +1728,9 @@ class GameNarratorDialog(QDialog):
             )
         self._queued_action = None
         self._playback_requested = False
+        self._playback_ready = False
+        if self.runner.active and self._operation == "preview":
+            self.cancellation.set()
 
     def _warm_selected(self) -> None:
         reference = self.references.currentData()
@@ -1705,20 +1777,28 @@ class GameNarratorDialog(QDialog):
         reference_transcript = self.exact_transcript.text().strip()
         if operation != "audio" and (
             not self._engine_available()
-            or self.source.currentData() == "preset"
+            or (self.source.currentData() == "preset" or self._narrator_uses_preset())
             and self.settings_value.speech_backend != "pocket-tts"
         ):
             self.status.setText(self._engine_guidance_text())
             return
         if (
             operation != "audio"
-            and self.source.currentData() in {"game", "catalog"}
+            and self.source.currentData() in {"game", "catalog", "narrator"}
             and self.settings_value.speech_backend == "pocket-tts"
             and not self.consent.isChecked()
+            and not self._narrator_uses_preset()
         ):
             self.status.setText(
                 "Accept Pocket's terms before generating or saving a game voice."
             )
+            return
+        if operation == "preview":
+            self._request_preview(reference_transcript)
+            return
+        if self.runner.active and self._operation == "preview":
+            self.cancellation.set()
+            self._queued_action = operation
             return
         if self.source.currentData() == "catalog":
             self._playback_requested = operation in {"audio", "preview"}
@@ -1764,6 +1844,268 @@ class GameNarratorDialog(QDialog):
             reference_transcript,
         )
 
+    def _prefetch_selected(self) -> None:
+        if (
+            getattr(self.previews, "supports_prefetch", False) is not True
+            or self._closing
+            or self._closed
+            or self._initializing
+            or self.source.currentData() in {"automatic", "narrator"}
+            or not self._engine_available()
+        ):
+            return
+        identity = self._current_preview_identity()
+        if identity == self._prefetch_identity:
+            return
+        settings = self._settings()
+        source = self.source.currentData()
+        if (
+            settings.speech_backend == "pocket-tts"
+            and source != "preset"
+            and not settings.pocket_gated_model_accepted
+        ):
+            return
+        source_id = (
+            self.catalog_choice.currentData()
+            if source == "catalog"
+            else self.presets.currentData()
+            if source == "preset"
+            else self.references.currentData()
+        )
+        manifest = (
+            self._catalog_manifest
+            if source == "catalog"
+            else None
+            if source == "preset"
+            else self._prepared.get(source_id)
+        )
+        try:
+            plan = narrator_preview_plan(
+                settings,
+                manifest,
+                source_id,
+                self.text.toPlainText().strip(),
+                self.exact_transcript.text().strip(),
+            )
+        except OSError, ValueError:
+            return
+        self._prefetch_identity = identity
+        self._prefetch_plan = plan
+        cast(VoiceAuditionSession, self.previews).prefetch(
+            plan, ((plan.groups[0], source_id, None),)
+        )
+
+    def _current_preview_identity(self) -> tuple[object, ...]:
+        return (
+            self.role.currentText(),
+            self.source.currentData(),
+            self._character,
+            self.catalog_choice.currentData(),
+            self.references.currentData(),
+            self.presets.currentData(),
+            self.text.toPlainText().strip(),
+            self.exact_transcript.text().strip(),
+            self._settings(),
+            repr(self.voice_library.binding("Narrator"))
+            if self.source.currentData() == "narrator"
+            else None,
+        )
+
+    def _request_preview(self, transcript: str) -> None:
+        if self.runner.active and self._operation not in {"warm", "preview"}:
+            return
+        settings = self._settings()
+        source = self.source.currentData()
+        source_id = (
+            self.catalog_choice.currentData()
+            if source == "catalog"
+            else self.presets.currentData()
+            if source == "preset"
+            else self.references.currentData()
+        )
+        manifest = (
+            self._catalog_manifest
+            if source == "catalog"
+            else None
+            if source == "preset"
+            else self._prepared.get(source_id)
+        )
+        text = self.text.toPlainText().strip()
+        if source != "narrator" and (
+            getattr(self.previews, "supports_prefetch", False) is True
+        ):
+            try:
+                plan = (
+                    self._prefetch_plan
+                    if self._prefetch_identity == self._current_preview_identity()
+                    else narrator_preview_plan(
+                        settings, manifest, source_id, text, transcript
+                    )
+                )
+                ready = (
+                    cast(VoiceAuditionSession, self.previews).peek(
+                        plan, plan.groups[0], source_id
+                    )
+                    if plan is not None
+                    else None
+                )
+            except OSError, ValueError:
+                ready = None
+            if ready is not None:
+                if self.runner.active and self._operation == "preview":
+                    self.cancellation.set()
+                self._operation = self._operation if self.runner.active else "preview"
+                self._queued_action = None
+                self._playback_requested = True
+                self._finish_playback("preview", ready)
+                return
+        if (
+            source == "narrator"
+            and self.runner.active
+            and self._operation == "preview"
+            and self._preview_identity is not None
+            and self._preview_identity[1] != "narrator"
+            and getattr(self.previews, "supports_prefetch", False) is True
+        ):
+            # The session checks disk audio independently of the displaced render.
+            self.cancellation.set()
+            self.runner.cancel()
+            self._queued_action = None
+        if self.runner.active:
+            if self._operation == "preview":
+                self.cancellation.set()
+            self._queued_action = "preview"
+            self.status.setText(
+                "Waiting for the previous request. You can browse voices."
+            )
+            return
+        self._playback_requested = True
+        if source == "narrator":
+            self._start(
+                "preview",
+                "Preparing your saved narrator preview...",
+                self._generate_narrator_preview,
+                settings,
+                self._catalog_registry,
+                text,
+            )
+            return
+        self._start(
+            "preview",
+            "Generating your preview...",
+            self._generate_preview,
+            settings,
+            manifest,
+            source_id,
+            text,
+            transcript,
+        )
+
+    def _generate_narrator_preview(
+        self,
+        settings: AppSettings,
+        registry: CharacterVoiceRegistry,
+        text: str,
+        cancellation: Event,
+    ) -> VoiceAuditionPreview:
+        # Separate request ownership prevents an old same-voice waiter cancelling us.
+        previews = (
+            cast(VoiceAuditionSession, self.previews).new_session()
+            if getattr(self.previews, "supports_prefetch", False) is True
+            else self.previews
+        )
+        try:
+            source_id = pregeneration_narrator_source_id(
+                settings, voice_library=self.voice_library
+            )
+            if source_id.startswith("preset:"):
+                return self._generate_preview(
+                    settings,
+                    None,
+                    source_id,
+                    text,
+                    "",
+                    cancellation,
+                    preview_service=previews,
+                )
+            registry = registry_with_voice_library(registry, self.voice_library)
+            voice = registry.resolve("Narrator")
+            if voice is None or not voice.references:
+                raise ValueError(
+                    "Choose an available Narrator voice before previewing it"
+                )
+            with temporary_directory(prefix="vntts-narrator-preview-") as directory:
+                root = Path(directory)
+                references = []
+                for index, reference in enumerate(voice.references):
+                    if cancellation.is_set():
+                        raise RuntimeError("Narrator preview cancelled")
+                    name = f"reference-{index}.wav"
+                    (root / name).write_bytes(
+                        read_voice_reference_bytes(voice, reference)
+                    )
+                    references.append(name)
+                manifest = root / "manifest.json"
+                write_voice_manifest(
+                    manifest,
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": voice.character,
+                                "speaker": voice.speaker,
+                                "references": references,
+                            }
+                        ],
+                    },
+                )
+                preview = self._generate_preview(
+                    settings,
+                    manifest,
+                    f"character:{normalize_character_name(voice.character)}",
+                    text,
+                    voice.reference_transcript or "",
+                    cancellation,
+                    preview_service=previews,
+                )
+                self.voice_library.resolve_source_paths("Narrator")
+                if any(
+                    sha256(read_voice_reference_bytes(voice, reference)).hexdigest()
+                    != sha256_file(root / name)
+                    for reference, name in zip(
+                        voice.references, references, strict=True
+                    )
+                ):
+                    raise ValueError(
+                        "Narrator reference changed during preview preparation"
+                    )
+                return preview
+        finally:
+            if previews is not self.previews:
+                previews.close()
+
+    def _generate_preview(
+        self,
+        settings: AppSettings,
+        manifest: Path | str | None,
+        source_id: str,
+        text: str,
+        transcript: str,
+        cancellation: Event,
+        *,
+        preview_service: VoiceAuditionPreviewService
+        | VoiceAuditionSession
+        | None = None,
+    ) -> VoiceAuditionPreview:
+        plan = narrator_preview_plan(settings, manifest, source_id, text, transcript)
+        return (preview_service or self.previews).generate(
+            plan,
+            plan.groups[0],
+            source_id,
+            cancel_event=cancellation,
+            progress=self.decoderProgress.emit,
+        )
+
     def _perform_candidate_action(
         self,
         operation: str,
@@ -1796,15 +2138,8 @@ class GameNarratorDialog(QDialog):
             )
         if operation == "audio":
             return load_original_reference(manifest, source_id)
-        plan = narrator_preview_plan(
-            settings, manifest, source_id, text, reference_transcript
-        )
-        return self.previews.generate(
-            plan,
-            plan.groups[0],
-            plan.groups[0].source_id,
-            cancel_event=self.cancellation,
-            progress=self.decoderProgress.emit,
+        return self._generate_preview(
+            settings, manifest, source_id, text, reference_transcript, self.cancellation
         )
 
     def _bind_selected_voice(
@@ -1864,15 +2199,13 @@ class GameNarratorDialog(QDialog):
             )
         if operation == "audio":
             return load_original_reference(self._catalog_manifest, source_id)
-        plan = narrator_preview_plan(
-            settings, self._catalog_manifest, source_id, text, reference_transcript
-        )
-        return self.previews.generate(
-            plan,
-            plan.groups[0],
+        return self._generate_preview(
+            settings,
+            self._catalog_manifest,
             source_id,
-            cancel_event=self.cancellation,
-            progress=self.decoderProgress.emit,
+            text,
+            reference_transcript,
+            self.cancellation,
         )
 
     def _policy_settings(self, settings: AppSettings) -> AppSettings:
@@ -1933,12 +2266,33 @@ class GameNarratorDialog(QDialog):
         if operation == "warm":
             self._finish_warm(error)
             return
+        if operation == "preview" and self._finish_stale_preview():
+            return
         if error is not None:
             if self._finish_error(operation, error):
                 return
         elif self._finish_success(operation, result):
             return
         self._update()
+
+    def _finish_stale_preview(self) -> bool:
+        queued = self._queued_action
+        self._queued_action = None
+        if (
+            not self.cancellation.is_set()
+            and self._preview_identity == self._current_preview_identity()
+        ):
+            return False
+        if queued:
+            self._candidate_action(queued)
+        elif (
+            self.characters.currentText()
+            and self.characters.currentText() != self._character
+        ):
+            self._prepare()
+        else:
+            self._update()
+        return True
 
     def _finish_warm(self, error: Exception | None) -> None:
         if self.references.currentData() != self._warming_reference:
@@ -1985,7 +2339,7 @@ class GameNarratorDialog(QDialog):
             return True
         self.status.setText(
             (
-                f"{error}\nNothing was assigned. Select Generate preview to "
+                f"{error}\nNothing was assigned. Select Play preview to "
                 "try again, or Cancel to leave.\n"
                 if operation == "preview"
                 else f"{error}\nRetry, choose a game folder, or cancel. "
@@ -2090,6 +2444,7 @@ class GameNarratorDialog(QDialog):
             self._update()
             return True
         self.status.setText("Starting playback...")
+        self._playback_ready = True
         if operation == "audio":
             if not isinstance(result, OriginalReference):
                 raise TypeError("Reference loader returned an invalid reference")
@@ -2106,8 +2461,14 @@ class GameNarratorDialog(QDialog):
             )
             self.player.play_bytes(result.payload, source=str(result.path))
         else:
-            self.player.setSource(QUrl.fromLocalFile(str(preview_path)))
-            self.player.play()
+            try:
+                payload = read_regular_bytes(Path(str(preview_path)))
+                if sha256(payload).hexdigest() != getattr(result, "audio_sha256", None):
+                    raise ValueError("Voice sample changed after validation")
+            except (OSError, ValueError) as error:
+                self._playback_error(None, str(error))
+                return True
+            self.player.play_bytes(payload, source=str(preview_path))
         return False
 
     def _finish_save(self, result: object) -> None:
@@ -2117,7 +2478,7 @@ class GameNarratorDialog(QDialog):
         self._cleanup()
 
     def _playback_state_changed(self, state: object) -> None:
-        if self.runner.active:
+        if self.runner.active and not self._playback_ready:
             return
         playing = (
             state == QMediaPlayer.PlaybackState.PlayingState
@@ -2134,9 +2495,12 @@ class GameNarratorDialog(QDialog):
             )
 
     def _playback_error(self, _code: object, message: str) -> None:
-        if self.runner.active or not self._playback_requested:
+        if (
+            self.runner.active and not self._playback_ready
+        ) or not self._playback_requested:
             return
         self._playback_requested = False
+        self._playback_ready = False
         self.stop_button.hide()
         subject = (
             "Original reference"
@@ -2149,16 +2513,17 @@ class GameNarratorDialog(QDialog):
 
     def _playback_media_changed(self, status: object) -> None:
         if (
-            not self.runner.active
+            (not self.runner.active or self._playback_ready)
             and status == QMediaPlayer.MediaStatus.EndOfMedia
             and self._playback_requested
         ):
             self.status.setText(
                 "Original reference finished. Press Play original to listen again."
                 if self._operation == "audio"
-                else "Preview finished. Press Generate preview to listen again."
+                else "Preview finished. Press Play preview to listen again."
             )
             self._playback_requested = False
+            self._playback_ready = False
             self.stop_button.hide()
 
     def _cleanup(self) -> None:
@@ -2171,7 +2536,8 @@ class GameNarratorDialog(QDialog):
         self._closing = True
         self.player.stop()
         self.cancellation.set()
-        self.previews.cancel()
+        if getattr(self.previews, "supports_prefetch", False) is True:
+            self.previews.cancel()
         if self.runner.active:
             self.status.setText(
                 "Cancelling. Waiting for the current operation to stop..."

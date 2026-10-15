@@ -98,6 +98,64 @@ class VoiceAuditionPanelTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def test_neighbor_buttons_select_and_play_ready_audio_without_saving(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            plan, group = with_second_candidate(plan, group)
+            service, player, decisions = Mock(), Mock(), Mock()
+            service.supports_prefetch = True
+            service.peek.return_value = generated_preview(root)
+            panel = VoiceAuditionPanel(
+                decisions, preview_service=service, player=player
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            panel.start(plan)
+            self.assertFalse(panel.previous_preview.isEnabled())
+            panel.voice_reference.setCurrentIndex(1)
+            self.assertTrue(panel.previous_preview.isEnabled())
+            self.assertFalse(panel.next_preview.isEnabled())
+            player.play_bytes.assert_not_called()
+            panel.voice_reference.setCurrentIndex(0)
+            panel.next_preview.click()
+            self.assertEqual(panel.voice_reference.currentIndex(), 1)
+            self.assertFalse(panel.next_preview.isEnabled())
+            player.play_bytes.assert_called_once()
+            panel.previous_preview.click()
+            self.assertEqual(panel.voice_reference.currentIndex(), 0)
+            self.assertEqual(player.play_bytes.call_count, 2)
+            panel._stop_playback()
+            self.assertEqual(panel.a_play.text(), "Play generated preview")
+            service.generate.assert_not_called()
+            decisions.remember_many.assert_not_called()
+            panel._set_decision_actions(False)
+            self.assertFalse(panel.next_preview.isEnabled())
+
+    def test_preview_navigation_fits_compact_width_with_larger_font(self):
+        with TemporaryDirectory() as directory:
+            plan, group, _manifest = ambiguous_fixture(Path(directory))
+            panel = VoiceAuditionPanel(Mock(), preview_service=Mock())
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            font = panel.font()
+            font.setPointSizeF(font.pointSizeF() * 2)
+            panel.setFont(font)
+            panel.start(plan, group_id=group.group_id)
+            panel.resize(620, 440)
+            panel.show()
+            self.application.processEvents()
+
+            self.assertLessEqual(panel.preview_box.minimumSizeHint().width(), 600)
+            self.assertGreater(
+                panel.previous_preview.geometry().top(),
+                panel.a_play.geometry().bottom(),
+            )
+            self.assertEqual(
+                panel.previous_preview.geometry().top(),
+                panel.next_preview.geometry().top(),
+            )
+
     def test_browsing_during_render_cancels_request_without_stale_playback(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

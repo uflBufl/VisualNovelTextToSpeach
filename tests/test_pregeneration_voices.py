@@ -1206,6 +1206,11 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(selected.reference_sha256s, binding.source_sha256s)
 
     def test_old_player_catalog_requires_refresh_before_planning(self):
+        for version in (3, 4):
+            with self.subTest(version=version):
+                self.assert_old_player_catalog_requires_refresh(version)
+
+    def assert_old_player_catalog_requires_refresh(self, version):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
@@ -1213,10 +1218,11 @@ class VoicePlanStoreTest(unittest.TestCase):
                 root / "player-voices", job.story_index_sha256
             )
             document = json.loads(manifest.read_text(encoding="utf-8"))
-            document[PLAYER_VOICE_CANDIDATES_FIELD]["schema_version"] = 3
-            for variant in document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"]:
-                del variant["source_excerpts"]
-                del variant["candidate_origin"]
+            document[PLAYER_VOICE_CANDIDATES_FIELD]["schema_version"] = version
+            if version == 3:
+                for variant in document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"]:
+                    del variant["source_excerpts"]
+                    del variant["candidate_origin"]
             manifest.write_text(json.dumps(document), encoding="utf-8")
 
             self.assertFalse(player_voice_catalog_is_current(manifest))
@@ -1282,7 +1288,6 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             document = json.loads(manifest.read_text(encoding="utf-8"))
             player = document[PLAYER_VOICE_CANDIDATES_FIELD]
-            player["schema_version"] = 4
             for index, variant in enumerate(player["variants"], 1):
                 variant["source_excerpts"] = [
                     {
@@ -1329,7 +1334,6 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             document = json.loads(manifest.read_text(encoding="utf-8"))
             player = document[PLAYER_VOICE_CANDIDATES_FIELD]
-            player["schema_version"] = 4
             player["variants"][0]["source_excerpts"] = [
                 {"line_id": "wrong-line", "title": None, "text": "Wrong speech."}
             ]

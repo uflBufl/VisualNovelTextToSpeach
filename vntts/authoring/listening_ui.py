@@ -12,12 +12,14 @@ from PySide6.QtGui import QCloseEvent, QDesktopServices, QKeySequence, QMouseEve
 from PySide6.QtWidgets import (
     QApplication,
     QDialogButtonBox,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QStyle,
@@ -51,6 +53,41 @@ Side = Literal["a", "b"]
 PlaybackState = Literal[
     "ready", "loading", "playing", "finished", "stopped", "complete"
 ]
+
+_CHOICE_GUIDANCE = (
+    "How to choose\n"
+    "A / B: one sample is better for the stated goal.\n"
+    "Both acceptable: both sound good with no meaningful preference.\n"
+    "Neither acceptable: both have problems that make them unsuitable.\n\n"
+    "Listen to both samples fully from the beginning, without skipping, before rating.\n"
+    "Choices save immediately and cannot be changed in this window.\n\n"
+    "Shortcuts: Ctrl+1 plays A; Ctrl+2 plays B; Ctrl+Space controls playback."
+)
+_GOAL_GUIDANCE = {
+    "synthesis-quality": (
+        "Synthesis quality",
+        "Natural speech without audible defects.",
+        "Listen for\n"
+        "- Extra or missing words, cut-off speech and repetitions.\n"
+        "- Noise, distortion and unnatural pronunciation or rhythm.\n"
+        "Compare with the dialogue text.\n\n"
+        "Different voice timbres can be equally good; character likeness and acting "
+        "style are outside this evaluation.",
+    ),
+    "overall-preference": (
+        "Overall preference",
+        "Choose the voice you prefer overall.",
+        "Choose the voice you prefer overall, considering timbre, naturalness and "
+        "delivery. Character likeness is not scored without an original recording.",
+    ),
+}
+_UNRECORDED_GOAL = (
+    "Not recorded",
+    "Confirm the intended criterion before rating.",
+    "This session did not record an evaluation goal. Check the intended criterion "
+    "with its author before rating. Existing choices do not say whether quality, "
+    "voice preference or character fit was judged.",
+)
 
 
 class PreferenceRecorder(Protocol):
@@ -87,7 +124,6 @@ SessionLoader = Callable[[Path], ListeningSession]
 ProgressReader = Callable[[ListeningSession], tuple[int, int]]
 PendingTrialReader = Callable[[ListeningSession], ListeningTrial | None]
 ReportBuilder = Callable[[Path, Path], ListeningReport]
-PreferenceConfirmer = Callable[[Preference], bool]
 PlaybackFactory = Callable[[], _Playback]
 
 _load_session: SessionLoader = load_listening_session
@@ -142,13 +178,11 @@ class ModelListeningDialog(CloseGuardedDialog):
         preference_recorder: PreferenceRecorder = _record_preference,
         playback_factory: PlaybackFactory = _playback_factory,
         thread_pool: QThreadPool | None = None,
-        confirmer: PreferenceConfirmer | None = None,
     ) -> None:
         super().__init__(parent)
         self.session_path = Path(session_path).expanduser().resolve()
         self.session: ListeningSession = _load_session(self.session_path)
         self.preference_recorder = preference_recorder
-        self.confirmer = confirmer or self._confirm_preference
         self.preference_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.preference_runner.finished.connect(self._preference_finished)
         self._preference_active = False
@@ -162,33 +196,30 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.active_initial_natural = False
         self.completed_sides: set[Side] = set()
         self.report_path: Path | None = None
-        self.setWindowTitle("Blind voice-model listening workbench")
+        self.setWindowTitle("Blind voice comparison")
         self.setMinimumSize(640, 400)
         self.resize(760, 460)
 
         self.progress = QLabel()
         self.progress.setAccessibleName("Blind listening progress")
         self.progress.setAccessibleDescription(
-            "Completed and remaining trials in the current blind session"
+            "Current progress through the listening session"
         )
-        self.decision_context = ReviewDecisionContext()
+        self.decision_context = self.create_instruction_context()
         self.context_toggle = QToolButton()
-        self.context_toggle.setText("Review context")
+        self.context_toggle.setText("Detailed instructions")
         self.context_toggle.setCheckable(True)
-        self.context_toggle.setAccessibleName("Show blind comparison context")
+        self.context_toggle.setAccessibleName("Show blind listening instructions")
         self.context_toggle.setAccessibleDescription(
             "Reveal comparison rules and technical provenance without unblinding A/B"
         )
         self.context_toggle.toggled.connect(self.decision_context.setVisible)
         self.context_toggle.toggled.connect(
             lambda visible: self.context_toggle.setText(
-                "Hide review context" if visible else "Review context"
+                "Hide instructions" if visible else "Detailed instructions"
             )
         )
         self.decision_context.hide()
-        self.trial_heading = QLabel()
-        self.trial_heading.setWordWrap(True)
-        self.trial_heading.setAccessibleName("Current blind trial")
         self.dialogue = QPlainTextEdit()
         self.dialogue.setReadOnly(True)
         self.dialogue.setAccessibleName("Current blind trial text")
@@ -200,7 +231,6 @@ class ModelListeningDialog(CloseGuardedDialog):
         current_trial_layout = QVBoxLayout()
         current_trial_layout.setContentsMargins(0, 0, 0, 0)
         current_trial_layout.setSpacing(2)
-        current_trial_layout.addWidget(self.trial_heading)
         current_trial_layout.addWidget(self.dialogue)
         self.current_trial_card = QWidget()
         self.current_trial_card.setAccessibleName("Current blind trial evidence")
@@ -232,8 +262,7 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.stop.clicked.connect(self.toggle_playback)
 
         self.now_playing = QLabel()
-        self.now_playing.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.now_playing.setMinimumHeight(32)
+        self.now_playing.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.now_playing.setAccessibleName("Blind sample playback status")
         playback = QHBoxLayout()
         playback.addWidget(self.play_a)
@@ -264,7 +293,7 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.seek_controls = seek_controls
 
         self.prefer_a = QPushButton("A is better")
-        self.tie = QPushButton("Both acceptable / no preference")
+        self.tie = QPushButton("Both acceptable")
         self.neither = QPushButton("Neither acceptable")
         self.prefer_b = QPushButton("B is better")
         self.prefer_a.setAccessibleName("Anonymous sample A is better")
@@ -296,13 +325,22 @@ class ModelListeningDialog(CloseGuardedDialog):
         decisions.addWidget(self.prefer_b, 0, 1)
         decisions.addWidget(self.tie, 1, 0)
         decisions.addWidget(self.neither, 1, 1)
-        self.decision_reason = QLabel()
-        self.decision_reason.setWordWrap(True)
+        self.decision_reason = QLabel(wordWrap=True)
         self.decision_reason.setAccessibleName("Blind decision availability")
-        self.status = QLabel()
-        self.status.setWordWrap(True)
+        self.decision_notice = QLabel(
+            "Saves immediately; no undo.",
+            wordWrap=True,
+            alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+        )
+        self.decision_notice.setAccessibleName("Blind decision permanence")
+        self.decision_notice.setAccessibleDescription(
+            "Choices save immediately and cannot be changed in this window."
+        )
+        self.decision_notice.setToolTip(self.decision_notice.accessibleDescription())
+        self.status = QLabel(wordWrap=True, textFormat=Qt.TextFormat.PlainText)
         self.status.setAccessibleName("Blind listening operation status")
-        self.open_report = QPushButton("Open aggregate report")
+        self.goal_card = self.create_goal_card()
+        self.open_report = QPushButton("Open report")
         self.open_report.setSizePolicy(
             QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
         )
@@ -315,28 +353,12 @@ class ModelListeningDialog(CloseGuardedDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
 
-        review_content = QWidget()
-        review_layout = QVBoxLayout(review_content)
-        review_layout.setContentsMargins(0, 0, 0, 0)
-        review_layout.setSpacing(3)
-        review_layout.addWidget(self.progress)
-        review_layout.addWidget(self.current_trial_card)
-        review_layout.addWidget(self.now_playing)
-        review_layout.addLayout(playback)
-        review_layout.addLayout(seek_controls)
-        review_layout.addWidget(self.status)
-        review_layout.addWidget(self.open_report)
-        review_layout.addWidget(self.context_toggle)
-        review_layout.addWidget(self.decision_context)
-        review_layout.addStretch(1)
-        self.review_scroll = review_scroll_area(
-            review_content, "Scrollable blind listening evidence"
-        )
-        for widget in review_content.findChildren(QWidget):
-            if widget.focusPolicy() != Qt.FocusPolicy.NoFocus:
-                widget.installEventFilter(self)
+        self.review_scroll = self.create_review_scroll(playback, seek_controls)
         layout = QVBoxLayout(self)
         layout.addWidget(self.review_scroll, 1)
+        layout.addWidget(self.status)
+        layout.addWidget(self.open_report, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.goal_card)
         layout.addWidget(self.decision_reason)
         layout.addLayout(decisions)
         layout.addWidget(buttons)
@@ -347,7 +369,8 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.setTabOrder(self.seek, self.skip_forward)
         self.setTabOrder(self.skip_forward, self.stop)
         self.setTabOrder(self.stop, self.context_toggle)
-        self.setTabOrder(self.context_toggle, self.decision_context.technical_toggle)
+        self.setTabOrder(self.context_toggle, self.goal_guidance)
+        self.setTabOrder(self.goal_guidance, self.decision_context.technical_toggle)
         self.setTabOrder(self.decision_context.technical_toggle, self.open_report)
         self.setTabOrder(self.open_report, self.prefer_a)
         self.setTabOrder(self.prefer_a, self.tie)
@@ -362,6 +385,87 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.playback_timer.start()
         self.load_next_trial()
 
+    def evaluation_goal(self) -> tuple[str, str, str]:
+        return _GOAL_GUIDANCE.get(
+            self.session.get("evaluation_goal", ""), _UNRECORDED_GOAL
+        )
+
+    def create_goal_card(self) -> QFrame:
+        card = QFrame()
+        card.setObjectName("listeningGoal")
+        card.setAccessibleName("Blind listening evaluation goal")
+        card.setStyleSheet(
+            "QFrame#listeningGoal { background-color: palette(alternate-base);"
+            " border: 1px solid palette(mid); border-left: 3px solid palette(highlight);"
+            " border-radius: 6px; }"
+        )
+        self.goal_title = QLabel(textFormat=Qt.TextFormat.PlainText, wordWrap=True)
+        self.goal_title.setAccessibleName("Evaluation goal title")
+        self.goal_title.setStyleSheet("font-weight: 600;")
+        self.goal_summary = QLabel(textFormat=Qt.TextFormat.PlainText, wordWrap=True)
+        self.goal_summary.setAccessibleName("Evaluation goal summary")
+        content = QVBoxLayout(card)
+        content.setContentsMargins(12, 10, 12, 10)
+        content.setSpacing(4)
+        content.addWidget(self.goal_title)
+        content.addWidget(self.goal_summary)
+        return card
+
+    def create_instruction_context(self) -> ReviewDecisionContext:
+        context = ReviewDecisionContext()
+        context.setTitle("Listening guide")
+        for label in (
+            context.purpose,
+            context.identity,
+            context.synthesis,
+            context.effect,
+        ):
+            label.hide()
+        context.technical_toggle.setText("Session details")
+        context.technical_toggle.setAccessibleName("Show listening session details")
+        self.goal_guidance = QLabel(wordWrap=True, textFormat=Qt.TextFormat.PlainText)
+        self.goal_guidance.setAccessibleName("Blind listening evaluation instructions")
+        self.goal_guidance.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByKeyboard
+            | Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.goal_guidance.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        content = context.layout()
+        assert isinstance(content, QVBoxLayout)
+        content.setContentsMargins(12, 20, 12, 12)
+        content.setSpacing(12)
+        content.insertWidget(0, self.goal_guidance)
+        return context
+
+    def create_review_scroll(
+        self, playback: QHBoxLayout, seek_controls: QHBoxLayout
+    ) -> QScrollArea:
+        review_content = QWidget()
+        review_layout = QVBoxLayout(review_content)
+        review_layout.setContentsMargins(0, 0, 0, 0)
+        review_layout.setSpacing(8)
+        header = QHBoxLayout()
+        header.addWidget(self.progress, 1)
+        header.addWidget(self.now_playing)
+        review_layout.addLayout(header)
+        review_layout.addWidget(self.current_trial_card)
+        review_layout.addLayout(playback)
+        review_layout.addLayout(seek_controls)
+        help_row = QHBoxLayout()
+        help_row.addWidget(self.context_toggle)
+        help_row.addWidget(self.decision_notice, 1)
+        review_layout.addLayout(help_row)
+        review_layout.addWidget(self.decision_context)
+        review_layout.addStretch(1)
+        scroll = review_scroll_area(
+            review_content, "Scrollable blind listening evidence"
+        )
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        for widget in review_content.findChildren(QWidget):
+            if widget.focusPolicy() != Qt.FocusPolicy.NoFocus:
+                widget.installEventFilter(self)
+        return scroll
+
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.FocusIn and isinstance(watched, QWidget):
             self.review_scroll.ensureWidgetVisible(watched)
@@ -370,7 +474,25 @@ class ModelListeningDialog(CloseGuardedDialog):
     def changeEvent(self, event: QEvent) -> None:
         if event.type() == QEvent.Type.FontChange and hasattr(self, "dialogue"):
             self.dialogue.setFixedHeight(max(64, self.fontMetrics().height() + 20))
+            if hasattr(self, "goal_card"):
+                self.goal_title.setFont(self.font())
+                self.goal_summary.setFont(self.font())
+                self.status.setFont(self.font())
         super().changeEvent(event)
+
+    def set_status(
+        self, message: str, *, error: bool = True, playback_error: bool = False
+    ) -> None:
+        self._playback_error = playback_error
+        self.status.setText(message)
+        self.status.setStyleSheet(
+            "QLabel { background-color: palette(alternate-base); padding: 8px;"
+            " border-left: 3px solid #d97706; }"
+            if message and error
+            else ""
+        )
+        self.status.setFont(self.font())
+        self.status.setVisible(bool(message))
 
     def set_preference_buttons_enabled(
         self, enabled: bool, reason: str | None = None
@@ -383,15 +505,10 @@ class ModelListeningDialog(CloseGuardedDialog):
         )
         if self._preference_active:
             enabled = False
-            reason = "Decision saving: playback remains available."
+            reason = "Saving choice..."
         if reason is None:
             reason = (
-                "Decision ready: choose one result."
-                if enabled
-                else (
-                    "Decision locked: play both anonymous samples completely from "
-                    "the beginning without seeking."
-                )
+                "Choose a result." if enabled else "Listen to A and B in full to rate."
             )
         self.decision_reason.setText(reason)
         for button, description in decisions:
@@ -402,15 +519,15 @@ class ModelListeningDialog(CloseGuardedDialog):
 
     def update_trial_context(self) -> None:
         completed, total = _listening_progress(self.session)
-        remaining = total - completed
-        self.progress.setText(
-            f"Completed {completed} of {total} | Remaining {remaining}"
-        )
+        goal_title, summary, instructions = self.evaluation_goal()
+        self.goal_title.setText(f"Evaluation goal: {goal_title}")
+        self.goal_summary.setText(summary)
+        self.goal_guidance.setText(f"{instructions}\n\n{_CHOICE_GUIDANCE}")
         if self.current_trial is None:
-            self.trial_heading.setText(f"All {total} trials reviewed")
+            self.progress.setText(f"{completed} / {total} rated")
             self.decision_context.set_context(
                 {
-                    "purpose": "Compare two anonymous synthesis outputs",
+                    "purpose": goal_title,
                     "effect": "Session complete; no further preference is required",
                 }
             )
@@ -422,10 +539,10 @@ class ModelListeningDialog(CloseGuardedDialog):
             if trial["trial_id"] == trial_id
         )
         identity = self.current_trial.get("line_id") or self.current_trial["queue_id"]
-        self.trial_heading.setText(f"Trial {position} of {total} | {identity}")
+        self.progress.setText(f"Comparison {position} of {total}")
         self.decision_context.set_context(
             {
-                "purpose": "Compare two anonymous synthesis outputs",
+                "purpose": goal_title,
                 "game_speaker": "Unknown (not captured by the benchmark corpus)",
                 "synthesis_voice": "Hidden to preserve the blind comparison",
                 "reference": "Hidden to preserve the blind comparison",
@@ -471,32 +588,28 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.apply_side_button_style(self.play_a, "a")
         self.apply_side_button_style(self.play_b, "b")
         labels = {
-            "ready": "READY",
-            "loading": f"LOADING: {label}",
-            "playing": f"NOW PLAYING: {label}",
-            "finished": f"FINISHED: {label}",
-            "stopped": f"PAUSED: {label}" if label else "PAUSED",
-            "complete": "SESSION COMPLETE",
+            "ready": "",
+            "loading": f"Loading {label}...",
+            "playing": f"Playing {label}",
+            "finished": "",
+            "stopped": f"{label} paused" if label else "",
+            "complete": "",
         }
-        background = self.side_colors[side]["normal"] if side is not None else "#3f3f46"
         self.now_playing.setText(labels[state])
-        self.now_playing.setStyleSheet(
-            f"QLabel {{ background-color: {background}; color: white;"
-            " font-size: 18px; font-weight: 700; border-radius: 6px; padding: 8px; }"
-        )
+        self.now_playing.setVisible(bool(labels[state]))
         self.stop.setText(
             {"stopped": "Resume", "finished": "Replay"}.get(state, "Pause")
         )
         self.stop.setEnabled(state not in {"ready", "complete"})
         if side is not None and state in {"loading", "playing"}:
             button = self.play_a if side == "a" else self.play_b
-            button.setText(f"{'LOADING' if state == 'loading' else 'PLAYING'} {label}")
             self.apply_side_button_style(button, side, active=True)
 
     def load_next_trial(self) -> None:
         self.session = _load_session(self.session_path)
         self.current_trial = _next_pending_trial(self.session)
         self.update_trial_context()
+        self.set_status("")
         self.auto_play_pending_b = False
         self.active_side = None
         self.active_token = None
@@ -506,33 +619,16 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.seek.setRange(0, 0)
         self.seek.setValue(0)
         self.time.setText("0:00 / 0:00")
-        self.set_preference_buttons_enabled(
-            False,
-            "Decision locked: play both anonymous samples completely from the "
-            "beginning without seeking.",
-        )
+        self.set_preference_buttons_enabled(False)
         if self.current_trial is None:
             self.set_playback_indicator("complete")
             self.set_preference_buttons_enabled(False, "Session complete.")
             report_path = self.session_path.with_name("report.json")
-            report = _ensure_report(self.session_path, report_path)
+            _ensure_report(self.session_path, report_path)
             self.report_path = report_path
-            models = report["models"]
-            if not models or models[0]["preference"]["rate"] is None:
-                result = "No preference leader."
-            elif (
-                len(models) > 1
-                and models[0]["preference"]["rate"] == models[1]["preference"]["rate"]
-            ):
-                result = "Top preference is tied."
-            else:
-                result = f"Preference leader: {models[0]['model_id']}."
-            self.dialogue.setPlainText("Listening session complete.")
-            self.status.setText(
-                f"Aggregate report saved. {result} Production "
-                "selection still requires manual approval."
-            )
+            self.set_status("Session complete. Results saved.", error=False)
             for widget in (
+                self.current_trial_card,
                 self.now_playing,
                 self.play_a,
                 self.play_b,
@@ -542,6 +638,8 @@ class ModelListeningDialog(CloseGuardedDialog):
                 self.time,
                 self.stop,
                 self.decision_reason,
+                self.decision_notice,
+                self.goal_card,
                 self.prefer_a,
                 self.prefer_b,
                 self.tie,
@@ -552,13 +650,13 @@ class ModelListeningDialog(CloseGuardedDialog):
                 widget.hide()
             self.open_report.show()
             self.open_report.setFocus()
-            completion_height = max(220, self.fontMetrics().height() * 11)
+            completion_height = max(140, self.fontMetrics().height() * 7)
             self.setMinimumHeight(completion_height)
             self.resize(640, completion_height)
             return
         self.setMinimumHeight(400)
         for widget in (
-            self.now_playing,
+            self.current_trial_card,
             self.play_a,
             self.play_b,
             self.skip_back,
@@ -567,11 +665,13 @@ class ModelListeningDialog(CloseGuardedDialog):
             self.time,
             self.stop,
             self.decision_reason,
+            self.goal_card,
             self.prefer_a,
             self.prefer_b,
             self.tie,
             self.neither,
             self.context_toggle,
+            self.decision_notice,
         ):
             widget.show()
         self.open_report.hide()
@@ -590,11 +690,6 @@ class ModelListeningDialog(CloseGuardedDialog):
         for side in ("a", "b"):
             path = self.session_path.parent / self.current_trial["audio"][side]
             self.audio_clips[side] = self.playback.load(path)
-        self.status.setText(
-            ("Starting A, then B automatically. " if self.auto_play else "Ready. ")
-            + "Shortcuts: Ctrl+1 plays A; Ctrl+2 plays B; Ctrl+Space controls "
-            "the active sample."
-        )
         if self.auto_play:
             QTimer.singleShot(0, self, self.start_auto_playback)
 
@@ -602,14 +697,14 @@ class ModelListeningDialog(CloseGuardedDialog):
         if self.report_path is not None and not QDesktopServices.openUrl(
             QUrl.fromLocalFile(str(self.report_path))
         ):
-            self.status.setText(f"Could not open report; saved at {self.report_path}.")
+            self.set_status(f"Could not open report; saved at {self.report_path}.")
 
     def start_auto_playback(self) -> None:
         if self.current_trial is not None and self.playback_timer.isActive():
             self.auto_play_pending_b = True
-            self.play("a", automatic=True)
+            self.play("a")
 
-    def play(self, side: Side, *, automatic: bool = False) -> None:
+    def play(self, side: Side) -> None:
         if self.current_trial is None or not self.playback_timer.isActive():
             return
         if side == "b":
@@ -623,8 +718,8 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.seek.setValue(0)
         self.update_time_label(0, clip.duration_ms)
         self.set_playback_indicator("loading", side)
-        mode = " automatically" if automatic else ""
-        self.status.setText(f"Playing anonymous sample {side.upper()}{mode}.")
+        if self._playback_error:
+            self.set_status("")
 
     def poll_playback(self) -> None:
         side = self.active_side
@@ -643,9 +738,10 @@ class ModelListeningDialog(CloseGuardedDialog):
             self.active_token = None
             self.active_initial_natural = False
             self.auto_play_pending_b = False
-            self.set_playback_indicator("stopped", side)
-            self.status.setText(
-                f"Playback failed for sample {side.upper()}: {snapshot.error}. Replay it."
+            self.set_playback_indicator("finished", side)
+            self.set_status(
+                f"Could not play {side.upper()}: {snapshot.error}. Replay to retry.",
+                playback_error=True,
             )
             return
         if snapshot.started and not self.active_started:
@@ -657,10 +753,10 @@ class ModelListeningDialog(CloseGuardedDialog):
         if snapshot.underflowed:
             self.active_initial_natural = False
             self.auto_play_pending_b = False
-            self.set_playback_indicator("stopped", side)
-            self.status.setText(
-                f"Playback underflowed for sample {side.upper()}; replay it before "
-                "making a decision."
+            self.set_playback_indicator("finished", side)
+            self.set_status(
+                f"Audio interrupted for {side.upper()}. Replay it in full to rate.",
+                playback_error=True,
             )
             return
         completed_naturally = snapshot.started and self.active_initial_natural
@@ -670,37 +766,25 @@ class ModelListeningDialog(CloseGuardedDialog):
         if self.completed_sides == {"a", "b"}:
             self.set_preference_buttons_enabled(
                 True,
-                "Decision ready: both samples played completely from the beginning.",
+                "Choose a result.",
             )
         elif side not in self.completed_sides:
             self.set_preference_buttons_enabled(
                 False,
-                f"Decision locked: replay sample {side.upper()} completely from the "
-                "beginning without seeking.",
+                f"Replay {side.upper()} without skipping to rate.",
             )
         else:
             remaining = ({"a", "b"} - self.completed_sides).pop().upper()
             self.set_preference_buttons_enabled(
                 False,
-                f"Decision locked: play sample {remaining} completely from the "
-                "beginning without seeking.",
+                f"Listen to {remaining} in full to rate.",
             )
         self.set_playback_indicator("finished", side)
         if side == "a" and self.auto_play_pending_b and side in self.completed_sides:
             self.auto_play_pending_b = False
-            QTimer.singleShot(0, self, lambda: self.play("b", automatic=True))
-        elif self.completed_sides == {"a", "b"}:
-            self.status.setText(
-                self.decision_reason.text()
-                if self._preference_active
-                else "Both samples completed. Choose a preference."
-            )
+            QTimer.singleShot(0, self, lambda: self.play("b"))
         elif side not in self.completed_sides:
             self.auto_play_pending_b = False
-            self.status.setText(
-                f"Sample {side.upper()} reached the end after a seek. Replay it "
-                "completely from the beginning before choosing."
-            )
 
     @staticmethod
     def format_time(milliseconds: int) -> str:
@@ -744,10 +828,7 @@ class ModelListeningDialog(CloseGuardedDialog):
             self.active_token = self.playback.resume()
             self.set_playback_indicator("loading", self.active_side)
         elif self.playback_control_state == "finished":
-            self.active_started = False
-            self.active_initial_natural = True
-            self.active_token = self.playback.play(self.audio_clips[self.active_side])
-            self.set_playback_indicator("loading", self.active_side)
+            self.play(self.active_side)
         elif self.playback_control_state in {"loading", "playing"}:
             self.auto_play_pending_b = False
             self.active_token = self.playback.seek(
@@ -764,48 +845,20 @@ class ModelListeningDialog(CloseGuardedDialog):
         if self.current_trial is None:
             return
         if self._preference_active:
-            self.status.setText("Wait for the current preference to finish saving.")
             return
         if self.completed_sides != {"a", "b"}:
-            self.status.setText("Play both samples completely before choosing.")
-            return
-        if not self.confirmer(preference):
-            self.status.setText(
-                "Preference cancelled; listening evidence is unchanged."
-            )
+            self.set_preference_buttons_enabled(False)
             return
         trial_id = self.current_trial["trial_id"]
         self._preference_active = True
         self.set_preference_buttons_enabled(False)
-        self.status.setText(
-            "Saving preference and updating the blinded report... "
-            "Playback remains available."
-        )
+        self.set_status("")
         self.preference_runner.start(
             self.preference_recorder,
             self.session_path,
             trial_id,
             preference,
             report_path=self.session_path.with_name("report.json"),
-        )
-
-    def _confirm_preference(self, preference: Preference) -> bool:
-        labels = {
-            "a": "A is better",
-            "b": "B is better",
-            "tie": "both are acceptable",
-            "neither": "neither is acceptable",
-        }
-        return bool(
-            QMessageBox.question(
-                self,
-                "Save irreversible blind preference?",
-                f"Save '{labels[preference]}' for this trial? "
-                "This listening window cannot revise it afterward.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            == QMessageBox.StandardButton.Yes
         )
 
     def _preference_finished(self, _result: object, error: Exception | None) -> None:
@@ -818,10 +871,10 @@ class ModelListeningDialog(CloseGuardedDialog):
         else:
             self.set_preference_buttons_enabled(
                 self.current_trial is not None and self.completed_sides == {"a", "b"},
-                "Decision ready: the previous save failed; choose again to retry.",
+                "Choose again to retry.",
             )
-            self.status.setText(
-                f"Preference was not saved: {error}. Choose again to retry."
+            self.set_status(
+                f"Could not save your choice: {error}. Choose again to retry."
             )
         if self._close_pending:
             self._close_pending = False
@@ -837,7 +890,6 @@ class ModelListeningDialog(CloseGuardedDialog):
         else:
             self.set_playback_indicator("complete")
             self.set_preference_buttons_enabled(False, "Session complete.")
-            self.dialogue.setPlainText("Listening session complete.")
             for widget in (
                 self.play_a,
                 self.play_b,
@@ -846,15 +898,12 @@ class ModelListeningDialog(CloseGuardedDialog):
                 self.skip_forward,
             ):
                 widget.setEnabled(False)
-        self.status.setText(message)
+        self.set_status(message)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._preference_active:
             self._close_pending = True
-            self.status.setText(
-                "Saving preference and report. Close is deferred until the "
-                "authoritative write finishes."
-            )
+            self.set_status("Finishing save before closing...", error=False)
             event.ignore()
             return
         self.playback_timer.stop()

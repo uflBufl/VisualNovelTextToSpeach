@@ -116,7 +116,12 @@ def readable_model_name(model: object | None) -> str:
     """Keep known model names readable; retain exact identity in details."""
     if not model:
         return "Default model"
-    name = str(model).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    parts = str(model).replace("\\", "/").rstrip("/").split("/")
+    name = parts[-1]
+    if len(parts) >= 3 and parts[-2] == "snapshots":
+        repository = parts[-3].split("--", 2)
+        if len(repository) == 3 and repository[0] == "models":
+            name = repository[2] or name
     aliases = {
         "MOSS-TTS-Local-Transformer-v1.5-MLX-int8": "Local v1.5 · 8-bit MLX",
         "moss-tts-local-v1.5-mlx-int8": "Local v1.5 · 8-bit MLX",

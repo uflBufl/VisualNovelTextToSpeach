@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from vntts.authoring.listening import (
+    EVALUATION_GOALS,
     ModelListeningError,
     aggregate_listening_report,
     create_listening_session,
@@ -28,10 +29,16 @@ def create_parser() -> argparse.ArgumentParser:
     start.add_argument("--benchmark", type=Path, required=True)
     start.add_argument("--output", type=Path, default=default_session_directory)
     start.add_argument("--seed", type=int, default=0)
+    start.add_argument(
+        "--evaluation-goal", choices=EVALUATION_GOALS, default="synthesis-quality"
+    )
     start_reports = subparsers.add_parser("start-reports")
     start_reports.add_argument("--reports", type=Path, nargs="+", required=True)
     start_reports.add_argument("--output", type=Path, default=default_session_directory)
     start_reports.add_argument("--seed", type=int, default=0)
+    start_reports.add_argument(
+        "--evaluation-goal", choices=EVALUATION_GOALS, default="synthesis-quality"
+    )
     start_reports.add_argument(
         "--sample-id",
         action="append",
@@ -62,7 +69,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if options.command == "start":
             path = create_listening_session(
-                options.benchmark, options.output, seed=options.seed
+                options.benchmark,
+                options.output,
+                seed=options.seed,
+                evaluation_goal=options.evaluation_goal,
             )
             return cli_success(f"Created blind listening session: {path}")
         if options.command == "start-reports":
@@ -71,6 +81,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 options.output,
                 seed=options.seed,
                 sample_ids=options.sample_ids,
+                evaluation_goal=options.evaluation_goal,
             )
             return cli_success(f"Created blind listening session: {path}")
         if options.command == "ui":

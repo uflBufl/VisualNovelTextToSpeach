@@ -1095,6 +1095,114 @@ class SpeechWorkerTest(unittest.TestCase):
                 self.assertIsNone(backend.process)
                 self.assertIsNone(backend._runtime_use)
 
+    def test_cancelled_render_restarts_same_backend_with_fresh_request(self):
+        cancellation = Event()
+        with (
+            patch.object(IsolatedSpeechBackend, "_start_worker"),
+            patch(
+                "vntts.speech_worker._runtime_paths",
+                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+            ),
+        ):
+            backend = IsolatedSpeechBackend(
+                "moss-tts", CharacterVoiceRegistry(), startup_cancellation=cancellation
+            )
+        original = FakeProcess(None)
+        backend.process = original
+
+        def cancel_render(*_args, **_options):
+            cancellation.set()
+            raise queue.Empty
+
+        with patch.object(backend, "_next_frame", side_effect=cancel_render):
+            result = backend.render(
+                SynthesisRequest("Narrator", "First.", cancellation=cancellation)
+            ).collect()
+        self.assertIs(result.completion, SynthesisCompletion.CANCELLED)
+        self.assertEqual(original.returncode, -15)
+        self.assertIsNone(backend.process)
+
+        restarted = FakeProcess(None)
+        backend.process_factory = MagicMock(return_value=restarted)
+        backend._runtime_use = MagicMock()
+        request = SynthesisRequest("Narrator", "Retry.")
+        generated = FakeWorkerBackend(backend.registry).render(request)
+        chunk = next(generated)
+        expected = generated.collect()
+        frames = (
+            (
+                {
+                    "type": "health",
+                    "interpreter": "/runtime/python",
+                    "prefix": "/runtime",
+                    "sample_rate": 24_000,
+                },
+                b"",
+            ),
+            (
+                {
+                    "type": "chunk",
+                    "shape": list(chunk.pcm.shape),
+                    "sample_rate": chunk.sample_rate,
+                    "index": 0,
+                    "elapsed_ms": 0.0,
+                },
+                chunk.pcm.tobytes(),
+            ),
+            ({"type": "result", "result": _result_document(expected)}, b""),
+        )
+        with (
+            patch("vntts.speech_worker.threading.Thread.start"),
+            patch.object(backend, "_next_frame", side_effect=frames),
+        ):
+            result = backend.render(request).collect()
+        self.assertIs(result.completion, SynthesisCompletion.COMPLETE)
+        np.testing.assert_array_equal(result.pcm, expected.pcm)
+        self.assertIs(backend.process, restarted)
+        self.assertIs(backend.startup_cancellation, cancellation)
+
+        backend.clear_runtime_cache()
+        rejected = FakeProcess(None)
+        backend.process_factory.return_value = rejected
+        with (
+            patch("vntts.speech_worker.threading.Thread.start"),
+            self.assertRaisesRegex(TTSSynthesisError, "startup was cancelled"),
+        ):
+            backend.prime("Narrator")
+        self.assertEqual(rejected.returncode, -15)
+        self.assertIsNone(backend.process)
+
+    def test_current_render_cancellation_stops_worker_restart(self):
+        with (
+            patch.object(IsolatedSpeechBackend, "_start_worker"),
+            patch(
+                "vntts.speech_worker._runtime_paths",
+                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+            ),
+        ):
+            backend = IsolatedSpeechBackend("moss-tts", CharacterVoiceRegistry())
+        cancellation = Event()
+        process = FakeProcess(None)
+        backend._runtime_use = MagicMock()
+
+        def start_process(*_args, **_options):
+            cancellation.set()
+            return process
+
+        backend.process_factory = start_process
+        with (
+            patch("vntts.speech_worker.threading.Thread.start"),
+            patch.object(backend, "_next_frame") as next_frame,
+            self.assertRaisesRegex(TTSSynthesisError, "startup was cancelled"),
+        ):
+            backend.render(
+                SynthesisRequest("Narrator", "Test.", cancellation=cancellation)
+            ).collect()
+        next_frame.assert_not_called()
+        self.assertEqual(process.returncode, -15)
+        self.assertIsNone(backend.process)
+        self.assertIsNone(backend._runtime_use)
+
     def test_startup_error_survives_process_and_claim_cleanup_failures(self):
         with (
             patch.object(IsolatedSpeechBackend, "_start_worker"),

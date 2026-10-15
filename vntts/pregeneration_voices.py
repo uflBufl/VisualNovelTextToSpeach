@@ -130,7 +130,7 @@ voice_plan_schema_version = 5
 voice_decisions_schema_version = 1
 PLAYER_VOICE_CANDIDATES_FIELD = "vntts.player.voice_candidates"
 PLAYER_VOICE_CANDIDATES_SCHEMA = "vntts.player-voice-candidates"
-PLAYER_VOICE_CANDIDATES_VERSION = 4
+PLAYER_VOICE_CANDIDATES_VERSION = 5
 UNLINKED_BANK_MEDIA = "exact_bank_unrouted_media"
 STORY_LINE_ROUTE = "story_line_route"
 UNLINKED_BANK_LABEL = "Unlinked game-bank audio; spoken text unknown"
@@ -2225,7 +2225,7 @@ def _manifest_candidate_variants(
         player, PLAYER_VOICE_CANDIDATES_VERSION
     ):
         raise PregenerationVoiceError(
-            "Game voice references need refreshing to show their source dialogue"
+            "Game voice references need refreshing before automatic selection"
         )
     expected_fields = {
         "schema",
@@ -2304,7 +2304,7 @@ def _manifest_candidate_variants(
 
 
 def player_voice_catalog_is_current(manifest_path: Path | str) -> bool:
-    """Return whether a cached game candidate catalog has source provenance."""
+    """Return whether a cached catalog uses the current candidate-admission policy."""
     try:
         document = decode_json(read_regular_text(Path(manifest_path), encoding="utf-8"))
     except OSError, ValueError, TypeError:

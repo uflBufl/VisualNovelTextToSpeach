@@ -923,14 +923,13 @@ def preview_identity(
             document["model"] = (
                 model or os.environ.get("VNTTS_MOSS_MODEL") or default_moss_tts_model
             )
-            from huggingface_hub import try_to_load_from_cache
-
             model = str(document["model"])
-            cached = (
-                try_to_load_from_cache(model, "config.json")
-                if not Path(model).is_dir()
-                else str(Path(model) / "config.json")
-            )
+            if Path(model).is_dir():
+                cached: object = str(Path(model) / "config.json")
+            else:
+                from huggingface_hub import try_to_load_from_cache
+
+                cached = try_to_load_from_cache(model, "config.json")
             if isinstance(cached, str) and Path(cached).is_file():
                 document["model_snapshot"] = (
                     str(Path(cached).parent),

@@ -34,7 +34,19 @@ from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import read_regular_text
 
 SPEECH_ROBUSTNESS_ASR_SCHEMA = "vntts.speech-robustness-asr-report"
-SPEECH_ROBUSTNESS_ASR_VERSION = 2
+SPEECH_ROBUSTNESS_ASR_VERSION = 3
+
+_DIGIT_WORDS = dict(
+    zip(
+        "0123456789",
+        "zero one two three four five six seven eight nine".split(),
+        strict=True,
+    )
+)
+_NUMERIC_FORMAT = re.compile(
+    r"(?<![\w'’+\-−.,:/])(?:[+\-−]\s*|\.)?\(?\d+\)?"
+    r"(?:\s*[.,:/\-]\s*\(?\d+\)?|\s+\(?\d+\)?)*(?![\w'’]|[.,:/+\-−]\w)"
+)
 
 JsonDocument: TypeAlias = dict[str, object]
 _EditCounts: TypeAlias = tuple[int, int, int, int]
@@ -111,7 +123,12 @@ class SpeechRobustnessAsrReport:
         return copy.deepcopy(self.document)
 
 
-def _words(text: str) -> tuple[str, ...]:
+def _words(text: str, *, normalize_numbers: bool = False) -> tuple[str, ...]:
+    if normalize_numbers:
+        # shortcut: only isolated English digits; qualify other number readings separately.
+        text = _NUMERIC_FORMAT.sub(
+            lambda match: _DIGIT_WORDS.get(match[0].strip("()"), match[0]), text
+        )
     return tuple(
         token.lower().replace("’", "'")
         for token in re.findall(r"[^\W_]+(?:['’][^\W_]+)*", text, flags=re.UNICODE)
@@ -163,11 +180,16 @@ def _edit_counts(expected: Sequence[str], observed: Sequence[str]) -> dict[str, 
 
 
 def compare_speech_transcript(
-    expected_text: str, observed_text: str
+    expected_text: str,
+    observed_text: str,
+    *,
+    analysis_version: int = SPEECH_ROBUSTNESS_ASR_VERSION,
 ) -> _TranscriptComparison:
     """Return deterministic word-level content metrics for one transcript."""
-    expected = _words(expected_text)
-    observed = _words(observed_text)
+    if type(analysis_version) is not int or analysis_version not in (2, 3):
+        raise SpeechRobustnessAsrError("ASR comparison version is invalid")
+    expected = _words(expected_text, normalize_numbers=analysis_version >= 3)
+    observed = _words(observed_text, normalize_numbers=analysis_version >= 3)
     edits = _edit_counts(expected, observed)
     denominator = max(1, len(expected))
     return {
@@ -302,12 +324,14 @@ def _sample_records(value: object) -> list[_RobustnessSample]:
     return samples
 
 
-def _asr_record(value: object) -> _AsrRecord:
+def _asr_record(value: object, *, version: int) -> _AsrRecord:
     if not _is_json_document(value):
         raise SpeechRobustnessAsrError("ASR record is invalid")
     expected_text = _text_field(value, "expected_text", "Expected text")
     observed_text = _text_field(value, "observed_text", "Observed text")
-    comparison = compare_speech_transcript(expected_text, observed_text)
+    comparison = compare_speech_transcript(
+        expected_text, observed_text, analysis_version=version
+    )
     if value.get("comparison") != comparison:
         raise SpeechRobustnessAsrError("ASR record comparison is invalid")
     return {
@@ -323,10 +347,10 @@ def _asr_record(value: object) -> _AsrRecord:
     }
 
 
-def _asr_records(value: object) -> list[_AsrRecord]:
+def _asr_records(value: object, *, version: int) -> list[_AsrRecord]:
     if not isinstance(value, list):
         raise SpeechRobustnessAsrError("ASR records are invalid")
-    return [_asr_record(record) for record in value]
+    return [_asr_record(record, version=version) for record in value]
 
 
 def _distribution(records: Sequence[_AsrRecord], metric: _RateMetric) -> JsonDocument:
@@ -395,9 +419,11 @@ def _validate_document(document: object) -> JsonDocument:
     }
     if not _is_json_document(document) or set(document) != fields:
         raise SpeechRobustnessAsrError("ASR robustness report shape is invalid")
+    version = document["schema_version"]
     if (
         document.get("schema") != SPEECH_ROBUSTNESS_ASR_SCHEMA
-        or not has_schema_version(document, SPEECH_ROBUSTNESS_ASR_VERSION)
+        or type(version) is not int
+        or version not in (2, 3)
         or type(document.get("corpus_schema_version")) is not int
         or document["corpus_schema_version"] not in (2, 3)
     ):
@@ -415,7 +441,7 @@ def _validate_document(document: object) -> JsonDocument:
     )
     if document.get("report_id") != expected_id:
         raise SpeechRobustnessAsrError("ASR robustness report identity is invalid")
-    records = _asr_records(document.get("records"))
+    records = _asr_records(document.get("records"), version=version)
     if document.get("summary") != _summary(records):
         raise SpeechRobustnessAsrError("ASR robustness report summary is invalid")
     return document
@@ -459,6 +485,11 @@ def _load_progress(
             "ASR progress predates corrected audio resampling; "
             "rerun with a new progress file"
         )
+    if _is_json_document(document) and document.get("schema_version") == 2:
+        raise SpeechRobustnessAsrError(
+            "ASR progress predates numeric transcript normalization; "
+            "rerun with a new progress file"
+        )
     expected = {
         "schema",
         "schema_version",
@@ -482,7 +513,9 @@ def _load_progress(
         )
     ):
         raise SpeechRobustnessAsrError("ASR progress authority is invalid")
-    records = _asr_records(document.get("records"))
+    records = _asr_records(
+        document.get("records"), version=SPEECH_ROBUSTNESS_ASR_VERSION
+    )
     if len(records) > len(samples):
         raise SpeechRobustnessAsrError("ASR progress authority is invalid")
     for record, sample in zip(records, samples, strict=False):

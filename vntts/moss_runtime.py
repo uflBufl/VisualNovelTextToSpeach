@@ -133,7 +133,7 @@ class _MossBackendLease:
     def render(self, request: SynthesisRequest) -> _LockedStream:
         self._runtime._operation_lock.acquire()
         try:
-            backend = self._runtime._configured_backend(self)
+            backend = self._runtime._configured_backend(self, request=request)
             return _LockedStream(backend.render(request), self._runtime._operation_lock)
         except BaseException:
             self._runtime._operation_lock.release()
@@ -234,39 +234,48 @@ class RetainedMossRuntime:
         self, registry: CharacterVoiceRegistry, **options: object
     ) -> _MossBackend | _MossBackendLease:
         model_name = options.get("model_name")
-        configuration = model_name, options.get("language", "English")
         if not moss_cpp_requested(model_name):
             return self._create_backend(registry, **options)
         with self._operation_lock:
-            if self._backend is None or self._model_configuration != configuration:
-                if self._backend is not None:
-                    record_native_speech(
-                        operation="runtime-replace",
-                        reason="configuration-change",
-                        server_pid=getattr(
-                            getattr(self._backend, "server", None), "pid", None
-                        ),
-                    )
-                shutdown_speech_backend(self._backend)
-                self._backend = None
-                self.root.mkdir(parents=True, exist_ok=True)
-                retained_options = dict(options)
-                retained_options["persistent_audio_cache_directory"] = (
-                    self.root / "audio"
-                )
-                retained_options["prompt_cache_directory"] = self.root / "voices"
-                retained_options.setdefault("persistent_audio_cache_max_entries", 512)
-                retained_options.setdefault("allow_download", True)
-                self._backend = self._create_backend(registry, **retained_options)
-                self._model_configuration = configuration
-            else:
-                self._backend.registry = registry
-                if "startup_cancellation" in options:
-                    self._backend.startup_cancellation = options["startup_cancellation"]
-                if "startup_progress" in options:
-                    self._backend.startup_progress = options["startup_progress"]
-                self._backend.load()
+            self._ensure_backend(registry, options, load=True)
         return _MossBackendLease(self, registry, dict(options))
+
+    def _ensure_backend(
+        self,
+        registry: CharacterVoiceRegistry,
+        options: BackendOptions,
+        *,
+        load: bool,
+    ) -> _MossBackend:
+        configuration = options.get("model_name"), options.get("language", "English")
+        if self._backend is None or self._model_configuration != configuration:
+            if self._backend is not None:
+                record_native_speech(
+                    operation="runtime-replace",
+                    reason="configuration-change",
+                    server_pid=getattr(
+                        getattr(self._backend, "server", None), "pid", None
+                    ),
+                )
+            shutdown_speech_backend(self._backend)
+            self._backend = None
+            self.root.mkdir(parents=True, exist_ok=True)
+            retained_options = dict(options)
+            retained_options["persistent_audio_cache_directory"] = self.root / "audio"
+            retained_options["prompt_cache_directory"] = self.root / "voices"
+            retained_options.setdefault("persistent_audio_cache_max_entries", 512)
+            retained_options.setdefault("allow_download", True)
+            self._backend = self._create_backend(registry, **retained_options)
+            self._model_configuration = configuration
+        else:
+            self._backend.registry = registry
+            if "startup_cancellation" in options:
+                self._backend.startup_cancellation = options["startup_cancellation"]
+            if "startup_progress" in options:
+                self._backend.startup_progress = options["startup_progress"]
+            if load:
+                self._backend.load()
+        return self._backend
 
     def __call__(
         self, registry: CharacterVoiceRegistry, **options: object
@@ -286,18 +295,17 @@ class RetainedMossRuntime:
         options.pop("allow_gated_model_access", None)
         return self.backend_for(registry, **options)
 
-    def _configured_backend(self, lease: _MossBackendLease) -> _MossBackend:
-        backend = self._backend
-        if backend is None:
+    def _configured_backend(
+        self, lease: _MossBackendLease, *, request: SynthesisRequest | None = None
+    ) -> _MossBackend:
+        if self._backend is None and self._model_configuration is None:
             raise RuntimeError("OpenMOSS runtime is unloaded")
-        backend.registry = lease.registry
         options = lease._options
+        if request is not None:
+            options = {**options, "startup_cancellation": request.cancellation}
+        backend = self._ensure_backend(lease.registry, options, load=False)
         if "narrator_reference" in options:
             backend.narrator_reference = options["narrator_reference"]
-        if "startup_cancellation" in options:
-            backend.startup_cancellation = options["startup_cancellation"]
-        if "startup_progress" in options:
-            backend.startup_progress = options["startup_progress"]
         if "volume" in options:
             backend.set_volume(options["volume"])
         if "generation_profile" in options:

@@ -1060,6 +1060,7 @@ class TrayApplicationTest(unittest.TestCase):
             factory.assert_called_once_with(
                 tray_application.settings,
                 tray_application.dashboard,
+                preview_service=ANY,
                 use_offline_engine=False,
             )
             tray_application._narrator_finished(QDialog.DialogCode.Rejected)
@@ -1089,6 +1090,7 @@ class TrayApplicationTest(unittest.TestCase):
             factory.assert_called_once_with(
                 resolve_pregeneration_settings(preparation.settings),
                 tray_application.dashboard,
+                preview_service=ANY,
                 use_offline_engine=True,
             )
             tray_application._narrator_finished(QDialog.DialogCode.Rejected)
@@ -1865,6 +1867,7 @@ class TrayApplicationTest(unittest.TestCase):
         factory.assert_called_once_with(
             tray_application.settings,
             tray_application.dashboard,
+            preview_service=ANY,
             use_offline_engine=False,
         )
         dialog.set_voice_context.assert_called_once_with(character="Selone")
@@ -3778,6 +3781,7 @@ class TrayApplicationTest(unittest.TestCase):
         factory.assert_called_once_with(
             tray_application.settings,
             tray_application.dashboard,
+            preview_service=ANY,
             use_offline_engine=False,
         )
         controller.start.assert_not_called()

@@ -63,6 +63,11 @@ default_session_directory = get_local_data_directory() / "authoring" / "model-li
 PathInput = str | Path
 Preference = Literal["a", "b", "tie", "neither"]
 RecordedPreference = Literal["a", "b", "tie"]
+EvaluationGoal = Literal["synthesis-quality", "overall-preference"]
+EVALUATION_GOALS: tuple[EvaluationGoal, ...] = (
+    "synthesis-quality",
+    "overall-preference",
+)
 
 
 class TrialAudio(TypedDict):
@@ -102,6 +107,7 @@ class _ValidatedListeningSession(TypedDict):
     trials: list[_ValidatedListeningTrial]
     updated_at: str
     dimensions: NotRequired[list[str]]
+    evaluation_goal: NotRequired[EvaluationGoal]
 
 
 class ListeningModel(TypedDict):
@@ -213,6 +219,7 @@ class ReportPairwise(TypedDict):
 
 
 class ReportFields(TypedDict):
+    evaluation_goal: EvaluationGoal | None
     complete: bool
     completed_trials: int
     pending_trials: int
@@ -231,6 +238,7 @@ class ListeningTrial(TypedDict):
 
 class ListeningSession(TypedDict):
     trials: list[ListeningTrial]
+    evaluation_goal: NotRequired[EvaluationGoal]
 
 
 class ListeningReportModel(TypedDict):
@@ -240,6 +248,7 @@ class ListeningReportModel(TypedDict):
 
 class ListeningReport(TypedDict):
     models: list[ListeningReportModel]
+    evaluation_goal: NotRequired[EvaluationGoal | None]
 
 
 class _ListeningCli(Protocol):
@@ -291,6 +300,7 @@ def create_listening_session_from_reports(
     *,
     seed: int = 0,
     sample_ids: Iterable[str] | None = None,
+    evaluation_goal: EvaluationGoal = "synthesis-quality",
 ) -> Path:
     """Create blind trials from two or more generic per-model reports."""
     resolved_paths = [Path(path).expanduser().resolve() for path in report_paths]
@@ -303,7 +313,11 @@ def create_listening_session_from_reports(
     except AuthoringAuthorityError as error:
         raise ModelListeningError(str(error)) from error
     return _create_listening_session_from_captured_reports(
-        snapshots, output_directory, seed=seed, sample_ids=sample_ids
+        snapshots,
+        output_directory,
+        seed=seed,
+        sample_ids=sample_ids,
+        evaluation_goal=evaluation_goal,
     )
 
 
@@ -314,7 +328,10 @@ def _create_listening_session_from_captured_reports(
     seed: int = 0,
     sample_ids: Iterable[str] | None = None,
     authority_hashes: Mapping[Path, str] | None = None,
+    evaluation_goal: EvaluationGoal = "synthesis-quality",
 ) -> Path:
+    if not _is_evaluation_goal(evaluation_goal):
+        raise ModelListeningError("Listening evaluation goal is invalid")
     if authority_hashes is not None:
         for snapshot in snapshots:
             expected = authority_hashes.get(snapshot.path)
@@ -346,6 +363,7 @@ def _create_listening_session_from_captured_reports(
         source_sha256=source_sha256,
         seed=seed,
         authority_hashes=authority_hashes,
+        evaluation_goal=evaluation_goal,
     )
 
 
@@ -457,7 +475,11 @@ def _validate_selected_samples(
 
 
 def create_listening_session(
-    benchmark_path: PathInput, output_directory: PathInput, *, seed: int = 0
+    benchmark_path: PathInput,
+    output_directory: PathInput,
+    *,
+    seed: int = 0,
+    evaluation_goal: EvaluationGoal = "synthesis-quality",
 ) -> Path:
     """Create a session from a VNTTS multi-model benchmark aggregate."""
     benchmark_path = Path(benchmark_path).expanduser().resolve()
@@ -477,7 +499,9 @@ def create_listening_session(
         if not path.is_absolute():
             path = benchmark_path.parent / path
         resolved.append(path.resolve())
-    return create_listening_session_from_reports(resolved, output_directory, seed=seed)
+    return create_listening_session_from_reports(
+        resolved, output_directory, seed=seed, evaluation_goal=evaluation_goal
+    )
 
 
 def _write_listening_session(
@@ -489,6 +513,7 @@ def _write_listening_session(
     sources: list[SourceRecord],
     source_sha256: str,
     seed: int,
+    evaluation_goal: EvaluationGoal,
     authority_hashes: Mapping[Path, str] | None = None,
 ) -> Path:
     output_directory = no_replace_destination(output_directory)
@@ -511,6 +536,7 @@ def _write_listening_session(
             sources=sources,
             source_sha256=source_sha256,
             seed=seed,
+            evaluation_goal=evaluation_goal,
         )
         for source in sources:
             try:
@@ -573,6 +599,7 @@ def _write_listening_session_staged(
     sources: list[SourceRecord],
     source_sha256: str,
     seed: int,
+    evaluation_goal: EvaluationGoal,
 ) -> None:
     session_path = output_directory / "session.json"
     model_ids = [model["model_id"] for model in models]
@@ -665,6 +692,7 @@ def _write_listening_session_staged(
         "blind_key_sha256": sha256_file(key_path),
         "seed": seed,
         "decision_mode": "preference-only",
+        "evaluation_goal": evaluation_goal,
         "trial_count": len(trials),
         "completed_count": 0,
         "trials": trials,
@@ -703,6 +731,10 @@ def _load_listening_documents(
 
 
 def _session_trials(session: dict[str, object]) -> list[object]:
+    if "evaluation_goal" in session and not _is_evaluation_goal(
+        session["evaluation_goal"]
+    ):
+        raise ModelListeningError("Listening evaluation goal is invalid")
     trials = _object_list(session.get("trials"))
     if (
         trials is None
@@ -1127,6 +1159,7 @@ def _report_fields(
     models = _report_models(stats, supports_acceptability)
     completed, total = listening_progress(session)
     return {
+        "evaluation_goal": session.get("evaluation_goal"),
         "complete": completed == total,
         "completed_trials": completed,
         "pending_trials": total - completed,
@@ -1617,6 +1650,10 @@ def _is_listening_trial(value: object) -> TypeGuard[_ValidatedListeningTrial]:
     )
 
 
+def _is_evaluation_goal(value: object) -> TypeGuard[EvaluationGoal]:
+    return isinstance(value, str) and value in EVALUATION_GOALS
+
+
 def _is_listening_session(
     value: Mapping[str, object],
 ) -> TypeGuard[_ValidatedListeningSession]:
@@ -1632,6 +1669,10 @@ def _is_listening_session(
         and type(value.get("trial_count")) is int
         and type(value.get("completed_count")) is int
         and isinstance(value.get("updated_at"), str)
+        and (
+            "evaluation_goal" not in value
+            or _is_evaluation_goal(value["evaluation_goal"])
+        )
         and trials is not None
         and all(_is_listening_trial(trial) for trial in trials)
         and (
@@ -1702,6 +1743,10 @@ def _is_public_session(value: object) -> TypeGuard[ListeningSession]:
     return (
         _is_json_object(value)
         and trials is not None
+        and (
+            "evaluation_goal" not in value
+            or _is_evaluation_goal(value["evaluation_goal"])
+        )
         and all(_is_public_trial(trial) for trial in trials)
     )
 
@@ -1717,6 +1762,10 @@ def _is_public_report(value: object) -> TypeGuard[ListeningReport]:
     return (
         _is_json_object(value)
         and models is not None
+        and (
+            value.get("evaluation_goal") is None
+            or _is_evaluation_goal(value["evaluation_goal"])
+        )
         and all(
             _is_json_object(model)
             and isinstance(model.get("model_id"), str)

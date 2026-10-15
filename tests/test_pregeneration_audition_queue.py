@@ -243,15 +243,25 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                 session.prefetch(plan, other, automatic=True)
                 session.prefetch(plan, first, automatic=True)
                 self.assertTrue(cancelled.cancel.is_set())
+                with owner._lock:
+                    self.assertEqual(len(session._focus_keys), 1)
+                    self.assertEqual(len(owner._pending), 1)
+                    self.assertIsNot(owner._pending[0], cancelled)
                 self.assertEqual(
                     session.preparation_state(plan, group, source), "queued"
                 )
             finally:
                 release.set()
             self.wait(owner)
-            self.assertEqual(len(backend.requests), 2)
+            self.assertEqual(
+                [request.text for request in backend.requests],
+                [group.sample_text, group.sample_text],
+            )
             self.assertEqual(session.preparation_state(plan, group, source), "ready")
-            self.assertIsNotNone(session.peek(plan, group, source))
+            preview = session.peek(plan, group, source)
+            self.assertIsNotNone(preview)
+            self.assertTrue(preview.path.exists())
+            self.assertTrue(session.generate(plan, group, source).reused)
             self.assertEqual(
                 session.preparation_state(
                     plan, group, source, text=group.alternate_sample_text

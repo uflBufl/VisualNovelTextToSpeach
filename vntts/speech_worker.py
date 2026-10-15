@@ -1022,7 +1022,7 @@ class IsolatedSpeechBackend:
         self.set_speed(1.0)
         self._start_worker()
 
-    def _start_worker(self) -> None:
+    def _start_worker(self, *, cancellation: Callable[[], bool] | None = None) -> None:
         from vntts.runtime_ownership import claim_runtime
 
         if self._runtime_use is None:
@@ -1032,7 +1032,7 @@ class IsolatedSpeechBackend:
             ):
                 self._runtime_use = claim_runtime("moss-tts", self.runtime_root)
         try:
-            self._launch_worker()
+            self._launch_worker(cancellation=cancellation)
         except BaseException as error:
             attempt_cleanup(
                 lambda: self._terminate_process(self.process),
@@ -1050,7 +1050,7 @@ class IsolatedSpeechBackend:
                     self._runtime_use = None
             raise
 
-    def _launch_worker(self) -> None:
+    def _launch_worker(self, *, cancellation: Callable[[], bool] | None = None) -> None:
         if self._closed:
             raise TTSSynthesisError(f"{self.name} isolated worker is shut down")
         self.health = None
@@ -1105,8 +1105,9 @@ class IsolatedSpeechBackend:
             },
         )
         deadline = monotonic() + self.startup_timeout
+        cancelled = cancellation or self._startup_cancelled
         while True:
-            if self._startup_cancelled():
+            if cancelled():
                 raise TTSSynthesisError(
                     f"{self.name} isolated worker startup was cancelled"
                 )
@@ -1256,9 +1257,11 @@ class IsolatedSpeechBackend:
             if owner is process:
                 return document, payload
 
-    def _ensure_worker(self) -> WorkerProcess:
+    def _ensure_worker(
+        self, *, cancellation: Callable[[], bool] | None = None
+    ) -> WorkerProcess:
         if self.process is None or self.process.poll() is not None:
-            self._start_worker()
+            self._start_worker(cancellation=cancellation)
         if self.process is None:
             raise TTSSynthesisError(f"{self.name} isolated worker is not running")
         return self.process
@@ -1272,7 +1275,11 @@ class IsolatedSpeechBackend:
         self, request: SynthesisRequest
     ) -> Generator[SynthesisChunk, None, SynthesisResult]:
         with self._request_lock:
-            process = self._ensure_worker()
+            process = self._ensure_worker(
+                cancellation=lambda: (
+                    self._stop_requested.is_set() or request.cancellation_requested()
+                )
+            )
             request_id = uuid.uuid4().hex
             self._send(
                 process,

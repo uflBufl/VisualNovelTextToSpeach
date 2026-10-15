@@ -15,6 +15,7 @@ from typing import TypedDict
 from durable_file import atomic_write_json
 
 from vntts.authoring.import_paths import default_import_root
+from vntts.authoring.listening import EVALUATION_GOALS
 from vntts.authoring.private_files import private_file_is_restricted
 from vntts.authoring.publication import (
     AtomicPublicationError,
@@ -237,6 +238,11 @@ def _validate_session(
 
 
 def _validate_session_header(session: JsonObject) -> list[object]:
+    if "evaluation_goal" in session and (
+        not isinstance(session["evaluation_goal"], str)
+        or session["evaluation_goal"] not in EVALUATION_GOALS
+    ):
+        raise ListeningImportError("Listening evaluation goal is invalid")
     source_kind = session.get("source_kind")
     if not is_utf8_text(source_kind) or not source_kind.strip():
         raise ListeningImportError(
@@ -604,6 +610,7 @@ def _expected_report(session: JsonObject, key: JsonObject) -> JsonObject:
     completed = _int_field(session, "completed_count")
     total = _int_field(session, "trial_count")
     return {
+        "evaluation_goal": session.get("evaluation_goal"),
         "complete": completed == total,
         "completed_trials": completed,
         "pending_trials": total - completed,

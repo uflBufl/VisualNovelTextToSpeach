@@ -12,6 +12,7 @@ from vntts.speech_presentation import (
     engine_model_label,
     narrator_voice_label,
     playback_labels,
+    readable_model_name,
     reading_policy_label,
     speech_configuration_label,
     speech_runtime_label,
@@ -63,6 +64,19 @@ class SpeechPresentationTest(unittest.TestCase):
             self.assertIn("8-bit MLX", label)
             self.assertNotIn("shraey/", label)
             self.assertIn(model, engine_model_label("moss-tts", model))
+
+    def test_snapshot_paths_show_the_model_and_keep_exact_path_in_details(self):
+        model = (
+            "/cache/models--shraey--MOSS-TTS-Local-Transformer-v1.5-MLX-int8/"
+            "snapshots/" + "a" * 40
+        )
+        for path in (model, model.replace("/", "\\") + "\\"):
+            with self.subTest(path=path):
+                self.assertEqual(readable_model_name(path), "Local v1.5 · 8-bit MLX")
+        with patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=False):
+            self.assertIn(model, engine_model_label("moss-tts", model))
+        self.assertEqual(readable_model_name("/custom/snapshots/model"), "model")
+        self.assertEqual(readable_model_name("/models--org--/snapshots/rev"), "rev")
 
     def test_compute_reports_actual_runtime_and_never_guesses_from_settings(self):
         backend = SimpleNamespace(runtime_status="GPU: RTX 2070 SUPER; auxiliary: CPU")

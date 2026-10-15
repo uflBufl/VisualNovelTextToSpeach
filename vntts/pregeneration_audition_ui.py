@@ -375,8 +375,48 @@ class VoiceAuditionPanel(QGroupBox):
         preview_layout = QVBoxLayout(preview_box)
         preview_layout.addWidget(self.preview_text)
         preview_layout.addLayout(preview_row)
+        self._add_preview_navigation(preview_layout)
 
         return preview_box
+
+    def _add_preview_navigation(self, layout: QVBoxLayout) -> None:
+        row = QHBoxLayout()
+        row.addStretch()
+        self.previous_preview = QPushButton("Previous")
+        self.next_preview = QPushButton("Next")
+        for button, step, shortcut in (
+            (self.previous_preview, -1, "Alt+Left"),
+            (self.next_preview, 1, "Alt+Right"),
+        ):
+            button.setAccessibleName(f"Play {button.text().lower()} voice reference")
+            button.setToolTip(
+                f"Select and play the {button.text().lower()} generated sample ({shortcut})."
+            )
+            button.setShortcut(shortcut)
+            button.clicked.connect(
+                lambda _checked=False, step=step: self._play_neighbor(step)
+            )
+            row.addWidget(button)
+        layout.addLayout(row)
+
+    def _play_neighbor(self, step: int) -> None:
+        if (
+            self.decision_runner.active
+            or self._cancel_requested
+            or self._shutdown_requested
+        ):
+            return
+        index = self.voice_reference.currentIndex() + step
+        if 0 <= index < len(self._candidate_entries):
+            self.voice_reference.setCurrentIndex(index)
+            self.play_a()
+
+    def _update_preview_navigation(self, enabled: bool = True) -> None:
+        index = self.voice_reference.currentIndex()
+        self.previous_preview.setEnabled(enabled and index > 0)
+        self.next_preview.setEnabled(
+            enabled and 0 <= index < len(self._candidate_entries) - 1
+        )
 
     def _set_status(self, message: str) -> None:
         self.status.setPlainText(message)
@@ -946,6 +986,7 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_box.setVisible(True)
         self.voice_reference.setEnabled(len(self._candidate_entries) > 1)
         self.preview_phrase.setEnabled(self.preview_phrase.count() > 1)
+        self._update_preview_navigation()
         self.auto_button.setText("Choose for me")
         self.auto_button.setEnabled(True)
         self._prefetch_window()
@@ -1575,6 +1616,7 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self.voice_reference.setEnabled(enabled and len(self._candidate_entries) > 1)
         self.preview_phrase.setEnabled(enabled and self.preview_phrase.count() > 1)
+        self._update_preview_navigation(enabled)
         self.auto_button.setEnabled(enabled)
 
     def _show_portrait(self, group: VoiceGroup) -> None:

@@ -17,7 +17,10 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_sha256,
 )
 from vntts.document_identity import sha256_file
-from vntts.pregeneration_voices import PLAYER_VOICE_CANDIDATES_FIELD
+from vntts.pregeneration_voices import (
+    PLAYER_VOICE_CANDIDATES_FIELD,
+    PLAYER_VOICE_CANDIDATES_VERSION,
+)
 
 
 def write_reference(path: Path, payload: bytes) -> None:
@@ -228,7 +231,7 @@ def write_player_candidate_manifest(
                 "voices": voices,
                 PLAYER_VOICE_CANDIDATES_FIELD: {
                     "schema": "vntts.player-voice-candidates",
-                    "schema_version": 4,
+                    "schema_version": PLAYER_VOICE_CANDIDATES_VERSION,
                     "story_index_sha256": story_index_sha256,
                     "candidate_report": report.name,
                     "candidate_report_sha256": sha256_file(report),

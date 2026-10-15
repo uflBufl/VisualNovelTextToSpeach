@@ -188,20 +188,7 @@ class VoiceLibrary:
             identity, display_role, display_variant = self._role_identity(
                 role, variant_key, document
             )
-            alias_key = normalize_character_name(role)
-            if alias_key in document["person_aliases"] and variant_key is not None:
-                linked_key = _linked_variant_key(alias_key, variant_key)
-                migrations = document["person_link_migrations"][alias_key]
-                if not any(
-                    item["linked_variant_key"] == linked_key for item in migrations
-                ):
-                    migrations.append(
-                        {
-                            "role": role,
-                            "variant_key": variant_key,
-                            "linked_variant_key": linked_key,
-                        }
-                    )
+            _remember_linked_variant(document, role, variant_key)
             binding_identity, binding_role, _ = self._binding_identity(
                 role, variant_key, document
             )
@@ -887,6 +874,23 @@ def _canonicalize_bindings(document: _VoiceLibraryDocument) -> None:
         )
         active[target] = {**deepcopy(chosen), "role": canonical, "variant_key": None}
     document["bindings"] = active
+
+
+def _remember_linked_variant(
+    document: _VoiceLibraryDocument, role: str, variant_key: str | None
+) -> None:
+    alias_key = normalize_character_name(role)
+    if alias_key in document["person_aliases"] and variant_key is not None:
+        linked_key = _linked_variant_key(alias_key, variant_key)
+        migrations = document["person_link_migrations"][alias_key]
+        if not any(item["linked_variant_key"] == linked_key for item in migrations):
+            migrations.append(
+                {
+                    "role": role,
+                    "variant_key": variant_key,
+                    "linked_variant_key": linked_key,
+                }
+            )
 
 
 def _person_link_migrations(

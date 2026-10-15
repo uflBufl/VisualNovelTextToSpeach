@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from vntts.moss_runtime import RetainedMossRuntime, _is_moss_backend, _LockedStream
-from vntts.synthesis import SynthesisChunkStream
+from vntts.synthesis import SynthesisChunkStream, SynthesisRequest
 
 
 class _Backend:
@@ -165,6 +165,89 @@ class RetainedMossRuntimeTests(unittest.TestCase):
         self.assertEqual(changed_language.render(None).collect(), "third")
         first.shutdown()
         runtime.shutdown()
+
+    @patch("vntts.moss_runtime.moss_cpp_requested", return_value=True)
+    def test_old_lease_restores_its_model_and_language_after_another_owner(self, _):
+        for model, language in (("model-b", "English"), ("model-a", "Russian")):
+            with self.subTest(model=model, language=language):
+                created = []
+
+                def factory(registry, **options):
+                    backend = _Backend(registry, **options)
+                    created.append(backend)
+                    return backend
+
+                runtime = RetainedMossRuntime(
+                    "/tmp/vntts-moss-runtime-test", backend_factory=factory
+                )
+                self.addCleanup(runtime.shutdown)
+                first = runtime.backend_for(
+                    "first", model_name="model-a", language="English"
+                )
+                runtime.backend_for("second", model_name=model, language=language)
+                request = SynthesisRequest(voice="Narrator", text="Test.")
+                self.assertEqual(first.render(request).collect(), "first")
+                self.assertEqual(len(created), 3)
+                self.assertEqual(created[-1].options["model_name"], "model-a")
+                self.assertEqual(created[-1].options["language"], "English")
+                self.assertEqual([value.shutdowns for value in created], [1, 1, 0])
+                self.assertEqual(first.render(request).collect(), "first")
+                self.assertEqual(len(created), 3)
+                runtime.shutdown()
+                with self.assertRaisesRegex(RuntimeError, "unloaded"):
+                    first.render(request)
+                self.assertFalse(runtime._operation_lock.locked())
+
+    @patch("vntts.moss_runtime.moss_cpp_requested", return_value=True)
+    def test_lease_reconfiguration_uses_current_render_startup_cancellation(self, _):
+        for cancelled in (None, False, True):
+            with self.subTest(cancelled=cancelled):
+                seen = []
+
+                def factory(registry, **options):
+                    cancellation = options.get("startup_cancellation")
+                    seen.append(cancellation)
+                    if cancellation is not None and cancellation.is_set():
+                        raise RuntimeError("startup cancelled")
+                    return _Backend(registry, **options)
+
+                runtime = RetainedMossRuntime(
+                    "/tmp/vntts-moss-runtime-test", backend_factory=factory
+                )
+                self.addCleanup(runtime.shutdown)
+                stale = Event()
+                first = runtime.backend_for(
+                    "first", model_name="model-a", startup_cancellation=stale
+                )
+                stale.set()
+                runtime.backend_for("second", model_name="model-b")
+                current = None if cancelled is None else Event()
+                if cancelled:
+                    current.set()
+                request = SynthesisRequest(
+                    voice="Narrator", text="Test.", cancellation=current
+                )
+                if cancelled:
+                    with self.assertRaisesRegex(RuntimeError, "startup cancelled"):
+                        first.render(request)
+                else:
+                    self.assertEqual(first.render(request).collect(), "first")
+                    self.assertIs(runtime.backend.startup_cancellation, current)
+                self.assertIs(seen[-1], current)
+                self.assertFalse(runtime._operation_lock.locked())
+                if cancelled:
+                    self.assertIsNone(runtime.backend)
+                    retry = Event()
+                    self.assertEqual(
+                        first.render(
+                            SynthesisRequest(
+                                voice="Narrator", text="Test.", cancellation=retry
+                            )
+                        ).collect(),
+                        "first",
+                    )
+                    self.assertIs(seen[-1], retry)
+                    self.assertEqual(runtime.backend.options["model_name"], "model-a")
 
     @patch("vntts.moss_runtime.moss_cpp_requested", return_value=True)
     def test_cached_playback_does_not_hold_the_generation_lock(self, _):

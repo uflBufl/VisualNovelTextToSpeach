@@ -111,7 +111,7 @@
       "path": "vntts/authoring/listening_ui.py",
       "scope": "ModelListeningDialog.poll_playback",
       "count": 1,
-      "maximum": 14
+      "maximum": 13
     },
     {
       "code": "C901",
@@ -685,7 +685,7 @@
       "path": "vntts/authoring/listening_ui.py",
       "scope": "ModelListeningDialog.poll_playback",
       "count": 1,
-      "maximum": 14
+      "maximum": 13
     },
     {
       "code": "PLR0912",
@@ -1182,7 +1182,7 @@
       "path": "vntts/authoring/listening_ui.py",
       "scope": "ModelListeningDialog.__init__",
       "count": 1,
-      "maximum": 177
+      "maximum": 162
     },
     {
       "code": "PLR0915",

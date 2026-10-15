@@ -1,3 +1,4 @@
+import builtins
 import io
 import json
 import os
@@ -8,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from types import SimpleNamespace
 from unittest.mock import ANY, Mock, call, patch
 
 import numpy as np
@@ -17,6 +19,7 @@ import vntts.pregeneration_audition as audition_module
 from tests.pregeneration_fixtures import FakeBackend, ambiguous_fixture, clean_wav_bytes
 from tests.story_fixtures import write_content
 from tests.voice_manifest_fixtures import write_manifest
+from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.pregeneration_audition import (
     VoiceAuditionCancelled,
     VoiceAuditionError,
@@ -24,6 +27,7 @@ from vntts.pregeneration_audition import (
     VoiceAuditionPreviewService,
     _staging_path,
     _validate_request,
+    preview_identity,
 )
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
 from vntts.pregeneration_voices import VoiceCandidate, VoicePlanStore
@@ -35,6 +39,102 @@ from vntts.synthesis import (
 
 
 class VoiceAuditionPreviewServiceTest(unittest.TestCase):
+    def test_local_moss_identity_keeps_snapshot_without_importing_huggingface(self):
+        with TemporaryDirectory() as directory:
+            model = Path(directory) / "local-model"
+            model.mkdir()
+            candidate = VoiceCandidate("preset:alba", "alba", "alba", ())
+            original_import = builtins.__import__
+
+            def reject_huggingface(name, *args, **kwargs):
+                if name == "huggingface_hub":
+                    raise AssertionError("Local models must not import Hugging Face")
+                return original_import(name, *args, **kwargs)
+
+            def identity():
+                return preview_identity(
+                    candidate,
+                    "Preview text.",
+                    backend="moss-tts",
+                    model=str(model),
+                    language="en",
+                    profile="stable",
+                )
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("vntts.runtime_paths.source_runtime_project", return_value=None),
+                patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=False),
+                patch("builtins.__import__", side_effect=reject_huggingface),
+            ):
+                with patch.object(
+                    audition_module,
+                    "canonical_document_sha256",
+                    wraps=canonical_document_sha256,
+                ) as hash_document:
+                    identity()
+                expected_document = hash_document.call_args.args[0]
+                self.assertNotIn("model_snapshot", expected_document)
+                config = model / "config.json"
+                config.write_bytes(b'{"model_type":"moss_tts"}')
+                expected_document["model_snapshot"] = (str(model), sha256_file(config))
+                first = identity()
+                self.assertEqual(first, canonical_document_sha256(expected_document))
+                self.assertEqual(identity(), first)
+                config.write_bytes(b'{"model_type":"moss_tts","revision":2}')
+                self.assertNotEqual(identity(), first)
+
+    def test_remote_moss_identity_resolves_and_hashes_cached_snapshot(self):
+        with TemporaryDirectory() as directory:
+            config = Path(directory) / "config.json"
+            config.write_bytes(b'{"model_type":"moss_tts"}')
+            resolver = Mock(return_value=None)
+            candidate = VoiceCandidate("preset:alba", "alba", "alba", ())
+
+            def identity():
+                return preview_identity(
+                    candidate,
+                    "Preview text.",
+                    backend="moss-tts",
+                    model="OpenMOSS/test-model",
+                    language="en",
+                    profile="stable",
+                )
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("vntts.runtime_paths.source_runtime_project", return_value=None),
+                patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=False),
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "huggingface_hub": SimpleNamespace(
+                            try_to_load_from_cache=resolver
+                        )
+                    },
+                ),
+            ):
+                with patch.object(
+                    audition_module,
+                    "canonical_document_sha256",
+                    wraps=canonical_document_sha256,
+                ) as hash_document:
+                    identity()
+                expected_document = hash_document.call_args.args[0]
+                self.assertNotIn("model_snapshot", expected_document)
+                resolver.return_value = str(config)
+                expected_document["model_snapshot"] = (
+                    str(config.parent),
+                    sha256_file(config),
+                )
+                self.assertEqual(
+                    identity(), canonical_document_sha256(expected_document)
+                )
+                self.assertEqual(
+                    resolver.call_args_list,
+                    [call("OpenMOSS/test-model", "config.json")] * 2,
+                )
+
     def test_request_prefers_inventory_and_retains_narrator_fallback(self):
         with TemporaryDirectory() as directory:
             plan, group, _manifest = ambiguous_fixture(Path(directory))

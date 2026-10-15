@@ -53,8 +53,9 @@ from vntts.game_content_importer import (
     GameContentImportCancelled,
     Reverse1999GameImporter,
 )
-from vntts.game_narrator import load_original_reference
+from vntts.game_narrator import load_original_reference, narrator_preview_plan
 from vntts.person_link_suggestions import PersonLinkSuggestion
+from vntts.pregeneration_audition import COMPARISON_PREVIEW_TEXT
 from vntts.pregeneration_audition_ui import (
     VoiceAuditionPanel,
     VoiceAuditionUIError,
@@ -123,6 +124,7 @@ from vntts.speech_presentation import (
     speech_configuration_label,
     speech_configuration_rows,
 )
+from vntts.story_voice_preview_ui import StoryVoicePreview
 from vntts.support import record_background_operation
 from vntts.ui_text import (
     copy_text_button,
@@ -313,7 +315,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.importer = importer or Reverse1999GameImporter()
         self.game_narrator_chooser = game_narrator_chooser
         self._initialize_task_runners(audition_service, preview_player, thread_pool)
-        self._initialize_state(preview_player)
+        self._initialize_state()
         self.readingLineObserved.connect(self._reading_line_observed)
         self._configure_window()
         narrator_row = self._build_voice_controls(game_narrator_chooser)
@@ -354,6 +356,14 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_panel.completed.connect(self._voice_auditions_completed)
         self.voice_panel.cancelled.connect(self._voice_auditions_cancelled)
         self.voice_panel.saveFailed.connect(lambda: self.cancel_button.setEnabled(True))
+        self._narrator_player = preview_player
+        self._summary_preview_target: str | None = None
+        self.summary_voice_preview = StoryVoicePreview(
+            self.voice_panel.preview_service,
+            self,
+            player=preview_player,
+            thread_pool=thread_pool,
+        )
         self.input_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.input_runner.finished.connect(self._generation_input_finished)
         self.sequence_runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -382,7 +392,7 @@ class OfflineAudioPreparationDialog(QDialog):
         ):
             runner.activeChanged.connect(self.activityChanged.emit)
 
-    def _initialize_state(self, preview_player: QtPcmPlayer | None) -> None:
+    def _initialize_state(self) -> None:
         self._progress_baseline: tuple[float, int] | None = None
         self._progress_snapshot: OfflineGenerationProgress | None = None
         self._reading_line_id: str | None = None
@@ -435,7 +445,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self._provisional_binding_rollback: VoiceBindingRollback | None = None
         self._changes_rows: tuple[tuple[str, str], ...] = ()
         self._resume_error_details = ""
-        self._narrator_player = preview_player
 
     def _configure_window(self) -> None:
         self._voice_plan_window_size: QSize | None = None
@@ -847,6 +856,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self, game_narrator_chooser: Callable[..., AppSettings | None] | None
     ) -> None:
         self.voice_confirmation = QGroupBox("Voices for selected stories")
+        self.voice_confirmation.installEventFilter(self.summary_voice_preview)
         self.voice_confirmation.setVisible(False)
         self.voice_configuration = QLabel()
         self.voice_configuration.setWordWrap(True)
@@ -855,6 +865,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self.confirmed_narrator.setWordWrap(True)
         self.confirmed_narrator.setAccessibleName("Narrator for prepared audio")
         self.edit_confirmed_narrator = QPushButton("Change narrator...")
+        self.play_summary_narrator = QPushButton("Play narrator")
+        self.play_summary_narrator.clicked.connect(self._play_summary_narrator)
         self.edit_confirmed_narrator.clicked.connect(self._choose_game_narrator)
         self.edit_confirmed_narrator.setVisible(game_narrator_chooser is not None)
         self.work_summary = QLabel()
@@ -870,6 +882,10 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_confirmation_status = QLabel()
         self.voice_confirmation_status.setTextFormat(Qt.TextFormat.PlainText)
         self.voice_confirmation_status.setWordWrap(True)
+        self.summary_voice_preview.statusChanged.connect(
+            self.voice_confirmation_status.setText
+        )
+        self.summary_voice_preview.activeChanged.connect(self._summary_preview_changed)
         self._layout_voice_confirmation()
 
     def _build_preparation_details(self) -> None:
@@ -944,6 +960,15 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.inspect_character_voice.setEnabled(False)
         self.inspect_character_voice.clicked.connect(self._inspect_character_voice)
+        self.play_selected_voice = QPushButton("Play selected voice")
+        self.play_selected_voice.setAccessibleDescription(
+            "Preview the voice this role will actually use, without changing its choice."
+        )
+        self.play_selected_voice.clicked.connect(self._play_selected_voice)
+        self.play_selected_voice.setEnabled(False)
+        self.voice_routes.currentItemChanged.connect(
+            lambda _item, _previous: self._stop_summary_preview()
+        )
         self.link_identity = QPushButton("Link same person...")
         self.link_identity.clicked.connect(self._link_selected_person)
         self.unlink_identity = QPushButton("Unlink name")
@@ -1017,9 +1042,10 @@ class OfflineAudioPreparationDialog(QDialog):
         confirmation_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         narrator_row = QHBoxLayout()
         narrator_row.addWidget(self.confirmed_narrator, 1)
-        narrator_row.addWidget(
-            self.edit_confirmed_narrator, alignment=Qt.AlignmentFlag.AlignTop
-        )
+        narrator_actions = QVBoxLayout()
+        narrator_actions.addWidget(self.play_summary_narrator)
+        narrator_actions.addWidget(self.edit_confirmed_narrator)
+        narrator_row.addLayout(narrator_actions)
         confirmation_layout.addLayout(narrator_row)
         confirmation_layout.addWidget(self.change_summary)
         confirmation_layout.addWidget(self.narrator_controls)
@@ -1032,7 +1058,10 @@ class OfflineAudioPreparationDialog(QDialog):
         actions = QHBoxLayout()
         actions.addWidget(self.back_to_story_selection)
         actions.addStretch()
-        actions.addWidget(self.inspect_character_voice)
+        voice_actions = QVBoxLayout()
+        voice_actions.addWidget(self.play_selected_voice)
+        voice_actions.addWidget(self.inspect_character_voice)
+        actions.addLayout(voice_actions)
         confirmation_layout.addLayout(actions)
         confirmation_layout.addWidget(self.more_voice_actions_toggle)
         confirmation_layout.addWidget(self.more_voice_actions)
@@ -1208,6 +1237,7 @@ class OfflineAudioPreparationDialog(QDialog):
         if self.has_pending_work():
             return
         assert self.game_narrator_chooser is not None
+        self._stop_summary_preview()
         previous_voices = self.voice_library.bindings()
         settings = self.game_narrator_chooser(self.settings, self)
         if settings is None:
@@ -1224,6 +1254,7 @@ class OfflineAudioPreparationDialog(QDialog):
         character = item.data(Qt.ItemDataRole.UserRole)
         if not isinstance(character, str) or not character:
             return
+        self._stop_summary_preview()
         if self._narrator_player is not None:
             self._narrator_player.stop()
         previous_voices = self.voice_library.bindings()
@@ -1245,6 +1276,114 @@ class OfflineAudioPreparationDialog(QDialog):
             self.apply_narrator_settings(
                 settings,
                 voice_changed=self.voice_library.bindings() != previous_voices,
+            )
+
+    def _summary_preview_changed(self, active: bool) -> None:
+        if not active:
+            self._summary_preview_target = None
+        self.play_selected_voice.setText(
+            "Stop preview"
+            if active and self._summary_preview_target == "role"
+            else "Play selected voice"
+        )
+        self.play_summary_narrator.setText(
+            "Stop preview"
+            if active and self._summary_preview_target == "narrator"
+            else "Play narrator"
+        )
+
+    def _stop_summary_preview(self) -> None:
+        was_active = self.summary_voice_preview.active
+        self.summary_voice_preview.stop()
+        if was_active:
+            self.voice_confirmation_status.setText("Voice preview stopped.")
+
+    def _summary_narrator_request(
+        self, role: VoiceGroup | None = None
+    ) -> tuple[VoicePlan, VoiceGroup, str]:
+        plan = self._voice_plan
+        source = self.narrator_choice.currentData()
+        if plan is None or not isinstance(source, str):
+            raise ValueError(
+                "Choose a narrator in Voices before previewing its fallback."
+            )
+        for group in ((role,) if role is not None else ()) + plan.groups:
+            if (
+                group.narrator_candidate
+                and group.narrator_candidate.source_id == source
+            ):
+                return plan, group, source
+        settings = resolve_pregeneration_settings(self.settings).updated(
+            speech_backend=plan.synthesis_backend,
+            tts_model=plan.synthesis_model,
+            tts_language=plan.synthesis_language,
+            tts_profile=plan.synthesis_profile,
+            pocket_gated_model_accepted=plan.pocket_voice_cloning,
+        )
+        preview = narrator_preview_plan(
+            settings, plan.voice_manifest, source, COMPARISON_PREVIEW_TEXT
+        )
+        return preview, preview.groups[0], source
+
+    def _play_summary_narrator(self) -> None:
+        self._play_summary_voice("narrator")
+
+    def _play_selected_voice(self) -> None:
+        self._play_summary_voice("role")
+
+    def _play_summary_voice(self, target: str) -> None:
+        if self._summary_preview_target == target and self.summary_voice_preview.active:
+            self._stop_summary_preview()
+            self.voice_confirmation_status.setText("Voice preview stopped.")
+            return
+        if (
+            not self._awaiting_voice_confirmation
+            or self._voice_plan is None
+            or self.has_pending_work()
+            or self._voice_plan_needs_update()
+        ):
+            return
+        self._stop_summary_preview()
+        if self._narrator_player is not None:
+            self._narrator_player.stop()
+        try:
+            if target == "narrator":
+                plan, group, source = self._summary_narrator_request()
+            else:
+                item = self.voice_routes.currentItem()
+                group_id = (
+                    item.data(int(Qt.ItemDataRole.UserRole) + 1) if item else None
+                )
+                selected_group = next(
+                    (
+                        value
+                        for value in self._voice_plan.groups
+                        if value.group_id == group_id
+                    ),
+                    None,
+                )
+                if selected_group is None:
+                    raise ValueError("Select a voice role first.")
+                group = selected_group
+                if group.route in {"narrator", "needs-audition"}:
+                    plan, group, source = self._summary_narrator_request(group)
+                elif group.route == "voice":
+                    plan, source = self._voice_plan, group.source_id
+                else:
+                    raise ValueError(
+                        "Inspect this role and choose a supported voice first."
+                    )
+            text = (
+                COMPARISON_PREVIEW_TEXT
+                if plan.synthesis_language in {None, "en", "English"}
+                else group.sample_text
+            )
+            self._summary_preview_target = target
+            self.summary_voice_preview.play(plan, group, source, text)
+        except (OSError, ValueError) as error:
+            self._summary_preview_target = None
+            self.voice_confirmation_status.setText(
+                f"Unable to preview this voice: {error}"
             )
 
     def _inspect_character_voice(self) -> None:
@@ -1310,6 +1449,7 @@ class OfflineAudioPreparationDialog(QDialog):
         role = self._selected_routing_role()
         ready = role is not None and not self._voice_plan_needs_update()
         self.inspect_character_voice.setEnabled(ready)
+        self.play_selected_voice.setEnabled(ready)
         self.choose_character_voice.setEnabled(ready)
         if role and normalize_character_name(role) == "narrator":
             role = None
@@ -1778,6 +1918,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self._set_selection_status(f"Unable to show character voices: {error}")
             return
         self._awaiting_voice_confirmation = True
+        self.content_scroll.show()
         self.continue_button.show()
         self.game_narrator_button.setEnabled(True)
         self.pocket_voice_cloning.setEnabled(True)
@@ -1798,7 +1939,6 @@ class OfflineAudioPreparationDialog(QDialog):
                 else ""
             )
         )
-        self._update_confirmed_narrator()
         self.voice_configuration.setToolTip(
             "These voices apply to generated lines in the selected stories. "
             "Matching saved work can be resumed. Other prepared stories remain unchanged."
@@ -2116,10 +2256,23 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_routes.setItemWidget(item, card)
 
     def _narrator_choice_changed(self, _index: int | None = None) -> None:
+        self._stop_summary_preview()
         source_id = self.narrator_choice.currentData()
         self.narrator_choice.setToolTip(self.narrator_choice.currentText())
         self._refresh_narrator_status()
         self._update_confirmed_narrator()
+        can_preview = isinstance(source_id, str) and (
+            source_id.startswith("character:")
+            or source_id.startswith("preset:")
+            and self._voice_plan is not None
+            and self._voice_plan.synthesis_backend == "pocket-tts"
+        )
+        self.play_summary_narrator.setEnabled(can_preview)
+        self.play_summary_narrator.setToolTip(
+            "Play generated speech with the narrator shown here."
+            if can_preview
+            else "Choose a supported narrator reference or Pocket built-in voice in Voices."
+        )
         if self._narrator_player is not None:
             self._narrator_player.stop()
         self.play_narrator_reference.setEnabled(
@@ -2176,6 +2329,7 @@ class OfflineAudioPreparationDialog(QDialog):
         )
 
     def _play_narrator_reference(self) -> None:
+        self._stop_summary_preview()
         source_id = self.narrator_choice.currentData()
         if not (
             self._voice_plan is not None
@@ -5290,6 +5444,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.source_status.show()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self.summary_voice_preview.close()
         self._stop_generation_progress()
         if self.has_pending_work() or self.sequence_runner.active:
             self._cancel_or_reject()
@@ -5315,6 +5470,7 @@ class OfflineAudioPreparationDialog(QDialog):
         super().closeEvent(event)
 
     def done(self, result: int) -> None:
+        self.summary_voice_preview.close()
         if self._narrator_player is not None:
             self._narrator_player.stop()
         if self.has_pending_work():
