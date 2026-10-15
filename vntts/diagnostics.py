@@ -38,6 +38,7 @@ class DiagnosticSnapshot:
     speaker_image: Image.Image | None = field(default=None, repr=False, compare=False)
     speaker_confidence: float | None = None
     dialogue_confidence: float | None = None
+    speaker_note: str = ""
 
 
 def resolve_voice_label(

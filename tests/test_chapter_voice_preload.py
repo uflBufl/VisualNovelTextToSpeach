@@ -287,6 +287,36 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
 
         self.assertEqual(line.line_id, "line-a")
         self.assertEqual(result, "expected-text-only")
+        self.assertEqual(preloader.current_match, ChapterMatch("1", 1, 1.0))
+
+    def test_exact_evidence_requires_full_identity_and_preserves_context(self):
+        text = "Only the explicit branch candidate may match."
+        first = ChapterDialogue("first", "1", 1, "Ada", text, "a" * 64)
+        duplicate = ChapterDialogue("duplicate", "1", 2, "Bea", text, "a" * 64)
+        missing_checksum = ChapterDialogue(
+            "missing-checksum", "1", 3, "Ada", text, None
+        )
+        missing_id = ChapterDialogue(None, "1", 4, "Ada", text, "a" * 64)
+        preloader = ChapterVoicePreloader(
+            (first, duplicate, missing_checksum, missing_id)
+        )
+        previous_match = ChapterMatch("other-chapter", 9, 1.0)
+        preloader.current_match = previous_match
+
+        for observed, candidates, expected in (
+            (text, ("first",), (first, "expected-text-only")),
+            (text, ("first", "duplicate"), (None, "expected-ambiguous")),
+            ("Only the explicit branch", ("first",), (None, "expected-no-match")),
+            (text, ("missing-checksum",), (None, "expected-no-match")),
+            (text, ("missing-id",), (None, "expected-no-match")),
+        ):
+            with self.subTest(observed=observed, candidates=candidates):
+                result = preloader.resolve_exact_among(
+                    "", observed, candidates, update_context=False
+                )
+
+                self.assertEqual(result, expected)
+                self.assertIs(preloader.current_match, previous_match)
 
     def test_expected_resolution_rejects_ambiguous_repeated_text(self):
         text = "The same repeated line."

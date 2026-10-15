@@ -161,6 +161,10 @@ class DiagnosticsDialog(QDialog):
         make_text_copyable(self)
 
     def _create_body(self) -> QWidget:
+        self.speaker_note = QLabel()
+        self.speaker_note.setTextFormat(Qt.TextFormat.PlainText)
+        self.speaker_note.setWordWrap(True)
+        self.speaker_note.hide()
         speaker_details = QFormLayout()
         speaker_details.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         speaker_details.addRow("Speaker", self.speaker)
@@ -200,6 +204,7 @@ class DiagnosticsDialog(QDialog):
         body_layout.addLayout(speaker_processed_header)
         body_layout.addWidget(self.speaker_processed_preview)
         body_layout.addLayout(speaker_details)
+        body_layout.addWidget(self.speaker_note)
         body_layout.addLayout(processed_header)
         body_layout.addWidget(self.processed_preview)
         body_layout.addWidget(processed_help)
@@ -322,6 +327,8 @@ class DiagnosticsDialog(QDialog):
         self._finish_refresh(f"Showing capture from {self.last_capture_time}.")
         self.set_warning("")
         self.speaker.setText(snapshot.character or "Narrator")
+        self.speaker_note.setText(snapshot.speaker_note)
+        self.speaker_note.setVisible(bool(snapshot.speaker_note))
         speaker_confidence = getattr(snapshot, "speaker_confidence", None)
         dialogue_confidence = getattr(snapshot, "dialogue_confidence", None)
         if dialogue_confidence is None:

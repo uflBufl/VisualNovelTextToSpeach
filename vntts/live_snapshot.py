@@ -28,6 +28,7 @@ def read_live_snapshot(
     correction_dictionary: OCRCorrectionDictionary | None = None,
     region: DialogRegion | None = None,
     ocr_regions: OCRRegions | None = None,
+    result_resolver: Callable[[OCRResult], OCRResult] | None = None,
 ) -> tuple[str | None, str]:
     image, _, result = analyze_dialog_snapshot(
         screenshot_directory,
@@ -40,6 +41,7 @@ def read_live_snapshot(
         correction_dictionary=correction_dictionary,
         region=region,
         ocr_regions=ocr_regions,
+        result_resolver=result_resolver,
     )
     if result.text and not result.is_confident(minimum_confidence):
         if uncertain_frame_recorder is not None:

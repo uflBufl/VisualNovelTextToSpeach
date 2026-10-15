@@ -146,6 +146,7 @@ def recognize_screenshot_result(
     correction_dictionary: OCRCorrectionDictionary | None = None,
     ocr_backend: OCRBackend | None = None,
     ocr_regions: OCRRegions | None = None,
+    result_resolver: Callable[[OCRResult], OCRResult] | None = None,
 ) -> OCRResult:
     try:
         backend = ocr_backend or TesseractOCRBackend(recognize_dialog_image_result)
@@ -164,11 +165,12 @@ def recognize_screenshot_result(
                 language=ocr_language,
                 ocr_regions=ocr_regions,
             )
-        return (
+        result = (
             correction_dictionary.correct_result(result)
             if correction_dictionary is not None
             else result
         )
+        return result_resolver(result) if result_resolver is not None else result
     except Exception as error:
         raise OCRError(str(error)) from error
 
@@ -457,6 +459,7 @@ def recognize_live_frame(
     ellipsis_speaker_resolver: object | None = None,
     *,
     clock: Clock = monotonic,
+    result_resolver: Callable[[OCRResult], OCRResult] | None = None,
 ) -> tuple[str | None, str]:
     image = _frame_image(frame)
     capture_ms = getattr(frame, "capture_ms", None)
@@ -470,6 +473,7 @@ def recognize_live_frame(
         ocr_language,
         correction_dictionary,
         ocr_regions=getattr(frame, "ocr_regions", None),
+        result_resolver=result_resolver,
     )
     regions = getattr(frame, "ocr_regions", None)
     dialogue_image = (
@@ -504,6 +508,7 @@ def recognize_live_frame(
         speaker_image=result.speaker_image,
         speaker_confidence=result.speaker_confidence,
         dialogue_confidence=result.dialogue_confidence,
+        speaker_note=result.speaker_note,
     )
     if diagnostic_handler is not None:
         diagnostic_handler(snapshot)
@@ -559,6 +564,7 @@ def analyze_dialog_snapshot(
     correction_dictionary: OCRCorrectionDictionary | None = None,
     region: DialogRegion | None = None,
     ocr_regions: OCRRegions | None = None,
+    result_resolver: Callable[[OCRResult], OCRResult] | None = None,
 ) -> tuple[Image.Image, Path | None, OCRResult]:
     capture_started = clock()
     image, output = capture_dialog(
@@ -577,6 +583,7 @@ def analyze_dialog_snapshot(
         ocr_language,
         correction_dictionary,
         ocr_regions=ocr_regions,
+        result_resolver=result_resolver,
     )
     ocr_ms = (clock() - ocr_started) * 1000
     snapshot = DiagnosticSnapshot(
@@ -597,6 +604,7 @@ def analyze_dialog_snapshot(
         speaker_image=result.speaker_image,
         speaker_confidence=result.speaker_confidence,
         dialogue_confidence=result.dialogue_confidence,
+        speaker_note=result.speaker_note,
     )
     if diagnostic_handler is not None:
         diagnostic_handler(snapshot)
@@ -616,6 +624,7 @@ def read_dialog(
     correction_dictionary: OCRCorrectionDictionary | None = None,
     region: DialogRegion | None = None,
     ocr_regions: OCRRegions | None = None,
+    result_resolver: Callable[[OCRResult], OCRResult] | None = None,
 ) -> None:
     image, output, result = analyze_dialog_snapshot(
         screenshot_directory,
@@ -629,6 +638,7 @@ def read_dialog(
         ocr_language=ocr_language,
         correction_dictionary=correction_dictionary,
         ocr_regions=ocr_regions,
+        result_resolver=result_resolver,
     )
     if result.text and not result.is_confident(minimum_confidence):
         error = OCRUncertainError(result, minimum_confidence)
@@ -669,6 +679,7 @@ def read_dialog_safely(
     correction_dictionary: OCRCorrectionDictionary | None = None,
     region: DialogRegion | None = None,
     ocr_regions: OCRRegions | None = None,
+    result_resolver: Callable[[OCRResult], OCRResult] | None = None,
 ) -> None:
     try:
         read_dialog(
@@ -684,6 +695,7 @@ def read_dialog_safely(
             correction_dictionary,
             region,
             ocr_regions,
+            result_resolver,
         )
     except Exception as error:
         (error_handler or report_runtime_error)(error)

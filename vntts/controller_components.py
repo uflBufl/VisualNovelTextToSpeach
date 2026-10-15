@@ -648,6 +648,7 @@ class RuntimeLifecycleComponent:
             correction_dictionary=controller.correction_dictionary,
             region_provider=controller._capture_region,
             ocr_regions_provider=controller._capture_ocr_regions,
+            result_resolver=controller._resolve_story_ocr_result,
         )
         return True
 
@@ -867,6 +868,7 @@ class LiveSessionComponent:
             controller.correction_dictionary,
             controller._capture_region(),
             controller._capture_ocr_regions(),
+            controller._resolve_story_ocr_result,
         )
         if is_empty(text):
             controller.live_scope_identification_failure = "no-dialog-text"
@@ -1394,6 +1396,7 @@ class DiagnosticsComponent:
             correction_dictionary=controller.correction_dictionary,
             region=controller._capture_region(),
             ocr_regions=controller._capture_ocr_regions(),
+            result_resolver=controller._resolve_story_ocr_result,
         )
         snapshot = snapshots[-1]
         return (
@@ -1420,6 +1423,7 @@ class DiagnosticsComponent:
             correction_dictionary=controller.correction_dictionary,
             region=controller._capture_region(),
             ocr_regions=controller._capture_ocr_regions(),
+            result_resolver=controller._resolve_story_ocr_result,
         )
         if result.text and not result.is_confident(
             controller.settings.ocr_minimum_confidence

@@ -91,6 +91,20 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(recognized, ("Marcus", "Hello?"))
         self.assertIs(snapshots[0].processed_image, processed_image)
 
+    def test_story_speaker_provenance_is_plain_text_and_clears_for_the_next_snapshot(
+        self,
+    ):
+        dialog = DiagnosticsDialog()
+        note = "Speaker from prepared story; raw OCR: <a ae Ce>"
+        dialog.set_snapshot(DiagnosticSnapshot(None, speaker_note=note))
+        self.assertEqual(dialog.speaker_note.text(), note)
+        self.assertEqual(dialog.speaker_note.textFormat(), Qt.TextFormat.PlainText)
+        self.assertFalse(dialog.speaker_note.isHidden())
+        dialog.set_snapshot(DiagnosticSnapshot(None))
+        self.assertTrue(dialog.speaker_note.isHidden())
+        self.assertEqual(dialog.speaker_note.text(), "")
+        dialog.close()
+
     def test_dialog_renders_snapshot_and_latencies(self):
         dialog = DiagnosticsDialog()
         self.assertLessEqual(dialog.width(), 700)

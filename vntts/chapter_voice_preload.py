@@ -332,7 +332,12 @@ class ChapterVoicePreloader:
         return selected, match_result
 
     def resolve_exact_among(
-        self, character: object, text: object, line_ids: Iterable[object]
+        self,
+        character: object,
+        text: object,
+        line_ids: Iterable[object],
+        *,
+        update_context: bool = True,
     ) -> tuple[ChapterDialogue | None, str]:
         """Resolve one OCR observation only among explicit cursor candidates."""
         allowed = {str(line_id) for line_id in line_ids if line_id}
@@ -372,7 +377,8 @@ class ChapterVoicePreloader:
         if len(candidates) != 1:
             return None, "expected-ambiguous" if candidates else "expected-no-match"
         selected = candidates[0]
-        self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
+        if update_context:
+            self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
         return selected, match_result
 
     def resolve_bounded_among(

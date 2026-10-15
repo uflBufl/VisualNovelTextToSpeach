@@ -270,6 +270,7 @@ class OCRResult:
     speaker_image: Image.Image | None = field(default=None, repr=False, compare=False)
     speaker_confidence: float | None = None
     dialogue_confidence: float | None = None
+    speaker_note: str = ""
 
     def is_confident(self, minimum: float = default_minimum_ocr_confidence) -> bool:
         return bool(self.text.strip()) and self.confidence >= minimum

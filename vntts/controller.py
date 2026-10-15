@@ -14,7 +14,11 @@ from typing import Protocol, TypeGuard, runtime_checkable
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.auto_advance import DialogueAdvancer
 from vntts.auto_advance_policy import auto_advance_allowed
-from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
+from vntts.chapter_voice_preload import (
+    ChapterDialogue,
+    ChapterVoicePreloader,
+    _normalize_exact_text,
+)
 from vntts.controller_components import (
     DiagnosticsComponent,
     LiveSessionComponent,
@@ -412,6 +416,7 @@ def create_dialog_read_scheduler(
     correction_dictionary: OCRCorrectionDictionary | None = None,
     region_provider: Callable[[], DialogRegion] | None = None,
     ocr_regions_provider: Callable[[], OCRRegions | None] | None = None,
+    result_resolver: Callable[[OCRResult], OCRResult] | None = None,
 ) -> _ScheduledDialogRead:
     def deliver(character: str, text: str) -> object:
         if speech_handler is not None:
@@ -438,6 +443,7 @@ def create_dialog_read_scheduler(
             ocr_regions=ocr_regions_provider()
             if ocr_regions_provider is not None
             else None,
+            result_resolver=result_resolver,
         )
 
     return _ScheduledDialogRead(submit, deliver, live_reader, shutdown_requested)
@@ -1026,8 +1032,72 @@ class AppController:
             self.settings.ocr_language,
             self.correction_dictionary,
             ellipsis_speaker_resolver=self.chapter_voice_preloader,
+            result_resolver=self._resolve_story_ocr_result,
         )
         return self._canonical_observed_character(character, text), text
+
+    def _resolve_story_ocr_result(self, result: OCRResult) -> OCRResult:
+        confidence = (
+            result.confidence
+            if result.dialogue_confidence is None
+            else result.dialogue_confidence
+        )
+        if (
+            not result.text.strip()
+            or not confidence >= self.settings.ocr_minimum_confidence
+        ):
+            return result
+        with self.story_cursor_lock:
+            preloader = self.chapter_voice_preloader
+            plan, cursor = self.live_sequence_plan, self.story_cursor
+            if plan is not None and self.settings.live_sequence_mode != "off":
+                events = (
+                    (cursor.current_event, *cursor.bounded_visible_successors())
+                    if cursor is not None
+                    and cursor.current_event is not None
+                    and cursor.state
+                    not in {StoryCursorState.UNSYNCHRONIZED, StoryCursorState.ANCHORING}
+                    else tuple(plan.events.values())
+                )
+                line_ids = tuple(
+                    event.line_id
+                    for event in events
+                    if event is not None
+                    and event.is_speech
+                    and event.line_id is not None
+                )
+            else:
+                rows = (
+                    preloader.dialogue
+                    if preloader.current_match is None
+                    else preloader.by_chapter.get(preloader.current_match.chapter, ())
+                )
+                line_ids = tuple(row.line_id for row in rows if row.line_id)
+            line, _match = preloader.resolve_exact_among(
+                "", result.text, line_ids, update_context=False
+            )
+        if line is None:
+            return result
+        # A short complete line can also be the still-rendering start of another.
+        if any(
+            (candidate := preloader.line_for_id(line_id)) is not None
+            and candidate.line_id != line.line_id
+            and candidate.text_sha256
+            and _normalize_exact_text(candidate.text).startswith(
+                _normalize_exact_text(line.text)
+            )
+            for line_id in line_ids
+        ):
+            return result
+        return replace(
+            result,
+            character=line.speaker,
+            text=line.text,
+            confidence=confidence,
+            speaker_note=(
+                f"Speaker from the prepared story; OCR name ignored: {result.character}"
+            ),
+        )
 
     def _preview_voice(self, character: str, text: str) -> tuple[str, str]:
         try:
