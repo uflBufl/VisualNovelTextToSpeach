@@ -494,7 +494,7 @@ class UiCatalogTest(unittest.TestCase):
                     0,
                 )
 
-    def test_game_profile_packet_covers_selection_and_compact_states(self):
+    def test_game_profile_packet_covers_selection_and_settings_edge_cases(self):
         root = Path(__file__).resolve().parents[1]
         with TemporaryDirectory() as directory:
             output = Path(directory) / "catalog"
@@ -524,6 +524,9 @@ class UiCatalogTest(unittest.TestCase):
                     "game-profiles.active",
                     "game-profiles.other-selected",
                     "game-profiles.compact",
+                    "game-profiles.missing-window",
+                    "game-profiles.long-values",
+                    "game-profiles.pack-backed",
                 },
             )
             for story in packet["target"]["stories"]:

@@ -6,12 +6,14 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
-    QGroupBox,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -21,6 +23,7 @@ from vntts.ocr import get_dialog_region, get_ocr_regions
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.profiles import GameProfile, GameProfileStore
 from vntts.settings import AppSettings
+from vntts.ui_text import copy_text_button, make_text_copyable, set_labeled_text
 
 
 class GameProfilesDialog(QDialog):
@@ -39,8 +42,20 @@ class GameProfilesDialog(QDialog):
         self.selected_settings: AppSettings | None = None
         self.setWindowTitle("Game profiles")
         self.setMinimumWidth(500)
+        if self.store.profiles:
+            self.resize(600, 440)
+        else:
+            self.resize(500, 200)
 
         self.profiles = QComboBox()
+        self.profiles.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.profiles.setMinimumContentsLength(20)
+        self.profiles.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self.profiles.setAccessibleName("Selected game profile")
         self.profiles.currentIndexChanged.connect(self.update_summary)
         self.create_button = QPushButton("Save current setup...")
         self.duplicate_button = QPushButton("Duplicate...")
@@ -59,24 +74,43 @@ class GameProfilesDialog(QDialog):
         actions.addWidget(self.rename_button)
         actions.addWidget(self.remove_button)
         actions.addStretch()
+        self.profile_actions = QWidget()
+        self.profile_actions.setLayout(actions)
+        actions.setContentsMargins(0, 0, 0, 0)
         management_layout = QVBoxLayout()
+        management_layout.addWidget(self.profile_actions)
         management_layout.addWidget(
             self.create_button, alignment=Qt.AlignmentFlag.AlignLeft
         )
-        management_layout.addLayout(actions)
-        management = QGroupBox("Manage stored profiles")
+        management = QWidget()
         management.setLayout(management_layout)
+        management_layout.setContentsMargins(0, 0, 0, 0)
 
         self.active_status = QLabel()
         self.active_status.setAccessibleName("Active game profile")
         self.active_status.setWordWrap(True)
+        self.active_status.setTextFormat(Qt.TextFormat.PlainText)
         self.summary = QLabel()
         self.summary.setAccessibleName("Selected game profile settings")
         self.summary.setWordWrap(True)
         form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         form.addRow("Active", self.active_status)
-        form.addRow("Profile", self.profiles)
-        summary_label = QLabel("Stored settings")
+        form.addRow("Selected profile", self.profiles)
+        self.profile_selection = QWidget()
+        self.profile_selection.setLayout(form)
+        form.setContentsMargins(0, 0, 0, 0)
+        self.summary_scroll = QScrollArea()
+        self.summary_scroll.setWidgetResizable(True)
+        self.summary_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.summary_scroll.setWidget(self.summary)
+        self.copy_settings = copy_text_button("Copy settings", self.summary.toolTip)
+        self.summary_heading = QWidget()
+        heading = QHBoxLayout(self.summary_heading)
+        heading.setContentsMargins(0, 0, 0, 0)
+        heading.addWidget(QLabel("Selected profile settings"))
+        heading.addStretch()
+        heading.addWidget(self.copy_settings)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         self.use_button = buttons.addButton(
@@ -86,19 +120,35 @@ class GameProfilesDialog(QDialog):
         self.use_button.setAccessibleName("Activate selected game profile")
         buttons.accepted.connect(self.use_profile)
         buttons.rejected.connect(self.reject)
-        persistence_note = QLabel("Profile changes are saved immediately.")
-        persistence_note.setWordWrap(True)
+        self.persistence_note = QLabel("Profile changes are saved immediately.")
+        self.persistence_note.setWordWrap(True)
+        self.close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
+        for button in (
+            self.create_button,
+            self.duplicate_button,
+            self.rename_button,
+            self.remove_button,
+            self.copy_settings,
+            self.use_button,
+            self.close_button,
+        ):
+            button.setAutoDefault(False)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(summary_label)
-        layout.addWidget(self.summary)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        layout.addWidget(self.profile_selection)
+        layout.addWidget(self.summary_heading)
+        layout.addWidget(self.summary_scroll, 1)
         layout.addWidget(management)
-        layout.addWidget(persistence_note)
+        layout.addWidget(self.persistence_note)
         layout.addWidget(buttons)
+        make_text_copyable(self)
+        self.summary.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.refresh_profiles(settings.active_profile_id)
 
     def refresh_profiles(self, selected_id: str | None = None) -> None:
+        was_empty = self.profiles.count() == 0
         self.profiles.clear()
         for profile in sorted(
             self.store.profiles, key=lambda item: item.name.casefold()
@@ -109,6 +159,11 @@ class GameProfilesDialog(QDialog):
             if index >= 0:
                 self.profiles.setCurrentIndex(index)
         self.update_summary()
+        if was_empty != (self.profiles.count() == 0):
+            if self.store.profiles:
+                self.resize(600, 440)
+            else:
+                self.resize(500, 200)
 
     def current_profile(self) -> GameProfile | None:
         profile_id = self.profiles.currentData()
@@ -265,6 +320,15 @@ class GameProfilesDialog(QDialog):
             else "Apply the selected stored settings and make this profile active"
         )
         has_profile = profile is not None
+        self.profile_selection.setVisible(has_profile)
+        self.summary_heading.setVisible(has_profile)
+        self.profile_actions.setVisible(has_profile)
+        self.use_button.setVisible(has_profile)
+        self.persistence_note.setVisible(has_profile)
+        self.profiles.setToolTip(profile.name if profile else "")
+        self.create_button.setDefault(not has_profile)
+        self.close_button.setDefault(selected_is_active)
+        self.use_button.setDefault(has_profile and not selected_is_active)
         self.duplicate_button.setEnabled(has_profile)
         self.rename_button.setEnabled(has_profile)
         self.remove_button.setEnabled(has_profile and not selected_is_active)
@@ -274,28 +338,25 @@ class GameProfilesDialog(QDialog):
             else "Permanently remove the selected stored profile"
         )
         if profile is None:
+            self.summary.setTextFormat(Qt.TextFormat.PlainText)
             self.summary.setText(
-                "No profiles yet. Save the current setup as a profile."
+                "No profiles yet. Save your current game setup to reuse its "
+                "capture, audio and reading settings."
             )
+            self.summary.setToolTip("")
             return
         capture = (
-            f"window '{profile.game_window_title}'"
-            if profile.capture_mode == "window" and profile.game_window_title
-            else "full screen"
+            (
+                f"Window: {profile.game_window_title}"
+                if profile.game_window_title
+                else "Window not selected - choose one in Settings"
+            )
+            if profile.capture_mode == "window"
+            else "Full screen"
         )
-        content = Path(profile.game_pack).name if profile.game_pack else "no game pack"
-        prepared = (
-            Path(profile.generated_audio_manifest).name
-            if profile.generated_audio_manifest
-            else "none"
-        )
-        voice_pack = (
-            Path(profile.voice_manifest).name
-            if profile.voice_manifest
-            else "default narrator"
-        )
+        capture += "; saved dialogue area"
         narrator_routing = (
-            "always live" if profile.force_live_narrator else "prepared audio first"
+            "Always live TTS" if profile.force_live_narrator else "Follows audio source"
         )
         audio_source = {
             "live-tts-only": "Live TTS only",
@@ -308,17 +369,49 @@ class GameProfilesDialog(QDialog):
             "audio-auto": "Automatic prepared-audio advance",
             "audio-manual": "Manual prepared-audio recovery",
         }.get(profile.live_sequence_mode, profile.live_sequence_mode)
+        if profile.live_sequence_mode != "off" and not profile.live_sequence_plan:
+            sequence += (
+                "; from game pack if available"
+                if profile.game_pack
+                else "; no timing plan saved"
+            )
         language = (
             "English (eng)" if profile.ocr_language == "eng" else profile.ocr_language
         )
-        self.summary.setText(
-            f"{'Already active' if selected_is_active else 'Use selected profile to apply:'}\n"
-            f"Capture: {capture} with its calibrated dialogue area\n"
-            f"Content: {content}; story timing: {sequence}\n"
-            f"Audio: {audio_source}; prepared tracks: {prepared}\n"
-            f"Voices: {voice_pack}; narrator: {narrator_routing}\n"
-            f"OCR language: {language}"
+        file_rows = (
+            (
+                "Game content",
+                profile.game_pack or profile.story_index or "Not configured",
+            ),
+            (
+                "Prepared audio",
+                "From game pack"
+                if profile.game_pack
+                else profile.generated_audio_manifest or "None",
+            ),
+            (
+                "Character voices",
+                "From game pack"
+                if profile.game_pack
+                else profile.voice_manifest or "Default narrator",
+            ),
         )
+        rows = (
+            ("Capture", capture),
+            ("OCR language", language),
+            ("Audio source", audio_source),
+            ("Narrator", narrator_routing),
+            ("Story timing", sequence),
+        )
+        set_labeled_text(
+            self.summary,
+            (*rows, *((name, Path(value).name) for name, value in file_rows)),
+        )
+        self.summary.setToolTip(
+            f"Profile: {profile.name}\n"
+            + "\n".join(f"{name}: {value}" for name, value in (*rows, *file_rows))
+        )
+        self.summary_scroll.verticalScrollBar().setValue(0)
 
     def use_profile(self) -> None:
         profile = self.current_profile()

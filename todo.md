@@ -480,8 +480,9 @@ Planned implementation order after approval:
       XTTS model. Confirm changed model selections never inherit another
       model's ready state and that failure text stays readable.
 - [ ] **Validate game profiles on real macOS and Windows hosts:** at 200% text
-      scaling, confirm the full selected-settings summary and every action remain
-      visible, keyboard focus follows selection/management/activation order,
+      scaling, reach the full selected-settings summary by keyboard scrolling,
+      distinguish same-prefix profile names in the open selector, and confirm
+      every action remains visible. Keyboard focus must follow selection/management/activation order;
       unavailable actions are announced as disabled, and Close does not imply
       rollback of saved profile edits. Simulate a read-only region file and full
       settings volume to verify activation leaves the previous profile usable.

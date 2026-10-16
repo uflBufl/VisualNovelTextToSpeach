@@ -220,7 +220,10 @@
         {"id": "game-profiles.empty", "title": "No saved profiles", "state": "The only available step is to save current setup as a profile"},
         {"id": "game-profiles.active", "title": "Current profile selected", "state": "An active profile is identified and cannot be activated twice"},
         {"id": "game-profiles.other-selected", "title": "Different profile selected", "state": "Selection and activation are distinct; the resulting settings are previewed"},
-        {"id": "game-profiles.compact", "title": "Compact profile manager", "state": "Long names and all actions remain usable with larger text"}
+        {"id": "game-profiles.compact", "title": "Compact profile manager", "state": "Long names and all actions remain usable with larger text"},
+        {"id": "game-profiles.missing-window", "title": "Window capture without a selected window", "state": "The stored window mode is identified without implying full-screen capture"},
+        {"id": "game-profiles.long-values", "title": "Long profile settings at larger text", "state": "Long profile and window names and standalone story paths remain readable at compact width with enlarged text"},
+        {"id": "game-profiles.pack-backed", "title": "Game pack owns content settings", "state": "The preview distinguishes the game pack from loose stored story, voice and prepared-audio paths resolved during activation"}
       ]
     },
     {

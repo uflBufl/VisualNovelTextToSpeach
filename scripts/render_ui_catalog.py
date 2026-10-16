@@ -1434,16 +1434,42 @@ def _render_stories(
             settings.updated(
                 capture_mode="window",
                 game_window_title="Reverse: 1999",
+                audio_source_policy="live-tts-only",
             ),
             region=region,
             profile_id="active",
         )
         other = GameProfile.from_settings(
             "A much longer second game profile name",
-            settings.updated(capture_mode="screen", game_window_title=None),
+            settings.updated(
+                capture_mode="screen",
+                game_window_title=None,
+                story_index="/catalog/stories/second-game.jsonl",
+                voice_manifest="/catalog/voices/second-game.json",
+                generated_audio_manifest="/catalog/audio/second-game.json",
+                audio_source_policy="prefer-generated",
+            ),
             region=region,
             profile_id="other",
         )
+        if state == "missing-window":
+            other = replace(other, capture_mode="window", game_window_title=None)
+        elif state == "long-values":
+            other = replace(
+                other,
+                name="The Northern Library and Traveling Company: extended story profile",
+                capture_mode="window",
+                game_window_title="The Northern Library and Traveling Company - Chapter Seven: The Storm Has Passed",
+                story_index="/catalog/stories/northern-library-traveling-company-extended-chapter-seven-story-index.jsonl",
+                voice_manifest="/catalog/voices/northern-library-traveling-company-confirmed-character-voices.json",
+                generated_audio_manifest="/catalog/audio/northern-library-traveling-company-prepared-chapter-seven-recordings.json",
+            )
+        elif state == "pack-backed":
+            other = replace(
+                other,
+                name="Packaged game",
+                game_pack="/catalog/packs/packaged-game.json",
+            )
         profiles = [] if state == "empty" else [active, other]
         store = GameProfileStore(
             Path("/private/tmp/vntts-ui-catalog-unused-profiles.json"), profiles
@@ -1452,9 +1478,15 @@ def _render_stories(
             settings.updated(active_profile_id=None if state == "empty" else "active"),
             store,
         )
-        if state in {"other-selected", "compact"}:
+        if state in {
+            "other-selected",
+            "compact",
+            "missing-window",
+            "long-values",
+            "pack-backed",
+        }:
             dialog.profiles.setCurrentIndex(dialog.profiles.findData("other"))
-        if state == "compact":
+        if state in {"compact", "long-values"}:
             dialog.resize(600, 410)
             font = dialog.font()
             font.setPointSize(font.pointSize() + 4)
@@ -2663,6 +2695,9 @@ def _render_stories(
         "game-profiles.active": lambda: game_profiles("active"),
         "game-profiles.other-selected": lambda: game_profiles("other-selected"),
         "game-profiles.compact": lambda: game_profiles("compact"),
+        "game-profiles.missing-window": lambda: game_profiles("missing-window"),
+        "game-profiles.long-values": lambda: game_profiles("long-values"),
+        "game-profiles.pack-backed": lambda: game_profiles("pack-backed"),
         "voice-import.empty": lambda: voice_import("empty"),
         "voice-import.selected": lambda: voice_import("selected"),
         "voice-import.long-values": lambda: voice_import("long-values"),

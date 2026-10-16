@@ -21,6 +21,7 @@ from vntts.profiles import (  # noqa: E402
 )
 from vntts.profiles_ui import GameProfilesDialog  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
+from vntts.ui_text import plain_label_text  # noqa: E402
 
 
 class GameProfileStoreTest(unittest.TestCase):
@@ -750,7 +751,7 @@ class GameProfilesDialogTest(unittest.TestCase):
             )
 
             self.assertEqual(dialog.active_status.text(), "Active game")
-            self.assertIn("Already active", dialog.summary.text())
+            self.assertTrue(dialog.close_button.isDefault())
             self.assertFalse(dialog.use_button.isEnabled())
             self.assertEqual(dialog.use_button.text(), "Already active")
             self.assertFalse(dialog.remove_button.isEnabled())
@@ -762,11 +763,12 @@ class GameProfilesDialogTest(unittest.TestCase):
             dialog.profiles.setCurrentIndex(dialog.profiles.findData(second.id))
 
             self.assertEqual(dialog.active_status.text(), "Active game")
-            self.assertIn("Use selected profile to apply", dialog.summary.text())
-            self.assertIn("Capture:", dialog.summary.text())
-            self.assertIn("Content:", dialog.summary.text())
-            self.assertIn("Audio:", dialog.summary.text())
-            self.assertIn("Voices:", dialog.summary.text())
+            summary = plain_label_text(dialog.summary)
+            self.assertIn("Capture:", summary)
+            self.assertIn("Game content:", summary)
+            self.assertIn("Audio source:", summary)
+            self.assertIn("Character voices:", summary)
+            self.assertTrue(dialog.use_button.isDefault())
             self.assertTrue(dialog.use_button.isEnabled())
             self.assertEqual(dialog.use_button.text(), "Use selected profile")
             self.assertTrue(dialog.remove_button.isEnabled())
@@ -802,8 +804,98 @@ class GameProfilesDialogTest(unittest.TestCase):
             self.assertFalse(dialog.rename_button.isEnabled())
             self.assertFalse(dialog.remove_button.isEnabled())
             self.assertFalse(dialog.use_button.isEnabled())
+            self.assertTrue(dialog.profile_selection.isHidden())
+            self.assertTrue(dialog.profile_actions.isHidden())
+            self.assertTrue(dialog.summary_heading.isHidden())
+            self.assertTrue(dialog.create_button.isDefault())
             dialog.close()
             dialog.deleteLater()
+
+    def test_summary_preserves_capture_audio_and_standalone_content_meaning(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
+            profile = store.create(
+                "Game <special>",
+                AppSettings(
+                    capture_mode="window",
+                    game_window_title=None,
+                    audio_source_policy="live-tts-only",
+                    force_live_narrator=False,
+                    story_index="/games/<special>/story.json",
+                    voice_manifest="/voices/same-name.json",
+                ),
+            )
+            dialog = GameProfilesDialog(AppSettings(), store)
+            self.addCleanup(dialog.deleteLater)
+            self.addCleanup(dialog.close)
+            summary = plain_label_text(dialog.summary)
+            self.assertIn("Window not selected", summary)
+            self.assertNotIn("Full screen", summary)
+            self.assertIn("saved dialogue area", summary)
+            self.assertIn("Narrator: Follows audio source", summary)
+            self.assertNotIn("prepared audio first", summary)
+            self.assertIn("Game content: story.json", summary)
+            dialog.copy_settings.click()
+            copied = self.application.clipboard().text()
+            self.assertIn("/games/<special>/story.json", copied)
+            self.assertIn("/voices/same-name.json", copied)
+            self.assertIsNone(dialog.settings().active_profile_id)
+            self.assertEqual(dialog.current_profile().id, profile.id)
+
+    def test_pack_summary_does_not_promise_stale_loose_manifest_paths(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
+            store.create(
+                "Pack profile",
+                AppSettings(
+                    game_pack="/games/<special>/pack.json",
+                    voice_manifest="/old/voices.json",
+                    generated_audio_manifest="/old/audio.json",
+                    force_live_narrator=True,
+                ),
+            )
+            with patch("vntts.game_pack.import_game_pack") as load_pack:
+                dialog = GameProfilesDialog(AppSettings(), store)
+                self.addCleanup(dialog.deleteLater)
+                self.addCleanup(dialog.close)
+                summary = plain_label_text(dialog.summary)
+                self.assertIn("Character voices: From game pack", summary)
+                self.assertIn("Prepared audio: From game pack", summary)
+                self.assertIn("Narrator: Always live TTS", summary)
+                self.assertNotIn("/old/", dialog.summary.toolTip())
+                load_pack.assert_not_called()
+
+    def test_long_summary_remains_scrollable_with_visible_completion_actions(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
+            store.create(
+                "A long game profile name " * 5,
+                AppSettings(
+                    capture_mode="window", game_window_title="Game <title> " * 50
+                ),
+            )
+            dialog = GameProfilesDialog(AppSettings(), store)
+            self.addCleanup(dialog.deleteLater)
+            self.addCleanup(dialog.close)
+            font = dialog.font()
+            font.setPointSize(font.pointSize() + 4)
+            dialog.setFont(font)
+            dialog.resize(520, 410)
+            dialog.show()
+            self.application.processEvents()
+            self.assertIn("Game <title>", plain_label_text(dialog.summary))
+            scrollbar = dialog.summary_scroll.verticalScrollBar()
+            self.assertGreater(scrollbar.maximum(), 0)
+            scrollbar.setValue(scrollbar.maximum())
+            self.assertEqual(scrollbar.value(), scrollbar.maximum())
+            self.assertTrue(dialog.use_button.isVisibleTo(dialog))
+            self.assertLessEqual(
+                dialog.use_button.mapTo(
+                    dialog, dialog.use_button.rect().bottomRight()
+                ).y(),
+                dialog.contentsRect().bottom(),
+            )
+            self.assertGreater(dialog.profiles.width(), 250)
 
     def test_failed_correction_copy_removes_incomplete_duplicate(self):
         with TemporaryDirectory() as temporary_directory:
