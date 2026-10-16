@@ -17,7 +17,7 @@ from PySide6.QtCore import (  # noqa: E402
     QThreadPool,
     QTimer,
 )
-from PySide6.QtGui import QCloseEvent  # noqa: E402
+from PySide6.QtGui import QCloseEvent, QKeySequence  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from shiboken6 import isValid  # noqa: E402
@@ -160,8 +160,20 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         self.assertFalse(dialog.replay_button.isEnabled())
         self.assertEqual(dialog.replay_button.text(), "Speak with current voice")
         self.assertEqual(dialog.stop_button.text(), "Stop speaking")
+        self.assertEqual(dialog.stop_button.accessibleName(), "Stop current speech")
+        self.assertEqual(dialog.export_button.text(), "Export history...")
         self.assertFalse(dialog.export_button.isEnabled())
-        self.assertIn("No dialogue has been captured", dialog.status.text())
+        self.assertIn("No dialogue has been captured", dialog.empty_message.text())
+        self.assertEqual(dialog.status.toPlainText(), "")
+
+    def test_whitespace_search_preserves_empty_session_guidance(self):
+        dialog = self.create_dialog(DialogueHistory(), Mock())
+
+        dialog.search.setText("   ")
+
+        self.assertIn("No dialogue has been captured", dialog.empty_message.text())
+        self.assertEqual(dialog.status.toPlainText(), "")
+        self.assertFalse(dialog.export_button.isEnabled())
 
     def test_searches_and_replays_selected_entry(self):
         history = DialogueHistory()
@@ -218,17 +230,69 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         self.assertTrue(dialog.replay_runner.active)
         self.assertFalse(dialog.replay_button.isEnabled())
         self.assertTrue(dialog.stop_button.isEnabled())
-        self.assertIn("Speaking as Marcus", dialog.status.text())
+        self.assertIn("Speaking as Marcus", dialog.status.toPlainText())
         close_event = QCloseEvent()
         dialog.closeEvent(close_event)
         self.assertFalse(close_event.isAccepted())
-        self.assertIn("Stopping", dialog.status.text())
+        self.assertIn("Stopping", dialog.status.toPlainText())
 
         self.wait_for(lambda: not dialog.replay_runner.active)
         stop.assert_called_once_with()
         self.assertTrue(dialog.replay_button.isEnabled())
-        self.assertEqual(dialog.status.text(), "Speech stopped.")
+        self.assertEqual(dialog.status.toPlainText(), "Speech stopped for Marcus.")
         release.set()
+
+    def test_speech_keeps_its_subject_when_selection_and_search_change(self):
+        for fails in (False, True):
+            with self.subTest(fails=fails):
+                history = DialogueHistory()
+                text = "The suitcase is ready."
+                history.add("Marcus", text)
+                history.finish_current()
+                history.add("Lucy", "Good morning.")
+                started = Event()
+                release = Event()
+                self.addCleanup(release.set)
+
+                def replay(_character, _text):
+                    started.set()
+                    release.wait(3)
+                    if fails:
+                        raise RuntimeError("backend unavailable")
+
+                dialog = self.create_dialog(history, replay, stop_handler=Mock())
+                dialog.entries.setCurrentRow(0)
+                dialog.replay_selected()
+                self.wait_for(started.is_set)
+                dialog.entries.setCurrentRow(1)
+
+                self.assertEqual(dialog.current_entry().character, "Lucy")
+                self.assertIn("Speaking as Marcus", dialog.status.toPlainText())
+                self.assertIn(text, dialog.status.toolTip())
+                dialog.search.setText("missing")
+
+                self.assertIn("No matching lines", dialog.empty_message.text())
+                self.assertIn("Speaking as Marcus", dialog.status.toPlainText())
+                self.assertTrue(dialog.stop_button.isEnabled())
+                release.set()
+                self.wait_for(lambda: not dialog.replay_runner.active)
+
+                self.assertIn("No matching lines", dialog.empty_message.text())
+                self.assertIn(text, dialog.status.toolTip())
+                if fails:
+                    self.assertIn(
+                        "Could not speak as Marcus:", dialog.status.toPlainText()
+                    )
+                    self.assertIn("backend unavailable", dialog.status.toPlainText())
+                else:
+                    self.assertEqual(
+                        dialog.status.toPlainText(), "Speech finished for Marcus."
+                    )
+                speech_status = dialog.status.toPlainText()
+                dialog.search.clear()
+                self.assertEqual(dialog.status.toPlainText(), speech_status)
+                self.assertTrue(dialog.replay_button.isEnabled())
+                self.assertFalse(dialog.stop_button.isEnabled())
 
     def test_stop_confirmation_closes_even_if_replay_future_is_unresponsive(self):
         history = DialogueHistory()
@@ -256,7 +320,13 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         release.set()
 
     def test_close_waits_for_stop_even_when_replay_finishes_first(self):
-        for outcome in ("early-close", "late-close", "failed-stop"):
+        for outcome in (
+            "early-close",
+            "late-close",
+            "failed-stop",
+            "unsupported-after-finish",
+            "unsupported-after-failure",
+        ):
             with self.subTest(outcome=outcome):
                 history = DialogueHistory()
                 history.add("Marcus", "Hello.")
@@ -269,13 +339,16 @@ class DialogueHistoryDialogTest(unittest.TestCase):
                     stop_release.wait(3)
                     if outcome == "failed-stop":
                         raise OSError("stop failed")
-                    return True
+                    return not outcome.startswith("unsupported-after-")
+
+                def replay(*_args):
+                    replay_release.wait(3)
+                    if outcome == "unsupported-after-failure":
+                        raise RuntimeError("voice file missing")
 
                 self.addCleanup(stop_release.set)
                 self.addCleanup(replay_release.set)
-                dialog = self.create_dialog(
-                    history, lambda *_args: replay_release.wait(3), stop_handler=stop
-                )
+                dialog = self.create_dialog(history, replay, stop_handler=stop)
                 dialog.show()
                 dialog.replay_selected()
                 if outcome == "late-close":
@@ -289,6 +362,7 @@ class DialogueHistoryDialogTest(unittest.TestCase):
                 selected_details = cursor.selectedText()
                 replay_release.set()
                 self.wait_for(lambda: not dialog.replay_runner.active)
+                self.assertIn("Stopping", dialog.status.toPlainText())
                 dialog.close()
 
                 self.assertTrue(dialog.isVisible())
@@ -300,10 +374,19 @@ class DialogueHistoryDialogTest(unittest.TestCase):
                 )
                 if outcome == "failed-stop":
                     self.assertTrue(dialog.isVisible())
-                    self.assertIn("stop failed", dialog.status.text())
+                    self.assertIn("stop failed", dialog.status.toPlainText())
                     self.assertTrue(dialog.replay_button.isEnabled())
                     self.assertFalse(dialog.stop_button.isEnabled())
                     dialog.close()
+                elif outcome == "unsupported-after-finish":
+                    self.assertEqual(
+                        dialog.status.toPlainText(), "Speech finished for Marcus."
+                    )
+                elif outcome == "unsupported-after-failure":
+                    self.assertIn(
+                        "Could not speak as Marcus", dialog.status.toPlainText()
+                    )
+                    self.assertIn("voice file missing", dialog.status.toPlainText())
                 self.assertFalse(dialog.isVisible())
 
     def test_escape_stops_active_replay_before_closing(self):
@@ -355,11 +438,83 @@ class DialogueHistoryDialogTest(unittest.TestCase):
 
         self.assertTrue(dialog.isVisible())
         self.assertTrue(dialog.replay_runner.active)
-        self.assertIn("cannot stop playback", dialog.status.text())
+        self.assertIn("cannot stop playback", dialog.status.toPlainText())
         dialog.close()
         self.assertEqual(stop.call_count, 1)
         release.set()
         self.wait_for(lambda: not dialog.isVisible())
+
+    def test_keyboard_browses_copies_speaks_stops_and_closes_history(self):
+        history = DialogueHistory()
+        text = " ".join(["The suitcase is ready."] * 100)
+        history.add("Marcus", text)
+        history.finish_current()
+        history.add("Lucy", "Good morning.")
+        replay_started = Event()
+        replay_release = Event()
+        stop_started = Event()
+        stop_release = Event()
+        self.addCleanup(replay_release.set)
+        self.addCleanup(stop_release.set)
+
+        def replay(_character, _text):
+            replay_started.set()
+            replay_release.wait(3)
+
+        def stop():
+            stop_started.set()
+            stop_release.wait(3)
+            replay_release.set()
+            return True
+
+        replay_handler = Mock(side_effect=replay)
+        stop_handler = Mock(side_effect=stop)
+        dialog = self.create_dialog(history, replay_handler, stop_handler=stop_handler)
+        dialog.show()
+        dialog.search.setFocus()
+        self.application.processEvents()
+
+        def tab_to(widget):
+            for _ in range(12):
+                if widget.hasFocus():
+                    return
+                QTest.keyClick(self.application.focusWidget(), Qt.Key.Key_Tab)
+            self.assertTrue(widget.hasFocus(), "Widget is unreachable using Tab")
+
+        tab_to(dialog.entries)
+        QTest.keyClick(dialog.entries, Qt.Key.Key_Up)
+        self.assertEqual(dialog.current_entry().character, "Marcus")
+        tab_to(dialog.details)
+        QTest.keySequence(dialog.details, QKeySequence.StandardKey.SelectAll)
+        QTest.keySequence(dialog.details, QKeySequence.StandardKey.Copy)
+        self.assertEqual(
+            self.application.clipboard().text(), dialog.details.toPlainText()
+        )
+        QTest.keySequence(
+            dialog.details, QKeySequence.StandardKey.MoveToStartOfDocument
+        )
+        QTest.keyClick(dialog.details, Qt.Key.Key_PageDown)
+        self.assertGreater(dialog.details.verticalScrollBar().value(), 0)
+        tab_to(dialog.replay_button)
+        QTest.keyClick(dialog.replay_button, Qt.Key.Key_Space)
+        self.wait_for(replay_started.is_set)
+        replay_handler.assert_called_once_with("Marcus", text)
+
+        tab_to(dialog.entries)
+        QTest.keyClick(dialog.entries, Qt.Key.Key_Down)
+        self.assertEqual(dialog.current_entry().character, "Lucy")
+        self.assertIn("Speaking as Marcus", dialog.status.toPlainText())
+        self.assertIn(text, dialog.status.toolTip())
+        tab_to(dialog.stop_button)
+        QTest.keyClick(dialog.stop_button, Qt.Key.Key_Space)
+        self.wait_for(stop_started.is_set)
+        QTest.keyClick(dialog, Qt.Key.Key_Escape)
+        self.assertTrue(dialog.isVisible())
+        self.assertIn("Stopping", dialog.status.toPlainText())
+        stop_release.set()
+        self.wait_for(lambda: not dialog.isVisible())
+        stop_handler.assert_called_once_with()
+        self.assertEqual(dialog.status.toPlainText(), "Speech stopped for Marcus.")
 
     def test_replay_failure_is_retryable_in_dialog(self):
         history = DialogueHistory()
@@ -371,8 +526,33 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         dialog.replay_selected()
         self.wait_for(lambda: not dialog.replay_runner.active)
 
-        self.assertIn("try again", dialog.status.text())
+        self.assertIn("try again", dialog.status.toPlainText())
         self.assertTrue(dialog.replay_button.isEnabled())
+
+    def test_long_replay_failure_can_be_scrolled_and_copied(self):
+        history = DialogueHistory()
+        history.add("Marcus", "The suitcase is ready.")
+        error = "Speech backend returned a detailed failure. " * 80
+        dialog = self.create_dialog(history, Mock(side_effect=RuntimeError(error)))
+        font = dialog.font()
+        font.setPointSize(16)
+        dialog.setFont(font)
+        dialog.resize(520, 400)
+        dialog.show()
+        dialog.replay_selected()
+        self.wait_for(lambda: not dialog.replay_runner.active)
+
+        self.assertTrue(dialog.status.isReadOnly())
+        self.assertIn(error, dialog.status.toPlainText())
+        dialog.status.setFocus()
+        QTest.keySequence(dialog.status, QKeySequence.StandardKey.MoveToStartOfDocument)
+        QTest.keyClick(dialog.status, Qt.Key.Key_PageDown)
+        self.assertGreater(dialog.status.verticalScrollBar().value(), 0)
+        QTest.keySequence(dialog.status, QKeySequence.StandardKey.SelectAll)
+        QTest.keySequence(dialog.status, QKeySequence.StandardKey.Copy)
+        self.assertEqual(
+            self.application.clipboard().text(), dialog.status.toPlainText()
+        )
 
     def test_no_search_results_keep_session_export_available(self):
         history = DialogueHistory()
@@ -384,7 +564,8 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         self.assertEqual(dialog.entries.count(), 0)
         self.assertFalse(dialog.replay_button.isEnabled())
         self.assertTrue(dialog.export_button.isEnabled())
-        self.assertIn("No matching lines", dialog.status.text())
+        self.assertIn("No matching lines", dialog.empty_message.text())
+        self.assertEqual(dialog.status.toPlainText(), "")
 
     def test_export_includes_whole_session_while_history_is_filtered(self):
         history = DialogueHistory()
@@ -392,18 +573,18 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         history.finish_current()
         history.add("Lucy", "Good morning.")
         dialog = self.create_dialog(history, Mock())
-        dialog.search.setText("Lucy")
-
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "history.json"
-            with patch(
-                "vntts.history_ui.QFileDialog.getSaveFileName",
-                return_value=(str(path), "JSON files (*.json)"),
-            ):
-                dialog.export_history()
-            exported = json.loads(path.read_text(encoding="utf-8"))
-
-        self.assertEqual(len(exported["entries"]), 2)
+            for query in ("Lucy", "missing"):
+                with self.subTest(query=query):
+                    dialog.search.setText(query)
+                    with patch(
+                        "vntts.history_ui.QFileDialog.getSaveFileName",
+                        return_value=(str(path), "JSON files (*.json)"),
+                    ):
+                        dialog.export_history()
+                    exported = json.loads(path.read_text(encoding="utf-8"))
+                    self.assertEqual(len(exported["entries"]), 2)
 
     def test_refresh_preserves_older_selection_and_scroll_position(self):
         history = DialogueHistory()

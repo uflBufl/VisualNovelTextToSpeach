@@ -163,10 +163,14 @@ class UiCatalogTest(unittest.TestCase):
                         "empty",
                         "populated",
                         "filtered",
+                        "no-matches",
+                        "speaking-filtered",
+                        "stopping",
                         "speaking",
                         "failure",
                         "long-text",
                         "compact",
+                        "compact-failure",
                     )
                 },
             )

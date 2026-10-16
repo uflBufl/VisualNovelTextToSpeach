@@ -419,9 +419,13 @@
         {"id": "dialogue-history.empty", "title": "No captured dialogue", "state": "The current session has no lines and no action can speak or export one"},
         {"id": "dialogue-history.populated", "title": "Captured dialogue", "state": "Player can choose a line and hear its text with the current voice"},
         {"id": "dialogue-history.filtered", "title": "Filtered dialogue", "state": "Search shows matching speaker or text with full selected detail"},
+        {"id": "dialogue-history.no-matches", "title": "No matching lines", "state": "Search guidance sits in the list; exporting retained history remains available"},
+        {"id": "dialogue-history.speaking-filtered", "title": "Search during speech", "state": "No matches and the named active speech remain visible together; Stop remains available"},
+        {"id": "dialogue-history.stopping", "title": "Stopping speech", "state": "The named stop operation remains visible while both speech actions are unavailable"},
         {"id": "dialogue-history.speaking", "title": "Speaking selected text", "state": "Stop is available while current-voice synthesis plays"},
         {"id": "dialogue-history.failure", "title": "Speech preview failed", "state": "The selected text and a retry remain available after failure"},
         {"id": "dialogue-history.long-text", "title": "Long dialogue", "state": "A long speaker and paragraph can be inspected and searched"},
+        {"id": "dialogue-history.compact-failure", "title": "Enlarged text with a long speech error", "state": "Long speaker, dialogue and failure remain readable with larger text in a narrow window"},
         {"id": "dialogue-history.compact", "title": "Compact dialogue history", "state": "Search, selected line and speech actions remain usable with larger text"}
       ]
     },

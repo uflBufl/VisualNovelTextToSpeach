@@ -2111,7 +2111,7 @@ def _render_stories(
                 "Believer IV", "They at least paid with their lives. What about you?"
             )
             history.finish_current()
-            if state == "long-text":
+            if state in {"long-text", "compact-failure"}:
                 history.add(
                     "A very long character name from the distant island",
                     "The narration continues beyond the edge of the list. " * 8,
@@ -2119,17 +2119,33 @@ def _render_stories(
         dialog = DialogueHistoryDialog(
             history, lambda *_args: None, stop_handler=lambda: None
         )
+        dialog._spoken_character = "Believer IV"
         if state == "filtered":
             dialog.search.setText("storm")
-        elif state == "speaking":
+        elif state == "no-matches":
+            dialog.search.setText("missing line")
+        elif state in {"speaking", "speaking-filtered", "stopping"}:
+            if state == "speaking-filtered":
+                dialog.search.setText("missing line")
             dialog.replay_button.setEnabled(False)
-            dialog.stop_button.setEnabled(True)
-            dialog.status.setText("Speaking as Believer IV with the current voice...")
-        elif state == "failure":
-            dialog._replay_finished(
-                None, RuntimeError("The speech engine is unavailable")
+            dialog.stop_button.setEnabled(state != "stopping")
+            dialog.status.setPlainText(
+                "Stopping speech for Believer IV..."
+                if state == "stopping"
+                else "Speaking as Believer IV with the current voice..."
             )
-        elif state == "compact":
+        elif state in {"failure", "compact-failure"}:
+            dialog._spoken_character = dialog.visible_entries[-1].character
+            dialog._replay_finished(
+                None,
+                RuntimeError(
+                    "The selected voice could not be loaded. The voice file is missing "
+                    "from the configured library"
+                    if state == "compact-failure"
+                    else "The speech engine is unavailable"
+                ),
+            )
+        if state in {"compact", "compact-failure"}:
             font = dialog.font()
             font.setPointSize(max(font.pointSize() + 3, 16))
             dialog.setFont(font)
@@ -2923,10 +2939,16 @@ def _render_stories(
         "dialogue-history.empty": lambda: dialogue_history("empty"),
         "dialogue-history.populated": lambda: dialogue_history("populated"),
         "dialogue-history.filtered": lambda: dialogue_history("filtered"),
+        "dialogue-history.no-matches": lambda: dialogue_history("no-matches"),
+        "dialogue-history.speaking-filtered": lambda: dialogue_history(
+            "speaking-filtered"
+        ),
+        "dialogue-history.stopping": lambda: dialogue_history("stopping"),
         "dialogue-history.speaking": lambda: dialogue_history("speaking"),
         "dialogue-history.failure": lambda: dialogue_history("failure"),
         "dialogue-history.long-text": lambda: dialogue_history("long-text"),
         "dialogue-history.compact": lambda: dialogue_history("compact"),
+        "dialogue-history.compact-failure": lambda: dialogue_history("compact-failure"),
         "diagnostics.empty": lambda: diagnostics("empty"),
         "diagnostics.snapshot": lambda: diagnostics("snapshot"),
         "diagnostics.technical": lambda: diagnostics("technical"),

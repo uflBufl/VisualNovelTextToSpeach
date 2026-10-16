@@ -1,5 +1,9 @@
 # TODO
 
+## Qualify dialogue history on native audio and accessibility setups
+
+- [ ] On macOS and Windows with a real speech engine, capture two lines, open Dialogue history, start one line and select/search for another, then stop and retry after restoring an unavailable engine. Confirm the assigned voice, actual audible stop and named status agree; verify Tab/Enter/Escape and full error scrolling/copying at 200% text with VoiceOver/NVDA. Retain native screenshots, audio and focus/announcement evidence. Automated Qt state/keyboard/export tests and Mac window renders do not qualify hardware output or screen-reader/native focus behavior.
+
 ## Investigate reported slow-sounding voice playback
 
 - [ ] Identify and retain an actually slowed audible sample from the original/preview/reading paths, then compare its native DAC duration with its PCM frame count and rate before changing playback or synthesis speed. The current Mac reproduction plays Centurion original 12.51 s and MOSS preview 3.84 s at matching DAC durations, with 100% configured speed and no underflow; this does not explain the user's earlier report.

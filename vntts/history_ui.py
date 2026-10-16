@@ -2,17 +2,20 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from datetime import datetime
 
-from PySide6.QtCore import QSignalBlocker, Qt, QThreadPool
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QEvent, QObject, QSignalBlocker, Qt, QThreadPool
+from PySide6.QtGui import QCloseEvent, QTextOption
 from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
+    QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -43,12 +46,15 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         self.stop_runner.finished.connect(self._stop_finished)
         self._close_pending = False
         self._stop_unsupported = False
+        self._spoken_character = ""
+        self._replay_error: Exception | None = None
         self.visible_entries: list[DialogueHistoryEntry] = []
         self.setWindowTitle("Dialogue history")
-        self.resize(820, 560)
+        self.resize(820, 480)
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("Speaker or dialogue text")
+        self.search.setClearButtonEnabled(True)
         self.search.setAccessibleName("Search dialogue history")
         self.search.textChanged.connect(self.refresh)
         self.search_label = QLabel("&Find a line")
@@ -56,22 +62,43 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         self.entries = QListWidget()
         self.entries.setAccessibleName("Dialogue history entries")
         self.entries.setWordWrap(True)
+        self.entries.setViewportMargins(6, 6, 6, 6)
+        self.entries.setSpacing(6)
         self.entries.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.entries.currentRowChanged.connect(self.show_entry)
+        self.empty_message = QLabel()
+        self.empty_message.setWordWrap(True)
+        self.empty_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_message.setMargin(12)
+        self.entry_stack = QStackedWidget()
+        self.entry_stack.addWidget(self.entries)
+        self.entry_stack.addWidget(self.empty_message)
         self.details = QTextEdit()
         self.details.setReadOnly(True)
+        self.details.document().setDocumentMargin(10)
         self.details.setAccessibleName("Selected dialogue details")
         self.details_label = QLabel("Selected &line")
         self.details_label.setBuddy(self.details)
         self.replay_button = QPushButton("Speak with current voice")
         self.replay_button.setEnabled(False)
+        self.replay_button.setToolTip(
+            "Speak the selected text using its current voice assignment. "
+            "This does not replay the original audio."
+        )
         self.stop_button = QPushButton("Stop speaking")
-        self.stop_button.setAccessibleName("Stop speaking selected dialogue")
+        self.stop_button.setAccessibleName("Stop current speech")
         self.stop_button.setEnabled(False)
-        self.export_button = QPushButton("Export session...")
-        self.status = QLabel()
+        self.export_button = QPushButton("Export history...")
+        self.export_button.setToolTip(
+            "Export all retained lines, including those hidden by search."
+        )
+        self.status = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
         self.status.setAccessibleName("Dialogue speech status")
-        self.status.setWordWrap(True)
+        self.status.setFrameShape(QFrame.Shape.NoFrame)
+        self.status.viewport().setAutoFillBackground(False)
+        self.status.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.status.setFixedHeight(self.status.fontMetrics().lineSpacing() * 2 + 12)
+        self.status.installEventFilter(self)
         self.replay_button.clicked.connect(self.replay_selected)
         self.stop_button.clicked.connect(self.stop_replay)
         self.export_button.clicked.connect(self.export_history)
@@ -81,8 +108,8 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         actions.addStretch()
 
         entries_layout = QVBoxLayout()
-        entries_layout.addWidget(QLabel("Captured lines"))
-        entries_layout.addWidget(self.entries)
+        entries_layout.addWidget(QLabel("Captured this session"))
+        entries_layout.addWidget(self.entry_stack)
         details_layout = QVBoxLayout()
         details_layout.addWidget(self.details_label)
         details_layout.addWidget(self.details)
@@ -98,17 +125,19 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         footer.addStretch()
         footer.addWidget(buttons)
         layout = QVBoxLayout(self)
-        layout.addWidget(
-            QLabel(
-                "Captured this session. Speak again uses the current voice, not the original audio."
-            )
-        )
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
         layout.addWidget(self.search_label)
         layout.addWidget(self.search)
         layout.addLayout(content)
         layout.addLayout(footer)
 
         self.refresh()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.status and event.type() == QEvent.Type.FontChange:
+            self.status.setFixedHeight(self.status.fontMetrics().lineSpacing() * 2 + 12)
+        return super().eventFilter(watched, event)
 
     def refresh(self) -> None:
         selected_id: str | None = None
@@ -119,10 +148,13 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         previous_scroll = scroll_bar.value()
         latest = self.history.search(self.search.text())
         self.export_button.setEnabled(bool(self.history.snapshot()))
+        self.entry_stack.setCurrentWidget(
+            self.entries if latest else self.empty_message
+        )
         if not latest:
-            self.status.setText(
+            self.empty_message.setText(
                 "No matching lines. Try another search."
-                if self.search.text()
+                if self.search.text().strip()
                 else "No dialogue has been captured in this session yet."
             )
         if latest == self.visible_entries:
@@ -150,8 +182,6 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         self.show_entry(selected_index)
         if not self.visible_entries:
             return
-        if self.status.text().startswith(("No matching lines", "No dialogue has")):
-            self.status.clear()
         if selected_id is not None:
             scroll_bar.setValue(min(previous_scroll, scroll_bar.maximum()))
         else:
@@ -188,9 +218,14 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         if entry is None or self.replay_runner.active or self.stop_runner.active:
             return
         self._stop_unsupported = False
+        self._spoken_character = entry.character
+        self._replay_error = None
+        self.status.setToolTip(entry.text)
         self.replay_button.setEnabled(False)
         self.stop_button.setEnabled(self.stop_handler is not None)
-        self.status.setText(f"Speaking as {entry.character} with the current voice...")
+        self.status.setPlainText(
+            f"Speaking as {entry.character} with the current voice..."
+        )
         self.replay_runner.start(
             self._run_replay,
             self.replay_handler,
@@ -208,14 +243,18 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         return result
 
     def _replay_finished(self, _result: object, error: Exception | None) -> None:
+        self._replay_error = error
         self.stop_button.setEnabled(False)
         self._update_replay_button(self.current_entry())
+        if self.stop_runner.active:
+            return
         if error is not None:
-            self.status.setText(
-                f"Could not speak this line: {error}. Check voice settings, then try again."
+            self.status.setPlainText(
+                f"Could not speak as {self._spoken_character}: {error}. "
+                "Check voice settings, then try again."
             )
         else:
-            self.status.setText("Speech finished.")
+            self.status.setPlainText(f"Speech finished for {self._spoken_character}.")
         if self._close_pending and not self.stop_runner.active:
             self._close_pending = False
             self.close()
@@ -231,16 +270,16 @@ class DialogueHistoryDialog(CloseGuardedDialog):
                 self.close()
             return
         if self.stop_handler is None:
-            self.status.setText("This speech engine cannot be stopped here.")
+            self.status.setPlainText("This speech engine cannot be stopped here.")
             return
         if self._stop_unsupported:
-            self.status.setText(
+            self.status.setPlainText(
                 "This speech engine cannot stop playback. Wait for it to finish."
             )
             return
         self.replay_button.setEnabled(False)
         self.stop_button.setEnabled(False)
-        self.status.setText("Stopping speech...")
+        self.status.setPlainText(f"Stopping speech for {self._spoken_character}...")
         self.stop_runner.start(self.stop_handler)
 
     def _stop_finished(self, _result: object, error: Exception | None) -> None:
@@ -248,19 +287,24 @@ class DialogueHistoryDialog(CloseGuardedDialog):
             self._close_pending = False
             self.stop_button.setEnabled(self.replay_runner.active)
             self._update_replay_button(self.current_entry())
-            self.status.setText(f"Unable to stop speech: {error}")
+            self.status.setPlainText(
+                f"Unable to stop speech for {self._spoken_character}: {error}"
+            )
             return
         if _result is False and self.replay_runner.active:
             self._stop_unsupported = True
             self.stop_button.setEnabled(False)
-            self.status.setText(
+            self.status.setPlainText(
                 "This speech engine cannot stop playback. Wait for it to finish."
             )
+            return
+        if _result is False:
+            self._replay_finished(None, self._replay_error)
             return
         self.replay_runner.cancel()
         self.stop_button.setEnabled(False)
         self._update_replay_button(self.current_entry())
-        self.status.setText("Speech stopped.")
+        self.status.setPlainText(f"Speech stopped for {self._spoken_character}.")
         if self._close_pending:
             self._close_pending = False
             self.close()
