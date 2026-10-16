@@ -1,9 +1,5 @@
 # TODO
 
-## Active - Deliver voice preview fixes to main
-
-- [ ] Push the completed commit to main with a normal fast-forward push and verify the remote commit.
-
 ## Investigate reported slow-sounding voice playback
 
 - [ ] Identify and retain an actually slowed audible sample from the original/preview/reading paths, then compare its native DAC duration with its PCM frame count and rate before changing playback or synthesis speed. The current Mac reproduction plays Centurion original 12.51 s and MOSS preview 3.84 s at matching DAC durations, with 100% configured speed and no underflow; this does not explain the user's earlier report.
