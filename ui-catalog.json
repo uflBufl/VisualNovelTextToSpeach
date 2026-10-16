@@ -175,13 +175,17 @@
       "contracts": ["single-mission", "support-boundary"],
       "stories": [
         {"id": "readiness.loading", "title": "Running checks", "state": "Progress is visible and stale fixes are unavailable"},
+        {"id": "readiness.cancelled", "title": "Checks cancelled", "state": "Cancelled checks leave no active result and offer a fresh run"},
+        {"id": "readiness.probe-failed", "title": "Probe failed", "state": "A failed diagnostics run explains the failure and allows a retry"},
         {"id": "readiness.blocked", "title": "OCR and audio unavailable", "state": "Blocking checks explain their specific next steps"},
         {"id": "readiness.audio-error", "title": "Audio output unavailable", "state": "Selecting a second error shows its own external recovery"},
         {"id": "readiness.warning-selected", "title": "Optional voice warning", "state": "A warning can be inspected without hiding the blocking errors"},
         {"id": "readiness.warning-only", "title": "Ready with narrator fallback", "state": "Warnings alone permit a direct return to Reading"},
         {"id": "readiness.non-english-ocr", "title": "Configured OCR language unavailable", "state": "External OCR guidance names the selected recognition language"},
         {"id": "readiness.ready", "title": "Ready to read", "state": "Successful checks do not demand remediation"},
-        {"id": "readiness.long-error", "title": "Long error at compact size", "state": "Full details remain available with larger text and a compact window"}
+        {"id": "readiness.full-details", "title": "Full selected check details", "state": "Expanded details preserve the full runtime path behind the concise table message"},
+        {"id": "readiness.long-error", "title": "Long error at compact size", "state": "Full details stay collapsed with larger text and a compact window"},
+        {"id": "readiness.long-error-expanded", "title": "Expanded long error at compact size", "state": "Expanded details keep a long failure available with larger text and a compact window"}
       ]
     },
     {

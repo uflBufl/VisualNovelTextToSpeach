@@ -147,7 +147,8 @@ class OnboardingDiagnostics:
                 "macOS permissions",
                 "error",
                 f"Missing {', '.join(missing)}. Allow the terminal or VNTTS "
-                "under System Settings -> Privacy & Security, then restart it.",
+                "under System Settings -> Privacy & Security. "
+                "Restart the app you granted permission to, then reopen VNTTS.",
                 "permissions",
             )
         if screen_capture is None or (needs_accessibility and accessibility is None):

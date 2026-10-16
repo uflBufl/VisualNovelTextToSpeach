@@ -350,13 +350,17 @@ class UiCatalogTest(unittest.TestCase):
                 {story["id"] for story in packet["target"]["stories"]},
                 {
                     "readiness.loading",
+                    "readiness.cancelled",
+                    "readiness.probe-failed",
                     "readiness.blocked",
                     "readiness.audio-error",
                     "readiness.warning-selected",
                     "readiness.warning-only",
                     "readiness.non-english-ocr",
                     "readiness.ready",
+                    "readiness.full-details",
                     "readiness.long-error",
+                    "readiness.long-error-expanded",
                 },
             )
             for story in packet["target"]["stories"]:

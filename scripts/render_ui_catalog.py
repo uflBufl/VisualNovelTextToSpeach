@@ -1233,33 +1233,34 @@ def _render_stories(
         )
         if state == "loading":
             return dialog
-        if state == "ready":
-            results = (
-                DiagnosticResult("Capture source", "ok", "Reverse: 1999"),
-                DiagnosticResult("Tesseract OCR", "ok", "Version 5.5.0"),
-                DiagnosticResult("Audio output", "ok", "Built-in speakers"),
-                DiagnosticResult("Speech runtime", "ok", "Installed at /app/runtime"),
+        if state == "cancelled":
+            dialog.cancel_checks()
+            return dialog
+        dialog.runner.cancel()
+        if state == "probe-failed":
+            dialog._checks_finished(
+                None, RuntimeError("Audio device discovery could not finish.")
             )
-        elif state == "warning-only":
+            return dialog
+        results = (
+            DiagnosticResult("Hotkeys", "ok", "Read and live hotkeys are valid"),
+            DiagnosticResult("Capture source", "ok", "Reverse: 1999"),
+            DiagnosticResult("macOS permissions", "ok", "Screen recording allowed"),
+            DiagnosticResult("Tesseract OCR", "ok", "Version 5.5.0"),
+            DiagnosticResult("Audio output", "ok", "Built-in speakers"),
+            DiagnosticResult("Speech runtime", "ok", "Installed at /app/runtime"),
+            DiagnosticResult(
+                "Character voices", "ok", "All voice recordings available"
+            ),
+        )
+        if state not in {"ready", "full-details", "warning-only"}:
             results = (
-                DiagnosticResult("Capture source", "ok", "Reverse: 1999"),
-                DiagnosticResult("Tesseract OCR", "ok", "Version 5.5.0"),
-                DiagnosticResult("Audio output", "ok", "Built-in speakers"),
-                DiagnosticResult(
-                    "Character voices",
-                    "warning",
-                    "Narrator fallback will be used",
-                    "voices",
-                ),
-            )
-        else:
-            results = (
-                DiagnosticResult("Capture source", "ok", "Reverse: 1999"),
+                *results[:3],
                 DiagnosticResult(
                     "Tesseract OCR",
                     "error",
                     "Tesseract executable was not found in the application environment."
-                    if state != "long-error"
+                    if not state.startswith("long-error")
                     else "Tesseract executable was not found at /Applications/"
                     + "An Example App/Resources/" * 8,
                     "external-ocr",
@@ -1270,6 +1271,12 @@ def _render_stories(
                     "No output device available",
                     "external-audio",
                 ),
+                results[5],
+                results[6],
+            )
+        if state not in {"ready", "full-details"}:
+            results = (
+                *results[:-1],
                 DiagnosticResult(
                     "Character voices",
                     "warning",
@@ -1278,12 +1285,24 @@ def _render_stories(
                 ),
             )
         dialog._checks_finished(results, None)
-        if state == "audio-error":
-            dialog.table.selectRow(2)
-        elif state == "warning-selected":
-            dialog.table.selectRow(3)
-        elif state == "long-error":
-            dialog.table.selectRow(1)
+        selected_name = {
+            "audio-error": "Audio output",
+            "warning-selected": "Character voices",
+            "full-details": "Speech runtime",
+            "long-error": "Tesseract OCR",
+            "long-error-expanded": "Tesseract OCR",
+        }.get(state)
+        if selected_name is not None:
+            dialog.table.selectRow(
+                next(
+                    row
+                    for row, result in enumerate(dialog._results)
+                    if result.name == selected_name
+                )
+            )
+        if state in {"full-details", "long-error-expanded"}:
+            dialog.details_toggle.setChecked(True)
+        if state.startswith("long-error"):
             dialog.resize(620, 440)
             font = dialog.font()
             font.setPointSize(font.pointSize() + 4)
@@ -2606,13 +2625,17 @@ def _render_stories(
         "settings.compact-advanced-speech-scrolled": settings_compact_advanced_scrolled,
         "settings.validation-error": settings_validation_error,
         "readiness.loading": lambda: readiness("loading"),
+        "readiness.cancelled": lambda: readiness("cancelled"),
+        "readiness.probe-failed": lambda: readiness("probe-failed"),
         "readiness.blocked": lambda: readiness("blocked"),
         "readiness.audio-error": lambda: readiness("audio-error"),
         "readiness.warning-selected": lambda: readiness("warning-selected"),
         "readiness.warning-only": lambda: readiness("warning-only"),
         "readiness.non-english-ocr": lambda: readiness("non-english-ocr"),
         "readiness.ready": lambda: readiness("ready"),
+        "readiness.full-details": lambda: readiness("full-details"),
         "readiness.long-error": lambda: readiness("long-error"),
+        "readiness.long-error-expanded": lambda: readiness("long-error-expanded"),
         "onboarding.game-window": lambda: onboarding("game-window"),
         "onboarding.screen-region": lambda: onboarding("screen-region"),
         "onboarding.game-window-error": lambda: onboarding("game-window-error"),

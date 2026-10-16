@@ -458,6 +458,7 @@ Planned implementation order after approval:
 - [ ] **Validate Readiness on macOS and Windows:** at 200% text scaling, use
       VoiceOver/Narrator and keyboard only through loading, an OCR error, a voice
       warning and success. Require the first error and its remedy to be announced,
+      Full check details and its text area to have visible keyboard focus,
       the full long error to scroll to its end, the install guide to open the
       official Tesseract page, cancel/retry to show no stale result, and Open
       Voices/Open Reading to return focus to the correct destination. Retain a

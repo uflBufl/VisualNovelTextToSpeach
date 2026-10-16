@@ -9,6 +9,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -60,12 +61,6 @@ class ReadinessDialog(QDialog):
         self.setWindowTitle("Check readiness")
         self.resize(760, 470)
 
-        intro = QLabel(
-            "Check capture, OCR, audio and speech before starting live reading. "
-            "Fix errors for reliable reading; warnings have a fallback."
-        )
-        intro.setWordWrap(True)
-        intro.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
         summary_font = self.summary.font()
@@ -79,6 +74,7 @@ class ReadinessDialog(QDialog):
         self.progress.hide()
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Status", "Component", "Details"])
+        self.table.verticalHeader().hide()
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -107,10 +103,17 @@ class ReadinessDialog(QDialog):
         self.selected_details.setMaximumHeight(90)
         self.selected_details.setAccessibleName("Full details of the selected check")
         self.selected_details.hide()
+        self.details_toggle = QCheckBox("Full check details")
+        self.details_toggle.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
+        self.details_toggle.toggled.connect(self.selected_details.setVisible)
         self.copy_selected = copy_text_button(
             "Copy selected check", self._selected_text
         )
         self.copy_all = copy_text_button("Copy report", self._report_text)
+        for secondary in (self.copy_selected, self.copy_all):
+            secondary.setAutoDefault(False)
         self.copy_shortcut = QShortcut(QKeySequence.StandardKey.Copy, self.table)
         self.copy_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.copy_shortcut.activated.connect(self.copy_selected.click)
@@ -149,10 +152,12 @@ class ReadinessDialog(QDialog):
         self.reading_button.hide()
         buttons.rejected.connect(self.close)
         layout = QVBoxLayout(self)
-        layout.addWidget(intro)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
         layout.addWidget(self.summary)
         layout.addWidget(self.progress)
         layout.addWidget(self.table, 1)
+        layout.addWidget(self.details_toggle, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.selected_details)
         layout.addLayout(remediation)
         layout.addLayout(controls)
@@ -208,6 +213,7 @@ class ReadinessDialog(QDialog):
         self.refresh_button.setEnabled(not running)
         self.cancel_button.setEnabled(running)
         self.cancel_button.setVisible(running)
+        self.cancel_button.setDefault(running)
         self.reading_button.hide()
 
     def _checks_finished(self, results: object, error: Exception | None) -> None:
@@ -219,7 +225,10 @@ class ReadinessDialog(QDialog):
             self.summary.setText(f"Checks failed: {reason}")
             self._update_remediation()
             return
-        self._results = results
+        priority = {"error": 0, "warning": 1, "ok": 2}
+        self._results = tuple(
+            sorted(results, key=lambda result: priority[result.status])
+        )
         self.table.setRowCount(len(results))
         dark = self.table.palette().color(QPalette.ColorRole.Base).lightness() < 128
         colors = {
@@ -227,7 +236,7 @@ class ReadinessDialog(QDialog):
             "warning": QColor("#edc66f" if dark else "#9a6400"),
             "error": QColor("#ff929c" if dark else "#b3261e"),
         }
-        for row, result in enumerate(results):
+        for row, result in enumerate(self._results):
             message = result.message
             if message.startswith("Installed at "):
                 message = "Installed and ready"
@@ -241,47 +250,27 @@ class ReadinessDialog(QDialog):
             values = (result.status.upper(), result.name, message)
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
+                item.setToolTip(result.message if column == 2 else value)
                 if column == 0:
                     item.setForeground(colors[result.status])
                 self.table.setItem(row, column, item)
         errors = sum(result.status == "error" for result in results)
         warnings = sum(result.status == "warning" for result in results)
-        first_error = next(
-            (result for result in results if result.status == "error"), None
-        )
         if errors:
-            assert first_error is not None
             self.summary.setText(
-                f"Readiness checks found {errors} error(s), {warnings} warning(s). "
-                f"Start with {first_error.name}."
+                f"Cannot start reading. Errors: {errors}."
+                + (f" Warnings: {warnings}." if warnings else "")
             )
         elif warnings:
             self.summary.setText(
-                f"Ready for live reading with {warnings} warning(s). "
-                "You can continue with the fallback."
+                f"Ready for live reading. Warnings: {warnings}; fallback available."
             )
         else:
             self.summary.setText("Ready for live reading.")
         self.reading_button.setVisible(errors == 0)
-        preferred_row = next(
-            (
-                row
-                for row, result in enumerate(self._results)
-                if result.status == "error"
-            ),
-            None,
-        )
-        if preferred_row is None:
-            preferred_row = next(
-                (
-                    row
-                    for row, result in enumerate(self._results)
-                    if result.status == "warning"
-                ),
-                0 if self._results else None,
-            )
-        if preferred_row is not None:
-            self.table.selectRow(preferred_row)
+        if self._results:
+            self.table.selectRow(0)
+            self.table.scrollToTop()
         self._update_remediation()
         self.refresh_requested.emit()
 
@@ -298,12 +287,17 @@ class ReadinessDialog(QDialog):
     def _update_remediation(self) -> None:
         self.selected_details.setPlainText(self._selected_text())
         result = self._selected_result()
-        self.selected_details.setVisible(
-            not self._checks_running and result is not None and result.status != "ok"
-        )
+        has_result = not self._checks_running and result is not None
+        if not has_result:
+            self.details_toggle.setChecked(False)
+        self.details_toggle.setVisible(has_result)
+        self.selected_details.setVisible(has_result and self.details_toggle.isChecked())
         self.copy_selected.setEnabled(not self._checks_running and result is not None)
         self.copy_all.setEnabled(not self._checks_running and bool(self._results))
         self.remediation_button.setEnabled(False)
+        self.remediation_button.setDefault(False)
+        self.refresh_button.setDefault(not self._checks_running)
+        self.reading_button.setDefault(not self.reading_button.isHidden())
         self.remediation_button.hide()
         self.remediation_reason.hide()
         if self._checks_running:
@@ -351,6 +345,7 @@ class ReadinessDialog(QDialog):
             self.remediation_button.setText("Tesseract install guide")
             self.remediation_button.setAccessibleName("Open Tesseract install guide")
             self.remediation_button.setEnabled(True)
+            self.remediation_button.setDefault(result.status == "error")
             self.remediation_button.show()
             return
         if result.remediation == "external-audio":
@@ -376,21 +371,22 @@ class ReadinessDialog(QDialog):
         self.remediation_button.setText(label)
         self.remediation_button.setAccessibleName(label)
         self.remediation_button.setEnabled(True)
+        self.remediation_button.setDefault(result.status == "error")
         self.remediation_button.show()
         if result.status == "warning":
             blocker = any(item.status == "error" for item in self._results)
             self.remediation_reason.setText(
                 f"{result.name} has a fallback. "
                 + (
-                    "Fix the errors above first. "
+                    "Resolve the errors before reading. "
                     if blocker
                     else "Reading can continue. "
                 )
-                + f"{label} if you want to change it."
+                + "Changing this fallback is optional."
             )
         else:
             self.remediation_reason.setText(
-                f"{result.name} needs attention. {label} to address this check."
+                f"{result.name}: fix this check, then run checks again."
             )
 
     def _run_selected_remediation(self) -> None:

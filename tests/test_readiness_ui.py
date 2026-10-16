@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QPalette, QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QHeaderView, QLabel  # noqa: E402
+from PySide6.QtWidgets import QApplication, QHeaderView  # noqa: E402
 
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.onboarding import DiagnosticResult  # noqa: E402
@@ -25,7 +25,7 @@ class ReadinessDialogTest(unittest.TestCase):
 
     def test_failed_assertion_releases_the_readiness_window(self):
         case = ReadinessDialogTest(
-            "test_intro_describes_live_reading_not_starting_the_game"
+            "test_loading_state_names_readiness_and_has_no_stale_details"
         )
         case.assertEqual = Mock(side_effect=AssertionError("injected failure"))
         result = unittest.TestResult()
@@ -99,6 +99,7 @@ class ReadinessDialogTest(unittest.TestCase):
         dialog.setFont(font)
         dialog.show()
         self.application.processEvents()
+        dialog.details_toggle.click()
         dialog.selected_details.moveCursor(QTextCursor.MoveOperation.End)
         self.application.processEvents()
         scrollbar = dialog.selected_details.verticalScrollBar()
@@ -114,17 +115,17 @@ class ReadinessDialogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_intro_describes_live_reading_not_starting_the_game(self):
+    def test_loading_state_names_readiness_and_has_no_stale_details(self):
         dialog = ReadinessDialog(
             AppSettings(),
             type("Diagnostics", (), {"run": lambda _self, _settings: ()})(),
             thread_pool=ManualThreadPool(),
         )
-        labels = [label.text() for label in dialog.findChildren(QLabel)]
-
         self.assertEqual(dialog.windowTitle(), "Check readiness")
-        self.assertTrue(any("before starting live reading" in text for text in labels))
-        self.assertFalse(any("before starting the game" in text for text in labels))
+        self.assertEqual(dialog.summary.text(), "Running readiness checks...")
+        self.assertTrue(dialog.details_toggle.isHidden())
+        self.assertTrue(dialog.selected_details.isHidden())
+        self.assertTrue(dialog.cancel_button.isDefault())
         dialog.close()
         dialog.deleteLater()
 
@@ -151,7 +152,7 @@ class ReadinessDialogTest(unittest.TestCase):
         pool.run_next()
         self.application.processEvents()
 
-        self.assertIn("1 error", dialog.summary.text())
+        self.assertIn("Errors: 1", dialog.summary.text())
         self.assertFalse(dialog.copy_all.isHidden())
         self.assertFalse(dialog.refresh_button.isHidden())
         self.assertEqual(dialog.table.rowCount(), 2)
@@ -159,6 +160,46 @@ class ReadinessDialogTest(unittest.TestCase):
             dialog.table.horizontalHeader().sectionResizeMode(1),
             QHeaderView.ResizeMode.ResizeToContents,
         )
+        dialog.deleteLater()
+
+    def test_details_follow_selection_and_reset_when_checks_restart(self):
+        pool = ManualThreadPool()
+        results = (
+            DiagnosticResult("Runtime", "ok", "Installed at /full/runtime/path"),
+            DiagnosticResult("Audio", "error", "No output device", "external-audio"),
+            DiagnosticResult("Voices", "warning", "Narrator fallback", "voices"),
+        )
+        diagnostics = Mock()
+        diagnostics.run.return_value = results
+        dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
+        pool.run_next()
+        self.application.processEvents()
+        dialog.show()
+        self.application.processEvents()
+
+        self.assertEqual(
+            [dialog.table.item(row, 1).text() for row in range(3)],
+            ["Audio", "Voices", "Runtime"],
+        )
+        self.assertTrue(dialog.selected_details.isHidden())
+        dialog.details_toggle.setFocus()
+        QTest.keyClick(dialog.details_toggle, Qt.Key.Key_Space)
+        self.assertFalse(dialog.selected_details.isHidden())
+        self.assertIn("No output device", dialog.selected_details.toPlainText())
+        dialog.table.selectRow(2)
+        self.assertIn("/full/runtime/path", dialog.selected_details.toPlainText())
+        dialog.copy_all.click()
+        report = self.application.clipboard().text()
+        for result in results:
+            self.assertIn(result.message, report)
+        dialog.refresh()
+        self.assertTrue(dialog.details_toggle.isHidden())
+        self.assertFalse(dialog.details_toggle.isChecked())
+        self.assertTrue(dialog.selected_details.isHidden())
+        pool.run_next()
+        self.application.processEvents()
+        self.assertTrue(dialog.selected_details.isHidden())
+        dialog.close()
         dialog.deleteLater()
 
     def test_changed_settings_discard_stale_probe_results(self):
@@ -294,9 +335,9 @@ class ReadinessDialogTest(unittest.TestCase):
         self.application.processEvents()
 
         self.assertEqual(dialog.table.currentRow(), 0)
-        self.assertIn("Start with Tesseract OCR", dialog.summary.text())
+        self.assertIn("Cannot start reading", dialog.summary.text())
         self.assertFalse(dialog.remediation_button.isEnabled())
-        dialog.table.selectRow(2)
+        dialog.table.selectRow(1)
         self.assertEqual(dialog.remediation_button.text(), "Open Settings")
         self.assertTrue(dialog.remediation_button.isEnabled())
         dialog.remediation_button.click()
@@ -306,14 +347,16 @@ class ReadinessDialogTest(unittest.TestCase):
 
         dialog.show()
         dialog.table.setFocus()
-        QTest.keyClick(dialog.table, Qt.Key.Key_Up)
-        self.assertEqual(dialog.table.currentRow(), 1)
+        QTest.keyClick(dialog.table, Qt.Key.Key_Down)
+        self.assertEqual(dialog.table.currentRow(), 2)
         self.assertEqual(dialog.remediation_button.text(), "Open Voices")
         dialog.remediation_button.setFocus()
         QTest.keyClick(dialog.remediation_button, Qt.Key.Key_Return)
         self.assertEqual(voice_requests, [True])
         self.assertFalse(dialog.isVisible())
-        self.assertIn("Fix the errors above first", dialog.remediation_reason.text())
+        self.assertIn(
+            "Resolve the errors before reading", dialog.remediation_reason.text()
+        )
 
         dialog.table.selectRow(0)
         self.assertFalse(dialog.remediation_button.isEnabled())
@@ -344,8 +387,10 @@ class ReadinessDialogTest(unittest.TestCase):
         dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
         pool.run_next()
         self.application.processEvents()
-        self.assertEqual(dialog.table.currentRow(), 1)
-        self.assertIn("Start with Audio output", dialog.summary.text())
+        self.assertEqual(dialog.table.currentRow(), 0)
+        self.assertEqual(dialog.table.item(0, 1).text(), "Audio output")
+        self.assertEqual(dialog.table.item(1, 1).text(), "Character voices")
+        self.assertIn("Cannot start reading", dialog.summary.text())
         dialog.deleteLater()
 
     def test_external_ocr_and_audio_errors_name_next_action_without_false_button(self):
@@ -373,6 +418,8 @@ class ReadinessDialogTest(unittest.TestCase):
             "system's app search path (PATH)", dialog.remediation_reason.text()
         )
         self.assertEqual(dialog.remediation_button.text(), "Tesseract install guide")
+        self.assertTrue(dialog.remediation_button.isDefault())
+        self.assertFalse(dialog.copy_selected.autoDefault())
         with patch(
             "vntts.readiness_ui.QDesktopServices.openUrl", return_value=True
         ) as open_url:
@@ -389,6 +436,8 @@ class ReadinessDialogTest(unittest.TestCase):
         self.assertTrue(dialog.remediation_button.isHidden())
         dialog.show()
         self.application.processEvents()
+        self.assertFalse(dialog.selected_details.isVisibleTo(dialog))
+        dialog.details_toggle.click()
         self.assertTrue(dialog.selected_details.isVisibleTo(dialog))
         dialog.deleteLater()
 
@@ -486,6 +535,8 @@ class ReadinessDialogTest(unittest.TestCase):
         self.application.processEvents()
         dialog.show()
         self.assertTrue(dialog.reading_button.isVisibleTo(dialog))
+        self.assertTrue(dialog.reading_button.isDefault())
+        self.assertFalse(dialog.remediation_button.isDefault())
         self.assertIn("fallback", dialog.summary.text())
 
         diagnostics.results = (DiagnosticResult("Tesseract OCR", "error", "Missing"),)
