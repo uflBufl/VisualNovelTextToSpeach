@@ -2397,6 +2397,8 @@ def _sequence_replay_metrics(
         for event in events
         if event["stage"] in {"sequence-audio-manual", "sequence-audio-auto"}
         and event.get("reason") == "observation-bounded-lookahead"
+        and event.get("match_result")
+        not in {"expected-owned-prefix", "expected-owned-exact"}
         and event.get("event_id")
     }
     ocr_frame_identities = {

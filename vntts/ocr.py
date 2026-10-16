@@ -1,7 +1,7 @@
 import math
 import os
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
@@ -211,6 +211,220 @@ class OCRRegions:
         return {"speaker": self.speaker.to_json(), "dialogue": self.dialogue.to_json()}
 
 
+def resolve_ocr_regions(
+    image: Image.Image, configured: OCRRegions | None = None
+) -> OCRRegions | None:
+    """Follow an unambiguous thin divider; retain calibration on other layouts."""
+    width, height = image.size
+    if width < 64 or height < 24:
+        return configured
+    left, right = 0, width
+    if configured is not None:
+        left = min(
+            configured.speaker._pixel_box(width, height)[0],
+            configured.dialogue._pixel_box(width, height)[0],
+        )
+        right = max(
+            configured.speaker._pixel_box(width, height)[2],
+            configured.dialogue._pixel_box(width, height)[2],
+        )
+    divider = _dialogue_divider(
+        np.asarray(image.convert("L"), dtype=np.float32), left, right
+    )
+    if divider is None:
+        return configured
+    line_left, line_right, band_top, band_bottom = divider
+    padding = max(4, round(width * 0.015))
+    name_left, name_right = (
+        max(0, line_left - padding),
+        min(width, line_right + padding),
+    )
+    text_left, text_right = name_left, name_right
+    text_bottom = height
+    if configured is not None:
+        text_left, _, text_right, text_bottom = configured.dialogue._pixel_box(
+            width, height
+        )
+    name_top = max(0, band_top - max(8, round(height * 0.35)))
+    name_bottom = band_top
+    if name_bottom <= name_top or band_bottom >= text_bottom:
+        return configured
+    name_box = _nameplate_bounds(image, (name_left, name_top, name_right, name_bottom))
+    if configured is not None:
+        x, _, end_x, _ = configured.speaker._pixel_box(width, height)
+        # Detect on the same pixels even when the caller already resolved this frame.
+        if max(x, name_box[0]) < min(end_x, name_box[2]):
+            name_box = (
+                max(x, name_box[0]),
+                name_box[1],
+                min(end_x, name_box[2]),
+                name_box[3],
+            )
+        else:
+            name_box = (x, name_top, end_x, name_bottom)
+
+    def region(box: tuple[int, int, int, int]) -> DialogRegion:
+        x, y, end_x, end_y = box
+        return DialogRegion(
+            x / width,
+            y / height,
+            min(1 - x / width, (end_x - x) / width),
+            min(1 - y / height, (end_y - y) / height),
+        )
+
+    return OCRRegions(
+        region(name_box), region((text_left, band_bottom, text_right, text_bottom))
+    )
+
+
+def _dialogue_divider(
+    pixels: np.ndarray, left: int, right: int
+) -> tuple[int, int, int, int] | None:
+    """Locate one thin rule that can safely separate the speaker and dialogue."""
+    height, _ = pixels.shape
+    ridge = (
+        pixels[1:-1, left:right]
+        - (pixels[:-2, left:right] + pixels[2:, left:right]) / 2
+    )
+    support = np.abs(ridge) > 2
+    counts = support.sum(axis=1)
+    counts[:2] = 0
+    counts[round(height * 0.75) :] = 0
+    candidates = np.flatnonzero(counts >= (right - left) * 0.4)
+    if not candidates.size:
+        return None
+    row = int(candidates[np.argmax(counts[candidates])])
+    # A panel border or several rules do not establish which one separates roles.
+    if any(
+        abs(int(other) - row) > 3 and counts[other] >= counts[row] * 0.9
+        for other in candidates
+    ):
+        return None
+    runs, _ = label(support[row])
+    spans = [bounds[0] for bounds in find_objects(runs) if bounds is not None]
+    longest = max(spans, key=lambda span: span.stop - span.start)
+    if longest.stop - longest.start < (right - left) * 0.35:
+        return None
+    spans = [span for span in spans if span.stop - span.start >= (right - left) * 0.02]
+    line_left = left + min(span.start for span in spans)
+    line_right = left + max(span.stop for span in spans)
+    divider = row + 1
+    # Remove only the thin rule itself, without shaving nearby glyphs.
+    band_top = divider
+    band_bottom = divider + 1
+    while band_top > 1 and counts[band_top - 2] >= counts[row] * 0.8:
+        band_top -= 1
+    while band_bottom < height - 1 and counts[band_bottom - 1] >= counts[row] * 0.8:
+        band_bottom += 1
+    if band_bottom - band_top > max(5, round(height * 0.02)):
+        return None
+    return line_left, line_right, band_top, band_bottom
+
+
+def _nameplate_bounds(
+    image: Image.Image, box: tuple[int, int, int, int]
+) -> tuple[int, int, int, int]:
+    """Tighten the name around strokes aligned with the divider's left edge."""
+    left, top, right, bottom = box
+    pixels = np.asarray(image.crop(box).convert("L"), dtype=np.int16)
+    light = float(np.median(pixels)) < 128
+    contrast = (
+        pixels - minimum_filter(pixels, size=3)
+        if light
+        else maximum_filter(pixels, size=3) - pixels
+    )
+    foreground = (contrast >= 16) & (
+        pixels >= np.median(pixels) + 32 if light else pixels <= np.median(pixels) - 32
+    )
+    components, _ = label(foreground, structure=np.ones((3, 3)))
+    glyphs = [
+        bounds
+        for bounds in find_objects(components)
+        if bounds is not None
+        and bounds[0].stop - bounds[0].start >= 4
+        and 1 <= bounds[1].stop - bounds[1].start <= (bottom - top) * 2
+        and bounds[0].stop - bounds[0].start < (bottom - top) * 0.9
+    ]
+    anchors = [g for g in glyphs if g[1].start <= max(12, (right - left) * 0.06)]
+    if not anchors:
+        if (
+            not glyphs
+            and int(pixels.max()) - int(pixels.min()) >= 32
+            and not _isolated_speaker_strokes(pixels)
+        ):
+            # A wide empty band can contain scenery edges far from the name's
+            # anchor. Preserve unanchored glyphs and uniformly faint labels.
+            right = min(right, left + max(12, round((right - left) * 0.06)))
+            return left, top, right, bottom
+        return box
+    anchor = max(anchors, key=lambda g: g[0].stop)
+    baseline = anchor[0].stop
+    aligned = [
+        g for g in glyphs if abs(g[0].stop - baseline) <= max(3, (bottom - top) * 0.15)
+    ]
+    aligned.sort(key=lambda g: g[1].start)
+    start = end = aligned.index(anchor)
+    gap = max(12, anchor[0].stop - anchor[0].start)
+    while start > 0 and aligned[start][1].start - aligned[start - 1][1].stop <= gap:
+        start -= 1
+    while (
+        end + 1 < len(aligned)
+        and aligned[end + 1][1].start - aligned[end][1].stop <= gap
+    ):
+        end += 1
+    aligned = aligned[start : end + 1]
+    # Include detached dots/accents by padding the aligned glyph line vertically.
+    padding = max(3, round((bottom - top) * 0.1))
+    return (
+        max(left, left + min(g[1].start for g in aligned) - padding),
+        max(top, top + min(g[0].start for g in aligned) - padding),
+        min(right, left + max(g[1].stop for g in aligned) + padding),
+        min(bottom, top + max(g[0].stop for g in aligned) + padding),
+    )
+
+
+def _isolated_speaker_strokes(pixels: np.ndarray) -> bool:
+    """Retain faint ink over smooth local background despite distant scenery."""
+    height, width = pixels.shape
+    for dark, contrast in enumerate(
+        (
+            pixels - minimum_filter(pixels, size=3),
+            maximum_filter(pixels, size=3) - pixels,
+        )
+    ):
+        components, _ = label(contrast >= 16, structure=np.ones((3, 3)))
+        for index, bounds in enumerate(find_objects(components), start=1):
+            if bounds is None:
+                continue
+            y, x = bounds
+            h, w = y.stop - y.start, x.stop - x.start
+            if h < 4 or not 1 <= w <= h * 3:
+                continue
+            top, left = max(0, y.start - 2 * h), max(0, x.start - 2 * h)
+            patch = pixels[
+                top : min(height, y.stop + 2 * h), left : min(width, x.stop + 2 * h)
+            ]
+            # Row/column medians tolerate ramps and stripes without treating
+            # faint letters as part of the surrounding scene's brightness.
+            background = (
+                np.median(patch, axis=1)[:, None]
+                + np.median(patch, axis=0)[None, :]
+                - np.median(patch)
+            )
+            if np.mean(np.abs(patch - background) <= 2) < 0.8:
+                continue
+            residual = (
+                pixels[bounds]
+                - background[
+                    y.start - top : y.stop - top, x.start - left : x.stop - left
+                ]
+            )
+            ink = (-residual if dark else residual)[components[bounds] == index]
+            if ink.max() >= 16:
+                return True
+    return False
+
+
 def combine_ocr_regions(
     speaker: DialogRegion,
     dialogue: DialogRegion,
@@ -274,6 +488,40 @@ class OCRResult:
 
     def is_confident(self, minimum: float = default_minimum_ocr_confidence) -> bool:
         return bool(self.text.strip()) and self.confidence >= minimum
+
+
+def detect_standalone_ellipsis_frame(
+    image: object, *, dialogue_only: bool = False
+) -> bool:
+    """Detect three isolated dialogue-band dots without relying on OCR text."""
+    if not isinstance(image, Image.Image):
+        return False
+    rgb = image.convert("RGB")
+    width, height = rgb.size
+    right = min(width, max(30, round(width * 0.12)))
+    top = 0 if dialogue_only else min(height - 1, round(height * 0.38))
+    bottom = (
+        height if dialogue_only else min(height, max(top + 1, round(height * 0.88)))
+    )
+    pixels = np.asarray(rgb.crop((0, top, right, bottom)))
+    brightness = pixels.min(axis=2)
+    bright = (brightness >= 150) & (pixels.max(axis=2) - brightness <= 45)
+    if not 6 <= np.count_nonzero(bright) <= 30:
+        return False
+    components, count = label(bright, structure=np.ones((3, 3)))
+    if count != 3:
+        return False
+    centers = []
+    for index in range(1, count + 1):
+        ys, xs = np.nonzero(components == index)
+        if not 2 <= len(xs) <= 12 or np.ptp(xs) > 3 or np.ptp(ys) > 3:
+            return False
+        centers.append((float(xs.mean()), float(ys.mean())))
+    centers.sort()
+    gaps = [centers[index + 1][0] - centers[index][0] for index in range(2)]
+    return max(center[1] for center in centers) - min(
+        center[1] for center in centers
+    ) <= 2.5 and all(4 <= gap <= 9 for gap in gaps)
 
 
 default_ocr_profiles = (
@@ -471,9 +719,11 @@ def recognize_dialog_image_result(
     if recognize_data is None:
         recognize_data = pytesseract.image_to_data
 
+    ocr_regions = resolve_ocr_regions(image, ocr_regions)
     if ocr_regions is not None:
+        speaker_image = ocr_regions.speaker.crop(image)
         speaker = _recognize_isolated_region(
-            ocr_regions.speaker.crop(image),
+            speaker_image,
             recognize_text,
             recognize_data,
             profiles,
@@ -494,19 +744,25 @@ def recognize_dialog_image_result(
             speaker=False,
             combine_outputs=combine_outputs,
         )
+        unreadable_speaker = not speaker.text.strip() and speaker_glyphs_visible(
+            speaker_image
+        )
         character = normalize_recognized_speaker(speaker.text, voice_registry)
         return OCRResult(
             character,
             dialogue.text,
             min(speaker.confidence, dialogue.confidence)
-            if speaker.text.strip()
+            if speaker.text.strip() or unreadable_speaker
             else dialogue.confidence,
             dialogue.profile,
             max(speaker.attempts, dialogue.attempts),
             processed_image=dialogue.processed_image,
             speaker_image=speaker.processed_image,
-            speaker_confidence=speaker.confidence if speaker.text.strip() else None,
+            speaker_confidence=speaker.confidence
+            if speaker.text.strip() or unreadable_speaker
+            else None,
             dialogue_confidence=dialogue.confidence,
+            speaker_note="Visible name could not be read" if unreadable_speaker else "",
         )
 
     best_result = None
@@ -592,9 +848,7 @@ def _recognize_isolated_region(
                 )
             # The explicit dialogue rectangle supplies layout authority. Keep
             # one-letter words and punctuation instead of nameplate/UI heuristics.
-            text = " ".join(
-                _strip_trailing_ocr_glyphs(line.strip()) for line in text.splitlines()
-            ).strip()
+            text = " ".join(line.strip() for line in text.splitlines()).strip()
             words = _recognized_words(data)
             cleaned = _trim_trailing_ocr_noise(words)
             if len(cleaned) < len(words):
@@ -607,6 +861,12 @@ def _recognize_isolated_region(
             attempt,
             processed_image=processed,
         )
+        if (
+            not speaker
+            and not text
+            and detect_standalone_ellipsis_frame(image, dialogue_only=True)
+        ):
+            return replace(result, text="...")
         if best_result is None or (
             bool(result.text),
             result.confidence,

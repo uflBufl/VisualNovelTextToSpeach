@@ -391,11 +391,10 @@ class ChapterVoicePreloader:
     ) -> tuple[ChapterDialogue | None, str]:
         """Resolve OCR drift only among explicit cursor-authorized line IDs."""
         allowed = tuple(dict.fromkeys(str(line_id) for line_id in line_ids if line_id))
-        allowed_set = set(allowed)
         valid = tuple(
             row
-            for row in self.dialogue
-            if row.line_id in allowed_set and row.text_sha256
+            for line_id in allowed
+            if (row := self.by_line_id.get(line_id)) is not None and row.text_sha256
         )
         exact_text = _normalize_exact_text(text)
         normalized_text = _normalize(text)

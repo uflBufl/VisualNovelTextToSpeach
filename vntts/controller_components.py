@@ -979,6 +979,8 @@ class LiveSessionComponent:
 
     def toggle_speech_pause(self) -> bool:
         controller = self.controller
+        with controller.story_cursor_lock:
+            controller.sequence_prefix_dispatch_lease = None
         reader = controller.live_reader
         if reader is None:
             return False
@@ -988,6 +990,8 @@ class LiveSessionComponent:
 
     def skip_current_speech(self) -> bool:
         controller = self.controller
+        with controller.story_cursor_lock:
+            controller.sequence_prefix_dispatch_lease = None
         reader = controller.live_reader
         if reader is None:
             return False
@@ -999,6 +1003,8 @@ class LiveSessionComponent:
 
     def repeat_last_speech(self) -> bool:
         controller = self.controller
+        with controller.story_cursor_lock:
+            controller.sequence_prefix_dispatch_lease = None
         if controller.shutdown_requested.is_set() is True:
             return False
         reader = controller.live_reader
@@ -1012,6 +1018,8 @@ class LiveSessionComponent:
 
     def clear_speech_queue(self) -> bool:
         controller = self.controller
+        with controller.story_cursor_lock:
+            controller.sequence_prefix_dispatch_lease = None
         reader = controller.live_reader
         if reader is None:
             return False
@@ -1021,6 +1029,8 @@ class LiveSessionComponent:
 
     def emergency_stop(self) -> bool:
         controller = self.controller
+        with controller.story_cursor_lock:
+            controller.sequence_prefix_dispatch_lease = None
         schedule = controller.schedule_dialog_read
         cancel_read = getattr(schedule, "cancel", None)
         cancelled_read = cancel_read() is True if callable(cancel_read) else False
@@ -1035,6 +1045,8 @@ class LiveSessionComponent:
 
     def set_auto_advance_enabled(self, enabled: bool) -> bool:
         controller = self.controller
+        with controller.story_cursor_lock:
+            controller.sequence_prefix_dispatch_lease = None
         allowed, effective, reason = auto_advance_control_state(
             controller.settings.capture_mode,
             controller.settings.live_sequence_mode,

@@ -41,7 +41,7 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 192
+      "maximum": 194
     },
     {
       "code": "C901",
@@ -259,13 +259,6 @@
       "scope": "AppController._get_live_sequence_status_locked",
       "count": 1,
       "maximum": 16
-    },
-    {
-      "code": "C901",
-      "path": "vntts/controller.py",
-      "scope": "AppController._observe_live_sequence_locked",
-      "count": 1,
-      "maximum": 13
     },
     {
       "code": "C901",
@@ -517,7 +510,7 @@
       "path": "vntts/readiness_ui.py",
       "scope": "ReadinessDialog._checks_finished",
       "count": 1,
-      "maximum": 12
+      "maximum": 11
     },
     {
       "code": "C901",
@@ -776,7 +769,7 @@
       "path": "vntts/controller.py",
       "scope": "AppController._observe_live_sequence_locked",
       "count": 1,
-      "maximum": 14
+      "maximum": 13
     },
     {
       "code": "PLR0912",
@@ -986,7 +979,7 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 877
+      "maximum": 881
     },
     {
       "code": "PLR0915",
@@ -1378,7 +1371,7 @@
       "path": "vntts/readiness_ui.py",
       "scope": "ReadinessDialog.__init__",
       "count": 1,
-      "maximum": 89
+      "maximum": 93
     },
     {
       "code": "PLR0915",

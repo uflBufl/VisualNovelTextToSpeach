@@ -283,6 +283,89 @@ class AutoAdvanceFakeFrameHarness:
 
 
 class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
+    def test_owned_prefix_does_not_reinterpret_the_unchanged_previous_frame(self):
+        harness = AutoAdvanceFakeFrameHarness(
+            stable_frame_route=lambda *_args: None,
+            ocr_purpose=lambda: "expected-successor-prefix",
+        )
+        harness.reader.routed_frame_fingerprint = "previous-line"
+        harness.start()
+        self.addCleanup(harness.stop)
+        harness.push(
+            "Ada",
+            "I...",
+            background="previous",
+            fingerprint="previous-line",
+            expected=(None, ""),
+        )
+        self.assertEqual(harness.recognized_frames, [])
+        self.assertEqual(harness.speech_executor.jobs, [])
+        self.assertEqual(harness.errors, [])
+
+    def test_expected_prefix_survives_typewriter_growth_only_for_current_owner(self):
+        for change in (
+            "growth",
+            "legacy",
+            "owner",
+            "epoch",
+            "hidden",
+            "focus",
+            "purpose",
+            "owner-static",
+            "epoch-static",
+            "focus-static",
+            "purpose-static",
+        ):
+            with self.subTest(change=change):
+                purpose = [
+                    "legacy" if change == "legacy" else "expected-successor-prefix"
+                ]
+                observed = Mock(
+                    return_value=CanonicalDialogRoute("Ada", "Next canonical line.")
+                )
+                harness = AutoAdvanceFakeFrameHarness(
+                    ocr_purpose=lambda: purpose[0],
+                    dialog_observed=observed,
+                    tracker_options={"complete_dialogue_only": True},
+                )
+                reader = harness.reader
+                reader.latest_frame = object()
+                reader.latest_frame_fingerprint = "first-letter"
+                reader.latest_frame_visible = True
+                reader.frame_version = 1
+                reader.line_id_resolver = lambda *_args: "line-2"
+
+                def recognize(_frame):
+                    # Capture continues while OCR reads the first letter.
+                    if not change.endswith("-static"):
+                        reader.latest_frame_fingerprint = "more-letters"
+                    condition = change.removesuffix("-static")
+                    if condition == "owner":
+                        harness.frame_owner = "event-2"
+                    elif condition == "epoch":
+                        reader.frame_route_epoch += 1
+                    elif condition == "hidden":
+                        reader.latest_frame_visible = False
+                    elif condition == "focus":
+                        harness.focused = False
+                    elif condition == "purpose":
+                        purpose[0] = "legacy"
+                    harness.stop_event.set()
+                    return "Ada", "N"
+
+                reader.recognize_frame = recognize
+                reader._run_ocr(harness.stop_event)
+
+                if change == "growth":
+                    observed.assert_called_once_with("Ada", "N")
+                    self.assertEqual(len(harness.speech_executor.jobs), 1)
+                    chunk = harness.speech_executor.jobs[0][2][0]
+                    self.assertEqual(chunk.text, "Next canonical line.")
+                else:
+                    observed.assert_not_called()
+                    self.assertEqual(harness.speech_executor.jobs, [])
+                self.assertEqual(harness.errors, [])
+
     def test_locked_visual_frame_is_acknowledged_without_running_ocr(self):
         observed = []
         harness = AutoAdvanceFakeFrameHarness(

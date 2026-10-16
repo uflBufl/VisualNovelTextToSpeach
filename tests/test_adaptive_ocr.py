@@ -1,0 +1,406 @@
+import shutil
+import unittest
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from PIL import Image, ImageDraw, ImageOps
+
+from vntts.dialog_capture import (
+    CapturedDialogFrame,
+    dialog_glyphs_visible,
+    fingerprint_dialog_frame,
+    fingerprint_dialog_render_activity,
+    recognize_live_frame,
+)
+from vntts.ocr import (
+    DialogRegion,
+    OCRPreprocessingProfile,
+    OCRRegions,
+    OCRResult,
+    default_dialog_region,
+    recognize_dialog_image_result,
+    resolve_ocr_regions,
+    speaker_glyphs_visible,
+)
+
+
+class AdaptiveOCRTest(unittest.TestCase):
+    @staticmethod
+    def frame(lines=1, name="X", text="?", inverted=False):
+        background, foreground = ("white", "black") if inverted else ("black", "white")
+        image = Image.new("RGB", (420, 180), background)
+        draw = ImageDraw.Draw(image)
+        divider = 120 - (lines - 1) * 25
+        draw.text((18, divider - 25), name, fill=foreground, font_size=18)
+        draw.line((10, divider, 405, divider), fill=foreground)
+        for row in range(lines):
+            draw.text((12, divider + 5 + row * 25), text, fill=foreground, font_size=18)
+        return image, divider
+
+    def test_follows_one_to_four_lines_and_both_polarities_without_clipping(self):
+        for lines in range(1, 5):
+            for inverted in (False, True):
+                with self.subTest(lines=lines, inverted=inverted):
+                    image, divider = self.frame(lines, inverted=inverted)
+                    regions = resolve_ocr_regions(image)
+                    self.assertIsNotNone(regions)
+                    _, name_top, _, name_bottom = regions.speaker._pixel_box(
+                        *image.size
+                    )
+                    _, text_top, _, text_bottom = regions.dialogue._pixel_box(
+                        *image.size
+                    )
+                    self.assertLessEqual(name_top, divider - 18)
+                    self.assertLess(name_bottom, divider)
+                    self.assertGreater(text_top, divider)
+                    self.assertLessEqual(text_top, divider + 5)
+                    self.assertEqual(text_bottom, image.height)
+                    frame = CapturedDialogFrame(image, 0)
+                    self.assertEqual(frame.ocr_regions, regions)
+                    self.assertEqual(resolve_ocr_regions(image, regions), regions)
+                    self.assertIs(frame.image, image)
+
+    def test_preserves_configured_horizontal_authority_when_divider_moves(self):
+        image, divider = self.frame(lines=4, name="???")
+        configured = OCRRegions(
+            DialogRegion(0.02, 0.5, 0.3, 0.14), DialogRegion(0.02, 0.72, 0.95, 0.28)
+        )
+        regions = resolve_ocr_regions(image, configured)
+        self.assertLess(regions.speaker.top, configured.speaker.top)
+        self.assertGreater(regions.dialogue.top * image.height, divider)
+        old_box = configured.dialogue._pixel_box(*image.size)
+        new_box = regions.dialogue._pixel_box(*image.size)
+        self.assertEqual((new_box[0], new_box[2]), (old_box[0], old_box[2]))
+        self.assertEqual(new_box[3], old_box[3])
+
+    def test_ambiguous_missing_thick_or_outside_divider_retains_calibration(self):
+        configured = OCRRegions(
+            DialogRegion(0.1, 0.1, 0.3, 0.2), DialogRegion(0.1, 0.4, 0.7, 0.5)
+        )
+        for variant in ("missing", "two", "thick", "outside"):
+            image = Image.new("RGB", (420, 180), "black")
+            draw = ImageDraw.Draw(image)
+            if variant == "two":
+                for y in (50, 90):
+                    draw.line((45, y, 330, y), fill="white")
+            elif variant == "thick":
+                draw.rectangle((45, 40, 330, 70), fill="white")
+            elif variant == "outside":
+                draw.line((0, 60, 35, 60), fill="white")
+            with self.subTest(variant=variant):
+                self.assertEqual(resolve_ocr_regions(image, configured), configured)
+
+    def test_name_crop_stops_at_distant_art_but_retains_spaces_within_name(self):
+        image, divider = self.frame(name="Adar Llwch Gwin")
+        ImageDraw.Draw(image).text(
+            (330, divider - 25), "JUNK", fill="white", font_size=18
+        )
+        regions = resolve_ocr_regions(image)
+        box = regions.speaker._pixel_box(*image.size)
+        self.assertGreater(box[2], 150)
+        self.assertLess(box[2], 300)
+        self.assertEqual(resolve_ocr_regions(image, regions), regions)
+
+    def test_empty_anchor_excludes_distant_scenery_without_stealing_dialogue(self):
+        image, _ = self.frame(name="", text="I")
+        ImageDraw.Draw(image).rectangle((390, 0, 410, image.height), fill="#555555")
+        regions = resolve_ocr_regions(image)
+        self.assertFalse(speaker_glyphs_visible(regions.speaker.crop(image)))
+        self.assertEqual(resolve_ocr_regions(image, regions), regions)
+        result = recognize_dialog_image_result(
+            image,
+            recognize_text=Mock(return_value="I"),
+            recognize_data=Mock(
+                side_effect=[
+                    {"text": ["noise"], "conf": [27]},
+                    {"text": ["I"], "conf": [96]},
+                ]
+            ),
+            profiles=(OCRPreprocessingProfile("one", 1, 170),),
+        )
+        self.assertEqual((result.character, result.text), ("Narrator", "I"))
+        self.assertIsNone(result.speaker_confidence)
+        self.assertTrue(result.is_confident())
+
+    def test_unanchored_short_or_uniformly_faint_names_remain_visible(self):
+        for name in ("X", "I", "???", "6", "37"):
+            for fill in ("white", "#181818"):
+                for inverted in (False, True):
+                    with self.subTest(name=name, fill=fill, inverted=inverted):
+                        image, divider = self.frame(name="", text="I")
+                        ImageDraw.Draw(image).text(
+                            (180, divider - 25), name, fill=fill, font_size=18
+                        )
+                        if inverted:
+                            image = ImageOps.invert(image)
+                        regions = resolve_ocr_regions(image)
+                        self.assertTrue(
+                            speaker_glyphs_visible(regions.speaker.crop(image))
+                        )
+                        self.assertEqual(resolve_ocr_regions(image, regions), regions)
+                        result = recognize_dialog_image_result(
+                            image,
+                            recognize_text=Mock(return_value="I"),
+                            recognize_data=Mock(
+                                side_effect=[
+                                    {"text": [], "conf": []},
+                                    {"text": ["I"], "conf": [96]},
+                                ]
+                            ),
+                            profiles=(OCRPreprocessingProfile("one", 1, 170),),
+                        )
+                        self.assertFalse(result.is_confident())
+                        self.assertIsNotNone(result.speaker_confidence)
+                        self.assertIn("could not be read", result.speaker_note)
+
+    def test_faint_centered_short_names_survive_distant_bright_scenery(self):
+        for name in ("X", "I", "J", "L", "T", "???", "6", "37"):
+            for font_size in (10, 18):
+                for inverted in (False, True):
+                    with self.subTest(
+                        name=name, font_size=font_size, inverted=inverted
+                    ):
+                        image, divider = self.frame(name="", text="I")
+                        draw = ImageDraw.Draw(image)
+                        draw.rectangle((390, 0, 399, divider - 1), fill="#505050")
+                        draw.text(
+                            (180, divider - 25),
+                            name,
+                            fill="#181818",
+                            font_size=font_size,
+                        )
+                        if inverted:
+                            image = ImageOps.invert(image)
+                        regions = resolve_ocr_regions(image)
+                        self.assertTrue(
+                            speaker_glyphs_visible(regions.speaker.crop(image))
+                        )
+                        self.assertEqual(resolve_ocr_regions(image, regions), regions)
+                        result = recognize_dialog_image_result(
+                            image,
+                            recognize_text=Mock(return_value="I"),
+                            recognize_data=Mock(
+                                side_effect=[
+                                    {"text": [], "conf": []},
+                                    {"text": ["I"], "conf": [96]},
+                                ]
+                            ),
+                            profiles=(OCRPreprocessingProfile("one", 1, 170),),
+                        )
+                        self.assertFalse(result.is_confident())
+                        self.assertIsNotNone(result.speaker_confidence)
+
+    def test_faint_name_touching_upper_crop_boundary_remains_unreadable(self):
+        for name in ("I", "J", "L", "T", "???", "6", "37"):
+            with self.subTest(name=name):
+                image, divider = self.frame(name="", text="I")
+                draw = ImageDraw.Draw(image)
+                draw.rectangle((390, 0, 399, divider - 1), fill="#505050")
+                draw.text((180, 50), name, fill="#181818", font_size=18)
+                regions = resolve_ocr_regions(image)
+                self.assertTrue(speaker_glyphs_visible(regions.speaker.crop(image)))
+                result = recognize_dialog_image_result(
+                    image,
+                    recognize_text=Mock(return_value="I"),
+                    recognize_data=Mock(
+                        side_effect=[
+                            {"text": [], "conf": []},
+                            {"text": ["I"], "conf": [96]},
+                        ]
+                    ),
+                    profiles=(OCRPreprocessingProfile("one", 1, 170),),
+                )
+                self.assertFalse(result.is_confident())
+                self.assertIsNotNone(result.speaker_confidence)
+
+    @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
+    def test_original_six_narrator_frames_keep_dialogue_and_live_acceptance(self):
+        directory = Path(__file__).parent / "fixtures" / "ocr-narrator-scenery"
+        for sequence in (55, 58, 60, 94, 95, 99):
+            with (
+                self.subTest(sequence=sequence),
+                Image.open(directory / f"event-{sequence}.png") as source,
+            ):
+                image = source.convert("RGB")
+                frame = CapturedDialogFrame(image, 0)
+                self.assertFalse(
+                    speaker_glyphs_visible(frame.ocr_regions.speaker.crop(image))
+                )
+                result = recognize_dialog_image_result(
+                    image, ocr_regions=frame.ocr_regions
+                )
+                self.assertEqual(result.character, "Narrator")
+                self.assertTrue(result.text.strip())
+                self.assertIsNone(result.speaker_confidence)
+                self.assertTrue(result.is_confident())
+                with patch(
+                    "vntts.dialog_capture.recognize_screenshot_result",
+                    return_value=result,
+                ):
+                    self.assertEqual(
+                        recognize_live_frame(frame), ("Narrator", result.text)
+                    )
+
+    def test_spatial_roles_preserve_short_names_and_dialogue(self):
+        for name in ("X", "I", "???", "6", "37"):
+            for text in ("I", "?", "...", "No.", ":", ";", "—"):
+                with self.subTest(name=name, text=text):
+                    image, _ = self.frame(lines=4, name=name, text=text)
+                    result = recognize_dialog_image_result(
+                        image,
+                        recognize_text=Mock(return_value=text),
+                        recognize_data=Mock(
+                            side_effect=[
+                                {"text": [name], "conf": [95]},
+                                {"text": [text], "conf": [96]},
+                            ]
+                        ),
+                        profiles=(OCRPreprocessingProfile("one", 1, 170),),
+                    )
+                    self.assertEqual((result.character, result.text), (name, text))
+                    self.assertTrue(result.is_confident())
+
+    def test_visible_unreadable_name_cannot_be_accepted_as_narrator(self):
+        image, _ = self.frame(name="Unknown")
+        result = recognize_dialog_image_result(
+            image,
+            recognize_text=Mock(return_value="?"),
+            recognize_data=Mock(
+                side_effect=[{"text": [], "conf": []}, {"text": ["?"], "conf": [96]}]
+            ),
+            profiles=(OCRPreprocessingProfile("one", 1, 170),),
+        )
+        self.assertFalse(result.is_confident())
+        self.assertIsNotNone(result.speaker_confidence)
+        self.assertIn("could not be read", result.speaker_note)
+        uncertain = Mock()
+        with (
+            patch(
+                "vntts.dialog_capture.recognize_screenshot_result", return_value=result
+            ),
+            patch(
+                "vntts.dialog_capture.detect_standalone_ellipsis_frame",
+                return_value=True,
+            ),
+        ):
+            self.assertEqual(
+                recognize_live_frame(
+                    CapturedDialogFrame(image, 0), uncertain_handler=uncertain
+                ),
+                (None, ""),
+            )
+        uncertain.assert_called_once()
+        with (
+            patch(
+                "vntts.dialog_capture.recognize_screenshot_result",
+                return_value=replace(result, text=""),
+            ),
+            patch(
+                "vntts.dialog_capture.detect_standalone_ellipsis_frame",
+                return_value=True,
+            ),
+        ):
+            self.assertEqual(
+                recognize_live_frame(CapturedDialogFrame(image, 0)), (None, "")
+            )
+
+    def test_absent_name_keeps_first_short_dialogue_as_dialogue(self):
+        image, _ = self.frame(name="", text="I")
+        result = recognize_dialog_image_result(
+            image,
+            recognize_text=Mock(return_value="I"),
+            recognize_data=Mock(
+                side_effect=[{"text": [], "conf": []}, {"text": ["I"], "conf": [96]}]
+            ),
+            profiles=(OCRPreprocessingProfile("one", 1, 170),),
+        )
+        self.assertEqual((result.character, result.text), ("Narrator", "I"))
+        self.assertTrue(result.is_confident())
+        self.assertIsNone(result.speaker_confidence)
+
+    def test_ellipsis_waives_body_confidence_without_waiving_name_confidence(self):
+        image, _ = self.frame(text="")
+        for speaker_confidence in (20, 95):
+            result = OCRResult(
+                "X",
+                "...",
+                0,
+                "one",
+                1,
+                speaker_confidence=speaker_confidence,
+                dialogue_confidence=0,
+            )
+            with (
+                self.subTest(speaker_confidence=speaker_confidence),
+                patch(
+                    "vntts.dialog_capture.recognize_screenshot_result",
+                    return_value=result,
+                ),
+            ):
+                expected = (None, "") if speaker_confidence == 20 else ("X", "...")
+                self.assertEqual(
+                    recognize_live_frame(CapturedDialogFrame(image, 0)), expected
+                )
+
+    def test_live_activity_observes_text_above_old_fixed_dialogue_crop(self):
+        image, divider = self.frame(lines=4, text="I")
+        configured = OCRRegions(
+            DialogRegion(0, 0.4, 1, 0.2), DialogRegion(0, 0.7, 1, 0.3)
+        )
+        first = CapturedDialogFrame(image, 0, configured)
+        changed = image.copy()
+        ImageDraw.Draw(changed).text((50, divider + 5), "?", fill="white", font_size=18)
+        second = CapturedDialogFrame(changed, 0, configured)
+        self.assertTrue(dialog_glyphs_visible(first))
+        self.assertNotEqual(
+            fingerprint_dialog_render_activity(first),
+            fingerprint_dialog_render_activity(second),
+        )
+
+    def test_resolved_fingerprints_ignore_continue_indicator_blink(self):
+        image, _ = self.frame(text="Hi.")
+        first = CapturedDialogFrame(image, 0)
+        changed = image.copy()
+        ImageDraw.Draw(changed).polygon(
+            ((401, 153), (407, 153), (404, 159)), fill="white"
+        )
+        second = CapturedDialogFrame(changed, 0)
+        self.assertEqual(
+            fingerprint_dialog_frame(first), fingerprint_dialog_frame(second)
+        )
+        self.assertEqual(
+            fingerprint_dialog_render_activity(first),
+            fingerprint_dialog_render_activity(second),
+        )
+
+    def test_cropped_ellipsis_is_detected_near_dialogue_top(self):
+        image, divider = self.frame(lines=4, text="")
+        draw = ImageDraw.Draw(image)
+        for x in (12, 18, 24):
+            draw.rectangle((x, divider + 12, x + 1, divider + 13), fill="white")
+        result = OCRResult("X", "", 95, "one", 1)
+        with patch(
+            "vntts.dialog_capture.recognize_screenshot_result", return_value=result
+        ):
+            self.assertEqual(
+                recognize_live_frame(CapturedDialogFrame(image, 0)), ("X", "...")
+            )
+
+    @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
+    def test_real_wide_sample_keeps_single_letter_name(self):
+        with Image.open(
+            Path(__file__).resolve().parents[1] / "samples" / "02.png"
+        ) as source:
+            image = default_dialog_region.crop(source)
+        result = recognize_dialog_image_result(image)
+        self.assertEqual(result.character, "X")
+        self.assertEqual(
+            result.text,
+            "You were the perfect fulcrum! I don't know what I would have done without you.",
+        )
+        self.assertTrue(result.is_confident())
+
+
+if __name__ == "__main__":
+    unittest.main()

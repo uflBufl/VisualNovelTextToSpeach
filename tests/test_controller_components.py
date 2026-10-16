@@ -1,6 +1,7 @@
 import ast
 import unittest
 from pathlib import Path
+from threading import RLock
 from unittest.mock import Mock, patch
 
 from vntts.controller import AppController
@@ -265,7 +266,7 @@ class ControllerComponentsTest(unittest.TestCase):
         controller.schedule_dialog_read.assert_not_called()
 
     def test_emergency_stop_cancels_pending_one_time_read(self):
-        controller = Mock()
+        controller = Mock(story_cursor_lock=RLock())
         controller.schedule_dialog_read.cancel.return_value = True
         controller.live_reader.emergency_stop.return_value = False
 
@@ -289,7 +290,7 @@ class ControllerComponentsTest(unittest.TestCase):
             ("window", "audio-manual", "never sends advance keys"),
         ):
             with self.subTest(capture_mode=capture_mode, sequence_mode=sequence_mode):
-                controller = Mock()
+                controller = Mock(story_cursor_lock=RLock())
                 controller.settings = AppSettings(
                     capture_mode=capture_mode,
                     live_sequence_mode=sequence_mode,

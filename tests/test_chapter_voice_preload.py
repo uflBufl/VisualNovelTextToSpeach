@@ -368,6 +368,23 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         self.assertEqual(drifted.line_id, "test:1")
         self.assertEqual(drifted_result, "expected-bounded-similarity")
 
+    def test_bounded_resolution_does_not_scan_the_story(self):
+        class IndexedOnly(tuple):
+            def __iter__(self):
+                raise AssertionError("Bounded matching must use the line ID index")
+
+        text = "The expected dialogue starts here and continues."
+        line = ChapterDialogue("line-1", "1", 1, "Ada", text, "a" * 64)
+        preloader = ChapterVoicePreloader((line,))
+        preloader.dialogue = IndexedOnly(preloader.dialogue)
+
+        selected, result = preloader.resolve_bounded_among(
+            "Ada", "The expected dialogue starts", ("line-1",)
+        )
+
+        self.assertIs(selected, line)
+        self.assertEqual(result, "expected-bounded-prefix")
+
     def test_bounded_resolution_normalizes_curly_apostrophe_and_leading_noise(self):
         rows = []
         for sequence, speaker, text in (

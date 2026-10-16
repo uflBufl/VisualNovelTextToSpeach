@@ -26,8 +26,10 @@ from vntts.ocr import (
     UncertainFrameRecorder,
     VoiceRegistry,
     default_minimum_ocr_confidence,
+    detect_standalone_ellipsis_frame,
     get_dialog_region,
     recognize_dialog_image_result,
+    resolve_ocr_regions,
 )
 from vntts.ocr_backend import OCRBackend, TesseractOCRBackend
 from vntts.ocr_corrections import OCRCorrectionDictionary
@@ -78,6 +80,11 @@ class CapturedDialogFrame:
     image: Image.Image
     capture_ms: float
     ocr_regions: OCRRegions | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "ocr_regions", resolve_ocr_regions(self.image, self.ocr_regions)
+        )
 
 
 def get_screenshot_directory(settings: ScreenshotSettings | None = None) -> Path:
@@ -266,7 +273,11 @@ def fingerprint_dialog_frame(frame: object) -> bytes:
             0, height, 27, 180, region_image=regions.speaker.crop(source)
         )
         dialog = glyph_band(
-            0, height, 45, 200, region_image=regions.dialogue.crop(source)
+            0,
+            height,
+            45,
+            200,
+            region_image=regions.dialogue.crop(_without_continue_indicator(source)),
         )
         return blake2b(label + dialog, digest_size=16).digest()
     label_bottom = max(1, round(height * 0.36))
@@ -297,7 +308,7 @@ def fingerprint_dialog_render_activity(frame: object) -> bytes:
     top = min(height - 1, max(0, round(height * 0.25)))
     regions = getattr(frame, "ocr_regions", None)
     band = (
-        regions.dialogue.crop(grayscale)
+        regions.dialogue.crop(_without_continue_indicator(grayscale))
         if isinstance(regions, OCRRegions)
         else grayscale.crop((left, top, right, height))
     )
@@ -385,39 +396,11 @@ def dialog_completion_cue_visible(frame: object) -> bool:
     return False
 
 
-def detect_standalone_ellipsis_frame(image: object) -> bool:
-    """Detect three isolated dialogue-band dots without relying on OCR text."""
-    if not isinstance(image, Image.Image):
-        return False
-    rgb = image.convert("RGB")
-    width, height = rgb.size
-    right = min(width, max(30, round(width * 0.12)))
-    top = min(height - 1, round(height * 0.38))
-    bottom = min(height, max(top + 1, round(height * 0.88)))
-    pixels = np.asarray(rgb.crop((0, top, right, bottom)))
-    brightness = pixels.min(axis=2)
-    bright = (brightness >= 150) & (pixels.max(axis=2) - brightness <= 45)
-    if not 6 <= np.count_nonzero(bright) <= 30:
-        return False
-    components = _pixel_components(bright)
-    if len(components) != 3:
-        return False
-    centers = []
-    for component in components:
-        xs = [point[0] for point in component]
-        ys = [point[1] + top for point in component]
-        if (
-            not 2 <= len(component) <= 12
-            or max(xs) - min(xs) > 3
-            or max(ys) - min(ys) > 3
-        ):
-            return False
-        centers.append((sum(xs) / len(xs), sum(ys) / len(ys)))
-    centers.sort()
-    gaps = [centers[index + 1][0] - centers[index][0] for index in range(2)]
-    return max(center[1] for center in centers) - min(
-        center[1] for center in centers
-    ) <= 2.5 and all(4 <= gap <= 9 for gap in gaps)
+def _without_continue_indicator(image: Image.Image) -> Image.Image:
+    image = image.copy()
+    width, height = image.size
+    image.paste(0, (round(width * 0.92), round(height * 0.68), width, height))
+    return image
 
 
 def is_standalone_ellipsis_text(value: object) -> bool:
@@ -480,7 +463,11 @@ def recognize_live_frame(
         regions.dialogue.crop(image) if isinstance(regions, OCRRegions) else image
     )
     recognized_text = (
-        "..." if detect_standalone_ellipsis_frame(dialogue_image) else result.text
+        "..."
+        if detect_standalone_ellipsis_frame(
+            dialogue_image, dialogue_only=isinstance(regions, OCRRegions)
+        )
+        else result.text
     )
     recognized_character = result.character
     if recognized_text == "..." and ellipsis_speaker_resolver is not None:
@@ -513,8 +500,15 @@ def recognize_live_frame(
     if diagnostic_handler is not None:
         diagnostic_handler(snapshot)
     if (
-        recognized_text != "..."
-        and result.text
+        (
+            recognized_text != "..."
+            or bool(result.speaker_note)
+            or (
+                result.speaker_confidence is not None
+                and result.speaker_confidence < minimum_confidence
+            )
+        )
+        and (recognized_text or result.speaker_note)
         and not result.is_confident(minimum_confidence)
     ):
         if uncertain_frame_recorder is not None:

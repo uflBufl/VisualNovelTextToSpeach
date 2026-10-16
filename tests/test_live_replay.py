@@ -483,7 +483,7 @@ class LiveReplayTest(unittest.TestCase):
                         ("Rhiannon", "The first source line is already complete.")
                     ],
                     "story:prefix:2": [
-                        ("???", "The generated narration"),
+                        ("Centurion", "T"),
                         ("corrupted nameplate", "The generated narration keeps"),
                         ("corrupted nameplate", "The generated narration keeps"),
                         ("Centurion", long_narration[:-42]),
@@ -494,7 +494,7 @@ class LiveReplayTest(unittest.TestCase):
                     ],
                 },
                 expected_counts={
-                    "ocr_calls": 1,
+                    "ocr_calls": 2,
                     "bounded_recoveries": 0,
                     "key_dispatch_attempts": 2,
                     "confirmed_key_dispatches": 2,
@@ -538,7 +538,7 @@ class LiveReplayTest(unittest.TestCase):
             (frame["dialogue_index"], frame["frame_index"])
             for frame in report["media_integrity"]["recognized_frames"]
         }
-        self.assertEqual(len(recognized_frame_identities), 1)
+        self.assertEqual(recognized_frame_identities, {(1, 1), (2, 1)})
         self.assertTrue(
             any(
                 frame["route_kind"] == "locked-visual-only"

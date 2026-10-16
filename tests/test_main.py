@@ -2698,6 +2698,20 @@ class MainTest(unittest.TestCase):
         )
         return controller, lines, pipeline
 
+    def test_reloading_sequence_plan_clears_prefix_transition_ownership(self):
+        controller, _lines, _pipeline = self._sequence_controller()
+        controller.story_cursor.anchor_event("event-1")
+        controller.sequence_prefix_dispatch_lease = SequenceEventLease(
+            "event-1", controller.story_cursor.occurrence_id
+        )
+        controller.sequence_prefix_confirmation_event_id = "event-1"
+
+        self.assertTrue(controller._load_live_sequence_plan())
+
+        self.assertIsNone(controller.sequence_prefix_dispatch_lease)
+        self.assertIsNone(controller.sequence_prefix_confirmation_event_id)
+        self.assertEqual(controller.story_cursor.state, StoryCursorState.UNSYNCHRONIZED)
+
     def test_sequence_timeout_recovers_only_from_bounded_dialogue_ocr(self):
         controller, lines, _pipeline = self._sequence_controller()
         unrelated = replace(
@@ -3117,7 +3131,9 @@ class MainTest(unittest.TestCase):
                 "Rhiannon",
                 "Second canonical line that",
             ),
-            ("Rhiannon", "Second canonical line that remains stable."),
+            CanonicalDialogRoute(
+                "Rhiannon", "Second canonical line that remains stable."
+            ),
         )
         generated_backend.has_generated_line.assert_called_once_with(
             preloader.dialogue[1]
@@ -3851,7 +3867,9 @@ class MainTest(unittest.TestCase):
             pending, cancellation=ANY
         )
 
-    def test_owned_auto_transition_routes_reserved_generated_successor_before_ocr(self):
+    def test_owned_auto_transition_routes_reserved_generated_successor_from_one_letter(
+        self,
+    ):
         rows = [
             {
                 "chapter": "1",
@@ -3925,12 +3943,27 @@ class MainTest(unittest.TestCase):
         controller.story_cursor.begin_playback()
         controller.story_cursor.finish_playback()
         controller.story_cursor.dispatch_advance()
+        controller.sequence_prefix_dispatch_lease = SequenceEventLease(
+            "event-1", controller.story_cursor.occurrence_id
+        )
 
         routed = controller._stable_live_frame_route(
             "first-stable-successor-frame",
-            True,
+            False,
             expected_owner="event-1",
         )
+        self.assertIsNone(routed)
+        self.assertEqual(controller._live_ocr_purpose(), "expected-successor-prefix")
+        preloader.resolve_bounded_among = Mock(
+            side_effect=AssertionError(
+                "Expected successor must bypass candidate search"
+            )
+        )
+        preloader.resolve_unique_prefix_by_text = Mock(
+            side_effect=AssertionError("Expected successor must bypass story search")
+        )
+        controller._prime_likely_chapter_voice = Mock()
+        routed = controller._dialog_observed(None, "A")
 
         self.assertEqual(
             routed,
@@ -3946,12 +3979,10 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader.confirm_pending_auto_advance.assert_called_once_with()
         transition = next(
-            event for event in pipeline if event[0][0] == "sequence-visual-transition"
+            event for event in pipeline if event[0][0] == "sequence-audio-auto"
         )
-        self.assertEqual(
-            transition[1]["proof"],
-            "application-owned-single-dispatch-generated-preflight",
-        )
+        self.assertEqual(transition[1]["match_result"], "expected-owned-prefix")
+        controller._prime_likely_chapter_voice.assert_not_called()
         controller.story_cursor.begin_playback()
         controller.story_cursor.finish_playback()
         controller.sequence_event_terminal_routes[
@@ -3961,6 +3992,94 @@ class MainTest(unittest.TestCase):
             controller._sequence_auto_advance_dialog().reason,
             "visual-wait",
         )
+
+    def test_expected_prefix_requires_owned_uninterrupted_unambiguous_transition(self):
+        for condition in (
+            "normal",
+            "complete",
+            "missing-name",
+            "wrong-name",
+            "wrong-text",
+            "punctuation",
+            "manual",
+            "focus-lost",
+            "timed-out",
+            "branch",
+            "missing-audio",
+            "paused",
+            "queue-cleared",
+        ):
+            with self.subTest(condition=condition):
+                controller, lines, _pipeline = self._sequence_controller()
+                backend = GeneratedAudioFallbackBackend(
+                    Mock(),
+                    Mock(),
+                    controller.chapter_voice_preloader,
+                    audio_output=Mock(),
+                )
+                backend.reserve_generated_line_for_early_playback = Mock(
+                    return_value=condition != "missing-audio"
+                )
+                controller.speech_backend = backend
+                controller._prime_likely_chapter_voice = Mock()
+                controller.live_reader = Mock(
+                    active_generation=12, failed_auto_advance_generation=None
+                )
+                cursor = controller.story_cursor
+                cursor.anchor_event("event-1")
+                cursor.begin_playback()
+                cursor.finish_playback()
+                lease = SequenceEventLease("event-1", cursor.occurrence_id)
+                controller.sequence_event_terminal_routes[lease] = "generated"
+                controller._is_game_focused = Mock(return_value=True)
+                controller._auto_advance_dialog = Mock(return_value=True)
+                self.assertTrue(controller._sequence_auto_advance_dialog())
+                self.assertEqual(controller.sequence_prefix_dispatch_lease, lease)
+                if condition == "manual":
+                    controller.sequence_prefix_dispatch_lease = None
+                elif condition == "paused":
+                    controller.toggle_speech_pause()
+                elif condition == "queue-cleared":
+                    controller.clear_speech_queue()
+                elif condition == "focus-lost":
+                    controller._capture_state_changed(False, 0.1)
+                    controller._capture_state_changed(True, 0.1)
+                elif condition == "timed-out":
+                    controller.live_reader.failed_auto_advance_generation = 12
+                elif condition == "branch":
+                    cursor.plan.events["event-1"] = replace(
+                        cursor.plan.events["event-1"],
+                        successors=("event-2", "event-1"),
+                    )
+                name = (
+                    None
+                    if condition == "missing-name"
+                    else "Someone else"
+                    if condition == "wrong-name"
+                    else "Rhiannon"
+                )
+                text = (
+                    lines[1].text
+                    if condition == "complete"
+                    else "X"
+                    if condition == "wrong-text"
+                    else "..."
+                    if condition == "punctuation"
+                    else "N"
+                )
+                routed = controller._dialog_observed(name, text)
+                if condition in {"normal", "missing-name", "complete"}:
+                    self.assertEqual(
+                        routed,
+                        (lines[1].speaker, lines[1].text)
+                        if condition == "complete"
+                        else CanonicalDialogRoute(lines[1].speaker, lines[1].text),
+                    )
+                    self.assertEqual(cursor.current_event_id, "event-2")
+                    controller._prime_likely_chapter_voice.assert_not_called()
+                else:
+                    self.assertFalse(routed)
+                    self.assertEqual(cursor.current_event_id, "event-1")
 
     def test_sequence_audio_manual_failed_playback_keeps_current_event_closed(self):
         preloader = ChapterVoicePreloader.from_document(

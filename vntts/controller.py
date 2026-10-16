@@ -19,6 +19,7 @@ from vntts.chapter_voice_preload import (
     ChapterVoicePreloader,
     _normalize_exact_text,
 )
+from vntts.chapter_voice_preload import _normalize as _normalize_story_text
 from vntts.controller_components import (
     DiagnosticsComponent,
     LiveSessionComponent,
@@ -473,6 +474,7 @@ class AppController:
     live_reader: LiveDialogReader | None
     live_sequence_plan: _LiveSequencePlanContract | None
     story_cursor: _StoryCursor | None
+    sequence_prefix_dispatch_lease: SequenceEventLease | None
     speech_backend: SpeechBackend | GeneratedAudioFallbackBackend | None
     tts: VoiceEngine | _VoiceRouter | None
     voice_router: _VoiceRouter | None
@@ -1048,6 +1050,8 @@ class AppController:
         ):
             return result
         with self.story_cursor_lock:
+            if self._expected_sequence_prefix_line_locked() is not None:
+                return result
             preloader = self.chapter_voice_preloader
             plan, cursor = self.live_sequence_plan, self.story_cursor
             if plan is not None and self.settings.live_sequence_mode != "off":
@@ -1215,6 +1219,8 @@ class AppController:
         character = self._canonical_observed_character(character, text)
         canonical_routing = False
         canonical_event_changed = False
+        early_prefix = False
+        owned_confirmation = False
         with self.story_cursor_lock:
             previous_event_id = (
                 None
@@ -1226,25 +1232,16 @@ class AppController:
                 if self.story_cursor is None:
                     return False
                 if sequence_observation is None:
-                    if self.story_cursor.state in {
-                        StoryCursorState.UNSYNCHRONIZED,
-                        StoryCursorState.ANCHORING,
-                    }:
-                        # Typewriter prefixes may not yet identify one canonical
-                        # line. Consume the changing frame without ever routing
-                        # its unbound OCR text to speech; a later exact frame can
-                        # still establish the anchor.
-                        return False
-                    if self.story_cursor.state in {
-                        StoryCursorState.LOCKED,
-                        StoryCursorState.PLAYING,
-                        StoryCursorState.WAITING_TRANSITION,
-                        StoryCursorState.MANUAL,
-                        StoryCursorState.DESYNCHRONIZED,
-                    }:
-                        return False
+                    # An unresolved typewriter prefix cannot authorize speech;
+                    # a later exact frame can still establish the anchor.
+                    return False
                 else:
                     snapshot, observed_line, _match_result = sequence_observation
+                    early_prefix = _match_result == "expected-owned-prefix"
+                    owned_confirmation = _match_result in {
+                        "expected-owned-prefix",
+                        "expected-owned-exact",
+                    }
                     if snapshot.state == StoryCursorState.DESYNCHRONIZED:
                         return False
                     plan = self.live_sequence_plan
@@ -1286,12 +1283,15 @@ class AppController:
                     canonical_event_changed = event.event_id != previous_event_id
         speech_deferred = self._offer_unknown_speaker_mapping(character, text)
         self._prime_observed_voice(character)
-        self._prime_likely_chapter_voice(character, text)
+        if not owned_confirmation:
+            self._prime_likely_chapter_voice(character, text)
         if canonical_event_changed:
             self.history.finish_current()
         self._record_and_display_dialogue(character, text)
         if speech_deferred:
             return False
+        if early_prefix:
+            return CanonicalDialogRoute(character, text)
         return (
             (character, text)
             if canonical_routing or character != observed_character
@@ -1349,6 +1349,7 @@ class AppController:
 
     def _start_live_sequence_session(self) -> None:
         with self.story_cursor_lock:
+            self.sequence_prefix_dispatch_lease = None
             cursor = self.story_cursor
             if cursor is None:
                 return
@@ -1377,6 +1378,7 @@ class AppController:
         self.story_cursor = None
         self.explicit_sequence_anchor_pending = False
         self.sequence_prefix_confirmation_event_id = None
+        self.sequence_prefix_dispatch_lease = None
         with self.sequence_prefetch_lock:
             self.sequence_prefetch_keys.clear()
         self.sequence_event_terminal_routes.clear()
@@ -1686,62 +1688,41 @@ class AppController:
                     "resolve_bounded_among",
                     self.chapter_voice_preloader.resolve_exact_among,
                 )
-                line, match_result = resolve_bounded(
-                    character, text, candidate_line_ids
-                )
+                expected = self._expected_sequence_prefix_line_locked()
+                if expected is not None:
+                    observed = _normalize_story_text(text)
+                    speaker = _normalize_story_text(character)
+                    if (
+                        any(character.isalnum() for character in observed)
+                        and _normalize_story_text(expected.text).startswith(observed)
+                        and (
+                            speaker in {"", "narrator"}
+                            or speaker == _normalize_story_text(expected.speaker)
+                        )
+                        and self._reserve_generated_prefix(expected)
+                    ):
+                        line = expected
+                        match_result = (
+                            "expected-owned-exact"
+                            if observed == _normalize_story_text(expected.text)
+                            else "expected-owned-prefix"
+                        )
+                    else:
+                        line, match_result = resolve_bounded(
+                            character, text, candidate_line_ids
+                        )
+                else:
+                    line, match_result = resolve_bounded(
+                        character, text, candidate_line_ids
+                    )
                 resolved_event = (
                     None
                     if line is None or line.line_id is None
                     else plan.event_for_line(line.line_id)
                 )
-                prefix_match = "prefix" in str(match_result)
-                pending_prefix_continuation = bool(
-                    prefix_match
-                    and resolved_event is not None
-                    and resolved_event.event_id == cursor.current_event_id
-                    and self.sequence_prefix_confirmation_event_id
-                    == resolved_event.event_id
+                line = self._apply_sequence_prefix_barrier_locked(
+                    cursor, line, match_result, resolved_event
                 )
-                if (
-                    self.settings.live_sequence_mode == "audio-auto"
-                    and line is not None
-                    and prefix_match
-                    and not pending_prefix_continuation
-                    and (
-                        cursor.state != StoryCursorState.WAITING_TRANSITION
-                        or not self._reserve_generated_prefix(line)
-                    )
-                ):
-                    line = None
-                elif (
-                    self.settings.live_sequence_mode == "audio-auto"
-                    and line is not None
-                ):
-                    if prefix_match:
-                        self.sequence_prefix_confirmation_event_id = (
-                            None if resolved_event is None else resolved_event.event_id
-                        )
-                    elif (
-                        match_result
-                        in {
-                            "expected-exact",
-                            "expected-normalized-exact",
-                            "expected-text-only",
-                            "expected-bounded-ocr-suffix",
-                            "expected-bounded-speaker-text",
-                        }
-                        and resolved_event is not None
-                        and self.sequence_prefix_confirmation_event_id
-                        == resolved_event.event_id
-                    ):
-                        self.sequence_prefix_confirmation_event_id = None
-                        record_full_text = getattr(
-                            self.live_reader,
-                            "record_canonical_full_text",
-                            None,
-                        )
-                        if callable(record_full_text) and line.line_id is not None:
-                            record_full_text(line_id=line.line_id)
                 snapshot = (
                     None
                     if line is None or line.line_id is None
@@ -1786,6 +1767,102 @@ class AppController:
         )
         self._publish_live_sequence_status()
         return snapshot, line, match_result
+
+    def _apply_sequence_prefix_barrier_locked(
+        self,
+        cursor: _StoryCursor,
+        line: ChapterDialogue | None,
+        match_result: object,
+        resolved_event: LiveSequenceEvent | None,
+    ) -> ChapterDialogue | None:
+        prefix_match = "prefix" in str(match_result)
+        pending_prefix_continuation = bool(
+            prefix_match
+            and resolved_event is not None
+            and resolved_event.event_id == cursor.current_event_id
+            and self.sequence_prefix_confirmation_event_id == resolved_event.event_id
+        )
+        if (
+            self.settings.live_sequence_mode == "audio-auto"
+            and line is not None
+            and prefix_match
+            and not pending_prefix_continuation
+            and (
+                cursor.state != StoryCursorState.WAITING_TRANSITION
+                or (
+                    match_result != "expected-owned-prefix"
+                    and not self._reserve_generated_prefix(line)
+                )
+            )
+        ):
+            line = None
+        elif self.settings.live_sequence_mode == "audio-auto" and line is not None:
+            if prefix_match:
+                self.sequence_prefix_confirmation_event_id = (
+                    None if resolved_event is None else resolved_event.event_id
+                )
+            elif (
+                match_result
+                in {
+                    "expected-exact",
+                    "expected-normalized-exact",
+                    "expected-text-only",
+                    "expected-bounded-ocr-suffix",
+                    "expected-bounded-speaker-text",
+                    "expected-owned-exact",
+                }
+                and resolved_event is not None
+                and self.sequence_prefix_confirmation_event_id
+                == resolved_event.event_id
+            ):
+                self.sequence_prefix_confirmation_event_id = None
+                record_full_text = getattr(
+                    self.live_reader,
+                    "record_canonical_full_text",
+                    None,
+                )
+                if callable(record_full_text) and line.line_id is not None:
+                    record_full_text(line_id=line.line_id)
+        return line
+
+    def _expected_sequence_prefix_line_locked(self) -> ChapterDialogue | None:
+        cursor = self.story_cursor
+        if (
+            cursor is None
+            or self.settings.live_sequence_mode != "audio-auto"
+            or cursor.state != StoryCursorState.WAITING_TRANSITION
+            or cursor.current_event_id is None
+            or not self.game_focused
+            or self.sequence_prefix_dispatch_lease
+            != SequenceEventLease(cursor.current_event_id, cursor.occurrence_id)
+        ):
+            return None
+        reader = self.live_reader
+        if reader is not None and (
+            reader.failed_auto_advance_generation == reader.active_generation
+        ):
+            return None
+        event = cursor.deterministic_visual_successor()
+        return self._declared_generated_sequence_line_locked(event)
+
+    def _declared_generated_sequence_line_locked(
+        self, event: LiveSequenceEvent | None
+    ) -> ChapterDialogue | None:
+        if event is None or not event.is_speech:
+            return None
+        line = self._canonical_sequence_line_locked(event.event_id)
+        backend = self.speech_backend
+        if (
+            line is None
+            or not isinstance(backend, GeneratedAudioFallbackBackend)
+            or backend.library is None
+            or backend.library.index.find(
+                line.line_id, line.text_sha256, verify_file=False
+            )
+            is None
+        ):
+            return None
+        return line
 
     def _report_sequence_candidate_miss_if_needed(
         self,
@@ -2182,6 +2259,8 @@ class AppController:
                 StoryCursorState.ANCHORING,
             }:
                 return None
+            if self._expected_sequence_prefix_line_locked() is not None:
+                return None
             if not settled:
                 return False
             if cursor.state in {
@@ -2229,37 +2308,21 @@ class AppController:
             self.settings.live_sequence_mode == "audio-auto"
             and cursor.state == StoryCursorState.WAITING_TRANSITION
         )
-        early_generated_line = self._early_generated_sequence_line(
-            event,
-            application_owned_transition,
-        )
+        if (
+            application_owned_transition
+            and self._declared_generated_sequence_line_locked(event) is not None
+        ):
+            return None
         if not self._has_unique_visible_successor(
             cursor,
             event,
             application_owned_transition,
-            early_generated_line,
         ):
             return None
         return self._confirm_visual_sequence_successor_locked(
             cursor,
             event,
             application_owned_transition,
-            early_generated_line,
-        )
-
-    def _early_generated_sequence_line(
-        self, event: LiveSequenceEvent | None, application_owned_transition: bool
-    ) -> ChapterDialogue | None:
-        if (
-            not application_owned_transition
-            or event is None
-            or not event.is_speech
-            or event.line_id is None
-        ):
-            return None
-        line = self._canonical_sequence_line_locked(event.event_id)
-        return (
-            line if line is not None and self._reserve_generated_prefix(line) else None
         )
 
     def _has_unique_visible_successor(
@@ -2267,12 +2330,11 @@ class AppController:
         cursor: _StoryCursor,
         event: LiveSequenceEvent | None,
         application_owned_transition: bool,
-        early_generated_line: ChapterDialogue | None,
     ) -> bool:
         immediate = bool(
             application_owned_transition
             and event is not None
-            and (event.kind == "silent" or early_generated_line is not None)
+            and event.kind == "silent"
         )
         candidates = cursor.bounded_visible_successors(
             maximum_visible_depth=1 if immediate else 3
@@ -2288,7 +2350,6 @@ class AppController:
         cursor: _StoryCursor,
         event: LiveSequenceEvent | None,
         application_owned_transition: bool,
-        early_generated_line: ChapterDialogue | None,
     ) -> bool | tuple[str, str] | CanonicalDialogRoute | SilentDialogRoute:
         if event is None:
             return False
@@ -2313,7 +2374,6 @@ class AppController:
             event,
             previous_event_id,
             generation,
-            early_generated_line,
         )
 
     def _confirm_silent_visual_successor_locked(
@@ -2352,7 +2412,6 @@ class AppController:
         event: LiveSequenceEvent,
         previous_event_id: str | None,
         generation: int,
-        early_generated_line: ChapterDialogue | None,
     ) -> bool | tuple[str, str] | CanonicalDialogRoute:
         line = self._canonical_sequence_line_locked(event.event_id)
         if line is None:
@@ -2362,8 +2421,6 @@ class AppController:
             )
             self._publish_live_sequence_status()
             return False
-        if early_generated_line is not None:
-            self.sequence_prefix_confirmation_event_id = event.event_id
         self.pipeline_event_handler(
             "sequence-visual-transition",
             generation,
@@ -2374,15 +2431,9 @@ class AppController:
             line_id=line.line_id,
             route="canonical-story-line",
             reason=cursor.reason,
-            proof=(
-                "application-owned-single-dispatch-generated-preflight"
-                if early_generated_line is not None
-                else "unique-bounded-visible-successor"
-            ),
+            proof="unique-bounded-visible-successor",
         )
         self._publish_live_sequence_status()
-        if early_generated_line is not None:
-            return CanonicalDialogRoute(line.speaker, line.text)
         return line.speaker, line.text
 
     def _stable_live_frame_owner(self) -> str | None:
@@ -2414,6 +2465,8 @@ class AppController:
                 return "explicit-recovery"
             if cursor.state == StoryCursorState.PLAYING:
                 return None
+            if self._expected_sequence_prefix_line_locked() is not None:
+                return "expected-successor-prefix"
             reader = self.live_reader
             if (
                 self.settings.live_sequence_mode == "audio-auto"
@@ -2424,19 +2477,29 @@ class AppController:
                 == reader.active_generation
             ):
                 return "post-advance-recovery"
-            if self.sequence_prefix_confirmation_event_id == cursor.current_event_id:
-                return None
-            if not cursor.can_confirm_visual_transition:
-                return None
-            candidates = cursor.bounded_visible_successors()
-            deterministic = cursor.deterministic_visual_successor()
-            if candidates and (
-                deterministic is None
-                or len(candidates) != 1
-                or candidates[0].event_id != deterministic.event_id
+            if (
+                self.settings.live_sequence_mode == "audio-auto"
+                and cursor.state == StoryCursorState.WAITING_TRANSITION
+                and (event := cursor.deterministic_visual_successor()) is not None
+                and self._declared_generated_sequence_line_locked(event) is not None
             ):
-                return "bounded-branch-disambiguation"
+                return "bounded-transition-confirmation"
+            return self._bounded_successor_ocr_purpose_locked(cursor)
+
+    def _bounded_successor_ocr_purpose_locked(self, cursor: _StoryCursor) -> str | None:
+        if self.sequence_prefix_confirmation_event_id == cursor.current_event_id:
             return None
+        if not cursor.can_confirm_visual_transition:
+            return None
+        candidates = cursor.bounded_visible_successors()
+        deterministic = cursor.deterministic_visual_successor()
+        if candidates and (
+            deterministic is None
+            or len(candidates) != 1
+            or candidates[0].event_id != deterministic.event_id
+        ):
+            return "bounded-branch-disambiguation"
+        return None
 
     def _sequence_prefix_recheck_required(self) -> bool:
         with self.story_cursor_lock:
@@ -2760,6 +2823,9 @@ class AppController:
         self, character: str | None, text: str | None = None
     ) -> str:
         original = str(character or "Narrator").strip() or "Narrator"
+        with self.story_cursor_lock:
+            if self._expected_sequence_prefix_line_locked() is not None:
+                return original
         canonicalize = getattr(self.chapter_voice_preloader, "canonical_speaker", None)
         if callable(canonicalize):
             canonical = canonicalize(original)
@@ -2787,6 +2853,9 @@ class AppController:
             if isinstance(canonical, str):
                 return canonical
 
+        return self._canonical_narrator_fallback_character(original)
+
+    def _canonical_narrator_fallback_character(self, original: str) -> str:
         normalized = normalize_character_name(original)
         ranked = sorted(
             (
@@ -2938,6 +3007,8 @@ class AppController:
         return reader.enqueue(routed_character, routed_text)
 
     def _ocr_uncertain(self, result: OCRResult, minimum_confidence: float) -> None:
+        with self.story_cursor_lock:
+            self.sequence_prefix_dispatch_lease = None
         if self.live_reader is not None:
             self.live_reader.clear_queue()
         preview = result.text if len(result.text) <= 80 else f"{result.text[:77]}..."
@@ -2997,6 +3068,7 @@ class AppController:
                 cursor.desynchronize("advance-dispatched-without-cursor-transition")
                 self._publish_live_sequence_status()
                 return AutoAdvanceAttempt(False, "cursor-dispatch-failed")
+            self.sequence_prefix_dispatch_lease = lease
             generation = (
                 self.live_reader.active_generation
                 if self.live_reader is not None
@@ -3114,6 +3186,8 @@ class AppController:
                 if reader.auto_advance_blocked_generation == reader.active_generation:
                     blocked_reason = reader.auto_advance_block_reason
         if lost_focus:
+            with self.story_cursor_lock:
+                self.sequence_prefix_dispatch_lease = None
             self.status_handler(
                 "Game focus lost; live capture and auto advance paused"
                 + (f". {blocked_reason}" if blocked_reason else "")

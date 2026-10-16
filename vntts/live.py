@@ -996,6 +996,52 @@ class LiveDialogReader:
         except Exception as error:
             self.report_error(error)
 
+    def _record_ocr_completion(self) -> None:
+        with self.state_lock:
+            metrics = self.pipeline_metrics
+            now = monotonic()
+            self.pipeline_metrics = replace(
+                metrics,
+                recognized_frames=metrics.recognized_frames + 1,
+                last_ocr_at=now,
+                last_speaker_resolved_at=now,
+            )
+
+    def _recognition_is_current(
+        self,
+        purpose: str,
+        recognition_owner: str | None,
+        recognition_epoch: int,
+        fingerprint: object,
+        visible: bool,
+        complete: bool,
+        render_fingerprint: object,
+    ) -> bool:
+        growing_expected_prefix = bool(
+            purpose == "expected-successor-prefix"
+            and self.ocr_purpose() == purpose
+            and recognition_owner == self.stable_frame_owner()
+            and self._is_focused()
+        )
+        with self.state_lock:
+            growing_expected_prefix = bool(
+                growing_expected_prefix
+                and recognition_epoch == self.frame_route_epoch
+                and self.latest_frame_visible
+            )
+            if not growing_expected_prefix and (
+                purpose == "expected-successor-prefix"
+                or fingerprint != self.latest_frame_fingerprint
+                or visible != self.latest_frame_visible
+                or complete != self.latest_frame_complete
+                or (
+                    self.tracker_options.get("complete_dialogue_only")
+                    and render_fingerprint != self.latest_render_fingerprint
+                )
+            ):
+                return False
+        return True
+
     def _run_ocr(self, stop_event: Event) -> None:
         tracker = self.tracker_factory(**self.tracker_options)
         policy = self.adaptive_policy_factory(
@@ -1128,7 +1174,8 @@ class LiveDialogReader:
                     or recheck_now
                     or render_changed
                 ):
-                    if self.ocr_purpose() is None:
+                    purpose = self.ocr_purpose()
+                    if purpose is None:
                         self.frame_observed(
                             frame,
                             fingerprint,
@@ -1139,32 +1186,26 @@ class LiveDialogReader:
                         with self.state_lock:
                             self.next_capture_interval = interval
                         continue
-                    character, text = self.recognize_frame(frame)
+                    recognition_owner = self.stable_frame_owner()
                     with self.state_lock:
-                        if (
-                            fingerprint != self.latest_frame_fingerprint
-                            or visible != self.latest_frame_visible
-                            or complete != self.latest_frame_complete
-                            or (
-                                self.tracker_options.get("complete_dialogue_only")
-                                and render_fingerprint != self.latest_render_fingerprint
-                            )
-                        ):
-                            continue
+                        recognition_epoch = self.frame_route_epoch
+                    character, text = self.recognize_frame(frame)
+                    if not self._recognition_is_current(
+                        purpose,
+                        recognition_owner,
+                        recognition_epoch,
+                        fingerprint,
+                        visible,
+                        complete,
+                        render_fingerprint,
+                    ):
+                        continue
                     route_kind = "ocr"
                     cached_fingerprint = fingerprint
                     cached_render_fingerprint = render_fingerprint
                     cached_completion = complete
                     cached_observation = (character, text)
-                    with self.state_lock:
-                        metrics = self.pipeline_metrics
-                        now = monotonic()
-                        self.pipeline_metrics = replace(
-                            metrics,
-                            recognized_frames=metrics.recognized_frames + 1,
-                            last_ocr_at=now,
-                            last_speaker_resolved_at=now,
-                        )
+                    self._record_ocr_completion()
                 elif frame_route is not None:
                     raise TypeError(
                         "stable_frame_route must return None, False or "
@@ -1259,12 +1300,13 @@ class LiveDialogReader:
             )
             return False
         owner = self.stable_frame_owner()
+        expected_prefix = self.ocr_purpose() == "expected-successor-prefix"
         now = self.stable_frame_clock()
         with self.state_lock:
             if self.routed_frame_fingerprint is None:
                 return None
             if fingerprint == self.routed_frame_fingerprint:
-                return None
+                return False if expected_prefix else None
             route_epoch = self.frame_route_epoch
             if (
                 fingerprint == self.candidate_frame_fingerprint
