@@ -724,9 +724,7 @@ def _source_reference_review(
     return dialog
 
 
-def _render_stories(
-    catalog: UICatalog, output: Path, selected_surface: str | None
-) -> dict[str, str]:
+def _catalog_surface_ids(catalog: UICatalog, selected_surface: str | None) -> set[str]:
     surfaces = {surface["id"]: surface for surface in catalog["surfaces"]}
     allowed_surfaces = set(surfaces)
     if selected_surface:
@@ -739,6 +737,49 @@ def _render_stories(
             *target.get("related", []),
         }
 
+    return allowed_surfaces
+
+
+def _configure_catalog_application() -> QApplication:
+    from PySide6.QtGui import QColor, QPalette
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(["vntts-ui-catalog"])
+    if not isinstance(app, QApplication):
+        raise RuntimeError("UI catalog requires a QApplication instance")
+    app.setStyle("Fusion")
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor("#272727"))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor("#f0f0f0"))
+    palette.setColor(QPalette.ColorRole.Base, QColor("#151515"))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#303030"))
+    palette.setColor(QPalette.ColorRole.Text, QColor("#f0f0f0"))
+    palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#a8a8a8"))
+    palette.setColor(QPalette.ColorRole.Button, QColor("#555555"))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor("#f0f0f0"))
+    palette.setColor(
+        QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor("#929292")
+    )
+    palette.setColor(
+        QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor("#929292")
+    )
+    palette.setColor(
+        QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, QColor("#929292")
+    )
+    palette.setColor(QPalette.ColorRole.Highlight, QColor("#148a2b"))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+    app.setPalette(palette)
+
+    return app
+
+
+def _render_stories(
+    catalog: UICatalog, output: Path, selected_surface: str | None
+) -> dict[str, str]:
+    allowed_surfaces = _catalog_surface_ids(catalog, selected_surface)
+
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
     from PIL import Image, ImageDraw, ImageFont
@@ -750,9 +791,9 @@ def _render_stories(
         QThreadPool,
         QTimer,
     )
-    from PySide6.QtGui import QColor, QPalette, QTextCursor
+    from PySide6.QtGui import QTextCursor
     from PySide6.QtMultimedia import QMediaPlayer
-    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+    from PySide6.QtWidgets import QDialog, QMessageBox
     from r1999extractor.story_voice_candidates import REPORT_SCHEMA, REPORT_VERSION
     from r1999extractor.story_voice_review_ui import StoryVoiceReviewDialog
 
@@ -833,33 +874,7 @@ def _render_stories(
     from vntts.support_ui import SupportCenterDialog
     from vntts.voice_library import VoiceLibrary
 
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication(["vntts-ui-catalog"])
-    if not isinstance(app, QApplication):
-        raise RuntimeError("UI catalog requires a QApplication instance")
-    app.setStyle("Fusion")
-    palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window, QColor("#272727"))
-    palette.setColor(QPalette.ColorRole.WindowText, QColor("#f0f0f0"))
-    palette.setColor(QPalette.ColorRole.Base, QColor("#151515"))
-    palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#303030"))
-    palette.setColor(QPalette.ColorRole.Text, QColor("#f0f0f0"))
-    palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#a8a8a8"))
-    palette.setColor(QPalette.ColorRole.Button, QColor("#555555"))
-    palette.setColor(QPalette.ColorRole.ButtonText, QColor("#f0f0f0"))
-    palette.setColor(
-        QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor("#929292")
-    )
-    palette.setColor(
-        QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor("#929292")
-    )
-    palette.setColor(
-        QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, QColor("#929292")
-    )
-    palette.setColor(QPalette.ColorRole.Highlight, QColor("#148a2b"))
-    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
-    app.setPalette(palette)
+    app = _configure_catalog_application()
 
     settings = AppSettings(
         onboarding_completed=True,

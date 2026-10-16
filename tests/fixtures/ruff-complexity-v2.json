@@ -41,7 +41,7 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 193
+      "maximum": 192
     },
     {
       "code": "C901",
@@ -986,7 +986,7 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 893
+      "maximum": 877
     },
     {
       "code": "PLR0915",
@@ -1455,7 +1455,7 @@
       "path": "vntts/dashboard_ui.py",
       "scope": "ControlDashboard._build_status_widgets",
       "count": 1,
-      "maximum": 60
+      "maximum": 57
     },
     {
       "code": "PLR0915",
