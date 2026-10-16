@@ -16,9 +16,59 @@ from vntts.pregeneration_audition_queue import (
     VoiceAuditionCoordinator,
     _wait_for_preview,
 )
+from vntts.settings import AppSettings
 
 
 class VoiceAuditionQueueTest(unittest.TestCase):
+    def test_warmup_starts_early_and_suspend_cancels_its_startup(self):
+        service = Mock()
+        entered = Event()
+
+        def warmup(_settings, *, cancel_event):
+            entered.set()
+            self.assertTrue(cancel_event.wait(5))
+
+        service.warmup.side_effect = warmup
+        owner = VoiceAuditionCoordinator(service)
+        self.addCleanup(owner.close)
+        owner.session().warmup(AppSettings(speech_backend="moss-tts"))
+        self.assertTrue(entered.wait(5))
+        owner.suspend()
+        self.wait(owner)
+        service.warmup.assert_called_once()
+
+    def test_warmup_respects_reading_and_closed_session_before_launch(self):
+        for close in (False, True):
+            with self.subTest(close=close):
+                service = Mock()
+                owner = VoiceAuditionCoordinator(service)
+                self.addCleanup(owner.close)
+                session = owner.session()
+                release = Event()
+                owner._pool.submit(lambda: release.wait(5))
+                session.warmup(AppSettings(speech_backend="moss-tts"))
+                if close:
+                    session.close()
+                else:
+                    owner.background_available = lambda: False
+                release.set()
+                self.wait(owner)
+                service.warmup.assert_not_called()
+
+    def test_new_model_request_cancels_queued_warmup(self):
+        service = Mock()
+        owner = VoiceAuditionCoordinator(service)
+        self.addCleanup(owner.close)
+        session = owner.session()
+        release = Event()
+        owner._pool.submit(lambda: release.wait(5))
+        session.warmup(AppSettings(speech_backend="moss-tts", tts_model="first"))
+        session.warmup(AppSettings(speech_backend="moss-tts", tts_model="second"))
+        release.set()
+        self.wait(owner)
+        service.warmup.assert_called_once()
+        self.assertEqual(service.warmup.call_args.args[0].tts_model, "second")
+
     def fixture(self, root):
         plan, group, manifest = ambiguous_fixture(root)
         group = replace(group, alternate_sample_text="A different preview phrase.")

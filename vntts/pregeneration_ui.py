@@ -1970,7 +1970,52 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.cancel_button.setText("Cancel")
         self.cancel_button.setEnabled(True)
+        self._prepare_summary_previews(plan)
+
+    def _prepare_summary_previews(self, plan: VoicePlan) -> None:
         self._narrator_choice_changed()
+        requests: list[tuple[VoicePlan, VoiceGroup, str, str]] = []
+        narrator_requests: list[tuple[VoicePlan, VoiceGroup, str, str]] = []
+        for group in sorted(
+            plan.groups,
+            key=lambda group: (
+                not self._voice_selection_label(group).startswith("automatic"),
+                -len(group.line_ids),
+                group.character.casefold(),
+            ),
+        ):
+            if group.route == "voice" and not is_narrator(group.character):
+                text = (
+                    COMPARISON_PREVIEW_TEXT
+                    if plan.synthesis_language in {None, "en", "English"}
+                    else group.sample_text
+                )
+                requests.append((plan, group, group.source_id, text))
+            elif group.route in {"narrator", "needs-audition"}:
+                try:
+                    narrator_plan, narrator_group, source = (
+                        self._summary_narrator_request(group)
+                    )
+                except OSError, ValueError:
+                    continue
+                text = (
+                    COMPARISON_PREVIEW_TEXT
+                    if narrator_plan.synthesis_language in {None, "en", "English"}
+                    else narrator_group.sample_text
+                )
+                narrator_requests.append((narrator_plan, narrator_group, source, text))
+        try:
+            narrator_plan, narrator_group, source = self._summary_narrator_request()
+        except OSError, ValueError:
+            pass
+        else:
+            text = (
+                COMPARISON_PREVIEW_TEXT
+                if narrator_plan.synthesis_language in {None, "en", "English"}
+                else narrator_group.sample_text
+            )
+            narrator_requests.append((narrator_plan, narrator_group, source, text))
+        self.summary_voice_preview.prepare(requests + narrator_requests)
 
     def _render_voice_routes(self, plan: VoicePlan | None) -> None:
         previous = self.voice_routes.currentItem()

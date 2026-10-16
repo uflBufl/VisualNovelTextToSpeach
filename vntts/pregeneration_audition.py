@@ -15,7 +15,7 @@ from io import BytesIO
 from pathlib import Path
 from stat import S_ISREG
 from time import monotonic
-from typing import BinaryIO, NamedTuple, Protocol, TypeAlias
+from typing import BinaryIO, NamedTuple, Protocol, TypeAlias, TypedDict
 
 import numpy as np
 from numpy.typing import NDArray
@@ -57,6 +57,7 @@ from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_binary, read_regular_bytes
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference
+from vntts.settings import AppSettings
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -113,6 +114,7 @@ class _BackendFactory(Protocol):
         startup_progress: Callable[[str], object] | None = None,
         terms_accepted: bool = False,
         allow_gated_model_access: bool = False,
+        allow_download: bool = True,
     ) -> _PreviewBackend: ...
 
 
@@ -129,6 +131,10 @@ class BackendConfig(NamedTuple):
 
 
 ProgressReporter: TypeAlias = Callable[[str], object]
+
+
+class _DownloadOptions(TypedDict, total=False):
+    allow_download: bool
 
 
 @dataclass(frozen=True)
@@ -194,6 +200,44 @@ class VoiceAuditionPreviewService:
             and self._backend is not None
             and self._backend_config == _backend_config(plan)
         )
+
+    def warmup(
+        self,
+        settings: AppSettings,
+        *,
+        cancel_event: _Cancellation,
+        progress: ProgressReporter | None = None,
+    ) -> None:
+        """Load the selected MOSS engine from installed assets before voice matching."""
+        if settings.speech_backend != "moss-tts":
+            return
+        config = BackendConfig(
+            settings.speech_backend,
+            settings.tts_model,
+            settings.tts_language,
+            settings.tts_profile,
+            settings.pocket_gated_model_accepted,
+            settings.xtts_terms_accepted,
+        )
+        with self._lock:
+            if self._closed:
+                return
+            cancellation = _CombinedCancellation(cancel_event)
+            _raise_if_cancelled(cancellation)
+            from vntts.moss_cpp_backend import moss_cpp_requested
+
+            if moss_cpp_requested(config.model) and not getattr(
+                self._backend, "runtime_status", None
+            ):
+                self._backend_config = None
+            self._ensure_backend(
+                config,
+                CharacterVoiceRegistry(),
+                cancellation,
+                progress,
+                progress or (lambda _message: None),
+                allow_download=False,
+            )
 
     def lookup(
         self,
@@ -452,7 +496,20 @@ class VoiceAuditionPreviewService:
         progress: ProgressReporter | None,
         notify: ProgressReporter,
     ) -> None:
-        config = _backend_config(plan)
+        self._ensure_backend(
+            _backend_config(plan), registry, cancellation, progress, notify
+        )
+
+    def _ensure_backend(
+        self,
+        config: BackendConfig,
+        registry: CharacterVoiceRegistry,
+        cancellation: _Cancellation,
+        progress: ProgressReporter | None,
+        notify: ProgressReporter,
+        *,
+        allow_download: bool = True,
+    ) -> None:
         if self._backend is not None and self._backend_config == config:
             self._backend.registry = registry
             return
@@ -460,29 +517,34 @@ class VoiceAuditionPreviewService:
         shutdown_speech_backend(self._backend)
         self._backend = None
         self._backend_config = None
+        download_options: _DownloadOptions = (
+            {} if allow_download else {"allow_download": False}
+        )
         try:
             if progress is None:
                 self._backend = self.backend_factory(
-                    plan.synthesis_backend,
+                    config.backend,
                     registry,
                     self.root / "synthesis-cache",
-                    model_name=plan.synthesis_model,
-                    language=plan.synthesis_language,
+                    model_name=config.model,
+                    language=config.language,
                     startup_cancellation=cancellation,
-                    allow_gated_model_access=plan.pocket_voice_cloning,
-                    terms_accepted=plan.xtts_terms_accepted,
+                    allow_gated_model_access=config.pocket_voice_cloning,
+                    terms_accepted=config.xtts_terms_accepted,
+                    **download_options,
                 )
             else:
                 self._backend = self.backend_factory(
-                    plan.synthesis_backend,
+                    config.backend,
                     registry,
                     self.root / "synthesis-cache",
-                    model_name=plan.synthesis_model,
-                    language=plan.synthesis_language,
+                    model_name=config.model,
+                    language=config.language,
                     startup_cancellation=cancellation,
                     startup_progress=progress,
-                    allow_gated_model_access=plan.pocket_voice_cloning,
-                    terms_accepted=plan.xtts_terms_accepted,
+                    allow_gated_model_access=config.pocket_voice_cloning,
+                    terms_accepted=config.xtts_terms_accepted,
+                    **download_options,
                 )
         except Exception as error:
             if cancellation.is_set():
@@ -492,6 +554,10 @@ class VoiceAuditionPreviewService:
             raise VoiceAuditionError(
                 f"Unable to start the voice preview model: {error}"
             ) from error
+        if cancellation.is_set():
+            shutdown_speech_backend(self._backend)
+            self._backend = None
+            _raise_if_cancelled(cancellation)
         self._backend_config = config
 
     def _render_preview(

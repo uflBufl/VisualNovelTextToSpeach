@@ -1,5 +1,13 @@
 # TODO
 
+## Active - Deliver voice preview fixes to main
+
+- [ ] Push the completed commit to main with a normal fast-forward push and verify the remote commit.
+
+## Investigate reported slow-sounding voice playback
+
+- [ ] Identify and retain an actually slowed audible sample from the original/preview/reading paths, then compare its native DAC duration with its PCM frame count and rate before changing playback or synthesis speed. The current Mac reproduction plays Centurion original 12.51 s and MOSS preview 3.84 s at matching DAC durations, with 100% configured speed and no underflow; this does not explain the user's earlier report.
+
 ## Active - Faster voice auditions and qualified reference selection
 
 - [ ] **Validate general automatic reference suitability:** qualify any new acoustic output rule against the accepted counterexamples in `.codex/investigations/reference-defects-20261015/acoustic-localization/analysis.json`, preserving variable repeat outcomes as uncertain. Require evidence on known natural defect types, balanced shared texts/seeds and independent character/source groups before assigning reference-ranking weights; retain an uncertain outcome and verify sample-rate/gain sensitivity. Do not fit thresholds or invert failed metrics from these development labels; injected controls are not natural-defect precision. Further human listening must answer a concrete unresolved question using a few targeted cases and a stated stopping decision, not another exhaustive batch. Keep named references/ratings research-only and ordinary users free of per-character A/B review.

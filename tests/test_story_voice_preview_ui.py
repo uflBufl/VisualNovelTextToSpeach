@@ -9,7 +9,8 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QPoint, Qt  # noqa: E402
+import shiboken6  # noqa: E402
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from tests.pregeneration_fixtures import (  # noqa: E402
@@ -18,7 +19,10 @@ from tests.pregeneration_fixtures import (  # noqa: E402
 )
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import write_story_index  # noqa: E402
-from vntts.pregeneration_audition import COMPARISON_PREVIEW_TEXT  # noqa: E402
+from vntts.pregeneration_audition import (  # noqa: E402
+    COMPARISON_PREVIEW_TEXT,
+    VoiceAuditionError,
+)
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
     PregenerationJobStore,
@@ -27,6 +31,7 @@ from vntts.pregeneration_setup import (  # noqa: E402
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
 from vntts.pregeneration_voices import VoiceCandidate, VoiceDecisionStore  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
+from vntts.story_voice_preview_ui import StoryVoicePreview  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
 
 
@@ -124,6 +129,119 @@ class StoryVoicePreviewTest(unittest.TestCase):
                 self.group.group_id, self.group.decision_context_sha256
             )
         )
+
+    def test_automatic_voices_prepare_before_manual_choices_and_narrator(self):
+        fresh = replace(
+            self.group, character="Fresh", resolution="known-character-voice"
+        )
+        manual = replace(
+            self.group,
+            group_id="manual",
+            character="Manual",
+            resolution="saved-player-decision",
+        )
+        saved_auto = replace(
+            self.group,
+            group_id="saved-auto",
+            character="Automatic",
+            resolution="saved-voice-assignment",
+        )
+        self.dialog.voice_library.select(
+            saved_auto.character,
+            route="voice",
+            source_id=saved_auto.source_id,
+            method="automatic",
+        )
+        self.plan = replace(self.plan, groups=(manual, fresh, saved_auto, self.other))
+        self.dialog._voice_plan = self.plan
+        session = Mock(supports_prefetch=True)
+        self.service.supports_prefetch = True
+        self.service.new_session.return_value = session
+
+        self.dialog._prepare_summary_previews(self.plan)
+        self.run_tasks()
+
+        calls = session.generate.call_args_list
+        self.assertEqual(
+            [call.args[1].character for call in calls[:3]],
+            ["Automatic", "Fresh", "Manual"],
+        )
+        self.assertTrue(all(call.args[2] == "preset:marius" for call in calls[3:]))
+        self.assertTrue(all(call.kwargs["automatic"] for call in calls))
+        self.assertTrue(
+            all(call.kwargs["text"] == COMPARISON_PREVIEW_TEXT for call in calls)
+        )
+        self.player.play_bytes.assert_not_called()
+
+    def test_background_ready_preview_plays_without_another_worker(self):
+        preparing = Mock(supports_prefetch=True)
+        preparing.peek.return_value = self.preview
+        foreground = Mock(supports_prefetch=True)
+        foreground.peek.return_value = None
+        self.service.supports_prefetch = True
+        self.service.peek.return_value = None
+        self.service.new_session.side_effect = [preparing, foreground]
+        self.dialog._prepare_summary_previews(self.plan)
+        self.run_tasks()
+        self.select(self.group)
+
+        self.dialog.play_selected_voice.click()
+
+        self.assertEqual(self.pool.tasks, [])
+        foreground.generate.assert_not_called()
+        self.player.play_bytes.assert_called_once()
+
+    def test_leaving_summary_cancels_background_work_without_autoplay(self):
+        session = Mock(supports_prefetch=True)
+        self.service.supports_prefetch = True
+        self.service.new_session.return_value = session
+        self.dialog._prepare_summary_previews(self.plan)
+        cancellation = self.dialog.summary_voice_preview.preparation_cancellation
+
+        self.application.sendEvent(
+            self.dialog.voice_confirmation, QEvent(QEvent.Type.Hide)
+        )
+        self.run_tasks()
+
+        self.assertTrue(cancellation.is_set())
+        session.close.assert_called_once()
+        session.generate.assert_not_called()
+        self.player.play_bytes.assert_not_called()
+
+    def test_background_failure_does_not_skip_later_roles_or_block_navigation(self):
+        session = Mock(supports_prefetch=True)
+        session.generate.side_effect = [
+            VoiceAuditionError("invalid reference"),
+            self.preview,
+            self.preview,
+        ]
+        self.service.supports_prefetch = True
+        self.service.new_session.return_value = session
+        self.dialog._prepare_summary_previews(self.plan)
+        cancellation = self.dialog.summary_voice_preview.preparation_cancellation
+
+        self.select(self.other)
+        self.assertFalse(cancellation.is_set())
+        self.run_tasks()
+
+        self.assertGreaterEqual(session.generate.call_count, 2)
+        self.player.play_bytes.assert_not_called()
+
+    def test_destroying_owner_cancels_queued_preparation(self):
+        parent = QObject()
+        session = Mock(supports_prefetch=True)
+        self.service.supports_prefetch = True
+        self.service.new_session.return_value = session
+        preview = StoryVoicePreview(self.service, parent, thread_pool=self.pool)
+        preview.prepare(((self.plan, self.group, self.group.source_id, "Hello."),))
+        cancellation = preview.preparation_cancellation
+
+        shiboken6.delete(parent)
+        self.run_tasks()
+
+        self.assertTrue(cancellation.is_set())
+        session.close.assert_called_once()
+        session.generate.assert_not_called()
 
     def test_unreviewed_role_previews_actual_narrator_fallback(self):
         self.select(self.other)

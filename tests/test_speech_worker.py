@@ -177,6 +177,52 @@ class BackendFactoryTests(unittest.TestCase):
 
 
 class SpeechWorkerTest(unittest.TestCase):
+    def test_installed_only_startup_never_installs_missing_runtime(self):
+        with (
+            patch(
+                "vntts.speech_worker.resolve_speech_runtime_paths",
+                side_effect=TTSConfigurationError("not installed"),
+            ),
+            patch("vntts.runtime_installation.ensure_speech_runtime") as install,
+            self.assertRaisesRegex(TTSConfigurationError, "not installed"),
+        ):
+            IsolatedSpeechBackend(
+                "moss-tts", CharacterVoiceRegistry(), allow_download=False
+            )
+        install.assert_not_called()
+
+    def test_installed_only_worker_uses_offline_environment_and_existing_runtime(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            paths = root, root / "bin/python", root / "lib/site-packages"
+            captured = {}
+
+            def process_factory(_command, **options):
+                captured.update(options)
+                return FakeProcess(
+                    {
+                        "type": "health",
+                        "backend": "moss-tts",
+                        "interpreter": str(paths[1]),
+                        "prefix": str(root),
+                        "runtime_site": str(paths[2]),
+                        "sample_rate": 24000,
+                        "modules": {},
+                    }
+                )
+
+            with patch("vntts.speech_worker._runtime_paths", return_value=paths):
+                backend = IsolatedSpeechBackend(
+                    "moss-tts",
+                    CharacterVoiceRegistry(),
+                    process_factory=process_factory,
+                    allow_download=False,
+                )
+            self.addCleanup(backend.shutdown)
+            self.assertEqual(captured["env"]["HF_HUB_OFFLINE"], "1")
+            self.assertEqual(captured["env"]["TRANSFORMERS_OFFLINE"], "1")
+            self.assertNotIn("allow_download", backend.worker_options)
+
     def test_invalid_volume_never_installs_runtime_or_launches_process(self):
         for backend in (
             "pocket-tts",

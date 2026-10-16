@@ -39,6 +39,57 @@ from vntts.synthesis import (
 
 
 class VoiceAuditionPreviewServiceTest(unittest.TestCase):
+    def test_warmup_reuses_the_same_backend_for_real_preview(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _ = ambiguous_fixture(root)
+            backend = FakeBackend("moss-tts")
+            factory = Mock(return_value=backend)
+            service = VoiceAuditionPreviewService(
+                root / "previews", backend_factory=factory
+            )
+            self.addCleanup(service.close)
+            settings = AppSettings(speech_backend="moss-tts", tts_profile="stable")
+            service.warmup(settings, cancel_event=Event())
+            self.assertFalse(factory.call_args.kwargs["allow_download"])
+            self.assertEqual(backend.requests, [])
+            self.assertTrue(service.can_prefetch(plan))
+            service.generate(plan, group, group.candidates[0].source_id)
+            factory.assert_called_once()
+            self.assertEqual(len(backend.requests), 1)
+
+    def test_cancelled_warmup_does_not_publish_backend(self):
+        cancel = Event()
+        backend = FakeBackend("moss-tts")
+
+        def factory(*_args, **_kwargs):
+            cancel.set()
+            return backend
+
+        service = VoiceAuditionPreviewService(backend_factory=factory)
+        self.addCleanup(service.close)
+        with self.assertRaises(VoiceAuditionCancelled):
+            service.warmup(AppSettings(speech_backend="moss-tts"), cancel_event=cancel)
+        self.assertIsNone(service.backend)
+        self.assertEqual(backend.shutdown_count, 1)
+
+    def test_new_preparation_reloads_an_explicitly_unloaded_native_lease(self):
+        backend = FakeBackend("moss-tts")
+        backend.runtime_status = "ready"
+        replacement = FakeBackend("moss-tts")
+        factory = Mock(side_effect=(backend, replacement))
+        service = VoiceAuditionPreviewService(backend_factory=factory)
+        self.addCleanup(service.close)
+        settings = AppSettings(speech_backend="moss-tts")
+        with patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=True):
+            service.warmup(settings, cancel_event=Event())
+            service.warmup(settings, cancel_event=Event())
+            factory.assert_called_once()
+            backend.runtime_status = None
+            service.warmup(settings, cancel_event=Event())
+        self.assertIs(service.backend, replacement)
+        self.assertEqual(factory.call_count, 2)
+
     def test_local_moss_identity_keeps_snapshot_without_importing_huggingface(self):
         with TemporaryDirectory() as directory:
             model = Path(directory) / "local-model"

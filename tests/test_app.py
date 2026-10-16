@@ -15,6 +15,7 @@ from durable_file import atomic_write_bytes  # noqa: E402
 from PySide6.QtCore import (  # noqa: E402
     QCoreApplication,
     QEvent,
+    QObject,
     QRunnable,
     Qt,
     QThreadPool,
@@ -316,6 +317,61 @@ class TrayApplicationTest(unittest.TestCase):
         backend.shutdown.assert_called_once_with()
         delete_dialog(tray.dashboard)
         delete_dialog(tray.compact_controller)
+
+    def test_preparation_cancel_does_not_quit_and_quit_waits_for_dialog_completion(
+        self,
+    ):
+        for quitting in (False, True):
+            with self.subTest(quitting=quitting):
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=Mock()),
+                )
+                dialog = QDialog(tray.dashboard)
+                dialog.has_pending_work = Mock(return_value=False)
+                tray.pregeneration_dialog = dialog
+                tray.dashboard.embed_preparation(dialog, show=False)
+                dialog.finished.connect(tray._pregeneration_finished)
+                with patch.object(self.application, "quit") as quit_application:
+                    if quitting:
+                        tray.request_quit()
+                    else:
+                        dialog.reject()
+                    self.assertIsNone(tray.pregeneration_dialog)
+                    quit_application.assert_not_called()
+                    self.application.processEvents()
+                    if quitting:
+                        quit_application.assert_called_once_with()
+                    else:
+                        quit_application.assert_not_called()
+                tray.shutdown()
+
+    def test_direct_quit_is_deferred_and_bound_to_application_lifetime(self):
+        for destroy_context in (False, True):
+            with self.subTest(destroy_context=destroy_context):
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=Mock()),
+                )
+                context = QObject()
+                context.quit = Mock()
+                tray.application = context
+                tray.request_quit()
+                context.quit.assert_not_called()
+                if destroy_context:
+                    context.deleteLater()
+                    QCoreApplication.sendPostedEvents(
+                        context, QEvent.Type.DeferredDelete
+                    )
+                self.application.processEvents()
+                if destroy_context:
+                    context.quit.assert_not_called()
+                else:
+                    context.quit.assert_called_once_with()
+                tray.application = self.application
+                tray.shutdown()
 
     def test_live_compute_tracks_backend_replacement_without_technical_details(self):
         controller = Mock()
@@ -940,6 +996,34 @@ class TrayApplicationTest(unittest.TestCase):
         status = start_activation.call_args.args[1]
         self.assertEqual(status, "Prepared audio is active for 42 dialogue lines.")
         tray_application.shutdown()
+
+    def test_continue_warms_selected_offline_model_before_voice_matching(self):
+        controller = Mock(is_live_running=False)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(
+                speech_backend="pocket-tts",
+                offline_speech_backend="moss-tts",
+                offline_tts_model="selected-moss",
+            ),
+            controller_factory=Mock(return_value=controller),
+        )
+        dialog = Mock(settings=tray.settings)
+        session = Mock()
+        with (
+            patch.object(tray.voice_auditions, "session", return_value=session),
+            patch("vntts.app.OfflineAudioPreparationDialog", return_value=dialog),
+            patch.object(tray.dashboard, "embed_preparation"),
+        ):
+            tray.open_pregeneration()
+            session.warmup.assert_not_called()
+            for connected in dialog.preparationRequested.connect.call_args_list:
+                connected.args[0]()
+        warmed = session.warmup.call_args.args[0]
+        self.assertEqual(warmed.speech_backend, "moss-tts")
+        self.assertEqual(warmed.tts_model, "selected-moss")
+        self.assertEqual(tray.settings.speech_backend, "pocket-tts")
+        tray.shutdown()
 
     def test_valid_saved_pack_activates_without_generation_transients(self):
         tray_application = TrayApplication(

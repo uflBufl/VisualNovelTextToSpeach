@@ -951,6 +951,7 @@ class IsolatedSpeechBackend:
         playback_latency: str | None = None,
         generation_profile: str | None = None,
         allow_gated_model_access: bool = False,
+        allow_download: bool = True,
         **worker_options: object,
     ) -> None:
         self.name = backend
@@ -987,10 +988,17 @@ class IsolatedSpeechBackend:
             "high" if backend == "chatterbox-nano" else "low"
         )
         self.allow_gated_model_access = bool(allow_gated_model_access)
+        self.allow_download = allow_download
         self.worker_options: WorkerOptions = worker_options
         validate_volume(volume)
+        if not isinstance(allow_download, bool):
+            raise TTSConfigurationError("Speech worker allow_download must be boolean")
         from vntts.runtime_installation import ensure_speech_runtime
 
+        if not allow_download:
+            runtime_directory = resolve_speech_runtime_paths(
+                backend, runtime_directory
+            )[0]
         self.runtime_root, self.interpreter, self.runtime_site = ensure_speech_runtime(
             backend,
             runtime_directory=runtime_directory,
@@ -1146,6 +1154,9 @@ class IsolatedSpeechBackend:
         self, command: list[str], environment: dict[str, str]
     ) -> WorkerProcess:
         """Validate a factory result before handing it to the startup owner."""
+        if not self.allow_download:
+            environment["HF_HUB_OFFLINE"] = "1"
+            environment["TRANSFORMERS_OFFLINE"] = "1"
         try:
             candidate = self.process_factory(
                 command,

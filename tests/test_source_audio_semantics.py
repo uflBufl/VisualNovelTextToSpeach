@@ -12,7 +12,12 @@ from vntts_artifacts.story_index import (
     write_story_index_document,
 )
 
-from tests.story_fixtures import write_synthetic_game_pack, write_verified_source_story
+from tests.story_fixtures import (
+    semantic_evidence_document,
+    semantic_evidence_entry,
+    write_synthetic_game_pack,
+    write_verified_source_story,
+)
 from vntts.source_audio_semantics import (
     SEMANTIC_EVIDENCE_PREPROCESSING,
     SourceAudioSemanticEvidenceError,
@@ -79,6 +84,70 @@ def semantic_story(root, *, current=False, partial=False, line_id="test:0"):
 
 
 class SourceAudioSemanticEvidenceTest(unittest.TestCase):
+    def test_punctuation_variants_keep_exact_evidence_through_merge(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = semantic_story(root / "source", current=True)
+            records = []
+            entries = []
+            for index, text in enumerate(("I'm Cornerstone.", "I'm Cornerstone ...")):
+                text_hash = hashlib.sha256(text.encode()).hexdigest()
+                line_id = f"variant:{index}"
+                entry, entry_id = semantic_evidence_entry(
+                    line_id=line_id,
+                    text=text,
+                    displayed_text_sha256=text_hash,
+                    media_id=7,
+                )
+                entries.append(entry)
+                records.append(
+                    {
+                        **source.records[0].to_record(),
+                        "line_id": line_id,
+                        "sequence": index,
+                        "text": text,
+                        "text_sha256": text_hash,
+                        "source_audio_semantic_evidence_entry_id": entry_id,
+                    }
+                )
+            entries.sort(key=lambda entry: entry["displayed_text_sha256"])
+            authority, evidence_id = semantic_evidence_document(entries)
+            evidence_path = source.path.with_name("source-audio-semantic-evidence.json")
+            evidence_path.write_text(json.dumps(authority), encoding="utf-8")
+            metadata = deepcopy(source.metadata)
+            metadata["source_audio_semantics"].update(
+                evidence_id=evidence_id,
+                evidence_sha256=hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+                applied_count=2,
+            )
+            for record in records:
+                record["source_audio_semantic_evidence_id"] = evidence_id
+            source = write_story_index_document(source.path, metadata, records)
+            self.assertEqual(
+                len(
+                    load_source_audio_semantic_evidence(evidence_path, source)[
+                        "entries"
+                    ]
+                ),
+                2,
+            )
+            records.sort(key=lambda record: record["text_sha256"], reverse=True)
+            metadata, merged, merged_path = merge_source_audio_semantics(
+                source, (source,), records, root / "merged"
+            )
+            published = write_story_index_document(
+                root / "merged" / "story-index.jsonl", metadata, merged
+            )
+            self.assertEqual(
+                load_source_audio_semantic_evidence(merged_path, published)["entries"],
+                entries,
+            )
+            records[0]["text_sha256"] = records[1]["text_sha256"]
+            records[0]["text"] = records[1]["text"]
+            tampered = write_story_index_document(source.path, source.metadata, records)
+            with self.assertRaisesRegex(SourceAudioSemanticEvidenceError, "changed"):
+                load_source_audio_semantic_evidence(evidence_path, tampered)
+
     def test_reset_rejects_source_sidecar_symlink_and_hardlink_destinations(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

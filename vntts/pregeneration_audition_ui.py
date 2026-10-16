@@ -122,6 +122,18 @@ class _VoiceAuditionPreviewer(Protocol):
 
 
 class _PrefetchVoiceAuditionPreviewer(_VoiceAuditionPreviewer, Protocol):
+    def generate(
+        self,
+        plan: VoicePlan,
+        group: VoiceGroup,
+        candidate_source_id: str,
+        *,
+        text: str | None = None,
+        cancel_event: Event | None = None,
+        progress: Callable[[str], object] | None = None,
+        automatic: bool = False,
+    ) -> _PreviewAudio: ...
+
     def peek(
         self,
         plan: VoicePlan,
@@ -362,10 +374,9 @@ class VoiceAuditionPanel(QGroupBox):
         self.preview_phrase.setAccessibleName("Generated preview phrase")
         self.preview_phrase.currentIndexChanged.connect(self._preview_phrase_selected)
 
-        self.a_play = QPushButton("Play generated preview")
+        self.a_play = QPushButton("Play preview")
         self.a_play.setMinimumWidth(self.a_play.sizeHint().width())
-        self.a_play.setText("Generate preview")
-        self.a_play.setAccessibleName("Play generated voice preview")
+        self.a_play.setAccessibleName("Play voice preview")
         self.a_play.clicked.connect(self.play_a)
         preview_row = QHBoxLayout()
         preview_row.addWidget(QLabel("Phrase"))
@@ -485,7 +496,7 @@ class VoiceAuditionPanel(QGroupBox):
 
     def _size_transient_controls(self) -> None:
         for button, label in (
-            (self.a_play, "Play generated preview"),
+            (self.a_play, "Stop preview"),
             (self.a_original, "Play original reference"),
         ):
             current = button.text()
@@ -653,7 +664,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._accepted_choice = None
         self.a_use.setEnabled(False)
         self._set_status(
-            "Preparing this generated preview... You can browse other voices."
+            "Preparing preview; it will play automatically. You can browse other voices."
         )
         self._preview_request = request
         arguments: dict[str, object] = {
@@ -960,9 +971,6 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self._show_reference_details(candidate)
         preview = self._ready_preview(candidate)
-        self.a_play.setText(
-            "Play generated preview" if preview is not None else "Generate preview"
-        )
         self.a_play.setEnabled(True)
         self.a_original.setEnabled(bool(candidate.reference_sha256s))
         self._set_playing_source(None)
@@ -998,9 +1006,9 @@ class VoiceAuditionPanel(QGroupBox):
             self._set_status(
                 "Listen to the preview before choosing."
                 if preview is not None
-                else "Play the original or generate a preview."
+                else "Play the original or the preview."
                 if candidate.reference_sha256s
-                else "Generate a preview before using this voice."
+                else "Play the preview before using this voice."
             )
 
     def _show_reference_details(self, candidate: VoiceCandidate) -> None:
@@ -1710,27 +1718,9 @@ class VoiceAuditionPanel(QGroupBox):
             if multiple
             else "Play original reference"
         )
-        current = (
-            self._current_entry()[0]
-            if self._candidate_entries and self._group_index < len(self._groups)
-            else None
-        )
-        preview_ready = bool(
-            current is not None and self._ready_preview(current) is not None
-        )
-        self.a_play.setText(
-            "Stop preview"
-            if source == "preview"
-            else "Play generated preview"
-            if preview_ready
-            else "Generate preview"
-        )
+        self.a_play.setText("Stop preview" if source == "preview" else "Play preview")
         self.a_play.setAccessibleName(
-            "Stop generated voice preview"
-            if source == "preview"
-            else "Play generated voice preview"
-            if preview_ready
-            else "Generate voice preview"
+            "Stop voice preview" if source == "preview" else "Play voice preview"
         )
 
     def _stop_player(self) -> None:

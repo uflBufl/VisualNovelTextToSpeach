@@ -21,6 +21,7 @@ from vntts.pregeneration_audition import (
     _validate_request,
 )
 from vntts.pregeneration_voices import VoiceGroup, VoicePlan
+from vntts.settings import AppSettings
 
 PreviewInput = tuple[VoiceGroup, str, str | None]
 
@@ -88,6 +89,8 @@ class VoiceAuditionCoordinator:
         self._closed = False
         self._suspended = False
         self._sessions: set[VoiceAuditionSession] = set()
+        self._warmup_cancel: Event | None = None
+        self._warmup_session: VoiceAuditionSession | None = None
 
     def session(self) -> VoiceAuditionSession:
         with self._lock:
@@ -101,6 +104,7 @@ class VoiceAuditionCoordinator:
         """Explicit unload/reading drops speculation without stopping another owner."""
         with self._lock:
             self._suspended = True
+            self._cancel_warmup()
             for session in self._sessions:
                 session._ready.clear()
                 self._cancel_session(session, background_only=True)
@@ -108,10 +112,42 @@ class VoiceAuditionCoordinator:
     def close(self) -> None:
         with self._lock:
             self._closed = True
+            self._cancel_warmup()
             for session in self._sessions:
                 self._cancel_session(session)
         self._pool.shutdown(wait=True)
         self.service.close()
+
+    def cancel_warmup(self) -> None:
+        with self._lock:
+            self._cancel_warmup()
+
+    def _cancel_warmup(self) -> None:
+        if self._warmup_cancel is not None:
+            self._warmup_cancel.set()
+
+    def _warmup(
+        self, session: VoiceAuditionSession, settings: AppSettings, cancel: Event
+    ) -> None:
+        try:
+            with self._lock:
+                if (
+                    cancel.is_set()
+                    or self._closed
+                    or session._closed
+                    or self._suspended
+                    or not self.background_available()
+                ):
+                    return
+            self.service.warmup(settings, cancel_event=cancel)
+        except Exception:
+            # Missing installed assets leave the normal explicit preview available.
+            pass
+        finally:
+            with self._lock:
+                if self._warmup_cancel is cancel:
+                    self._warmup_cancel = None
+                    self._warmup_session = None
 
     def _cancel_session(
         self, session: VoiceAuditionSession, *, background_only: bool = False
@@ -280,6 +316,23 @@ class VoiceAuditionSession:
                 and not self.owner._suspended
                 and self.owner.background_available()
             )
+
+    def warmup(self, settings: AppSettings) -> None:
+        with self.owner._lock:
+            self.owner._cancel_warmup()
+            if (
+                self._closed
+                or self.owner._closed
+                or not self.owner.background_available()
+                or settings.speech_backend != "moss-tts"
+            ):
+                return
+            # Continue is a new explicit preparation request after an unload/read.
+            self.owner._suspended = False
+            cancel = Event()
+            self.owner._warmup_cancel = cancel
+            self.owner._warmup_session = self
+            self.owner._pool.submit(self.owner._warmup, self, settings, cancel)
 
     def generate(
         self,
@@ -499,11 +552,15 @@ class VoiceAuditionSession:
 
     def cancel(self) -> None:
         with self.owner._lock:
+            if self.owner._warmup_session is self:
+                self.owner._cancel_warmup()
             self.owner._cancel_session(self)
 
     def close(self) -> None:
         with self.owner._lock:
             self._closed = True
+            if self.owner._warmup_session is self:
+                self.owner._cancel_warmup()
             self.owner._cancel_session(self)
             self._ready.clear()
             self.owner._sessions.discard(self)

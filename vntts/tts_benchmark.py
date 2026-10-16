@@ -239,6 +239,7 @@ def create_backend(
         "allow_gated_model_access",
         "require_cuda",
         "persistent_audio_cache_max_entries",
+        "allow_download",
     }
     unexpected = sorted(set(options) - allowed_options)
     if unexpected:
@@ -308,6 +309,11 @@ def create_backend(
         return _require_benchmark_backend(
             create_moss_worker_backend(
                 registry,
+                **(
+                    {"allow_download": options["allow_download"]}
+                    if "allow_download" in options
+                    else {}
+                ),
                 **({"model_name": str(model_name)} if model_name is not None else {}),
                 **streaming_options,
                 prompt_cache_directory=cache_root / "prompt-codes",

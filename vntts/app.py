@@ -3155,9 +3155,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
             return None
+        audition_session = self.voice_auditions.session()
         dialog = OfflineAudioPreparationDialog(
             self.settings,
-            audition_service=self.voice_auditions.session(),
+            audition_service=audition_session,
             generator=OfflineGenerationWorker(
                 backend_factory=self.moss_runtime.benchmark_backend
             ),
@@ -3170,6 +3171,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog.finished.connect(self._pregeneration_finished)
         dialog.readingRequested.connect(self._read_prepared_story)
         dialog.preparationRequested.connect(self._remember_preparation_context)
+        dialog.preparationRequested.connect(
+            lambda: audition_session.warmup(
+                resolve_pregeneration_settings(dialog.settings)
+            )
+        )
         dialog.packReady.connect(self._activate_ready_preparation)
         dialog.activityChanged.connect(
             self._preparation_activity_changed, Qt.ConnectionType.QueuedConnection
@@ -3178,6 +3184,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         return dialog
 
     def _save_offline_preferences(self, selected: AppSettings) -> None:
+        self.voice_auditions.cancel_warmup()
         candidate = self.settings.updated(
             offline_speech_backend=selected.offline_speech_backend,
             offline_tts_model=selected.offline_tts_model,
@@ -3232,6 +3239,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _preparation_activity_changed(self, _active: bool) -> None:
         if self._shutting_down:
             return
+        if not self._voice_audition_background_available():
+            self.voice_auditions.cancel_warmup()
         self._apply_controller_action_state()
 
     def _pregeneration_finished(self, result: int) -> PregenerationJob | None:
@@ -3245,7 +3254,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog.deleteLater()
         self._apply_controller_action_state()
         if self._quit_requested:
-            self.application.quit()
+            # Let dialog completion and native close events unwind before quitting.
+            QTimer.singleShot(0, self.application, self.application.quit)
             return None
         if result != QDialog.DialogCode.Accepted:
             if used_runtime_progress:
@@ -4501,6 +4511,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.settings_button.setEnabled(available)
 
     def _begin_controller_lifecycle(self, cancellation: Event | None = None) -> int:
+        self.voice_auditions.cancel_warmup()
         self._live_scope_generation = None
         self.live_scope_runner.cancel()
         self._cancel_diagnostics_refresh()
@@ -4663,7 +4674,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
             self.pregeneration_dialog.reject()
             return
-        self.application.quit()
+        QTimer.singleShot(0, self.application, self.application.quit)
 
 
 def _worker_exit_code(value: object) -> int:

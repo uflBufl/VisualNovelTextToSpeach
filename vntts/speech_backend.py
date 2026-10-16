@@ -1882,6 +1882,7 @@ class MossTTSVoiceRouterBackend:
         model_factory: _MossTTSModelFactory | None,
         runtime_directory: str | Path | None,
     ) -> _MossTTSModel:
+        load_codec = model_factory is None
         if model_factory is None:
             runtime_site_packages = activate_moss_tts_runtime(runtime_directory)
             try:
@@ -1904,7 +1905,11 @@ class MossTTSVoiceRouterBackend:
             # first use in the other worker with "There is no Stream(...) in
             # current thread". Materialize the model before it crosses that
             # boundary; streamed audio generation remains lazy and incremental.
-            return model_factory(self.model_name, lazy=False)
+            model = model_factory(self.model_name, lazy=False)
+            if load_codec:
+                # Offline startup must also admit the codec before reusing this worker.
+                model._ensure_audio_tokenizer()
+            return model
         except Exception as error:
             raise TTSConfigurationError(
                 f"MOSS-TTS could not load {self.model_name!r}: {error}"

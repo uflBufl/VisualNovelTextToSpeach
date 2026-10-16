@@ -260,6 +260,7 @@ def validate_source_audio_semantic_evidence(
                 entry["locale"],
                 entry["media_sha256"],
                 entry["normalized_displayed_text_sha256"],
+                entry["displayed_text_sha256"],
             )
         )
     if keys != sorted(set(keys)):
@@ -600,6 +601,7 @@ def merge_source_audio_semantics(
             entry["locale"],
             entry["media_sha256"],
             entry["normalized_displayed_text_sha256"],
+            entry["displayed_text_sha256"],
         ),
     )
     merged["source_story_index_sha256"] = catalog_sha256

@@ -172,6 +172,38 @@ class FailingAudioOutput(FakeAudioOutput):
 
 
 class MossTTSBackendTest(unittest.TestCase):
+    def test_real_loader_requires_codec_before_model_is_ready(self):
+        for codec_error in (None, OSError("codec is not cached")):
+            with self.subTest(codec_error=codec_error):
+                model = Mock(sample_rate=48000)
+                model._ensure_audio_tokenizer.side_effect = codec_error
+                loader = Mock(return_value=model)
+                mx = SimpleNamespace()
+                backend = object.__new__(MossTTSVoiceRouterBackend)
+                backend.model_name = "installed-moss"
+                with (
+                    patch("vntts.speech_backend.activate_moss_tts_runtime"),
+                    patch("vntts.moss_compat.install_moss_quantized_codec_compat"),
+                    patch.dict(
+                        sys.modules,
+                        {
+                            "mlx": SimpleNamespace(core=mx),
+                            "mlx.core": mx,
+                            "mlx_audio": SimpleNamespace(),
+                            "mlx_audio.tts": SimpleNamespace(load=loader),
+                        },
+                    ),
+                ):
+                    if codec_error is None:
+                        self.assertIs(backend._load_moss_model(None, None), model)
+                    else:
+                        with self.assertRaisesRegex(
+                            TTSConfigurationError, "codec is not cached"
+                        ):
+                            backend._load_moss_model(None, None)
+                model._ensure_audio_tokenizer.assert_called_once_with()
+                loader.assert_called_once_with("installed-moss", lazy=False)
+
     def test_constructor_keeps_subclass_profiles_and_late_volume_setter(self):
         class CheckedBackend(MossTTSVoiceRouterBackend):
             _generation_profiles: ClassVar = {"custom": {"audio_temperature": 1.2}}

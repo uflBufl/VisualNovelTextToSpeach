@@ -242,7 +242,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f.ready.update(f.previews)
             f.panel.start(f.plan)
             self.assertIn("Ready", f.panel.voice_reference.currentText())
-            self.assertEqual(f.panel.a_play.text(), "Play generated preview")
+            self.assertEqual(f.panel.a_play.text(), "Play preview")
             f.panel.a_play.click()
             f.service.generate.assert_not_called()
             f.player.play_bytes.assert_called_once()

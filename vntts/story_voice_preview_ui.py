@@ -1,15 +1,21 @@
 """Cancellable playback of a planned voice without leaving the story summary."""
 
+from collections.abc import Sequence
 from hashlib import sha256
 from threading import Event
+from typing import cast
 
-from PySide6.QtCore import QEvent, QObject, QThreadPool, Signal
+from PySide6.QtCore import QEvent, QMetaObject, QObject, QThreadPool, Signal
 from PySide6.QtMultimedia import QMediaPlayer
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.path_safety import read_regular_bytes
-from vntts.pregeneration_audition import VoiceAuditionError
-from vntts.pregeneration_audition_ui import _PreviewAudio, _VoiceAuditionPreviewer
+from vntts.pregeneration_audition import VoiceAuditionCancelled, VoiceAuditionError
+from vntts.pregeneration_audition_ui import (
+    _PrefetchVoiceAuditionPreviewer,
+    _PreviewAudio,
+    _VoiceAuditionPreviewer,
+)
 from vntts.pregeneration_voices import VoiceGroup, VoicePlan
 from vntts.qt_audio import QtPcmPlayer
 
@@ -32,6 +38,10 @@ class StoryVoicePreview(QObject):
         self.player = player
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.runner.finished.connect(self._finished)
+        self.preparation_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.preparation_session: _PrefetchVoiceAuditionPreviewer | None = None
+        self.preparation_cancellation = Event()
+        self._preparation_cleanup: tuple[QMetaObject.Connection, ...] = ()
         self.cancellation = Event()
         self.active = False
         if self.player is not None:
@@ -45,7 +55,66 @@ class StoryVoicePreview(QObject):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.Hide:
             self.stop()
+            self.cancel_preparation()
         return super().eventFilter(watched, event)
+
+    def prepare(
+        self, requests: Sequence[tuple[VoicePlan, VoiceGroup, str, str]]
+    ) -> None:
+        self.cancel_preparation()
+        if (
+            not requests
+            or getattr(self.service, "supports_prefetch", False) is not True
+        ):
+            return
+        session = cast(
+            _PrefetchVoiceAuditionPreviewer, getattr(self.service, "new_session")()
+        )
+        self.preparation_session = session
+        self.preparation_cancellation = Event()
+        self._preparation_cleanup = (
+            self.destroyed.connect(self.preparation_cancellation.set),
+            self.destroyed.connect(session.close),
+        )
+        self.preparation_runner.start(
+            self._prepare_requests,
+            session,
+            requests,
+            self.preparation_cancellation,
+        )
+
+    @staticmethod
+    def _prepare_requests(
+        session: _PrefetchVoiceAuditionPreviewer,
+        requests: Sequence[tuple[VoicePlan, VoiceGroup, str, str]],
+        cancellation: Event,
+    ) -> None:
+        for plan, group, source, text in requests:
+            if cancellation.is_set():
+                return
+            try:
+                session.generate(
+                    plan,
+                    group,
+                    source,
+                    text=text,
+                    cancel_event=cancellation,
+                    automatic=True,
+                )
+            except VoiceAuditionCancelled:
+                return
+            except OSError, ValueError, VoiceAuditionError:
+                continue
+
+    def cancel_preparation(self) -> None:
+        self.preparation_cancellation.set()
+        self.preparation_runner.cancel()
+        for connection in self._preparation_cleanup:
+            QObject.disconnect(connection)
+        self._preparation_cleanup = ()
+        if self.preparation_session is not None:
+            self.preparation_session.close()
+            self.preparation_session = None
 
     def play(self, plan: VoicePlan, group: VoiceGroup, source: str, text: str) -> None:
         self.stop()
@@ -69,6 +138,10 @@ class StoryVoicePreview(QObject):
             )
             if ready is None and self.session is not self.service:
                 ready = getattr(self.service, "peek")(plan, group, source, text=text)
+            if ready is None and self.preparation_session is not None:
+                ready = getattr(self.preparation_session, "peek")(
+                    plan, group, source, text=text
+                )
         except (OSError, ValueError, VoiceAuditionError) as error:
             self._finished(None, error)
             return
@@ -131,6 +204,7 @@ class StoryVoicePreview(QObject):
 
     def close(self) -> None:
         self.stop()
+        self.cancel_preparation()
         if self.session is not None and self.session is not self.service:
             self.session.close()
         self.session = None
