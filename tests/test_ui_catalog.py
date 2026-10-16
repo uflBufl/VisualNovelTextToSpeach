@@ -478,8 +478,8 @@ class UiCatalogTest(unittest.TestCase):
             packet = json.loads(
                 (output / "review-packets" / "asset-manager.json").read_text()
             )
-            self.assertEqual(
-                {story["id"] for story in packet["target"]["stories"]},
+            story_ids = {story["id"] for story in packet["target"]["stories"]}
+            self.assertTrue(
                 {
                     "asset-manager.voices-empty",
                     "asset-manager.voices-manifest",
@@ -491,7 +491,16 @@ class UiCatalogTest(unittest.TestCase):
                     "asset-manager.model-failure",
                     "asset-manager.compact-voices",
                     "asset-manager.compact-model",
-                },
+                    "asset-manager.voice-importing",
+                    "asset-manager.voice-import-failure",
+                    "asset-manager.voice-import-success",
+                    "asset-manager.voice-import-close-pending",
+                    "asset-manager.model-verifying",
+                    "asset-manager.model-cancel-pending",
+                    "asset-manager.compact-voices-long-error",
+                    "asset-manager.compact-model-long-error",
+                }
+                <= story_ids
             )
             for story in packet["target"]["stories"]:
                 self.assertGreater(

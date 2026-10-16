@@ -228,10 +228,10 @@
     },
     {
       "id": "asset-manager",
-      "title": "Speech assets",
+      "title": "Voice libraries and models",
       "family": "Setup and recovery",
       "audience": "Player",
-      "mission": "Install only the model assets required by the active speech engine.",
+      "mission": "Manage voice libraries and, for Coqui XTTS, install the selected speech model.",
       "canonical_owner": "asset-manager",
       "related": ["readiness", "settings", "onboarding"],
       "contracts": ["single-mission", "global-settings"],
@@ -240,12 +240,20 @@
         {"id": "asset-manager.voices-manifest", "title": "Selected voice manifest", "state": "A manually selected path and its validation action are visible"},
         {"id": "asset-manager.voices-validation", "title": "Checking voice files", "state": "Validation progress prevents premature saving"},
         {"id": "asset-manager.voices-error", "title": "Invalid voice manifest", "state": "Failure preserves the path and a retry action"},
+        {"id": "asset-manager.voice-importing", "title": "Importing a character voice", "state": "Voice files are imported and checksum-validated in the background while conflicting actions are disabled"},
+        {"id": "asset-manager.voice-import-failure", "title": "Character voice import failed", "state": "The import error and retry route remain visible"},
+        {"id": "asset-manager.voice-import-success", "title": "Character voice import complete", "state": "The selected library and completion status are clear without repeating the same path"},
+        {"id": "asset-manager.voice-import-close-pending", "title": "Close while importing a voice", "state": "Close is deferred until the active import finishes"},
         {"id": "asset-manager.model-unchecked", "title": "XTTS model not checked", "state": "The selected model is not claimed ready before checksum verification"},
         {"id": "asset-manager.model-verified", "title": "XTTS model verified", "state": "A passing checksum check explicitly confirms the model is ready"},
+        {"id": "asset-manager.model-verifying", "title": "Verifying XTTS checksums", "state": "Verification progress blocks conflicting asset actions while leaving its purpose visible"},
         {"id": "asset-manager.model-download", "title": "Model download underway", "state": "Progress and cancellation have unambiguous ownership"},
+        {"id": "asset-manager.model-cancel-pending", "title": "Model download cancellation pending", "state": "The request waits for the current network chunk and prevents duplicate cancellation"},
         {"id": "asset-manager.model-failure", "title": "Model download failure", "state": "Retry remains available without hiding the failure"},
         {"id": "asset-manager.compact-voices", "title": "Compact voice import", "state": "Manifest controls and Save remain available with larger text"},
-        {"id": "asset-manager.compact-model", "title": "Compact model management", "state": "Long model and directory values remain readable with larger text"}
+        {"id": "asset-manager.compact-model", "title": "Compact model management", "state": "Long model and directory values remain readable with larger text"},
+        {"id": "asset-manager.compact-voices-long-error", "title": "Long voice import error at compact size", "state": "A long validation failure remains readable and recoverable with larger text"},
+        {"id": "asset-manager.compact-model-long-error", "title": "Long model error at compact size", "state": "A long model verification failure remains readable with larger text"}
       ]
     },
     {

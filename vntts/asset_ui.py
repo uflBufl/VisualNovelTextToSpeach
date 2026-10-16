@@ -3,7 +3,7 @@ from pathlib import Path
 from threading import Event
 from typing import Literal, Protocol, TypeAlias
 
-from PySide6.QtCore import QObject, QThreadPool, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, Signal
 from PySide6.QtGui import QCloseEvent, QPalette
 from PySide6.QtWidgets import (
     QComboBox,
@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -28,6 +30,7 @@ from vntts.async_ui import LatestTaskRunner
 from vntts.document_identity import file_sha256
 from vntts.model_assets import ModelAssetManager, ModelDownloadCancelled
 from vntts.settings import AppSettings
+from vntts.ui_text import make_text_copyable
 from vntts.voice_packs import VoicePackManager
 
 default_model = "tts_models/multilingual/multi-dataset/xtts_v2"
@@ -188,9 +191,9 @@ class AssetManagerDialog(QDialog):
         self._accept_after_manifest_validation = False
         self.model_management_available = settings.speech_backend == "coqui-xtts"
         self.setWindowTitle(
-            "Models and character voices"
+            "Models and voice libraries"
             if self.model_management_available
-            else "Character voices"
+            else "Voice libraries"
         )
         self.setMinimumSize(680, 300)
 
@@ -201,7 +204,7 @@ class AssetManagerDialog(QDialog):
         else:
             self.models_tab.setParent(self)
             self.models_tab.hide()
-        self.tabs.addTab(self._create_voices_tab(), "Character voices")
+        self.tabs.addTab(self._create_voices_tab(), "Voice libraries")
         self.tabs.tabBar().setVisible(self.model_management_available)
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -228,10 +231,38 @@ class AssetManagerDialog(QDialog):
         self.buttons.accepted.connect(self.accept_settings)
         self.buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
         layout.addWidget(self.tabs)
         layout.addWidget(self.buttons)
+        make_text_copyable(self)
 
         self.signals.progress.connect(self.update_progress)
+
+    def _status_field(self, name: str, text: str) -> QPlainTextEdit:
+        status = QPlainTextEdit(text, readOnly=True, tabChangesFocus=True)
+        status.setAccessibleName(name)
+        status.setFrameShape(QFrame.Shape.NoFrame)
+        status.viewport().setAutoFillBackground(False)
+        status.setFixedHeight(status.fontMetrics().lineSpacing() * 3 + 12)
+        status.installEventFilter(self)
+        return status
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            isinstance(watched, QPlainTextEdit)
+            and event.type() == QEvent.Type.FontChange
+        ):
+            watched.setFixedHeight(watched.fontMetrics().lineSpacing() * 3 + 12)
+        return super().eventFilter(watched, event)
+
+    @staticmethod
+    def _scrollable_tab(body: QWidget) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(body)
+        return scroll
 
     def _create_models_tab(self) -> QWidget:
         tab = QWidget()
@@ -242,11 +273,12 @@ class AssetManagerDialog(QDialog):
             self.model.setCurrentText(self.settings_value.tts_model)
         self.model_path = QLabel(self._model_path_text())
         self.model_path.setWordWrap(True)
+        self.model_path.setTextFormat(Qt.TextFormat.PlainText)
         self.model.currentTextChanged.connect(self._model_changed)
-        self.model_status = QLabel(
-            "Installation status not checked. Verify checksums to confirm this model."
+        self.model_status = self._status_field(
+            "Speech model status",
+            "Installation status not checked. Verify checksums to confirm this model.",
         )
-        self.model_status.setWordWrap(True)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
@@ -265,15 +297,15 @@ class AssetManagerDialog(QDialog):
         actions.addWidget(self.cancel_button)
         actions.addStretch()
         layout = QVBoxLayout(tab)
-        layout.addWidget(QLabel("Model"))
+        layout.addWidget(QLabel("Selected model"))
         layout.addWidget(self.model)
-        layout.addWidget(QLabel("Application-owned model directory"))
-        layout.addWidget(self.model_path)
+        layout.addLayout(actions)
         layout.addWidget(self.model_status)
         layout.addWidget(self.progress)
-        layout.addLayout(actions)
+        layout.addWidget(QLabel("Model files"))
+        layout.addWidget(self.model_path)
         layout.addStretch()
-        return tab
+        return self._scrollable_tab(tab)
 
     def _model_path_text(self) -> str:
         name = self.model_name()
@@ -287,43 +319,37 @@ class AssetManagerDialog(QDialog):
     def _model_changed(self, _text: str) -> None:
         self.model_path.setText(self._model_path_text())
         if not self.operation_running:
-            self.model_status.setText(
+            self.model_status.setPlainText(
                 "Installation status not checked. Verify checksums to confirm this model."
             )
-            self.model_status.setStyleSheet("")
             self.download_button.setText("Download model")
 
     def _create_voices_tab(self) -> QWidget:
         tab = QWidget()
         self.voice_manifest = QLineEdit(self.settings_value.voice_manifest or "")
-        self.voice_manifest.setAccessibleName("Active voice manifest")
+        self.voice_manifest.setAccessibleName("Selected voice library")
         self.voice_manifest.setAccessibleDescription(
-            "Path to the active character voice manifest JSON file"
+            "Manifest JSON file mapping character names to voice references; Save selection applies this library"
         )
-        self.voice_status = QLabel(
-            "Files not checked. Verify files to confirm this manifest."
+        self.voice_status = self._status_field(
+            "Voice library and import status",
+            "Files not checked. Verify files to confirm this library."
             if self.voice_manifest.text().strip()
-            else "No active voice manifest selected. Live voice assignments are disabled."
+            else "No voice library selected. Save selection will disable live voice assignments.",
         )
-        self.voice_status.setWordWrap(True)
-        self.voice_status.setAccessibleName("Voice manifest and import status")
         self.voice_progress = QProgressBar()
         self.voice_progress.setRange(0, 100)
         self.voice_progress.setValue(0)
         self.voice_progress.hide()
-        self.import_pack_button = QPushButton("Import manifest into library...")
+        self.import_pack_button = QPushButton("Import library...")
         self.add_voice_button = QPushButton("Add voice from audio...")
         self.browse_manifest_button = QPushButton("Choose existing...")
         self.validate_manifest_button = QPushButton("Verify files")
-        self.browse_manifest_button.setAccessibleName(
-            "Browse for active voice manifest"
-        )
+        self.browse_manifest_button.setAccessibleName("Browse for a voice library")
         self.browse_manifest_button.setAccessibleDescription(
             "Choose an existing voice manifest JSON file"
         )
-        self.validate_manifest_button.setAccessibleName(
-            "Validate active voice manifest"
-        )
+        self.validate_manifest_button.setAccessibleName("Verify selected voice library")
         self.validate_manifest_button.setAccessibleDescription(
             "Checksum-validate the selected manifest and all referenced voice files"
         )
@@ -335,28 +361,39 @@ class AssetManagerDialog(QDialog):
         manifest_selector = QHBoxLayout()
         manifest_selector.addWidget(self.voice_manifest, 1)
         manifest_selector.addWidget(self.browse_manifest_button)
-        manifest_selector.addWidget(self.validate_manifest_button)
+        validation = QHBoxLayout()
+        validation.addWidget(self.voice_status, 1)
+        validation.addWidget(
+            self.validate_manifest_button, 0, Qt.AlignmentFlag.AlignTop
+        )
         actions = QHBoxLayout()
         actions.addWidget(self.import_pack_button)
         actions.addWidget(self.add_voice_button)
         actions.addStretch()
         layout = QVBoxLayout(tab)
-        manifest_label = QLabel("Active voice manifest")
+        manifest_label = QLabel("Selected voice library")
         manifest_label.setBuddy(self.voice_manifest)
         layout.addWidget(manifest_label)
         layout.addLayout(manifest_selector)
-        layout.addWidget(self.voice_status)
+        layout.addLayout(validation)
         layout.addWidget(self.voice_progress)
         layout.addLayout(actions)
+        import_help = QLabel(
+            "Imports copy files into the app immediately, even if you cancel. "
+            "Save selection applies the selected library."
+        )
+        import_help.setWordWrap(True)
+        layout.addWidget(import_help)
         layout.addStretch()
         self.validate_manifest_button.setEnabled(
             bool(self.voice_manifest.text().strip())
         )
         self.setTabOrder(self.voice_manifest, self.browse_manifest_button)
         self.setTabOrder(self.browse_manifest_button, self.validate_manifest_button)
-        self.setTabOrder(self.validate_manifest_button, self.import_pack_button)
+        self.setTabOrder(self.validate_manifest_button, self.voice_status)
+        self.setTabOrder(self.voice_status, self.import_pack_button)
         self.setTabOrder(self.import_pack_button, self.add_voice_button)
-        return tab
+        return self._scrollable_tab(tab)
 
     def _voice_manifest_edited(self) -> None:
         manifest = self.voice_manifest.text().strip()
@@ -365,17 +402,16 @@ class AssetManagerDialog(QDialog):
         self._accept_after_manifest_validation = False
         self._set_manifest_validation_pending(False)
         self.voice_progress.setValue(0)
-        self.voice_status.setStyleSheet("")
         self.validate_manifest_button.setEnabled(
             bool(manifest) and not self.operation_running
         )
         if manifest:
-            self.voice_status.setText(
-                "Manifest path changed. Validate it before saving."
+            self.voice_status.setPlainText(
+                "Library selection changed. Verify files, or Save selection to check and apply it."
             )
         else:
-            self.voice_status.setText(
-                "No active voice manifest selected. Live voice assignments are disabled."
+            self.voice_status.setPlainText(
+                "No voice library selected. Save selection will disable live voice assignments."
             )
 
     def browse_voice_manifest(self) -> None:
@@ -386,7 +422,7 @@ class AssetManagerDialog(QDialog):
             start = str(candidate if candidate.is_dir() else candidate.parent)
         source, _selected_filter = QFileDialog.getOpenFileName(
             self,
-            "Choose active voice manifest",
+            "Choose voice library",
             start,
             "JSON files (*.json);;All files (*)",
         )
@@ -398,12 +434,12 @@ class AssetManagerDialog(QDialog):
     def validate_voice_manifest(self) -> bool:
         manifest = self.voice_manifest.text().strip()
         if not manifest:
-            self.voice_status.setText(
-                "No active voice manifest selected. Live voice assignments are disabled."
+            self.voice_status.setPlainText(
+                "No voice library selected. Save selection will disable live voice assignments."
             )
             return True
         self._set_manifest_validation_pending(True)
-        self.voice_status.setText(
+        self.voice_status.setPlainText(
             "Checksum-validating the selected manifest and voice files..."
         )
         self.manifest_runner.start(self._validate_manifest_snapshot, manifest)
@@ -426,42 +462,38 @@ class AssetManagerDialog(QDialog):
         if error is not None:
             self._validated_manifest_identity = None
             self._accept_after_manifest_validation = False
-            self.voice_status.setText(
-                f"Voice manifest is invalid: {error}. Check its audio paths or "
-                "choose another manifest, then Verify files."
+            self.voice_status.setPlainText(
+                f"Voice library is invalid: {error}. Check its audio paths or "
+                "choose another library, then Verify files."
             )
-            self.voice_status.setStyleSheet("font-weight: 600;")
             self.voice_manifest.setFocus()
             self.voice_manifest.selectAll()
             self.voice_progress.setValue(0)
             return
         assert result is not None
-        path, digest, validated = result
+        path, digest, _validated = result
         try:
             selected_path = str(Path(selected).expanduser().resolve())
             selected_digest = file_sha256(selected_path, error_type=OSError)
         except OSError:
             self._voice_manifest_edited()
-            self.voice_status.setText(
-                "Voice manifest is unavailable. Restore it or choose another "
-                "manifest, then Verify files."
+            self.voice_status.setPlainText(
+                "Voice library is unavailable. Restore it or choose another "
+                "library, then Verify files."
             )
-            self.voice_status.setStyleSheet("font-weight: 600;")
             return
         if selected_path != path or selected_digest != digest:
             if selected_path == path:
                 self._voice_manifest_edited()
-                self.voice_status.setText(
-                    "Voice manifest changed after validation. Verify files again "
+                self.voice_status.setPlainText(
+                    "Voice library changed after validation. Verify files again "
                     "before saving."
                 )
-                self.voice_status.setStyleSheet("font-weight: 600;")
             return
         self._validated_manifest_identity = (path, digest)
         self.voice_progress.setValue(100)
-        self.voice_status.setStyleSheet("")
-        self.voice_status.setText(
-            f"Voice manifest passed checksum validation: {validated}"
+        self.voice_status.setPlainText(
+            "Voice library passed checksum validation. Save selection to apply it."
         )
         if self._accept_after_manifest_validation:
             self._accept_after_manifest_validation = False
@@ -506,8 +538,7 @@ class AssetManagerDialog(QDialog):
             return
         self.cancel_event = Event()
         self.set_operation_running(True, "download")
-        self.model_status.setStyleSheet("")
-        self.model_status.setText("Preparing model download...")
+        self.model_status.setPlainText("Preparing model download...")
         self.model_runner.start(self._download_model, self.model_name())
 
     def _download_model(self, model_name: str) -> Path:
@@ -520,7 +551,7 @@ class AssetManagerDialog(QDialog):
     def cancel_download(self) -> None:
         self.cancel_event.set()
         self.cancel_button.setEnabled(False)
-        self.model_status.setText("Cancelling after the current network chunk...")
+        self.model_status.setPlainText("Cancelling after the current network chunk...")
 
     def verify_model(self) -> None:
         if self.operation_running or not self.model_management_available:
@@ -529,14 +560,13 @@ class AssetManagerDialog(QDialog):
             QMessageBox.warning(self, "No model", "Choose a model to verify.")
             return
         self.set_operation_running(True, "verify")
-        self.model_status.setStyleSheet("")
-        self.model_status.setText("Verifying model checksums...")
+        self.model_status.setPlainText("Verifying model checksums...")
         self.model_runner.start(self.model_manager.validate, self.model_name())
 
     def _model_operation_finished(self, path: object, error: Exception | None) -> None:
         if self.operation_kind == "download":
             message = (
-                f"Model ready at {path}"
+                "Model ready. Save selection to use it."
                 if error is None
                 else str(error)
                 if isinstance(error, ModelDownloadCancelled)
@@ -544,7 +574,7 @@ class AssetManagerDialog(QDialog):
             )
         else:
             message = (
-                f"Model verified and ready at {path}"
+                "Model verified and ready. Save selection to use it."
                 if error is None
                 else f"Verification failed: {error}"
             )
@@ -556,7 +586,7 @@ class AssetManagerDialog(QDialog):
         else:
             self.progress.setRange(0, 100)
             self.progress.setValue(percent)
-        self.model_status.setText(message)
+        self.model_status.setPlainText(message)
 
     def model_finished(self, successful: bool, message: str) -> None:
         operation_kind = self.operation_kind
@@ -575,8 +605,7 @@ class AssetManagerDialog(QDialog):
             if not successful and operation_kind == "download"
             else "Download model"
         )
-        self.model_status.setStyleSheet("" if successful else "font-weight: 600;")
-        self.model_status.setText(
+        self.model_status.setPlainText(
             f"{message}. Model not ready; Save only records the selection. "
             "Resolve the issue, then Retry download."
             if not successful and operation_kind == "download"
@@ -664,10 +693,7 @@ class AssetManagerDialog(QDialog):
         self.set_operation_running(True, "voice-import")
         self.voice_progress.setRange(0, 0)
         self.voice_progress.show()
-        self.voice_status.setStyleSheet("")
-        self.voice_status.setText(
-            "Importing and checksum-validating voice files in the background..."
-        )
+        self.voice_status.setPlainText("Importing voice files...")
         self.voice_runner.start(operation, *arguments, **keyword_arguments)
 
     def _voice_import_finished(self, manifest: object, error: Exception | None) -> None:
@@ -679,7 +705,7 @@ class AssetManagerDialog(QDialog):
         self.voice_progress.setRange(0, 100)
         if error is not None:
             self.voice_progress.setValue(0)
-            self.voice_status.setText(
+            self.voice_status.setPlainText(
                 f"Voice import failed: {error}. "
                 + (
                     "Choose Add voice from audio to revise and retry."
@@ -687,7 +713,6 @@ class AssetManagerDialog(QDialog):
                     else "Choose the source again to retry."
                 )
             )
-            self.voice_status.setStyleSheet("font-weight: 600;")
         else:
             self.voice_imported(str(manifest), message or "Voice import complete")
             if from_audio:
@@ -700,8 +725,7 @@ class AssetManagerDialog(QDialog):
 
     def voice_imported(self, manifest: str, message: str) -> None:
         self.voice_manifest.setText(manifest)
-        self.voice_status.setStyleSheet("")
-        self.voice_status.setText(message)
+        self.voice_status.setPlainText(message)
         self.settings_value = self.settings_value.updated(voice_manifest=manifest)
 
     def accept_settings(self) -> None:
@@ -760,8 +784,8 @@ class AssetManagerDialog(QDialog):
                     "Wait for the current network chunk to stop before closing.",
                 )
             else:
-                self.voice_status.setText(
-                    "Close is deferred until the current verification or import finishes."
+                self.voice_status.setPlainText(
+                    "Finishing the voice import before closing. Imported files will be kept."
                 )
             return
         super().reject()
@@ -779,9 +803,10 @@ class AssetManagerDialog(QDialog):
             self._close_pending = True
             if self.operation_kind == "download":
                 self.cancel_download()
-            self.voice_status.setText(
-                "Close is deferred until the current model or voice operation finishes."
-            )
+            else:
+                self.voice_status.setPlainText(
+                    "Finishing the voice import before closing. Imported files will be kept."
+                )
             event.ignore()
             return
         super().closeEvent(event)

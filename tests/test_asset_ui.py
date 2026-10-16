@@ -16,7 +16,7 @@ from PySide6.QtCore import (  # noqa: E402
     QThreadPool,
     QTimer,
 )
-from PySide6.QtGui import QCloseEvent  # noqa: E402
+from PySide6.QtGui import QCloseEvent, QKeySequence  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QDialogButtonBox,
     QFileDialog,
     QMessageBox,
+    QScrollArea,
 )
 from shiboken6 import isValid  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
@@ -204,7 +205,7 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.assertEqual(dialog.progress.value(), 100)
         self.assertTrue(dialog.progress.isHidden())
         self.assertTrue(dialog.cancel_button.isHidden())
-        self.assertIn("Model ready", dialog.model_status.text())
+        self.assertIn("Model ready", dialog.model_status.toPlainText())
         self.assertEqual(dialog.settings().tts_model, default_model)
 
     def test_editable_model_path_handles_invalid_names_and_recovers(self):
@@ -259,18 +260,22 @@ class AssetManagerDialogTest(unittest.TestCase):
             thread_pool=pool,
         )
         dialog.set_operation_running(True, "verify")
+        pending_status = dialog.model_status.toPlainText()
         dialog.model_runner.start(lambda: Path("stale"))
         dialog.model_runner.start(lambda: Path("latest"))
 
         pool.tasks.pop(0).run()
         self.application.processEvents()
         self.assertTrue(dialog.operation_running)
-        self.assertNotIn("stale", dialog.model_status.text())
+        self.assertEqual(dialog.model_status.toPlainText(), pending_status)
 
         pool.tasks.pop(0).run()
         self.application.processEvents()
         self.assertFalse(dialog.operation_running)
-        self.assertIn("latest", dialog.model_status.text())
+        self.assertEqual(
+            dialog.model_status.toPlainText(),
+            "Model verified and ready. Save selection to use it.",
+        )
 
     def test_model_selection_invalidates_verification_and_cannot_inherit_old_result(
         self,
@@ -287,14 +292,14 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.assertFalse(dialog.model.isEnabled())
         dialog.model_finished(True, "Model verified and ready at managed/first")
         dialog.model.setCurrentText("second")
-        self.assertIn("not checked", dialog.model_status.text())
+        self.assertIn("not checked", dialog.model_status.toPlainText())
         self.assertEqual(dialog.model_path.text(), str(Path("managed") / "second"))
 
         dialog.set_operation_running(True, "verify")
         dialog.model.setCurrentText("third")
         dialog.model_finished(True, "Model verified and ready at managed/second")
-        self.assertIn("Selected model changed", dialog.model_status.text())
-        self.assertIn("Model not ready", dialog.model_status.text())
+        self.assertIn("Selected model changed", dialog.model_status.toPlainText())
+        self.assertIn("Model not ready", dialog.model_status.toPlainText())
         self.assertNotEqual(dialog.settings().tts_model, "third")
 
     def test_model_verification_can_finish_after_close_without_updating_ui(self):
@@ -327,7 +332,9 @@ class AssetManagerDialogTest(unittest.TestCase):
         release.set()
         self.assertTrue(pool.waitForDone(3000))
         self.application.processEvents()
-        self.assertEqual(dialog.model_status.text(), "Verifying model checksums...")
+        self.assertEqual(
+            dialog.model_status.toPlainText(), "Verifying model checksums..."
+        )
 
     def test_default_pocket_backend_offers_only_character_voice_assets(self):
         model_manager = Mock()
@@ -338,12 +345,12 @@ class AssetManagerDialogTest(unittest.TestCase):
             voice_manager=Mock(),
         )
 
-        self.assertEqual(dialog.windowTitle(), "Character voices")
+        self.assertEqual(dialog.windowTitle(), "Voice libraries")
         self.assertEqual(dialog.tabs.count(), 1)
-        self.assertEqual(dialog.tabs.tabText(0), "Character voices")
+        self.assertEqual(dialog.tabs.tabText(0), "Voice libraries")
         self.assertTrue(dialog.tabs.tabBar().isHidden())
         self.assertTrue(dialog.voice_progress.isHidden())
-        self.assertIn("No active voice manifest", dialog.voice_status.text())
+        self.assertIn("No voice library", dialog.voice_status.toPlainText())
         self.assertEqual(
             dialog.buttons.button(QDialogButtonBox.StandardButton.Save).text(),
             "Save selection",
@@ -391,7 +398,7 @@ class AssetManagerDialogTest(unittest.TestCase):
         ):
             dialog.add_character_voice()
         self.wait_for(lambda: not dialog.operation_running)
-        self.assertIn("revise and retry", dialog.voice_status.text())
+        self.assertIn("revise and retry", dialog.voice_status.toPlainText())
 
         retry_dialog = VoiceImportDialog(dialog)
         with (
@@ -453,7 +460,7 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.assertFalse(dialog.cancel_button.isEnabled())
         self.wait_for(lambda: not dialog.operation_running)
 
-        self.assertIn("Model download cancelled", dialog.model_status.text())
+        self.assertIn("Model download cancelled", dialog.model_status.toPlainText())
 
     def test_voice_pack_import_is_nonblocking_and_close_safe(self):
         with TemporaryDirectory() as directory:
@@ -500,11 +507,13 @@ class AssetManagerDialogTest(unittest.TestCase):
             self.assertEqual(dialog.operation_kind, "voice-import")
             self.assertFalse(dialog.import_pack_button.isEnabled())
             self.assertFalse(dialog.buttons.isEnabled())
-            self.assertIn("background", dialog.voice_status.text())
+            self.assertIn("Importing voice files", dialog.voice_status.toPlainText())
             close_event = QCloseEvent()
             dialog.closeEvent(close_event)
             self.assertFalse(close_event.isAccepted())
-            self.assertIn("Close is deferred", dialog.voice_status.text())
+            self.assertIn(
+                "Finishing the voice import", dialog.voice_status.toPlainText()
+            )
 
             release.set()
             self.wait_for(lambda: not dialog.operation_running)
@@ -530,7 +539,9 @@ class AssetManagerDialogTest(unittest.TestCase):
         )
         self.wait_for(lambda: not dialog.operation_running)
 
-        self.assertIn("Choose the source again to retry", dialog.voice_status.text())
+        self.assertIn(
+            "Choose the source again to retry", dialog.voice_status.toPlainText()
+        )
         self.assertIsNotNone(dialog._voice_import_draft)
         self.assertTrue(dialog.import_pack_button.isEnabled())
         self.assertTrue(dialog.buttons.isEnabled())
@@ -559,7 +570,9 @@ class AssetManagerDialogTest(unittest.TestCase):
 
             self.assertEqual(dialog.voice_manifest.text(), str(manifest))
             voice_manager.validate.assert_called_once_with(manifest.resolve())
-            self.assertIn("passed checksum validation", dialog.voice_status.text())
+            self.assertIn(
+                "passed checksum validation", dialog.voice_status.toPlainText()
+            )
             self.assertTrue(dialog.voice_manifest.accessibleName())
             self.assertTrue(dialog.browse_manifest_button.accessibleDescription())
             self.assertTrue(dialog.validate_manifest_button.accessibleDescription())
@@ -593,7 +606,7 @@ class AssetManagerDialogTest(unittest.TestCase):
                 self.wait_for(lambda: not dialog.manifest_runner.active)
 
             warning.assert_not_called()
-            self.assertIn("checksum mismatch", dialog.voice_status.text())
+            self.assertIn("checksum mismatch", dialog.voice_status.toPlainText())
             self.assertEqual(dialog.voice_manifest.selectedText(), str(manifest))
             self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
 
@@ -635,7 +648,7 @@ class AssetManagerDialogTest(unittest.TestCase):
                     self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
                     self.assertIs(dialog.settings(), settings)
                     pool.run_next()
-                self.assertIn("invalid", dialog.voice_status.text())
+                self.assertIn("invalid", dialog.voice_status.toPlainText())
                 self.assertFalse(dialog.manifest_runner.active)
                 self.assertFalse(dialog._accept_after_manifest_validation)
                 self.assertIsNone(dialog._validated_manifest_identity)
@@ -662,7 +675,7 @@ class AssetManagerDialogTest(unittest.TestCase):
             voice_manager=Mock(),
         )
 
-        self.assertIn("Files not checked", dialog.voice_status.text())
+        self.assertIn("Files not checked", dialog.voice_status.toPlainText())
         font = dialog.font()
         font.setPointSize(font.pointSize() + 4)
         dialog.setFont(font)
@@ -677,6 +690,51 @@ class AssetManagerDialogTest(unittest.TestCase):
             .font()
             .pointSize(),
         )
+
+    def test_long_statuses_are_plain_copyable_and_do_not_expand_the_window(self):
+        model_manager = Mock()
+        model_manager.model_path.return_value = Path("managed/model")
+        dialog = self.create_dialog(
+            AppSettings(speech_backend="coqui-xtts", voice_manifest="voices.json"),
+            model_manager=model_manager,
+            voice_manager=Mock(),
+        )
+        font = dialog.font()
+        font.setPointSize(18)
+        dialog.setFont(font)
+        dialog.resize(680, 440)
+        dialog.show()
+        self.application.processEvents()
+        message = "<Missing reference> " + "long-path/" * 80 + "voice.wav"
+        for tab, status in ((0, dialog.model_status), (1, dialog.voice_status)):
+            with self.subTest(tab=tab):
+                dialog.tabs.setCurrentIndex(tab)
+                status.setPlainText(message)
+                self.application.processEvents()
+                self.assertEqual(status.toPlainText(), message)
+                self.assertEqual(status.font().pointSize(), 18)
+                self.assertTrue(status.isReadOnly())
+                self.assertGreater(status.verticalScrollBar().maximum(), 0)
+                status.setFocus()
+                QTest.keyClick(status, Qt.Key.Key_PageDown)
+                self.assertGreater(status.verticalScrollBar().value(), 0)
+                QTest.keySequence(status, QKeySequence.StandardKey.SelectAll)
+                QTest.keySequence(status, QKeySequence.StandardKey.Copy)
+                self.assertEqual(self.application.clipboard().text(), message)
+                self.assertEqual(dialog.size().toTuple(), (680, 440))
+                page = dialog.tabs.currentWidget()
+                self.assertIsInstance(page, QScrollArea)
+                self.assertTrue(dialog.buttons.isVisible())
+
+        dialog.tabs.setCurrentIndex(0)
+        dialog.resize(700, 320)
+        self.application.processEvents()
+        viewport = dialog.models_tab.viewport()
+        for action in (dialog.verify_button, dialog.download_button):
+            visible_rect = action.rect().translated(
+                action.mapTo(viewport, action.rect().topLeft())
+            )
+            self.assertTrue(viewport.rect().contains(visible_rect))
 
     def test_manifest_controls_follow_operation_state_and_empty_is_valid(self):
         model_manager = Mock()
@@ -767,8 +825,11 @@ class AssetManagerDialogTest(unittest.TestCase):
                 dialog._validated_manifest_identity,
                 (str(second.resolve()), sha256_file(second)),
             )
-            self.assertIn(second.name, dialog.voice_status.text())
-            self.assertNotIn(first.name, dialog.voice_status.text())
+            self.assertEqual(dialog.voice_manifest.text(), str(second))
+            self.assertIn(
+                "passed checksum validation", dialog.voice_status.toPlainText()
+            )
+            self.assertNotIn(first.name, dialog.voice_status.toPlainText())
 
     def test_save_waits_for_exact_manifest_validation_then_accepts(self):
         with TemporaryDirectory() as directory:
@@ -889,7 +950,7 @@ class AssetManagerDialogTest(unittest.TestCase):
                 else:
                     voice_manager.validate.assert_not_called()
                 expected_status = "unavailable" if phase == "completion" else "invalid"
-                self.assertIn(expected_status, dialog.voice_status.text())
+                self.assertIn(expected_status, dialog.voice_status.toPlainText())
                 self.assertIsNone(dialog._validated_manifest_identity)
                 self.assertFalse(dialog._accept_after_manifest_validation)
                 self.assertFalse(dialog.manifest_runner.active)
@@ -940,8 +1001,8 @@ class AssetManagerDialogTest(unittest.TestCase):
 
                 dialog._manifest_validation_finished(result, None)
 
-                self.assertIn(expected_status, dialog.voice_status.text())
-                self.assertIn("Verify files", dialog.voice_status.text())
+                self.assertIn(expected_status, dialog.voice_status.toPlainText())
+                self.assertIn("Verify files", dialog.voice_status.toPlainText())
                 self.assertIsNone(dialog._validated_manifest_identity)
                 self.assertFalse(dialog._accept_after_manifest_validation)
                 self.assertTrue(dialog.validate_manifest_button.isEnabled())

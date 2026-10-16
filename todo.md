@@ -482,7 +482,11 @@ Planned implementation order after approval:
       choose, checksum-validate and save an existing voice manifest; import a
       manifest and one character voice; verify, download, cancel and retry an
       XTTS model. Confirm changed model selections never inherit another
-      model's ready state and that failure text stays readable.
+      model's ready state and that failure text stays readable. Verify complete
+      error/path copying, unsaved selection cancellation, imported-file permanence
+      after Cancel, and close during import. Automated Qt checks and native macOS
+      library validation cover these states without qualifying assistive technology
+      or real network transfers.
 - [ ] **Validate game profiles on real macOS and Windows hosts:** at 200% text
       scaling, reach the full selected-settings summary by keyboard scrolling,
       distinguish same-prefix profile names in the open selector, and confirm

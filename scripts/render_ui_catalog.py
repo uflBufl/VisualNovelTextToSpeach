@@ -1235,6 +1235,24 @@ def _render_stories(
             # Catalog snapshots intentionally retain a pending operation without dispatch.
             pass
 
+    class CapturedPool(QThreadPool):
+        def __init__(self) -> None:
+            super().__init__()
+            self.tasks: list[QRunnable | Callable[..., object]] = []
+
+        def start(
+            self, task: QRunnable | Callable[..., object], /, priority: int | None = 0
+        ) -> None:
+            self.tasks.append(task)
+
+        def finish_next(self) -> None:
+            task = self.tasks.pop(0)
+            if isinstance(task, QRunnable):
+                task.run()
+            else:
+                task()
+            app.processEvents()
+
     def readiness(state: str) -> ReadinessDialog:
         dialog = ReadinessDialog(
             settings.updated(ocr_language="jpn")
@@ -1395,10 +1413,12 @@ def _render_stories(
         model_manager.model_path.return_value = Path(
             "/Users/Player/Library/Application Support/VNTTS/models/xtts_v2"
         )
-        model_state = state.startswith("model-") or state == "compact-model"
+        voice_manager = Mock()
+        model_state = state.startswith("model-") or state.startswith("compact-model")
         manifest = (
             None if state == "voices-empty" else "/Users/Player/voices/manifest.json"
         )
+        pool = CapturedPool()
         dialog = AssetManagerDialog(
             settings.updated(
                 speech_backend="coqui-xtts" if model_state else "moss-tts",
@@ -1406,11 +1426,12 @@ def _render_stories(
                 xtts_terms_accepted=True,
             ),
             model_manager=model_manager,
-            voice_manager=Mock(),
+            voice_manager=voice_manager,
+            thread_pool=pool,
         )
         if state == "voices-validation":
             dialog._set_manifest_validation_pending(True)
-            dialog.voice_status.setText(
+            dialog.voice_status.setPlainText(
                 "Checksum-validating the selected manifest and voice files..."
             )
         elif state == "voices-error":
@@ -1420,18 +1441,76 @@ def _render_stories(
                     "Voice reference checksum failed: voices/Centurion/line-03.wav"
                 ),
             )
+        elif state in {
+            "voice-importing",
+            "voice-import-failure",
+            "voice-import-success",
+            "voice-import-close-pending",
+        }:
+            voice_manager.import_voice.return_value = Path(
+                "/Users/Player/VNTTS/voices/manifest.json"
+            )
+            if state == "voice-import-failure":
+                voice_manager.import_voice.side_effect = OSError(
+                    "Voice reference checksum failed: voices/Centurion/line-03.wav"
+                )
+            dialog._voice_import_draft = (
+                "Centurion",
+                ["/Users/Player/voices/Centurion/line-03.wav"],
+                [],
+            )
+            dialog._start_voice_import(
+                voice_manager.import_voice,
+                "Centurion",
+                ("/Users/Player/voices/Centurion/line-03.wav",),
+                aliases=(),
+                message="Imported 1 reference for Centurion",
+                from_audio=True,
+            )
+            if state == "voice-import-close-pending":
+                from PySide6.QtGui import QCloseEvent
+
+                dialog.closeEvent(QCloseEvent())
+            elif state != "voice-importing":
+                pool.finish_next()
         elif state == "model-verified":
             dialog.set_operation_running(True, "verify")
-            dialog.model_finished(
-                True,
-                "Model verified and ready at /Users/Player/Library/VNTTS/models/xtts_v2",
+            dialog._model_operation_finished(
+                Path("/Users/Player/Library/VNTTS/models/xtts_v2"), None
             )
+        elif state == "model-verifying":
+            dialog.verify_model()
         elif state == "model-download":
             dialog.set_operation_running(True, "download")
             dialog.update_progress(45, "Downloading selected speech model: 45%")
+        elif state == "model-cancel-pending":
+            dialog.download_model()
+            dialog.cancel_download()
         elif state == "model-failure":
             dialog.set_operation_running(True, "download")
             dialog.model_finished(False, "Model download failed: Network unavailable")
+        elif state in {"compact-voices-long-error", "compact-model-long-error"}:
+            dialog.resize(700, 320)
+            font = dialog.font()
+            font.setPointSize(font.pointSize() + 4)
+            dialog.setFont(font)
+            long_voice_error = (
+                "Voice reference checksum failed for "
+                + "/".join(["voices", "The Northern Library and Traveling Company"] * 8)
+                + "/chapter-seven-character-reference.wav. Choose another manifest, "
+                "then verify every referenced file before saving."
+            )
+            if state == "compact-voices-long-error":
+                dialog._manifest_validation_finished(None, ValueError(long_voice_error))
+            else:
+                dialog.set_operation_running(True, "verify")
+                dialog.model_finished(
+                    False,
+                    "Verification failed: Model checksum failed: "
+                    "tts_models/multilingual/multi-dataset/xtts_v2/"
+                    + "model-layer/" * 7
+                    + "model.pth",
+                )
         elif state in {"compact-voices", "compact-model"}:
             dialog.resize(700, 320)
             font = dialog.font()
@@ -2756,12 +2835,32 @@ def _render_stories(
         "asset-manager.voices-manifest": lambda: asset_manager("voices-manifest"),
         "asset-manager.voices-validation": lambda: asset_manager("voices-validation"),
         "asset-manager.voices-error": lambda: asset_manager("voices-error"),
+        "asset-manager.voice-importing": lambda: asset_manager("voice-importing"),
+        "asset-manager.voice-import-failure": lambda: asset_manager(
+            "voice-import-failure"
+        ),
+        "asset-manager.voice-import-success": lambda: asset_manager(
+            "voice-import-success"
+        ),
+        "asset-manager.voice-import-close-pending": lambda: asset_manager(
+            "voice-import-close-pending"
+        ),
         "asset-manager.model-unchecked": lambda: asset_manager("model-unchecked"),
         "asset-manager.model-verified": lambda: asset_manager("model-verified"),
+        "asset-manager.model-verifying": lambda: asset_manager("model-verifying"),
         "asset-manager.model-download": lambda: asset_manager("model-download"),
+        "asset-manager.model-cancel-pending": lambda: asset_manager(
+            "model-cancel-pending"
+        ),
         "asset-manager.model-failure": lambda: asset_manager("model-failure"),
         "asset-manager.compact-voices": lambda: asset_manager("compact-voices"),
         "asset-manager.compact-model": lambda: asset_manager("compact-model"),
+        "asset-manager.compact-voices-long-error": lambda: asset_manager(
+            "compact-voices-long-error"
+        ),
+        "asset-manager.compact-model-long-error": lambda: asset_manager(
+            "compact-model-long-error"
+        ),
         "game-profiles.empty": lambda: game_profiles("empty"),
         "game-profiles.active": lambda: game_profiles("active"),
         "game-profiles.other-selected": lambda: game_profiles("other-selected"),
