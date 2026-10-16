@@ -259,6 +259,16 @@ def _prepare_catalog_screenshot(
         widget.content_scroll.ensureWidgetVisible(widget.more_voice_actions)
         app.processEvents()
     if story_id in {
+        "diagnostics.technical",
+        "diagnostics.missing-images",
+        "diagnostics.compact-technical",
+    }:
+        from vntts.diagnostics_ui import DiagnosticsDialog
+
+        assert isinstance(widget, DiagnosticsDialog)
+        widget.body_scroll.ensureWidgetVisible(widget.speaker_processed_preview)
+        app.processEvents()
+    if story_id in {
         "offline-preparation.voice-overview-many-compact-table",
         "offline-preparation.voice-overview-shared-character-compact-table",
         "offline-preparation.voice-overview-compact-long-narrator-table",
@@ -784,6 +794,8 @@ def _render_stories(
 
     from PIL import Image, ImageDraw, ImageFont
     from PySide6.QtCore import (
+        QCoreApplication,
+        QEvent,
         QPoint,
         QRunnable,
         QSettings,
@@ -2162,50 +2174,93 @@ def _render_stories(
                 fill="white",
                 font=ImageFont.load_default(size=25),
             )
-            dialog.set_snapshot(
-                DiagnosticSnapshot(
-                    capture,
-                    character="Believer IV",
-                    text="They at least paid with their lives. What about you?",
-                    confidence=91.2,
-                    preprocessing_profile="dark-background",
-                    voice="Believer IV; voice ID: game-believer-iv",
-                    capture_ms=12.3,
-                    ocr_ms=45.6,
-                    synthesis_ms=789.0,
-                    playback_ms=321.0,
-                    capture_interval_ms=600.0,
-                    game_focused=True,
-                    corrections=("BeIiever -> Believer",),
-                    speech_queue_depth=1,
-                    max_speech_queue_depth=3,
-                    last_first_audio_ms=427.0,
-                    captured_at=datetime(2026, 9, 22, 12, 34, tzinfo=timezone.utc),
-                )
+            processed_dialogue = Image.new("RGB", (420, 96), "#101216")
+            ImageDraw.Draw(processed_dialogue).text(
+                (12, 16),
+                "THEY AT LEAST PAID WITH THEIR\nLIVES. WHAT ABOUT YOU?",
+                fill="#f1f1f1",
+                font=ImageFont.load_default(size=20),
             )
-        if state == "technical":
+            processed_speaker = Image.new("RGB", (280, 64), "#101216")
+            ImageDraw.Draw(processed_speaker).text(
+                (12, 20),
+                "BELIEVER IV",
+                fill="#f1f1f1",
+                font=ImageFont.load_default(size=20),
+            )
+            snapshot = DiagnosticSnapshot(
+                capture,
+                character="Believer IV",
+                text="They at least paid with their lives. What about you?",
+                confidence=91.2,
+                dialogue_confidence=91.2,
+                speaker_confidence=87.4,
+                speaker_note="Speaker from prepared story; raw OCR: Beliver IV",
+                preprocessing_profile="dark-background",
+                voice="Believer IV; voice ID: game-believer-iv",
+                capture_ms=12.3,
+                ocr_ms=45.6,
+                synthesis_ms=789.0,
+                playback_ms=321.0,
+                capture_interval_ms=600.0,
+                game_focused=True,
+                corrections=("Beliver -> Believer",),
+                speech_queue_depth=1,
+                max_speech_queue_depth=3,
+                last_first_audio_ms=427.0,
+                captured_at=datetime(2026, 9, 22, 12, 34, tzinfo=timezone.utc),
+                processed_image=processed_dialogue,
+                speaker_image=processed_speaker,
+            )
+            dialog.set_snapshot(snapshot)
+            if state == "missing-images":
+                dialog.set_snapshot(
+                    replace(snapshot, processed_image=None, speaker_image=None)
+                )
+        if state in {"technical", "missing-images", "compact-technical"}:
             dialog.technical_toggle.setChecked(True)
         if state == "refreshing":
             dialog.request_refresh()
-        elif state == "warning":
+        elif state in {"warning", "long-warning", "compact"}:
             dialog.set_warning(
-                "The selected game window is unavailable. Restore the game or choose another window.",
-                remediation=("settings", "Open Settings"),
+                (
+                    "The OCR regions no longer match this game window after its layout changed. "
+                    "Open Settings, select the current game window, then choose Change regions "
+                    "in Live diagnostics and draw the speaker and dialogue areas again. "
+                    "Refresh after saving both regions."
+                    if state == "long-warning"
+                    else "Screen Recording permission is missing. Allow VNTTS in macOS System Settings, then reopen the app."
+                    if state == "compact"
+                    else "The selected game window is unavailable. Restore the game or choose another window."
+                ),
+                remediation=(
+                    "macos-permissions",
+                    "Open macOS permissions",
+                )
+                if state == "compact"
+                else ("settings", "Open Settings"),
             )
         elif state == "timeout":
             dialog.request_refresh()
             dialog._refresh_timed_out(dialog.refresh_generation)
-        elif state == "compact":
-            dialog.set_warning(
-                "Screen Recording permission is missing. Allow VNTTS in macOS System Settings, then reopen the app.",
-                remediation=("macos-permissions", "Open macOS permissions"),
-            )
+        if state in {"compact", "compact-technical"}:
             font = dialog.font()
             font.setPointSize(max(font.pointSize() + 3, 16))
             dialog.setFont(font)
             dialog.warning.setFont(font)
             dialog.resize(620, 460)
         return dialog
+
+    def diagnostics_enlarged(state: str) -> QDialog:
+        parent = diagnostics("snapshot")
+        enlarged = parent._capture_dialog(
+            processed=state == "enlarged-dialogue", speaker=state == "enlarged-speaker"
+        )
+        assert enlarged is not None
+        enlarged.setParent(None)
+        parent.deleteLater()
+        QCoreApplication.sendPostedEvents(parent, QEvent.Type.DeferredDelete)
+        return enlarged
 
     def support_center(state: str) -> SupportCenterDialog:
         events = _catalog_support_log(state)
@@ -2951,11 +3006,20 @@ def _render_stories(
         "dialogue-history.compact-failure": lambda: dialogue_history("compact-failure"),
         "diagnostics.empty": lambda: diagnostics("empty"),
         "diagnostics.snapshot": lambda: diagnostics("snapshot"),
+        "diagnostics.missing-images": lambda: diagnostics("missing-images"),
         "diagnostics.technical": lambda: diagnostics("technical"),
         "diagnostics.refreshing": lambda: diagnostics("refreshing"),
         "diagnostics.warning": lambda: diagnostics("warning"),
+        "diagnostics.long-warning": lambda: diagnostics("long-warning"),
         "diagnostics.timeout": lambda: diagnostics("timeout"),
         "diagnostics.compact": lambda: diagnostics("compact"),
+        "diagnostics.compact-technical": lambda: diagnostics("compact-technical"),
+        "diagnostics.enlarged-dialogue": lambda: diagnostics_enlarged(
+            "enlarged-dialogue"
+        ),
+        "diagnostics.enlarged-speaker": lambda: diagnostics_enlarged(
+            "enlarged-speaker"
+        ),
         "support-center.empty": lambda: support_center("empty"),
         "support-center.events": lambda: support_center("events"),
         "support-center.new-events": lambda: support_center("new-events"),

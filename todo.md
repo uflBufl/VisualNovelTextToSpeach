@@ -516,10 +516,14 @@ Planned implementation order after approval:
       text scaling. Confirm a backend without Stop keeps the window open until
       speech finishes.
 - [ ] **Validate diagnostics and support on real macOS and Windows hosts:** at
-      200% text scaling, inspect and enlarge a current capture with both scroll
-      axes, trigger permission/window warnings and a timeout, and verify stale
-      data is dated while Refresh and its remedy stay keyboard/screen-reader
-      reachable. Browse a growing log without losing selection, export and
+      200% text scaling, inspect the capture summary, expand separate speaker and
+      dialogue OCR images/confidence, and enlarge each image with both scroll
+      axes. Trigger permission/window warnings and a timeout; verify stale data
+      stays dated, full warnings can be scrolled/copied, and Refresh and its remedy
+      remain keyboard/screen-reader reachable. From one successful native capture,
+      confirm the original, speaker OCR and dialogue OCR enlargements belong to
+      that same snapshot, then retry after timeout and restored permissions.
+      Browse a growing log without losing selection, export and
       inspect a support archive for screenshots/dialogue/audio/secrets, then
       retry after a read-only destination. Retain screenshots and archive inventory.
 - [ ] **Validate the authoring workbench on real macOS and Windows hosts:** at

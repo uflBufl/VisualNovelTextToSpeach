@@ -440,12 +440,17 @@
       "contracts": ["support-boundary", "single-mission"],
       "stories": [
         {"id": "diagnostics.empty", "title": "No captured snapshot", "state": "Inspection has not received a dialogue image yet"},
-        {"id": "diagnostics.snapshot", "title": "Captured dialogue evidence", "state": "Image, OCR output, voice and timing evidence are available"},
-        {"id": "diagnostics.technical", "title": "Capture and timing details", "state": "Advanced timing and capture fields remain available on request"},
+        {"id": "diagnostics.snapshot", "title": "Captured dialogue evidence", "state": "Captured game image and recognized dialogue remain in the summary; OCR images and separate confidence values are available on request"},
+        {"id": "diagnostics.missing-images", "title": "Processed OCR images unavailable", "state": "A refreshed snapshot without processed images clears stale previews and explains that they are unavailable"},
+        {"id": "diagnostics.technical", "title": "OCR images and capture details", "state": "Processed speaker and dialogue images, separate confidence values and timing details are available on request"},
         {"id": "diagnostics.refreshing", "title": "Refreshing capture", "state": "A new snapshot is pending and refresh cannot be triggered twice"},
         {"id": "diagnostics.warning", "title": "Capture warning", "state": "Specific recovery action is paired with a permission or window warning"},
+        {"id": "diagnostics.long-warning", "title": "Long region warning", "state": "A multi-step OCR region warning remains readable and copyable in its bounded field"},
         {"id": "diagnostics.timeout", "title": "Refresh timed out", "state": "Previous evidence remains visible and a retry is available"},
-        {"id": "diagnostics.compact", "title": "Compact diagnostics", "state": "Latest evidence and recovery remain reachable with enlarged text"}
+        {"id": "diagnostics.compact", "title": "Compact diagnostics with warning", "state": "Captured evidence and permission recovery remain readable at enlarged text in a narrow window"},
+        {"id": "diagnostics.compact-technical", "title": "Compact OCR details", "state": "The technical disclosure opens to processed images and timing fields at enlarged text in a narrow window"},
+        {"id": "diagnostics.enlarged-dialogue", "title": "Enlarged dialogue OCR image", "state": "The processed dialogue image can be inspected at larger size"},
+        {"id": "diagnostics.enlarged-speaker", "title": "Enlarged speaker OCR image", "state": "The processed speaker image can be inspected at larger size"}
       ]
     },
     {

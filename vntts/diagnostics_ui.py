@@ -1,5 +1,5 @@
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QPixmap, QResizeEvent
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QColor, QPalette, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -55,18 +56,27 @@ class DiagnosticsDialog(QDialog):
             max_height=100,
         )
         self.speaker_preview = self.speaker_processed_preview
-        self.enlarge_button = QPushButton("Enlarge capture")
+        self.enlarge_button = QPushButton("Enlarge")
+        self.enlarge_button.setAccessibleName("Enlarge captured dialogue region")
         self.enlarge_button.setEnabled(False)
         self.enlarge_button.clicked.connect(self.enlarge_capture)
-        self.enlarge_processed_button = QPushButton("Enlarge processed image")
+        self.enlarge_processed_button = QPushButton("Enlarge")
+        self.enlarge_processed_button.setAccessibleName(
+            "Enlarge processed dialogue OCR image"
+        )
         self.enlarge_processed_button.setEnabled(False)
         self.enlarge_processed_button.clicked.connect(self.enlarge_processed_image)
-        self.enlarge_speaker_button = QPushButton("Enlarge speaker image")
+        self.enlarge_speaker_button = QPushButton("Enlarge")
+        self.enlarge_speaker_button.setAccessibleName(
+            "Enlarge processed speaker OCR image"
+        )
         self.enlarge_speaker_button.setEnabled(False)
         self.enlarge_speaker_button.clicked.connect(self.enlarge_speaker_image)
         self.enlarge_speaker_processed_button = self.enlarge_speaker_button
-        self.calibrate_button = QPushButton("Change capture region...")
-        self.calibrate_button.setAccessibleName("Change captured dialogue region")
+        self.calibrate_button = QPushButton("Change regions...")
+        self.calibrate_button.setAccessibleName(
+            "Change speaker and dialogue capture regions"
+        )
         self.calibrate_button.clicked.connect(self.calibration_requested.emit)
 
         self.speaker = QLabel("-")
@@ -87,43 +97,38 @@ class DiagnosticsDialog(QDialog):
         self.playback_latency = QLabel("-")
         self.capture_interval = QLabel("-")
         self.first_audio = QLabel("-")
-        self.queue_depth = QLabel("0")
+        self.queue_depth = QLabel("-")
         self.game_focus = QLabel("-")
-        self.corrections = QLabel("None")
+        self.corrections = QLabel("-")
         self.corrections.setWordWrap(True)
         for label in (
             self.speaker,
             self.speaker_confidence,
             self.text,
             self.voice,
+            self.preprocessing,
             self.corrections,
         ):
             label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setWordWrap(True)
 
-        technical_details = QFormLayout()
-        technical_details.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        technical_details.addRow("Preprocessing", self.preprocessing)
-        technical_details.addRow("Capture latency", self.capture_latency)
-        technical_details.addRow("OCR latency", self.ocr_latency)
-        technical_details.addRow("Synthesis latency", self.synthesis_latency)
-        technical_details.addRow("Playback latency", self.playback_latency)
-        technical_details.addRow("Capture interval", self.capture_interval)
-        technical_details.addRow("First audio", self.first_audio)
-        technical_details.addRow("Speech queue", self.queue_depth)
-        technical_details.addRow("Game focused", self.game_focus)
         self.technical_panel = QWidget()
-        self.technical_panel.setLayout(technical_details)
         self.technical_panel.hide()
-        self.technical_toggle = QCheckBox("Show capture and timing details")
+        self.technical_toggle = QCheckBox("Show OCR images and timing details")
         self.technical_toggle.toggled.connect(self.technical_panel.setVisible)
-
-        self.warning = QLabel()
-        self.warning.setTextFormat(Qt.TextFormat.PlainText)
-        self.warning.setWordWrap(True)
-        self.warning.setStyleSheet(
-            "QLabel { color: #8a3b12; background: #fff1df; padding: 8px; "
-            "border: 1px solid #e3b37d; }"
+        self.technical_toggle.toggled.connect(
+            lambda: QTimer.singleShot(0, self, self._scale_preview)
         )
+
+        self.warning = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
+        self.warning.setAccessibleName("Diagnostics warning")
+        palette = self.warning.palette()
+        palette.setColor(QPalette.ColorRole.Base, QColor("#fff1df"))
+        palette.setColor(QPalette.ColorRole.Text, QColor("#8a3b12"))
+        self.warning.setPalette(palette)
+        self.warning.document().setDocumentMargin(8)
+        self.warning.setFixedHeight(self.warning.fontMetrics().lineSpacing() * 3 + 20)
+        self.warning.installEventFilter(self)
         self.warning.hide()
         self.warning_action = QPushButton()
         self.warning_action.setAccessibleName("Resolve diagnostics warning")
@@ -143,19 +148,26 @@ class DiagnosticsDialog(QDialog):
         controls.addWidget(self.refresh_status, 1)
         controls.addStretch()
         controls.addWidget(self.refresh_button)
-        self.copy_error_button = copy_text_button("Copy warning", self.warning.text)
+        self.copy_error_button = copy_text_button(
+            "Copy warning", self.warning.toPlainText
+        )
         self.copy_error_button.hide()
-        controls.addWidget(self.copy_error_button)
+        warning_actions = QHBoxLayout()
+        warning_actions.addStretch()
+        warning_actions.addWidget(self.copy_error_button)
+        warning_actions.addWidget(self.warning_action)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self._create_body())
+        self.body_scroll = QScrollArea()
+        self.body_scroll.setWidgetResizable(True)
+        self.body_scroll.setWidget(self._create_body())
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
         layout.addWidget(self.warning)
-        layout.addWidget(self.warning_action, 0, Qt.AlignmentFlag.AlignRight)
-        layout.addWidget(scroll, 1)
+        layout.addLayout(warning_actions)
+        layout.addWidget(self.body_scroll, 1)
         layout.addLayout(controls)
         layout.addWidget(buttons)
         make_text_copyable(self)
@@ -165,55 +177,74 @@ class DiagnosticsDialog(QDialog):
         self.speaker_note.setTextFormat(Qt.TextFormat.PlainText)
         self.speaker_note.setWordWrap(True)
         self.speaker_note.hide()
-        speaker_details = QFormLayout()
-        speaker_details.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        speaker_details.addRow("Speaker", self.speaker)
-        speaker_details.addRow("Speaker OCR confidence", self.speaker_confidence)
-        dialogue_details = QFormLayout()
-        dialogue_details.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        dialogue_details.addRow("Recognized text", self.text)
-        dialogue_details.addRow("Dialogue OCR confidence", self.dialogue_confidence)
-        shared_summary = QFormLayout()
-        shared_summary.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        shared_summary.addRow("Selected voice", self.voice)
-        shared_summary.addRow("OCR corrections", self.corrections)
+        summary = QFormLayout()
+        summary.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        summary.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        summary.addRow("Speaker", self.speaker)
+        summary.addRow("Recognized text", self.text)
+        summary.addRow("Selected voice", self.voice)
+        summary.addRow("OCR corrections", self.corrections)
 
         capture_header = QHBoxLayout()
-        capture_header.addWidget(QLabel("Captured dialogue region"))
+        capture_header.addWidget(QLabel("Captured image"))
         capture_header.addStretch()
         capture_header.addWidget(self.calibrate_button)
         capture_header.addWidget(self.enlarge_button)
         processed_header = QHBoxLayout()
-        processed_header.addWidget(QLabel("Processed dialogue image used by OCR"))
+        processed_header.addWidget(QLabel("Dialogue OCR image"))
         processed_header.addStretch()
         processed_header.addWidget(self.enlarge_processed_button)
         speaker_processed_header = QHBoxLayout()
-        speaker_processed_header.addWidget(
-            QLabel("Processed image used for speaker OCR")
-        )
+        speaker_processed_header.addWidget(QLabel("Speaker OCR image"))
         speaker_processed_header.addStretch()
         speaker_processed_header.addWidget(self.enlarge_speaker_button)
-        processed_help = QLabel(
-            "Shows the selected OCR attempt after preprocessing and any dialogue crop."
+        self.processed_preview.setToolTip(
+            "The selected OCR attempt after preprocessing and any dialogue crop."
         )
-        processed_help.setWordWrap(True)
+        ocr_confidence = QFormLayout()
+        ocr_confidence.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        ocr_confidence.addRow("Speaker OCR confidence", self.speaker_confidence)
+        ocr_confidence.addRow("Dialogue OCR confidence", self.dialogue_confidence)
+        technical_details = QFormLayout()
+        technical_details.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        technical_details.addRow("Preprocessing", self.preprocessing)
+        technical_details.addRow("Capture latency", self.capture_latency)
+        technical_details.addRow("OCR latency", self.ocr_latency)
+        technical_details.addRow("Synthesis latency", self.synthesis_latency)
+        technical_details.addRow("Playback latency", self.playback_latency)
+        technical_details.addRow("Capture interval", self.capture_interval)
+        technical_details.addRow("First audio", self.first_audio)
+        technical_details.addRow("Speech queue", self.queue_depth)
+        technical_details.addRow("Game focused", self.game_focus)
+        technical = QVBoxLayout(self.technical_panel)
+        technical.setContentsMargins(0, 0, 0, 0)
+        technical.addLayout(speaker_processed_header)
+        technical.addWidget(self.speaker_processed_preview)
+        technical.addLayout(processed_header)
+        technical.addWidget(self.processed_preview)
+        technical.addLayout(ocr_confidence)
+        technical.addLayout(technical_details)
         body = QWidget()
         body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(12, 12, 12, 12)
+        body_layout.setSpacing(10)
         body_layout.addLayout(capture_header)
         body_layout.addWidget(self.preview)
-        body_layout.addLayout(speaker_processed_header)
-        body_layout.addWidget(self.speaker_processed_preview)
-        body_layout.addLayout(speaker_details)
+        body_layout.addLayout(summary)
         body_layout.addWidget(self.speaker_note)
-        body_layout.addLayout(processed_header)
-        body_layout.addWidget(self.processed_preview)
-        body_layout.addWidget(processed_help)
-        body_layout.addLayout(dialogue_details)
-        body_layout.addLayout(shared_summary)
         body_layout.addWidget(self.technical_toggle)
         body_layout.addWidget(self.technical_panel)
         body_layout.addStretch()
         return body
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.warning and event.type() == QEvent.Type.FontChange:
+            self.warning.setFixedHeight(
+                self.warning.fontMetrics().lineSpacing() * 3 + 20
+            )
+        return super().eventFilter(watched, event)
 
     @staticmethod
     def _image_preview(
@@ -224,20 +255,23 @@ class DiagnosticsDialog(QDialog):
         preview.setMinimumHeight(min_height)
         preview.setMaximumHeight(max_height)
         preview.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        preview.setStyleSheet(
-            "QLabel { background: #202124; color: #d0d0d0; border: 1px solid #555; }"
-        )
+        preview.setWordWrap(True)
+        palette = preview.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor("#202124"))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor("#d0d0d0"))
+        preview.setPalette(palette)
+        preview.setAutoFillBackground(True)
         return preview
 
     def set_calibration_pending(self, pending: bool) -> None:
         self.calibrate_button.setEnabled(not pending)
         self.calibrate_button.setText(
-            "Stopping reading..." if pending else "Change capture region..."
+            "Stopping reading..." if pending else "Change regions..."
         )
         self.calibrate_button.setAccessibleName(
             "Stopping reading before capture calibration"
             if pending
-            else "Change captured dialogue region"
+            else "Change speaker and dialogue capture regions"
         )
 
     def resizeEvent(self, event: QResizeEvent) -> None:
@@ -247,6 +281,7 @@ class DiagnosticsDialog(QDialog):
     def request_refresh(self) -> None:
         if self.refresh_in_flight:
             return
+        self.set_warning("")
         self.refresh_in_flight = True
         self.refresh_generation += 1
         generation = self.refresh_generation
@@ -391,16 +426,22 @@ class DiagnosticsDialog(QDialog):
     def set_warning(
         self, message: str, *, remediation: tuple[str, str] | None = None
     ) -> None:
-        if self.refresh_in_flight:
-            self._finish_refresh(
-                "Refresh failed. Resolve the warning above, then select Refresh now."
-            )
-        if message and self.last_capture_time:
+        was_refreshing = self.refresh_in_flight
+        if was_refreshing:
+            self._finish_refresh("Refresh failed.")
+        if message:
             self.refresh_status.setText(
-                f"Showing previous capture from {self.last_capture_time}. "
-                "Resolve the warning above, then refresh."
+                f"Showing previous capture from {self.last_capture_time}."
+                if self.last_capture_time
+                else ("Refresh failed." if was_refreshing else "No capture yet.")
             )
-        self.warning.setText(message)
+        elif self.warning.toPlainText():
+            self.refresh_status.setText(
+                f"Showing capture from {self.last_capture_time}."
+                if self.last_capture_time
+                else "No capture yet. Select Refresh now to inspect the current dialogue."
+            )
+        self.warning.setPlainText(message)
         self.warning.setVisible(bool(message))
         self.copy_error_button.setVisible(bool(message))
         self.warning_remediation = remediation[0] if remediation else None

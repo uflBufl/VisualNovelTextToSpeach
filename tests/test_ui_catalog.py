@@ -1,5 +1,6 @@
 import json
 import os
+import struct
 import subprocess
 import sys
 import unittest
@@ -496,6 +497,61 @@ class UiCatalogTest(unittest.TestCase):
                 self.assertGreater(
                     (output / "screenshots" / f"{story['id']}.png").stat().st_size,
                     0,
+                )
+
+    def test_diagnostics_catalog_covers_split_ocr_images_and_recovery(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "catalog"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/render_ui_catalog.py",
+                    "--output",
+                    str(output),
+                    "--surface",
+                    "diagnostics",
+                ],
+                cwd=root,
+                env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            packet = json.loads(
+                (output / "review-packets" / "diagnostics.json").read_text()
+            )
+            self.assertEqual(
+                {story["id"] for story in packet["target"]["stories"]},
+                {
+                    "diagnostics.empty",
+                    "diagnostics.snapshot",
+                    "diagnostics.missing-images",
+                    "diagnostics.technical",
+                    "diagnostics.refreshing",
+                    "diagnostics.warning",
+                    "diagnostics.long-warning",
+                    "diagnostics.timeout",
+                    "diagnostics.compact",
+                    "diagnostics.compact-technical",
+                    "diagnostics.enlarged-dialogue",
+                    "diagnostics.enlarged-speaker",
+                },
+            )
+            for story in packet["target"]["stories"]:
+                self.assertGreater(
+                    (output / "screenshots" / f"{story['id']}.png").stat().st_size,
+                    0,
+                )
+            for story_id in (
+                "diagnostics.compact",
+                "diagnostics.compact-technical",
+            ):
+                screenshot = output / "screenshots" / f"{story_id}.png"
+                self.assertEqual(
+                    struct.unpack(">II", screenshot.read_bytes()[16:24]),
+                    (620, 460),
                 )
 
     def test_game_profile_packet_covers_selection_and_settings_edge_cases(self):

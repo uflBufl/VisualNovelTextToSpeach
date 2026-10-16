@@ -4865,7 +4865,7 @@ class TrayApplicationTest(unittest.TestCase):
 
         dialog = tray_application.diagnostics_dialog
         self.assertEqual(dialog.text.text(), "Earlier captured dialogue")
-        self.assertIn("Screen Recording permission", dialog.warning.text())
+        self.assertIn("Screen Recording permission", dialog.warning.toPlainText())
         self.assertTrue(dialog.warning.isVisible())
         tray_application.shutdown()
 
@@ -5473,8 +5473,8 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(tray.live_stop_runner.active)
         self.assertIsNone(tray._live_stop_generation)
         self.assertTrue(dialog.calibrate_button.isEnabled())
-        self.assertEqual(dialog.calibrate_button.text(), "Change capture region...")
-        self.assertIn("pool unavailable", dialog.warning.text())
+        self.assertEqual(dialog.calibrate_button.text(), "Change regions...")
+        self.assertIn("pool unavailable", dialog.warning.toPlainText())
         self.assertIn("pool unavailable", tray.dashboard.status.text())
 
     def test_diagnostics_region_stop_timeout_allows_retry(self):
@@ -5494,7 +5494,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.wait_until(lambda: not tray.live_stop_runner.active)
 
         self.assertTrue(dialog.calibrate_button.isEnabled())
-        self.assertIn("reader stuck", dialog.warning.text())
+        self.assertIn("reader stuck", dialog.warning.toPlainText())
         tray.shutdown()
 
     def test_diagnostics_can_change_region_and_refresh_after_calibration(self):
@@ -5512,7 +5512,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(dialog.calibrate_button.isVisible())
         self.assertEqual(
             dialog.calibrate_button.accessibleName(),
-            "Change captured dialogue region",
+            "Change speaker and dialogue capture regions",
         )
         overlay = Mock()
         background = object()

@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image  # noqa: E402
 from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtGui import QKeySequence  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QScrollArea  # noqa: E402
 
@@ -288,7 +289,7 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertIsNone(dialog._capture_dialog(processed=True))
         self.assertFalse(dialog.warning.isVisible())
         self.assertFalse(dialog.warning_action.isVisible())
-        self.assertEqual(dialog.warning.text(), "")
+        self.assertEqual(dialog.warning.toPlainText(), "")
         dialog.close()
         dialog.deleteLater()
 
@@ -370,6 +371,103 @@ class DiagnosticsTest(unittest.TestCase):
                 dialog.set_snapshot(DiagnosticSnapshot(None, text="Late"))
                 self.assertFalse(dialog.isVisible())
                 dialog.deleteLater()
+
+    def test_warning_clear_and_retry_do_not_leave_stale_recovery_instructions(self):
+        dialog = DiagnosticsDialog()
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(dialog.close)
+        dialog.set_warning(
+            "Permission missing", remediation=("settings", "Open Settings")
+        )
+        self.assertNotIn("Refresh failed", dialog.refresh_status.text())
+        dialog.set_permission_warnings([])
+        self.assertTrue(dialog.warning.isHidden())
+        self.assertTrue(dialog.copy_error_button.isHidden())
+        self.assertNotIn("warning", dialog.refresh_status.text())
+        dialog.set_snapshot(DiagnosticSnapshot(None, text="Previously recognized"))
+        dialog.set_warning("Window missing", remediation=("settings", "Open Settings"))
+        dialog.request_refresh()
+        self.assertTrue(dialog.refresh_in_flight)
+        self.assertTrue(dialog.warning.isHidden())
+        self.assertTrue(dialog.warning_action.isHidden())
+        self.assertIn("Capturing", dialog.refresh_status.text())
+        self.assertIn("Previous capture", dialog.refresh_status.text())
+        self.assertEqual(dialog.text.text(), "Previously recognized")
+        dialog.set_warning("Capture failed")
+        self.assertFalse(dialog.refresh_in_flight)
+        dialog.set_permission_warnings([])
+        self.assertNotIn("warning", dialog.refresh_status.text())
+        self.assertIn("Showing capture from", dialog.refresh_status.text())
+
+    def test_long_warning_remains_readable_and_copyable_with_larger_text(self):
+        dialog = DiagnosticsDialog()
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(dialog.close)
+        font = dialog.font()
+        font.setPointSize(18)
+        dialog.setFont(font)
+        dialog.resize(620, 460)
+        warning = "<Missing window> Restore the selected game, then try again. " * 30
+        dialog.set_warning(warning, remediation=("settings", "Open Settings"))
+        dialog.show()
+        self.application.processEvents()
+        self.assertEqual(dialog.warning.toPlainText(), warning)
+        self.assertTrue(dialog.warning.isReadOnly())
+        self.assertGreater(dialog.warning.verticalScrollBar().maximum(), 0)
+        dialog.warning.setFocus()
+        QTest.keyClick(dialog.warning, Qt.Key.Key_PageDown)
+        self.assertGreater(dialog.warning.verticalScrollBar().value(), 0)
+        QTest.mouseClick(dialog.copy_error_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(self.application.clipboard().text(), warning)
+        self.assertTrue(
+            dialog.rect().contains(dialog.refresh_button.geometry().center())
+        )
+        self.assertTrue(
+            dialog.rect().contains(dialog.warning_action.geometry().center())
+        )
+
+    def test_result_is_visible_before_optional_ocr_images_and_details_scroll(self):
+        dialog = DiagnosticsDialog()
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(dialog.close)
+        dialog.set_snapshot(
+            DiagnosticSnapshot(
+                Image.new("RGB", (320, 90), "black"),
+                character="Marcus",
+                text="The captured line.",
+                speaker_image=Image.new("L", (1000, 160), "white"),
+                processed_image=Image.new("L", (1000, 200), "gray"),
+            )
+        )
+        dialog.show()
+        self.application.processEvents()
+        self.assertFalse(dialog.technical_panel.isVisible())
+        viewport = dialog.body_scroll.viewport()
+        self.assertTrue(
+            viewport.rect().contains(
+                dialog.text.mapTo(viewport, dialog.text.rect().center())
+            )
+        )
+        dialog.technical_toggle.setFocus()
+        QTest.keyClick(dialog.technical_toggle, Qt.Key.Key_Space)
+        self.application.processEvents()
+        self.assertTrue(dialog.processed_preview.isVisible())
+        for preview in (dialog.speaker_processed_preview, dialog.processed_preview):
+            self.assertLessEqual(preview.pixmap().width(), preview.width())
+            self.assertLessEqual(preview.pixmap().height(), preview.height())
+        self.assertTrue(dialog.enlarge_speaker_button.isEnabled())
+        self.assertGreater(dialog.body_scroll.verticalScrollBar().maximum(), 0)
+        dialog.body_scroll.ensureWidgetVisible(dialog.game_focus)
+        self.assertGreater(dialog.body_scroll.verticalScrollBar().value(), 0)
+        self.assertTrue(
+            viewport.rect().contains(
+                dialog.game_focus.mapTo(viewport, dialog.game_focus.rect().center())
+            )
+        )
+        dialog.text.setFocus()
+        QTest.keySequence(dialog.text, QKeySequence.StandardKey.SelectAll)
+        QTest.keySequence(dialog.text, QKeySequence.StandardKey.Copy)
+        self.assertEqual(self.application.clipboard().text(), "The captured line.")
 
     def test_macos_permission_warnings_explain_both_permissions(self):
         warnings = macos_permission_warnings(
