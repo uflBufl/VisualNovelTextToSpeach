@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -105,6 +106,7 @@ def _apply_reading_capabilities(
     read_button.setEnabled(state.can_read)
     live_button.setEnabled(state.can_toggle_live)
     _set_live_button_presentation(live_button, state.active)
+    live_button.setToolTip("" if state.can_toggle_live else state.reason_for("live"))
     if state.transition is not None:
         live_button.setText(
             "Cancel start" if state.transition == "starting" else "Stopping reading..."
@@ -1041,13 +1043,6 @@ class ControlDashboard(QMainWindow):
         window_problem = "window" in (state.unavailable_reason or "").casefold()
         self._window_problem = window_problem
         self.prepare_reading_button.setText(self._reading_setup_action())
-        _apply_reading_capabilities(
-            state,
-            read_button=self.read_button,
-            live_button=self.live_button,
-        )
-        self.prepare_reading_button.setDefault(not state.ready and not state.active)
-        self.live_button.setDefault(state.ready or state.active)
         self.sequence_resync_button.setEnabled(
             state.ready and self._sequence_controls_available
         )
@@ -1065,6 +1060,13 @@ class ControlDashboard(QMainWindow):
             )
         else:
             self._set_action_reason(self._reading_setup_reason())
+        _apply_reading_capabilities(
+            state,
+            read_button=self.read_button,
+            live_button=self.live_button,
+        )
+        self.prepare_reading_button.setDefault(not state.ready and not state.active)
+        self.live_button.setDefault(state.ready or state.active)
 
     def _reading_setup_action(self) -> str:
         if self._window_problem:
@@ -1181,24 +1183,19 @@ class CompactController(QWidget):
         self.setMinimumWidth(540)
 
     def _build_status_labels(self) -> None:
+        self.message_focus_frame = QFocusFrame(self)
         self.mode = QLabel("Starting")
-        self.mode.setStyleSheet("font-weight: 600;")
+        mode_font = QFont()
+        mode_font.setBold(True)
+        self.mode.setFont(mode_font)
+        self.mode.setAccessibleName("Reading state")
+        self.mode.setContentsMargins(0, 4, 0, 0)
         self.mode.setSizePolicy(
             QSizePolicy.Policy.Fixed,
             QSizePolicy.Policy.Preferred,
         )
-        self.status = QLabel("Initializing...")
-        self.status.setWordWrap(True)
-        self.status.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Preferred,
-        )
-        self.status.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        self.action_reason = QLabel()
-        self.action_reason.setWordWrap(True)
-        self.action_reason.setAccessibleName("Compact control availability")
+        self.status = self._message_field("Latest reading message", "Initializing...")
+        self.action_reason = self._message_field("Compact control availability")
         self.action_reason.setAccessibleDescription(
             "Explains why compact reading controls are available or unavailable"
         )
@@ -1206,23 +1203,40 @@ class CompactController(QWidget):
         self.sequence_recovery.setWordWrap(True)
         self.sequence_recovery.setAccessibleName("Story position recovery")
         self.sequence_recovery.hide()
-        self.speaker = QLabel("Narrator")
-        self.speaker.setMinimumWidth(120)
-        self.speaker.setWordWrap(True)
-        self.speaker.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-        self.speaker.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Preferred,
-        )
-        self.speaker.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
+        self.speaker_label = QLabel("Last speaker:")
+        self.speaker_label.setContentsMargins(0, 4, 0, 0)
+        self.speaker = self._message_field("Last dialogue speaker")
+        self.speaker_label.setBuddy(self.speaker)
+        self.speaker_label.hide()
+        self.speaker.hide()
+
+    def _message_field(self, name: str, text: str = "") -> QPlainTextEdit:
+        field = QPlainTextEdit(text, readOnly=True, tabChangesFocus=True)
+        field.setAccessibleName(name)
+        field.setFrameShape(QFrame.Shape.NoFrame)
+        field.viewport().setAutoFillBackground(False)
+        field.setFixedHeight(field.fontMetrics().lineSpacing() * 2 + 12)
+        field.installEventFilter(self)
+        return field
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            isinstance(watched, QPlainTextEdit)
+            and event.type() == QEvent.Type.FontChange
+        ):
+            watched.setFixedHeight(watched.fontMetrics().lineSpacing() * 2 + 12)
+            QTimer.singleShot(0, self, self._fit_content)
+        if isinstance(watched, QPlainTextEdit):
+            if event.type() == QEvent.Type.FocusIn:
+                self.message_focus_frame.setWidget(watched)
+                self.message_focus_frame.show()
+            elif event.type() == QEvent.Type.FocusOut:
+                self.message_focus_frame.hide()
+        return super().eventFilter(watched, event)
 
     def _build_buttons(self) -> None:
         self.live_button = QPushButton("Start reading")
-        self.read_button = QPushButton("Read")
+        self.read_button = QPushButton("Read once")
         self.sequence_expected_button = QPushButton("Use expected next line")
         self.sequence_expected_button.setVisible(False)
         self.full_button = QPushButton("Full controls")
@@ -1249,31 +1263,32 @@ class CompactController(QWidget):
 
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(4)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(6)
         information = QHBoxLayout()
-        information.setSpacing(8)
-        information.addWidget(self.mode)
-        information.addWidget(self.status, 4)
-        information.addWidget(self.speaker, 2)
+        information.setSpacing(12)
+        information.addWidget(self.mode, 0, Qt.AlignmentFlag.AlignTop)
+        information.addWidget(self.speaker_label, 0, Qt.AlignmentFlag.AlignTop)
+        information.addWidget(self.speaker, 1)
+        information.addStretch()
         primary_controls = QHBoxLayout()
         primary_controls.setSpacing(6)
-        for button in (
-            self.live_button,
-            self.read_button,
-        ):
-            primary_controls.addWidget(button)
+        primary_controls.addWidget(self.live_button)
+        primary_controls.addWidget(self.read_button)
         primary_controls.addStretch(1)
-        secondary_controls = QHBoxLayout()
-        secondary_controls.setSpacing(6)
-        secondary_controls.addWidget(self.sequence_expected_button)
-        secondary_controls.addStretch(1)
-        secondary_controls.addWidget(self.full_button)
+        primary_controls.addWidget(self.full_button)
         layout.addLayout(information)
+        layout.addWidget(self.status)
         layout.addWidget(self.action_reason)
         layout.addWidget(self.sequence_recovery)
         layout.addLayout(primary_controls)
-        layout.addLayout(secondary_controls)
+        layout.addWidget(self.sequence_expected_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.setTabOrder(self.live_button, self.read_button)
+        self.setTabOrder(self.read_button, self.full_button)
+        self.setTabOrder(self.full_button, self.sequence_expected_button)
+        self.setTabOrder(self.sequence_expected_button, self.status)
+        self.setTabOrder(self.status, self.action_reason)
+        self.setTabOrder(self.action_reason, self.speaker)
 
     def set_sequence_status(self, status: LiveSequenceStatus) -> None:
         manual = is_live_sequence_audio_mode(status.mode)
@@ -1294,7 +1309,7 @@ class CompactController(QWidget):
         self.sequence_expected_button.setText(
             "Use expected next line"
             if candidate_count == 1
-            else f"Choose {candidate_count} expected lines..."
+            else f"Choose among {candidate_count} expected lines..."
         )
         self._fit_content()
 
@@ -1304,7 +1319,7 @@ class CompactController(QWidget):
 
     def _finish_show(self, geometry: WindowGeometry | None) -> None:
         configure_floating_window(self)
-        self.adjustSize()
+        self._fit_content()
         screen = None
         if geometry is not None:
             center = QPoint(
@@ -1332,19 +1347,23 @@ class CompactController(QWidget):
         self.raise_()
 
     def set_status(self, message: str) -> None:
-        self.status.setText(message)
-        self.status.setStyleSheet("")
-        self.setToolTip(message)
+        self.status.setPlainText(message)
+        self.status.setFont(QFont())
         self._fit_content()
 
     def set_warning(self, message: str) -> None:
-        self.status.setText(message)
-        self.status.setStyleSheet("color: #a21818; font-weight: 600;")
-        self.setToolTip(message)
+        self.status.setPlainText(message)
+        warning_font = QFont()
+        warning_font.setBold(True)
+        self.status.setFont(warning_font)
         self._fit_content()
 
-    def set_dialogue(self, speaker: str | None, _text: str | None) -> None:
-        self.speaker.setText(speaker or "Narrator")
+    def set_dialogue(self, speaker: str | None, text: str | None) -> None:
+        if not text:
+            return
+        self.speaker.setPlainText(speaker or "Narrator")
+        self.speaker_label.show()
+        self.speaker.show()
         self._fit_content()
 
     def set_ready(self, ready: bool, *, reason: str | None = None) -> None:
@@ -1357,6 +1376,24 @@ class CompactController(QWidget):
 
     def set_runtime_controls(self, state: RuntimeControlState) -> None:
         self._ready = state.ready
+        self._live = state.live
+        self.mode.setText(
+            "Stopping"
+            if state.transition == "stopping"
+            else "Starting reading"
+            if state.starting or state.transition == "starting"
+            else "Paused"
+            if state.paused
+            else "Reading"
+            if state.live
+            else "Speaking"
+            if state.speaking or state.queued
+            else "Ready"
+            if state.ready
+            else "Unavailable"
+            if state.unavailable_reason
+            else "Starting"
+        )
         _apply_reading_capabilities(
             state,
             read_button=self.read_button,
@@ -1367,38 +1404,19 @@ class CompactController(QWidget):
             and not self.sequence_expected_button.isHidden()
             and self._sequence_expected_candidate_count > 0
         )
-        if state.ready:
-            self._set_action_reason(
-                "Ready. Start reading, or read the current dialogue once."
-            )
-        else:
-            self._set_action_reason(
-                state.unavailable_reason
-                or "Controls unavailable while VNTTS is starting. Select Full "
-                "controls and Check readiness if this does not clear."
-            )
+        reason = (
+            state.unavailable_reason
+            or "Controls unavailable while VNTTS is starting. Select Full "
+            "controls and Check readiness if this does not clear."
+        )
+        self.action_reason.setPlainText(f"Reading unavailable: {reason}")
+        self.sequence_expected_button.setToolTip("" if state.ready else reason)
         self._fit_content()
-
-    def _set_action_reason(self, message: str) -> None:
-        self.action_reason.setText(message)
-        for button in (
-            self.read_button,
-            self.live_button,
-            self.sequence_expected_button,
-        ):
-            button.setToolTip(message)
-        self.action_reason.setVisible(not self._ready)
 
     def set_live(self, running: bool) -> None:
         self._live = bool(running)
         self.mode.setText("Reading" if running else "Stopped")
         _set_live_button_presentation(self.live_button, running)
-        if self._ready:
-            self._set_action_reason(
-                "Reading active; Stop reading ends speech immediately."
-                if running
-                else "Ready: start reading or read once."
-            )
         self._fit_content()
 
     def set_paused(self, paused: bool) -> None:
@@ -1408,11 +1426,17 @@ class CompactController(QWidget):
         self._fit_content()
 
     def _fit_content(self) -> None:
+        self.action_reason.setVisible(
+            not self._ready
+            and self.action_reason.toPlainText().removeprefix("Reading unavailable: ")
+            != self.status.toPlainText()
+        )
         right = self.x() + self.width()
         top = self.y()
-        for label in (self.status, self.speaker):
-            label.setMinimumHeight(label.heightForWidth(label.width()))
         self.adjustSize()
+        layout = self.layout()
+        if layout is not None:
+            self.resize(self.width(), layout.totalHeightForWidth(self.width()))
         if self.isVisible():
             self.move(right - self.width(), top)
 

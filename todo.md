@@ -1,5 +1,9 @@
 # TODO
 
+## Qualify compact controls over a real game
+
+- [ ] With verified background workspace isolation, or an explicitly approved native session, exercise compact controls on macOS and Windows over a fullscreen game: Start, Stop, Cancel start, Read once, pause/focus loss and expected-line recovery. Confirm capture/audio stop, no focus theft, screen-edge placement, and keyboard access to the complete last speaker, latest message and unavailable reason at enlarged text with VoiceOver/NVDA. Retain native focus, screenshot and audible-stop evidence. Offscreen tests qualify state, dispatch, layout, scrolling/copy and focus indicators, not fullscreen or assistive-technology integration.
+
 ## Qualify native local voice import
 
 - [ ] With verified background workspace isolation, or an explicitly approved native session, open the audio file picker by keyboard on macOS and Windows; choose and cancel multiple local recordings, then retry after a file becomes unavailable. Verify focus restoration, enlarged system text and VoiceOver/NVDA announcements for invalid names and replacement confirmation. Enter/Escape must keep the old voice; explicit Replace voice must update only the intended custom character. Use a disposable library and retain native focus/announcement evidence. Offscreen Qt tests and renders qualify draft, keyboard dispatch, scrolling and guarded publication, not native picker placement or screen-reader output.

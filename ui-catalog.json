@@ -103,7 +103,22 @@
       "related": ["dashboard", "tray-menu"],
       "contracts": ["single-mission", "runtime-controls"],
       "stories": [
-        {"id": "compact-controller.sequence-recovery", "title": "Story position recovery", "state": "The compact control names the way to set story position without expanding its ordinary controls"}
+        {"id": "compact-controller.sequence-recovery", "title": "Story position recovery", "state": "The compact control names the way to set story position without expanding its ordinary controls"},
+        {"id": "compact-controller.starting", "title": "Starting components", "state": "Starting components with current reading controls and independent runtime message"},
+        {"id": "compact-controller.ready", "title": "Ready to read", "state": "Ready to read with current reading controls and independent runtime message"},
+        {"id": "compact-controller.reading", "title": "Reading game dialogue", "state": "Reading game dialogue with current reading controls and independent runtime message"},
+        {"id": "compact-controller.paused", "title": "Paused reading", "state": "Paused reading with current reading controls and independent runtime message"},
+        {"id": "compact-controller.speaking", "title": "Reading the current dialogue once", "state": "Reading the current dialogue once with current reading controls and independent runtime message"},
+        {"id": "compact-controller.starting-reading", "title": "Finding story position", "state": "Finding story position with current reading controls and independent runtime message"},
+        {"id": "compact-controller.stopping", "title": "Stopping reading", "state": "Stopping reading with current reading controls and independent runtime message"},
+        {"id": "compact-controller.unavailable", "title": "Model failure", "state": "Model failure with current reading controls and independent runtime message"},
+        {"id": "compact-controller.warning", "title": "Narrator fallback notice", "state": "Narrator fallback notice with current reading controls and independent runtime message"},
+        {"id": "compact-controller.long-error", "title": "Long error path", "state": "Long error path with current reading controls and independent runtime message"},
+        {"id": "compact-controller.long-error-end", "title": "End of error path", "state": "End of error path with current reading controls and independent runtime message"},
+        {"id": "compact-controller.sequence-choice", "title": "Choose an expected story line", "state": "Choose an expected story line with current reading controls and independent runtime message"},
+        {"id": "compact-controller.scaled-warning-end", "title": "End of enlarged speaker and notice", "state": "The end of a long speaker identity and full notice remain reachable at enlarged text"},
+        {"id": "compact-controller.scaled-warning", "title": "Notice and long speaker at enlarged text", "state": "Notice and long speaker at enlarged text with current reading controls and independent runtime message"},
+        {"id": "compact-controller.scaled-sequence-recovery", "title": "Story recovery at enlarged text", "state": "Story recovery at enlarged text with current reading controls and independent runtime message"}
       ]
     },
     {

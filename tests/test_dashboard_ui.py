@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, Qt  # noqa: E402
-from PySide6.QtGui import QFont  # noqa: E402
+from PySide6.QtGui import QFont, QKeySequence, QPalette  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
@@ -35,6 +35,9 @@ class ControlDashboardTest(unittest.TestCase):
         compact = CompactController()
         with patch("sys.excepthook") as exception_hook:
             compact.show_for_game()
+            font = QFont(compact.font())
+            font.setPointSizeF(24.0)
+            compact.setFont(font)
             compact.close()
             compact.deleteLater()
             self.application.sendPostedEvents(compact, QEvent.Type.DeferredDelete)
@@ -572,9 +575,20 @@ class ControlDashboardTest(unittest.TestCase):
 
                 controls.set_status("Prepared audio is active.")
 
-                self.assertEqual(controls.action_reason.text(), reason)
+                if isinstance(controls, CompactController):
+                    actual_reason = controls.action_reason.toPlainText()
+                    actual_status = controls.status.toPlainText()
+                else:
+                    actual_reason = controls.action_reason.text()
+                    actual_status = controls.status.text()
+                self.assertEqual(
+                    actual_reason,
+                    f"Reading unavailable: {reason}"
+                    if isinstance(controls, CompactController)
+                    else reason,
+                )
                 self.assertEqual(controls.live_button.toolTip(), reason)
-                self.assertEqual(controls.status.text(), "Prepared audio is active.")
+                self.assertEqual(actual_status, "Prepared audio is active.")
                 self.assertFalse(controls.live_button.isEnabled())
                 controls.deleteLater()
 
@@ -933,11 +947,11 @@ class ControlDashboardTest(unittest.TestCase):
 
         controller.live_button.click()
         controller.set_runtime_controls(
-            RuntimeControlState(ready=True, live=True, replayable=True)
+            RuntimeControlState(ready=True, live=True, paused=True, replayable=True)
         )
 
         self.assertEqual(requests, ["live"])
-        self.assertEqual(controller.speaker.text(), "Selone")
+        self.assertEqual(controller.speaker.toPlainText(), "Selone")
         self.assertEqual(controller.mode.text(), "Paused")
         self.assertEqual(controller.live_button.text(), "Stop reading")
         self.assertEqual(controller.full_button.text(), "Full controls")
@@ -985,8 +999,8 @@ class ControlDashboardTest(unittest.TestCase):
 
         controller.set_status("Speech model failed to load")
 
-        self.assertIn("Check readiness", controller.action_reason.text())
-        self.assertIn("Full controls", controller.action_reason.text())
+        self.assertIn("Check readiness", controller.action_reason.toPlainText())
+        self.assertIn("Full controls", controller.action_reason.toPlainText())
         controller.close()
         controller.deleteLater()
         controller.deleteLater()
@@ -1095,18 +1109,44 @@ class ControlDashboardTest(unittest.TestCase):
         )
 
         self.assertEqual(controller.mode.text(), "Reading")
-        self.assertIn("source-audio completion", controller.status.text())
+        self.assertIn("source-audio completion", controller.status.toPlainText())
 
+        status_color = controller.status.palette().color(QPalette.ColorRole.Text)
         controller.set_warning("Voice needed: Hotelier")
 
         self.assertEqual(controller.mode.text(), "Reading")
-        self.assertEqual(controller.status.text(), "Voice needed: Hotelier")
-        self.assertIn("#a21818", controller.status.styleSheet())
+        self.assertEqual(controller.status.toPlainText(), "Voice needed: Hotelier")
+        self.assertTrue(controller.status.font().bold())
+        self.assertEqual(
+            controller.status.palette().color(QPalette.ColorRole.Text), status_color
+        )
 
         controller.set_paused(True)
 
         self.assertEqual(controller.mode.text(), "Paused")
-        self.assertEqual(controller.status.text(), "Voice needed: Hotelier")
+        self.assertEqual(controller.status.toPlainText(), "Voice needed: Hotelier")
+
+        controller.set_status("Reading resumed")
+
+        self.assertEqual(controller.status.toPlainText(), "Reading resumed")
+        self.assertFalse(controller.status.font().bold())
+        controller.deleteLater()
+
+    def test_compact_warning_survives_ready_reading_and_paused_states(self):
+        controller = CompactController(platform="win32")
+        controller.set_warning("Narrator used for Selone")
+        for state, mode in (
+            (RuntimeControlState(ready=True), "Ready"),
+            (RuntimeControlState(ready=True, live=True), "Reading"),
+            (RuntimeControlState(ready=True, live=True, paused=True), "Paused"),
+        ):
+            with self.subTest(mode=mode):
+                controller.set_runtime_controls(state)
+                self.assertEqual(controller.mode.text(), mode)
+                self.assertEqual(
+                    controller.status.toPlainText(), "Narrator used for Selone"
+                )
+                self.assertTrue(controller.status.font().bold())
         controller.deleteLater()
 
     def test_compact_disabled_controls_show_recovery_beside_controls(self):
@@ -1120,10 +1160,14 @@ class ControlDashboardTest(unittest.TestCase):
 
         self.assertFalse(controller.live_button.isEnabled())
         self.assertTrue(controller.full_button.isEnabled())
-        self.assertIn("Speech model failed to load", controller.action_reason.text())
-        self.assertIn("Full controls", controller.action_reason.text())
+        self.assertIn(
+            "Speech model failed to load", controller.action_reason.toPlainText()
+        )
+        self.assertIn("Full controls", controller.action_reason.toPlainText())
+        self.assertFalse(controller.action_reason.isHidden())
         self.assertEqual(
-            controller.live_button.toolTip(), controller.action_reason.text()
+            f"Reading unavailable: {controller.live_button.toolTip()}",
+            controller.action_reason.toPlainText(),
         )
         self.assertTrue(controller.live_button.isDefault())
         self.assertTrue(controller.action_reason.accessibleName())
@@ -1173,45 +1217,381 @@ class ControlDashboardTest(unittest.TestCase):
         )
         controller.deleteLater()
 
-    def test_compact_text_gets_width_before_fixed_size_buttons(self):
+    def test_compact_runtime_mode_uses_authoritative_control_state(self):
         controller = CompactController(platform="win32")
-        controller.resize(650, controller.sizeHint().height())
-        controller.show()
         controller.set_status(
-            "Auto advance key sent; waiting for the next dialogue generation"
+            "Auto advance paused: source-audio completion unavailable"
         )
-        controller.set_dialogue("Adar Llwch Gwin Fledgling", "A line")
+        message = controller.status.toPlainText()
+        cases = (
+            (RuntimeControlState(), "Starting"),
+            (RuntimeControlState(ready=True), "Ready"),
+            (RuntimeControlState(ready=True, starting=True), "Starting reading"),
+            (
+                RuntimeControlState(ready=True, transition="starting"),
+                "Starting reading",
+            ),
+            (RuntimeControlState(ready=True, live=True), "Reading"),
+            (RuntimeControlState(ready=True, speaking=True), "Speaking"),
+            (RuntimeControlState(ready=True, queued=True), "Speaking"),
+            (RuntimeControlState(ready=False, speaking=True), "Speaking"),
+            (RuntimeControlState(ready=True, live=True, paused=True), "Paused"),
+            (
+                RuntimeControlState(ready=True, live=True, transition="stopping"),
+                "Stopping",
+            ),
+            (
+                RuntimeControlState(unavailable_reason="Speech model failed to load"),
+                "Unavailable",
+            ),
+            (RuntimeControlState(), "Starting"),
+            (RuntimeControlState(ready=True), "Ready"),
+        )
+        for state, mode in cases:
+            with self.subTest(state=state):
+                controller.set_runtime_controls(state)
+                self.assertEqual(controller.mode.text(), mode)
+                self.assertEqual(controller.status.toPlainText(), message)
+        controller.deleteLater()
+
+    def test_reading_control_tooltips_preserve_current_capability_reasons(self):
+        dashboard = ControlDashboard(AppSettings())
+        compact = CompactController(platform="win32")
+        for controls in (dashboard, compact):
+            with self.subTest(controls=type(controls).__name__):
+                controls.set_runtime_controls(
+                    RuntimeControlState(ready=True, live=True)
+                )
+                self.assertIn("Stop reading and speech", controls.read_button.toolTip())
+                controls.set_runtime_controls(
+                    RuntimeControlState(
+                        ready=True, starting=True, transition="starting"
+                    )
+                )
+                self.assertIn("Cancel", controls.live_button.toolTip())
+                self.assertIn("Cancel start", controls.read_button.toolTip())
+                controls.set_runtime_controls(
+                    RuntimeControlState(ready=True, transition="stopping")
+                )
+                self.assertIn("stop", controls.live_button.toolTip())
+                self.assertIn("stopping", controls.read_button.toolTip())
+                self.assertFalse(controls.live_button.isEnabled())
+                controls.set_runtime_controls(
+                    RuntimeControlState(
+                        unavailable_reason="Choose the saved game window"
+                    )
+                )
+                self.assertEqual(
+                    controls.live_button.toolTip(), "Choose the saved game window"
+                )
+                if controls is dashboard:
+                    self.assertTrue(dashboard.prepare_reading_button.isDefault())
+                    self.assertFalse(dashboard.live_button.isDefault())
+                controls.set_runtime_controls(RuntimeControlState(ready=True))
+                self.assertEqual(controls.live_button.toolTip(), "")
+                self.assertEqual(controls.read_button.toolTip(), "")
+                self.assertTrue(controls.live_button.isEnabled())
+                self.assertTrue(controls.read_button.isEnabled())
+        dashboard.deleteLater()
+        compact.deleteLater()
+
+    def test_compact_status_and_speaker_keep_literal_text(self):
+        controller = CompactController(platform="win32")
+        self.assertTrue(controller.speaker.isHidden())
+        self.assertTrue(controller.speaker_label.isHidden())
+        status = '<b>Voice missing</b> & "retry"\n<Centurion>'
+        speaker = '<Centurion> & "child"'
+        controller.set_status(status)
+        controller.set_dialogue(speaker, "A line")
+
+        self.assertEqual(controller.status.toPlainText(), status)
+        self.assertEqual(controller.speaker.toPlainText(), speaker)
+        self.assertFalse(controller.speaker.isHidden())
+        self.assertFalse(controller.speaker_label.isHidden())
+        self.assertEqual(controller.speaker_label.text(), "Last speaker:")
+        self.assertTrue(controller.status.isReadOnly())
+        self.assertTrue(controller.speaker.isReadOnly())
+        self.assertTrue(controller.status.accessibleName())
+        self.assertTrue(controller.speaker.accessibleName())
+        controller.set_dialogue(None, "A line")
+        self.assertEqual(controller.speaker.toPlainText(), "Narrator")
+        controller.deleteLater()
+
+    def test_compact_empty_dialogue_preserves_last_detected_speaker(self):
+        controller = CompactController(platform="win32")
+        for text in (None, ""):
+            controller.set_dialogue("Narrator", text)
+            self.assertTrue(controller.speaker.isHidden())
+            self.assertTrue(controller.speaker_label.isHidden())
+            self.assertEqual(controller.speaker.toPlainText(), "")
+
+        controller.set_dialogue("Selone", "A detected line")
+        for text in (None, ""):
+            controller.set_dialogue("Narrator", text)
+            self.assertFalse(controller.speaker.isHidden())
+            self.assertFalse(controller.speaker_label.isHidden())
+            self.assertEqual(controller.speaker.toPlainText(), "Selone")
+
+        controller.set_dialogue(None, "A narrated line")
+        self.assertEqual(controller.speaker.toPlainText(), "Narrator")
+        controller.deleteLater()
+
+    def test_compact_long_text_stays_bounded_with_scaled_fonts(self):
+        base_font = QApplication.font()
+        base_size = base_font.pointSizeF() if base_font.pointSizeF() > 0 else 12.0
+        for scale in (1.0, 2.0):
+            with self.subTest(scale=scale):
+                controller = CompactController(platform="win32")
+                font = QFont(base_font)
+                font.setPointSizeF(base_size * scale)
+                controller.setFont(font)
+                controller.set_ready(True)
+                controller.set_sequence_status(
+                    LiveSequenceStatus(
+                        "audio-manual",
+                        "desynchronized",
+                        recovery_required=True,
+                        expected_candidate_count=2,
+                    )
+                )
+                controller.set_status("Reading started")
+                controller.set_dialogue("Selone", "A line")
+                controller.show()
+                controller._fit_content()
+                self.application.processEvents()
+                short_size = controller.size()
+                status_height = controller.status.height()
+                speaker_height = controller.speaker.height()
+                controller.set_status(
+                    "Model failed: " + "long/path/" * 1000 + "\n" * 20
+                )
+                controller.set_dialogue("Very long character name " * 500, "A line")
+                self.application.processEvents()
+
+                self.assertEqual(controller.size(), short_size)
+                self.assertEqual(controller.status.height(), status_height)
+                self.assertEqual(controller.speaker.height(), speaker_height)
+                self.assertAlmostEqual(
+                    controller.speaker.font().pointSizeF(), font.pointSizeF()
+                )
+                self.assertLessEqual(
+                    controller.status.height(),
+                    controller.status.fontMetrics().lineSpacing() * 2 + 16,
+                )
+                self.assertLessEqual(
+                    controller.speaker.height(),
+                    controller.speaker.fontMetrics().lineSpacing() * 2 + 16,
+                )
+                self.assertGreater(controller.status.verticalScrollBar().maximum(), 0)
+                for button in (
+                    controller.live_button,
+                    controller.read_button,
+                    controller.full_button,
+                    controller.sequence_expected_button,
+                ):
+                    self.assertTrue(button.isVisibleTo(controller))
+                    self.assertTrue(
+                        controller.rect().contains(
+                            button.mapTo(controller, button.rect().bottomRight())
+                        )
+                    )
+                    self.assertEqual(
+                        button.sizePolicy().horizontalPolicy(), QSizePolicy.Policy.Fixed
+                    )
+                controller.close()
+                controller.deleteLater()
+
+    def test_compact_failure_details_stay_bounded_and_do_not_repeat_status(self):
+        base_font = QApplication.font()
+        base_size = base_font.pointSizeF() if base_font.pointSizeF() > 0 else 12.0
+        for scale in (1.0, 2.0):
+            with self.subTest(scale=scale):
+                controller = CompactController(platform="win32")
+                font = QFont(base_font)
+                font.setPointSizeF(base_size * scale)
+                controller.setFont(font)
+                controller.set_status("OCR corrections saved")
+                controller.set_dialogue("Selone", "A line")
+                controller.set_ready(False, reason="Model failed to load")
+                controller.show()
+                controller._fit_content()
+                self.application.processEvents()
+                short_failure_size = controller.size()
+                long_reason = "Model failed: " + "missing/backend/path/" * 1000
+                controller.set_ready(False, reason=long_reason)
+                self.application.processEvents()
+
+                self.assertEqual(controller.size(), short_failure_size)
+                self.assertEqual(
+                    controller.action_reason.toPlainText(),
+                    f"Reading unavailable: {long_reason}",
+                )
+                self.assertFalse(controller.action_reason.isHidden())
+                self.assertLessEqual(
+                    controller.action_reason.height(),
+                    controller.action_reason.fontMetrics().lineSpacing() * 2 + 16,
+                )
+                self.assertGreater(
+                    controller.action_reason.verticalScrollBar().maximum(), 0
+                )
+                self.assertTrue(
+                    controller.rect().contains(
+                        controller.full_button.mapTo(
+                            controller, controller.full_button.rect().bottomRight()
+                        )
+                    )
+                )
+                controller.set_status(long_reason)
+                self.assertTrue(controller.action_reason.isHidden())
+                self.assertFalse(controller.status.isHidden())
+                self.assertEqual(controller.status.toPlainText(), long_reason)
+                controller.set_status("OCR corrections saved")
+                self.assertFalse(controller.action_reason.isHidden())
+                self.assertEqual(
+                    controller.action_reason.toPlainText(),
+                    f"Reading unavailable: {long_reason}",
+                )
+                self.assertFalse(controller.live_button.isEnabled())
+                self.assertTrue(controller.full_button.isEnabled())
+                controller.close()
+                controller.deleteLater()
+
+    def test_compact_text_focus_ring_tracks_keyboard_focus(self):
+        controller = CompactController(platform="win32")
+        controller.set_dialogue("Selone", "A line")
+        controller.set_ready(False, reason="Select the game window")
+        controller.show()
+        controller.activateWindow()
         self.application.processEvents()
 
-        buttons = (
-            controller.read_button,
-            controller.live_button,
-            controller.full_button,
-        )
-        self.assertTrue(controller.status.wordWrap())
-        self.assertTrue(controller.speaker.wordWrap())
-        self.assertGreater(
-            controller.status.width(),
-            max(button.width() for button in buttons),
-        )
-        self.assertGreater(
-            controller.speaker.width(),
-            max(button.width() for button in buttons),
-        )
-        self.assertGreaterEqual(
-            controller.status.height(),
-            controller.status.heightForWidth(controller.status.width()),
-        )
-        self.assertGreaterEqual(
-            controller.speaker.height(),
-            controller.speaker.heightForWidth(controller.speaker.width()),
-        )
-        for button in buttons:
-            self.assertEqual(
-                button.sizePolicy().horizontalPolicy(),
-                QSizePolicy.Policy.Fixed,
-            )
+        for field in (controller.status, controller.speaker, controller.action_reason):
+            field.setFocus()
+            self.application.processEvents()
+            self.assertTrue(field.hasFocus())
+            self.assertIs(controller.message_focus_frame.widget(), field)
+            self.assertTrue(controller.message_focus_frame.isVisible())
 
+        controller.full_button.setFocus()
+        self.application.processEvents()
+        self.assertFalse(controller.message_focus_frame.isVisible())
+        controller.close()
+        controller.deleteLater()
+
+    def test_compact_enlarged_font_reflows_populated_window_without_manual_refit(self):
+        controller = CompactController(platform="win32")
+        controller.set_ready(True)
+        controller.set_dialogue("A long speaker name " * 30, "A line")
+        controller.set_status("Reading active with a long status message " * 20)
+        controller.set_sequence_status(
+            LiveSequenceStatus("audio-manual", "desynchronized", recovery_required=True)
+        )
+        controller.show()
+        self.application.processEvents()
+        font = QFont(controller.font())
+        font.setPointSizeF((font.pointSizeF() if font.pointSizeF() > 0 else 12.0) * 2)
+
+        controller.setFont(font)
+        for _ in range(2):
+            self.application.processEvents()
+
+        self.assertGreaterEqual(
+            controller.status.geometry().top()
+            - controller.speaker.geometry().bottom()
+            - 1,
+            controller.layout().spacing(),
+        )
+        self.assertGreaterEqual(
+            controller.sequence_recovery.geometry().top()
+            - controller.status.geometry().bottom()
+            - 1,
+            controller.layout().spacing(),
+        )
+        self.assertGreaterEqual(
+            controller.sequence_recovery.height(),
+            controller.sequence_recovery.heightForWidth(
+                controller.sequence_recovery.width()
+            ),
+        )
+        controller.close()
+        controller.deleteLater()
+
+    def test_compact_keyboard_reaches_text_and_actions_and_copies_full_values(self):
+        controller = CompactController(platform="win32")
+        controller.set_ready(True)
+        controller.set_sequence_status(
+            LiveSequenceStatus("audio-manual", "locked", expected_candidate_count=1)
+        )
+        message = "\n".join(f"Failure detail {index}" for index in range(80))
+        speaker = "Long character name " * 100
+        controller.set_status(message)
+        controller.set_dialogue(speaker, "A line")
+        controller.show()
+        controller.activateWindow()
+        controller.status.setFocus()
+        self.application.processEvents()
+
+        self.assertTrue(controller.status.hasFocus())
+        QTest.keyClick(controller.status, Qt.Key.Key_PageDown)
+        self.assertGreater(controller.status.verticalScrollBar().value(), 0)
+        QTest.keySequence(
+            controller.status, QKeySequence(QKeySequence.StandardKey.SelectAll)
+        )
+        QTest.keySequence(
+            controller.status, QKeySequence(QKeySequence.StandardKey.Copy)
+        )
+        self.assertEqual(self.application.clipboard().text(), message)
+        QTest.keyClick(controller.status, Qt.Key.Key_X)
+        self.assertEqual(controller.status.toPlainText(), message)
+        reached = {controller.focusWidget()}
+        for _ in range(8):
+            QTest.keyClick(controller.focusWidget(), Qt.Key.Key_Tab)
+            reached.add(controller.focusWidget())
+        self.assertTrue(
+            {
+                controller.status,
+                controller.speaker,
+                controller.live_button,
+                controller.read_button,
+                controller.full_button,
+                controller.sequence_expected_button,
+            }.issubset(reached)
+        )
+
+        controller.speaker.setFocus()
+        QTest.keyClick(controller.speaker, Qt.Key.Key_PageDown)
+        self.assertGreater(controller.speaker.verticalScrollBar().value(), 0)
+        self.assertTrue(controller.speaker_label.isVisibleTo(controller))
+        self.assertEqual(controller.speaker_label.text(), "Last speaker:")
+        QTest.keySequence(
+            controller.speaker, QKeySequence(QKeySequence.StandardKey.SelectAll)
+        )
+        QTest.keySequence(
+            controller.speaker, QKeySequence(QKeySequence.StandardKey.Copy)
+        )
+        self.assertEqual(self.application.clipboard().text(), speaker)
+        failure = "\n".join(f"Model failure detail {index}" for index in range(80))
+        controller.set_ready(False, reason=failure)
+        controller.action_reason.setFocus()
+        QTest.keyClick(controller.action_reason, Qt.Key.Key_PageDown)
+        self.assertGreater(controller.action_reason.verticalScrollBar().value(), 0)
+        self.assertTrue(controller.action_reason.isReadOnly())
+        QTest.keySequence(
+            controller.action_reason, QKeySequence(QKeySequence.StandardKey.SelectAll)
+        )
+        QTest.keySequence(
+            controller.action_reason, QKeySequence(QKeySequence.StandardKey.Copy)
+        )
+        self.assertEqual(
+            self.application.clipboard().text(), f"Reading unavailable: {failure}"
+        )
+        QTest.keyClick(controller.action_reason, Qt.Key.Key_Tab)
+        self.assertFalse(controller.action_reason.hasFocus())
+        controller.set_ready(True)
+        requests = []
+        controller.live_requested.connect(lambda: requests.append("live"))
+        controller.live_button.setFocus()
+        QTest.keyClick(controller.live_button, Qt.Key.Key_Return)
+        self.assertEqual(requests, ["live"])
         controller.close()
         controller.deleteLater()
 

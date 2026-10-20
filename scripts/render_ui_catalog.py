@@ -1161,6 +1161,93 @@ def _voice_import_story(state: str) -> QWidget:
     return dialog
 
 
+def _compact_controller_story(state: str) -> QWidget:
+    from PySide6.QtCore import QTimer
+
+    from vntts.controller import LiveSequenceStatus
+    from vntts.dashboard_ui import CompactController, RuntimeControlState
+
+    scaled = state.startswith("scaled-")
+    at_end = state.endswith("-end")
+    state = state.removeprefix("scaled-").replace("warning-end", "warning")
+    speaker = (
+        "Guardian of the Long Forgotten Eastern Sanctuary"
+        if scaled
+        else "<b>Unknown visitor</b>"
+        if state == "warning"
+        else "Marcus"
+    )
+    reason = "Speech model failed to load. Open Full controls, then Check readiness."
+    states = {
+        "starting": RuntimeControlState(),
+        "starting-reading": RuntimeControlState(
+            ready=True, starting=True, transition="starting"
+        ),
+        "reading": RuntimeControlState(ready=True, live=True),
+        "paused": RuntimeControlState(ready=True, live=True, paused=True),
+        "speaking": RuntimeControlState(ready=True, speaking=True),
+        "stopping": RuntimeControlState(ready=True, live=True, transition="stopping"),
+        "unavailable": RuntimeControlState(unavailable_reason=reason),
+        "long-error": RuntimeControlState(unavailable_reason=reason),
+        "long-error-end": RuntimeControlState(unavailable_reason=reason),
+        "sequence-recovery": RuntimeControlState(ready=True, live=True, paused=True),
+        "sequence-choice": RuntimeControlState(ready=True, live=True, paused=True),
+        "warning": RuntimeControlState(ready=True, live=True),
+    }
+    dialog = CompactController(platform="win32")
+    dialog.set_runtime_controls(states.get(state, RuntimeControlState(ready=True)))
+    messages = {
+        "starting": "Loading the speech model...",
+        "ready": "Ready to read the game dialogue.",
+        "reading": "Following dialogue in the game.",
+        "paused": "Waiting for the game window to regain focus.",
+        "speaking": "Speaking the visible dialogue once.",
+        "starting-reading": "Loading the selected story...",
+        "stopping": "Stopping reading and speech...",
+        "unavailable": reason,
+        "sequence-recovery": "Paused at an unmatched story line.",
+        "sequence-choice": "Paused at an unmatched story line.",
+        "warning": f"Narrator used for {speaker}.",
+        "long-error": "Unable to open recording: "
+        + "/very-long-audio-directory" * 30
+        + "/missing.wav",
+        "long-error-end": "Unable to open recording: "
+        + "/very-long-audio-directory" * 30
+        + "/missing.wav",
+    }
+    dialog.set_status(messages[state])
+    if state == "warning":
+        dialog.set_warning(messages[state])
+    if state in {
+        "reading",
+        "paused",
+        "speaking",
+        "warning",
+        "sequence-recovery",
+        "sequence-choice",
+    }:
+        dialog.set_dialogue(speaker, "The current dialogue.")
+    if state in {"sequence-recovery", "sequence-choice"}:
+        dialog.set_sequence_status(
+            LiveSequenceStatus(
+                "audio-manual",
+                "desynchronized",
+                recovery_required=True,
+                expected_candidate_count=2 if state == "sequence-choice" else 0,
+            )
+        )
+    if scaled:
+        font = dialog.font()
+        font.setPointSize(22)
+        dialog.setFont(font)
+    if at_end:
+        bar = dialog.status.verticalScrollBar()
+        QTimer.singleShot(0, lambda: bar.setValue(bar.maximum()))
+        speaker_bar = dialog.speaker.verticalScrollBar()
+        QTimer.singleShot(0, lambda: speaker_bar.setValue(speaker_bar.maximum()))
+    return dialog
+
+
 def _render_stories(
     catalog: UICatalog, output: Path, selected_surface: str | None
 ) -> dict[str, str]:
@@ -1227,7 +1314,6 @@ def _render_stories(
     from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
     from vntts.controller import LiveSequenceStatus
     from vntts.dashboard_ui import (
-        CompactController,
         ControlDashboard,
         RuntimeControlState,
     )
@@ -1508,24 +1594,6 @@ def _render_stories(
             ),
         )
         return dashboard
-
-    def compact_sequence_recovery() -> CompactController:
-        compact = CompactController(platform="win32")
-        compact.set_runtime_controls(
-            RuntimeControlState(ready=True, live=True, paused=True)
-        )
-        compact.set_live(True)
-        compact.set_paused(True)
-        compact.set_status("Paused at an unmatched story line.")
-        compact.set_sequence_status(
-            LiveSequenceStatus(
-                "audio-manual",
-                "desynchronized",
-                recovery_required=True,
-                expected_candidate_count=0,
-            )
-        )
-        return compact
 
     def dashboard_voice_saved() -> ControlDashboard:
         dashboard = ControlDashboard(settings)
@@ -3027,7 +3095,40 @@ def _render_stories(
         "dashboard.reading-long-capture": dashboard_long_capture,
         "dashboard.reading-long-values-scrolled": dashboard_long_values_scrolled,
         "dashboard.setup-expanded": dashboard_setup,
-        "compact-controller.sequence-recovery": compact_sequence_recovery,
+        "compact-controller.sequence-recovery": lambda: _compact_controller_story(
+            "sequence-recovery"
+        ),
+        "compact-controller.starting": lambda: _compact_controller_story("starting"),
+        "compact-controller.ready": lambda: _compact_controller_story("ready"),
+        "compact-controller.reading": lambda: _compact_controller_story("reading"),
+        "compact-controller.paused": lambda: _compact_controller_story("paused"),
+        "compact-controller.speaking": lambda: _compact_controller_story("speaking"),
+        "compact-controller.starting-reading": lambda: _compact_controller_story(
+            "starting-reading"
+        ),
+        "compact-controller.stopping": lambda: _compact_controller_story("stopping"),
+        "compact-controller.unavailable": lambda: _compact_controller_story(
+            "unavailable"
+        ),
+        "compact-controller.warning": lambda: _compact_controller_story("warning"),
+        "compact-controller.long-error": lambda: _compact_controller_story(
+            "long-error"
+        ),
+        "compact-controller.long-error-end": lambda: _compact_controller_story(
+            "long-error-end"
+        ),
+        "compact-controller.sequence-choice": lambda: _compact_controller_story(
+            "sequence-choice"
+        ),
+        "compact-controller.scaled-warning": lambda: _compact_controller_story(
+            "scaled-warning"
+        ),
+        "compact-controller.scaled-warning-end": lambda: _compact_controller_story(
+            "scaled-warning-end"
+        ),
+        "compact-controller.scaled-sequence-recovery": lambda: (
+            _compact_controller_story("scaled-sequence-recovery")
+        ),
         "settings.speech-and-voices": settings_speech,
         "settings.shortcuts": lambda: settings_section(0),
         "settings.capture": lambda: settings_section(1),
