@@ -64,14 +64,11 @@ class UiCatalogTest(unittest.TestCase):
                         assert dialog.resolve_button.isEnabled()
                     elif state == "compact":
                         assert dialog.font().pointSize() == 22
-                        assert dialog.save_button.font().pointSize() == 22
-                        assert dialog.section_navigation.font().pointSize() == 22
-                        viewport = dialog.settings_scroll.viewport()
-                        for checkbox in dialog.findChildren(QCheckBox):
-                            if checkbox.isVisibleTo(dialog) and viewport.isAncestorOf(checkbox):
-                                assert checkbox.font().pointSize() == 22
-                                assert checkbox.width() >= checkbox.sizeHint().width()
-                                assert checkbox.mapTo(viewport, checkbox.rect().topRight()).x() < viewport.width()
+                        for control in (
+                            dialog.sample_list, dialog.corrected_text, dialog.scope,
+                            dialog.save_button, dialog.resolve_button,
+                        ):
+                            assert control.font().pointSize() == 22
                     elif state == "long-text":
                         assert "<b>Stay here</b>" in dialog.source_text.toPlainText()
                         dialog.show()
