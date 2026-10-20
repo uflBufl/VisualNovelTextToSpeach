@@ -1,8 +1,10 @@
 import ast
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import RLock
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from vntts.controller import AppController
 from vntts.controller_components import (
@@ -12,6 +14,7 @@ from vntts.controller_components import (
     VoiceAssignmentComponent,
 )
 from vntts.generated_audio import GeneratedAudioFallbackBackend
+from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
 from vntts.settings import AppSettings
 from vntts.speech_backend import XTTSVoiceRouterBackend
@@ -363,7 +366,6 @@ class RuntimeLifecycleTest(unittest.TestCase):
             self.addCleanup(controller.shutdown)
             self.assertTrue(controller.start())
             self.assertEqual(scheduler_factory.call_count, 1)
-            initial_corrections = controller.correction_dictionary
             self.assertTrue(
                 controller.apply_settings(
                     controller.settings.updated(
@@ -376,6 +378,11 @@ class RuntimeLifecycleTest(unittest.TestCase):
 
         self.assertEqual(scheduler_factory.call_count, 2)
         initial, refreshed = scheduler_factory.call_args_list
+        for call in (initial, refreshed):
+            self.assertIs(
+                call.kwargs["correction_dictionary_provider"](),
+                controller.correction_dictionary,
+            )
         self.assertEqual(initial.args[:2], refreshed.args[:2])
         self.assertEqual(refreshed.args[2], Path("new-screenshots"))
         expected = {
@@ -389,7 +396,7 @@ class RuntimeLifecycleTest(unittest.TestCase):
             "diagnostic_handler": controller._publish_diagnostic,
             "voice_resolver": controller._resolve_voice_label,
             "ocr_language": "rus",
-            "correction_dictionary": controller.correction_dictionary,
+            "correction_dictionary_provider": ANY,
             "region_provider": controller._capture_region,
             "ocr_regions_provider": controller._capture_ocr_regions,
             "result_resolver": controller._resolve_story_ocr_result,
@@ -401,9 +408,47 @@ class RuntimeLifecycleTest(unittest.TestCase):
                 **expected,
                 "minimum_confidence": 60,
                 "ocr_language": "eng",
-                "correction_dictionary": initial_corrections,
             },
         )
+
+    def test_correction_refresh_updates_next_read_without_replacing_pending_read(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "corrections.json"
+            store = OCRCorrectionStore(path)
+            store.upsert_entries({"Mareus": "Marcus"})
+            controller = AppController(
+                AppSettings(active_profile_id="game"), correction_store=store
+            )
+            self.addCleanup(controller.shutdown)
+            controller.voice_router = Mock()
+            controller.live_reader = Mock(is_running=False)
+            controller.capture_executor = executor = Mock()
+            first_read, second_read = Future(), Future()
+            executor.submit.side_effect = [first_read, second_read]
+            controller.runtime_lifecycle._configure_dialog_read(Path("captures"))
+            schedule = controller.schedule_dialog_read
+            self.assertTrue(schedule())
+            original_dictionary = executor.submit.call_args.kwargs[
+                "correction_dictionary"
+            ]
+
+            external = OCRCorrectionStore.load(path)
+            external.upsert_entries({"Mareus": "Profile Marcus"}, "game")
+            controller.refresh_corrections()
+
+            self.assertIs(controller.schedule_dialog_read, schedule)
+            self.assertEqual(original_dictionary.correct_text("Mareus")[0], "Marcus")
+            self.assertFalse(schedule())
+            self.assertEqual(executor.submit.call_count, 1)
+            first_read.set_result(None)
+            self.assertTrue(schedule())
+            current_dictionary = executor.submit.call_args.kwargs[
+                "correction_dictionary"
+            ]
+            self.assertEqual(
+                current_dictionary.correct_text("Mareus")[0], "Profile Marcus"
+            )
+            second_read.set_result(None)
 
     def test_backend_initialization_resolves_narrator_once(self):
         for voice in (

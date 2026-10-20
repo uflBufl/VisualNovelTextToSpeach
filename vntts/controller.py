@@ -415,6 +415,7 @@ def create_dialog_read_scheduler(
     voice_resolver: Callable[[str], str] | None = None,
     ocr_language: str = "eng",
     correction_dictionary: OCRCorrectionDictionary | None = None,
+    correction_dictionary_provider: Callable[[], OCRCorrectionDictionary] | None = None,
     region_provider: Callable[[], DialogRegion] | None = None,
     ocr_regions_provider: Callable[[], OCRRegions | None] | None = None,
     result_resolver: Callable[[OCRResult], OCRResult] | None = None,
@@ -439,7 +440,9 @@ def create_dialog_read_scheduler(
             diagnostic_handler=diagnostic_handler,
             voice_resolver=voice_resolver,
             ocr_language=ocr_language,
-            correction_dictionary=correction_dictionary,
+            correction_dictionary=correction_dictionary_provider()
+            if correction_dictionary_provider is not None
+            else correction_dictionary,
             region=region_provider() if region_provider is not None else None,
             ocr_regions=ocr_regions_provider()
             if ocr_regions_provider is not None

@@ -646,7 +646,7 @@ class RuntimeLifecycleComponent:
             diagnostic_handler=controller._publish_diagnostic,
             voice_resolver=controller._resolve_voice_label,
             ocr_language=controller.settings.ocr_language,
-            correction_dictionary=controller.correction_dictionary,
+            correction_dictionary_provider=lambda: controller.correction_dictionary,
             region_provider=controller._capture_region,
             ocr_regions_provider=controller._capture_ocr_regions,
             result_resolver=controller._resolve_story_ocr_result,

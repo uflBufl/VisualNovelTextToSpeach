@@ -1334,10 +1334,14 @@ class MainTest(unittest.TestCase):
             diagnostic_handler=controller._publish_diagnostic,
             voice_resolver=controller._resolve_voice_label,
             ocr_language="eng",
-            correction_dictionary=controller.correction_dictionary,
+            correction_dictionary_provider=ANY,
             region_provider=controller._capture_region,
             ocr_regions_provider=controller._capture_ocr_regions,
             result_resolver=controller._resolve_story_ocr_result,
+        )
+        self.assertIs(
+            schedule_dialog_read.call_args.kwargs["correction_dictionary_provider"](),
+            controller.correction_dictionary,
         )
 
     def test_controller_can_skip_startup_voice_warmup(self):
