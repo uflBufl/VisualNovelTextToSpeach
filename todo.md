@@ -592,6 +592,11 @@ Planned implementation order after approval:
       undecided. Trigger a bundle-load failure and verify the blocked status and
       Retry are visible without scrolling; confirm keyboard/screen-reader order
       and that checksum or stale-authority errors cannot commit a decision.
+      Stop while a recording is preparing and switch samples during playback;
+      confirm no delayed sound or false heard mark. Close during loading/saving
+      and verify completion, then force a listening-progress write failure and
+      retry or explicitly discard. Retain native audio-stop, focus and
+      VoiceOver/NVDA evidence; offscreen callbacks do not qualify physical output.
 - [ ] **Validate blind missing-voice review on real macOS and Windows hosts:**
       at 200% text scaling, compare two playable A/B candidates, stop each
       before the end and confirm Neither/Choose remain blocked, then hear both

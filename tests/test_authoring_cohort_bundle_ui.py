@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import threading
@@ -16,18 +17,23 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtCore import QPoint, Qt, QTimer
-    from PySide6.QtGui import QCloseEvent
+    from PySide6.QtGui import QCloseEvent, QKeySequence
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    from shiboken6 import isValid
 
-    from tests.authoring_fixtures import create_pending_cohort_workspace
-    from tests.qt_task_fixtures import release_and_wait_for_pool
+    from tests.authoring_fixtures import (
+        create_pending_cohort_workspace,
+        write_legacy_fixture,
+    )
+    from tests.qt_task_fixtures import ManualThreadPool, release_and_wait_for_pool
     from vntts.authoring.cohort_bundle import (
         build_cohort_review_bundle,
         execute_cohort_bundle_decision,
         load_cohort_review_bundle_samples,
         write_cohort_review_bundle,
+        write_cohort_review_observations,
     )
     from vntts.authoring.cohort_bundle_ui import CohortReviewBundleDialog
     from vntts.authoring.cohort_bundle_ui import main as review_bundle_main
@@ -47,6 +53,58 @@ except ModuleNotFoundError as error:
     QMediaPlayer = None
     QTest = None
     CohortReviewBundleDialog = None
+    isValid = None
+
+
+def create_multisample_bundle(root):
+    def write_multisample_fixture(*arguments, **options):
+        fixture = write_legacy_fixture(*arguments, **options)
+        metadata, template = (
+            json.loads(line) for line in fixture["queue"].read_text().splitlines()
+        )
+        state = json.loads(fixture["state"].read_text())
+        result = next(iter(state["items"].values()))
+        manifest = json.loads(fixture["manifest"].read_text())
+        entry = manifest["entries"][0]
+        items, entries, results = [], [], {}
+        for index, word_count in enumerate((3, 10, 18, 4)):
+            text = " ".join(["word"] * word_count) + "."
+            digest = hashlib.sha256(text.encode()).hexdigest()
+            line_id = f"reverse1999:cohort:{index}"
+            queue_id = f"{line_id}:{digest[:16]}"
+            identity = {"queue_id": queue_id, "line_id": line_id, "text_sha256": digest}
+            items.append({**template, **identity, "text": text})
+            entries.append({**entry, **identity})
+            results[queue_id] = {
+                **result,
+                "line_id": line_id,
+                "text_sha256": digest,
+                "status": "generated",
+                "review_status": "pending_review",
+                "generation_profile": "stable",
+                "voice_character": "Rhiannon",
+                "prompt_applied": False,
+                "synthesis_provenance_sha256": "b" * 64,
+            }
+        metadata["item_count"] = len(items)
+        fixture["queue"].write_text(
+            "\n".join(json.dumps(row) for row in [metadata, *items]) + "\n"
+        )
+        queue_sha256 = hashlib.sha256(fixture["queue"].read_bytes()).hexdigest()
+        state.update(items=results, queue_sha256=queue_sha256)
+        fixture["state"].write_text(json.dumps(state))
+        manifest.update(
+            entries=entries, entry_count=len(entries), source_queue_sha256=queue_sha256
+        )
+        fixture["manifest"].write_text(json.dumps(manifest))
+        return fixture
+
+    with patch(
+        "tests.authoring_fixtures.write_legacy_fixture",
+        side_effect=write_multisample_fixture,
+    ):
+        workspace, state_path, _queue_id = create_pending_cohort_workspace(root)
+    return build_cohort_review_bundle((workspace,)), state_path
 
 
 @unittest.skipIf(QApplication is None, "PySide6 is not installed")
@@ -70,6 +128,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                 widget._load_active = False
                 widget._playback_prepare_active = False
                 widget._decision_active = False
+                widget._observation_error = None
                 widget.close()
                 widget.deleteLater()
         self.application.processEvents()
@@ -142,7 +201,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertTrue(
                 dialog.cohort_choice.itemText(0).startswith("Cohort 1 of 2")
             )
-            self.assertIn("Review every listed cohort", dialog.operation.text())
+            self.assertIn("Cohort 1 of 2", dialog.cohort_scope.text())
             self.assertEqual(
                 dialog.overall_progress.format(),
                 "0 of 2 cohorts completed in this review session",
@@ -179,8 +238,8 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog.technical_details.setChecked(True)
             self.assertFalse(dialog.table.isColumnHidden(5))
             self.assertFalse(dialog.table.isColumnHidden(6))
-            self.assertTrue(dialog.cohort_audit.isVisible())
-            self.assertIn("Provider:", dialog.cohort_audit.text())
+            self.assertTrue(dialog.decision_context.isVisible())
+            self.assertIn("Synthesis:", dialog.decision_context.synthesis.text())
 
             dialog.play_selected()
             self.wait_for(lambda: dialog._playback_target is not None)
@@ -208,7 +267,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertEqual(dialog.status.text(), "Ready to decide this cohort")
             self.assertIn("All 1 required samples", dialog.decision_help.text())
 
-    def test_navigation_during_playback_credits_target_and_keeps_new_selection(self):
+    def test_navigation_stops_old_sample_without_heard_credit(self):
         with TemporaryDirectory() as directory:
             bundle = self.create_bundle(Path(directory))
             dialog = CohortReviewBundleDialog(bundle, confirmer=lambda *_args: True)
@@ -232,18 +291,144 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertEqual(
                 dialog._selected_sample().item.queue_id, second.item.queue_id
             )
-            self.assertIsNotNone(dialog._playback_target)
+            self.assertIsNone(dialog._playback_target)
 
             dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
-            self.wait_for(lambda: dialog.table.item(0, 0).text() == "Heard")
+            self.assertFalse(dialog.heard[key])
 
             self.assertEqual(
                 dialog._selected_sample().item.queue_id, second.item.queue_id
             )
-            self.assertIn(first.item.queue_id, dialog.heard[key])
+            self.assertNotIn(first.item.queue_id, dialog.heard[key])
             self.assertNotIn(second.item.queue_id, dialog.heard[key])
-            self.assertEqual(dialog.table.item(0, 0).text(), "Heard")
+            self.assertEqual(dialog.table.item(0, 0).text(), "Not heard")
             self.assertEqual(dialog.table.item(1, 0).text(), "Not heard")
+
+    def test_cohort_switch_restores_exact_heard_and_defect_state(self):
+        with TemporaryDirectory() as directory:
+            dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            first = dialog._selected_sample()
+            dialog.play_selected()
+            self.wait_for(lambda: dialog._playback_target is not None)
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.wait_for(lambda: dialog._playback_buffer is None)
+            dialog.defect_checks["repetition"].setChecked(True)
+            dialog.play_selected()
+            self.wait_for(lambda: dialog._playback_target is not None)
+
+            dialog.cohort_choice.setCurrentIndex(1)
+
+            self.assertNotEqual(
+                dialog._selected_sample().workspace_id, first.workspace_id
+            )
+            self.assertIsNone(dialog._playback_target)
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.assertFalse(dialog.heard[dialog._current_key()])
+            self.assertFalse(dialog.defect_checks["repetition"].isChecked())
+            self.assertFalse(dialog.mark_bad.isEnabled())
+            dialog.cohort_choice.setCurrentIndex(0)
+            self.assertEqual(dialog._selected_sample(), first)
+            self.assertEqual(dialog.table.item(0, 0).text(), "Heard")
+            self.assertTrue(dialog.defect_checks["repetition"].isChecked())
+            self.assertIn("Repeated words", dialog.table.item(0, 1).text())
+
+    def test_stop_cancels_preparation_before_audio_can_start(self):
+        with TemporaryDirectory() as directory:
+            dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            pool = ManualThreadPool()
+            dialog._playback_runner.thread_pool = pool
+            dialog.player.play_bytes.reset_mock()
+
+            dialog.play_selected()
+            self.assertTrue(dialog._playback_prepare_active)
+            self.assertTrue(dialog.stop.isEnabled())
+            dialog.stop.click()
+            pool.run_next()
+            self.application.processEvents()
+
+            dialog.player.play_bytes.assert_not_called()
+            self.assertFalse(dialog._playback_prepare_active)
+            self.assertIsNone(dialog._playback_target)
+            self.assertFalse(dialog.heard[dialog._current_key()])
+
+    def test_replay_stops_existing_audio_before_preparing_replacement(self):
+        with TemporaryDirectory() as directory:
+            dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            dialog.play_selected()
+            self.wait_for(lambda: dialog._playback_target is not None)
+            target = dialog._playback_target
+            pool = ManualThreadPool()
+            dialog._playback_runner.thread_pool = pool
+            dialog.player.stop.reset_mock()
+            dialog.player.play_bytes.reset_mock()
+
+            dialog.play_selected()
+
+            dialog.player.stop.assert_called_once()
+            self.assertIsNone(dialog._playback_target)
+            self.assertTrue(dialog._playback_prepare_active)
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.assertFalse(dialog.heard[dialog._current_key()])
+            dialog.player.play_bytes.assert_not_called()
+            pool.run_next()
+            self.wait_for(lambda: dialog._playback_target is not None)
+            self.assertEqual(dialog._playback_target, target)
+            dialog.player.play_bytes.assert_called_once()
+
+    def test_decision_shortcuts_wait_for_loading_and_playback_preparation(self):
+        with TemporaryDirectory() as directory:
+            confirmer = Mock(return_value=True)
+            dialog = CohortReviewBundleDialog(
+                self.create_bundle(Path(directory)), confirmer=confirmer
+            )
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            sample = dialog._selected_sample()
+            dialog.heard[dialog._current_key()].add(sample.item.queue_id)
+            for active in ("_load_active", "_playback_prepare_active"):
+                with self.subTest(active=active):
+                    setattr(dialog, active, True)
+                    dialog._update_actions()
+                    self.assertFalse(dialog.accept_button.isEnabled())
+                    dialog.table.setFocus()
+                    with patch.object(dialog._decision_runner, "start") as start:
+                        try:
+                            QTest.keyClick(
+                                dialog.table,
+                                Qt.Key.Key_Return,
+                                Qt.KeyboardModifier.ControlModifier,
+                            )
+                            start.assert_not_called()
+                            confirmer.assert_not_called()
+                        finally:
+                            setattr(dialog, active, False)
+                            dialog._decision_active = False
+                            dialog._operation_timer.stop()
+                            confirmer.reset_mock()
+
+    def test_bad_shortcut_cannot_change_evidence_while_decision_saves(self):
+        with TemporaryDirectory() as directory:
+            dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            sample = dialog._selected_sample()
+            key = dialog._current_key()
+            dialog.heard[key].add(sample.item.queue_id)
+            dialog._decision_active = True
+            dialog._update_actions()
+            self.assertFalse(dialog.mark_bad.isEnabled())
+            dialog.table.setFocus()
+            try:
+                QTest.keyClick(dialog.table, Qt.Key.Key_B)
+
+                self.assertFalse(dialog.bad[key])
+                self.assertFalse(dialog.bad_reasons[key])
+            finally:
+                dialog._decision_active = False
 
     def test_bad_marker_blocks_accept_but_keeps_reject(self):
         calls = []
@@ -371,9 +556,8 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog._show_current_cohort()
 
             self.assertTrue(dialog.repair_marked.isEnabled())
-            self.assertEqual(
-                dialog.repair_marked.text(), "Repair 1 marked; accept 1 heard"
-            )
+            self.assertIn("reject 1", dialog.decision_help.text())
+            self.assertIn("accept 1 individually heard", dialog.decision_help.text())
             self.assertIn("individually heard", dialog.decision_help.text())
             dialog.apply_decision("split")
             self.wait_for(lambda: bool(calls) and not dialog._decision_active)
@@ -429,11 +613,92 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog._show_current_cohort()
 
         self.assertTrue(dialog.repair_marked.isEnabled())
-        self.assertEqual(
-            dialog.repair_marked.text(),
-            "Repair 1 marked; accept 0 heard; leave 1 pending",
-        )
+        self.assertIn("reject 1", dialog.decision_help.text())
+        self.assertIn("accept 0 individually heard", dialog.decision_help.text())
         self.assertIn("leave 1 unsampled WAVs pending", dialog.decision_help.text())
+
+    def test_real_mixed_review_saves_one_bad_two_heard_good_and_one_pending(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle, state_path = create_multisample_bundle(root)
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            dialog = CohortReviewBundleDialog(
+                publication, confirmer=lambda *_args: True
+            )
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 3)
+            samples = dialog._current_samples()
+            heard_ids = {sample.item.queue_id for sample in samples}
+            target_ids = {
+                item["queue_id"]
+                for item in bundle.document["sources"][0]["plan"]["cohorts"][0]["items"]
+            }
+            pending_id = (target_ids - heard_ids).pop()
+            for row in range(3):
+                dialog.table.selectRow(row)
+                dialog.play_selected()
+                self.wait_for(lambda: dialog._playback_target is not None)
+                dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+                self.wait_for(
+                    lambda: (
+                        not dialog._observation_active
+                        and dialog._playback_buffer is None
+                    )
+                )
+            dialog.table.selectRow(0)
+            bad_id = dialog._selected_sample().item.queue_id
+            dialog.toggle_bad()
+            self.wait_for(lambda: not dialog._observation_active)
+
+            dialog.repair_marked.click()
+            self.wait_for(
+                lambda: not dialog._decision_active and not dialog._load_active
+            )
+
+            state = json.loads(state_path.read_text())["items"]
+            self.assertEqual(state[bad_id]["review_status"], "rejected")
+            for queue_id in heard_ids - {bad_id}:
+                self.assertEqual(state[queue_id]["review_status"], "approved")
+            self.assertEqual(state[pending_id]["review_status"], "pending_review")
+            self.assertEqual(dialog.bundle.document["pending_item_count"], 1)
+            self.assertEqual(dialog._selected_sample().item.queue_id, pending_id)
+            dialog.close()
+
+            reopened = CohortReviewBundleDialog(publication)
+            self.wait_for(lambda: reopened.table.rowCount() == 1)
+            self.assertEqual(reopened._selected_sample().item.queue_id, pending_id)
+
+    def test_one_heard_sample_allows_whole_cohort_rejection_but_not_acceptance(self):
+        with TemporaryDirectory() as directory:
+            bundle, state_path = create_multisample_bundle(Path(directory))
+            confirmer = Mock(return_value=True)
+            dialog = CohortReviewBundleDialog(bundle, confirmer=confirmer)
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 3)
+            dialog.play_selected()
+            self.wait_for(lambda: dialog._playback_target is not None)
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.wait_for(lambda: dialog._playback_buffer is None)
+
+            self.assertEqual(len(dialog.heard[dialog._current_key()]), 1)
+            self.assertFalse(dialog.accept_button.isEnabled())
+            self.assertTrue(dialog.reject_button.isEnabled())
+            self.assertIn("every WAV", dialog.reject_button.toolTip())
+            dialog.reject_button.click()
+            self.wait_for(
+                lambda: not dialog._decision_active and not dialog._load_active
+            )
+
+            decision, cohort, reviewed_count, bad_count = confirmer.call_args.args
+            self.assertEqual((decision, reviewed_count, bad_count), ("rejected", 1, 0))
+            self.assertEqual(cohort["item_count"], 4)
+            state = json.loads(state_path.read_text())["items"]
+            self.assertEqual(len(state), 4)
+            self.assertEqual(
+                {item["review_status"] for item in state.values()}, {"rejected"}
+            )
+            self.assertEqual(dialog.bundle.document["cohort_count"], 0)
 
     def test_space_and_bad_shortcuts_work_from_table_at_compact_size(self):
         with TemporaryDirectory() as directory:
@@ -457,7 +722,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertTrue(dialog.heading.isVisible())
             self.assertTrue(dialog.sample_text.isVisible())
             self.assertTrue(dialog.reject_button.isVisible())
-            self.assertIn("press Space to play/replay", dialog.shortcuts_help.text())
+            self.assertIn("press Space to play/replay", dialog.guide.toolTip())
             review_bottom = dialog.review_scroll.mapTo(
                 dialog, QPoint(0, dialog.review_scroll.height())
             ).y()
@@ -525,7 +790,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertIs(dialog.cohort_choice_label.buddy(), dialog.cohort_choice)
             self.assertIs(
                 dialog.decision_context.technical_toggle.nextInFocusChain(),
-                dialog.retry_load,
+                dialog.need_another,
             )
             self.assertIs(
                 dialog.cohort_choice.nextInFocusChain(), dialog.technical_details
@@ -598,6 +863,49 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
         self.assertEqual(calls[0][2], sample.cohort_id)
         self.assertEqual(calls[0][4], [sample.item.queue_id])
 
+    def test_close_during_in_memory_decision_finishes_without_restarting_playback(self):
+        with TemporaryDirectory() as directory:
+            dialog = CohortReviewBundleDialog(
+                self.create_bundle(Path(directory)), confirmer=lambda *_args: True
+            )
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            sample = dialog._selected_sample()
+            dialog.heard[dialog._current_key()].add(sample.item.queue_id)
+            pool = ManualThreadPool()
+            dialog._decision_runner.thread_pool = pool
+            dialog.player.play_bytes.reset_mock()
+            dialog.apply_decision("accepted")
+            self.assertTrue(dialog._decision_active)
+
+            dialog.close()
+            self.assertTrue(dialog.isVisible())
+            dialog.play_selected()
+            self.assertFalse(dialog._playback_prepare_active)
+            pool.run_next()
+            self.wait_for(lambda: not dialog.isVisible())
+
+            self.assertFalse(dialog._decision_active)
+            self.assertFalse(dialog._load_active)
+            dialog.player.play_bytes.assert_not_called()
+
+    def test_repeated_reflow_invalidates_replaced_sample_action_items(self):
+        with TemporaryDirectory() as directory:
+            dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            for _iteration in range(4):
+                previous_items = [
+                    dialog.sample_actions.itemAt(index)
+                    for index in range(dialog.sample_actions.count())
+                ]
+                self.assertEqual(len(previous_items), 5)
+                self.assertTrue(all(isValid(item) for item in previous_items))
+
+                dialog._reflow_controls()
+
+                self.assertFalse(any(isValid(item) for item in previous_items))
+                self.assertEqual(dialog.sample_actions.count(), 5)
+
     def test_close_is_deferred_during_authority_work(self):
         with TemporaryDirectory() as directory:
             bundle = self.create_bundle(Path(directory))
@@ -612,7 +920,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
         self.assertFalse(event.isAccepted())
         self.assertIn("Close deferred", dialog.status.text())
         self.assertFalse(dialog.progress.isHidden())
-        self.assertIn("Refreshing checksum authority", dialog.operation.text())
+        self.assertIn("Closing after the current task", dialog.decision_help.text())
 
     def test_reject_does_not_finish_during_authority_work(self):
         with TemporaryDirectory() as directory:
@@ -688,10 +996,10 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                         ),
                         None,
                     )
-                    self.assertEqual(
-                        dialog.status.text(),
-                        "SAVE FAILED: worker returned an invalid decision result",
-                    )
+                    self.assertIn("SAVE FAILED", dialog.status.text())
+                    self.assertIn("reload review", dialog.status.text())
+                    self.assertTrue(dialog._load_failed)
+                    self.assertFalse(dialog.accept_button.isEnabled())
                     self.assertFalse(dialog._decision_active)
                     self.assertIs(dialog.bundle, bundle)
 
@@ -723,7 +1031,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertNotEqual(
                 dialog._selected_sample().workspace_id, first.workspace_id
             )
-            self.assertIn("Current required cohort: 1/1", dialog.operation.text())
+            self.assertIn("Cohort 1 of 1", dialog.cohort_scope.text())
             self.assertEqual(
                 dialog.overall_progress.format(),
                 "1 of 2 cohorts completed in this review session",
@@ -764,10 +1072,12 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                 dialog.status.text(),
                 "COMPLETE: all required cohorts are saved",
             )
-            self.assertEqual(
-                dialog.summary.text(),
-                "Review complete. All required cohorts were saved.",
-            )
+            self.assertEqual(dialog.summary.text(), "")
+            self.assertTrue(dialog.sample_group.isHidden())
+            self.assertTrue(dialog.cohort_group.isHidden())
+            self.assertTrue(dialog.table.isHidden())
+            self.assertTrue(dialog.accept_button.isHidden())
+            self.assertEqual(dialog.leave_undecided.text(), "Close")
             self.assertEqual(dialog.sample_position.text(), "Review complete")
             self.assertFalse(dialog.retry_load.isVisible())
 
@@ -891,13 +1201,390 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                 dialog.close()
                 self.assertTrue(dialog.isVisible())
                 self.wait_for(lambda: not dialog._observation_active)
-                self.assertIn("checkpoint disk failure", dialog.status.text())
+                self.assertIn(
+                    "checkpoint disk failure", dialog.error_details.toPlainText()
+                )
                 self.assertFalse(dialog._close_after_observation)
                 self.assertEqual(len(callbacks), 1)
                 callbacks.pop()()
             self.assertIn("LISTENING CHECKPOINT FAILED", dialog.status.text())
-            self.assertIn("checkpoint disk failure", dialog.status.text())
+            self.assertIn("checkpoint disk failure", dialog.error_details.toPlainText())
             self.assertTrue(dialog.isVisible())
+
+    def test_retry_progress_persists_failed_listening_and_defect_observations(self):
+        attempts = []
+
+        def fail_once(*arguments):
+            attempts.append(arguments)
+            if len(attempts) == 1:
+                raise OSError("checkpoint disk failure")
+            return write_cohort_review_observations(*arguments)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(self.create_bundle(root), publication)
+            dialog = CohortReviewBundleDialog(publication, observation_writer=fail_once)
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            sample = dialog._selected_sample()
+            key = dialog._current_key()
+            queue_id = sample.item.queue_id
+            dialog.heard[key].add(queue_id)
+            dialog.bad[key].add(queue_id)
+            dialog.bad_reasons[key][queue_id] = {"repetition"}
+            dialog._checkpoint_observations()
+            self.wait_for(lambda: not dialog._observation_active)
+
+            self.assertIn("checkpoint disk failure", dialog.error_details.toPlainText())
+            self.assertTrue(dialog.retry_progress.isVisible())
+            self.assertTrue(dialog.retry_progress.isEnabled())
+            dialog.retry_progress.click()
+            self.wait_for(lambda: not dialog._observation_active)
+            self.assertEqual(len(attempts), 2)
+            self.assertFalse(dialog.retry_progress.isVisible())
+            self.assertNotIn("FAILED", dialog.status.text())
+            dialog.close()
+
+            reopened = CohortReviewBundleDialog(publication)
+            self.wait_for(lambda: reopened.table.rowCount() == 1)
+            self.assertIn(queue_id, reopened.heard[key])
+            self.assertIn(queue_id, reopened.bad[key])
+            self.assertEqual(reopened.bad_reasons[key][queue_id], {"repetition"})
+
+    def test_observation_completion_preserves_blocking_decision_failure(self):
+        for observation_error in (None, OSError("checkpoint write failure")):
+            with (
+                self.subTest(error=observation_error),
+                TemporaryDirectory() as directory,
+            ):
+                dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
+                dialog.show()
+                self.wait_for(lambda: dialog.table.rowCount() == 1)
+                dialog._observation_active = True
+                dialog._decision_active = True
+
+                dialog._decision_finished(
+                    None, OSError("postcommit projection failure")
+                )
+                dialog._observation_finished(None, observation_error)
+
+                self.assertIn("SAVE FAILED", dialog.status.text())
+                self.assertIn(
+                    "postcommit projection failure", dialog.error_details.toPlainText()
+                )
+                self.assertTrue(dialog._load_failed)
+                self.assertTrue(dialog.retry_load.isVisible())
+                self.assertTrue(dialog.retry_load.isEnabled())
+                self.assertFalse(dialog.accept_button.isEnabled())
+                self.assertFalse(dialog.reject_button.isEnabled())
+                if observation_error is not None:
+                    self.assertEqual(dialog._observation_error, str(observation_error))
+                    self.assertTrue(dialog.retry_progress.isVisible())
+                    self.assertTrue(dialog.retry_progress.isEnabled())
+                dialog._observation_error = None
+                dialog.close()
+
+    def test_bad_mark_immediately_exposes_pending_checkpoint_and_close_guard(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(self.create_bundle(root), publication)
+            dialog = CohortReviewBundleDialog(publication)
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            sample = dialog._selected_sample()
+            dialog.heard[dialog._current_key()].add(sample.item.queue_id)
+            pool = ManualThreadPool()
+            dialog._observation_runner.thread_pool = pool
+
+            dialog.toggle_bad()
+
+            self.assertTrue(dialog._observation_active)
+            self.assertTrue(dialog.operation.isVisible())
+            self.assertIn("Saving listening progress", dialog.operation.text())
+            self.assertTrue(dialog.progress.isVisible())
+            self.assertFalse(dialog.leave_undecided.isEnabled())
+            pool.run_next()
+            self.wait_for(lambda: not dialog._observation_active)
+            self.assertTrue(dialog.leave_undecided.isEnabled())
+            self.assertTrue((root / "bundle.observations.json").is_file())
+
+    def test_successful_checkpoint_preserves_current_playback_and_save_headlines(self):
+        with TemporaryDirectory() as directory:
+            dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            dialog.play_selected()
+            self.wait_for(lambda: dialog._playback_target is not None)
+            playing = dialog.status.text()
+            self.assertTrue(playing.startswith("PLAYING:"))
+            dialog._observation_active = True
+
+            dialog._observation_finished(None, None)
+
+            self.assertEqual(dialog.status.text(), playing)
+            dialog.stop_playback()
+            dialog._decision_active = True
+            saving = "SAVING accepted: the current cohort"
+            dialog._set_status(saving)
+            dialog._observation_active = True
+            try:
+                dialog._observation_finished(None, None)
+
+                self.assertEqual(dialog.status.text(), saving)
+            finally:
+                dialog._decision_active = False
+
+    def test_accepted_decision_preserves_exact_heard_evidence_after_checkpoint_failure(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(self.create_bundle(root), publication)
+            dialog = CohortReviewBundleDialog(
+                publication,
+                observation_writer=Mock(side_effect=OSError("listening disk failure")),
+                confirmer=lambda *_args: True,
+            )
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            sample = dialog._selected_sample()
+            dialog.play_selected()
+            self.wait_for(lambda: dialog._playback_target is not None)
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.wait_for(
+                lambda: (
+                    not dialog._observation_active and dialog._playback_buffer is None
+                )
+            )
+            self.assertIsNotNone(dialog._observation_error)
+            self.assertTrue(dialog.accept_button.isEnabled())
+
+            dialog.accept_button.click()
+            self.wait_for(lambda: not dialog._decision_active)
+            workspace = Path(
+                next(
+                    source["workspace"]
+                    for source in dialog.original_bundle.document["sources"]
+                    if source["workspace_id"] == sample.workspace_id
+                )
+            )
+            decision_path = next((workspace / "cohort-reviews").glob("decision-*.json"))
+            decision = json.loads(decision_path.read_text())
+            self.assertEqual(decision["decision"], "accepted")
+            self.assertEqual(
+                decision["reviewed_samples"][0]["queue_id"], sample.item.queue_id
+            )
+            self.assertEqual(
+                decision["reviewed_samples"][0]["audio_sha256"],
+                sample.item.authority.audio_sha256,
+            )
+            self.assertEqual(
+                decision["sample_assessments"][0]["assessment"], "acceptable"
+            )
+            with patch(
+                "vntts.authoring.cohort_bundle_ui.QMessageBox.warning",
+                return_value=QMessageBox.StandardButton.Discard,
+            ):
+                dialog.close()
+
+            reopened = CohortReviewBundleDialog(publication)
+            self.wait_for(lambda: reopened.table.rowCount() == 1)
+            self.assertEqual(reopened.bundle.document["cohort_count"], 1)
+            self.assertNotEqual(
+                reopened._selected_sample().workspace_id, sample.workspace_id
+            )
+            state = json.loads(
+                (workspace / "generated-audio/generation-state.json").read_text()
+            )
+            self.assertEqual(
+                state["items"][sample.item.queue_id]["review_status"], "approved"
+            )
+
+    def test_long_error_copies_completely_and_keyboard_navigation_recovers(self):
+        with TemporaryDirectory() as directory:
+            dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            diagnostic = (
+                "\n".join(
+                    f"{index}: <b>literal error</b> & unavailable source"
+                    for index in range(200)
+                )
+                + "\nFINAL-DIAGNOSTIC-MARKER"
+            )
+            dialog._mark_load_failed(diagnostic)
+            clipboard = self.application.clipboard()
+            previous_clipboard = clipboard.text()
+            try:
+                dialog.error_details.setFocus()
+                QTest.keySequence(
+                    dialog.error_details,
+                    QKeySequence(QKeySequence.StandardKey.SelectAll),
+                )
+                QTest.keySequence(
+                    dialog.error_details, QKeySequence(QKeySequence.StandardKey.Copy)
+                )
+                self.assertEqual(clipboard.text(), diagnostic)
+                self.assertTrue(clipboard.text().endswith("FINAL-DIAGNOSTIC-MARKER"))
+            finally:
+                clipboard.setText(previous_clipboard)
+
+            for _step in range(20):
+                if self.application.focusWidget() is dialog.retry_load:
+                    break
+                QTest.keyClick(self.application.focusWidget(), Qt.Key.Key_Tab)
+            self.assertIs(self.application.focusWidget(), dialog.retry_load)
+            QTest.keyClick(dialog.retry_load, Qt.Key.Key_Space)
+            self.wait_for(lambda: not dialog._load_active)
+            self.assertFalse(dialog._load_failed)
+            self.assertTrue(dialog.error_details.isHidden())
+            for _step in range(20):
+                if self.application.focusWidget() is dialog.replay:
+                    break
+                QTest.keyClick(self.application.focusWidget(), Qt.Key.Key_Tab)
+            self.assertIs(self.application.focusWidget(), dialog.replay)
+            QTest.keyClick(dialog.replay, Qt.Key.Key_Space)
+            self.wait_for(lambda: dialog._playback_target is not None)
+
+    def test_enlarged_provenance_wraps_and_copies_literal_identifiers_without_trapping_focus(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
+            font = dialog.font()
+            font.setPointSize(22)
+            dialog.setFont(font)
+            dialog.resize(900, 640)
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            dialog.technical_details.setChecked(True)
+            dialog.decision_context.technical_toggle.setChecked(True)
+            provenance = (
+                "Exact model: C:\\models\\<literal>&configuration\\"
+                + "long-model-" * 60
+                + "\nWorkspace: "
+                + "abcdef0123456789" * 40
+                + "\nFINAL-PROVENANCE-MARKER"
+            )
+            dialog.decision_context.set_context(
+                dict(dialog.decision_context.values), technical=provenance
+            )
+            details = dialog.decision_context.technical
+            dialog.review_scroll.ensureWidgetVisible(details)
+            self.application.processEvents()
+            self.assertTrue(details.isVisible())
+            self.assertEqual(details.horizontalScrollBar().maximum(), 0)
+            self.assertEqual(dialog.review_scroll.horizontalScrollBar().maximum(), 0)
+            clipboard = self.application.clipboard()
+            previous_clipboard = clipboard.text()
+            try:
+                details.setFocus()
+                QTest.keySequence(
+                    details, QKeySequence(QKeySequence.StandardKey.SelectAll)
+                )
+                QTest.keySequence(details, QKeySequence(QKeySequence.StandardKey.Copy))
+                self.assertEqual(clipboard.text(), provenance)
+            finally:
+                clipboard.setText(previous_clipboard)
+            QTest.keyClick(details, Qt.Key.Key_Tab)
+            self.assertIsNot(self.application.focusWidget(), details)
+            self.assertIsNotNone(self.application.focusWidget())
+
+    def test_failed_progress_requires_explicit_discard_before_close(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(self.create_bundle(root), publication)
+            dialog = CohortReviewBundleDialog(
+                publication, observation_writer=Mock(side_effect=OSError("disk full"))
+            )
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            sample = dialog._selected_sample()
+            key = dialog._current_key()
+            dialog.heard[key].add(sample.item.queue_id)
+            dialog._checkpoint_observations()
+            self.wait_for(lambda: not dialog._observation_active)
+
+            with patch(
+                "vntts.authoring.cohort_bundle_ui.QMessageBox.warning",
+                return_value=QMessageBox.StandardButton.Cancel,
+            ) as confirm:
+                dialog.close()
+                self.assertTrue(dialog.isVisible())
+                self.assertIn(sample.item.queue_id, dialog.heard[key])
+                confirm.assert_called_once()
+                self.assertEqual(
+                    confirm.call_args.args[-1], QMessageBox.StandardButton.Cancel
+                )
+
+            with patch(
+                "vntts.authoring.cohort_bundle_ui.QMessageBox.warning",
+                return_value=QMessageBox.StandardButton.Discard,
+            ):
+                dialog.close()
+                self.assertFalse(dialog.isVisible())
+
+    def test_close_during_loading_finishes_after_successful_load(self):
+        with TemporaryDirectory() as directory:
+            dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            pool = ManualThreadPool()
+            dialog._load_runner.thread_pool = pool
+            dialog.reload_bundle()
+
+            dialog.close()
+            self.assertTrue(dialog.isVisible())
+            pool.run_next()
+            self.wait_for(lambda: not dialog.isVisible())
+
+    def test_postcommit_failure_blocks_stale_decision_and_retry_recovers_saved_scope(
+        self,
+    ):
+        for published in (True, False):
+            with self.subTest(published=published), TemporaryDirectory() as directory:
+                root = Path(directory)
+                bundle = self.create_bundle(root)
+                publication = root / "bundle.json"
+                write_cohort_review_bundle(bundle, publication)
+                confirmer = Mock(return_value=True)
+                dialog = CohortReviewBundleDialog(
+                    publication if published else bundle, confirmer=confirmer
+                )
+                dialog.show()
+                self.wait_for(lambda: dialog.table.rowCount() == 1)
+                sample = dialog._selected_sample()
+                dialog.heard[dialog._current_key()].add(sample.item.queue_id)
+                dialog._update_actions()
+
+                with patch(
+                    "vntts.authoring.cohort_bundle._reconcile_cohort_source",
+                    side_effect=OSError("successor temporarily unavailable"),
+                ):
+                    dialog.apply_decision("accepted")
+                    self.wait_for(lambda: not dialog._decision_active)
+
+                self.assertTrue(dialog.retry_load.isVisible())
+                self.assertFalse(dialog.accept_button.isEnabled())
+                self.assertEqual(dialog.table.rowCount(), 0)
+                self.assertIn(
+                    "successor temporarily unavailable",
+                    dialog.error_details.toPlainText(),
+                )
+                dialog.apply_decision("accepted")
+                confirmer.assert_called_once()
+
+                dialog.retry_load.click()
+                self.wait_for(lambda: not dialog._load_active)
+                self.assertFalse(dialog._load_failed)
+                self.assertEqual(dialog.cohort_choice.count(), 1)
+                self.assertNotEqual(
+                    dialog._selected_sample().workspace_id, sample.workspace_id
+                )
+                dialog.close()
 
     def test_observation_checkpoint_is_background_coalesced_and_close_safe(self):
         started = threading.Event()
@@ -942,7 +1629,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
 
                 self.assertEqual(heartbeat, [True])
                 self.assertFalse(close_event.isAccepted())
-                self.assertTrue(dialog.replay.isEnabled())
+                self.assertFalse(dialog.replay.isEnabled())
                 self.assertTrue(dialog._close_after_observation)
                 release.set()
                 self.wait_for(
@@ -979,6 +1666,46 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertIn("Unspecified", dialog.table.item(0, 1).text())
             self.assertIn("1 heard", dialog.sample_position.text())
 
+    def test_real_more_evidence_adds_one_unheard_sample_and_restores_prior_defect(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle, _state_path = create_multisample_bundle(root)
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            dialog = CohortReviewBundleDialog(
+                publication, confirmer=lambda *_args: True
+            )
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 3)
+            key = dialog._current_key()
+            previous_ids = {
+                sample.item.queue_id for sample in dialog._current_samples()
+            }
+            dialog.heard[key].update(previous_ids)
+            bad_id = dialog._selected_sample().item.queue_id
+            dialog._update_actions()
+            dialog.defect_checks["repetition"].setChecked(True)
+            self.wait_for(lambda: not dialog._observation_active)
+            self.assertTrue(dialog.need_another.isEnabled())
+
+            dialog.need_another.click()
+            self.wait_for(
+                lambda: not dialog._decision_active and dialog.table.rowCount() == 4
+            )
+
+            current_ids = {sample.item.queue_id for sample in dialog._current_samples()}
+            self.assertEqual(len(current_ids - previous_ids), 1)
+            self.assertEqual(dialog.heard[key], previous_ids)
+            self.assertEqual(dialog.bad_reasons[key][bad_id], {"repetition"})
+            self.assertFalse(dialog.accept_button.isEnabled())
+            dialog.close()
+
+            reopened = CohortReviewBundleDialog(publication)
+            self.wait_for(lambda: reopened.table.rowCount() == 4)
+            self.assertEqual(reopened.heard[key], previous_ids)
+            self.assertEqual(reopened.bad_reasons[key][bad_id], {"repetition"})
+            self.assertFalse(reopened.accept_button.isEnabled())
+
     def test_published_decision_preloads_next_cohort_without_second_reload(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1007,9 +1734,10 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertEqual(reloads, [])
             self.assertFalse(dialog._load_active)
             self.assertEqual(dialog.cohort_choice.count(), 1)
-            self.assertIn("commit", dialog.status.text())
-            self.assertIn("checkpoint", dialog.status.text())
+            self.assertIn("SAVED", dialog.status.text())
             self.assertIn("next cohort", dialog.status.text())
+            self.assertIn("commit", dialog.status.toolTip())
+            self.assertIn("checkpoint", dialog.status.toolTip())
 
     def test_retry_recovers_a_transient_load_error(self):
         calls = []
@@ -1129,8 +1857,11 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog.show()
             self.wait_for(lambda: dialog.retry_load.isEnabled())
 
-            self.assertIn("does not match every remaining cohort", dialog.status.text())
-            self.assertIn("prompt_sha256", dialog.status.text())
+            self.assertIn(
+                "does not match every remaining cohort",
+                dialog.error_details.toPlainText(),
+            )
+            self.assertIn("prompt_sha256", dialog.error_details.toPlainText())
             self.assertEqual(dialog.table.rowCount(), 0)
             self.assertFalse(dialog.accept_button.isEnabled())
             self.assertFalse(dialog.reject_button.isEnabled())

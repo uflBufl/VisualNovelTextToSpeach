@@ -283,7 +283,7 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             self.assertEqual(values["generation_profile"], "stable")
             self.assertIn("Seed: 0", values["controls"])
             self.assertIn("bind one complete candidate", values["effect"])
-            self.assertIn("Plan:", dialog.decision_context.technical.text())
+            self.assertIn("Plan:", dialog.decision_context.technical.toPlainText())
             dialog.deleteLater()
 
     def finish_current_audio(self, dialog):

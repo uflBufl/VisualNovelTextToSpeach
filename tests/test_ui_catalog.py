@@ -10,6 +10,192 @@ from textwrap import dedent
 
 
 class UiCatalogTest(unittest.TestCase):
+    def test_cohort_catalog_projects_real_operations_and_restores_application_font(
+        self,
+    ):
+        script = dedent("""
+            import json
+            from contextlib import ExitStack
+            from pathlib import Path
+            from PySide6.QtCore import Qt
+            from PySide6.QtGui import QTextCursor
+            from PySide6.QtWidgets import QApplication
+            from scripts.render_ui_catalog import (
+                _cohort_review_story, _close_catalog_widget, _prepare_cohort_screenshot,
+                COHORT_CATALOG_ERROR,
+            )
+
+            app = QApplication([])
+            original_font = app.font()
+            surface = next(s for s in json.loads(Path("ui-catalog.json").read_text())["surfaces"]
+                           if s["id"] == "cohort-review")
+            states = {s["id"].removeprefix("cohort-review.") for s in surface["stories"]}
+            assert len(states) == 29
+            for state in sorted(states):
+                with ExitStack() as resources:
+                    dialog = _cohort_review_story(resources, state)
+                    dialog.show()
+                    app.processEvents()
+                    _prepare_cohort_screenshot(dialog, "cohort-review." + state, app)
+                    assert dialog.sample_identity.textFormat() == Qt.TextFormat.PlainText
+                    assert dialog.sample_text.textFormat() == Qt.TextFormat.PlainText
+                    if state not in {"load-failure", "compact-load-failure-end", "save-failure", "compact-save-failure", "complete", "save-recovered"}:
+                        assert dialog.table.rowCount() == 3
+                        assert len({s.item.speaker for s in dialog._current_samples()}) == 3
+                        assert all(s.item.voice_character == dialog._current_cohort()["identity"]["voice_character"] for s in dialog._current_samples())
+                        assert "<b>Stay here</b>" in dialog.sample_text.text() or state in {"stopped", "compact-table", "second-cohort"}
+                    if state.startswith("compact"):
+                        assert app.font().pointSize() == 22
+                        for control in (dialog.replay, dialog.accept_button, dialog.sample_text, dialog.error_details):
+                            assert control.font().pointSize() == 22
+                        for button in (dialog.replay, dialog.stop, dialog.accept_button, dialog.reject_button):
+                            metrics = button.fontMetrics()
+                            assert button.width() >= metrics.horizontalAdvance(button.text()) + 16
+                            assert button.height() >= metrics.height() + 6
+                    assert dialog.decision_context.isHidden() == (state not in {"technical-details", "compact-technical-details", "compact-technical-table-end", "compact-provenance-end"})
+                    if state in {"load-failure", "compact-load-failure-end", "save-failure", "compact-save-failure", "audio-failure", "observation-failure"}:
+                        assert COHORT_CATALOG_ERROR in dialog.error_details.toPlainText()
+                        assert len(dialog.status.text()) < 200
+                    if state == "compact-load-failure-end":
+                        bar = dialog.error_details.verticalScrollBar()
+                        assert bar.maximum() > 0 and bar.value() == bar.maximum()
+                    if state == "compact-actions":
+                        assert dialog.review_scroll.verticalScrollBar().value() > 0
+                        assert dialog.replay.isEnabled()
+                    if state in {"technical-details", "compact-technical-details", "compact-technical-table-end", "compact-provenance-end"}:
+                        assert not dialog.table.isColumnHidden(2)
+                        assert not dialog.decision_context.isHidden()
+                        assert not dialog.decision_context.technical.isHidden()
+                    if state == "compact-provenance-end":
+                        technical = dialog.decision_context.technical
+                        bar = technical.verticalScrollBar()
+                        assert bar.maximum() > 0 and bar.value() == bar.maximum()
+                        assert technical.toPlainText().endswith("Line: story:chapter-seven:line-1")
+                        cursor = QTextCursor(technical.document())
+                        cursor.movePosition(QTextCursor.MoveOperation.End)
+                        assert technical.viewport().rect().contains(technical.cursorRect(cursor).topLeft())
+                    if state == "compact-technical-table-end":
+                        bar = dialog.table.horizontalScrollBar()
+                        assert bar.maximum() > 0 and bar.value() == bar.maximum()
+                        for row in range(3):
+                            cell = dialog.table.visualItemRect(dialog.table.item(row, 7))
+                            assert dialog.table.viewport().rect().contains(cell.topLeft())
+                            assert dialog.table.viewport().rect().contains(cell.bottomRight())
+                        assert dialog.review_scroll.viewport().rect().contains(dialog.table.mapTo(dialog.review_scroll.viewport(), dialog.table.rect().bottomRight()))
+                    if state == "compact-table":
+                        assert dialog.table.currentRow() == 1
+                        assert dialog.table.rowCount() == 3
+                        assert dialog.table.item(0, 0).text() == "Heard"
+                        assert dialog.table.item(1, 0).text() == "Not heard"
+                        for row in range(3):
+                            cell = dialog.table.visualItemRect(dialog.table.item(row, 7))
+                            assert dialog.table.viewport().rect().contains(cell.topLeft())
+                            assert dialog.table.viewport().rect().contains(cell.bottomRight())
+                            assert cell.height() >= dialog.table.fontMetrics().height()
+                        assert dialog.review_scroll.viewport().rect().contains(dialog.table.mapTo(dialog.review_scroll.viewport(), dialog.table.rect().bottomRight()))
+                    if state == "second-cohort":
+                        assert dialog.cohort_choice.currentIndex() == 1
+                        assert dialog.table.currentRow() == 1
+                        assert "Cohort 2 of 2" in dialog.cohort_scope.text()
+                        assert "Do you have shillings" in dialog.sample_text.text()
+                    if state == "quality-baseline":
+                        assert not dialog.quality_baseline.isHidden()
+                        assert "VOICE BASELINE ALREADY ACCEPTED" in dialog.quality_baseline.text()
+                    if state in {"pending", "preparing", "playback", "stopped", "audio-failure", "recovered"}:
+                        assert not dialog.accept_button.isEnabled()
+                    if state == "heard":
+                        assert dialog.accept_button.isEnabled()
+                    if state in {"save-failure", "compact-save-failure"}:
+                        assert dialog.retry_load.isEnabled()
+                        assert not dialog.accept_button.isEnabled()
+                    if state in {"saving", "close-pending"}:
+                        assert dialog._decision_active
+                        assert not dialog.accept_button.isEnabled()
+                    if state == "close-pending":
+                        assert "deferred" in dialog.status.text().lower()
+                    if state == "preparing":
+                        assert dialog._playback_prepare_active
+                        assert not dialog.replay.isEnabled()
+                    if state == "playback":
+                        assert dialog.stop.isEnabled() and dialog._playback_target is not None
+                    if state in {"stopped", "audio-failure"}:
+                        assert not dialog.stop.isEnabled()
+                        assert not dialog.heard[dialog._current_key()]
+                    if state in {"bad", "compact-bad", "compact-bad-reasons"}:
+                        assert dialog.bad[dialog._current_key()]
+                        assert not dialog.accept_button.isEnabled()
+                        assert dialog.repair_marked.isEnabled()
+                        assert "leave 9 unsampled WAVs pending" in dialog.decision_help.text()
+                    if state == "compact-bad-reasons":
+                        for checkbox in dialog.defect_checks.values():
+                            assert checkbox.width() >= checkbox.fontMetrics().horizontalAdvance(checkbox.text()) + 26
+                        last = tuple(dialog.defect_checks.values())[-1]
+                        assert dialog.review_scroll.viewport().rect().contains(last.mapTo(dialog.review_scroll.viewport(), last.rect().bottomRight()))
+                    if state == "observation-failure":
+                        assert dialog.retry_progress.isEnabled()
+                        assert dialog._observation_error is not None
+                    if state == "observation-recovered":
+                        assert dialog.retry_progress.isHidden()
+                        assert dialog._observation_error is None
+                        assert dialog.error_details.isHidden()
+                    if state in {"complete", "save-recovered"}:
+                        assert dialog.bundle.document["cohort_count"] == 0
+                        assert dialog.table.rowCount() == 0
+                        assert not dialog.accept_button.isEnabled()
+                        for control in (dialog.cohort_group, dialog.sample_group, dialog.table, dialog.accept_button, dialog.reject_button, dialog.repair_marked):
+                            assert control.isHidden()
+                        assert not dialog.leave_undecided.isHidden()
+                    _close_catalog_widget(dialog)
+                assert app.font() == original_font
+        """)
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[1],
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_cohort_review_packet_renders_every_registered_state(self):
+        root = Path(__file__).resolve().parents[1]
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "catalog"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "scripts.render_ui_catalog",
+                    "--output",
+                    str(output),
+                    "--surface",
+                    "cohort-review",
+                ],
+                cwd=root,
+                env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=90,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            packet = json.loads(
+                (output / "review-packets/cohort-review.json").read_text()
+            )
+            expected = next(
+                s
+                for s in json.loads((root / "ui-catalog.json").read_text())["surfaces"]
+                if s["id"] == "cohort-review"
+            )
+            self.assertEqual(
+                {s["id"] for s in packet["target"]["stories"]},
+                {s["id"] for s in expected["stories"]},
+            )
+            for story in packet["target"]["stories"]:
+                self.assertGreater((output / story["screenshot"]).stat().st_size, 0)
+
     def test_ocr_review_catalog_uses_real_writes_and_recoverable_drafts(self):
         script = dedent("""
             from contextlib import ExitStack

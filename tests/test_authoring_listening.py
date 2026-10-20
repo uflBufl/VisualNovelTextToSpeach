@@ -1519,7 +1519,9 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertEqual(dialog.progress.text(), "Comparison 1 of 3")
-            self.assertIn("Line: line-0", dialog.decision_context.technical.text())
+            self.assertIn(
+                "Line: line-0", dialog.decision_context.technical.toPlainText()
+            )
             self.assertIn(
                 "blind comparison",
                 dialog.decision_context.values["model"],

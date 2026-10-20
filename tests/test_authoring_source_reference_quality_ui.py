@@ -243,7 +243,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             card.identity.textInteractionFlags()
             & Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        self.assertEqual(card.technical.text(), "provenance")
+        self.assertEqual(card.technical.toPlainText(), "provenance")
         card.technical_toggle.setChecked(True)
         card.set_context({})
         self.assertEqual(card.purpose.text(), "You are deciding: Unknown")

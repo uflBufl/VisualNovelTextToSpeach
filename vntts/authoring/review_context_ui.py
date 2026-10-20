@@ -6,10 +6,12 @@ from collections.abc import Mapping
 from pathlib import PureWindowsPath
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QTextOption
 from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QLabel,
+    QPlainTextEdit,
     QScrollArea,
     QToolButton,
     QVBoxLayout,
@@ -77,10 +79,9 @@ class ReviewDecisionContext(QGroupBox):
         self.technical_toggle.setCheckable(True)
         self.technical_toggle.setChecked(False)
         self.technical_toggle.setAccessibleName("Show decision provenance")
-        self.technical = QLabel()
-        self.technical.setWordWrap(True)
-        self.technical.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
+        self.technical = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
+        self.technical.setWordWrapMode(
+            QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
         )
         self.technical.setAccessibleName("Decision provenance details")
         self.technical.hide()
@@ -122,7 +123,7 @@ class ReviewDecisionContext(QGroupBox):
         )
         self.effect.setText(f"Your decision will: {value['effect']}")
         details = str(technical or "").strip()
-        self.technical.setText(details or "No additional technical details.")
+        self.technical.setPlainText(details or "No additional technical details.")
         self.technical_toggle.setVisible(bool(details))
         if not details:
             self.technical_toggle.setChecked(False)

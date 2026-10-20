@@ -9,7 +9,6 @@ import json
 import os
 import socket
 import sys
-import time
 import wave
 from contextlib import ExitStack
 from dataclasses import replace
@@ -17,7 +16,7 @@ from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Callable, Never, cast
+from typing import TYPE_CHECKING, Callable, cast
 from unittest.mock import Mock, patch
 
 if TYPE_CHECKING:
@@ -26,6 +25,13 @@ if TYPE_CHECKING:
     from PySide6.QtWidgets import QApplication, QWidget
 
     from vntts.app import SettingsDialog
+    from vntts.authoring.cohort_bundle import CohortBundleSample, CohortReviewBundle
+    from vntts.authoring.cohort_bundle_ui import (
+        CohortReviewBundleDialog,
+        DecisionExecutor,
+        PlaybackPreparer,
+        SampleLoader,
+    )
     from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
     from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
     from vntts.calibration import CalibrationReviewDialog, DialogRegionOverlay
@@ -49,6 +55,380 @@ from vntts.ui_catalog import (  # noqa: E402
     _write_catalog,
     load_catalog,
 )
+
+COHORT_CATALOG_ERROR = (
+    "<b>Keep this diagnostic literal.</b> The exact sample authority could not be read.\n"
+    + "The selected source changed while checksum-bound recordings were checked. " * 70
+    + "\nEND OF ERROR: check the source and retry this operation."
+)
+
+
+def _cohort_catalog_bundle(
+    root: Path,
+) -> tuple[CohortReviewBundle, tuple[CohortBundleSample, ...]]:
+    from copy import deepcopy
+
+    from tests.authoring_fixtures import create_pending_cohort_workspace
+    from vntts.authoring.cohort_bundle import (
+        build_cohort_review_bundle,
+        load_cohort_review_bundle_samples,
+    )
+
+    workspaces = tuple(
+        create_pending_cohort_workspace(root / name)[0] for name in ("first", "second")
+    )
+    bundle, source_samples = load_cohort_review_bundle_samples(
+        build_cohort_review_bundle(workspaces)
+    )
+    document = deepcopy(bundle.document)
+    samples = []
+    for source in source_samples:
+        for index, (speaker, text, reason) in enumerate(
+            (
+                (
+                    "The Keeper of the Northern Library",
+                    "<b>Stay here</b>, timekeeper. "
+                    + "The northern road is closed until dawn. " * 3,
+                    "technical-attention: unusual pace; report-only",
+                ),
+                (
+                    "Travelling Hotelier",
+                    "Do you have shillings, miss?",
+                    "clean representative sample",
+                ),
+                (
+                    "Narrator",
+                    "The storm finally passed.",
+                    "longest dialogue",
+                ),
+            )
+        ):
+            samples.append(
+                replace(
+                    source,
+                    required_reason=reason,
+                    item=replace(
+                        source.item,
+                        queue_id=f"{source.item.queue_id}-catalog-{index}",
+                        line_id=f"story:chapter-seven:line-{index + 1}",
+                        speaker=speaker,
+                        text=text,
+                    ),
+                )
+            )
+    for cohort in document["cohorts"]:
+        cohort_samples = [
+            sample
+            for sample in samples
+            if sample.workspace_id == cohort["workspace_id"]
+        ]
+        cohort["samples"] = [
+            {
+                **cohort["samples"][0],
+                "queue_id": sample.item.queue_id,
+                "line_id": sample.item.line_id,
+                "required_reason": sample.required_reason,
+            }
+            for sample in cohort_samples
+        ]
+        cohort["item_count"] = 12
+        source_document = next(
+            value
+            for value in document["sources"]
+            if value["workspace_id"] == cohort["workspace_id"]
+        )
+        plan = source_document["plan"]
+        plan_cohort = next(
+            value
+            for value in plan["cohorts"]
+            if value["cohort_id"] == cohort["cohort_id"]
+        )
+        original_item = plan_cohort["items"][0]
+        plan_cohort["items"] = [
+            {
+                **original_item,
+                "queue_id": sample["queue_id"],
+                "line_id": sample["line_id"],
+                "sampled": True,
+            }
+            for sample in cohort["samples"]
+        ]
+        plan_cohort["items"].extend(
+            {
+                **original_item,
+                "queue_id": f"catalog-unsampled-{index}",
+                "sampled": False,
+            }
+            for index in range(9)
+        )
+        plan_cohort["sample_queue_ids"] = [
+            sample.item.queue_id for sample in cohort_samples
+        ]
+        plan_cohort["item_count"] = plan["pending_item_count"] = 12
+        plan["sample_item_count"] = len(cohort_samples)
+    document["pending_item_count"] = 24
+    document["sample_item_count"] = len(samples)
+    return replace(bundle, document=document), tuple(samples)
+
+
+def _cohort_catalog_operations(
+    bundle: CohortReviewBundle, samples: tuple[CohortBundleSample, ...], state: str
+) -> tuple[SampleLoader, DecisionExecutor, PlaybackPreparer]:
+    from vntts.authoring.cohort_bundle import CohortBundleProjection, CohortReviewBundle
+
+    load_attempts = 0
+
+    def load(
+        _bundle: CohortReviewBundle | Path,
+    ) -> tuple[CohortReviewBundle, tuple[CohortBundleSample, ...]]:
+        nonlocal load_attempts
+        load_attempts += 1
+        if load_attempts == 1 and state in {
+            "load-failure",
+            "compact-load-failure-end",
+            "recovered",
+        }:
+            raise ValueError(COHORT_CATALOG_ERROR)
+        if (
+            isinstance(_bundle, CohortReviewBundle)
+            and _bundle.document["cohort_count"] == 0
+        ):
+            return _bundle, ()
+        return bundle, tuple(samples)
+
+    save_attempts = 0
+
+    def save(*_arguments: object) -> CohortBundleProjection:
+        nonlocal save_attempts
+        save_attempts += 1
+        if save_attempts == 1 and state.removeprefix("compact-") in {
+            "save-failure",
+            "save-recovered",
+        }:
+            raise OSError(COHORT_CATALOG_ERROR)
+        empty = replace(
+            bundle,
+            document={
+                **bundle.document,
+                "cohorts": [],
+                "cohort_count": 0,
+                "pending_item_count": 0,
+                "sample_item_count": 0,
+            },
+        )
+        current = samples[0]
+        return CohortBundleProjection(
+            bundle.bundle_id,
+            current.workspace_id,
+            current.cohort_id,
+            (),
+            "approved",
+            empty,
+        )
+
+    def prepare(sample: CohortBundleSample) -> tuple[CohortBundleSample, bytes]:
+        assert sample.item.audio is not None
+        return sample, sample.item.audio.read_bytes()
+
+    return load, save, prepare
+
+
+def _cohort_review_story(resources: ExitStack, state: str) -> CohortReviewBundleDialog:
+    from PySide6.QtWidgets import QApplication
+
+    from tests.qt_task_fixtures import ManualThreadPool
+    from vntts.async_ui import LatestTaskRunner
+    from vntts.authoring import cohort_bundle_ui as ui
+
+    app = QApplication.instance()
+    assert isinstance(app, QApplication)
+    mode = state.removeprefix("compact-")
+    mode = {"bad-reasons": "bad", "provenance-end": "technical-details"}.get(mode, mode)
+    if state.startswith("compact"):
+        font = app.font()
+        resources.callback(app.setFont, app.font())
+        font.setPointSize(22)
+        app.setFont(font)
+    root = Path(
+        resources.enter_context(temporary_directory(prefix="vntts-ui-catalog-"))
+    )
+    bundle, samples = _cohort_catalog_bundle(root)
+    pool = ManualThreadPool()
+    resources.enter_context(
+        patch.object(
+            ui,
+            "LatestTaskRunner",
+            lambda parent, **_kwargs: LatestTaskRunner(
+                parent, thread_pool=cast("QThreadPool", pool)
+            ),
+        )
+    )
+    media_status = ui.QMediaPlayer.MediaStatus
+    player = resources.enter_context(patch.object(ui, "QMediaPlayer"))
+    player.MediaStatus = media_status
+    player.return_value.play_bytes.return_value = object()
+    resources.enter_context(
+        patch.object(
+            ui.QMessageBox,
+            "warning",
+            return_value=ui.QMessageBox.StandardButton.Discard,
+        )
+    )
+    load, save, prepare = _cohort_catalog_operations(bundle, samples, state)
+    dialog = ui.CohortReviewBundleDialog(
+        bundle,
+        sample_loader=load,
+        playback_preparer=prepare,
+        decision_executor=save,
+        confirmer=lambda *_args: True,
+    )
+
+    def finish() -> None:
+        pool.run_next()
+        app.processEvents()
+
+    finish()
+    if state == "recovered":
+        dialog.retry_load.click()
+        finish()
+    _set_cohort_playback_story(dialog, mode, finish)
+    _set_cohort_write_story(dialog, mode, finish, root)
+    if mode in {"technical-details", "technical-table-end"}:
+        dialog.technical_details.setChecked(True)
+        dialog.decision_context.technical_toggle.click()
+    if mode == "second-cohort":
+        dialog.cohort_choice.setCurrentIndex(1)
+    if mode in {"table", "second-cohort"}:
+        dialog.table.selectRow(1)
+    if state == "quality-baseline":
+        dialog.quality_gate_context = ui._QualityGateContext(
+            "catalog-accepted-voice-gate",
+            "Rhiannon",
+            "The Keeper of the Northern Library",
+            2,
+        )
+        dialog._apply_loaded_bundle(bundle, samples)
+    if state.startswith("compact"):
+        dialog.resize(dialog.minimumSize())
+    return dialog
+
+
+def _set_cohort_playback_story(
+    dialog: CohortReviewBundleDialog, mode: str, finish: Callable[[], None]
+) -> None:
+    from PySide6.QtWidgets import QApplication
+
+    from vntts.authoring.cohort_bundle_ui import QMediaPlayer
+
+    if mode in {
+        "heard",
+        "bad",
+        "saving",
+        "save-failure",
+        "save-recovered",
+        "complete",
+        "close-pending",
+        "observation-failure",
+        "observation-recovered",
+        "table",
+    }:
+        for row in range(1 if mode == "table" else dialog.table.rowCount()):
+            dialog.table.selectRow(row)
+            dialog.replay.click()
+            finish()
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            QApplication.processEvents()
+        dialog.table.selectRow(0)
+    if mode == "bad":
+        dialog.mark_bad.click()
+        dialog.defect_toggle.setChecked(True)
+    if mode in {"preparing", "playback", "stopped", "audio-failure"}:
+        dialog.replay.click()
+        if mode != "preparing":
+            finish()
+        if mode == "stopped":
+            dialog.stop.click()
+        elif mode == "audio-failure":
+            dialog._media_error(None, COHORT_CATALOG_ERROR)
+
+
+def _set_cohort_write_story(
+    dialog: CohortReviewBundleDialog, mode: str, finish: Callable[[], None], root: Path
+) -> None:
+    if mode in {
+        "saving",
+        "save-failure",
+        "save-recovered",
+        "complete",
+        "close-pending",
+    }:
+        dialog.accept_button.click()
+        if mode == "close-pending":
+            dialog.close()
+        elif mode != "saving":
+            finish()
+            if mode == "save-recovered":
+                dialog.retry_load.click()
+                finish()
+                dialog.accept_button.click()
+                finish()
+            if mode in {"complete", "save-recovered"}:
+                finish()
+    if mode.startswith("observation-"):
+        dialog._checkpoint_observations_enabled = True
+        dialog.observation_writer = Mock(
+            side_effect=[OSError(COHORT_CATALOG_ERROR), root / "progress.json"]
+        )
+        dialog._checkpoint_observations()
+        finish()
+        if mode == "observation-recovered":
+            dialog.retry_progress.click()
+            finish()
+
+
+def _prepare_cohort_screenshot(
+    widget: QWidget, story_id: str, app: QApplication
+) -> None:
+    if not story_id.startswith("cohort-review."):
+        return
+    from vntts.authoring.cohort_bundle_ui import CohortReviewBundleDialog
+
+    assert isinstance(widget, CohortReviewBundleDialog)
+    app.processEvents()
+    scroll_target = {
+        "cohort-review.compact-actions": widget.next,
+        "cohort-review.compact-bad": widget.defect_toggle,
+        "cohort-review.compact-bad-reasons": tuple(widget.defect_checks.values())[-1],
+        "cohort-review.compact-save-failure": widget.error_details,
+        "cohort-review.quality-baseline": widget.quality_baseline,
+    }.get(story_id)
+    if scroll_target is not None:
+        widget.review_scroll.ensureWidgetVisible(scroll_target)
+    elif story_id.endswith(("compact-table", "compact-technical-table-end")):
+        widget.review_scroll.ensureWidgetVisible(widget.table)
+        widget.review_scroll.verticalScrollBar().setValue(widget.table.y() - 12)
+        if story_id.endswith("compact-technical-table-end"):
+            widget.table.horizontalScrollBar().setValue(
+                widget.table.horizontalScrollBar().maximum()
+            )
+    elif story_id.endswith("compact-load-failure-end"):
+        widget.review_scroll.ensureWidgetVisible(widget.error_details)
+        widget.error_details.verticalScrollBar().setValue(
+            widget.error_details.verticalScrollBar().maximum()
+        )
+    elif story_id.endswith(("technical-details", "compact-provenance-end")):
+        widget.review_scroll.verticalScrollBar().setValue(
+            widget.review_scroll.verticalScrollBar().maximum()
+        )
+        if story_id.endswith("compact-technical-details"):
+            widget.table.horizontalScrollBar().setValue(
+                widget.table.horizontalScrollBar().maximum()
+            )
+        if story_id.endswith("compact-provenance-end"):
+            widget.decision_context.technical.verticalScrollBar().setValue(
+                widget.decision_context.technical.verticalScrollBar().maximum()
+            )
+    app.processEvents()
 
 
 def _set_long_authoring_review(dialog: AuthoringWorkbenchDialog, state: str) -> None:
@@ -726,6 +1106,7 @@ def _prepare_catalog_screenshot(
 
     _prepare_ocr_review_screenshot(widget, story_id, app)
     _prepare_settings_screenshot(widget, story_id, app)
+    _prepare_cohort_screenshot(widget, story_id, app)
     if story_id.startswith("authoring-workbench."):
         assert isinstance(widget, AuthoringWorkbenchDialog)
         _prepare_authoring_screenshot(widget, story_id, app)
@@ -2019,7 +2400,6 @@ def _render_stories(
     from tests.authoring_fixtures import (
         _legacy_bad_fixture,
         create_failed_reference_workspace,
-        create_pending_cohort_workspace,
     )
     from tests.listening_fixtures import FakePlayback, write_model_reports
     from tests.missing_voice_reuse_fixtures import (
@@ -2031,8 +2411,6 @@ def _render_stories(
         build_unknown_speaker_prompt,
     )
     from vntts.asset_ui import AssetManagerDialog
-    from vntts.authoring.cohort_bundle import build_cohort_review_bundle
-    from vntts.authoring.cohort_bundle_ui import CohortReviewBundleDialog
     from vntts.authoring.failure_reference_audit import publish_failure_reference_audit
     from vntts.authoring.failure_reference_audit_ui import FailureReferenceAuditDialog
     from vntts.authoring.legacy_reason_review import build_legacy_reason_review
@@ -3225,50 +3603,7 @@ def _render_stories(
         return _authoring_workbench_story(resources, state)
 
     def cohort_review(state: str) -> CohortReviewBundleDialog:
-        temporary = resources.enter_context(
-            temporary_directory(prefix="vntts-ui-catalog-")
-        )
-        root = Path(temporary)
-        first = create_pending_cohort_workspace(root / "first")[0]
-        second = create_pending_cohort_workspace(root / "second")[0]
-        bundle = build_cohort_review_bundle((first, second))
-        if state == "load-failure":
-
-            def fail_load(_bundle: object) -> Never:
-                raise ValueError("The sample manifest could not be read")
-
-            dialog = CohortReviewBundleDialog(bundle, sample_loader=fail_load)
-        else:
-            dialog = CohortReviewBundleDialog(bundle)
-
-        deadline = time.monotonic() + 3
-        while dialog._load_active and time.monotonic() < deadline:
-            app.processEvents()
-            time.sleep(0.005)
-        if state in {"heard", "bad"}:
-            sample = dialog._selected_sample()
-            key = dialog._current_key()
-            if sample is not None and key is not None:
-                dialog.heard[key].add(sample.item.queue_id)
-                dialog._show_current_cohort()
-            if state == "bad":
-                dialog.toggle_bad()
-                dialog.defect_toggle.setChecked(True)
-        if state == "compact":
-            font = dialog.font()
-            font.setPointSize(max(font.pointSize() + 3, 16))
-            dialog.setFont(font)
-            dialog.resize(dialog.minimumSize())
-        if state == "preparing":
-            dialog._playback_prepare_active = True
-            dialog.status.setText("Preparing selected recording...")
-            dialog._update_actions()
-        if state == "saving":
-            dialog._decision_active = True
-            dialog._decision_started_at = time.perf_counter()
-            dialog._decision_scope_text = "one exact cohort"
-            dialog._update_actions()
-        return dialog
+        return _cohort_review_story(resources, state)
 
     def legacy_reason_review(state: str) -> LegacyReasonReviewDialog:
         temporary = resources.enter_context(
@@ -4120,13 +4455,40 @@ def _render_stories(
         "support-center.failure": lambda: _support_center("failure"),
         "support-center.compact": lambda: _support_center("compact"),
         "authoring-workbench.ready": lambda: authoring_workbench("ready"),
-        "cohort-review.pending": lambda: cohort_review("pending"),
-        "cohort-review.heard": lambda: cohort_review("heard"),
-        "cohort-review.bad": lambda: cohort_review("bad"),
-        "cohort-review.preparing": lambda: cohort_review("preparing"),
-        "cohort-review.saving": lambda: cohort_review("saving"),
-        "cohort-review.load-failure": lambda: cohort_review("load-failure"),
-        "cohort-review.compact": lambda: cohort_review("compact"),
+        **{
+            f"cohort-review.{state}": partial(cohort_review, state)
+            for state in (
+                "pending",
+                "second-cohort",
+                "heard",
+                "bad",
+                "preparing",
+                "saving",
+                "load-failure",
+                "compact",
+                "compact-table",
+                "compact-technical-details",
+                "compact-technical-table-end",
+                "compact-provenance-end",
+                "compact-bad",
+                "compact-bad-reasons",
+                "compact-save-failure",
+                "compact-actions",
+                "technical-details",
+                "quality-baseline",
+                "playback",
+                "stopped",
+                "compact-load-failure-end",
+                "recovered",
+                "save-failure",
+                "save-recovered",
+                "audio-failure",
+                "complete",
+                "close-pending",
+                "observation-failure",
+                "observation-recovered",
+            )
+        },
         "legacy-reason-review.pending": lambda: legacy_reason_review("pending"),
         "legacy-reason-review.heard": lambda: legacy_reason_review("heard"),
         "legacy-reason-review.selected": lambda: legacy_reason_review("selected"),
