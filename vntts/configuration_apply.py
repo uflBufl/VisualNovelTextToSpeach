@@ -93,6 +93,7 @@ class ConfigurationApplyMixin:
     _configuration_success_status: str | None
     _configuration_refresh_hotkeys: bool
     _configuration_restart: bool
+    _configuration_after_apply: Callable[[], object] | None
 
     if TYPE_CHECKING:
         settings: AppSettings
@@ -172,6 +173,7 @@ class ConfigurationApplyMixin:
         self._configuration_success_status = None
         self._configuration_refresh_hotkeys = False
         self._configuration_restart = False
+        self._configuration_after_apply = None
 
     def _configuration_runner_active_changed(self, active: bool) -> None:
         self.cancel_configuration_action.setVisible(active)
@@ -185,6 +187,7 @@ class ConfigurationApplyMixin:
         success_status: str,
         refresh_hotkeys: bool = False,
         restart: bool = False,
+        after_apply: Callable[[], object] | None = None,
     ) -> None:
         # A cancelled replacement can leave the saved and loaded identities apart.
         restart = restart or (
@@ -201,6 +204,7 @@ class ConfigurationApplyMixin:
         self._configuration_success_status = success_status
         self._configuration_refresh_hotkeys = bool(refresh_hotkeys)
         self._configuration_restart = restart
+        self._configuration_after_apply = after_apply
         self.set_status(progress_status)
         self.configuration_runner.start(
             self.session_owner.configure,
@@ -211,6 +215,7 @@ class ConfigurationApplyMixin:
         )
 
     def cancel_configuration_apply(self) -> None:
+        self._configuration_after_apply = None
         cancellation = self._configuration_cancellation
         if cancellation is None or not self.configuration_runner.active:
             self.set_status("No runtime configuration apply is in progress")
@@ -236,6 +241,8 @@ class ConfigurationApplyMixin:
         self, result: tuple[bool, bool] | None, error: Exception | None
     ) -> None:
         generation = self._configuration_generation
+        after_apply = self._configuration_after_apply
+        self._configuration_after_apply = None
         self._configuration_generation = None
         self._configuration_cancellation = None
         if not self._lifecycle_is_current(generation):
@@ -264,6 +271,8 @@ class ConfigurationApplyMixin:
         self._configuration_refresh_hotkeys = False
         self.set_status(self._configuration_success_status)
         self._configuration_success_status = None
+        if after_apply is not None:
+            after_apply()
 
     def _save_settings_with_login_rollback(
         self, updated_settings: AppSettings, original_settings: AppSettings

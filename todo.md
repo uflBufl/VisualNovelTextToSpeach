@@ -641,6 +641,11 @@ Planned implementation order after approval:
 - [ ] On supported macOS and Windows builds, use VoiceOver and NVDA to traverse
       target, source, game-reference, consent, preview, impact and action controls;
       enter the same editor from live character recovery with that character selected.
+      Confirm an unknown character in live and Read once uses the narrator without
+      opening a blocking choice. After a live voice edit, exercise Save, Back,
+      Resume with narrator and Escape; Stop or a failed/cancelled voice reload must
+      never restart reading. Exercise the same optional edit after Read once and
+      require Cancel without a paused-recovery prompt.
       Trigger original and preview playback states. Gate: focus follows visual order,
       every control has a meaningful announced name, and each changing status is
       announced once with its subject. Retain a screen-reader transcript or recording.

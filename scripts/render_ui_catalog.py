@@ -1839,6 +1839,7 @@ def _render_stories(
         failed: bool = False,
         compact_long_values: bool = False,
         narrator_fallback: bool = False,
+        resume_live: bool = True,
     ) -> ControlDashboard | GameNarratorDialog:
         dashboard = ControlDashboard(settings)
         dashboard.resize(
@@ -1928,7 +1929,7 @@ def _render_stories(
             else f"{role} was not mapped during live reading. Choose and save a voice."
         )
         if role == "Selone" and not narrator_fallback:
-            panel.set_recovery_context("Selone", resume_live=True)
+            panel.set_recovery_context("Selone", resume_live=resume_live)
         if narrator_fallback:
             with QSignalBlocker(panel.source):
                 panel.source.setCurrentIndex(panel.source.findData("narrator"))
@@ -3077,6 +3078,9 @@ def _render_stories(
         ),
         "voice-editor.narrator": lambda: voice_editor("Narrator"),
         "voice-editor.live-recovery": lambda: voice_editor("Selone"),
+        "voice-editor.one-shot-assignment": lambda: voice_editor(
+            "Selone", resume_live=False
+        ),
         "voice-editor.narrator-fallback": lambda: voice_editor(
             "Selone", narrator_fallback=True
         ),

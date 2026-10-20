@@ -1417,7 +1417,13 @@ class TrayApplicationTest(unittest.TestCase):
                 patch("vntts.app.GameNarratorDialog", return_value=picker),
                 patch.object(tray.dashboard, "embed_narrator"),
                 patch.object(tray.dashboard, "remove_narrator"),
-                patch.object(tray, "_reload_game_narrator"),
+                patch.object(
+                    tray,
+                    "_reload_game_narrator",
+                    side_effect=lambda *_args, after_apply=None: (
+                        after_apply() if after_apply is not None else None
+                    ),
+                ),
             ):
                 tray.open_voice_previews()
                 self.wait_until(lambda: tray.narrator_dialog is picker)
@@ -1597,7 +1603,7 @@ class TrayApplicationTest(unittest.TestCase):
                                     for settings in saved_settings
                                 )
                             )
-                            reload.assert_called_once_with(True)
+                            reload.assert_called_once_with(True, None, after_apply=None)
                             if same_preparation:
                                 preparation.apply_narrator_settings.assert_called_once_with(
                                     candidate.updated(last_main_section="reading"),
@@ -1848,7 +1854,7 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application.shutdown()
 
-    def test_unknown_speaker_prompt_suppresses_duplicate_notification(self):
+    def test_paused_voice_editor_recovery_suppresses_duplicate_notification(self):
         controller = Mock(is_live_running=False)
         tray_application = TrayApplication(
             self.application,
@@ -1861,7 +1867,14 @@ class TrayApplicationTest(unittest.TestCase):
             patch("vntts.app.configure_floating_window") as configure_window,
             patch("vntts.app.sys.platform", "darwin"),
         ):
-            tray_application.signals.unknown_speaker.emit("Selone")
+            tray_application.pending_unknown_speaker = "Selone"
+            tray_application.speaker_mapping_action.setText(
+                "Manage voice for Selone..."
+            )
+            tray_application._finish_unknown_speaker_mapping(
+                "Selone", resolved=False, resume_live=True
+            )
+            self.application.processEvents()
             self.application.processEvents()
 
         self.assertTrue(tray_application.speaker_mapping_action.isVisible())
@@ -1869,11 +1882,6 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.speaker_mapping_action.text(), "Manage voice for Selone..."
         )
         notification.assert_not_called()
-        self.assertIn("No voice is assigned", tray_application.dashboard.status.text())
-        self.assertEqual(
-            tray_application.compact_controller.status.text(),
-            "Voice needed: Selone",
-        )
         self.assertIsInstance(
             tray_application.unknown_speaker_prompt,
             QMessageBox,
@@ -1884,7 +1892,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.unknown_speaker_prompt.text(),
         )
         self.assertIn(
-            "Live reading is waiting",
+            "Live reading is paused for voice editing",
             tray_application.unknown_speaker_prompt.informativeText(),
         )
         self.assertTrue(
@@ -1897,7 +1905,7 @@ class TrayApplicationTest(unittest.TestCase):
         )
         self.assertEqual(
             tray_application.unknown_speaker_continue_button.text(),
-            "Use narrator this session",
+            "Resume with narrator",
         )
         self.assertEqual(
             tray_application.unknown_speaker_choose_button.text(),
@@ -1926,21 +1934,54 @@ class TrayApplicationTest(unittest.TestCase):
         controller.allow_narrator_fallback.assert_called_once_with("Selone")
         tray_application.shutdown()
 
-    def test_unknown_speaker_during_live_reading_is_nonmodal(self):
-        controller = Mock(is_live_running=True)
-        tray_application = TrayApplication(
+    def test_paused_voice_recovery_escape_keeps_live_stopped(self):
+        controller = Mock(is_live_running=False)
+        tray = TrayApplication(
             self.application,
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
-
-        tray_application.offer_speaker_mapping("Selone")
-
-        self.assertIsNone(tray_application.unknown_speaker_prompt)
-        self.assertEqual(tray_application.pending_unknown_speaker, "Selone")
-        self.assertIn("Using the narrator", tray_application.status_action.text())
+        tray._finish_unknown_speaker_mapping("Selone", resolved=False, resume_live=True)
+        self.application.processEvents()
+        tray.unknown_speaker_prompt.reject()
+        self.application.processEvents()
         controller.toggle_live.assert_not_called()
-        tray_application.shutdown()
+        self.assertEqual(tray.pending_unknown_speaker, "Selone")
+        self.assertFalse(tray.resume_live_after_unknown_mapping)
+        self.assertIn("remains paused after voice editing", tray.status_action.text())
+        tray.shutdown()
+
+    def test_unknown_speaker_notice_is_nonmodal_for_live_and_read_once(self):
+        for running in (False, True):
+            with self.subTest(running=running):
+                controller = Mock(is_live_running=running)
+                tray_application = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=controller),
+                )
+
+                tray_application.signals.unknown_speaker.emit("Selone")
+                self.application.processEvents()
+                tray_application.signals.unknown_speaker.emit("Hotelier")
+                self.application.processEvents()
+
+                self.assertIsNone(tray_application.unknown_speaker_prompt)
+                self.assertEqual(tray_application.pending_unknown_speaker, "Selone")
+                self.assertEqual(
+                    list(tray_application._queued_unknown_speakers), ["Hotelier"]
+                )
+                self.assertIn(
+                    "Using the narrator for Hotelier",
+                    tray_application.status_action.text(),
+                )
+                self.assertIn("after Selone", tray_application.status_action.text())
+                self.assertEqual(
+                    tray_application.compact_controller.status.text(),
+                    "Using the narrator for Hotelier. Manage its voice after Selone if needed.",
+                )
+                controller.toggle_live.assert_not_called()
+                tray_application.shutdown()
 
     def test_pending_speaker_mapping_opens_canonical_editor_on_character(self):
         controller = Mock(is_live_running=False)
@@ -2640,7 +2681,13 @@ class TrayApplicationTest(unittest.TestCase):
             patch.object(tray_application.dashboard, "remove_narrator"),
             patch.object(tray_application, "_save_settings_candidate"),
             patch.object(tray_application, "_sync_active_profile", return_value=True),
-            patch.object(tray_application, "_reload_game_narrator"),
+            patch.object(
+                tray_application,
+                "_reload_game_narrator",
+                side_effect=lambda *_args, after_apply=None: (
+                    after_apply() if after_apply is not None else None
+                ),
+            ),
         ):
             tray_application._open_pending_speaker_mapping("Selone")
             self.wait_until(lambda: tray_application.narrator_dialog is dialog)
@@ -2655,6 +2702,138 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(tray_application.resume_live_after_unknown_mapping)
         self.assertIsNone(tray_application.pending_unknown_speaker)
         tray_application.shutdown()
+
+    def test_saved_voice_resumes_only_after_runtime_apply(self):
+        for queued in (False, True):
+            with self.subTest(queued=queued):
+                controller = Mock(
+                    settings=AppSettings(), is_ready=True, is_live_running=False
+                )
+                controller.live_reader.runtime_control_snapshot.return_value = {}
+                controller.unresolved_live_speakers.return_value = ()
+                controller.toggle_live.side_effect = lambda: (
+                    setattr(controller, "is_live_running", True) or True
+                )
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=controller),
+                )
+                tray.set_ready(True)
+                pool = ManualThreadPool()
+                tray.configuration_runner.thread_pool = pool
+                dialog = Mock(result_settings=tray.settings)
+                dialog.voice_library.binding.return_value = Mock()
+                tray.narrator_dialog = dialog
+                tray.pending_unknown_speaker = "Selone"
+                tray.unknown_speaker_mapping_in_progress = "Selone"
+                tray._resume_live_after_narrator = True
+                if queued:
+                    tray._queued_unknown_speakers.append("Hotelier")
+                with (
+                    patch.object(tray.dashboard, "remove_narrator"),
+                    patch.object(tray, "_save_settings_candidate"),
+                    patch.object(tray, "_sync_active_profile", return_value=True),
+                ):
+                    tray._narrator_finished(QDialog.DialogCode.Accepted)
+                self.assertTrue(tray.configuration_runner.active)
+                self.application.processEvents()
+                self.assertIsNone(tray.unknown_speaker_prompt)
+                controller.toggle_live.assert_not_called()
+                pool.run_next()
+                self.application.processEvents()
+                self.application.processEvents()
+                self.assertFalse(tray._controller_busy)
+                if queued:
+                    self.assertIsNotNone(tray.unknown_speaker_prompt)
+                    self.assertEqual(tray.pending_unknown_speaker, "Hotelier")
+                    controller.toggle_live.assert_not_called()
+                    tray.unknown_speaker_continue_button.click()
+                    self.application.processEvents()
+                self.assertTrue(controller.is_live_running)
+                controller.toggle_live.assert_called_once_with()
+                tray.shutdown()
+
+    def test_saved_voice_never_resumes_after_interrupted_runtime_apply(self):
+        for interruption in (
+            "error",
+            "cancel_configuration_apply",
+            "_begin_controller_lifecycle",
+            "_request_stop_reading",
+            "emergency_stop",
+        ):
+            with self.subTest(interruption=interruption):
+                controller = Mock(
+                    settings=AppSettings(), is_ready=True, is_live_running=False
+                )
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=controller),
+                )
+                tray.set_ready(True)
+                pool = ManualThreadPool()
+                tray.configuration_runner.thread_pool = pool
+                dialog = Mock(result_settings=tray.settings)
+                dialog.voice_library.binding.return_value = Mock()
+                tray.narrator_dialog = dialog
+                tray.pending_unknown_speaker = "Selone"
+                tray.unknown_speaker_mapping_in_progress = "Selone"
+                tray._resume_live_after_narrator = True
+                tray._queued_unknown_speakers.append("Hotelier")
+                with (
+                    patch.object(tray.dashboard, "remove_narrator"),
+                    patch.object(tray, "_save_settings_candidate"),
+                    patch.object(tray, "_sync_active_profile", return_value=True),
+                    patch.object(tray, "show_error"),
+                    patch.object(tray.live_stop_runner, "start"),
+                ):
+                    tray._narrator_finished(QDialog.DialogCode.Accepted)
+                    if interruption == "error":
+                        controller.start.side_effect = RuntimeError("reload failed")
+                    else:
+                        getattr(tray, interruption)()
+                    pool.run_next()
+                    self.application.processEvents()
+                    self.application.processEvents()
+                controller.toggle_live.assert_not_called()
+                self.assertIsNone(tray.unknown_speaker_prompt)
+                self.assertEqual(tray.pending_unknown_speaker, "Selone")
+                self.assertEqual(list(tray._queued_unknown_speakers), ["Hotelier"])
+                tray.shutdown()
+
+    def test_failed_voice_save_does_not_resume_live_reading(self):
+        for failure in ("missing-result", "settings-write"):
+            with self.subTest(failure=failure):
+                controller = Mock(is_live_running=False)
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=controller),
+                )
+                dialog = Mock(
+                    result_settings=None
+                    if failure == "missing-result"
+                    else tray.settings
+                )
+                tray.narrator_dialog = dialog
+                tray._resume_live_after_narrator = True
+                with (
+                    patch.object(tray.dashboard, "remove_narrator"),
+                    patch.object(
+                        tray,
+                        "_save_settings_candidate",
+                        side_effect=OSError("disk full"),
+                    ),
+                    patch.object(tray, "_reload_game_narrator") as reload,
+                    patch.object(tray, "show_error") as show_error,
+                ):
+                    tray._narrator_finished(QDialog.DialogCode.Accepted)
+                show_error.assert_called_once()
+                reload.assert_not_called()
+                controller.toggle_live.assert_not_called()
+                self.assertIsNone(tray.unknown_speaker_prompt)
+                tray.shutdown()
 
     def test_missing_narrator_result_does_not_save_settings(self):
         tray_application = TrayApplication(self.application, AppSettings())
@@ -2688,6 +2867,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch.object(tray_application, "_show_unknown_speaker_prompt") as prompt,
         ):
             tray_application._open_pending_speaker_mapping("Selone")
+            self.assertTrue(tray_application.resume_live_after_unknown_mapping)
             tray_application._narrator_finished(QDialog.DialogCode.Rejected)
             self.application.processEvents()
 
@@ -2696,6 +2876,80 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray_application.pending_unknown_speaker, "Selone")
         self.assertTrue(tray_application.resume_live_after_unknown_mapping)
         tray_application.shutdown()
+
+    def test_optional_voice_mapping_never_opens_paused_recovery(self):
+        for accepted in (False, True):
+            with self.subTest(accepted=accepted):
+                controller = Mock(is_live_running=False)
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=controller),
+                )
+                dialog = Mock(result_settings=tray.settings)
+                dialog.voice_library.binding.return_value = Mock()
+                tray.offer_speaker_mapping("Selone")
+                tray.offer_speaker_mapping("Hotelier")
+                with (
+                    patch("vntts.app.GameNarratorDialog", return_value=dialog),
+                    patch.object(tray.dashboard, "embed_narrator"),
+                    patch.object(tray.dashboard, "remove_narrator"),
+                    patch.object(tray, "_save_settings_candidate"),
+                    patch.object(tray, "_sync_active_profile", return_value=True),
+                    patch.object(
+                        tray,
+                        "_reload_game_narrator",
+                        side_effect=lambda *_args, after_apply=None: (
+                            after_apply() if after_apply is not None else None
+                        ),
+                    ),
+                    patch.object(tray, "_show_unknown_speaker_prompt") as prompt,
+                ):
+                    tray.open_speaker_mapping()
+                    dialog.set_recovery_context.assert_called_once_with(
+                        "Selone", resume_live=False
+                    )
+                    tray._narrator_finished(
+                        QDialog.DialogCode.Accepted
+                        if accepted
+                        else QDialog.DialogCode.Rejected
+                    )
+                    self.application.processEvents()
+                prompt.assert_not_called()
+                controller.toggle_live.assert_not_called()
+                self.assertEqual(
+                    tray.pending_unknown_speaker, "Hotelier" if accepted else "Selone"
+                )
+                self.assertEqual(
+                    list(tray._queued_unknown_speakers),
+                    [] if accepted else ["Hotelier"],
+                )
+                self.assertFalse(tray.resume_live_after_unknown_mapping)
+                tray.shutdown()
+
+    def test_stop_or_lifecycle_cancels_queued_voice_recovery(self):
+        for interrupt in (
+            "emergency_stop",
+            "_request_stop_reading",
+            "_begin_controller_lifecycle",
+        ):
+            with self.subTest(interrupt=interrupt):
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=Mock(is_live_running=False)),
+                )
+                tray._finish_unknown_speaker_mapping(
+                    "Selone", resolved=False, resume_live=True
+                )
+                with patch.object(tray.live_stop_runner, "start"):
+                    getattr(tray, interrupt)()
+                with patch("vntts.app.build_unknown_speaker_prompt") as build_prompt:
+                    self.application.processEvents()
+                build_prompt.assert_not_called()
+                self.assertFalse(tray.resume_live_after_unknown_mapping)
+                self.assertIsNone(tray.unknown_speaker_prompt)
+                tray.shutdown()
 
     def test_second_unknown_speaker_waits_for_active_mapping(self):
         controller = Mock(is_live_running=False)
@@ -2714,7 +2968,13 @@ class TrayApplicationTest(unittest.TestCase):
             patch.object(tray_application.dashboard, "remove_narrator"),
             patch.object(tray_application, "_save_settings_candidate"),
             patch.object(tray_application, "_sync_active_profile", return_value=True),
-            patch.object(tray_application, "_reload_game_narrator"),
+            patch.object(
+                tray_application,
+                "_reload_game_narrator",
+                side_effect=lambda *_args, after_apply=None: (
+                    after_apply() if after_apply is not None else None
+                ),
+            ),
             patch.object(tray_application, "_show_unknown_speaker_prompt") as prompt,
         ):
             tray_application._open_pending_speaker_mapping("Selone")

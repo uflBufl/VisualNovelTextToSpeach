@@ -1936,6 +1936,30 @@ class GameNarratorTest(unittest.TestCase):
             finally:
                 dialog.reject()
 
+    def test_optional_voice_edit_explains_narrator_without_waiting(self):
+        pool = ManualThreadPool()
+        dialog = GameNarratorDialog(
+            AppSettings(),
+            importer=Mock(),
+            preview_service=Mock(),
+            thread_pool=pool,
+            player=Mock(),
+        )
+        try:
+            dialog.set_recovery_context("Selone", resume_live=False)
+            self.assertIn("Choose a voice for Selone", dialog.context_note.text())
+            self.assertIn("Reading stays stopped", dialog.context_note.text())
+            self.assertNotIn("waiting", dialog.context_note.text())
+            self.assertEqual(dialog.cancel_button.text(), "Cancel")
+            dialog._operation = "warm"
+            dialog._finish_warm = Mock()
+            dialog._finished(None, None)
+            self.assertEqual(dialog.cancel_button.text(), "Cancel")
+        finally:
+            dialog.reject()
+            while pool.tasks:
+                self.run_task(pool)
+
     def test_live_recovery_explains_role_and_save_consequence(self):
         pool = ManualThreadPool()
         importer = Mock()
@@ -1958,9 +1982,11 @@ class GameNarratorTest(unittest.TestCase):
             self.assertTrue(dialog.context_note.isVisibleTo(dialog))
             self.assertIn("Selone", dialog.context_note.text())
             self.assertIn("Live reading is paused", dialog.context_note.text())
-            self.assertIn("reading resumes", dialog.context_note.text())
-            self.assertIn("live reading stays paused", dialog.context_note.text())
-            self.assertIn("Not assigned", dialog.role_summary.text())
+            self.assertIn("Save a voice to continue", dialog.context_note.text())
+            self.assertIn("keeps live reading paused", dialog.context_note.text())
+            self.assertIn(
+                "Narrator fallback (no saved choice)", dialog.role_summary.text()
+            )
             self.assertEqual(dialog.source.currentData(), "game")
             self.assertEqual(dialog.save_button.text(), "Save voice")
             self.assertEqual(dialog.cancel_button.text(), "Back to recovery choices")

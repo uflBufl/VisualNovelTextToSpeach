@@ -58,7 +58,8 @@
       "contracts": ["single-mission", "responsive-form", "voice-selection", "global-settings", "playback-evidence"],
       "stories": [
         {"id": "voice-editor.narrator", "title": "Narrator assignment", "state": "Normal entry from the Voices tab"},
-        {"id": "voice-editor.live-recovery", "title": "Unknown speaker recovery", "state": "Same editor with the missing character preselected"},
+        {"id": "voice-editor.live-recovery", "title": "Unknown speaker recovery", "state": "Character preselected after the user paused live reading to edit its voice"},
+        {"id": "voice-editor.one-shot-assignment", "title": "Voice choice after Read once", "state": "Optional assignment after automatic narrator playback, without claiming speech is waiting"},
         {"id": "voice-editor.narrator-fallback", "title": "Character narrator fallback", "state": "A selected character can deliberately use the narrator's voice"},
         {"id": "voice-editor.preview-generating", "title": "Preview generation", "state": "Progress, cancellation and playback ownership are visible"},
         {"id": "voice-editor.preview-failure", "title": "Preview generation failure", "state": "Failure explains recovery without implying that a voice was assigned"},
@@ -120,12 +121,12 @@
       "title": "Unknown speaker recovery",
       "family": "Everyday playback",
       "audience": "Player",
-      "mission": "Pause an unresolved live line and route the user into the canonical voice editor.",
+      "mission": "After an interrupted live voice edit, let the user finish assigning, resume with the narrator, or remain stopped.",
       "canonical_owner": "voice-editor",
       "related": ["voice-editor", "dashboard", "unmapped-speaker-notification"],
       "contracts": ["voice-selection", "single-mission"],
       "stories": [
-        {"id": "unknown-speaker-prompt.awaiting-choice", "title": "Speaker recovery choice", "state": "Open the canonical voice editor, use narrator for this session, or keep reading paused"},
+        {"id": "unknown-speaker-prompt.awaiting-choice", "title": "Speaker recovery choice", "state": "After leaving a live voice edit without saving: return to the editor, resume with narrator, or keep reading paused"},
         {"id": "unknown-speaker-prompt.long-name", "title": "Long speaker and larger text", "state": "All three recovery outcomes remain visible with a long speaker name and increased text size"}
       ]
     },
@@ -671,8 +672,8 @@
       "title": "Unmapped speaker notification",
       "family": "Notifications",
       "audience": "Player",
-      "mission": "Draw bounded attention to paused speaker recovery without duplicating a visible prompt.",
-      "canonical_owner": "unknown-speaker-prompt",
+      "mission": "Explain automatic narrator fallback without blocking live or one-shot reading; retain optional voice assignment.",
+      "canonical_owner": "dashboard",
       "related": ["unknown-speaker-prompt", "voice-editor"],
       "contracts": ["voice-selection"]
     },

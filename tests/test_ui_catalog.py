@@ -876,6 +876,7 @@ class UiCatalogTest(unittest.TestCase):
                 "dashboard.setup-expanded",
                 "voice-editor.narrator",
                 "voice-editor.live-recovery",
+                "voice-editor.one-shot-assignment",
                 "voice-editor.preview-generating",
                 "voice-editor.preview-failure",
                 "voice-editor.long-values",

@@ -1479,13 +1479,6 @@
       "maximum": 11
     },
     {
-      "code": "PLR0912",
-      "path": "vntts/app.py",
-      "scope": "TrayApplication._narrator_finished",
-      "count": 1,
-      "maximum": 13
-    },
-    {
       "code": "PLR0915",
       "path": "vntts/pregeneration_ui.py",
       "scope": "OfflineAudioPreparationDialog._populate_stories",

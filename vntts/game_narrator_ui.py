@@ -217,6 +217,7 @@ class GameNarratorDialog(QDialog):
         self._game_reference_dirty = False
         self._installation_root: Path | None = None
         self._recovery_role: str | None = None
+        self._recovery_resume_live = False
         self._suppress_auto_discovery = False
         self.select_affected_after_save = False
 
@@ -711,24 +712,25 @@ class GameNarratorDialog(QDialog):
         """Explain why the canonical editor opened for an unresolved live role."""
         display_role = role.strip() or "this character"
         self._recovery_role = normalize_character_name(display_role)
+        self._recovery_resume_live = resume_live
         self._suppress_auto_discovery = True
         if resume_live:
             message = (
-                f"Live reading is paused because {display_role} has no assigned "
-                "voice. Save a voice to resolve this character; reading resumes "
-                "after any other waiting speakers are resolved. Back to recovery "
-                "choices returns without saving; live reading stays paused."
+                f"Live reading is paused for voice editing: {display_role}. "
+                "Save a voice to continue after any other voice choices. "
+                "Back to recovery choices keeps live reading paused."
             )
         else:
             message = (
-                f"Speech is waiting because {display_role} has no assigned voice. "
-                "Save a voice to resolve this character, or return to the recovery "
-                "choices without saving."
+                f"Choose a voice for {display_role} to change future speech. "
+                "Reading stays stopped."
             )
         self.context_note.setText(message)
         self.context_note.show()
         self.save_button.setText("Save voice")
-        self.cancel_button.setText("Back to recovery choices")
+        self.cancel_button.setText(
+            "Back to recovery choices" if resume_live else "Cancel"
+        )
         self.save_button.adjustSize()
         self.cancel_button.adjustSize()
         if (
@@ -741,7 +743,7 @@ class GameNarratorDialog(QDialog):
             with QSignalBlocker(self.source):
                 self.source.setCurrentIndex(self.source.findData("game"))
             self._source_changed()
-            summary = "Not assigned - waiting for your choice"
+            summary = "Narrator fallback (no saved choice)"
             if self._story_titles:
                 summary += "\nSelected stories: " + ", ".join(self._story_titles[:3])
             self.role_summary.setText(summary)
@@ -826,7 +828,7 @@ class GameNarratorDialog(QDialog):
             self._recovery_role == normalize_character_name(role)
             and saved_binding is None
         ):
-            return "Not assigned - waiting for your choice"
+            return "Narrator fallback (no saved choice)"
         summary = self._source_label(selected)
         return (
             summary
@@ -2263,7 +2265,7 @@ class GameNarratorDialog(QDialog):
         self.controls.setEnabled(True)
         self.progress.hide()
         self.cancel_button.setText(
-            "Back to recovery choices" if self._recovery_role else "Cancel"
+            "Back to recovery choices" if self._recovery_resume_live else "Cancel"
         )
         self.cancel_button.adjustSize()
         if operation == "warm":
