@@ -5656,6 +5656,30 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application.shutdown()
 
+    def test_hotkey_refresh_keeps_current_ui_and_registers_only_supported_platforms(
+        self,
+    ):
+        for platform in ("darwin", "win32", "linux"):
+            with self.subTest(platform=platform):
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=Mock()),
+                )
+                tray.show_dashboard()
+                tray.set_status("Saved configuration.")
+                with (
+                    patch("vntts.app.sys.platform", platform),
+                    patch.object(tray, "start_hotkeys") as start_hotkeys,
+                ):
+                    tray.signals.hotkeys_requested.emit()
+                    QTest.qWait(350)
+                self.assertEqual(start_hotkeys.call_count, int(platform != "darwin"))
+                self.assertTrue(tray.dashboard.isVisible())
+                self.assertFalse(tray.compact_controller.isVisible())
+                self.assertEqual(tray.status_action.text(), "Saved configuration.")
+                tray.shutdown()
+
     def test_controller_lifecycle_shows_main_window_loading_state(self):
         tray_application = TrayApplication(
             self.application,
@@ -5759,7 +5783,11 @@ class TrayApplicationTest(unittest.TestCase):
             patch("vntts.app.sys.platform", "darwin"),
             patch.object(tray_application, "start_hotkeys") as start_hotkeys,
         ):
-            tray_application._start_hotkeys_safely()
+            generation = tray_application._begin_controller_lifecycle()
+            tray_application._initial_start_generation = generation
+            tray_application._initial_start_finished(True, None)
+            self.assertFalse(tray_application.compact_controller.isVisible())
+            QTest.qWait(350)
 
         start_hotkeys.assert_not_called()
         self.assertTrue(tray_application.compact_controller.isVisible())
@@ -7137,6 +7165,156 @@ class TrayApplicationTest(unittest.TestCase):
         controller.toggle_live.assert_not_called()
         controller.apply_settings.assert_not_called()
         tray_application.shutdown()
+
+    def test_macos_setup_save_keeps_reading_handoff_after_deferred_hotkey_refresh(self):
+        with patch("vntts.app.sys.platform", "darwin"):
+            saved, controller, tray, pool, wizard = self._onboarding_preview_case(
+                "success"
+            )
+            self._complete_onboarding_preview(wizard, pool)
+            wizard.finish_button.click()
+            self.application.processEvents()
+            saved_status = tray.dashboard.status.text()
+            QTest.qWait(350)
+            self.assertIsNone(tray.onboarding_wizard)
+            self.assertTrue(tray.dashboard.isVisible())
+            self.assertFalse(tray.compact_controller.isVisible())
+            self.assertIn("Reading setup saved", saved_status)
+            self.assertEqual(tray.dashboard.status.text(), saved_status)
+            self.assertEqual(tray.dashboard.live_button.text(), "Start reading")
+            self.assertTrue(tray.dashboard.live_button.isEnabled())
+            self.assertEqual(
+                load_app_settings(tray._settings_path, environment={}), tray.settings
+            )
+            self.assertEqual(tray.settings.game_window_title, "Preview")
+            self.assertEqual(tray.settings.speech_backend, saved.speech_backend)
+            self.assertEqual(controller.settings.game_window_title, "Preview")
+            controller.toggle_live.assert_not_called()
+            tray.shutdown()
+
+    def _onboarding_preview_case(self, outcome):
+        saved = AppSettings(onboarding_completed=True, game_window_title="Saved")
+        controller = Mock(settings=saved, is_ready=False, is_live_running=False)
+        tray = TrayApplication(
+            self.application, saved, controller_factory=Mock(return_value=controller)
+        )
+        pool = ManualThreadPool()
+        tray.onboarding_test_runner.thread_pool = pool
+        tray.configuration_runner.thread_pool = pool
+        tray.run_onboarding()
+        wizard = tray.onboarding_wizard
+        wizard.draft_settings = (
+            saved
+            if outcome == "same-settings"
+            else saved.updated(game_window_title="Preview")
+        )
+
+        def apply_settings(settings, **_kwargs):
+            controller.settings = settings
+            if outcome == "apply-error" and settings is wizard.draft_settings:
+                raise RuntimeError("Preview apply failed after publishing settings")
+            return True
+
+        def cancel_during_test():
+            wizard.reject()
+            self.assertIs(tray.onboarding_wizard, wizard)
+            self.assertTrue(wizard.test_page.running)
+            return "Narrator", "Cancelled dialogue."
+
+        controller.apply_settings.side_effect = apply_settings
+        controller.start.side_effect = lambda: (
+            setattr(controller, "is_ready", True) or True
+        )
+        controller.shutdown.side_effect = lambda: setattr(controller, "is_ready", False)
+        controller.test_current_dialog.return_value = ("Narrator", "Test dialogue.")
+        if outcome == "failure":
+            controller.test_current_dialog.side_effect = RuntimeError("OCR failed")
+        elif outcome == "cancel-test":
+            controller.test_current_dialog.side_effect = cancel_during_test
+        return saved, controller, tray, pool, wizard
+
+    def _complete_onboarding_preview(self, wizard, pool):
+        wizard.show_page(len(wizard.pages) - 1)
+        wizard.test_page.run_test()
+        pool.run_next()
+        self.application.processEvents()
+        self.assertFalse(wizard.test_page.running)
+
+    def test_cancelled_or_unsaved_onboarding_restores_its_applied_preview(self):
+        for outcome in (
+            "success",
+            "failure",
+            "cancel-test",
+            "apply-error",
+            "save-error",
+        ):
+            with self.subTest(outcome=outcome):
+                saved, controller, tray, pool, wizard = self._onboarding_preview_case(
+                    outcome
+                )
+                self._complete_onboarding_preview(wizard, pool)
+                self.assertIs(controller.settings, wizard.draft_settings)
+                starts_before_close = controller.start.call_count
+                shutdowns_before_close = controller.shutdown.call_count
+                with (
+                    patch.object(
+                        tray,
+                        "_save_settings_candidate",
+                        side_effect=OSError("Disk full"),
+                    ),
+                    patch.object(tray, "show_error") as show_error,
+                ):
+                    if outcome == "save-error":
+                        wizard.accept()
+                        show_error.assert_called_once()
+                    else:
+                        wizard.reject()
+                self.assertIsNone(tray.onboarding_wizard)
+                self.assertIsNone(tray._onboarding_preview_settings)
+                self.assertTrue(tray.configuration_runner.active)
+                self.assertTrue(tray._controller_busy)
+                pool.run_next()
+                self.application.processEvents()
+                self.assertIs(controller.settings, saved)
+                self.assertIs(tray.settings, saved)
+                self.assertFalse(tray._controller_busy)
+                self.assertIn("Saved Reading setup restored", tray.status_action.text())
+                self.assertEqual(controller.start.call_count, starts_before_close)
+                self.assertEqual(controller.shutdown.call_count, shutdowns_before_close)
+                tray.shutdown()
+
+    def test_onboarding_cancel_keeps_unchanged_or_unrelated_runtime(self):
+        for outcome in (
+            "same-settings",
+            "no-preview",
+            "unrelated-settings",
+            "shutdown",
+        ):
+            with self.subTest(outcome=outcome):
+                saved, controller, tray, pool, wizard = self._onboarding_preview_case(
+                    outcome
+                )
+                if outcome != "no-preview":
+                    self._complete_onboarding_preview(wizard, pool)
+                if outcome in {"no-preview", "unrelated-settings"}:
+                    controller.settings = saved.updated(
+                        game_window_title="Other configuration"
+                    )
+                runtime_before_close = controller.settings
+                starts_before_close = controller.start.call_count
+                shutdowns_before_close = controller.shutdown.call_count
+                tray._shutting_down = outcome == "shutdown"
+                wizard.reject()
+                self.assertIsNone(tray.onboarding_wizard)
+                self.assertIsNone(tray._onboarding_preview_settings)
+                self.assertFalse(tray.configuration_runner.active)
+                self.assertFalse(tray._controller_busy)
+                self.assertIs(controller.settings, runtime_before_close)
+                self.assertIs(tray.settings, saved)
+                self.assertEqual(controller.start.call_count, starts_before_close)
+                self.assertEqual(controller.shutdown.call_count, shutdowns_before_close)
+                tray._shutting_down = False
+                tray.shutdown()
 
     def test_onboarding_test_runs_controller_end_to_end(self):
         controller = Mock()

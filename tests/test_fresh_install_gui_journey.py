@@ -31,6 +31,7 @@ from vntts.generated_audio import (  # noqa: E402
     GeneratedAudioRoute,
     PlaybackStatus,
 )
+from vntts.ocr import DialogRegion  # noqa: E402
 from vntts.onboarding import DiagnosticResult  # noqa: E402
 from vntts.onboarding_ui import OnboardingWizard  # noqa: E402
 from vntts.pregeneration_queue import PregenerationInputStore  # noqa: E402
@@ -213,7 +214,9 @@ def _first_process(root):
                 "Onboarding diagnostics did not finish",
             )
             wizard.next_button.click()
-            wizard.calibration_page.finish_calibration(None)
+            wizard.calibration_page.finish_calibration(
+                DialogRegion(0.1, 0.2, 0.4, 0.16)
+            )
             wizard.next_button.click()
             wizard.test_page.button.click()
             _wait_until(

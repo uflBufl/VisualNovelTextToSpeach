@@ -11,9 +11,15 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtGui import QFont  # noqa: E402
+from PySide6.QtGui import QFont, QKeySequence  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog, QLabel, QSizePolicy  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QDialog,
+    QLabel,
+    QScrollArea,
+    QSizePolicy,
+)
 
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.calibration import DialogRegionOverlay  # noqa: E402
@@ -491,7 +497,7 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertEqual(wizard.diagnostics_page.results.count(), 1)
         self.assertTrue(wizard.diagnostics_page.complete)
         wizard.next_page()
-        wizard.calibration_page.finish_calibration(None)
+        wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.2, 0.4, 0.16))
         wizard.next_page()
         wizard.test_page.set_result(True, "Spoke one line")
         wizard.previous_page()
@@ -666,6 +672,208 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertFalse(wizard.test_page.running)
         self.assertTrue(wizard.back_button.isEnabled())
         self.assertTrue(wizard.cancel_button.isEnabled())
+        wizard.deleteLater()
+
+    def test_completed_test_hides_progress_and_cancel_for_every_outcome(self):
+        for successful, message in (
+            (True, "Read a line"),
+            (False, "No dialogue"),
+            (False, "Test cancelled"),
+        ):
+            with self.subTest(successful=successful, message=message):
+                wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+                wizard.show_page(len(wizard.pages) - 1)
+                page = wizard.test_page
+                page.run_test()
+                page.set_progress(55, "Speaking")
+                page.set_result(successful, message)
+                self.assertTrue(page.progress.isHidden())
+                self.assertTrue(page.cancel_button.isHidden())
+                self.assertTrue(page.button.isEnabled())
+                self.assertEqual(wizard.finish_button.isEnabled(), successful)
+                final_text = page.status.text()
+                page.set_progress(75, "Late progress")
+                self.assertEqual(page.status.text(), final_text)
+                wizard.deleteLater()
+
+    def test_test_cancellation_keeps_its_message_and_emits_once(self):
+        wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+        wizard.show_page(len(wizard.pages) - 1)
+        requests = []
+        wizard.cancel_requested.connect(lambda: requests.append(True))
+        page = wizard.test_page
+        page.run_test()
+        page.request_cancel()
+        page.set_progress(80, "Late download update")
+        page.request_cancel()
+        self.assertEqual(requests, [True])
+        self.assertIn("Cancelling", page.status.text())
+        self.assertTrue(page.running)
+        page.set_result(False, "Cancelled")
+        page.run_test()
+        page.set_progress(20, "Retry running")
+        self.assertEqual(page.status.text(), "Retry running")
+        page.set_result(False, "Done")
+        wizard.deleteLater()
+
+    def test_new_calibration_invalidates_previous_test_and_reuses_selected_region(self):
+        wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+        first = DialogRegion(0.1, 0.2, 0.4, 0.16)
+        changed = DialogRegion(0.1, 0.4, 0.4, 0.2)
+        wizard.calibration_page.finish_calibration(first)
+        wizard.show_page(len(wizard.pages) - 1)
+        wizard.test_page.set_result(True, "Spoke from first area")
+        wizard.previous_page()
+        wizard.calibration_page.finish_calibration(changed)
+        self.assertEqual(wizard.calibration_page.capture_region, changed)
+        wizard.next_page()
+        self.assertFalse(wizard.test_page.successful)
+        self.assertFalse(wizard.finish_button.isEnabled())
+        self.assertEqual(wizard.test_page.status.text(), "The test has not run.")
+        self.assertEqual(wizard.test_page.button.text(), "Read the visible line")
+        wizard.test_page.set_result(True, "Spoke from changed area")
+        wizard.previous_page()
+        wizard.calibration_page.finish_calibration(changed)
+        wizard.next_page()
+        self.assertTrue(wizard.finish_button.isEnabled())
+        wizard.deleteLater()
+
+    def test_long_test_error_remains_reachable_without_covering_navigation(self):
+        for reading_setup in (False, True):
+            with self.subTest(reading_setup=reading_setup):
+                wizard = OnboardingWizard(AppSettings(), reading_setup=reading_setup)
+                wizard.show_page(len(wizard.pages) - 1)
+                font = QFont(wizard.font())
+                font.setPointSize(22)
+                wizard.setFont(font)
+                wizard.resize(560, 440)
+                message = "<b>Missing voice</b> " + "long/path/" * 100 + " END"
+                wizard.test_page.set_result(False, message)
+                wizard.show()
+                self.application.processEvents()
+                scroll = wizard.stack.currentWidget()
+                self.assertIsInstance(scroll, QScrollArea)
+                self.assertGreater(scroll.verticalScrollBar().maximum(), 0)
+                self.assertEqual(
+                    wizard.test_page.status.textFormat(), Qt.TextFormat.PlainText
+                )
+                self.assertEqual(wizard.test_page.status.text(), message)
+                for button in (
+                    wizard.back_button,
+                    wizard.cancel_button,
+                    wizard.finish_button,
+                ):
+                    self.assertTrue(button.isVisibleTo(wizard))
+                    self.assertTrue(
+                        wizard.rect().contains(
+                            button.mapTo(wizard, button.rect().bottomRight())
+                        )
+                    )
+                scroll.ensureWidgetVisible(wizard.test_page.button)
+                self.application.processEvents()
+                self.assertTrue(
+                    scroll.viewport()
+                    .rect()
+                    .contains(
+                        wizard.test_page.button.mapTo(
+                            scroll.viewport(), wizard.test_page.button.rect().center()
+                        )
+                    )
+                )
+                wizard.close()
+                wizard.deleteLater()
+
+    def test_setup_messages_keep_literal_text_and_keyboard_copy(self):
+        message = "<b>Voice</b> & missing.wav\n" + "long/path/" * 100 + "END"
+        for reading_setup in (False, True):
+            for page_name in ("diagnostics_page", "test_page"):
+                with self.subTest(reading_setup=reading_setup, page=page_name):
+                    wizard = OnboardingWizard(
+                        AppSettings(), reading_setup=reading_setup
+                    )
+                    wizard.diagnostics_page.runner.start = Mock()
+                    page = getattr(wizard, page_name)
+                    wizard.show_page(wizard.pages.index(page))
+                    page.status.setText(message)
+                    wizard.show()
+                    label = page.status
+                    label.setFocus()
+                    QTest.keySequence(
+                        label, QKeySequence(QKeySequence.StandardKey.SelectAll)
+                    )
+                    QTest.keySequence(
+                        label, QKeySequence(QKeySequence.StandardKey.Copy)
+                    )
+                    self.assertEqual(self.application.clipboard().text(), message)
+                    for other in (
+                        wizard.diagnostics_page.status,
+                        wizard.diagnostics_page.remediation_reason,
+                        wizard.calibration_page.status,
+                        wizard.test_page.status,
+                        wizard.configuration_page.validation_summary,
+                    ):
+                        self.assertEqual(other.textFormat(), Qt.TextFormat.PlainText)
+                    wizard.close()
+                    wizard.deleteLater()
+
+    def test_incomplete_game_selection_disables_next_and_highlights_refresh(self):
+        wizard = OnboardingWizard(
+            AppSettings(game_window_title="Game"), reading_setup=True
+        )
+        wizard.show()
+        self.assertTrue(wizard.next_button.isEnabled())
+        wizard.configuration_page.game_window.setCurrentText("")
+        self.assertFalse(wizard.next_button.isEnabled())
+        self.assertFalse(wizard.next_button.isDefault())
+        self.assertTrue(wizard.configuration_page.refresh_button.isDefault())
+        font = QFont(wizard.font())
+        font.setPointSize(22)
+        wizard.setFont(font)
+        self.assertEqual(
+            wizard.configuration_page.validation_summary.font().pointSize(), 22
+        )
+        self.assertTrue(
+            wizard.configuration_page.configuration_scroll.isAncestorOf(
+                wizard.configuration_page.validation_summary
+            )
+        )
+        wizard.configuration_page.game_window.setCurrentText("Another game")
+        self.assertTrue(wizard.next_button.isEnabled())
+        self.assertTrue(wizard.next_button.isDefault())
+        wizard.close()
+        wizard.deleteLater()
+
+    def test_default_action_follows_current_step_without_bypassing_test(self):
+        wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+        wizard.diagnostics_page.runner.start = Mock()
+        wizard.show_page(wizard.pages.index(wizard.diagnostics_page))
+        wizard.diagnostics_page._checks_finished(
+            (DiagnosticResult("Capture", "ok", "Ready"),), None
+        )
+        wizard.show()
+        self.assertTrue(wizard.next_button.isDefault())
+        QTest.keyClick(wizard, Qt.Key.Key_Return)
+        self.assertIs(wizard.pages[wizard.current_page_index], wizard.calibration_page)
+        self.assertTrue(wizard.calibration_page.button.isDefault())
+        wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.2, 0.4, 0.16))
+        self.assertTrue(wizard.next_button.isDefault())
+        wizard.next_page()
+        requests = []
+        wizard.test_requested.connect(requests.append)
+        self.assertTrue(wizard.test_page.button.isDefault())
+        QTest.keyClick(wizard, Qt.Key.Key_Return)
+        self.assertEqual(len(requests), 1)
+        self.assertFalse(wizard.test_page.button.isDefault())
+        QTest.keyClick(wizard, Qt.Key.Key_Return)
+        self.assertEqual(len(requests), 1)
+        wizard.test_page.set_result(False, "Try again")
+        self.assertTrue(wizard.test_page.button.isDefault())
+        wizard.test_page.run_test()
+        wizard.test_page.set_result(True, "Read one line")
+        self.assertTrue(wizard.finish_button.isDefault())
+        self.assertFalse(wizard.test_page.button.isDefault())
+        QTest.keyClick(wizard, Qt.Key.Key_Return)
+        self.assertEqual(wizard.result(), QDialog.DialogCode.Accepted)
         wizard.deleteLater()
 
     def test_configuration_gives_text_fields_room_to_expand(self):
@@ -1058,6 +1266,7 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertEqual(pool.tasks, [])
         self.assertFalse(page.install_moss_button.isHidden())
         self.assertTrue(page.install_moss_button.isEnabled())
+        self.assertTrue(page.install_moss_button.isDefault())
         self.assertIn("9.1 GB download", page.status.text())
         self.assertIn("20.0 GB", page.status.text())
 
@@ -1175,7 +1384,7 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertTrue(wizard.diagnostics_page.complete)
 
         wizard.next_page()
-        wizard.calibration_page.finish_calibration(None)
+        wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.2, 0.4, 0.16))
         wizard.next_page()
         wizard.test_page.button.click()
         self.assertEqual(len(test_requests), 1)

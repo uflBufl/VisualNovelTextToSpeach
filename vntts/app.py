@@ -1772,6 +1772,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.onboarding_test_runner = LatestTaskRunner(self)
         self.onboarding_test_runner.finished.connect(self._onboarding_test_finished)
         self._onboarding_test_generation: int | None = None
+        self._onboarding_preview_settings: AppSettings | None = None
         self.live_scope_runner = LatestTaskRunner(self)
         self.live_scope_runner.finished.connect(self._live_scope_finished)
         self._live_scope_generation: int | None = None
@@ -1975,7 +1976,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.diagnostics_changed.connect(self.update_diagnostics_snapshot)
         self.signals.sequence_status_changed.connect(self.set_sequence_status)
         self.signals.diagnostics_failed.connect(self.set_diagnostics_error)
-        self.signals.hotkeys_requested.connect(self.schedule_hotkeys)
+        self.signals.hotkeys_requested.connect(self._refresh_hotkeys)
         self.signals.read_requested.connect(
             self.read_once, Qt.ConnectionType.QueuedConnection
         )
@@ -2301,10 +2302,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ready = False
         self.signals.ready_changed.emit(ready)
         if ready:
-            self.signals.hotkeys_requested.emit()
+            self.schedule_hotkeys()
             if self._start_live_after_initial_start:
                 self.toggle_live()
         self._start_live_after_initial_start = False
+
+    def _refresh_hotkeys(self) -> None:
+        if sys.platform != "darwin":
+            self.schedule_hotkeys()
 
     def schedule_hotkeys(self) -> None:
         QTimer.singleShot(250, self, self._start_hotkeys_safely)
@@ -2939,6 +2944,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             capture_region=self.controller._capture_region(),
         )
         self.onboarding_wizard = wizard
+        self._onboarding_preview_settings = None
         wizard.voices_requested.connect(lambda: self._open_onboarding_voices(wizard))
         wizard.settings_requested.connect(
             lambda: self._open_onboarding_settings(wizard)
@@ -3043,7 +3049,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         model_name: str | None,
         cancel_event: Event,
     ) -> str | None:
-        self.controller.apply_settings(settings)
+        previous_settings = self.controller.settings
+        try:
+            self.controller.apply_settings(settings)
+        finally:
+            if self.controller.settings is not previous_settings:
+                self._onboarding_preview_settings = self.controller.settings
         if cancel_event.is_set():
             return "OCR-to-speech test cancelled."
         if settings.speech_backend == "coqui-xtts" and model_name:

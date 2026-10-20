@@ -56,6 +56,8 @@ class DurableSettingsMixin:
         signals: _Signals
         onboarding_wizard: _OnboardingWizard | None
         onboarding_cancel_event: Event
+        _onboarding_preview_settings: AppSettings | None
+        _shutting_down: bool
         _settings_path: Path
         _settings_revision: bytes | None
         _settings_commit_lock: Lock
@@ -74,6 +76,10 @@ class DurableSettingsMixin:
         def show_error(self, message: str) -> None: ...
 
         def show_dashboard(self) -> None: ...
+
+        def _start_configuration_apply(
+            self, settings: AppSettings, *, progress_status: str, success_status: str
+        ) -> None: ...
 
     def _save_settings_candidate(self, candidate: AppSettings) -> Path:
         with self._settings_commit_lock:
@@ -133,6 +139,7 @@ class DurableSettingsMixin:
             self.set_status("Setup required")
             wizard.deleteLater()
             self.show_dashboard()
+            self._restore_onboarding_runtime()
             return
 
         candidate = wizard.settings().updated(
@@ -145,7 +152,9 @@ class DurableSettingsMixin:
             self.show_error(f"Unable to save setup settings: {error}")
             wizard.deleteLater()
             self.show_dashboard()
+            self._restore_onboarding_runtime()
             return
+        self._onboarding_preview_settings = None
         self.settings = candidate
         self._update_auto_advance_action()
         # The successful setup test already applied and started this draft.
@@ -161,6 +170,21 @@ class DurableSettingsMixin:
             f"Settings saved to {path}."
         )
         self.signals.hotkeys_requested.emit()
+
+    def _restore_onboarding_runtime(self) -> None:
+        preview_settings = self._onboarding_preview_settings
+        self._onboarding_preview_settings = None
+        if (
+            preview_settings is not None
+            and not self._shutting_down
+            and self.controller.settings is preview_settings
+            and preview_settings != self.settings
+        ):
+            self._start_configuration_apply(
+                self.settings,
+                progress_status="Restoring the saved Reading setup...",
+                success_status="Saved Reading setup restored.",
+            )
 
     def _save_compact_preference(self, enabled: bool) -> None:
         enabled = bool(enabled)

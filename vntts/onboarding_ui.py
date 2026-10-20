@@ -12,6 +12,7 @@ from PySide6.QtGui import (
     QCloseEvent,
     QColor,
     QDesktopServices,
+    QFont,
     QPalette,
     QStandardItemModel,
 )
@@ -418,7 +419,8 @@ class ConfigurationPage(QWizardPage):
         self.advanced_toggle.toggled.connect(self._set_advanced_expanded)
         form_content = QWidget()
         form_layout = QVBoxLayout(form_content)
-        form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setContentsMargins(10, 10, 10, 10)
+        form_layout.addWidget(self.validation_summary)
         form_layout.addLayout(recommended_form)
         form_layout.addWidget(self.advanced_toggle)
         form_layout.addWidget(self.advanced_content)
@@ -431,7 +433,6 @@ class ConfigurationPage(QWizardPage):
         self.configuration_scroll.setWidget(form_content)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.validation_summary)
         layout.addWidget(self.configuration_scroll, 1)
 
     def _connect_controls(self) -> None:
@@ -453,9 +454,7 @@ class ConfigurationPage(QWizardPage):
         advanced_form: QFormLayout,
     ) -> None:
         self.setTitle("Choose the game window")
-        self.setSubTitle(
-            "Select the running game. Reading uses your selected story and voices."
-        )
+        self.setSubTitle("Select the running game.")
         recommended_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         self.auto_advance.setText("Advance after speech")
         recommended_form.setRowVisible(self.speech_backend, False)
@@ -607,12 +606,10 @@ class ConfigurationPage(QWizardPage):
                 "Choose the game window" if window_capture else "Choose capture source"
             )
             subtitle = (
-                "Select the running game. Reading uses your selected story and voices."
+                "Select the running game."
                 if window_capture
                 else "Select the dialogue area in step 3; automatic advance is unavailable."
             )
-            if sys.platform == "darwin":
-                subtitle += " macOS Screen Recording permission is required."
             self.setSubTitle(subtitle)
             if (
                 hasattr(self, "flow")
@@ -828,20 +825,25 @@ class ConfigurationPage(QWizardPage):
             "Manual reference files are optional in Advanced options."
         )
         errors = self.validation_errors()
+        font = QFont()
+        font.setBold(bool(errors))
+        self.validation_summary.setFont(font)
         if errors:
             self.validation_summary.setText(
                 f"Fix {len(errors)} setting(s) before continuing:\n"
                 + "\n".join(f"- {message}" for _widget, message in errors)
             )
-            self.validation_summary.setStyleSheet("font-weight: 600;")
         else:
             self.validation_summary.setText(
                 "Capture is selected. Speech and audio will be checked next."
                 if self.reading_setup
                 else "Configuration is ready."
             )
-            self.validation_summary.setStyleSheet("")
+        self.completeChanged.emit()
         return errors
+
+    def isComplete(self) -> bool:
+        return not self.validation_errors()
 
     def validatePage(self) -> bool:
         errors = self.update_validation_summary()
@@ -978,11 +980,11 @@ class DiagnosticsPage(QWizardPage):
         actions.addWidget(self.cancel_button)
         actions.addStretch()
         layout = QVBoxLayout(self)
+        layout.addLayout(actions)
         layout.addWidget(self.status)
         layout.addWidget(self.progress)
         layout.addWidget(self.results)
         layout.addLayout(remediation)
-        layout.addLayout(actions)
         layout.addStretch()
 
     def initializePage(self) -> None:
@@ -1362,7 +1364,10 @@ class CalibrationPage(QWizardPage):
         if self.overlay is not None:
             self.overlay.close()
 
-    def finish_calibration(self, _region: object) -> None:
+    def finish_calibration(self, region: DialogRegion) -> None:
+        if region != self.capture_region:
+            self.flow.test_page.successful = False
+        self.capture_region = region
         self.calibrated = True
         self.status.setText("Dialogue area saved.")
         self.completeChanged.emit()
@@ -1385,6 +1390,7 @@ class EndToEndTestPage(QWizardPage):
         self.flow: OnboardingWizard
         self.successful = False
         self.running = False
+        self.cancelling = False
         self.setTitle("Test OCR and speech")
         instructions = QLabel(
             "Keep dialogue visible in the calibrated area. The first test may "
@@ -1406,13 +1412,13 @@ class EndToEndTestPage(QWizardPage):
         self.status.setWordWrap(True)
         layout = QVBoxLayout(self)
         layout.addWidget(instructions)
-        layout.addWidget(self.progress)
-        layout.addWidget(self.status)
         actions = QHBoxLayout()
         actions.addWidget(self.button)
         actions.addWidget(self.cancel_button)
         actions.addStretch()
         layout.addLayout(actions)
+        layout.addWidget(self.progress)
+        layout.addWidget(self.status)
         layout.addStretch()
 
     def initializePage(self) -> None:
@@ -1420,7 +1426,13 @@ class EndToEndTestPage(QWizardPage):
             return
         self.successful = False
         self.running = False
+        self.cancelling = False
         self.button.setEnabled(True)
+        self.button.setText(
+            "Read the visible line"
+            if self.flow.reading_setup
+            else "Run OCR-to-speech test"
+        )
         self.cancel_button.setEnabled(False)
         self.cancel_button.hide()
         self.cancel_button.setText("Cancel test")
@@ -1433,6 +1445,7 @@ class EndToEndTestPage(QWizardPage):
     def run_test(self) -> None:
         self.successful = False
         self.running = True
+        self.cancelling = False
         self.button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.cancel_button.show()
@@ -1443,8 +1456,9 @@ class EndToEndTestPage(QWizardPage):
         self.test_requested.emit(self.flow.draft_settings)
 
     def request_cancel(self) -> None:
-        if not self.running:
+        if not self.running or self.cancelling:
             return
+        self.cancelling = True
         self.cancel_button.setEnabled(False)
         self.cancel_button.hide()
         self.cancel_button.setText("Cancelling...")
@@ -1453,6 +1467,8 @@ class EndToEndTestPage(QWizardPage):
         self.cancel_requested.emit()
 
     def set_progress(self, percent: int | None, message: str) -> None:
+        if not self.running or self.cancelling:
+            return
         if percent is None:
             self.progress.setRange(0, 0)
         else:
@@ -1463,13 +1479,14 @@ class EndToEndTestPage(QWizardPage):
     def set_result(self, successful: bool, message: str) -> None:
         self.successful = successful
         self.running = False
+        self.cancelling = False
         self.button.setEnabled(True)
         self.cancel_button.setEnabled(False)
         self.cancel_button.setText("Cancel test")
+        self.cancel_button.hide()
         self.progress.setRange(0, 100)
-        if successful:
-            self.progress.setValue(100)
-            self.progress.hide()
+        self.progress.setValue(100 if successful else 0)
+        self.progress.hide()
         self.status.setText(
             f"{message}\n\nTest completed. If you heard no sound, check system "
             "output and read the line again. Save setup to return to Reading, "
@@ -1530,6 +1547,17 @@ class OnboardingWizard(QDialog):
         self.finished.connect(self.calibration_page.cancel_calibration)
         navigation = self._build_navigation(reading_setup)
         self._build_layout(navigation)
+        for page in (self.diagnostics_page, self.calibration_page, self.test_page):
+            make_text_copyable(page)
+        for label in (
+            self.configuration_page.validation_summary,
+            self.configuration_page.window_help,
+            self.diagnostics_page.status,
+            self.diagnostics_page.remediation_reason,
+            self.calibration_page.status,
+            self.test_page.status,
+        ):
+            label.setTextFormat(Qt.TextFormat.PlainText)
         self.show_page(0)
 
     def _initialize_state(
@@ -1569,7 +1597,7 @@ class OnboardingWizard(QDialog):
         welcome_text = QLabel(
             "This wizard selects the game, verifies OCR and audio, calibrates "
             "the dialogue area, and runs a complete speech test.\n\n"
-            "Next: Prepare offline audio -> choose stories and narrator -> "
+            "After setup: Prepare offline audio -> choose stories and narrator -> "
             "generate and activate audio -> Start reading in the game. "
             "You can also read immediately with live TTS."
         )
@@ -1592,10 +1620,7 @@ class OnboardingWizard(QDialog):
         self.test_page.cancel_requested.connect(self.cancel_requested.emit)
         if reading_setup:
             self.diagnostics_page.setTitle("Get Reading ready")
-            self.diagnostics_page.setSubTitle(
-                "Check capture, OCR and audio; prepare speech dependencies. "
-                "The model may still download at the final test."
-            )
+            self.diagnostics_page.setSubTitle("")
             self.calibration_page.setTitle("Confirm the dialogue area")
             self.test_page.setTitle("Try one dialogue line")
             self.test_page.button.setText("Read the visible line")
@@ -1613,7 +1638,7 @@ class OnboardingWizard(QDialog):
             self.test_page,
         ):
             self.pages.append(page)
-            if reading_setup and page is not self.configuration_page:
+            if page is not self.configuration_page:
                 scroll = QScrollArea()
                 scroll.setWidgetResizable(True)
                 scroll.setHorizontalScrollBarPolicy(
@@ -1628,9 +1653,15 @@ class OnboardingWizard(QDialog):
     def _build_navigation(self, reading_setup: bool) -> QHBoxLayout:
         self.step_label = QLabel()
         self.step_label.setAccessibleName("Onboarding progress")
-        self.step_label.setStyleSheet("font-weight: 600;")
         self.page_title = QLabel()
-        self.page_title.setStyleSheet("font-weight: 600;")
+        self.page_title.setWordWrap(True)
+        self.page_title.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        for label in (self.step_label, self.page_title):
+            font = QFont()
+            font.setBold(True)
+            label.setFont(font)
         self.page_subtitle = QLabel()
         self.page_subtitle.setWordWrap(True)
         self.back_button = QPushButton("Back")
@@ -1638,7 +1669,6 @@ class OnboardingWizard(QDialog):
         self.finish_button = QPushButton(
             "Save setup" if reading_setup else "Finish setup"
         )
-        self.finish_button.setDefault(True)
         self.finish_button.setAccessibleDescription(
             "Save setup and return to the dashboard without starting playback"
         )
@@ -1677,6 +1707,7 @@ class OnboardingWizard(QDialog):
         )
         self.page_title.setText(page.title())
         self.page_subtitle.setText(page.subTitle())
+        self.page_subtitle.setVisible(bool(page.subTitle()))
         initializer = getattr(page, "initializePage", None)
         if callable(initializer) and (
             page is not self.configuration_page or self.auto_discover_windows
@@ -1712,6 +1743,25 @@ class OnboardingWizard(QDialog):
         self.next_button.setEnabled(bool(complete))
         self.finish_button.setVisible(final)
         self.finish_button.setEnabled(bool(complete))
+        actions = {
+            self.configuration_page: self.configuration_page.refresh_button,
+            self.diagnostics_page: self.diagnostics_page.install_moss_button,
+            self.calibration_page: self.calibration_page.button,
+            self.test_page: self.test_page.button,
+        }
+        primary = (
+            (self.finish_button if final else self.next_button)
+            if complete
+            else actions.get(page)
+        )
+        if primary is not None and (not primary.isEnabled() or primary.isHidden()):
+            primary = None
+        if page is self.configuration_page and not complete:
+            if self.configuration_page.game_window.currentText().strip():
+                primary = None
+        for button in (self.next_button, self.finish_button, *actions.values()):
+            button.setAutoDefault(False)
+            button.setDefault(button is primary)
 
     def accept(self) -> None:
         if not self.test_page.successful:

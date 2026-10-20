@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
     from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
     from vntts.calibration import CalibrationReviewDialog, DialogRegionOverlay
+    from vntts.onboarding_ui import OnboardingWizard
     from vntts.pregeneration_audition_ui import VoiceAuditionPanel
     from vntts.pregeneration_queue import PregenerationInput
     from vntts.pregeneration_setup import GameContent, PregenerationJob
@@ -1248,6 +1249,172 @@ def _compact_controller_story(state: str) -> QWidget:
     return dialog
 
 
+def _onboarding_diagnostics_story(
+    wizard: OnboardingWizard, state: str, long_error: str
+) -> None:
+    from PySide6.QtCore import QRunnable, QThreadPool
+    from PySide6.QtWidgets import QApplication
+
+    from vntts.onboarding import DiagnosticResult
+
+    class CapturedPool(QThreadPool):
+        def __init__(self) -> None:
+            super().__init__()
+            self.tasks: list[QRunnable] = []
+
+        def start(
+            self, runnable: QRunnable | Callable[[], object], priority: int | None = 0
+        ) -> None:
+            assert isinstance(runnable, QRunnable)
+            self.tasks.append(runnable)
+
+    diagnostics = Mock()
+    diagnostics.run.return_value = {
+        "diagnostics-complete": (
+            DiagnosticResult("Capture, OCR and audio", "ok", "Ready"),
+        ),
+        "diagnostics-warning": (
+            DiagnosticResult(
+                "Speech model",
+                "warning",
+                "Not cached yet; it will be downloaded before the final test",
+            ),
+        ),
+        "diagnostics-multiple": (
+            DiagnosticResult("Capture source", "ok", "Reverse: 1999"),
+            DiagnosticResult(
+                "Audio output", "error", "No output device", "external-audio"
+            ),
+            DiagnosticResult(
+                "Tesseract OCR",
+                "error",
+                "Tesseract executable was not found.",
+                "external-ocr",
+            ),
+            DiagnosticResult(
+                "Voice manifest",
+                "error",
+                "Voice manifest not found: /voices/character-voices.json",
+                "voices",
+            ),
+        ),
+        "diagnostics-audio-error": (
+            DiagnosticResult(
+                "Audio output", "error", "No output device", "external-audio"
+            ),
+        ),
+    }.get(
+        state.removesuffix("-last"),
+        (
+            DiagnosticResult("Capture source", "ok", "Reverse: 1999"),
+            DiagnosticResult(
+                "Tesseract OCR",
+                "error",
+                "Tesseract executable was not found.",
+                "external-ocr",
+            ),
+        ),
+    )
+    if state in {"diagnostics-exception", "diagnostics-exception-end"}:
+        diagnostics.run.side_effect = RuntimeError(long_error)
+    page = wizard.diagnostics_page
+    page.diagnostics = diagnostics
+    pool = CapturedPool()
+    page.runner.thread_pool = pool
+    wizard.show_page(wizard.pages.index(page))
+    if state == "diagnostics-cancelled":
+        page.cancel_checks()
+    elif state in {"diagnostics-install", "diagnostics-disk-space"}:
+        page._request_moss_installation(
+            2_000_000_000,
+            4_000_000_000,
+            20_000_000_000 if state == "diagnostics-install" else 1_000_000_000,
+        )
+    elif state != "diagnostics-loading":
+        pool.tasks.pop().run()
+        QApplication.processEvents()
+        if state.endswith("-last"):
+            page.results.setCurrentRow(page.results.count() - 1)
+
+
+def _onboarding_test_story(
+    wizard: OnboardingWizard, state: str, long_error: str
+) -> None:
+    wizard.calibration_page.calibrated = True
+    wizard.show_page(len(wizard.pages) - 1)
+    if state == "test":
+        return
+    page = wizard.test_page
+    page.run_test()
+    page.set_progress(55, "Reading the detected line...")
+    if state == "test-cancelling":
+        page.request_cancel()
+    elif state != "test-running":
+        outcomes = {
+            "test-success": (True, "Recognized Marcus: The storm has passed."),
+            "test-failure": (
+                False,
+                "No dialogue detected. Keep dialogue visible and try again.",
+            ),
+            "test-cancelled": (False, "OCR-to-speech test cancelled."),
+            "test-long-error": (False, long_error),
+            "test-long-error-end": (False, long_error),
+        }
+        page.set_result(*outcomes[state])
+
+
+def _onboarding_story(state: str) -> QWidget:
+    from vntts.ocr import DialogRegion
+    from vntts.onboarding_ui import OnboardingWizard
+    from vntts.settings import AppSettings
+
+    first_run = state.startswith("first-run-")
+    state = state.removeprefix("first-run-")
+    long_error = (
+        "Unable to open voice recording: "
+        + "/long-audio-directory" * 60
+        + "/missing.wav"
+    )
+    wizard = OnboardingWizard(
+        AppSettings(
+            game_window_title="Reverse: 1999",
+            speech_backend="pocket-tts" if first_run else "moss-tts",
+        ),
+        diagnostics=Mock(),
+        window_loader=lambda: (),
+        auto_discover_windows=False,
+        reading_setup=not first_run,
+    )
+    if state.startswith("game-window-error"):
+        wizard.configuration_page.game_window.setCurrentText("")
+        wizard.configuration_page.update_validation_summary()
+    elif state == "screen-region":
+        mode = wizard.configuration_page.capture_mode
+        mode.setCurrentIndex(mode.findData("screen"))
+    elif state.startswith("diagnostics") or state.startswith("compact-error"):
+        _onboarding_diagnostics_story(wizard, state, long_error)
+    elif state.startswith("calibration"):
+        wizard.show_page(wizard.pages.index(wizard.calibration_page))
+        if state == "calibration-complete":
+            wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.6, 0.8, 0.3))
+    elif state.startswith("test"):
+        _onboarding_test_story(wizard, state, long_error)
+    if state in {
+        "game-window-error-compact",
+        "compact-error",
+        "diagnostics-exception",
+        "diagnostics-exception-end",
+        "compact-error-end",
+        "test-long-error",
+        "test-long-error-end",
+    }:
+        font = wizard.font()
+        font.setPointSize(22)
+        wizard.setFont(font)
+        wizard.resize(560, 440)
+    return wizard
+
+
 def _render_stories(
     catalog: UICatalog, output: Path, selected_surface: str | None
 ) -> dict[str, str]:
@@ -1328,7 +1495,6 @@ def _render_stories(
     from vntts.ocr_corrections import OCRCorrectionStore
     from vntts.ocr_review_ui import OCRReviewDialog
     from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics
-    from vntts.onboarding_ui import OnboardingWizard
     from vntts.pregeneration_generation import OfflineGenerationProgress
     from vntts.pregeneration_setup import (
         ContentDiscovery,
@@ -1776,55 +1942,6 @@ def _render_stories(
             font.setPointSize(font.pointSize() + 4)
             dialog.setFont(font)
         return dialog
-
-    def onboarding(state: str) -> OnboardingWizard:
-        wizard = OnboardingWizard(
-            settings.updated(onboarding_completed=False),
-            diagnostics=Mock(),
-            window_loader=lambda: (),
-            auto_discover_windows=False,
-            reading_setup=True,
-        )
-        if state == "game-window-error":
-            wizard.configuration_page.game_window.setCurrentText("")
-            wizard.configuration_page.update_validation_summary()
-        elif state == "screen-region":
-            mode = wizard.configuration_page.capture_mode
-            mode.setCurrentIndex(mode.findData("screen"))
-        elif state.startswith("diagnostics") or state == "compact-error":
-            resources.enter_context(
-                patch.object(wizard.diagnostics_page.runner, "start", return_value=0)
-            )
-            wizard.show_page(1)
-            if state != "diagnostics-loading":
-                wizard.diagnostics_page._checks_finished(
-                    (
-                        DiagnosticResult("Capture source", "ok", "Reverse: 1999"),
-                        DiagnosticResult(
-                            "Tesseract OCR",
-                            "error",
-                            "Tesseract executable was not found in the application environment.",
-                            "external-ocr",
-                        ),
-                    ),
-                    None,
-                )
-        elif state == "calibration":
-            wizard.show_page(2)
-        elif state in {"test", "test-success"}:
-            wizard.calibration_page.calibrated = True
-            wizard.show_page(3)
-            if state == "test-success":
-                wizard.test_page.set_result(
-                    True,
-                    "Success. Recognized Believer IV: The storm has passed.",
-                )
-        if state == "compact-error":
-            wizard.resize(560, 440)
-            font = wizard.font()
-            font.setPointSize(font.pointSize() + 4)
-            wizard.setFont(font)
-        return wizard
 
     def macos_permissions(state: str) -> QWidget:
         return _macos_permissions_story(state)
@@ -3157,15 +3274,69 @@ def _render_stories(
         "readiness.full-details": lambda: readiness("full-details"),
         "readiness.long-error": lambda: readiness("long-error"),
         "readiness.long-error-expanded": lambda: readiness("long-error-expanded"),
-        "onboarding.game-window": lambda: onboarding("game-window"),
-        "onboarding.screen-region": lambda: onboarding("screen-region"),
-        "onboarding.game-window-error": lambda: onboarding("game-window-error"),
-        "onboarding.diagnostics-loading": lambda: onboarding("diagnostics-loading"),
-        "onboarding.diagnostics-error": lambda: onboarding("diagnostics-error"),
-        "onboarding.calibration": lambda: onboarding("calibration"),
-        "onboarding.test": lambda: onboarding("test"),
-        "onboarding.test-success": lambda: onboarding("test-success"),
-        "onboarding.compact-error": lambda: onboarding("compact-error"),
+        "onboarding.game-window": lambda: _onboarding_story("game-window"),
+        "onboarding.screen-region": lambda: _onboarding_story("screen-region"),
+        "onboarding.game-window-error": lambda: _onboarding_story("game-window-error"),
+        "onboarding.game-window-error-compact": lambda: _onboarding_story(
+            "game-window-error-compact"
+        ),
+        "onboarding.diagnostics-loading": lambda: _onboarding_story(
+            "diagnostics-loading"
+        ),
+        "onboarding.diagnostics-error": lambda: _onboarding_story("diagnostics-error"),
+        "onboarding.calibration": lambda: _onboarding_story("calibration"),
+        "onboarding.calibration-complete": lambda: _onboarding_story(
+            "calibration-complete"
+        ),
+        "onboarding.diagnostics-multiple": lambda: _onboarding_story(
+            "diagnostics-multiple"
+        ),
+        "onboarding.diagnostics-multiple-last": lambda: _onboarding_story(
+            "diagnostics-multiple-last"
+        ),
+        "onboarding.test": lambda: _onboarding_story("test"),
+        "onboarding.test-success": lambda: _onboarding_story("test-success"),
+        "onboarding.compact-error": lambda: _onboarding_story("compact-error"),
+        "onboarding.compact-error-end": lambda: _onboarding_story("compact-error-end"),
+        "onboarding.diagnostics-exception-end": lambda: _onboarding_story(
+            "diagnostics-exception-end"
+        ),
+        "onboarding.diagnostics-audio-error": lambda: _onboarding_story(
+            "diagnostics-audio-error"
+        ),
+        "onboarding.diagnostics-complete": lambda: _onboarding_story(
+            "diagnostics-complete"
+        ),
+        "onboarding.diagnostics-warning": lambda: _onboarding_story(
+            "diagnostics-warning"
+        ),
+        "onboarding.diagnostics-cancelled": lambda: _onboarding_story(
+            "diagnostics-cancelled"
+        ),
+        "onboarding.diagnostics-exception": lambda: _onboarding_story(
+            "diagnostics-exception"
+        ),
+        "onboarding.diagnostics-install": lambda: _onboarding_story(
+            "diagnostics-install"
+        ),
+        "onboarding.diagnostics-disk-space": lambda: _onboarding_story(
+            "diagnostics-disk-space"
+        ),
+        "onboarding.test-running": lambda: _onboarding_story("test-running"),
+        "onboarding.test-cancelling": lambda: _onboarding_story("test-cancelling"),
+        "onboarding.test-failure": lambda: _onboarding_story("test-failure"),
+        "onboarding.test-cancelled": lambda: _onboarding_story("test-cancelled"),
+        "onboarding.test-long-error": lambda: _onboarding_story("test-long-error"),
+        "onboarding.test-long-error-end": lambda: _onboarding_story(
+            "test-long-error-end"
+        ),
+        "onboarding.first-run-welcome": lambda: _onboarding_story("first-run-welcome"),
+        "onboarding.first-run-test-long-error": lambda: _onboarding_story(
+            "first-run-test-long-error"
+        ),
+        "onboarding.first-run-test-long-error-end": lambda: _onboarding_story(
+            "first-run-test-long-error-end"
+        ),
         "macos-permissions.denied": lambda: macos_permissions("denied"),
         "macos-permissions.granted": lambda: macos_permissions("granted"),
         "macos-permissions.unavailable": lambda: macos_permissions("unavailable"),
@@ -3658,6 +3829,18 @@ def _render_stories(
                     widget.show()
                     app.processEvents()
                     _prepare_catalog_screenshot(widget, story_id, app)
+                    if story_id.startswith("onboarding.") and story_id.endswith("-end"):
+                        from PySide6.QtWidgets import QScrollArea
+
+                        from vntts.onboarding_ui import OnboardingWizard
+
+                        assert isinstance(widget, OnboardingWizard)
+                        scroll = widget.stack.currentWidget()
+                        assert isinstance(scroll, QScrollArea)
+                        scroll.verticalScrollBar().setValue(
+                            scroll.verticalScrollBar().maximum()
+                        )
+                        app.processEvents()
                     image_name = f"{story_id}.png"
                     image_path = screenshots / image_name
                     if not widget.grab().save(str(image_path)):
