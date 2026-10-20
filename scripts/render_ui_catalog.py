@@ -1055,6 +1055,48 @@ def _ocr_corrections_story(resources: ExitStack, state: str) -> QWidget:
     return dialog
 
 
+def _macos_permissions_story(state: str) -> QWidget:
+    from vntts.macos_ui import MacOSPermissionsDialog, PermissionStatus
+
+    compact = state.startswith("compact")
+    state = state.removeprefix("compact-")
+    statuses: dict[str, PermissionStatus] = {
+        "granted": {"screen_capture": True, "accessibility": True},
+        "unavailable": {"screen_capture": None, "accessibility": None},
+        "capture-ready": {"screen_capture": True, "accessibility": False},
+        "accessibility-unknown": {"screen_capture": True, "accessibility": None},
+    }
+    status = statuses.get(state, {"screen_capture": False, "accessibility": False})
+    error = RuntimeError("The native permission service is unavailable. " * 12)
+    dialog = MacOSPermissionsDialog(
+        status_provider=Mock(
+            return_value=status,
+            side_effect=error if state == "status-failure" else None,
+        ),
+        screen_request=Mock(side_effect=error if state == "request-failure" else None),
+        accessibility_request=Mock(),
+        url_opener=Mock(
+            return_value=True,
+            side_effect=error if state == "settings-failure" else None,
+        ),
+    )
+    if compact:
+        font = dialog.font()
+        font.setPointSize(max(font.pointSize() + 4, 16))
+        dialog.setFont(font)
+        dialog.resize(560, 320)
+    if state == "requesting":
+        dialog._set_request_active(True)
+        dialog.operation_status.setPlainText(
+            "Requesting Screen Recording permission..."
+        )
+    elif state == "request-failure":
+        dialog.request_screen()
+    elif state in {"settings-failure", "settings-opened"}:
+        dialog.open_settings("accessibility")
+    return dialog
+
+
 def _render_stories(
     catalog: UICatalog, output: Path, selected_surface: str | None
 ) -> dict[str, str]:
@@ -1132,7 +1174,6 @@ def _render_stories(
     from vntts.game_narrator_ui import GameNarratorDialog
     from vntts.history import DialogueHistory
     from vntts.history_ui import DialogueHistoryDialog
-    from vntts.macos_ui import MacOSPermissionsDialog, PermissionStatus
     from vntts.ocr import DialogRegion, OCRResult, UncertainFrameRecorder
     from vntts.ocr_corrections import OCRCorrectionStore
     from vntts.ocr_review_ui import OCRReviewDialog
@@ -1653,25 +1694,8 @@ def _render_stories(
             wizard.setFont(font)
         return wizard
 
-    def macos_permissions(state: str) -> MacOSPermissionsDialog:
-        status: PermissionStatus = {
-            "screen_capture": state == "granted",
-            "accessibility": state == "granted",
-        }
-        if state == "unavailable":
-            status = {"screen_capture": None, "accessibility": None}
-        dialog = MacOSPermissionsDialog(
-            status_provider=lambda: status,
-            screen_request=Mock(),
-            accessibility_request=Mock(),
-            url_opener=Mock(return_value=True),
-        )
-        if state == "compact":
-            dialog.resize(620, 380)
-            font = dialog.font()
-            font.setPointSize(font.pointSize() + 4)
-            dialog.setFont(font)
-        return dialog
+    def macos_permissions(state: str) -> QWidget:
+        return _macos_permissions_story(state)
 
     def asset_manager(state: str) -> AssetManagerDialog:
         model_manager = Mock()
@@ -3005,6 +3029,36 @@ def _render_stories(
         "macos-permissions.denied": lambda: macos_permissions("denied"),
         "macos-permissions.granted": lambda: macos_permissions("granted"),
         "macos-permissions.unavailable": lambda: macos_permissions("unavailable"),
+        "macos-permissions.capture-ready": lambda: macos_permissions("capture-ready"),
+        "macos-permissions.accessibility-unknown": lambda: macos_permissions(
+            "accessibility-unknown"
+        ),
+        "macos-permissions.requesting": lambda: macos_permissions("requesting"),
+        "macos-permissions.status-failure": lambda: macos_permissions("status-failure"),
+        "macos-permissions.request-failure": lambda: macos_permissions(
+            "request-failure"
+        ),
+        "macos-permissions.settings-failure": lambda: macos_permissions(
+            "settings-failure"
+        ),
+        "macos-permissions.settings-opened": lambda: macos_permissions(
+            "settings-opened"
+        ),
+        "macos-permissions.compact-status-failure": lambda: macos_permissions(
+            "compact-status-failure"
+        ),
+        "macos-permissions.compact-requesting": lambda: macos_permissions(
+            "compact-requesting"
+        ),
+        "macos-permissions.compact-request-failure": lambda: macos_permissions(
+            "compact-request-failure"
+        ),
+        "macos-permissions.compact-settings-failure": lambda: macos_permissions(
+            "compact-settings-failure"
+        ),
+        "macos-permissions.compact-settings-opened": lambda: macos_permissions(
+            "compact-settings-opened"
+        ),
         "macos-permissions.compact": lambda: macos_permissions("compact"),
         "asset-manager.voices-empty": lambda: asset_manager("voices-empty"),
         "asset-manager.voices-manifest": lambda: asset_manager("voices-manifest"),

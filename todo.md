@@ -1,8 +1,16 @@
 # TODO
 
+## Keep full regression shards within their watchdogs
+
+- [ ] Measure and repartition the broad `remainder` inventory in `scripts/run_ci_unittests.py`, including a separate bounded group for catalog renders, while preserving every discovered test and the existing watchdogs. In the macOS permissions UI cycle the 900-second aggregate timed out during catalog renders; excluding the catalog still completed 4,460 of 4,475 remainder tests before the deadline, without an assertion failure. Use exact test-ID union checks and investigate slow cases rather than raising limits or dropping coverage. Validate the normal full-suite entry point on supported CI platforms; locally split retries qualify the tests, not the current aggregate scheduling.
+
 ## Restore the existing UI complexity gate
 
 - [ ] Refactor the oversized UI/catalog scopes reported by `uv run python scripts/check_ruff_complexity.py` on main: catalog screenshot preparation and asset stories, history constructor/keyboard test, diagnostics constructor/body, and profile constructor. Reconcile the baseline only after actual simplification; keep the current calibration behavior and catalog coverage. These failures reproduce on `197c8df1` before the calibration changes.
+
+## Qualify native macOS permission recovery
+
+- [ ] In an explicitly approved native macOS session (OS prompts and System Settings may interrupt the desktop), test Screen Recording and Accessibility separately: Request, deny/grant/retry, and Open/Manage Settings. Confirm each opens the corresponding system control; change access and return to VNTTS, then verify automatic status refresh and manual Refresh status. Check pending-request Close/Escape, keyboard focus and VoiceOver names/descriptions at enlarged text; preserve screenshots and focus/announcement evidence. Offscreen tests verify dispatch, state, keyboard, scroll/copy and exact target URLs, not native OS routing, prompts or accessibility announcements.
 
 ## Qualify native OCR editor tooltips
 

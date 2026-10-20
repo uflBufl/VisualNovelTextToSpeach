@@ -298,6 +298,18 @@
         {"id": "macos-permissions.denied", "title": "Permission missing", "state": "Screen Recording and Accessibility can be requested or managed independently"},
         {"id": "macos-permissions.granted", "title": "Permissions granted", "state": "No unnecessary request actions remain"},
         {"id": "macos-permissions.unavailable", "title": "Permission status unavailable", "state": "Uncertain system state is not shown as denial or success"},
+        {"id": "macos-permissions.capture-ready", "title": "Capture allowed without auto advance", "state": "Screen Recording is granted while optional Accessibility remains denied"},
+        {"id": "macos-permissions.accessibility-unknown", "title": "Optional status unknown", "state": "Unknown Accessibility does not turn the granted Screen Recording state into a failure"},
+        {"id": "macos-permissions.requesting", "title": "Request pending", "state": "The named request is visible and competing actions are unavailable"},
+        {"id": "macos-permissions.status-failure", "title": "Status check failed", "state": "One complete error accompanies unknown statuses and an explicit refresh action"},
+        {"id": "macos-permissions.request-failure", "title": "Native request failed", "state": "The known permission state remains visible alongside the failed action and its recovery"},
+        {"id": "macos-permissions.settings-failure", "title": "Settings failed to open", "state": "A named action error preserves the last permission state"},
+        {"id": "macos-permissions.settings-opened", "title": "Settings opened", "state": "The user knows that status will refresh on return"},
+        {"id": "macos-permissions.compact-status-failure", "title": "Long failure with larger text", "state": "The complete error remains readable without widening permission rows or losing footer actions"},
+        {"id": "macos-permissions.compact-requesting", "title": "Pending request with larger text", "state": "The named request and disabled competing actions remain legible at enlarged text"},
+        {"id": "macos-permissions.compact-request-failure", "title": "Failed request with larger text", "state": "Full errors can be scrolled while recovery actions remain visible"},
+        {"id": "macos-permissions.compact-settings-failure", "title": "Settings failure with larger text", "state": "The manual recovery path remains visible with enlarged text"},
+        {"id": "macos-permissions.compact-settings-opened", "title": "Settings opened with larger text", "state": "Return and refresh guidance remains readable with enlarged text"},
         {"id": "macos-permissions.compact", "title": "Compact permission recovery", "state": "Both permission paths remain usable with larger text"}
       ]
     },

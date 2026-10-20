@@ -1,14 +1,16 @@
 from typing import Callable, Literal, TypeAlias, TypedDict
 
-from PySide6.QtCore import QEvent, QEventLoop, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QEvent, QEventLoop, QObject, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QTextOption
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
+    QPlainTextEdit,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -63,9 +65,47 @@ class MacOSPermissionsDialog(QDialog):
         )
         self.url_opener = url_opener or QDesktopServices.openUrl
         self._refresh_on_activate = False
+        self._request_active = False
         self.setWindowTitle("macOS permissions")
-        self.setMinimumWidth(620)
+        self.setMinimumWidth(480)
 
+        self.permission_fields = self._create_permission_fields()
+
+        self.note = QLabel()
+        self.note.setWordWrap(True)
+        self.operation_status = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
+        self.operation_status.setAccessibleName("Permission action status")
+        self.operation_status.setFrameShape(QFrame.Shape.NoFrame)
+        self.operation_status.viewport().setAutoFillBackground(False)
+        self.operation_status.setWordWrapMode(
+            QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
+        )
+        self.operation_status.setFixedHeight(
+            self.operation_status.fontMetrics().lineSpacing() * 3 + 12
+        )
+        self.operation_status.installEventFilter(self)
+        self.refresh_button = QPushButton("Refresh status")
+        self.refresh_button.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
+        self.refresh_button.clicked.connect(self.refresh)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.close)
+        footer = QHBoxLayout()
+        footer.addWidget(self.refresh_button)
+        footer.addStretch()
+        footer.addWidget(buttons)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        layout.addWidget(self.permission_fields)
+        layout.addWidget(self.note)
+        layout.addWidget(self.operation_status)
+        layout.addStretch()
+        layout.addLayout(footer)
+        self.refresh()
+
+    def _create_permission_fields(self) -> QWidget:
         self.screen_status = QLabel()
         self.accessibility_status = QLabel()
         self.request_screen_button = QPushButton("Request")
@@ -115,42 +155,35 @@ class MacOSPermissionsDialog(QDialog):
         form.addRow("Screen Recording", screen_row)
         form.addRow("Accessibility", accessibility_row)
 
-        self.note = QLabel()
-        self.note.setWordWrap(True)
-        self.hotkey_note = QLabel(
-            "Global hotkeys are unavailable on this macOS build; use the control "
-            "window or compact controls."
-        )
-        self.hotkey_note.setWordWrap(True)
-        self.refresh_button = QPushButton("Refresh status")
-        self.refresh_button.setSizePolicy(
-            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
-        )
-        self.refresh_button.clicked.connect(self.refresh)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.close)
-        footer = QHBoxLayout()
-        footer.addWidget(self.refresh_button)
-        footer.addStretch()
-        footer.addWidget(buttons)
-        layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(self.note)
-        layout.addWidget(self.hotkey_note)
-        layout.addStretch()
-        layout.addLayout(footer)
-        self.refresh()
+        form.setHorizontalSpacing(20)
+        form.setVerticalSpacing(16)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setContentsMargins(0, 0, 0, 0)
+        fields = QWidget()
+        fields.setLayout(form)
+        return fields
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.operation_status and event.type() == QEvent.Type.FontChange:
+            self.operation_status.setFixedHeight(
+                self.operation_status.fontMetrics().lineSpacing() * 3 + 12
+            )
+        return super().eventFilter(watched, event)
 
     def refresh(self) -> None:
+        if self._request_active:
+            return
+        self.operation_status.clear()
         try:
             status = self.status_provider()
         except Exception as error:
-            message = f"Status check failed: {error}"
-            self.screen_status.setText(message)
-            self.accessibility_status.setText(message)
+            self.screen_status.setText("Could not check")
+            self.accessibility_status.setText("Could not check")
+            self.operation_status.setPlainText(
+                f"Could not check permissions. Select Refresh status to retry.\n{error}"
+            )
             self.note.setText(
-                "Could not check permissions. Verify Screen Recording in System "
-                "Settings, then refresh status."
+                "Verify Screen Recording in System Settings before reading."
             )
             self._set_permission_actions(
                 None, self.request_screen_button, self.open_screen_button
@@ -162,13 +195,11 @@ class MacOSPermissionsDialog(QDialog):
         self.screen_status.setText(self._status_text(status["screen_capture"]))
         self.accessibility_status.setText(self._status_text(status["accessibility"]))
         self.note.setText(
-            "Screen Recording is granted. If you just changed permissions, restart "
-            "VNTTS before reading."
+            "If you just changed Screen Recording, restart VNTTS before reading."
             if status["screen_capture"] is True
             else "Grant Screen Recording, then restart VNTTS before reading."
             if status["screen_capture"] is False
-            else "Could not check Screen Recording. Verify it in System Settings, "
-            "then refresh status."
+            else "Verify Screen Recording in System Settings, then select Refresh status."
         )
         self._set_permission_actions(
             status["screen_capture"],
@@ -195,57 +226,78 @@ class MacOSPermissionsDialog(QDialog):
     def request_screen(self) -> None:
         self._request_permission(
             self.screen_request,
-            self.request_screen_button,
-            self.screen_status,
+            "Screen Recording",
         )
 
     def request_accessibility(self) -> None:
         self._request_permission(
             self.accessibility_request,
-            self.request_accessibility_button,
-            self.accessibility_status,
+            "Accessibility",
         )
+
+    def _set_request_active(self, active: bool) -> None:
+        self._request_active = active
+        self.permission_fields.setEnabled(not active)
+        self.refresh_button.setEnabled(not active)
 
     def _request_permission(
         self,
         request: PermissionRequest,
-        button: QPushButton,
-        status_label: QLabel,
+        permission_label: str,
     ) -> None:
-        button.setEnabled(False)
-        status_label.setText("Requesting permission...")
-        QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+        if self._request_active:
+            return
+        self._set_request_active(True)
+        self.operation_status.setPlainText(
+            f"Requesting {permission_label} permission..."
+        )
         try:
+            QApplication.processEvents(
+                QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
+            )
             request()
         except Exception as error:
-            status_label.setText(f"Request failed: {error}")
-            button.setEnabled(True)
+            self.operation_status.setPlainText(
+                f"{permission_label}: request failed. Try Open Settings.\n{error}"
+            )
             return
-        button.setEnabled(True)
+        finally:
+            self._set_request_active(False)
+        self._refresh_on_activate = True
         self.refresh()
 
     def open_settings(self, permission: PermissionName) -> None:
-        label = (
-            self.screen_status
-            if permission == "screen_capture"
-            else self.accessibility_status
-        )
+        if self._request_active:
+            return
+        name = "Screen Recording" if permission == "screen_capture" else "Accessibility"
         try:
             opened = self.url_opener(QUrl(privacy_urls[permission]))
         except Exception as error:
-            label.setText(f"Unable to open Settings: {error}")
+            self.operation_status.setPlainText(
+                f"{name}: could not open System Settings. "
+                f"Open it manually and search for {name}.\n{error}"
+            )
             return
         if opened is False:
-            label.setText("Unable to open System Settings")
+            self.operation_status.setPlainText(
+                f"{name}: could not open System Settings. "
+                f"Open it manually and search for {name}."
+            )
             return
-        label.setText("System Settings opened; status will refresh on return.")
+        self.operation_status.setPlainText(
+            f"{name}: System Settings opened. Status will refresh on return."
+        )
         self._refresh_on_activate = True
 
-    def changeEvent(self, event: QEvent) -> None:
-        if event.type() == QEvent.Type.WindowActivate and self._refresh_on_activate:
+    def event(self, event: QEvent) -> bool:
+        if (
+            event.type() == QEvent.Type.WindowActivate
+            and self._refresh_on_activate
+            and not self._request_active
+        ):
             self._refresh_on_activate = False
             QTimer.singleShot(0, self, self.refresh)
-        super().changeEvent(event)
+        return super().event(event)
 
     @staticmethod
     def _status_text(value: PermissionGranted) -> str:
