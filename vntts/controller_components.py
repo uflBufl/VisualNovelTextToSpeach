@@ -1323,13 +1323,9 @@ class VoiceAssignmentComponent:
     def unresolved_live_speakers(self) -> tuple[str, ...] | None:
         controller = self.controller
         if (
-            (
-                controller.allow_unscoped_live_reading
-                or controller.settings.audio_source_policy == "live-tts-only"
-            )
-            and not controller._live_sequence_audio_active()
-            and not controller.settings.live_speaker_corpus
-        ):
+            controller.allow_unscoped_live_reading
+            or controller.settings.audio_source_policy == "live-tts-only"
+        ) and controller.can_start_live_from_ocr():
             return ()
         scope: tuple[ChapterDialogue | str, ...] | None = (
             controller.chapter_voice_preloader.live_voice_preflight_rows()

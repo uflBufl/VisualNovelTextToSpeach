@@ -2134,6 +2134,75 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIs(prompt.defaultButton(), read)
         self.assertIs(prompt.escapeButton(), stop)
 
+    def test_sequence_recovery_offers_matching_retry_without_promising_ocr(self):
+        prompt, retry, stories, stop = build_story_match_recovery_prompt(
+            "The visible dialogue does not match the prepared story.",
+            can_read_visible_dialogue=False,
+        )
+        self.addCleanup(prompt.deleteLater)
+        self.assertEqual(retry.text(), "Try matching again")
+        self.assertIn("needs a matching story line", prompt.informativeText())
+        self.assertNotIn("start reading the dialogue", prompt.informativeText())
+        self.assertIs(prompt.defaultButton(), retry)
+        self.assertIs(prompt.escapeButton(), stop)
+        self.assertEqual(stories.text(), "Open Stories...")
+
+    def test_sequence_recovery_retries_identification_instead_of_ocr_start(self):
+        controller = Mock(is_live_running=False)
+        controller.can_start_live_from_ocr.return_value = False
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.live_scope_runner = Mock(active=False)
+        with patch("vntts.app.QMessageBox") as message_box:
+            retry, stories, stop = object(), object(), object()
+            prompt = message_box.return_value
+            prompt.addButton.side_effect = (retry, stories, stop)
+            prompt.clickedButton.return_value = retry
+            self.assertFalse(tray._offer_story_match_recovery("No match"))
+        controller.start_live_from_ocr.assert_not_called()
+        tray.live_scope_runner.start.assert_called_once_with(
+            controller.identify_live_scope
+        )
+        self.assertIn("Identifying", tray.dashboard.status.text())
+        self.assertEqual(tray._live_scope_generation, tray._lifecycle_generation)
+        tray.shutdown()
+
+    def test_story_recovery_ignores_a_choice_after_lifecycle_change_or_stop(self):
+        controller = Mock(is_live_running=False)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        for interrupt in (tray._begin_controller_lifecycle, tray.emergency_stop):
+            with self.subTest(interrupt=interrupt.__name__):
+                with patch("vntts.app.QMessageBox") as message_box:
+                    read, stories, stop = object(), object(), object()
+                    prompt = message_box.return_value
+                    prompt.addButton.side_effect = (read, stories, stop)
+                    prompt.clickedButton.return_value = read
+                    prompt.exec.side_effect = interrupt
+                    self.assertFalse(tray._offer_story_match_recovery("No match"))
+                    prompt.deleteLater.assert_called_once_with()
+                controller.start_live_from_ocr.assert_not_called()
+        tray.shutdown()
+
+    def test_story_recovery_closes_on_emergency_stop_inside_modal_event_loop(self):
+        controller = Mock(is_live_running=False)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        QTimer.singleShot(0, tray.emergency_stop)
+        self.assertFalse(tray._offer_story_match_recovery("No match"))
+        controller.start_live_from_ocr.assert_not_called()
+        self.assertIsNone(self.application.activeModalWidget())
+        tray.shutdown()
+
     def test_story_match_recovery_can_leave_reading_stopped(self):
         controller = Mock(is_live_running=False)
         tray_application = TrayApplication(

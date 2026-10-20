@@ -4963,12 +4963,62 @@ class MainTest(unittest.TestCase):
 
         controller.live_reader.toggle.side_effect = toggle
 
+        self.assertTrue(controller.can_start_live_from_ocr())
+        settings = controller.settings
         self.assertTrue(controller.start_live_from_ocr())
         self.assertTrue(controller.allow_unscoped_live_reading)
+        self.assertIs(controller.settings, settings)
         self.assertEqual(controller.settings.story_index, "story.jsonl")
         self.assertEqual(controller.settings.generated_audio_manifest, "generated.json")
         self.assertFalse(controller.toggle_live())
         self.assertFalse(controller.allow_unscoped_live_reading)
+
+    def test_ocr_live_fallback_preserves_sequence_and_corpus_requirements(self):
+        for mode, corpus in (
+            ("audio-auto", ""),
+            ("audio-manual", ""),
+            ("off", "speakers.json"),
+        ):
+            for allow_unscoped in (False, True):
+                with self.subTest(mode=mode, corpus=corpus, flag=allow_unscoped):
+                    line = ChapterDialogue(
+                        "reverse1999:1:1",
+                        "1",
+                        1,
+                        "Rhiannon",
+                        "Known line.",
+                        text_sha256("Known line."),
+                    )
+                    controller = AppController(
+                        AppSettings(
+                            story_index="story.jsonl",
+                            live_sequence_plan="plan.json",
+                            live_sequence_mode=mode,
+                            live_speaker_corpus=corpus,
+                        ),
+                        tts_factory=Mock(),
+                        chapter_voice_preloader=ChapterVoicePreloader((line,)),
+                        live_sequence_plan_factory=Mock(
+                            return_value=stub_live_sequence_plan(line)
+                        ),
+                    )
+                    controller.live_reader = Mock(is_running=False)
+                    controller.allow_unscoped_live_reading = allow_unscoped
+                    settings = controller.settings
+
+                    self.assertFalse(controller.can_start_live_from_ocr())
+                    self.assertIsNone(controller.unresolved_live_speakers())
+                    controller.chapter_voice_preloader.recommend(
+                        "Rhiannon", "Known line."
+                    )
+                    self.assertEqual(controller.unresolved_live_speakers(), ())
+                    self.assertFalse(controller.start_live_from_ocr())
+
+                    controller.live_reader.toggle.assert_not_called()
+                    self.assertIs(controller.settings, settings)
+                    self.assertEqual(
+                        controller.allow_unscoped_live_reading, allow_unscoped
+                    )
 
     def test_controller_reports_each_narrator_fallback_once_without_blocking(self):
         offered = []

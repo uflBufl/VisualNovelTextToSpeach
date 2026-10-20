@@ -809,7 +809,7 @@ class UiCatalogTest(unittest.TestCase):
                     0,
                 )
 
-    def test_story_match_recovery_renders_both_states(self):
+    def test_story_match_recovery_renders_both_modes_and_font_sizes(self):
         root = Path(__file__).resolve().parents[1]
         with TemporaryDirectory() as directory:
             output = Path(directory) / "catalog"
@@ -838,6 +838,8 @@ class UiCatalogTest(unittest.TestCase):
                 {
                     "story-match-recovery.awaiting-choice",
                     "story-match-recovery.larger-text",
+                    "story-match-recovery.sequence-mode",
+                    "story-match-recovery.sequence-larger-text",
                 },
             )
             for story in packet["target"]["stories"]:

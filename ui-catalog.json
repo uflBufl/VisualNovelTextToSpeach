@@ -140,6 +140,8 @@
       "contracts": ["single-mission", "runtime-controls"],
       "stories": [
         {"id": "story-match-recovery.awaiting-choice", "title": "Unmatched current line", "state": "Start live reading from the visible dialogue, open Stories, or stay stopped"},
+        {"id": "story-match-recovery.sequence-mode", "title": "Sequential reading needs a match", "state": "Retry matching the visible line, open Stories, or remain stopped; unavailable OCR fallback is not offered"},
+        {"id": "story-match-recovery.sequence-larger-text", "title": "Sequence recovery at larger text", "state": "The matching requirement and all three choices remain readable at enlarged text"},
         {"id": "story-match-recovery.larger-text", "title": "Larger text at compact width", "state": "Recovery explanation and all three choices remain readable with increased text size and a compact viewport"}
       ]
     },

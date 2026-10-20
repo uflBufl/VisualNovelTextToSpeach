@@ -695,7 +695,15 @@ class AppController:
     def toggle_live(self) -> bool:
         return self.live_session.toggle()
 
+    def can_start_live_from_ocr(self) -> bool:
+        return (
+            not self._live_sequence_audio_active()
+            and not self.settings.live_speaker_corpus
+        )
+
     def start_live_from_ocr(self) -> bool:
+        if not self.can_start_live_from_ocr():
+            return False
         self.allow_unscoped_live_reading = True
         running = self.live_session.toggle()
         if not running:

@@ -1966,9 +1966,12 @@ def _render_stories(
             prompt.setFont(font)
         return prompt
 
-    def story_match_recovery(*, larger_text: bool = False) -> QMessageBox:
+    def story_match_recovery(
+        *, larger_text: bool = False, can_read_visible_dialogue: bool = True
+    ) -> QMessageBox:
         prompt, _read, _stories, _stop = build_story_match_recovery_prompt(
-            "The visible dialogue does not match the prepared story at this point."
+            "The visible dialogue does not match the prepared story at this point.",
+            can_read_visible_dialogue=can_read_visible_dialogue,
         )
         if larger_text:
             font = prompt.font()
@@ -3060,6 +3063,12 @@ def _render_stories(
         ),
         "unknown-speaker-prompt.awaiting-choice": unknown_speaker_prompt,
         "story-match-recovery.awaiting-choice": story_match_recovery,
+        "story-match-recovery.sequence-mode": lambda: story_match_recovery(
+            can_read_visible_dialogue=False
+        ),
+        "story-match-recovery.sequence-larger-text": lambda: story_match_recovery(
+            can_read_visible_dialogue=False, larger_text=True
+        ),
         "story-match-recovery.larger-text": lambda: story_match_recovery(
             larger_text=True
         ),

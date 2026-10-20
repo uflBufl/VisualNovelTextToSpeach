@@ -465,8 +465,11 @@ Planned implementation order after approval:
       visible line and the smallest supported display at 200% text scaling, use
       VoiceOver/Narrator and keyboard only. Require the mismatch to be announced,
       all three actions and their focus to remain visible and distinguishable,
-      Enter to start live reading, Stories to open with reading stopped, and Escape
-      to leave reading stopped. Retain a short recording or accessibility trace.
+      Enter to start live OCR reading where supported or retry matching in sequence
+      modes, Stories to open with reading stopped, and Escape to leave reading
+      stopped. Confirm emergency stop dismisses recovery and a settings restart
+      invalidates the old choice. Retain an active-window/full-display recording
+      or accessibility trace, including visible primary-button focus.
 - [ ] **Validate Readiness on macOS and Windows:** at 200% text scaling, use
       VoiceOver/Narrator and keyboard only through loading, an OCR error, a voice
       warning and success. Require the first error and its remedy to be announced,

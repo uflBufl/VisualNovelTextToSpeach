@@ -282,7 +282,10 @@ def build_unknown_speaker_prompt(
 
 
 def build_story_match_recovery_prompt(
-    message: str, parent: QWidget | None = None
+    message: str,
+    parent: QWidget | None = None,
+    *,
+    can_read_visible_dialogue: bool = True,
 ) -> tuple[QMessageBox, QPushButton, QPushButton, QPushButton]:
     """Offer the existing recovery routes when a live story line cannot match."""
     prompt = QMessageBox(parent)
@@ -292,9 +295,13 @@ def build_story_match_recovery_prompt(
     prompt.setInformativeText(
         "You can start reading the dialogue visible on screen now. Prepared "
         "recordings remain available if a later line matches."
+        if can_read_visible_dialogue
+        else "This reading mode needs a matching story line. Keep a complete "
+        "dialogue line visible and try again, or open Stories to check the selected story."
     )
     continue_button = prompt.addButton(
-        "Start live reading", QMessageBox.ButtonRole.AcceptRole
+        "Start live reading" if can_read_visible_dialogue else "Try matching again",
+        QMessageBox.ButtonRole.AcceptRole,
     )
     stories_button = prompt.addButton(
         "Open Stories...", QMessageBox.ButtonRole.ActionRole
@@ -2561,13 +2568,36 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._start_live_with_available_scope(allow_scope_bootstrap=False)
 
     def _offer_story_match_recovery(self, message: str) -> bool:
+        generation = self._lifecycle_generation
         self.show_dashboard()
         self.dashboard.show_reading()
+        can_read_visible_dialogue = self.controller.can_start_live_from_ocr()
         prompt, continue_button, stories_button, _cancel_button = (
-            build_story_match_recovery_prompt(message, self.dashboard)
+            build_story_match_recovery_prompt(
+                message,
+                self.dashboard,
+                can_read_visible_dialogue=can_read_visible_dialogue,
+            )
         )
-        prompt.exec()
-        if prompt.clickedButton() is continue_button:
+        cancelled = False
+
+        def reading_changed(_running: bool) -> None:
+            nonlocal cancelled
+            cancelled = True
+            prompt.reject()
+
+        self.signals.live_changed.connect(reading_changed)
+        try:
+            prompt.exec()
+            clicked = prompt.clickedButton()
+        finally:
+            self.signals.live_changed.disconnect(reading_changed)
+            prompt.deleteLater()
+        if cancelled or not self._lifecycle_is_current(generation):
+            return False
+        if clicked is continue_button:
+            if not can_read_visible_dialogue:
+                return self._identify_live_scope_then_start()
             self.voice_auditions.suspend()
             running = bool(self.controller.start_live_from_ocr())
             self.signals.live_changed.emit(running)
@@ -2578,7 +2608,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 else "Live reading could not start from the visible dialogue."
             )
             return running
-        if prompt.clickedButton() is stories_button:
+        if clicked is stories_button:
             self.dashboard.show_stories()
             self.set_status(
                 "Stories is open: select and prepare the story currently shown in "
