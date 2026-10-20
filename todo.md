@@ -1,5 +1,9 @@
 # TODO
 
+## Qualify native local voice import
+
+- [ ] With verified background workspace isolation, or an explicitly approved native session, open the audio file picker by keyboard on macOS and Windows; choose and cancel multiple local recordings, then retry after a file becomes unavailable. Verify focus restoration, enlarged system text and VoiceOver/NVDA announcements for invalid names and replacement confirmation. Enter/Escape must keep the old voice; explicit Replace voice must update only the intended custom character. Use a disposable library and retain native focus/announcement evidence. Offscreen Qt tests and renders qualify draft, keyboard dispatch, scrolling and guarded publication, not native picker placement or screen-reader output.
+
 ## Keep full regression shards within their watchdogs
 
 - [ ] Measure and repartition the broad `remainder` inventory in `scripts/run_ci_unittests.py`, including a separate bounded group for catalog renders, while preserving every discovered test and the existing watchdogs. In the macOS permissions UI cycle the 900-second aggregate timed out during catalog renders; excluding the catalog still completed 4,460 of 4,475 remainder tests before the deadline, without an assertion failure. Use exact test-ID union checks and investigate slow cases rather than raising limits or dropping coverage. Validate the normal full-suite entry point on supported CI platforms; locally split retries qualify the tests, not the current aggregate scheduling.

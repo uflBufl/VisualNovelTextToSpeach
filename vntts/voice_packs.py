@@ -19,10 +19,23 @@ from vntts.document_identity import file_sha256
 from vntts.json_types import decode_json
 from vntts.path_safety import copy_regular_file, open_regular_binary
 from vntts.settings import get_local_data_directory
-from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
+from vntts.voices import (
+    CharacterVoiceRegistry,
+    VoiceManifestError,
+    normalize_character_name,
+)
 
 supported_audio_extensions = {".flac", ".m4a", ".mp3", ".ogg", ".wav"}
 _VOICE_MANIFEST_READ_LIMIT = 16 * 1024 * 1024
+
+
+class VoiceReplacementRequired(VoiceManifestError):
+    def __init__(self, character: str, manifest_sha256: str) -> None:
+        self.character = character
+        self.manifest_sha256 = manifest_sha256
+        super().__init__(
+            f"A voice already exists for {character!r}. Confirm replacement."
+        )
 
 
 class VoicePackManager:
@@ -51,10 +64,21 @@ class VoicePackManager:
         *,
         aliases: tuple[str, ...] = (),
         pack: str = "custom",
+        expected_manifest_sha256: str | None = None,
     ) -> Path:
         character = (character or "").strip()
         if not character:
             raise VoiceManifestError("Character name is required")
+        if not normalize_character_name(character):
+            raise VoiceManifestError(
+                "Character name must contain at least one letter or number"
+            )
+        if any(
+            alias.strip() and not normalize_character_name(alias) for alias in aliases
+        ):
+            raise VoiceManifestError(
+                "Aliases must contain at least one letter or number"
+            )
         references = self._validate_reference_files(reference_files)
         pack_path = self.storage_root / slugify(pack, fallback="asset")
         self._check_pack_path(pack_path)
@@ -62,6 +86,12 @@ class VoicePackManager:
         with exclusive_advisory_lock(lock_path, blocking=True):
             self._check_pack_path(pack_path)
             manifest_path: Path = pack_path / "manifest.json"
+            if expected_manifest_sha256 is not None and (
+                not manifest_path.exists()
+                or file_sha256(manifest_path, error_type=VoiceManifestError)
+                != expected_manifest_sha256
+            ):
+                raise VoiceManifestError("Voice library changed. Review it and retry.")
             manifest = (
                 read_json(manifest_path, None)
                 if manifest_path.exists()
@@ -74,6 +104,19 @@ class VoicePackManager:
                 isinstance(item, dict) for item in voices
             ):
                 raise VoiceManifestError("Existing voice manifest is invalid")
+            existing_voice = next(
+                (
+                    item
+                    for item in voices
+                    if str(item.get("character", "")).casefold() == character.casefold()
+                ),
+                None,
+            )
+            if existing_voice is not None and expected_manifest_sha256 is None:
+                raise VoiceReplacementRequired(
+                    str(existing_voice["character"]),
+                    file_sha256(manifest_path, error_type=VoiceManifestError),
+                )
             references_path = pack_path / "references"
             copied = [
                 references_path

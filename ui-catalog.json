@@ -274,15 +274,23 @@
       "title": "Voice import",
       "family": "Setup and recovery",
       "audience": "Advanced player",
-      "mission": "Add a verified external voice reference to the reusable voice library.",
+      "mission": "Import local recordings for one character into the custom voice library, with explicit confirmation before replacing an existing voice.",
       "canonical_owner": "voice-import",
-      "related": ["voice-editor", "settings"],
-      "contracts": ["single-mission", "playback-evidence"],
+      "related": ["asset-manager", "voice-editor", "settings"],
+      "contracts": ["single-mission"],
       "stories": [
         {"id": "voice-import.empty", "title": "No audio selected", "state": "Character name and local audio selection are discoverable"},
         {"id": "voice-import.selected", "title": "Two audio references", "state": "Selected files and optional aliases are visible before saving"},
         {"id": "voice-import.long-values", "title": "Long selected filenames", "state": "Long audio filenames remain inspectable and replaceable"},
-        {"id": "voice-import.compact", "title": "Compact voice import", "state": "All controls fit with enlarged text"}
+        {"id": "voice-import.compact", "title": "Compact voice import", "state": "All controls fit with enlarged text"},
+        {"id": "voice-import.duplicate-filenames", "title": "Same filenames from different folders", "state": "Full paths distinguish the selected recordings without hovering"},
+        {"id": "voice-import.invalid-name", "title": "Unusable character name", "state": "An inline problem explains why punctuation-only names cannot be added"},
+        {"id": "voice-import.invalid-alias", "title": "Unusable other name", "state": "An inline problem preserves the character and selected files while an alias is corrected"},
+        {"id": "voice-import.compact-invalid-alias", "title": "Invalid other name with enlarged text", "state": "The input problem and actions remain readable with enlarged text"},
+        {"id": "voice-import.replacement", "title": "Confirm replacement", "state": "Replacing an existing custom voice requires explicit consent and explains immediate effects"},
+        {"id": "voice-import.compact-overflow", "title": "Long character and many recordings", "state": "A compact window with enlarged text, a long character name and twenty long paths"},
+        {"id": "voice-import.compact-overflow-end", "title": "End of overflowing values", "state": "The end of the character name and the last full recording path are reachable"},
+        {"id": "voice-import.compact-replacement", "title": "Long replacement target with enlarged text", "state": "The full character identity and replacement consequences remain readable"}
       ]
     },
     {

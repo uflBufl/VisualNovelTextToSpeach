@@ -31,7 +31,8 @@ from vntts.document_identity import file_sha256
 from vntts.model_assets import ModelAssetManager, ModelDownloadCancelled
 from vntts.settings import AppSettings
 from vntts.ui_text import make_text_copyable
-from vntts.voice_packs import VoicePackManager
+from vntts.voice_packs import VoicePackManager, VoiceReplacementRequired
+from vntts.voices import normalize_character_name
 
 default_model = "tts_models/multilingual/multi-dataset/xtts_v2"
 
@@ -65,6 +66,7 @@ class _VoiceManager(Protocol):
         reference_files: tuple[str, ...],
         *,
         aliases: tuple[str, ...],
+        expected_manifest_sha256: str | None = None,
     ) -> Path: ...
 
     def validate(self, manifest_path: Path) -> Path: ...
@@ -72,6 +74,27 @@ class _VoiceManager(Protocol):
 
 class AssetSignals(QObject):
     progress = Signal(object, str)
+
+
+def build_voice_replacement_prompt(
+    character: str, parent: QWidget | None = None
+) -> QMessageBox:
+    dialog = QMessageBox(parent)
+    dialog.setWindowTitle("Replace existing voice?")
+    dialog.setIcon(QMessageBox.Icon.Warning)
+    dialog.setTextFormat(Qt.TextFormat.PlainText)
+    dialog.setText(f"Replace the voice for {character}?")
+    dialog.setInformativeText(
+        "This replaces all recordings and other names stored for this character "
+        "in your custom library. The change is saved immediately."
+    )
+    dialog.setStandardButtons(
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+    )
+    dialog.button(QMessageBox.StandardButton.Yes).setText("Replace voice")
+    dialog.setDefaultButton(QMessageBox.StandardButton.Cancel)
+    dialog.setEscapeButton(QMessageBox.StandardButton.Cancel)
+    return dialog
 
 
 class VoiceImportDialog(QDialog):
@@ -82,23 +105,36 @@ class VoiceImportDialog(QDialog):
         self.aliases = QLineEdit()
         self.aliases.setPlaceholderText("Comma-separated names")
         self.references: list[str] = []
-        self.reference_files = QPlainTextEdit("No files selected")
-        self.reference_files.setReadOnly(True)
-        self.reference_files.setFixedHeight(76)
+        self.reference_files = QPlainTextEdit(
+            "No files selected", readOnly=True, tabChangesFocus=True
+        )
+        self.reference_files.setFixedHeight(
+            self.reference_files.fontMetrics().lineSpacing() * 3 + 12
+        )
+        self.reference_files.installEventFilter(self)
         self.reference_files.setAccessibleName("Selected audio references")
-        choose_button = QPushButton("Choose audio files...")
-        choose_button.clicked.connect(self.choose_references)
+        self.choose_button = QPushButton("Choose audio files...")
+        self.choose_button.clicked.connect(self.choose_references)
 
         form = QFormLayout()
         form.addRow("Character (required)", self.character)
-        form.addRow("Aliases (optional)", self.aliases)
-        reference_controls = QVBoxLayout()
-        reference_controls.addWidget(self.reference_files)
+        form.addRow("Other names (optional)", self.aliases)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(10)
         picker_row = QHBoxLayout()
-        picker_row.addWidget(choose_button)
+        picker_row.addWidget(QLabel("Recordings (required)"))
         picker_row.addStretch()
-        reference_controls.addLayout(picker_row)
-        form.addRow("Audio references (required)", reference_controls)
+        picker_row.addWidget(self.choose_button)
+        self.validation_error = QLabel()
+        self.validation_error.setWordWrap(True)
+        self.validation_error.setAccessibleName("Voice input problem")
+        self.validation_error.hide()
+        import_help = QLabel(
+            "Adds recordings to your custom library immediately. Cancel in the "
+            "library window won't undo the import."
+        )
+        import_help.setWordWrap(True)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
@@ -107,11 +143,28 @@ class VoiceImportDialog(QDialog):
         self.add_button.setText("Add voice")
         self.add_button.setEnabled(False)
         self.character.textChanged.connect(self._update_add_button)
+        self.aliases.textChanged.connect(self._update_add_button)
         buttons.accepted.connect(self.validate_and_accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
         layout.addLayout(form)
+        layout.addLayout(picker_row)
+        layout.addWidget(self.reference_files)
+        layout.addWidget(self.validation_error)
+        layout.addWidget(import_help)
         layout.addWidget(buttons)
+        self.setTabOrder(self.aliases, self.choose_button)
+        self.setTabOrder(self.choose_button, self.reference_files)
+        self.setTabOrder(self.reference_files, self.add_button)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.reference_files and event.type() == QEvent.Type.FontChange:
+            self.reference_files.setFixedHeight(
+                self.reference_files.fontMetrics().lineSpacing() * 3 + 12
+            )
+        return super().eventFilter(watched, event)
 
     def choose_references(self) -> None:
         files, _selected_filter = QFileDialog.getOpenFileNames(
@@ -126,28 +179,39 @@ class VoiceImportDialog(QDialog):
     def set_references(self, files: list[str]) -> None:
         self.references = list(files)
         self.reference_files.setPlainText(
-            "\n".join(Path(path).name for path in files)
-            if files
-            else "No files selected"
+            "\n".join(files) if files else "No files selected"
         )
-        self.reference_files.setToolTip("\n".join(files))
         self._update_add_button()
 
+    def _input_problem(self) -> tuple[str, QWidget] | None:
+        name, references, aliases = self.values()
+        if not normalize_character_name(name):
+            return (
+                "Enter a character name containing a letter or number.",
+                self.character,
+            )
+        if any(not normalize_character_name(alias) for alias in aliases):
+            return "Each other name must contain a letter or number.", self.aliases
+        if not references:
+            return "Choose at least one recording.", self.choose_button
+        return None
+
     def _update_add_button(self) -> None:
-        self.add_button.setEnabled(
-            bool(self.character.text().strip() and self.references)
+        problem = self._input_problem()
+        self.add_button.setEnabled(problem is None)
+        show_problem = problem is not None and (
+            (problem[1] is self.character and bool(self.character.text().strip()))
+            or problem[1] is self.aliases
         )
+        self.validation_error.setText(problem[0] if show_problem and problem else "")
+        self.validation_error.setVisible(show_problem)
 
     def validate_and_accept(self) -> None:
-        if not self.character.text().strip():
-            QMessageBox.warning(self, "Missing character", "Enter a character name.")
-            return
-        if not self.references:
-            QMessageBox.warning(
-                self,
-                "Missing references",
-                "Select at least one local audio reference.",
-            )
+        problem = self._input_problem()
+        if problem is not None:
+            self.validation_error.setText(problem[0])
+            self.validation_error.show()
+            problem[1].setFocus()
             return
         self.accept()
 
@@ -669,12 +733,20 @@ class AssetManagerDialog(QDialog):
             return
         character, references, aliases = dialog.values()
         self._voice_import_draft = character, references, aliases
+        self._start_drafted_voice_import()
+
+    def _start_drafted_voice_import(
+        self, expected_manifest_sha256: str | None = None
+    ) -> None:
+        assert self._voice_import_draft is not None
+        character, references, aliases = self._voice_import_draft
         self._start_voice_import(
             self.voice_manager.import_voice,
             character,
             tuple(references),
             aliases=tuple(aliases),
-            message=f"Imported {len(references)} reference(s) for {character}",
+            expected_manifest_sha256=expected_manifest_sha256,
+            message=f"Imported {len(references)} recording(s) for {character}",
             from_audio=True,
         )
 
@@ -703,7 +775,18 @@ class AssetManagerDialog(QDialog):
         self._voice_import_from_audio = False
         self.set_operation_running(False)
         self.voice_progress.setRange(0, 100)
-        if error is not None:
+        self.voice_progress.hide()
+        if isinstance(error, VoiceReplacementRequired) and from_audio:
+            self.voice_progress.setValue(0)
+            if not self._close_pending:
+                prompt = build_voice_replacement_prompt(error.character, self)
+                if prompt.exec() == QMessageBox.StandardButton.Yes:
+                    self._start_drafted_voice_import(error.manifest_sha256)
+                    return
+            self.voice_status.setPlainText(
+                "Existing voice kept. Choose Add voice from audio to revise and retry."
+            )
+        elif error is not None:
             self.voice_progress.setValue(0)
             self.voice_status.setPlainText(
                 f"Voice import failed: {error}. "
@@ -718,7 +801,6 @@ class AssetManagerDialog(QDialog):
             if from_audio:
                 self._voice_import_draft = None
             self.voice_progress.setValue(100)
-        self.voice_progress.hide()
         if self._close_pending:
             self._close_pending = False
             self.close()

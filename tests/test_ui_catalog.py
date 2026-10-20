@@ -646,6 +646,14 @@ class UiCatalogTest(unittest.TestCase):
                     "voice-import.selected",
                     "voice-import.long-values",
                     "voice-import.compact",
+                    "voice-import.compact-overflow",
+                    "voice-import.compact-overflow-end",
+                    "voice-import.duplicate-filenames",
+                    "voice-import.invalid-name",
+                    "voice-import.invalid-alias",
+                    "voice-import.compact-invalid-alias",
+                    "voice-import.replacement",
+                    "voice-import.compact-replacement",
                 },
             )
             for story in packet["target"]["stories"]:

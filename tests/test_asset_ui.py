@@ -34,10 +34,13 @@ from vntts.asset_integrity import ModelIntegrityError  # noqa: E402
 from vntts.asset_ui import (  # noqa: E402
     AssetManagerDialog,
     VoiceImportDialog,
+    build_voice_replacement_prompt,
     default_model,
 )
 from vntts.model_assets import ModelDownloadCancelled  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
+from vntts.voice_packs import VoiceReplacementRequired  # noqa: E402
+from vntts.voices import VoiceManifestError  # noqa: E402
 
 
 def delete_dialog(dialog):
@@ -69,13 +72,16 @@ class VoiceImportDialogTest(unittest.TestCase):
         ):
             dialog.choose_references()
             self.assertEqual(
-                dialog.reference_files.toPlainText(), "first.wav\nsecond.wav"
+                dialog.reference_files.toPlainText(),
+                "/voices/first.wav\n/voices/second.wav",
             )
             self.assertTrue(dialog.add_button.isEnabled())
             dialog.choose_references()
 
         self.assertEqual(dialog.references, ["/voices/replacement.wav"])
-        self.assertEqual(dialog.reference_files.toPlainText(), "replacement.wav")
+        self.assertEqual(
+            dialog.reference_files.toPlainText(), "/voices/replacement.wav"
+        )
         dialog.reference_files.setPlainText(
             "\n".join(f"very-long-reference-{index:02d}.wav" for index in range(20))
         )
@@ -88,6 +94,108 @@ class VoiceImportDialogTest(unittest.TestCase):
         )
         dialog.validate_and_accept()
         self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+
+    def test_invalid_names_stay_in_form_and_focus_the_problem(self):
+        dialog = VoiceImportDialog()
+        self.addCleanup(delete_dialog, dialog)
+        dialog.set_references(["/voices/line.wav"])
+        dialog.character.setText("???")
+        dialog.show()
+        self.application.processEvents()
+        self.assertFalse(dialog.add_button.isEnabled())
+        self.assertIn("letter or number", dialog.validation_error.text())
+        dialog.validate_and_accept()
+        self.assertIs(self.application.focusWidget(), dialog.character)
+        dialog.character.setText("Маркус")
+        dialog.aliases.setText("Marcus, !!!")
+        self.assertFalse(dialog.add_button.isEnabled())
+        dialog.validate_and_accept()
+        self.assertIs(self.application.focusWidget(), dialog.aliases)
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(dialog.references, ["/voices/line.wav"])
+        dialog.aliases.setText("Marcus, М")
+        self.assertTrue(dialog.add_button.isEnabled())
+        self.assertEqual(dialog.validation_error.text(), "")
+
+    def test_file_paths_are_distinct_copyable_and_do_not_trap_tab(self):
+        dialog = VoiceImportDialog()
+        self.addCleanup(delete_dialog, dialog)
+        paths = ["/recordings/first/line.wav", "/recordings/second/line.wav"]
+        dialog.set_references(paths)
+        dialog.character.setText("Marcus")
+        dialog.show()
+        self.application.processEvents()
+        dialog.character.setFocus()
+        for control in (
+            dialog.character,
+            dialog.aliases,
+            dialog.choose_button,
+            dialog.reference_files,
+        ):
+            self.assertIs(self.application.focusWidget(), control)
+            QTest.keyClick(control, Qt.Key.Key_Tab)
+        self.assertIs(self.application.focusWidget(), dialog.add_button)
+        QTest.keyClick(dialog.add_button, Qt.Key.Key_Backtab)
+        self.assertIs(self.application.focusWidget(), dialog.reference_files)
+        QTest.keySequence(dialog.reference_files, QKeySequence.StandardKey.SelectAll)
+        QTest.keySequence(dialog.reference_files, QKeySequence.StandardKey.Copy)
+        self.assertEqual(self.application.clipboard().text(), "\n".join(paths))
+        with patch.object(QFileDialog, "getOpenFileNames", return_value=([], "")):
+            dialog.choose_references()
+        self.assertEqual(dialog.references, paths)
+        with patch.object(
+            QFileDialog, "getOpenFileNames", return_value=([], "")
+        ) as picker:
+            dialog.choose_button.setFocus()
+            QTest.keyClick(dialog.choose_button, Qt.Key.Key_Space)
+        picker.assert_called_once()
+        font = dialog.font()
+        font.setPointSize(20)
+        dialog.setFont(font)
+        self.application.processEvents()
+        self.assertGreaterEqual(
+            dialog.reference_files.height(),
+            dialog.reference_files.fontMetrics().lineSpacing() * 3,
+        )
+        dialog.resize(520, 250)
+        dialog.character.setText("A very long character name " * 8)
+        dialog.set_references(
+            [
+                f"/recordings/a-very-long-folder-name/a-very-long-recording-name-{index:02d}.wav"
+                for index in range(20)
+            ]
+        )
+        self.application.processEvents()
+        dialog.character.setFocus()
+        QTest.keyClick(dialog.character, Qt.Key.Key_End)
+        self.assertEqual(
+            dialog.character.cursorPosition(), len(dialog.character.text())
+        )
+        dialog.reference_files.setFocus()
+        for _ in range(20):
+            QTest.keyClick(dialog.reference_files, Qt.Key.Key_PageDown)
+        self.assertGreater(dialog.reference_files.verticalScrollBar().value(), 0)
+        self.assertEqual(
+            dialog.reference_files.verticalScrollBar().value(),
+            dialog.reference_files.verticalScrollBar().maximum(),
+        )
+
+    def test_replacement_prompt_keeps_cancel_as_keyboard_default(self):
+        dialog = build_voice_replacement_prompt("<Marcus & 37>")
+        self.addCleanup(delete_dialog, dialog)
+        self.assertEqual(dialog.textFormat(), Qt.TextFormat.PlainText)
+        self.assertIn("<Marcus & 37>", dialog.text())
+        self.assertIn("all recordings and other names", dialog.informativeText())
+        self.assertIs(
+            dialog.defaultButton(), dialog.button(QMessageBox.StandardButton.Cancel)
+        )
+        for key in (Qt.Key.Key_Escape, Qt.Key.Key_Return):
+            QTimer.singleShot(0, lambda key=key: QTest.keyClick(dialog, key))
+            self.assertEqual(dialog.exec(), QMessageBox.StandardButton.Cancel)
+        self.assertFalse(dialog.isVisible())
+        self.assertIs(
+            dialog.escapeButton(), dialog.button(QMessageBox.StandardButton.Cancel)
+        )
 
 
 class AssetManagerDialogTest(unittest.TestCase):
@@ -414,6 +522,101 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.assertTrue(retry_dialog.add_button.isEnabled())
         retry_dialog.set_references(["/voices/better.wav"])
         voice_manager.import_voice.assert_called_once()
+
+    def test_existing_voice_requires_explicit_confirmation_before_retry(self):
+        for consent in (
+            QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        ):
+            with self.subTest(consent=consent):
+                pool = ManualThreadPool()
+                manager = Mock()
+                manager.import_voice.side_effect = [
+                    VoiceReplacementRequired("Marcus", "confirmed-revision"),
+                    Path("managed/custom/manifest.json"),
+                ]
+                dialog = self.create_dialog(
+                    AppSettings(voice_manifest="existing.json"),
+                    voice_manager=manager,
+                    thread_pool=pool,
+                )
+                draft = ("Marcus", ["/voices/new.wav"], ["M"])
+                dialog._voice_import_draft = draft
+                dialog._start_drafted_voice_import()
+                with patch.object(QMessageBox, "exec", return_value=consent) as prompt:
+                    pool.run_next()
+                prompt.assert_called_once()
+                self.assertEqual(manager.import_voice.call_count, 1)
+                self.assertEqual(dialog.voice_manifest.text(), "existing.json")
+                if consent == QMessageBox.StandardButton.Yes:
+                    self.assertTrue(dialog.operation_running)
+                    self.assertFalse(dialog.add_voice_button.isEnabled())
+                    self.assertFalse(dialog.voice_progress.isHidden())
+                    pool.run_next()
+                    self.assertEqual(
+                        manager.import_voice.call_args.kwargs[
+                            "expected_manifest_sha256"
+                        ],
+                        "confirmed-revision",
+                    )
+                    self.assertEqual(
+                        dialog.voice_manifest.text(), "managed/custom/manifest.json"
+                    )
+                    self.assertIsNone(dialog._voice_import_draft)
+                else:
+                    self.assertEqual(dialog._voice_import_draft, draft)
+                    self.assertIn(
+                        "Existing voice kept", dialog.voice_status.toPlainText()
+                    )
+                self.assertFalse(dialog.operation_running)
+                self.assertTrue(dialog.add_voice_button.isEnabled())
+                self.assertTrue(dialog.voice_progress.isHidden())
+
+    def test_stale_confirmation_preserves_draft_and_does_not_retry_automatically(self):
+        pool = ManualThreadPool()
+        manager = Mock()
+        manager.import_voice.side_effect = [
+            VoiceReplacementRequired("Marcus", "old-revision"),
+            VoiceManifestError("Voice library changed. Review it and retry."),
+        ]
+        dialog = self.create_dialog(
+            AppSettings(), voice_manager=manager, thread_pool=pool
+        )
+        draft = ("Marcus", ["/voices/new.wav"], ["M"])
+        dialog._voice_import_draft = draft
+        dialog._start_drafted_voice_import()
+        with patch.object(
+            QMessageBox, "exec", return_value=QMessageBox.StandardButton.Yes
+        ):
+            pool.run_next()
+        pool.run_next()
+        self.assertFalse(dialog.operation_running)
+        self.assertEqual(manager.import_voice.call_count, 2)
+        self.assertEqual(dialog._voice_import_draft, draft)
+        self.assertIn("Voice library changed", dialog.voice_status.toPlainText())
+        self.assertEqual(dialog.voice_manifest.text(), "")
+        self.assertEqual(pool.tasks, [])
+
+    def test_close_pending_never_prompts_for_voice_replacement(self):
+        pool = ManualThreadPool()
+        manager = Mock()
+        manager.import_voice.side_effect = VoiceReplacementRequired(
+            "Marcus", "revision"
+        )
+        dialog = self.create_dialog(
+            AppSettings(), voice_manager=manager, thread_pool=pool
+        )
+        dialog._voice_import_draft = ("Marcus", ["/voices/new.wav"], [])
+        dialog.show()
+        dialog._start_drafted_voice_import()
+        dialog.close()
+        self.assertTrue(dialog._close_pending)
+        with patch.object(QMessageBox, "exec") as prompt:
+            pool.run_next()
+        prompt.assert_not_called()
+        manager.import_voice.assert_called_once()
+        self.assertFalse(dialog.isVisible())
+        self.assertFalse(dialog.operation_running)
 
     def test_cancel_button_sets_download_event(self):
         model_manager = Mock()

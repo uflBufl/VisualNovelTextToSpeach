@@ -1097,6 +1097,70 @@ def _macos_permissions_story(state: str) -> QWidget:
     return dialog
 
 
+def _voice_import_story(state: str) -> QWidget:
+    from vntts.asset_ui import VoiceImportDialog, build_voice_replacement_prompt
+
+    dialog: QWidget
+    compact = state.startswith("compact-") or state == "compact"
+    state = state.removeprefix("compact-")
+    if state == "replacement":
+        dialog = build_voice_replacement_prompt(
+            "Believer IV, Guardian of the Long Forgotten Eastern Sanctuary"
+            if compact
+            else "Believer IV"
+        )
+    else:
+        dialog = VoiceImportDialog()
+        dialog.resize(580, 220)
+        if state != "empty":
+            dialog.character.setText(
+                "???" if state == "invalid-name" else "Believer IV"
+            )
+            dialog.aliases.setText(
+                "Believer, !!!" if state == "invalid-alias" else "Believer, Faithful"
+            )
+            references = {
+                "long-values": [
+                    "/Users/Player/voices/Chapter_7_Believer_IV_They_at_least_paid_with_their_lives.wav",
+                    "/Users/Player/voices/Chapter_7_Believer_IV_What_about_you.wav",
+                ],
+                "duplicate-filenames": [
+                    "/Users/Player/Chapter_7/line.wav",
+                    "/Users/Player/Chapter_8/line.wav",
+                ],
+            }.get(
+                state,
+                [
+                    "/Users/Player/voices/Believer_01.wav",
+                    "/Users/Player/voices/Believer_02.wav",
+                ],
+            )
+            dialog.set_references(references)
+        if state in {"overflow", "overflow-end"}:
+            dialog.character.setText(
+                "Believer IV, Guardian of the Long Forgotten Eastern Sanctuary"
+            )
+            dialog.set_references(
+                [
+                    f"/Users/Player/voices/Chapter_7_Believer_IV_Long_dialogue_recording_{index:02d}.wav"
+                    for index in range(20)
+                ]
+            )
+            dialog.character.setCursorPosition(0)
+            if state == "overflow-end":
+                from PySide6.QtCore import QTimer
+
+                scrollbar = dialog.reference_files.verticalScrollBar()
+                QTimer.singleShot(0, lambda: scrollbar.setValue(scrollbar.maximum()))
+                dialog.character.setCursorPosition(len(dialog.character.text()))
+    if compact:
+        dialog.resize(520, 250)
+        font = dialog.font()
+        font.setPointSize(font.pointSize() + 4)
+        dialog.setFont(font)
+    return dialog
+
+
 def _render_stories(
     catalog: UICatalog, output: Path, selected_surface: str | None
 ) -> dict[str, str]:
@@ -1135,7 +1199,7 @@ def _render_stories(
         build_story_match_recovery_prompt,
         build_unknown_speaker_prompt,
     )
-    from vntts.asset_ui import AssetManagerDialog, VoiceImportDialog
+    from vntts.asset_ui import AssetManagerDialog
     from vntts.authoring.cohort_bundle import build_cohort_review_bundle
     from vntts.authoring.cohort_bundle_ui import CohortReviewBundleDialog
     from vntts.authoring.failure_reference_audit import publish_failure_reference_audit
@@ -1753,7 +1817,7 @@ def _render_stories(
                 "Centurion",
                 ("/Users/Player/voices/Centurion/line-03.wav",),
                 aliases=(),
-                message="Imported 1 reference for Centurion",
+                message="Imported 1 recording(s) for Centurion",
                 from_audio=True,
             )
             if state == "voice-import-close-pending":
@@ -1868,31 +1932,6 @@ def _render_stories(
             dialog.profiles.setCurrentIndex(dialog.profiles.findData("other"))
         if state in {"compact", "long-values"}:
             dialog.resize(600, 410)
-            font = dialog.font()
-            font.setPointSize(font.pointSize() + 4)
-            dialog.setFont(font)
-        return dialog
-
-    def voice_import(state: str) -> VoiceImportDialog:
-        dialog = VoiceImportDialog()
-        dialog.resize(580, 220)
-        if state != "empty":
-            dialog.character.setText("Believer IV")
-            dialog.aliases.setText("Believer, Faithful")
-            filenames = (
-                [
-                    "Chapter_7_Believer_IV_They_at_least_paid_with_their_lives.wav",
-                    "Chapter_7_Believer_IV_What_about_you.wav",
-                ]
-                if state == "long-values"
-                else ["Believer_01.wav", "Believer_02.wav"]
-            )
-            dialog.references = [f"/Users/Player/voices/{name}" for name in filenames]
-            dialog.reference_files.setPlainText("\n".join(filenames))
-            dialog.reference_files.setToolTip("\n".join(dialog.references))
-            dialog._update_add_button()
-        if state == "compact":
-            dialog.resize(520, 250)
             font = dialog.font()
             font.setPointSize(font.pointSize() + 4)
             dialog.setFont(font)
@@ -3097,10 +3136,28 @@ def _render_stories(
         "game-profiles.missing-window": lambda: game_profiles("missing-window"),
         "game-profiles.long-values": lambda: game_profiles("long-values"),
         "game-profiles.pack-backed": lambda: game_profiles("pack-backed"),
-        "voice-import.empty": lambda: voice_import("empty"),
-        "voice-import.selected": lambda: voice_import("selected"),
-        "voice-import.long-values": lambda: voice_import("long-values"),
-        "voice-import.compact": lambda: voice_import("compact"),
+        "voice-import.empty": lambda: _voice_import_story("empty"),
+        "voice-import.selected": lambda: _voice_import_story("selected"),
+        "voice-import.long-values": lambda: _voice_import_story("long-values"),
+        "voice-import.compact": lambda: _voice_import_story("compact"),
+        "voice-import.compact-overflow": lambda: _voice_import_story(
+            "compact-overflow"
+        ),
+        "voice-import.compact-overflow-end": lambda: _voice_import_story(
+            "compact-overflow-end"
+        ),
+        "voice-import.duplicate-filenames": lambda: _voice_import_story(
+            "duplicate-filenames"
+        ),
+        "voice-import.invalid-name": lambda: _voice_import_story("invalid-name"),
+        "voice-import.invalid-alias": lambda: _voice_import_story("invalid-alias"),
+        "voice-import.compact-invalid-alias": lambda: _voice_import_story(
+            "compact-invalid-alias"
+        ),
+        "voice-import.replacement": lambda: _voice_import_story("replacement"),
+        "voice-import.compact-replacement": lambda: _voice_import_story(
+            "compact-replacement"
+        ),
         "calibration.overlay-empty": lambda: calibration("overlay-empty"),
         "calibration.overlay-selected": lambda: calibration("overlay-selected"),
         "calibration.overlay-top-selected": lambda: calibration("overlay-top-selected"),

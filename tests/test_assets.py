@@ -25,6 +25,8 @@ from vntts.assets import (
     ModelIntegrityError,
     VoicePackManager,
 )
+from vntts.document_identity import file_sha256
+from vntts.voice_packs import VoiceReplacementRequired
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
 
@@ -1191,6 +1193,89 @@ class VoicePackManagerTest(unittest.TestCase):
             self.assertNotEqual(voice.references[0], source)
             self.assertEqual(manager.validate(manifest), manifest)
 
+    def test_import_voice_requires_confirmation_before_replacing_existing_voice(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.wav"
+            second = root / "second.wav"
+            first.write_bytes(b"first voice")
+            second.write_bytes(b"second voice")
+            manager = VoicePackManager(root / "managed")
+            manifest = manager.import_voice("Ada", [first], aliases=("Original",))
+            pack = manifest.parent
+            original_files = {
+                path.relative_to(pack): path.read_bytes()
+                for path in pack.rglob("*")
+                if path.is_file()
+            }
+
+            with self.assertRaises(VoiceReplacementRequired) as raised:
+                manager.import_voice("ada", [second], aliases=("Replacement",))
+
+            self.assertEqual(raised.exception.character, "Ada")
+            self.assertEqual(raised.exception.manifest_sha256, file_sha256(manifest))
+            self.assertEqual(
+                {
+                    path.relative_to(pack): path.read_bytes()
+                    for path in pack.rglob("*")
+                    if path.is_file()
+                },
+                original_files,
+            )
+            self.assertEqual(manager.validate(manifest), manifest)
+
+    def test_import_voice_rejects_stale_or_missing_confirmed_manifest(self):
+        for removed in (False, True):
+            with self.subTest(removed=removed), TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "voice.wav"
+                source.write_bytes(b"voice")
+                manager = VoicePackManager(root / "managed")
+                manifest = manager.import_voice("Ada", [source])
+                expected_sha256 = file_sha256(manifest)
+                if removed:
+                    manifest.unlink()
+                else:
+                    manager.import_voice("Grace", [source])
+                pack = manifest.parent
+                original_files = {
+                    path.relative_to(pack): path.read_bytes()
+                    for path in pack.rglob("*")
+                    if path.is_file()
+                }
+
+                with self.assertRaisesRegex(
+                    VoiceManifestError, "library changed.*retry"
+                ):
+                    manager.import_voice(
+                        "Ada", [source], expected_manifest_sha256=expected_sha256
+                    )
+
+                self.assertEqual(
+                    {
+                        path.relative_to(pack): path.read_bytes()
+                        for path in pack.rglob("*")
+                        if path.is_file()
+                    },
+                    original_files,
+                )
+
+    def test_import_voice_rejects_names_without_letters_or_numbers(self):
+        for character, aliases in (("???", ()), ("Ada", ("!!!",))):
+            with (
+                self.subTest(character=character, aliases=aliases),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                source = root / "voice.wav"
+                source.write_bytes(b"voice")
+                manager = VoicePackManager(root / "managed")
+
+                with self.assertRaisesRegex(VoiceManifestError, "letter or number"):
+                    manager.import_voice(character, [source], aliases=aliases)
+
+                self.assertFalse(manager.storage_root.exists())
+
     def test_import_voice_removes_replaced_managed_references(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1200,8 +1285,10 @@ class VoicePackManagerTest(unittest.TestCase):
             second.write_bytes(b"second voice")
             manager = VoicePackManager(root / "managed")
 
-            manager.import_voice("Ada", [first])
-            manifest = manager.import_voice("Ada", [second])
+            manifest = manager.import_voice("Ada", [first])
+            manifest = manager.import_voice(
+                "Ada", [second], expected_manifest_sha256=file_sha256(manifest)
+            )
             registry = CharacterVoiceRegistry.from_file(manifest)
 
             self.assertEqual(
@@ -1369,7 +1456,11 @@ class VoicePackManagerTest(unittest.TestCase):
                 encoding="utf-8",
             )
             for import_again in (
-                lambda: manager.import_voice("Ada", [new_reference]),
+                lambda: manager.import_voice(
+                    "Ada",
+                    [new_reference],
+                    expected_manifest_sha256=file_sha256(manifest),
+                ),
                 lambda: manager.import_pack(source_manifest, pack_name="custom"),
             ):
                 with self.subTest(import_again=import_again):
@@ -1423,7 +1514,9 @@ class VoicePackManagerTest(unittest.TestCase):
                     patch("vntts.voice_packs.os.replace", side_effect=fail_one_restore),
                     self.assertRaises(OSError) as raised,
                 ):
-                    manager.import_voice("Ada", [new])
+                    manager.import_voice(
+                        "Ada", [new], expected_manifest_sha256=file_sha256(manifest)
+                    )
                 self.assertIs(raised.exception, primary)
                 self.assertEqual(restores, ["manifest.json", "vntts-asset.json"])
                 backups = tuple(manifest.parent.glob(".voice-pack-backup-*"))
@@ -1529,7 +1622,11 @@ class VoicePackManagerTest(unittest.TestCase):
                         self.assertLogs("vntts.assets", level="WARNING") as warnings,
                     ):
                         imported = (
-                            manager.import_voice("Ada", [new])
+                            manager.import_voice(
+                                "Ada",
+                                [new],
+                                expected_manifest_sha256=file_sha256(manifest),
+                            )
                             if import_mode == "voice"
                             else manager.import_pack(
                                 source_manifest, pack_name="custom"

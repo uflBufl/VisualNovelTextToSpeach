@@ -12,6 +12,7 @@ import vntts.voice_packs as voice_packs
 from tests.authoring_fixtures import tree_hashes
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
+from vntts.document_identity import file_sha256
 from vntts.voice_packs import VoicePackManager
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
@@ -223,7 +224,11 @@ class AssetInputAdmissionTest(unittest.TestCase):
                 failure = fail_stream if phase == "stream" else primary
                 with patch(f"vntts.voice_packs.shutil.{name}", side_effect=failure):
                     with self.assertRaises(OSError) as raised:
-                        manager.import_voice("Ada", [source])
+                        manager.import_voice(
+                            "Ada",
+                            [source],
+                            expected_manifest_sha256=file_sha256(manifest),
+                        )
                 self.assertIs(raised.exception, primary)
                 self.assertEqual((manifest.read_bytes(), checksum.read_bytes()), prior)
                 self.assertEqual(
