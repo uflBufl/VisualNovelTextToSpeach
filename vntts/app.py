@@ -3,6 +3,7 @@ import sys
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
+from json import JSONDecodeError
 from multiprocessing import freeze_support
 from pathlib import Path
 from threading import Event, Lock, Thread
@@ -15,6 +16,7 @@ if getattr(sys, "frozen", False):
 from PIL import Image
 from pynput import keyboard
 from PySide6.QtCore import (
+    QEvent,
     QObject,
     QPointF,
     QRectF,
@@ -42,6 +44,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QInputDialog,
@@ -49,6 +52,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -534,6 +538,23 @@ class SettingsDialog(QDialog):
         self.speech_rate.setRange(50, 150)
         self.speech_rate.setSuffix("%")
         self.speech_rate.setValue(settings.speech_rate_percent)
+        self.speech_rate.setToolTip(
+            "Speed changes are supported by Coqui XTTS. Prepared audio requires 100%."
+        )
+        self.speech_rate.setAccessibleDescription(self.speech_rate.toolTip())
+        self.reset_speech_rate = QPushButton("Reset to 100%")
+        self.reset_speech_rate.setAutoDefault(False)
+        self.reset_speech_rate.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
+        self.reset_speech_rate.setToolTip(
+            "Use the normal speed required for prepared audio"
+        )
+        self.reset_speech_rate.setEnabled(self.speech_rate.value() != 100)
+        self.reset_speech_rate.clicked.connect(lambda: self.speech_rate.setValue(100))
+        self.speech_rate_notice = QLabel()
+        self.speech_rate_notice.setWordWrap(True)
+        self.speech_rate.valueChanged.connect(self.update_speech_rate_controls)
         self.auto_advance = QCheckBox("Advance after the spoken dialogue finishes")
         self.auto_advance.setChecked(settings.auto_advance_enabled)
         self.auto_advance_reason = QLabel()
@@ -567,14 +588,12 @@ class SettingsDialog(QDialog):
         self.auto_advance_delay.setValue(settings.auto_advance_delay_ms)
 
     def _build_application_controls(self, settings: AppSettings) -> None:
-        self.warm_up_voices = QCheckBox("Warm up model and voices before gameplay")
+        self.warm_up_voices = QCheckBox("Warm up voices before reading")
         self.warm_up_voices.setChecked(settings.warm_up_voices)
-        self.launch_at_login = QCheckBox("Launch automatically when I sign in")
+        self.launch_at_login = QCheckBox("Launch at sign-in (macOS)")
         self.launch_at_login.setChecked(settings.launch_at_login)
         self.launch_at_login.setEnabled(sys.platform == "darwin")
-        self.keep_running_on_close = QCheckBox(
-            "Keep reading in the background when Full controls closes"
-        )
+        self.keep_running_on_close = QCheckBox("Keep reading when Full controls closes")
         self.keep_running_on_close.setChecked(settings.keep_running_on_close)
         self.xtts_terms = QCheckBox("I agree to the non-commercial CPML terms")
         self.xtts_terms.setChecked(settings.xtts_terms_accepted)
@@ -824,7 +843,13 @@ class SettingsDialog(QDialog):
     ) -> QFormLayout:
         playback_form = QFormLayout()
         playback_form.addRow("Output volume", self.output_volume)
-        playback_form.addRow("Speaking speed", self.speech_rate)
+        speed_layout = QHBoxLayout()
+        speed_layout.addWidget(self.speech_rate, 1)
+        speed_layout.addWidget(self.reset_speech_rate)
+        _add_composite_form_row(
+            playback_form, "Speaking speed", self.speech_rate, speed_layout
+        )
+        playback_form.addRow(self.speech_rate_notice)
         playback_form.addRow("Auto advance", self.auto_advance)
         playback_form.addRow("", self.auto_advance_reason)
         playback_form.addRow("Sequence-first rollout", self.live_sequence_mode)
@@ -857,9 +882,9 @@ class SettingsDialog(QDialog):
 
     def _build_application_form(self) -> QFormLayout:
         application_form = QFormLayout()
-        application_form.addRow("Startup readiness", self.warm_up_voices)
-        application_form.addRow("macOS startup", self.launch_at_login)
-        application_form.addRow("Closing the window", self.keep_running_on_close)
+        application_form.addRow(self.warm_up_voices)
+        application_form.addRow(self.launch_at_login)
+        application_form.addRow(self.keep_running_on_close)
         return application_form
 
     def _build_settings_content(
@@ -909,17 +934,17 @@ class SettingsDialog(QDialog):
         section_navigation_layout.addWidget(section_label)
         section_navigation_layout.addWidget(self.section_navigation, 1)
 
-        self.validation_summary = QLabel()
-        self.validation_summary.setWordWrap(True)
-        self.validation_summary.setAccessibleName("Settings validation summary")
-        self.validation_summary.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
+        self.validation_summary = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
+        self.validation_summary.setFrameShape(QFrame.Shape.NoFrame)
+        self.validation_summary.viewport().setAutoFillBackground(False)
+        self.validation_summary.setFixedHeight(
+            self.validation_summary.fontMetrics().lineSpacing() * 3 + 12
         )
-
-        note_text = "Speech engine and voice changes reload speech when saved."
-        if sys.platform != "darwin":
-            note_text = f"Hotkey changes take effect immediately. {note_text}"
-        self.restart_note = QLabel(note_text)
+        self.validation_summary.installEventFilter(self)
+        self.validation_summary.setAccessibleName("Settings validation summary")
+        self.restart_note = QLabel(
+            "Speech engine and voice changes reload speech when saved."
+        )
         self.restart_note.setWordWrap(True)
         settings_content_layout.insertWidget(
             settings_content_layout.count() - 1, self.restart_note
@@ -933,6 +958,8 @@ class SettingsDialog(QDialog):
         self.save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
         layout.addLayout(section_navigation_layout)
         layout.addWidget(self.advanced_settings)
         layout.addWidget(self.validation_summary)
@@ -970,7 +997,34 @@ class SettingsDialog(QDialog):
         self.update_validation_summary()
         self.section_navigation.setCurrentIndex(1)
         self._set_advanced_settings(False)
+        self.settings_scroll.viewport().installEventFilter(self)
         make_text_copyable(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            watched is self.validation_summary
+            and event.type() == QEvent.Type.FontChange
+        ):
+            self.validation_summary.setFixedHeight(
+                self.validation_summary.fontMetrics().lineSpacing() * 3 + 12
+            )
+        viewport = self.settings_scroll.viewport()
+        if watched is viewport and event.type() in {
+            QEvent.Type.Resize,
+            QEvent.Type.FontChange,
+        }:
+            stacked = viewport.width() < viewport.fontMetrics().horizontalAdvance(
+                "Offline preparation engine   A useful editable value"
+            )
+            for region in self.settings_regions:
+                form = region.layout()
+                assert isinstance(form, QFormLayout)
+                form.setRowWrapPolicy(
+                    QFormLayout.RowWrapPolicy.WrapAllRows
+                    if stacked
+                    else QFormLayout.RowWrapPolicy.WrapLongRows
+                )
+        return super().eventFilter(watched, event)
 
     def _set_advanced_settings(self, visible: bool) -> None:
         for form, field in self._advanced_rows:
@@ -1058,7 +1112,15 @@ class SettingsDialog(QDialog):
         if 0 <= index < len(self.settings_regions):
             for position, region in enumerate(self.settings_regions):
                 region.setVisible(position == index)
-            self.restart_note.setVisible(index == 2)
+            self.advanced_settings.setVisible(index in {1, 2, 3})
+            self.restart_note.setText(
+                "Hotkey changes take effect when saved."
+                if index == 0
+                else "Speech engine and voice changes reload speech when saved."
+            )
+            self.restart_note.setVisible(
+                index == 2 or (index == 0 and sys.platform != "darwin")
+            )
             self.settings_scroll.verticalScrollBar().setValue(0)
 
     def _connect_validation_updates(self) -> None:
@@ -1114,6 +1176,21 @@ class SettingsDialog(QDialog):
         if not Path(text).expanduser().is_file():
             return f"{label}: the selected file does not exist."
         return None
+
+    def _validate_game_pack(self) -> tuple[AppSettings | None, str | None]:
+        path_error = self._file_validation_error("Game pack", self.game_pack.text())
+        if path_error:
+            return None, path_error
+        try:
+            return self._settings_with_game_pack(self._raw_settings()), None
+        except (GamePackError, OSError) as error:
+            cause = error.__cause__
+            if isinstance(cause, JSONDecodeError):
+                return None, (
+                    f"Game pack: invalid JSON at line {cause.lineno}, "
+                    f"column {cause.colno}. Choose a valid game pack."
+                )
+            return None, f"Game pack: {error}."
 
     def validation_errors(self) -> tuple[ValidationError, ...]:
         errors: list[ValidationError] = []
@@ -1191,10 +1268,8 @@ class SettingsDialog(QDialog):
         game_pack = self.game_pack.text().strip()
         effective_settings: AppSettings | None = None
         if game_pack:
-            try:
-                effective_settings = self._settings_with_game_pack(self._raw_settings())
-            except (GamePackError, OSError) as error:
-                add(2, self.game_pack, f"Game pack: {error}.")
+            effective_settings, pack_error = self._validate_game_pack()
+            add(2, self.game_pack, pack_error)
 
         for label, field in (
             ("Narrator reference", self.narrator_reference),
@@ -1278,16 +1353,19 @@ class SettingsDialog(QDialog):
             narrator_voice_label(self._raw_settings(), self.voice_library)
         )
         errors = self.validation_errors()
-        if errors:
-            self.validation_summary.setText(
-                f"Fix {len(errors)} setting(s) before saving:\n"
-                + "\n".join(f"- {message}" for _section, _widget, message in errors)
-            )
-            self.validation_summary.setStyleSheet("font-weight: 600;")
-        else:
-            self.validation_summary.setText("All settings are valid.")
-            self.validation_summary.setStyleSheet("")
+        message = (
+            "Check these settings before saving:\n"
+            + "\n".join(f"- {message}" for _section, _widget, message in errors)
+            if errors
+            else ""
+        )
+        self._show_validation_message(message)
         return errors
+
+    def _show_validation_message(self, message: str) -> None:
+        if self.validation_summary.toPlainText() != message:
+            self.validation_summary.setPlainText(message)
+        self.validation_summary.setVisible(bool(message))
 
     def _resize_for_available_screen(self) -> None:
         available = self.screen().availableGeometry()
@@ -1439,25 +1517,38 @@ class SettingsDialog(QDialog):
         }:
             self.tts_model.setText(default_xtts_model)
         self.tts_model.setEnabled(uses_xtts or uses_moss)
-        self.offline_tts_model.setEnabled(
-            self.offline_speech_backend.currentData() in {"coqui-xtts", "moss-tts"}
-        )
+        offline_model = self.offline_speech_backend.currentData() in {
+            "coqui-xtts",
+            "moss-tts",
+        }
+        self.offline_tts_model.setEnabled(offline_model)
         advanced = self.advanced_settings.isChecked()
+        self.speech_form.setRowVisible(
+            self.offline_tts_model, advanced and offline_model
+        )
         self.speech_form.setRowVisible(
             self.tts_model, advanced and (uses_xtts or uses_moss)
         )
-        self.tts_language.setEnabled(
-            uses_xtts
-            or uses_moss
-            or self.offline_speech_backend.currentData() == "coqui-xtts"
-        )
+        self.tts_language.setEnabled(uses_xtts or uses_moss or offline_model)
         self.narrator_reference.setEnabled(True)
         self.narrator_reference_button.setEnabled(True)
         self.narrator_speaker.setEnabled(uses_xtts)
         self.speech_form.setRowVisible(self.narrator_speaker, advanced and uses_xtts)
         self.tts_profile.setEnabled(uses_xtts or uses_moss)
-        self.speech_rate.setEnabled(uses_xtts)
+        self.update_speech_rate_controls()
         self.update_terms_control()
+
+    def update_speech_rate_controls(self) -> None:
+        uses_xtts = self.speech_backend.currentData() == "coqui-xtts"
+        changed_speed = self.speech_rate.value() != 100
+        self.speech_rate.setEnabled(uses_xtts)
+        self.reset_speech_rate.setEnabled(changed_speed)
+        self.speech_rate_notice.setText(
+            "Prepared audio requires 100% speed."
+            if uses_xtts
+            else "This engine uses normal speed. Reset to 100% to use prepared audio."
+        )
+        self.speech_rate_notice.setVisible(changed_speed)
 
     def validate_and_accept(self) -> None:
         errors = self.update_validation_summary()

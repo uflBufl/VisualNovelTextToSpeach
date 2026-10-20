@@ -14,6 +14,7 @@ import wave
 from contextlib import ExitStack
 from dataclasses import replace
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Callable, Never
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
     from PySide6.QtCore import QThreadPool
     from PySide6.QtWidgets import QApplication, QWidget
 
+    from vntts.app import SettingsDialog
     from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
     from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
     from vntts.calibration import CalibrationReviewDialog, DialogRegionOverlay
@@ -385,6 +387,134 @@ def _scroll_calibration_review_to_end(widget: QWidget, app: QApplication) -> Non
     app.processEvents()
 
 
+def _settings_story(resources: ExitStack, state: str) -> SettingsDialog:
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+
+    from vntts.app import SettingsDialog
+    from vntts.settings import AppSettings
+    from vntts.voice_library import VoiceLibrary
+
+    root = Path(
+        resources.enter_context(temporary_directory(prefix="vntts-ui-catalog-"))
+    )
+    reference = root / "reference.wav"
+    reference.touch()
+    if state.startswith("compact-"):
+        font = QApplication.font()
+        resources.callback(QApplication.setFont, QApplication.font())
+        font.setPointSize(22)
+        QApplication.setFont(font)
+    settings = AppSettings(
+        onboarding_completed=True,
+        capture_mode="window",
+        speech_backend="pocket-tts" if "offline-moss" in state else "moss-tts",
+        offline_speech_backend="moss-tts",
+        tts_profile="stable",
+        game_window_title="Reverse: 1999",
+        tts_speaker_wav=str(reference),
+        screenshot_directory=str(root / "Screenshots"),
+        ocr_diagnostics_directory=str(root / "OCR Diagnostics"),
+        speech_rate_percent=125 if state.startswith("playback-speed") else 100,
+    )
+    platform = "win32" if state == "shortcuts-windows" else sys.platform
+    with patch("vntts.app.sys", SimpleNamespace(platform=platform)):
+        dialog = SettingsDialog(
+            settings, voice_library=VoiceLibrary(root / "voice-library")
+        )
+        section = {
+            "shortcuts": 0,
+            "shortcuts-windows": 0,
+            "capture": 1,
+            "capture-window": 1,
+            "advanced-capture": 1,
+            "compact-capture": 1,
+            "compact-shortcuts": 0,
+            "compact-playback": 3,
+            "compact-application": 4,
+            "playback": 3,
+            "playback-advanced": 3,
+            "playback-speed-reset-needed": 3,
+            "playback-speed-reset": 3,
+            "application": 4,
+            "checkbox-focus": 4,
+        }.get(state, 2)
+        dialog.section_navigation.setCurrentIndex(section)
+    dialog.advanced_settings.setChecked("advanced" in state)
+    dialog.resize(760, 600)
+    if state.startswith("compact-"):
+        dialog.resize(620, 500)
+    if state == "capture-window":
+        dialog.game_window.setCurrentText(
+            "Reverse: 1999 - A Particularly Long Game Window Title"
+        )
+    if state == "checkbox-focus":
+        QTimer.singleShot(0, dialog.warm_up_voices.setFocus)
+    if state == "validation-error":
+        dialog.narrator_reference.setText("/missing/voice-reference.wav")
+        dialog.save_button.click()
+    if "validation-errors" in state or state == "validation-recovered":
+        _settings_validation_story(dialog, root, state)
+    if state == "playback-speed-reset":
+        dialog.reset_speech_rate.click()
+    return dialog
+
+
+def _settings_validation_story(dialog: SettingsDialog, root: Path, state: str) -> None:
+    blocked = root / "not-a-directory"
+    blocked.touch()
+    dialog.screenshot_directory.setText(str(blocked))
+    dialog.retain_uncertain_frames.setChecked(True)
+    dialog.ocr_diagnostics_directory.setText(str(blocked))
+    dialog.game_window.setCurrentText("")
+    dialog.speech_backend.setCurrentIndex(dialog.speech_backend.findData("coqui-xtts"))
+    dialog.xtts_terms.setChecked(False)
+    dialog.narrator_reference.setText(str(root / "missing-reference.wav"))
+    dialog.live_speaker_corpus.setText(str(root / "missing-corpus.json"))
+    dialog.game_pack.setText(str(root / "missing-pack.json"))
+    dialog.save_button.click()
+    if state == "validation-recovered":
+        dialog.screenshot_directory.setText(
+            dialog.original_settings.screenshot_directory
+        )
+        dialog.ocr_diagnostics_directory.setText(
+            dialog.original_settings.ocr_diagnostics_directory
+        )
+        dialog.game_window.setCurrentText(
+            dialog.original_settings.game_window_title or ""
+        )
+        dialog.xtts_terms.setChecked(True)
+        dialog.narrator_reference.setText(
+            dialog.original_settings.tts_speaker_wav or ""
+        )
+        dialog.live_speaker_corpus.clear()
+        dialog.game_pack.clear()
+
+
+def _prepare_settings_screenshot(
+    widget: QWidget, story_id: str, app: QApplication
+) -> None:
+    if not story_id.startswith("settings."):
+        return
+    from vntts.app import SettingsDialog
+
+    assert isinstance(widget, SettingsDialog)
+    app.processEvents()
+    if story_id.endswith("compact-advanced-speech-scrolled"):
+        bar = widget.settings_scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
+    if "compact-validation-errors" in story_id:
+        widget.save_button.click()
+        app.processEvents()
+        bar = widget.validation_summary.verticalScrollBar()
+        for _ in range(3):
+            bar.setValue(bar.maximum())
+            app.processEvents()
+        if not story_id.endswith("-end"):
+            bar.setValue(0)
+    app.processEvents()
+
+
 def _prepare_catalog_screenshot(
     widget: QWidget, story_id: str, app: QApplication
 ) -> None:
@@ -392,6 +522,7 @@ def _prepare_catalog_screenshot(
     from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 
     _prepare_ocr_review_screenshot(widget, story_id, app)
+    _prepare_settings_screenshot(widget, story_id, app)
     if story_id in {
         "calibration.review-long-compact-scrolled",
         "calibration.review-long-enlarged-scrolled",
@@ -926,6 +1057,8 @@ def _configure_catalog_application() -> QApplication:
     palette.setColor(QPalette.ColorRole.Base, QColor("#151515"))
     palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#303030"))
     palette.setColor(QPalette.ColorRole.Text, QColor("#f0f0f0"))
+    palette.setColor(QPalette.ColorRole.Link, QColor("#79b8ff"))
+    palette.setColor(QPalette.ColorRole.LinkVisited, QColor("#d4a5ff"))
     palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#a8a8a8"))
     palette.setColor(QPalette.ColorRole.Button, QColor("#555555"))
     palette.setColor(QPalette.ColorRole.ButtonText, QColor("#f0f0f0"))
@@ -1689,7 +1822,6 @@ def _render_stories(
     )
     from tests.terminal_conflict_fixtures import create_terminal_conflict_review
     from vntts.app import (
-        SettingsDialog,
         build_story_match_recovery_prompt,
         build_unknown_speaker_prompt,
     )
@@ -1755,6 +1887,7 @@ def _render_stories(
         tts_profile="stable",
         game_window_title="Reverse: 1999",
     )
+    resources: ExitStack
     screenshots = output / "screenshots"
     screenshots.mkdir(parents=True, exist_ok=True)
     for screenshot in screenshots.glob("*.png"):
@@ -2010,65 +2143,8 @@ def _render_stories(
         dashboard.show_voices()
         return dashboard
 
-    def settings_speech() -> SettingsDialog:
-        temporary = resources.enter_context(
-            temporary_directory(prefix="vntts-ui-catalog-")
-        )
-        reference = Path(temporary) / "reference.wav"
-        reference.touch()
-        dialog = SettingsDialog(
-            settings.updated(
-                tts_speaker_wav=str(reference),
-                screenshot_directory="/Users/Player/Screenshots",
-                ocr_diagnostics_directory="/Users/Player/OCR Diagnostics",
-            ),
-            voice_library=VoiceLibrary(Path(temporary) / "voice-library"),
-        )
-
-        dialog.resize(760, 600)
-        dialog.section_navigation.setCurrentIndex(2)
-        return dialog
-
-    def settings_validation_error() -> SettingsDialog:
-        dialog = settings_speech()
-        dialog.advanced_narrator.setChecked(True)
-        dialog.narrator_reference.setText("/missing/voice-reference.wav")
-        dialog.validate_and_accept()
-        return dialog
-
-    def settings_section(
-        index: int, *, advanced: bool = False, compact: bool = False
-    ) -> SettingsDialog:
-        dialog = settings_speech()
-        dialog.section_navigation.setCurrentIndex(index)
-        dialog.advanced_settings.setChecked(advanced)
-        if compact:
-            dialog.resize(620, 500)
-            font = dialog.font()
-            font.setPointSize(font.pointSize() + 4)
-            dialog.setFont(font)
-        return dialog
-
-    def settings_capture_window() -> SettingsDialog:
-        dialog = settings_section(1)
-        dialog.capture_mode.setCurrentIndex(dialog.capture_mode.findData("window"))
-        dialog.game_window.setCurrentText(
-            "Reverse: 1999 - A Particularly Long Game Window Title"
-        )
-        return dialog
-
-    def settings_checkbox_focus() -> SettingsDialog:
-        dialog = settings_section(4)
-        QTimer.singleShot(0, dialog.warm_up_voices.setFocus)
-        return dialog
-
-    def settings_compact_advanced_scrolled() -> SettingsDialog:
-        dialog = settings_section(2, advanced=True, compact=True)
-        dialog.show()
-        app.processEvents()
-        scrollbar = dialog.settings_scroll.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
-        return dialog
+    def settings_story(state: str) -> QWidget:
+        return _settings_story(resources, state)
 
     class IdlePool(QThreadPool):
         def start(
@@ -3402,22 +3478,36 @@ def _render_stories(
         "compact-controller.scaled-sequence-recovery": lambda: (
             _compact_controller_story("scaled-sequence-recovery")
         ),
-        "settings.speech-and-voices": settings_speech,
-        "settings.shortcuts": lambda: settings_section(0),
-        "settings.capture": lambda: settings_section(1),
-        "settings.capture-window": settings_capture_window,
-        "settings.advanced-capture": lambda: settings_section(1, advanced=True),
-        "settings.playback": lambda: settings_section(3),
-        "settings.playback-advanced": lambda: settings_section(3, advanced=True),
-        "settings.application": lambda: settings_section(4),
-        "settings.checkbox-focus": settings_checkbox_focus,
-        "settings.advanced-speech": lambda: settings_section(2, advanced=True),
-        "settings.compact-capture": lambda: settings_section(1, compact=True),
-        "settings.compact-advanced-speech": lambda: settings_section(
-            2, advanced=True, compact=True
-        ),
-        "settings.compact-advanced-speech-scrolled": settings_compact_advanced_scrolled,
-        "settings.validation-error": settings_validation_error,
+        **{
+            f"settings.{state}": partial(settings_story, state)
+            for state in (
+                "speech-and-voices",
+                "shortcuts",
+                "shortcuts-windows",
+                "capture",
+                "capture-window",
+                "advanced-capture",
+                "playback",
+                "playback-advanced",
+                "application",
+                "checkbox-focus",
+                "advanced-speech",
+                "compact-capture",
+                "compact-shortcuts",
+                "compact-playback",
+                "compact-application",
+                "compact-advanced-speech",
+                "compact-advanced-speech-scrolled",
+                "validation-error",
+                "basic-offline-moss",
+                "advanced-offline-moss",
+                "compact-validation-errors",
+                "compact-validation-errors-end",
+                "validation-recovered",
+                "playback-speed-reset-needed",
+                "playback-speed-reset",
+            )
+        },
         "readiness.loading": lambda: readiness("loading"),
         "readiness.cancelled": lambda: readiness("cancelled"),
         "readiness.probe-failed": lambda: readiness("probe-failed"),

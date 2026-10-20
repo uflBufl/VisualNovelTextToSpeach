@@ -90,7 +90,18 @@
         {"id": "settings.compact-capture", "title": "Capture at compact large-text size", "state": "Global capture controls stay usable with enlarged text"},
         {"id": "settings.compact-advanced-speech", "title": "Advanced speech at compact large-text size", "state": "Long advanced form scrolls while Save remains visible"},
         {"id": "settings.compact-advanced-speech-scrolled", "title": "End of compact advanced speech", "state": "Final advanced fields and restart note remain reachable while Save stays visible"},
-        {"id": "settings.validation-error", "title": "Invalid speech settings", "state": "Save is blocked with a focused actionable explanation"}
+        {"id": "settings.compact-shortcuts", "title": "Keyboard shortcuts at 22-point text", "state": "Platform instructions and shortcut controls fit while Save and Cancel stay visible"},
+        {"id": "settings.compact-playback", "title": "Playback at 22-point text", "state": "Speed, reset and auto advance remain usable with enlarged text"},
+        {"id": "settings.compact-application", "title": "Application at 22-point text", "state": "Long behavior choices remain readable within the available width"},
+        {"id": "settings.validation-error", "title": "Invalid speech settings", "state": "Save is blocked with a focused actionable explanation"},
+        {"id": "settings.shortcuts-windows", "title": "Windows keyboard shortcuts", "state": "Shortcut edits apply when saved; Advanced has no empty disclosure"},
+        {"id": "settings.basic-offline-moss", "title": "Basic live and offline engines", "state": "Live Pocket and offline MOSS share model disclosure through Advanced"},
+        {"id": "settings.advanced-offline-moss", "title": "Offline MOSS language", "state": "Offline model and language remain editable with Pocket live reading"},
+        {"id": "settings.compact-validation-errors", "title": "Many errors at 22-point text", "state": "Real Save validation keeps the first invalid field and footer reachable while multiple actionable errors scroll"},
+        {"id": "settings.compact-validation-errors-end", "title": "End of enlarged validation errors", "state": "The final real validation error is reachable without losing the form and Save controls"},
+        {"id": "settings.validation-recovered", "title": "Validation recovered", "state": "Repairing all invalid fields clears and hides the error summary"},
+        {"id": "settings.playback-speed-reset-needed", "title": "Saved speed needs reset", "state": "Non-XTTS speech explains its disabled 125 percent speed and offers Reset to 100%"},
+        {"id": "settings.playback-speed-reset", "title": "Playback speed reset", "state": "The real Reset to 100% action restores prepared-recording playback and becomes unavailable"}
       ]
     },
     {

@@ -1,5 +1,9 @@
 # TODO
 
+## Qualify Settings on native Windows and macOS
+
+- [ ] With verified background workspace isolation or an explicitly approved native session, edit Settings across sections, open the file and engine selectors, save and cancel nested voice choices, and confirm keyboard focus/VoiceOver or NVDA announcements at enlarged system text. On Windows verify native shortcut symbols and application after Save; on macOS verify the unsupported-hotkey explanation. Start with a saved non-100% speed, reset to 100%, save, reopen, and play an existing prepared line; repeat reset with Cancel and verify the original setting remains. Retain native focus, popup placement and audible playback evidence. Offscreen Qt checks cover persistence, rollback, literal text, navigation and layout, not OS integration or physical output.
+
 ## Qualify Reading setup with native capture and audio
 
 - [ ] With verified background workspace isolation or an explicitly approved native session, run Reading setup on macOS and Windows: choose a real game, recover from a missing audio device, calibrate, test/cancel/retry, change the region after success, then save. Confirm actual audio stops, a new area requires a new successful test, cancellation restores saved runtime settings, and Save leaves Reading visible without starting playback. Check full errors and keyboard focus with enlarged text and VoiceOver/NVDA; retain focus, audio and timing evidence. Offscreen tests cover transitions, persistence, clipboard and delayed window handoff, not physical capture/audio or assistive technology.

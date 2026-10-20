@@ -3460,18 +3460,19 @@ class TrayApplicationTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertNotEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
-            self.assertIn("Screenshot directory", dialog.validation_summary.text())
-            self.assertIn("Capture source", dialog.validation_summary.text())
-            self.assertIn("Narrator voice", dialog.validation_summary.text())
+            self.assertIn(
+                "Screenshot directory", dialog.validation_summary.toPlainText()
+            )
+            self.assertIn("Capture source", dialog.validation_summary.toPlainText())
+            self.assertIn("Narrator voice", dialog.validation_summary.toPlainText())
             self.assertEqual(dialog.section_navigation.currentIndex(), 1)
             self.assertTrue(dialog.screenshot_directory.hasFocus())
 
             dialog.screenshot_directory.setText(str(root))
             dialog.game_window.setCurrentText("Reverse: 1999")
             dialog.narrator_reference.setText(str(narrator))
-            self.assertEqual(
-                dialog.validation_summary.text(), "All settings are valid."
-            )
+            self.assertEqual(dialog.validation_summary.toPlainText(), "")
+            self.assertTrue(dialog.validation_summary.isHidden())
             dialog.validate_and_accept()
             self.assertEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
             delete_dialog(dialog)
@@ -3490,7 +3491,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertNotEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
-            self.assertIn("Game pack:", dialog.validation_summary.text())
+            self.assertIn("Game pack:", dialog.validation_summary.toPlainText())
             self.assertEqual(dialog.section_navigation.currentIndex(), 2)
             self.assertTrue(dialog.game_pack.hasFocus())
             delete_dialog(dialog)
@@ -3502,7 +3503,7 @@ class TrayApplicationTest(unittest.TestCase):
             voice_manifest = root / "pack-voices.json"
             story_index = root / "pack-story.jsonl"
             generated_audio = root / "pack-generated.json"
-            for path in (voice_manifest, story_index, generated_audio):
+            for path in (game_pack, voice_manifest, story_index, generated_audio):
                 path.touch()
 
             def apply(settings, path=None):
@@ -3645,7 +3646,7 @@ class TrayApplicationTest(unittest.TestCase):
                 self.application.processEvents()
 
                 self.assertTrue(dialog.section_navigation.isVisibleTo(dialog))
-                self.assertTrue(dialog.validation_summary.isVisibleTo(dialog))
+                self.assertTrue(dialog.validation_summary.isHidden())
                 self.assertTrue(dialog.settings_scroll.isVisibleTo(dialog))
                 self.assertTrue(dialog.save_button.isVisibleTo(dialog))
 
@@ -4000,6 +4001,160 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(dialog._raw_settings().offline_speech_backend, "qwen-tts")
         delete_dialog(dialog)
 
+    def test_settings_allow_offline_moss_language_and_explicit_speed_reset(self):
+        dialog = SettingsDialog(
+            AppSettings(
+                speech_backend="pocket-tts",
+                offline_speech_backend="moss-tts",
+                speech_rate_percent=125,
+            )
+        )
+        dialog.section_navigation.setCurrentIndex(2)
+        self.assertTrue(dialog.offline_tts_model.isHidden())
+        dialog.advanced_settings.setChecked(True)
+        self.assertFalse(dialog.offline_tts_model.isHidden())
+        self.assertTrue(dialog.tts_language.isEnabled())
+        dialog.tts_language.setText("ru")
+        self.assertEqual(dialog.settings().tts_language, "ru")
+        dialog.section_navigation.setCurrentIndex(3)
+        self.assertFalse(dialog.speech_rate.isEnabled())
+        self.assertEqual(dialog.settings().speech_rate_percent, 125)
+        self.assertTrue(dialog.reset_speech_rate.isEnabled())
+        self.assertFalse(dialog.speech_rate_notice.isHidden())
+        self.assertIn("normal speed", dialog.speech_rate_notice.text())
+        dialog.reset_speech_rate.click()
+        self.assertEqual(dialog.settings().speech_rate_percent, 100)
+        self.assertFalse(dialog.reset_speech_rate.isEnabled())
+        self.assertTrue(dialog.speech_rate_notice.isHidden())
+        dialog.section_navigation.setCurrentIndex(4)
+        self.assertTrue(dialog.advanced_settings.isHidden())
+        dialog.section_navigation.setCurrentIndex(2)
+        self.assertTrue(dialog.advanced_settings.isChecked())
+        self.assertFalse(dialog.offline_tts_model.isHidden())
+        delete_dialog(dialog)
+
+    def test_settings_application_options_fit_real_enlarged_text(self):
+        original_font = self.application.font()
+        font = QFont(original_font)
+        font.setPointSize(22)
+        self.application.setFont(font)
+        self.addCleanup(self.application.setFont, original_font)
+        dialog = SettingsDialog(AppSettings())
+        dialog.resize(620, 500)
+        dialog.section_navigation.setCurrentIndex(4)
+        dialog.show()
+        self.application.processEvents()
+        viewport = dialog.settings_scroll.viewport()
+        for checkbox in (
+            dialog.warm_up_voices,
+            dialog.launch_at_login,
+            dialog.keep_running_on_close,
+        ):
+            self.assertEqual(checkbox.font().pointSize(), 22)
+            self.assertTrue(
+                viewport.rect().contains(
+                    checkbox.mapTo(viewport, checkbox.rect().bottomRight())
+                )
+            )
+        self.assertEqual(dialog.width(), 620)
+        self.assertTrue(dialog.save_button.isVisibleTo(dialog))
+        delete_dialog(dialog)
+
+    def test_settings_advanced_paths_use_full_row_with_enlarged_text(self):
+        original_font = self.application.font()
+        font = QFont(original_font)
+        font.setPointSize(22)
+        self.application.setFont(font)
+        self.addCleanup(self.application.setFont, original_font)
+        dialog = SettingsDialog(AppSettings())
+        dialog.resize(620, 500)
+        dialog.section_navigation.setCurrentIndex(2)
+        dialog.advanced_settings.setChecked(True)
+        dialog.show()
+        for _ in range(3):
+            self.application.processEvents()
+        for field in (dialog.live_speaker_corpus, dialog.generated_audio_manifest):
+            field.setFocus()
+            dialog.settings_scroll.ensureWidgetVisible(field)
+            self.application.processEvents()
+            self.assertGreater(field.width(), 350)
+            label = next(
+                label for label in dialog.findChildren(QLabel) if label.buddy() is field
+            )
+            self.assertLess(
+                label.mapTo(dialog, label.rect().bottomLeft()).y(),
+                field.mapTo(dialog, field.rect().topLeft()).y(),
+            )
+            self.assertTrue(dialog.save_button.isVisibleTo(dialog))
+        delete_dialog(dialog)
+
+    def test_settings_missing_game_pack_has_concise_recovery(self):
+        dialog = SettingsDialog(AppSettings())
+        missing = "/missing/" + "a long directory/" * 20 + "<b>pack</b>.json"
+        dialog.game_pack.setText(missing)
+        dialog.save_button.click()
+        self.assertEqual(
+            dialog.validation_summary.toPlainText(),
+            "Check these settings before saving:\n- Game pack: the selected file does not exist.",
+        )
+        self.assertEqual(dialog.game_pack.text(), missing)
+        self.assertTrue(dialog.advanced_settings.isChecked())
+        self.assertEqual(dialog.section_navigation.currentIndex(), 2)
+        delete_dialog(dialog)
+
+    def test_settings_malformed_pack_shows_parse_location_without_repeating_path(self):
+        with TemporaryDirectory() as directory:
+            pack = Path(directory) / "Northern-Library-long-game-pack-name.json"
+            pack.write_text("{", encoding="utf-8")
+            dialog = SettingsDialog(AppSettings())
+            dialog.game_pack.setText(str(pack))
+            dialog.save_button.click()
+            self.assertEqual(
+                dialog.validation_summary.toPlainText(),
+                "Check these settings before saving:\n- Game pack: invalid JSON "
+                "at line 1, column 2. Choose a valid game pack.",
+            )
+            self.assertEqual(dialog.game_pack.text(), str(pack))
+            delete_dialog(dialog)
+
+    def test_settings_long_errors_leave_fields_and_footer_reachable(self):
+        dialog = SettingsDialog(AppSettings())
+        font = QFont(dialog.font())
+        font.setPointSize(22)
+        dialog.setFont(font)
+        dialog.resize(620, 500)
+        dialog.show()
+        message = (
+            "<b>Literal source</b> "
+            + "A long recovery explanation. " * 60
+            + "END OF ERROR"
+        )
+        with patch.object(
+            dialog, "validation_errors", return_value=((2, dialog.game_pack, message),)
+        ):
+            dialog.validate_and_accept()
+            for _ in range(4):
+                self.application.processEvents()
+            self.assertEqual(dialog.size().height(), 500)
+            self.assertTrue(dialog.game_pack.hasFocus())
+            self.assertTrue(dialog.save_button.isVisibleTo(dialog))
+            self.assertGreater(dialog.settings_scroll.viewport().height(), 150)
+            summary = dialog.validation_summary
+            self.assertGreater(summary.verticalScrollBar().maximum(), 0)
+            summary.setFocus()
+            summary.selectAll()
+            summary.copy()
+            self.assertIn(message, self.application.clipboard().text())
+            summary.verticalScrollBar().setValue(summary.verticalScrollBar().maximum())
+            dialog.update_validation_summary()
+            self.assertEqual(
+                summary.verticalScrollBar().value(),
+                summary.verticalScrollBar().maximum(),
+            )
+            QTest.keyClick(summary, Qt.Key.Key_Tab)
+            self.assertFalse(summary.hasFocus())
+        delete_dialog(dialog)
+
     def test_settings_missing_moss_voice_targets_picker_and_file_is_optional(self):
         empty_directory = TemporaryDirectory()
         self.addCleanup(empty_directory.cleanup)
@@ -4209,6 +4364,99 @@ class TrayApplicationTest(unittest.TestCase):
         controller.apply_settings.assert_not_called()
         self.assertIn("disk full", tray_application.status_action.text())
         tray_application.shutdown()
+
+    def test_settings_reset_and_multiple_sections_save_or_cancel_together(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = AppSettings(
+                screenshot_directory=str(root),
+                speech_backend="pocket-tts",
+                speech_rate_percent=125,
+                output_volume_percent=80,
+                capture_mode="window",
+                game_window_title="First game",
+                warm_up_voices=True,
+            )
+            path = Path(os.environ["VNTTS_SETTINGS_FILE"])
+            original.save(path)
+            controller = Mock(settings=original)
+            tray = TrayApplication(
+                self.application,
+                original,
+                controller_factory=Mock(return_value=controller),
+            )
+            library = VoiceLibrary(root / "voices")
+            for save in (False, True):
+                with self.subTest(save=save):
+                    dialog = SettingsDialog(original, voice_library=library)
+
+                    def edit():
+                        dialog.section_navigation.setCurrentIndex(1)
+                        dialog.game_window.setCurrentText("Second game")
+                        dialog.section_navigation.setCurrentIndex(4)
+                        dialog.warm_up_voices.setChecked(False)
+                        dialog.section_navigation.setCurrentIndex(3)
+                        dialog.output_volume.setValue(45)
+                        dialog.reset_speech_rate.click()
+                        if save:
+                            dialog.save_button.click()
+                        else:
+                            dialog.reject()
+                        return dialog.result()
+
+                    with (
+                        patch.object(
+                            tray, "_create_settings_dialog", return_value=dialog
+                        ),
+                        patch.object(dialog, "exec", side_effect=edit),
+                    ):
+                        tray.open_settings()
+                        self.wait_until(lambda: not tray.configuration_runner.active)
+                    persisted = load_app_settings(path)
+                    reopened = SettingsDialog(persisted, voice_library=library)
+                    self.assertEqual(reopened.speech_rate.value(), 100 if save else 125)
+                    self.assertEqual(reopened.output_volume.value(), 45 if save else 80)
+                    self.assertEqual(
+                        reopened.game_window.currentText(),
+                        "Second game" if save else "First game",
+                    )
+                    self.assertEqual(reopened.warm_up_voices.isChecked(), not save)
+                    delete_dialog(reopened)
+                    delete_dialog(dialog)
+            tray.shutdown()
+
+    def test_settings_error_recovery_follows_fields_across_sections(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "reference.wav"
+            reference.touch()
+            dialog = SettingsDialog(
+                AppSettings(screenshot_directory=str(root)),
+                voice_library=VoiceLibrary(root / "voices"),
+            )
+            dialog.screenshot_directory.clear()
+            dialog.capture_mode.setCurrentIndex(dialog.capture_mode.findData("window"))
+            dialog.game_window.setCurrentText("")
+            dialog.narrator_reference.setText(str(root / "missing.wav"))
+            dialog.show()
+            for field, replacement, section in (
+                (dialog.screenshot_directory, str(root), 1),
+                (dialog.game_window, "Actual game", 1),
+                (dialog.narrator_reference, str(reference), 2),
+            ):
+                dialog.save_button.click()
+                self.application.processEvents()
+                self.assertEqual(dialog.section_navigation.currentIndex(), section)
+                self.assertTrue(field.hasFocus())
+                self.assertTrue(dialog.save_button.isVisibleTo(dialog))
+                if field is dialog.game_window:
+                    field.setCurrentText(replacement)
+                else:
+                    field.setText(replacement)
+            self.assertTrue(dialog.validation_summary.isHidden())
+            dialog.save_button.click()
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            delete_dialog(dialog)
 
     def test_backend_setting_reloads_speech_without_app_restart(self):
         controller = Mock()
@@ -4786,7 +5034,7 @@ class TrayApplicationTest(unittest.TestCase):
         dialog.output_volume.setValue(37)
         errors = dialog.update_validation_summary()
         self.assertEqual([widget for _, widget, _ in errors], [dialog.live_hotkey])
-        self.assertIn("Live reading", dialog.validation_summary.text())
+        self.assertIn("Live reading", dialog.validation_summary.toPlainText())
         with patch("vntts.app.GameNarratorDialog") as picker:
             picker.return_value.exec.return_value = QDialog.DialogCode.Rejected
             dialog.choose_narrator()
@@ -4812,7 +5060,7 @@ class TrayApplicationTest(unittest.TestCase):
 
         dialog.validate_and_accept()
 
-        self.assertIn("duplicates", dialog.validation_summary.text())
+        self.assertIn("duplicates", dialog.validation_summary.toPlainText())
         self.assertEqual(dialog.section_navigation.currentIndex(), 0)
         self.assertNotEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
         delete_dialog(dialog)

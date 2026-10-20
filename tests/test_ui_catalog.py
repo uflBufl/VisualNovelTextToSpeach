@@ -64,6 +64,14 @@ class UiCatalogTest(unittest.TestCase):
                         assert dialog.resolve_button.isEnabled()
                     elif state == "compact":
                         assert dialog.font().pointSize() == 22
+                        assert dialog.save_button.font().pointSize() == 22
+                        assert dialog.section_navigation.font().pointSize() == 22
+                        viewport = dialog.settings_scroll.viewport()
+                        for checkbox in dialog.findChildren(QCheckBox):
+                            if checkbox.isVisibleTo(dialog) and viewport.isAncestorOf(checkbox):
+                                assert checkbox.font().pointSize() == 22
+                                assert checkbox.width() >= checkbox.sizeHint().width()
+                                assert checkbox.mapTo(viewport, checkbox.rect().topRight()).x() < viewport.width()
                     elif state == "long-text":
                         assert "<b>Stay here</b>" in dialog.source_text.toPlainText()
                         dialog.show()
@@ -359,6 +367,87 @@ class UiCatalogTest(unittest.TestCase):
                     0,
                 )
 
+    def test_settings_catalog_uses_real_validation_and_recovery_actions(self):
+        script = dedent("""
+            import sys
+            from contextlib import ExitStack
+            from PySide6.QtWidgets import QApplication, QCheckBox, QLabel
+            from scripts.render_ui_catalog import (
+                _settings_story, _prepare_settings_screenshot, _close_catalog_widget,
+            )
+
+            app = QApplication([])
+            platform = sys.platform
+            states = (
+                "shortcuts", "shortcuts-windows", "application", "advanced-speech",
+                "basic-offline-moss", "advanced-offline-moss", "compact-capture",
+                "compact-shortcuts", "compact-playback", "compact-application",
+                "compact-advanced-speech-scrolled", "compact-validation-errors",
+                "compact-validation-errors-end", "validation-recovered",
+                "playback-speed-reset-needed", "playback-speed-reset",
+            )
+            for state in states:
+                with ExitStack() as resources:
+                    dialog = _settings_story(resources, state)
+                    dialog.show()
+                    app.processEvents()
+                    _prepare_settings_screenshot(dialog, "settings." + state, app)
+                    assert sys.platform == platform
+                    assert dialog.rect().contains(dialog.save_button.mapTo(dialog, dialog.save_button.rect().center()))
+                    if state.startswith("compact-"):
+                        assert dialog.font().pointSize() == 22
+                    if "validation-errors" in state:
+                        summary = dialog.validation_summary
+                        assert len(dialog.validation_errors()) >= 6
+                        assert summary.isReadOnly() and summary.tabChangesFocus()
+                        assert "Game pack: the selected file does not exist." in summary.toPlainText()
+                        assert dialog.game_pack.text() not in summary.toPlainText()
+                        assert summary.verticalScrollBar().maximum() > 0
+                        assert dialog.focusWidget() is dialog.screenshot_directory
+                        viewport = dialog.settings_scroll.viewport()
+                        assert viewport.rect().contains(dialog.screenshot_directory.mapTo(viewport, dialog.screenshot_directory.rect().center()))
+                        if state.endswith("-end"):
+                            assert summary.verticalScrollBar().value() == summary.verticalScrollBar().maximum()
+                        else:
+                            assert summary.verticalScrollBar().value() == 0
+                    elif state == "validation-recovered":
+                        assert not dialog.validation_errors()
+                        assert dialog.validation_summary.isHidden()
+                        assert not dialog.validation_summary.toPlainText()
+                    elif "offline-moss" in state:
+                        assert dialog.speech_backend.currentData() == "pocket-tts"
+                        assert dialog.offline_speech_backend.currentData() == "moss-tts"
+                        assert dialog.tts_language.isEnabled()
+                        assert dialog.offline_tts_model.isHidden() == (state == "basic-offline-moss")
+                    elif state.startswith("playback-speed"):
+                        reset = state == "playback-speed-reset"
+                        assert not dialog.speech_rate.isEnabled()
+                        assert dialog.speech_rate.value() == (100 if reset else 125)
+                        assert dialog.reset_speech_rate.isEnabled() == (not reset)
+                        assert dialog.reset_speech_rate.text() == "Reset to 100%"
+                    elif state in {"shortcuts", "shortcuts-windows", "application"}:
+                        assert dialog.advanced_settings.isHidden()
+                        if state == "shortcuts-windows":
+                            assert any("when saved" in label.text() and label.isVisibleTo(dialog) for label in dialog.findChildren(QLabel))
+                    elif state == "advanced-speech":
+                        assert not dialog.tts_model.isHidden()
+                        assert not dialog.offline_tts_model.isHidden()
+                    if state == "compact-advanced-speech-scrolled":
+                        bar = dialog.settings_scroll.verticalScrollBar()
+                        assert bar.maximum() > 0 and bar.value() == bar.maximum()
+                    _close_catalog_widget(dialog)
+        """)
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[1],
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_settings_packet_covers_sections_disclosure_and_compact_state(self):
         root = Path(__file__).resolve().parents[1]
         with TemporaryDirectory() as directory:
@@ -396,9 +485,20 @@ class UiCatalogTest(unittest.TestCase):
                     "settings.checkbox-focus",
                     "settings.advanced-speech",
                     "settings.compact-capture",
+                    "settings.compact-shortcuts",
+                    "settings.compact-playback",
+                    "settings.compact-application",
                     "settings.compact-advanced-speech",
                     "settings.compact-advanced-speech-scrolled",
                     "settings.validation-error",
+                    "settings.shortcuts-windows",
+                    "settings.basic-offline-moss",
+                    "settings.advanced-offline-moss",
+                    "settings.compact-validation-errors",
+                    "settings.compact-validation-errors-end",
+                    "settings.validation-recovered",
+                    "settings.playback-speed-reset-needed",
+                    "settings.playback-speed-reset",
                 },
             )
             self.assertGreater(
