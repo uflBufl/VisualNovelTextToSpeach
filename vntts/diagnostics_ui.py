@@ -73,9 +73,9 @@ class DiagnosticsDialog(QDialog):
         self.enlarge_speaker_button.setEnabled(False)
         self.enlarge_speaker_button.clicked.connect(self.enlarge_speaker_image)
         self.enlarge_speaker_processed_button = self.enlarge_speaker_button
-        self.calibrate_button = QPushButton("Change regions...")
+        self.calibrate_button = QPushButton("Change capture area...")
         self.calibrate_button.setAccessibleName(
-            "Change speaker and dialogue capture regions"
+            "Change the capture area containing speaker and dialogue"
         )
         self.calibrate_button.clicked.connect(self.calibration_requested.emit)
 
@@ -266,12 +266,12 @@ class DiagnosticsDialog(QDialog):
     def set_calibration_pending(self, pending: bool) -> None:
         self.calibrate_button.setEnabled(not pending)
         self.calibrate_button.setText(
-            "Stopping reading..." if pending else "Change regions..."
+            "Stopping reading..." if pending else "Change capture area..."
         )
         self.calibrate_button.setAccessibleName(
             "Stopping reading before capture calibration"
             if pending
-            else "Change speaker and dialogue capture regions"
+            else "Change the capture area containing speaker and dialogue"
         )
 
     def resizeEvent(self, event: QResizeEvent) -> None:

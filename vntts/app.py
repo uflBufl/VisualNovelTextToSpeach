@@ -104,7 +104,6 @@ from vntts.model_assets import ModelDownloadCancelled
 from vntts.moss_runtime import RetainedMossRuntime
 from vntts.ocr import (
     DialogRegion,
-    OCRRegions,
     get_dialog_region_file,
     save_dialog_region,
 )
@@ -2714,7 +2713,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 geometry,
                 background=background,
                 save_region=self._save_calibration_region,
-                save_layout=self._save_calibration_layout,
                 capture_region=self.controller._capture_region(),
             )
         except Exception as error:
@@ -2750,18 +2748,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.profile_store.update_region(profile.id, region)
         else:
             save_dialog_region(region, get_dialog_region_file())
-
-    def _save_calibration_layout(
-        self, region: DialogRegion, ocr_regions: OCRRegions
-    ) -> None:
-        profile_id = self.settings.active_profile_id
-        profile = self.profile_store.get(profile_id) if profile_id else None
-        if profile is not None:
-            self.profile_store.update_capture_regions(profile.id, region, ocr_regions)
-        else:
-            save_dialog_region(
-                region, get_dialog_region_file(), ocr_regions=ocr_regions
-            )
 
     def restore_control_window(self) -> None:
         if self.restore_compact_after_calibration:
@@ -2912,7 +2898,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.settings,
             reading_setup=True,
             save_region=self._save_calibration_region,
-            save_layout=self._save_calibration_layout,
             capture_region=self.controller._capture_region(),
         )
         self.onboarding_wizard = wizard

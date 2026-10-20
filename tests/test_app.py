@@ -48,7 +48,13 @@ from vntts.cli import CLIReportResult  # noqa: E402
 from vntts.controller import AppController, LiveSequenceStatus  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.generated_audio import AudioRouteTrace  # noqa: E402
-from vntts.ocr import DialogRegion  # noqa: E402
+from vntts.ocr import (  # noqa: E402
+    DialogRegion,
+    OCRRegions,
+    load_dialog_region,
+    load_ocr_regions,
+    save_dialog_region,
+)
 from vntts.ocr_corrections import OCRCorrectionStore  # noqa: E402
 from vntts.onboarding import DiagnosticResult  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivationResult  # noqa: E402
@@ -5318,7 +5324,6 @@ class TrayApplicationTest(unittest.TestCase):
                 geometry,
                 background=background,
                 save_region=tray_application._save_calibration_region,
-                save_layout=tray_application._save_calibration_layout,
                 capture_region=controller._capture_region.return_value,
             )
         tray_application.shutdown()
@@ -5473,7 +5478,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(tray.live_stop_runner.active)
         self.assertIsNone(tray._live_stop_generation)
         self.assertTrue(dialog.calibrate_button.isEnabled())
-        self.assertEqual(dialog.calibrate_button.text(), "Change regions...")
+        self.assertEqual(dialog.calibrate_button.text(), "Change capture area...")
         self.assertIn("pool unavailable", dialog.warning.toPlainText())
         self.assertIn("pool unavailable", tray.dashboard.status.text())
 
@@ -5512,7 +5517,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(dialog.calibrate_button.isVisible())
         self.assertEqual(
             dialog.calibrate_button.accessibleName(),
-            "Change speaker and dialogue capture regions",
+            "Change the capture area containing speaker and dialogue",
         )
         overlay = Mock()
         background = object()
@@ -5536,7 +5541,6 @@ class TrayApplicationTest(unittest.TestCase):
                 geometry,
                 background=background,
                 save_region=tray_application._save_calibration_region,
-                save_layout=tray_application._save_calibration_layout,
                 capture_region=controller._capture_region.return_value,
             )
 
@@ -5550,24 +5554,40 @@ class TrayApplicationTest(unittest.TestCase):
     def test_calibration_updates_the_active_game_profile(self):
         with TemporaryDirectory() as temporary_directory:
             store = GameProfileStore(Path(temporary_directory) / "profiles.json")
-            profile = store.create("Game", AppSettings())
+            region = DialogRegion(0.1, 0.6, 0.8, 0.3)
+            profile = store.create(
+                "Game",
+                AppSettings(),
+                region=region,
+                ocr_regions=OCRRegions(
+                    DialogRegion(0, 0, 1, 0.2), DialogRegion(0, 0.2, 1, 0.8)
+                ),
+            )
             tray_application = TrayApplication(
                 self.application,
                 AppSettings(active_profile_id=profile.id),
                 controller_factory=Mock(return_value=Mock()),
                 profile_store=store,
             )
-            region = DialogRegion(0.1, 0.6, 0.8, 0.3)
-
             tray_application._save_calibration_region(region)
 
             self.assertEqual(store.get(profile.id).dialog_region, region)
+            self.assertIsNone(store.get(profile.id).ocr_regions)
+            reloaded = GameProfileStore.load(store.path)
+            self.assertEqual(reloaded.get(profile.id).dialog_region, region)
+            self.assertIsNone(reloaded.get(profile.id).ocr_regions)
             tray_application.shutdown()
 
     def test_calibration_profile_save_failure_keeps_previous_region(self):
         with TemporaryDirectory() as temporary_directory:
             store = GameProfileStore(Path(temporary_directory) / "profiles.json")
-            profile = store.create("Game", AppSettings())
+            profile = store.create(
+                "Game",
+                AppSettings(),
+                ocr_regions=OCRRegions(
+                    DialogRegion(0, 0, 1, 0.2), DialogRegion(0, 0.2, 1, 0.8)
+                ),
+            )
             tray_application = TrayApplication(
                 self.application,
                 AppSettings(active_profile_id=profile.id),
@@ -5575,12 +5595,39 @@ class TrayApplicationTest(unittest.TestCase):
                 profile_store=store,
             )
             region = DialogRegion(0.1, 0.6, 0.8, 0.3)
-            with patch.object(store, "update_region", side_effect=OSError("disk full")):
+            with patch.object(
+                store, "_save_profiles", side_effect=OSError("disk full")
+            ):
                 with self.assertRaisesRegex(OSError, "disk full"):
                     tray_application._save_calibration_region(region)
 
             self.assertEqual(store.get(profile.id).dialog_region, profile.dialog_region)
+            self.assertEqual(store.get(profile.id).ocr_regions, profile.ocr_regions)
+            self.assertEqual(GameProfileStore.load(store.path).get(profile.id), profile)
             tray_application.shutdown()
+
+    def test_calibration_replaces_global_manual_regions_with_one_capture_area(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "region.json"
+            region = DialogRegion(0.1, 0.6, 0.8, 0.3)
+            save_dialog_region(
+                region,
+                path,
+                ocr_regions=OCRRegions(
+                    DialogRegion(0, 0, 1, 0.2), DialogRegion(0, 0.2, 1, 0.8)
+                ),
+            )
+            tray = TrayApplication(
+                self.application,
+                AppSettings(),
+                controller_factory=Mock(return_value=Mock()),
+            )
+            with patch("vntts.app.get_dialog_region_file", return_value=path):
+                tray._save_calibration_region(region)
+
+            self.assertEqual(load_dialog_region(path), region)
+            self.assertIsNone(load_ocr_regions(path))
+            tray.shutdown()
 
     def test_profile_selection_reloads_runtime_with_profile_settings(self):
         with TemporaryDirectory() as temporary_directory:
@@ -6530,6 +6577,14 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertIsNotNone(wizard)
         self.assertTrue(wizard.isVisible())
+        self.assertEqual(
+            wizard.calibration_page.save_region,
+            tray_application._save_calibration_region,
+        )
+        self.assertEqual(
+            wizard.calibration_page.capture_region,
+            tray_application.controller._capture_region.return_value,
+        )
 
         wizard.reject()
         self.application.processEvents()

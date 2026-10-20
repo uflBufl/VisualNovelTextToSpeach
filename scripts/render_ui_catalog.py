@@ -20,10 +20,13 @@ from typing import TYPE_CHECKING, Callable, Never
 from unittest.mock import Mock, patch
 
 if TYPE_CHECKING:
+    from PIL import Image
+    from PySide6.QtCore import QThreadPool
     from PySide6.QtWidgets import QApplication, QWidget
 
     from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
     from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
+    from vntts.calibration import CalibrationReviewDialog, DialogRegionOverlay
     from vntts.pregeneration_audition_ui import VoiceAuditionPanel
     from vntts.pregeneration_queue import PregenerationInput
     from vntts.pregeneration_setup import GameContent, PregenerationJob
@@ -231,12 +234,166 @@ def _shared_character_overview_story(
     return _voice_overview_story(dialog, state)
 
 
+def _calibration_overlay_story(state: str, scene: Image.Image) -> DialogRegionOverlay:
+    from PIL import Image, ImageDraw
+    from PySide6.QtCore import QEvent, QPoint, QRect, Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QDialog
+
+    from vntts.calibration import DialogRegionOverlay
+    from vntts.ocr import DialogRegion
+    from vntts.qt_images import pixmap_from_pil
+
+    overlay = DialogRegionOverlay(
+        output=Path("/private/tmp/vntts-ui-catalog-unused-region.json"),
+        background=scene,
+        capture_region=DialogRegion(0.1, 0.6, 0.8, 0.35),
+    )
+    overlay.resize(800, 450)
+    if state == "overlay-top-selected":
+        scene = Image.new("RGB", (800, 450), "#272936")
+        painter = ImageDraw.Draw(scene)
+        painter.rectangle((75, 25, 730, 170), fill="#141822", outline="#7a8198")
+        painter.text((105, 50), "SELONE", fill="#e9e9e9", font_size=20)
+        painter.text(
+            (105, 95), "The dialogue appears at the top.", fill="#e9e9e9", font_size=20
+        )
+        overlay.background = scene
+        overlay.background_pixmap = pixmap_from_pil(scene)
+        overlay.origin = QPoint(85, 35)
+        overlay.current = QPoint(735, 175)
+    if state in {
+        "overlay-selected",
+        "overlay-save-failure",
+        "overlay-compact-save-error",
+    }:
+        overlay.origin = QPoint(85, 285)
+        overlay.current = QPoint(735, 425)
+    if state == "overlay-compact-save-error":
+        overlay.resize(620, 440)
+        overlay.origin = QPoint(66, 278)
+        overlay.current = QPoint(570, 415)
+    if state == "overlay-keyboard-selection":
+        overlay.keyPressEvent(
+            QKeyEvent(
+                QEvent.Type.KeyPress,
+                Qt.Key.Key_Return,
+                Qt.KeyboardModifier.NoModifier,
+            )
+        )
+    if state in {"overlay-save-failure", "overlay-compact-save-error"}:
+        overlay.reviewer = Mock(
+            return_value=Mock(exec=Mock(return_value=QDialog.DialogCode.Accepted))
+        )
+        overlay.save_region = Mock(
+            side_effect=OSError("The configuration folder is not writable")
+        )
+        assert overlay.origin is not None and overlay.current is not None
+        overlay._review_rectangle(QRect(overlay.origin, overlay.current))
+    if state == "overlay-compact-save-error":
+        font = overlay.font()
+        font.setPointSize(font.pointSize() + 4)
+        overlay.setFont(font)
+    return overlay
+
+
+def _calibration_review_story(
+    state: str, scene: Image.Image, pool: QThreadPool
+) -> CalibrationReviewDialog:
+    from PIL import Image, ImageDraw
+
+    from vntts.calibration import CalibrationReviewDialog
+    from vntts.ocr import OCRResult
+
+    long_review = state.startswith("review-long-")
+    text = "I have returned. We can continue our journey."
+    if long_review:
+        lines = [
+            f"{index + 1}. We crossed the northern library and waited for the storm to pass."
+            for index in range(16)
+        ]
+        text = "\n".join([*lines, "END OF DIALOGUE"])
+        scene = Image.new("RGB", (1000, 1100), "#141822")
+        painter = ImageDraw.Draw(scene)
+        painter.text((40, 30), "SELONE", fill="#e9e9e9", font_size=30)
+        painter.multiline_text((40, 90), text, fill="#e9e9e9", spacing=22, font_size=20)
+    crop = scene if long_review else scene.crop((85, 285, 735, 425))
+    dialog = CalibrationReviewDialog(crop, thread_pool=pool)
+    if state in {"review-recognized", "review-compact"} or long_review:
+        dialog._recognition_finished(
+            OCRResult(
+                "Selone",
+                text,
+                94.5,
+                "balanced",
+                1,
+            ),
+            None,
+        )
+    elif state in {"review-failure", "review-failure-compact"}:
+        dialog._recognition_finished(
+            None,
+            OSError(
+                "OCR runtime unavailable while checking the selected dialogue area"
+            ),
+        )
+    elif state == "review-empty":
+        dialog._recognition_finished(OCRResult("Narrator", "", 0.0, "none", 0), None)
+    elif state == "review-unreadable-name":
+        dialog._recognition_finished(
+            OCRResult(
+                "Narrator",
+                "I have returned. We can continue our journey.",
+                47.25,
+                "balanced",
+                1,
+                speaker_confidence=0.0,
+                dialogue_confidence=94.5,
+                speaker_note="Visible name could not be read",
+            ),
+            None,
+        )
+    if state in {"review-compact", "review-failure-compact"} or long_review:
+        dialog.resize(620, 430)
+        font = dialog.font()
+        font.setPointSize(18 if long_review else font.pointSize() + 4)
+        dialog.setFont(font)
+    return dialog
+
+
+def _scroll_calibration_review_to_end(widget: QWidget, app: QApplication) -> None:
+    from PySide6.QtWidgets import QScrollArea
+
+    from vntts.calibration import CalibrationReviewDialog
+
+    if isinstance(widget, CalibrationReviewDialog):
+        widget.body_scroll.ensureWidgetVisible(widget.result_text)
+        scroll = widget.result_text.verticalScrollBar()
+    else:
+        image_scroll = widget.findChild(QScrollArea)
+        assert image_scroll is not None
+        scroll = image_scroll.verticalScrollBar()
+    scroll.setValue(scroll.maximum())
+    if isinstance(widget, CalibrationReviewDialog):
+        cursor = widget.result_text.document().find("END OF DIALOGUE")
+        assert not cursor.isNull()
+        cursor.clearSelection()
+        widget.result_text.setTextCursor(cursor)
+        widget.result_text.ensureCursorVisible()
+    app.processEvents()
+
+
 def _prepare_catalog_screenshot(
     widget: QWidget, story_id: str, app: QApplication
 ) -> None:
     from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
     from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 
+    if story_id in {
+        "calibration.review-long-compact-scrolled",
+        "calibration.review-long-enlarged-scrolled",
+    }:
+        _scroll_calibration_review_to_end(widget, app)
     if story_id.startswith(
         "offline-preparation.voice-overview-compact-"
     ) and story_id.endswith("-actions"):
@@ -796,7 +953,6 @@ def _render_stories(
     from PySide6.QtCore import (
         QCoreApplication,
         QEvent,
-        QPoint,
         QRunnable,
         QSettings,
         QSignalBlocker,
@@ -851,7 +1007,6 @@ def _render_stories(
         TerminalConflictReviewDialog,
     )
     from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
-    from vntts.calibration import CalibrationReviewDialog, DialogRegionOverlay
     from vntts.controller import LiveSequenceStatus
     from vntts.dashboard_ui import (
         CompactController,
@@ -1609,7 +1764,7 @@ def _render_stories(
             dialog.setFont(font)
         return dialog
 
-    def calibration(state: str) -> DialogRegionOverlay | CalibrationReviewDialog:
+    def calibration(state: str) -> DialogRegionOverlay | QDialog:
         scene = Image.new("RGB", (800, 450), "#272936")
         painter = ImageDraw.Draw(scene)
         painter.rectangle((75, 275, 730, 420), fill="#141822", outline="#7a8198")
@@ -1618,39 +1773,16 @@ def _render_stories(
             (105, 345), "I have returned. We can continue our journey.", fill="#e9e9e9"
         )
         if state.startswith("overlay-"):
-            overlay = DialogRegionOverlay(
-                output=Path("/private/tmp/vntts-ui-catalog-unused-region.json"),
-                background=scene,
-            )
-            overlay.resize(800, 450)
-            if state in {"overlay-selected", "overlay-save-failure"}:
-                overlay.origin = QPoint(85, 285)
-                overlay.current = QPoint(735, 425)
-            if state == "overlay-save-failure":
-                overlay.save_error = "Unable to save the dialogue area: disk full"
-            return overlay
-        pool = IdlePool()
-        dialog = CalibrationReviewDialog(
-            scene.crop((85, 285, 735, 425)), thread_pool=pool
-        )
-        if state in {"review-recognized", "review-compact"}:
-            dialog._recognition_finished(
-                OCRResult(
-                    "Selone",
-                    "I have returned. We can continue our journey.",
-                    94.5,
-                    "balanced",
-                    1,
-                ),
-                None,
-            )
-        elif state == "review-failure":
-            dialog._recognition_finished(None, OSError("OCR runtime unavailable"))
-        if state == "review-compact":
-            dialog.resize(620, 430)
-            font = dialog.font()
-            font.setPointSize(font.pointSize() + 4)
-            dialog.setFont(font)
+            return _calibration_overlay_story(state, scene)
+        dialog = _calibration_review_story(state, scene, IdlePool())
+        if state.startswith("review-long-enlarged"):
+            dialog.show_enlarged_capture()
+            enlarged = dialog.capture_preview
+            assert enlarged is not None
+            enlarged.setParent(None)
+            dialog.deleteLater()
+            QCoreApplication.sendPostedEvents(dialog, QEvent.Type.DeferredDelete)
+            return enlarged
         return dialog
 
     def voice_editor(
@@ -2303,10 +2435,10 @@ def _render_stories(
         elif state in {"warning", "long-warning", "compact"}:
             dialog.set_warning(
                 (
-                    "The OCR regions no longer match this game window after its layout changed. "
-                    "Open Settings, select the current game window, then choose Change regions "
-                    "in Live diagnostics and draw the speaker and dialogue areas again. "
-                    "Refresh after saving both regions."
+                    "The capture area no longer matches this game window after its layout changed. "
+                    "Open Settings, select the current game window, then choose Change capture area "
+                    "in Live diagnostics and select the whole dialogue box, including its name and continue indicator. "
+                    "Refresh after saving the capture area."
                     if state == "long-warning"
                     else "Screen Recording permission is missing. Allow VNTTS in macOS System Settings, then reopen the app."
                     if state == "compact"
@@ -2874,11 +3006,33 @@ def _render_stories(
         "voice-import.compact": lambda: voice_import("compact"),
         "calibration.overlay-empty": lambda: calibration("overlay-empty"),
         "calibration.overlay-selected": lambda: calibration("overlay-selected"),
+        "calibration.overlay-top-selected": lambda: calibration("overlay-top-selected"),
         "calibration.overlay-save-failure": lambda: calibration("overlay-save-failure"),
+        "calibration.overlay-keyboard-selection": lambda: calibration(
+            "overlay-keyboard-selection"
+        ),
+        "calibration.overlay-compact-save-error": lambda: calibration(
+            "overlay-compact-save-error"
+        ),
         "calibration.review-loading": lambda: calibration("review-loading"),
         "calibration.review-recognized": lambda: calibration("review-recognized"),
+        "calibration.review-empty": lambda: calibration("review-empty"),
+        "calibration.review-unreadable-name": lambda: calibration(
+            "review-unreadable-name"
+        ),
+        "calibration.review-failure-compact": lambda: calibration(
+            "review-failure-compact"
+        ),
         "calibration.review-failure": lambda: calibration("review-failure"),
         "calibration.review-compact": lambda: calibration("review-compact"),
+        "calibration.review-long-compact": lambda: calibration("review-long-compact"),
+        "calibration.review-long-compact-scrolled": lambda: calibration(
+            "review-long-compact-scrolled"
+        ),
+        "calibration.review-long-enlarged": lambda: calibration("review-long-enlarged"),
+        "calibration.review-long-enlarged-scrolled": lambda: calibration(
+            "review-long-enlarged-scrolled"
+        ),
         "unknown-speaker-prompt.awaiting-choice": unknown_speaker_prompt,
         "story-match-recovery.awaiting-choice": story_match_recovery,
         "story-match-recovery.larger-text": lambda: story_match_recovery(

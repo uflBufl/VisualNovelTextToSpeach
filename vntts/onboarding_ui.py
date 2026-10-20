@@ -44,7 +44,6 @@ from vntts.auto_advance_policy import (
     guard_auto_advance_settings,
 )
 from vntts.calibration import (
-    CaptureLayoutSaver,
     DialogRegionOverlay,
     show_calibration_overlay,
 )
@@ -1265,13 +1264,11 @@ class CalibrationPage(QWizardPage):
         self,
         capture_target_factory: CaptureTargetFactory,
         save_region: Callable[[DialogRegion], None] | None = None,
-        save_layout: CaptureLayoutSaver | None = None,
         capture_region: DialogRegion | None = None,
     ) -> None:
         super().__init__()
         self.capture_target_factory = capture_target_factory
         self.save_region = save_region
-        self.save_layout = save_layout
         self.capture_region = capture_region
         self.flow: OnboardingWizard
         self.calibrated = False
@@ -1283,13 +1280,10 @@ class CalibrationPage(QWizardPage):
         self.capture_timer.timeout.connect(self.open_overlay)
         self.setTitle("Calibrate the dialogue area")
         self.instructions = QLabel(
-            "Open a scene with dialogue, click Calibrate, then select the speaker "
-            "name and the full dialogue area separately. Leave room for multiline "
-            "dialogue and exclude the continue indicator. Review both OCR results "
-            "before saving. Press Escape to cancel."
-            if save_layout is not None
-            else "Open a scene with dialogue, click Calibrate, then drag over the "
-            "speaker name and dialogue text. Keyboard: press Enter for a "
+            "Open a scene with dialogue, click Calibrate, then select one area "
+            "containing the speaker name, full dialogue text and continue indicator. "
+            "Leave room for multiline dialogue. "
+            "Keyboard: press Enter for a "
             "suggested region, use arrows to move it, Shift plus arrows to "
             "resize it, and Enter again to review. Press Escape to cancel."
         )
@@ -1335,20 +1329,11 @@ class CalibrationPage(QWizardPage):
             return
         self.capture_timer.stop()
         try:
-            if self.save_layout is not None:
-                overlay = show_calibration_overlay(
-                    self.pending_geometry,
-                    save_layout=self.save_layout,
-                    capture_region=self.capture_region,
-                )
-            else:
-                overlay = (
-                    show_calibration_overlay(self.pending_geometry)
-                    if self.save_region is None
-                    else show_calibration_overlay(
-                        self.pending_geometry, save_region=self.save_region
-                    )
-                )
+            overlay = show_calibration_overlay(
+                self.pending_geometry,
+                save_region=self.save_region,
+                capture_region=self.capture_region,
+            )
         except Exception as error:
             self.restore_wizard()
             self.status.setText(
@@ -1528,7 +1513,6 @@ class OnboardingWizard(QDialog):
         auto_discover_windows: bool | None = None,
         reading_setup: bool = False,
         save_region: Callable[[DialogRegion], None] | None = None,
-        save_layout: CaptureLayoutSaver | None = None,
         capture_region: DialogRegion | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -1541,7 +1525,6 @@ class OnboardingWizard(QDialog):
             window_loader,
             reading_setup,
             save_region,
-            save_layout,
             capture_region,
         )
         self.finished.connect(self.calibration_page.cancel_calibration)
@@ -1579,7 +1562,6 @@ class OnboardingWizard(QDialog):
         window_loader: WindowLoader,
         reading_setup: bool,
         save_region: Callable[[DialogRegion], None] | None,
-        save_layout: CaptureLayoutSaver | None,
         capture_region: DialogRegion | None,
     ) -> None:
         welcome = QWizardPage()
@@ -1603,7 +1585,7 @@ class OnboardingWizard(QDialog):
         )
         self.diagnostics_page = DiagnosticsPage(diagnostics or OnboardingDiagnostics())
         self.calibration_page = CalibrationPage(
-            capture_target_factory, save_region, save_layout, capture_region
+            capture_target_factory, save_region, capture_region
         )
         self.test_page = EndToEndTestPage()
         self.test_page.test_requested.connect(self.test_requested.emit)

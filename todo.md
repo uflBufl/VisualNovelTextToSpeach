@@ -1,5 +1,9 @@
 # TODO
 
+## Restore the existing UI complexity gate
+
+- [ ] Refactor the oversized UI/catalog scopes reported by `uv run python scripts/check_ruff_complexity.py` on main: catalog screenshot preparation and asset stories, history constructor/keyboard test, diagnostics constructor/body, and profile constructor. Reconcile the baseline only after actual simplification; keep the current calibration behavior and catalog coverage. These failures reproduce on `197c8df1` before the calibration changes.
+
 ## Qualify dialogue history on native audio and accessibility setups
 
 - [ ] On macOS and Windows with a real speech engine, capture two lines, open Dialogue history, start one line and select/search for another, then stop and retry after restoring an unavailable engine. Confirm the assigned voice, actual audible stop and named status agree; verify Tab/Enter/Escape and full error scrolling/copying at 200% text with VoiceOver/NVDA. Retain native screenshots, audio and focus/announcement evidence. Automated Qt state/keyboard/export tests and Mac window renders do not qualify hardware output or screen-reader/native focus behavior.
@@ -499,10 +503,14 @@ Planned implementation order after approval:
       and replace audio files, inspect a long scrollable file list, cancel without
       import, and confirm an import error preserves the entered selection for retry.
 - [ ] **Validate calibration on real macOS and Windows hosts:** at 200% text
-      scaling, use mouse and keyboard to draw, move, resize, clear and review a
-      region. Deny region-file write permission and confirm the selected pixels,
-      error and retry remain visible; retry after restoring permission. Check that
-      an active profile and global region agree after each success/failure.
+      scaling with VoiceOver/Narrator, select one complete dialogue box (name,
+      multiline text and continue indicator), move/resize it, review and enlarge
+      the capture, scroll to its edges, and cancel without changing prior settings.
+      Include near-fullscreen/top-positioned dialogue and real game fonts. Deny
+      region-file write permission, then restore it and retry. Confirm only the
+      active profile (or global region without a profile) changes on Save and old
+      manual OCR subregions clear only after successful saving. Retain native
+      screenshots, focus/announcement evidence and before/after config values.
 - [ ] **Validate uncertain OCR review on real macOS and Windows hosts:** at 200%
       text scaling, correct one speaker-only and one text-only sample, inspect a
       wide/tall screenshot with both scrollbars, retry after read-only storage,

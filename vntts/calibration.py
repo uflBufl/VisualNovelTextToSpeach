@@ -8,7 +8,16 @@ from typing import Protocol
 
 import mss
 from PIL import Image
-from PySide6.QtCore import QPoint, QRect, Qt, QThreadPool, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    QRect,
+    Qt,
+    QThreadPool,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
@@ -23,8 +32,12 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
+    QFrame,
     QLabel,
     QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -33,9 +46,7 @@ from PySide6.QtWidgets import (
 from vntts.async_ui import LatestTaskRunner
 from vntts.ocr import (
     DialogRegion,
-    OCRRegions,
     OCRResult,
-    combine_ocr_regions,
     get_dialog_region,
     get_dialog_region_file,
     recognize_dialog_image_result,
@@ -50,7 +61,6 @@ class _CalibrationReviewer(Protocol):
 
 
 ReviewerFactory = Callable[[Image.Image], _CalibrationReviewer]
-CaptureLayoutSaver = Callable[[DialogRegion, OCRRegions], None]
 CALIBRATION_OCR_TIMEOUT_SECONDS = 10.0
 _active_overlay: DialogRegionOverlay | None
 
@@ -83,25 +93,33 @@ class CalibrationReviewDialog(QDialog):
         *,
         recognizer: Callable[[Image.Image], OCRResult] = recognize_dialog_image_result,
         thread_pool: QThreadPool | None = None,
-        ocr_regions: OCRRegions | None = None,
     ) -> None:
         super().__init__(parent)
         self._ocr_cancelled = Event()
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.runner.finished.connect(self._recognition_finished)
-        self.ocr_regions = ocr_regions
-        self.setWindowTitle(
-            "Confirm separate OCR regions"
-            if ocr_regions
-            else "Confirm dialogue capture"
-        )
+        self.setWindowTitle("Confirm dialogue capture")
         self.resize(760, 380)
-        self.preview = self._capture_preview(image, ocr_regions)
+        self.preview_pixmap = pixmap_from_pil(image)
+        self.capture_preview: QDialog | None = None
+        self.preview = QLabel()
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored
+        )
+        self.preview.installEventFilter(self)
+        self.preview.setMinimumHeight(100)
+        self.preview.setMaximumHeight(260)
+        self.preview.setAccessibleName("Selected dialogue region preview")
+        self.preview.setAccessibleDescription(
+            "Frozen screenshot crop used for calibration review"
+        )
         self.result_text = QTextEdit()
         self.result_text.setReadOnly(True)
+        self.result_text.setMinimumHeight(120)
         self.result_text.setAccessibleName("Calibration OCR result")
         self.result_text.setAccessibleDescription(
-            "Recognized speaker, confidence and dialogue from the selected regions"
+            "Recognized speaker, confidence and dialogue from the selected area"
         )
         self.result_text.setPlainText("Recognizing the selected dialogue region...")
         self.progress = QProgressBar()
@@ -111,14 +129,62 @@ class CalibrationReviewDialog(QDialog):
             "Progress while recognizing the frozen calibration preview"
         )
         note = QLabel(
-            "Confirm that the name region contains only the speaker name and the dialogue "
-            "region includes every line, without the name or continue indicator. "
-            'Choose "Draw again" to replace both selections.'
-            if ocr_regions
-            else "Confirm only when the speaker name and complete dialogue are inside "
-            'the preview. Choose "Draw again" to change the area.'
+            "Compare the image with the recognized name and dialogue; OCR can make mistakes. "
+            '"Draw again" should include the whole dialogue box, with room for taller text.'
         )
         note.setWordWrap(True)
+        buttons = self._create_buttons()
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.addWidget(note)
+        body_layout.addWidget(self.preview, 1)
+        body_layout.addWidget(
+            self.enlarge_button, alignment=Qt.AlignmentFlag.AlignRight
+        )
+        body_layout.addWidget(self.result_text, 1)
+        body_layout.addWidget(self.progress)
+        self.body_scroll = QScrollArea()
+        self.body_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.body_scroll.setWidgetResizable(True)
+        self.body_scroll.setWidget(body)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+        layout.addWidget(self.body_scroll, 1)
+        layout.addWidget(buttons)
+        self.setTabOrder(self.enlarge_button, self.result_text)
+        self.setTabOrder(self.result_text, self.save_button)
+        self.setTabOrder(self.save_button, self.retry_button)
+        self.setTabOrder(self.retry_button, self.cancel_button)
+        self._start_recognition(image.copy(), recognizer)
+
+    def show_enlarged_capture(self) -> None:
+        if self.capture_preview is None:
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Captured dialogue - full size")
+            dialog.resize(900, 540)
+            image = QLabel()
+            image.setPixmap(self.preview_pixmap)
+            image.setAccessibleName("Full-size captured dialogue image")
+            scroll = QScrollArea()
+            scroll.setAccessibleName("Full-size capture scroll area")
+            scroll.setWidget(image)
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+            buttons.rejected.connect(dialog.reject)
+            layout = QVBoxLayout(dialog)
+            layout.setContentsMargins(16, 16, 16, 16)
+            layout.addWidget(scroll)
+            layout.addWidget(buttons)
+            self.capture_preview = dialog
+        self.capture_preview.open()
+
+    def _create_buttons(self) -> QDialogButtonBox:
+        self.enlarge_button = QPushButton("Enlarge capture")
+        self.enlarge_button.setAutoDefault(False)
+        self.enlarge_button.setAccessibleDescription(
+            "View the captured image at full size with scrolling"
+        )
+        self.enlarge_button.clicked.connect(self.show_enlarged_capture)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Retry
@@ -127,7 +193,7 @@ class CalibrationReviewDialog(QDialog):
         self.save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
         self.retry_button = buttons.button(QDialogButtonBox.StandardButton.Retry)
         self.cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
-        self.save_button.setText("Save OCR regions" if ocr_regions else "Save region")
+        self.save_button.setText("Save region")
         self.save_button.setEnabled(False)
         self.save_button.setAccessibleName("Save calibrated dialogue region")
         self.save_button.setAccessibleDescription(
@@ -147,45 +213,21 @@ class CalibrationReviewDialog(QDialog):
         self.save_button.clicked.connect(self.accept)
         self.retry_button.clicked.connect(lambda: self.done(self.DrawAgain))
         buttons.rejected.connect(self.reject)
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.preview)
-        layout.addWidget(self.result_text)
-        layout.addWidget(self.progress)
-        layout.addWidget(note)
-        layout.addWidget(buttons)
-        self.setTabOrder(self.result_text, self.save_button)
-        self.setTabOrder(self.save_button, self.retry_button)
-        self.setTabOrder(self.retry_button, self.cancel_button)
-        self._start_recognition(image.copy(), recognizer)
+        return buttons
 
-    @staticmethod
-    def _capture_preview(image: Image.Image, ocr_regions: OCRRegions | None) -> QLabel:
-        preview = QLabel()
-        preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        preview.setAccessibleName("Selected dialogue region preview")
-        preview.setAccessibleDescription(
-            "Frozen screenshot crop used for calibration review"
-        )
-        pixmap = pixmap_from_pil(image)
-        if ocr_regions is not None:
-            painter = QPainter(pixmap)
-            for region, color in (
-                (ocr_regions.speaker, QColor(100, 255, 150)),
-                (ocr_regions.dialogue, QColor(0, 220, 255)),
-            ):
-                box = region.capture_box({"width": image.width, "height": image.height})
-                painter.setPen(QPen(color, max(2, image.width // 500)))
-                painter.drawRect(box["left"], box["top"], box["width"], box["height"])
-            painter.end()
-        preview.setPixmap(
-            pixmap.scaled(
-                720,
-                260,
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.preview and event.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self, self._scale_preview)
+        return super().eventFilter(watched, event)
+
+    def _scale_preview(self) -> None:
+        self.preview.setPixmap(
+            self.preview_pixmap.scaled(
+                self.preview.size(),
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
         )
-        return preview
 
     def _start_recognition(
         self, image: Image.Image, recognizer: Callable[[Image.Image], OCRResult]
@@ -196,7 +238,6 @@ class CalibrationReviewDialog(QDialog):
                 image,
                 timeout=CALIBRATION_OCR_TIMEOUT_SECONDS,
                 cancelled=self._ocr_cancelled.is_set,
-                ocr_regions=self.ocr_regions,
             )
         else:
             self.runner.start(recognizer, image)
@@ -204,37 +245,39 @@ class CalibrationReviewDialog(QDialog):
     def _recognition_finished(self, result: object, error: Exception | None) -> None:
         self.progress.hide()
         if error is not None:
-            self.result_text.setPlainText(f"OCR preview failed: {error}")
-            self.save_button.setText(
-                "Save OCR regions without preview"
-                if self.ocr_regions
-                else "Save region without OCR preview"
+            self.result_text.setPlainText(
+                f"OCR preview failed: {error}\n\nDraw again, or save the selected area without recognized text."
             )
+            self.save_button.setText("Save without OCR")
+            self.save_button.setAccessibleName("Save selected area without OCR preview")
             self.save_button.setEnabled(True)
             return
         if not isinstance(result, OCRResult):
-            self.result_text.setPlainText("OCR preview returned an invalid result")
-            self.save_button.setText(
-                "Save OCR regions without preview"
-                if self.ocr_regions
-                else "Save region without OCR preview"
+            self.result_text.setPlainText(
+                "OCR preview returned an invalid result.\n\nDraw again, or save the selected area without recognized text."
             )
+            self.save_button.setText("Save without OCR")
+            self.save_button.setAccessibleName("Save selected area without OCR preview")
             self.save_button.setEnabled(True)
             return
-        speaker = result.character or "Narrator"
+        speaker = result.speaker_note or result.character or "No name recognized"
+        dialogue = result.text.strip()
+        confidence = (
+            f"Speaker OCR confidence: {result.speaker_confidence:.1f}%\n"
+            if result.speaker_confidence is not None
+            else ""
+        )
+        confidence += f"Dialogue OCR confidence: {(result.dialogue_confidence if result.dialogue_confidence is not None else result.confidence):.1f}%"
         self.result_text.setPlainText(
-            f"Speaker: {speaker}\n"
+            f"Speaker: {speaker}\n\n"
             + (
-                f"Speaker OCR confidence: {result.speaker_confidence:.1f}%\n"
-                if result.speaker_confidence is not None
-                else ""
+                dialogue
+                or "No dialogue recognized. Draw again, or save without OCR to keep the selected area."
             )
-            + f"Dialogue OCR confidence: {(result.dialogue_confidence if result.dialogue_confidence is not None else result.confidence):.1f}%\n\n"
-            + f"{result.text or '(No dialogue recognized)'}"
+            + f"\n\n{confidence}"
         )
-        self.save_button.setText(
-            "Save OCR regions" if self.ocr_regions else "Save region"
-        )
+        self.save_button.setText("Save without OCR" if not dialogue else "Save region")
+        self.save_button.setAccessibleName(self.save_button.text())
         self.save_button.setEnabled(True)
 
     def _cancel_recognition(self) -> None:
@@ -242,6 +285,8 @@ class CalibrationReviewDialog(QDialog):
         self.runner.cancel()
 
     def done(self, result: int) -> None:
+        if self.capture_preview is not None:
+            self.capture_preview.reject()
         self._cancel_recognition()
         super().done(result)
 
@@ -259,7 +304,6 @@ class DialogRegionOverlay(QWidget):
         background: Image.Image | None = None,
         reviewer: ReviewerFactory | None = None,
         save_region: Callable[[DialogRegion], None] | None = None,
-        save_layout: CaptureLayoutSaver | None = None,
         capture_region: DialogRegion | None = None,
     ) -> None:
         super().__init__()
@@ -275,10 +319,7 @@ class DialogRegionOverlay(QWidget):
         self._review: _CalibrationReviewer | None = None
         self._closed = False
         self.save_region = save_region or self.persist
-        self.save_layout = save_layout
         self.capture_region = capture_region or get_dialog_region()
-        self.speaker_region: DialogRegion | None = None
-        self.pending_ocr_regions: OCRRegions | None = None
         self.save_error: str | None = None
         self.setWindowTitle("Select the visual-novel dialog region")
         self.setWindowFlags(
@@ -293,14 +334,10 @@ class DialogRegionOverlay(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAccessibleName("Dialogue region calibration overlay")
         self.setAccessibleDescription(
-            (
-                "Select the speaker name, then the complete dialogue in separate rectangles. "
-                if save_layout is not None
-                else "Select the speaker name and dialogue. "
-            )
-            + "Press Enter for a suggested "
-            "region, use arrows to move it, Shift plus arrows to resize it, and "
-            "press Enter again to review. Press Escape to cancel."
+            "Select the whole dialogue box, including the speaker name and continue indicator, "
+            "with room for every dialogue line. OCR finds the name and text automatically. "
+            "Press Enter for a suggested region, use arrows to move it, Shift plus "
+            "arrows to resize it, and Enter again to review. Escape cancels."
         )
 
     def persist(self, region: DialogRegion) -> None:
@@ -346,17 +383,6 @@ class DialogRegionOverlay(QWidget):
             return
         try:
             region = self._region_from_rectangle(rectangle)
-            if self.save_layout is not None:
-                if self.speaker_region is None:
-                    self.speaker_region = region
-                    self.origin = None
-                    self.current = None
-                    self.save_error = None
-                    self.update()
-                    return
-                region, self.pending_ocr_regions = combine_ocr_regions(
-                    self.speaker_region, region, self.capture_region
-                )
             if self.background is None:
                 # Keeps the overlay directly usable in tests and by callers that
                 # deliberately opt out of the frozen preview workflow.
@@ -364,12 +390,7 @@ class DialogRegionOverlay(QWidget):
             else:
                 crop = region.crop(self.background)
                 self.hide()
-                self._review = (
-                    CalibrationReviewDialog(crop, ocr_regions=self.pending_ocr_regions)
-                    if self.reviewer is CalibrationReviewDialog
-                    and self.pending_ocr_regions is not None
-                    else self.reviewer(crop)
-                )
+                self._review = self.reviewer(crop)
                 result = self._review.exec()
         except Exception as error:
             self._selection_failed(f"Unable to review the dialogue area: {error}")
@@ -389,18 +410,14 @@ class DialogRegionOverlay(QWidget):
         self.activateWindow()
         self.origin = None
         self.current = None
-        self.speaker_region = None
-        self.pending_ocr_regions = None
+        self.save_error = None
         self.update()
 
     def _save_selection(self, region: DialogRegion) -> None:
         if self._closed:
             return
         try:
-            if self.save_layout is not None and self.pending_ocr_regions is not None:
-                self.save_layout(region, self.pending_ocr_regions)
-            else:
-                self.save_region(region)
+            self.save_region(region)
         except OSError as error:
             self._selection_failed(f"Unable to save the dialogue area: {error}")
             return
@@ -421,29 +438,13 @@ class DialogRegionOverlay(QWidget):
         self.update()
 
     def _set_suggested_keyboard_region(self) -> None:
-        if self.save_layout is not None:
-            capture = self.capture_region
-            top = capture.top + capture.height * (
-                0.08 if self.speaker_region is None else 0.4
-            )
-            width = capture.width * (0.35 if self.speaker_region is None else 0.85)
-            height = capture.height * (0.2 if self.speaker_region is None else 0.45)
-            rectangle = QRect(
-                round((capture.left + capture.width * 0.02) * self.width()),
-                round(top * self.height()),
-                max(20, round(width * self.width())),
-                max(20, round(height * self.height())),
-            ).intersected(self.rect())
-            self.origin, self.current = rectangle.topLeft(), rectangle.bottomRight()
-            self.update()
-            return
-        left = round(self.width() * 0.08)
-        top = round(self.height() * 0.62)
-        right = max(left + 20, round(self.width() * 0.92))
-        bottom = max(top + 20, round(self.height() * 0.94))
-        rectangle = QRect(left, top, right - left, bottom - top).intersected(
-            self.rect()
-        )
+        capture = self.capture_region
+        rectangle = QRect(
+            round(capture.left * self.width()),
+            round(capture.top * self.height()),
+            max(20, round(capture.width * self.width())),
+            max(20, round(capture.height * self.height())),
+        ).intersected(self.rect())
         self.origin = rectangle.topLeft()
         self.current = rectangle.bottomRight()
         self.update()
@@ -515,8 +516,6 @@ class DialogRegionOverlay(QWidget):
         if event.key() == Qt.Key.Key_R:
             self.origin = None
             self.current = None
-            self.speaker_region = None
-            self.pending_ocr_regions = None
             self.save_error = None
             self.update()
             return
@@ -535,17 +534,6 @@ class DialogRegionOverlay(QWidget):
         if self.background_pixmap is not None:
             painter.drawPixmap(self.rect(), self.background_pixmap)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 110))
-        if self.speaker_region is not None:
-            region = self.speaker_region
-            painter.setPen(QPen(QColor(100, 255, 150), 3))
-            painter.drawRect(
-                QRect(
-                    round(region.left * self.width()),
-                    round(region.top * self.height()),
-                    round(region.width * self.width()),
-                    round(region.height * self.height()),
-                )
-            )
         if self.origin is not None and self.current is not None:
             rectangle = QRect(self.origin, self.current).normalized()
             if self.background_pixmap is not None:
@@ -564,37 +552,41 @@ class DialogRegionOverlay(QWidget):
             painter.setPen(QPen(QColor(0, 220, 255), 3))
             painter.drawRect(rectangle)
 
-        instructions = QRect(24, 24, max(0, self.width() - 48), 64)
-        painter.fillRect(instructions, QColor(0, 0, 0, 190))
-        painter.setPen(Qt.GlobalColor.white)
         font = painter.font()
         font.setBold(True)
         painter.setFont(font)
-        if self.save_error:
-            instruction = (
-                f"{self.save_error}. Press Enter to review and retry, or Esc to cancel."
-            )
-        elif self.origin is None or self.current is None:
-            instruction = (
-                (
-                    "Step 1 of 2: Drag around the speaker name only. "
-                    if self.speaker_region is None
-                    else "Step 2 of 2: Drag around the full dialogue area, leaving room for every line. Exclude the name and continue indicator. "
-                )
-                + "Enter suggests a region; arrows adjust it; R starts again; Esc cancels."
-                if self.save_layout is not None
-                else "Drag around the speaker name and dialogue text. Keyboard: press "
-                "Enter for a suggested region. Press Esc to cancel."
-            )
-        else:
-            instruction = (
-                "Press Enter to review. Arrow keys move; Shift plus arrows resize; "
-                "R clears the selection; Esc cancels."
-            )
+        instruction = self._instruction_text()
+        text_width = max(1, self.width() - 80)
+        text_bounds = painter.fontMetrics().boundingRect(
+            QRect(0, 0, text_width, 0), Qt.TextFlag.TextWordWrap, instruction
+        )
+        instructions = QRect(24, 24, text_width + 32, text_bounds.height() + 16)
+        if self.origin is not None and self.current is not None:
+            if instructions.intersects(QRect(self.origin, self.current).normalized()):
+                instructions.moveBottom(self.height() - 24)
+        painter.fillRect(instructions, QColor(0, 0, 0, 190))
+        painter.setPen(Qt.GlobalColor.white)
         painter.drawText(
             instructions.adjusted(16, 8, -16, -8),
-            Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+            Qt.AlignmentFlag.AlignLeft
+            | Qt.AlignmentFlag.AlignVCenter
+            | Qt.TextFlag.TextWordWrap,
             instruction,
+        )
+
+    def _instruction_text(self) -> str:
+        if self.save_error:
+            return f"{self.save_error}. Enter reviews and retries; R starts again; Esc cancels."
+        selected = self.origin is not None and self.current is not None
+        return (
+            "Select the whole dialogue box, including the name and continue indicator. "
+            "Leave room for all dialogue lines. "
+            + (
+                "Enter reviews the area. "
+                if selected
+                else "Drag to select, or Enter suggests an area. "
+            )
+            + "Arrows move; Shift + arrows resize; R starts again; Esc cancels."
         )
 
 
@@ -603,7 +595,6 @@ def show_calibration_overlay(
     *,
     background: Image.Image | None = None,
     save_region: Callable[[DialogRegion], None] | None = None,
-    save_layout: CaptureLayoutSaver | None = None,
     capture_region: DialogRegion | None = None,
 ) -> DialogRegionOverlay:
     if background is None:
@@ -611,7 +602,6 @@ def show_calibration_overlay(
     overlay = DialogRegionOverlay(
         background=background,
         save_region=save_region,
-        save_layout=save_layout,
         capture_region=capture_region,
     )
     if geometry is None:
@@ -644,11 +634,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not isinstance(application, QApplication):
         application = QApplication(sys.argv)
     global _active_overlay
-    _active_overlay = show_calibration_overlay(
-        save_layout=lambda region, regions: save_dialog_region(
-            region, get_dialog_region_file(), ocr_regions=regions
-        )
-    )
+    _active_overlay = show_calibration_overlay()
     return application.exec()
 
 

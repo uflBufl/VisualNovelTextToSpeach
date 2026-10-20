@@ -198,13 +198,23 @@
       "related": ["onboarding", "settings", "readiness"],
       "contracts": ["single-mission"],
       "stories": [
-        {"id": "calibration.overlay-empty", "title": "Draw dialogue area", "state": "Mouse and keyboard ways to select a region are visible"},
+        {"id": "calibration.overlay-empty", "title": "Draw dialogue area", "state": "Mouse and keyboard ways to select one whole dialogue area are visible"},
         {"id": "calibration.overlay-selected", "title": "Adjust selected area", "state": "Selection can be moved, resized, cleared or reviewed"},
+        {"id": "calibration.overlay-top-selected", "title": "Dialogue at the top", "state": "Selection around a top dialogue block remains clear of the instruction banner"},
         {"id": "calibration.overlay-save-failure", "title": "Region save failure", "state": "Selection stays visible with a retryable save error"},
+        {"id": "calibration.overlay-keyboard-selection", "title": "Suggested capture area", "state": "Keyboard selection uses the current overall capture area"},
+        {"id": "calibration.overlay-compact-save-error", "title": "Save error at larger text", "state": "A long save error and retry instructions remain readable"},
         {"id": "calibration.review-loading", "title": "Recognizing selected area", "state": "Review remains readable while OCR runs and Save is gated"},
         {"id": "calibration.review-recognized", "title": "Recognized dialogue", "state": "Preview, recognized speaker and full text can be checked before saving"},
-        {"id": "calibration.review-failure", "title": "OCR preview unavailable", "state": "Player can draw again or explicitly save the region without OCR evidence"},
-        {"id": "calibration.review-compact", "title": "Compact review", "state": "Preview, OCR evidence and actions remain reachable with larger text"}
+        {"id": "calibration.review-empty", "title": "No dialogue recognized", "state": "An empty OCR result requires explicit save without OCR"},
+        {"id": "calibration.review-unreadable-name", "title": "Unreadable speaker name", "state": "Uncertain name evidence remains visible beside recognized dialogue"},
+        {"id": "calibration.review-failure-compact", "title": "OCR failure at larger text", "state": "Failed preview and actions remain reachable with larger text"},
+        {"id": "calibration.review-failure", "title": "OCR preview unavailable", "state": "Player can draw again or explicitly save without OCR evidence"},
+        {"id": "calibration.review-compact", "title": "Compact review", "state": "Preview, OCR evidence and actions remain reachable with larger text"},
+        {"id": "calibration.review-long-compact", "title": "Long dialogue at larger text", "state": "Tall screenshot and multiline dialogue can be inspected at 18pt in a 620 by 430 window"},
+        {"id": "calibration.review-long-compact-scrolled", "title": "End of long dialogue", "state": "Scrolling reaches the final dialogue marker while save, redraw and cancel remain available"},
+        {"id": "calibration.review-long-enlarged", "title": "Full-size long capture", "state": "The original screenshot pixels make the speaker and first dialogue lines readable"},
+        {"id": "calibration.review-long-enlarged-scrolled", "title": "Bottom of full-size capture", "state": "Scrolling the full-size screenshot reaches the final dialogue marker"}
       ]
     },
     {

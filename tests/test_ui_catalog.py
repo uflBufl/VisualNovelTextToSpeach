@@ -670,11 +670,21 @@ class UiCatalogTest(unittest.TestCase):
                 {
                     "calibration.overlay-empty",
                     "calibration.overlay-selected",
+                    "calibration.overlay-top-selected",
                     "calibration.overlay-save-failure",
+                    "calibration.overlay-keyboard-selection",
+                    "calibration.overlay-compact-save-error",
                     "calibration.review-loading",
                     "calibration.review-recognized",
+                    "calibration.review-empty",
+                    "calibration.review-unreadable-name",
+                    "calibration.review-failure-compact",
                     "calibration.review-failure",
                     "calibration.review-compact",
+                    "calibration.review-long-compact",
+                    "calibration.review-long-compact-scrolled",
+                    "calibration.review-long-enlarged",
+                    "calibration.review-long-enlarged-scrolled",
                 },
             )
             for story in packet["target"]["stories"]:
@@ -682,6 +692,61 @@ class UiCatalogTest(unittest.TestCase):
                     (output / "screenshots" / f"{story['id']}.png").stat().st_size,
                     0,
                 )
+
+    def test_compact_calibration_story_scrolls_to_last_dialogue_line(self):
+        root = Path(__file__).resolve().parents[1]
+        script = dedent("""
+            from PIL import Image
+            from PySide6.QtCore import QThreadPool
+            from PySide6.QtWidgets import QApplication
+            from scripts.render_ui_catalog import (
+                _calibration_review_story, _close_catalog_widget,
+                _prepare_catalog_screenshot,
+            )
+
+            class IdlePool(QThreadPool):
+                def start(self, *args, **kwargs):
+                    pass
+
+            app = QApplication.instance() or QApplication([])
+            pool = IdlePool()
+            dialog = _calibration_review_story(
+                "review-long-compact-scrolled", Image.new("RGB", (800, 450)), pool
+            )
+            try:
+                dialog.show()
+                app.processEvents()
+                app.processEvents()
+                assert dialog.size().toTuple() == (620, 430)
+                assert dialog.font().pointSize() == 18
+                text = dialog.result_text
+                scrollbar = text.verticalScrollBar()
+                assert scrollbar.maximum() > 0
+                cursor = text.document().find("END OF DIALOGUE")
+                assert not cursor.isNull()
+                assert text.cursorRect(cursor).top() >= text.viewport().height()
+                _prepare_catalog_screenshot(
+                    dialog, "calibration.review-long-compact-scrolled", app
+                )
+                assert scrollbar.value() > 0
+                assert text.viewport().rect().contains(text.cursorRect(cursor))
+                for button in (dialog.save_button, dialog.retry_button, dialog.cancel_button):
+                    rect = button.rect().translated(
+                        button.mapTo(dialog, button.rect().topLeft())
+                    )
+                    assert dialog.rect().contains(rect)
+            finally:
+                _close_catalog_widget(dialog)
+        """)
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=root,
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_dashboard_packet_renders_active_and_recovery_states(self):
         root = Path(__file__).resolve().parents[1]

@@ -11,8 +11,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image  # noqa: E402
 from PySide6.QtCore import QPoint, QRect, Qt, QThreadPool, QTimer  # noqa: E402
+from PySide6.QtGui import QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog, QTextEdit  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QDialog,
+    QScrollArea,
+    QTextEdit,
+)
 from pytesseract import pytesseract as pytesseract_runtime  # noqa: E402
 
 from tests.qt_task_fixtures import release_and_wait_for_pool  # noqa: E402
@@ -21,7 +27,7 @@ from vntts.calibration import (  # noqa: E402
     DialogRegionOverlay,
     show_calibration_overlay,
 )
-from vntts.ocr import DialogRegion, OCRRegions, OCRResult  # noqa: E402
+from vntts.ocr import DialogRegion, OCRResult  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
 
 
@@ -39,77 +45,24 @@ class DialogRegionOverlayTest(unittest.TestCase):
             QTest.qWait(5)
         self.fail("Timed out waiting for calibration OCR")
 
-    def split_overlay(self, save, review_result=QDialog.DialogCode.Accepted):
+    def test_one_selection_reviews_and_saves_the_whole_capture(self):
+        save = Mock()
+        reviewer = Mock(
+            return_value=Mock(exec=Mock(return_value=QDialog.DialogCode.Accepted))
+        )
         overlay = DialogRegionOverlay(
-            background=Image.new("RGB", (800, 450), "black"),
-            reviewer=Mock(return_value=Mock(exec=Mock(return_value=review_result))),
-            save_layout=save,
-            capture_region=DialogRegion(0, 0.5, 1, 0.5),
+            background=Image.new("RGB", (800, 450)),
+            reviewer=reviewer,
+            save_region=save,
         )
         self.addCleanup(overlay.deleteLater)
         self.addCleanup(overlay.close)
         overlay.resize(800, 450)
         overlay.show()
-        return overlay
-
-    def test_split_calibration_saves_both_only_after_review(self):
-        save = Mock()
-        overlay = self.split_overlay(save)
-        selected = Mock()
-        overlay.selected.connect(selected)
-        overlay._review_rectangle(QRect(80, 270, 160, 30))
-        save.assert_not_called()
-        overlay.reviewer.assert_not_called()
-        self.assertIsNotNone(overlay.speaker_region)
-
-        overlay._review_rectangle(QRect(80, 330, 640, 60))
-        save.assert_called_once()
-        capture, regions = save.call_args.args
-        self.assertEqual(capture, DialogRegion(0, 0.5, 1, 0.5))
-        self.assertIsInstance(regions, OCRRegions)
-        self.assertEqual(
-            regions.speaker.crop(capture.crop(overlay.background)).size, (160, 30)
-        )
-        self.assertEqual(
-            regions.dialogue.crop(capture.crop(overlay.background)).size, (640, 60)
-        )
-        selected.assert_called_once_with(capture)
-        self.assertFalse(overlay.isVisible())
-
-    def test_split_calibration_overlap_can_be_corrected(self):
-        save = Mock()
-        overlay = self.split_overlay(save)
-        overlay._review_rectangle(QRect(80, 270, 160, 30))
-        overlay._review_rectangle(QRect(80, 270, 200, 50))
-        self.assertIn("must not overlap", overlay.save_error)
-        self.assertTrue(overlay.isVisible())
-        save.assert_not_called()
-        overlay._review_rectangle(QRect(80, 330, 640, 60))
-        save.assert_called_once()
-
-    def test_split_calibration_draw_again_resets_both_and_cancel_writes_nothing(self):
-        save = Mock()
-        overlay = self.split_overlay(save, CalibrationReviewDialog.DrawAgain)
-        overlay._review_rectangle(QRect(80, 270, 160, 30))
-        overlay._review_rectangle(QRect(80, 330, 640, 60))
-        self.assertIsNone(overlay.speaker_region)
-        self.assertIsNone(overlay.pending_ocr_regions)
-        self.assertTrue(overlay.isVisible())
-        overlay._review_rectangle(QRect(80, 270, 160, 30))
-        overlay.close()
-        save.assert_not_called()
-
-    def test_split_calibration_failed_save_keeps_both_retryable(self):
-        save = Mock(side_effect=[OSError("disk unavailable"), None])
-        overlay = self.split_overlay(save)
-        overlay._review_rectangle(QRect(80, 270, 160, 30))
-        overlay._review_rectangle(QRect(80, 330, 640, 60))
-        self.assertTrue(overlay.isVisible())
-        self.assertIn("disk unavailable", overlay.save_error)
-        self.assertIsNotNone(overlay.pending_ocr_regions)
-        overlay._review_rectangle(QRect(80, 330, 640, 60))
-        self.assertEqual(save.call_count, 2)
-        self.assertEqual(save.call_args_list[0], save.call_args_list[1])
+        overlay._review_rectangle(QRect(80, 270, 640, 144))
+        reviewer.assert_called_once()
+        self.assertEqual(reviewer.call_args.args[0].size, (640, 144))
+        save.assert_called_once_with(DialogRegion(0.1, 0.6, 0.8, 0.32))
         self.assertFalse(overlay.isVisible())
 
     def test_review_failure_keeps_selection_visible_and_retryable(self):
@@ -426,10 +379,140 @@ class DialogRegionOverlayTest(unittest.TestCase):
         self.wait_for(lambda: not dialog.runner.active)
 
         self.assertIn("OCR preview failed", dialog.result_text.toPlainText())
-        self.assertEqual(dialog.save_button.text(), "Save region without OCR preview")
+        self.assertEqual(dialog.save_button.text(), "Save without OCR")
         self.assertTrue(dialog.save_button.isEnabled())
         self.assertTrue(dialog.progress.isHidden())
         dialog.deleteLater()
+
+    def test_review_keeps_unreadable_name_warning_and_requires_explicit_empty_save(
+        self,
+    ):
+        result = OCRResult(
+            "Narrator",
+            "",
+            0.0,
+            "gray",
+            1,
+            speaker_note="Visible name could not be read",
+        )
+        dialog = CalibrationReviewDialog(
+            Image.new("RGB", (1200, 240), "black"),
+            recognizer=lambda _image: result,
+        )
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(dialog.close)
+        self.wait_for(lambda: not dialog.runner.active)
+        self.assertIn(result.speaker_note, dialog.result_text.toPlainText())
+        self.assertNotIn("Speaker: Narrator", dialog.result_text.toPlainText())
+        self.assertIn("No dialogue recognized", dialog.result_text.toPlainText())
+        self.assertEqual(dialog.save_button.text(), "Save without OCR")
+        font = dialog.font()
+        font.setPointSize(20)
+        dialog.setFont(font)
+        dialog.resize(620, 430)
+        dialog.show()
+        self.application.processEvents()
+        self.application.processEvents()
+        self.assertEqual(dialog.size().toTuple(), (620, 430))
+        self.assertLessEqual(dialog.preview.pixmap().width(), dialog.preview.width())
+        self.assertLessEqual(dialog.preview.pixmap().height(), dialog.preview.height())
+        for button in (dialog.save_button, dialog.retry_button, dialog.cancel_button):
+            rect = button.rect().translated(
+                button.mapTo(dialog, button.rect().topLeft())
+            )
+            self.assertTrue(dialog.rect().contains(rect))
+        dialog.save_button.click()
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+
+    def test_full_size_capture_preserves_pixels_and_closes_with_review(self):
+        dialog = CalibrationReviewDialog(
+            Image.new("RGB", (1200, 900), "black"),
+            recognizer=lambda _image: OCRResult("Selone", "A line.", 94.5, "gray", 1),
+        )
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(dialog.close)
+        dialog.show()
+        dialog.enlarge_button.click()
+        self.application.processEvents()
+        enlarged = dialog.capture_preview
+        self.assertTrue(enlarged.isVisible())
+        scroll = enlarged.findChild(QScrollArea)
+        self.assertEqual(scroll.widget().pixmap().size().toTuple(), (1200, 900))
+        self.assertGreater(scroll.horizontalScrollBar().maximum(), 0)
+        self.assertGreater(scroll.verticalScrollBar().maximum(), 0)
+        QTest.keyClick(enlarged, Qt.Key.Key_Escape)
+        self.assertFalse(enlarged.isVisible())
+        self.assertTrue(dialog.isVisible())
+        dialog.enlarge_button.click()
+        self.assertIs(dialog.capture_preview, enlarged)
+        dialog.reject()
+        self.assertFalse(enlarged.isVisible())
+        self.assertFalse(dialog.runner.active)
+
+    def test_long_review_can_scroll_to_last_line_with_actions_visible(self):
+        text = "\n".join(f"Dialogue line {index}." for index in range(50))
+        result = OCRResult("Selone", text + "\nFinal dialogue line.", 94.5, "gray", 1)
+        dialog = CalibrationReviewDialog(
+            Image.new("RGB", (1200, 720), "black"), recognizer=lambda _image: result
+        )
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(dialog.close)
+        font = dialog.font()
+        font.setPointSize(20)
+        dialog.setFont(font)
+        dialog.resize(620, 430)
+        dialog.show()
+        self.wait_for(lambda: not dialog.runner.active)
+        dialog.result_text.setFocus()
+        self.wait_for(lambda: dialog.result_text.verticalScrollBar().maximum() > 0)
+        QTest.keyClick(dialog.result_text, Qt.Key.Key_End)
+        self.application.processEvents()
+        scroll = dialog.result_text.verticalScrollBar()
+        self.assertGreater(scroll.maximum(), 0)
+        self.assertEqual(scroll.value(), scroll.maximum())
+        cursor = dialog.result_text.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.assertTrue(
+            dialog.result_text.viewport()
+            .rect()
+            .intersects(dialog.result_text.cursorRect(cursor))
+        )
+        for button in (dialog.save_button, dialog.retry_button, dialog.cancel_button):
+            self.assertTrue(
+                dialog.rect().contains(
+                    button.rect().translated(button.mapTo(dialog, QPoint()))
+                )
+            )
+
+    def test_keyboard_suggestion_uses_current_capture_and_reviews_once(self):
+        region = DialogRegion(0.1, 0.5, 0.8, 0.4)
+        save = Mock()
+        overlay = DialogRegionOverlay(
+            background=Image.new("RGB", (800, 450)),
+            save_region=save,
+            capture_region=region,
+            reviewer=Mock(
+                return_value=Mock(
+                    exec=Mock(return_value=CalibrationReviewDialog.DrawAgain)
+                )
+            ),
+        )
+        self.addCleanup(overlay.deleteLater)
+        self.addCleanup(overlay.close)
+        overlay.resize(800, 450)
+        overlay.show()
+        QTest.keyClick(overlay, Qt.Key.Key_Return)
+        self.assertEqual(
+            QRect(overlay.origin, overlay.current), QRect(80, 225, 640, 180)
+        )
+        self.assertIn("Enter reviews", overlay._instruction_text())
+        overlay.save_error = "disk full"
+        QTest.keyClick(overlay, Qt.Key.Key_Return)
+        overlay.reviewer.assert_called_once()
+        save.assert_not_called()
+        self.assertIsNone(overlay.save_error)
+        self.assertIsNone(overlay.origin)
+        self.assertTrue(overlay.isVisible())
 
     def test_review_actions_have_keyboard_and_accessibility_contract(self):
         result = OCRResult("Selone", "I have returned.", 94.5, "gray", 1)
@@ -478,6 +561,7 @@ class DialogRegionOverlayTest(unittest.TestCase):
                 Path(temporary_directory) / "region.json",
                 background=Image.new("RGB", (1600, 900), "black"),
                 reviewer=Reviewer,
+                capture_region=DialogRegion(0.08, 0.62, 0.84, 0.28),
             )
             overlay.selected.connect(selected.append)
             overlay.resize(800, 450)

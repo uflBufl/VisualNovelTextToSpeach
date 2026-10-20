@@ -19,6 +19,7 @@ from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.calibration import DialogRegionOverlay  # noqa: E402
 from vntts.game_pack import GamePackError  # noqa: E402
 from vntts.moss_cpp_installation import MossCppInstallRequired  # noqa: E402
+from vntts.ocr import DialogRegion  # noqa: E402
 from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics  # noqa: E402
 from vntts.onboarding_ui import OnboardingWizard  # noqa: E402
 from vntts.services.tts_engine import TTSSynthesisError  # noqa: E402
@@ -1226,7 +1227,7 @@ class OnboardingWizardTest(unittest.TestCase):
                 platform="darwin",
             )
 
-            def show_overlay(_geometry):
+            def show_overlay(_geometry, **_kwargs):
                 overlay.show()
                 return overlay
 
@@ -1252,16 +1253,21 @@ class OnboardingWizardTest(unittest.TestCase):
 
     def test_reading_setup_passes_profile_aware_region_save_to_overlay(self):
         save_region = Mock()
+        region = DialogRegion(0.1, 0.6, 0.8, 0.3)
         wizard = OnboardingWizard(
             AppSettings(active_profile_id="active"),
             reading_setup=True,
             save_region=save_region,
+            capture_region=region,
         )
         wizard.calibration_page.pending_geometry = None
         with patch("vntts.onboarding_ui.show_calibration_overlay") as show_overlay:
             wizard.calibration_page.open_overlay()
 
-        show_overlay.assert_called_once_with(None, save_region=save_region)
+        show_overlay.assert_called_once_with(
+            None, save_region=save_region, capture_region=region
+        )
+        save_region.assert_not_called()
         wizard.close()
         wizard.deleteLater()
 
@@ -1286,7 +1292,10 @@ class OnboardingWizardTest(unittest.TestCase):
             wizard.deleteLater()
 
     def test_calibration_finish_closes_active_overlay_without_restoring_wizard(self):
-        wizard = OnboardingWizard(AppSettings(capture_mode="screen"))
+        save_region = Mock()
+        wizard = OnboardingWizard(
+            AppSettings(capture_mode="screen"), save_region=save_region
+        )
         page = wizard.calibration_page
         overlay = Mock()
         try:
@@ -1307,6 +1316,7 @@ class OnboardingWizardTest(unittest.TestCase):
                 overlay.deleteLater.assert_called_once_with()
                 self.assertIsNone(page.overlay)
                 restore.assert_not_called()
+                save_region.assert_not_called()
         finally:
             wizard.deleteLater()
 
