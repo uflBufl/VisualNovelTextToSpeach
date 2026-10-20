@@ -24,9 +24,11 @@
 
 - [ ] In an explicitly approved native macOS session (OS prompts and System Settings may interrupt the desktop), test Screen Recording and Accessibility separately: Request, deny/grant/retry, and Open/Manage Settings. Confirm each opens the corresponding system control; change access and return to VNTTS, then verify automatic status refresh and manual Refresh status. Check pending-request Close/Escape, keyboard focus and VoiceOver names/descriptions at enlarged text; preserve screenshots and focus/announcement evidence. Offscreen tests verify dispatch, state, keyboard, scroll/copy and exact target URLs, not native OS routing, prompts or accessibility announcements.
 
-## Qualify native OCR editor tooltips
+## Qualify native OCR review and editor accessibility
 
 - [ ] Once native UI can be launched without interrupting the desktop, check saved OCR corrections on macOS and Windows at enlarged system text: put the narrow editor near screen edges, hover both long source/replacement cells and inspect each with F2/Escape. Confirm full values remain readable, hover stays usable, native tooltips remain on screen, and exiting inspection leaves Save disabled. Retain full-window/tooltip captures and keyboard evidence. Offscreen tests and cropped tooltips verify content, not native placement or focus.
+
+- [ ] With verified background workspace isolation or an explicitly approved native session, review a captured uncertain line on macOS and Windows at enlarged system text. Check VoiceOver/NVDA names and status announcements, Tab/arrow access to every footer action, literal-text copying and tooltips near screen edges. Save a scoped correction, reopen after an external rule edit, then Read Once on a real game and confirm the updated correction is used. Retain native focus, capture and accessibility evidence; offscreen tests do not qualify OS routing or assistive technology.
 
 ## Qualify dialogue history on native audio and accessibility setups
 

@@ -451,7 +451,7 @@
       "related": ["ocr-corrections", "diagnostics", "dashboard"],
       "contracts": ["single-mission", "support-boundary"],
       "stories": [
-        {"id": "ocr-review.pending", "title": "Uncertain captured line", "state": "One screenshot and its detected speaker and text can be reviewed"},
+        {"id": "ocr-review.pending", "title": "Uncertain captured lines", "state": "Three distinct captured lines retain confidence and selection context"},
         {"id": "ocr-review.enlarged-screenshot", "title": "Enlarged captured dialogue", "state": "The captured screenshot can be inspected at double size in a scrollable view"},
         {"id": "ocr-review.enlarged-long", "title": "Large captured screenshot", "state": "A wide and tall screenshot has horizontal and vertical scrolling plus a visible Close action"},
         {"id": "ocr-review.corrected", "title": "Correction drafted", "state": "Changed speaker and text enable a profile-scoped correction"},
@@ -461,7 +461,23 @@
         {"id": "ocr-review.saving", "title": "Saving review", "state": "A pending write disables competing actions without hiding the draft"},
         {"id": "ocr-review.save-failure", "title": "Review save failure", "state": "Failure keeps the draft and a retry path"},
         {"id": "ocr-review.empty", "title": "No uncertain lines", "state": "The empty queue has no misleading save action"},
-        {"id": "ocr-review.compact", "title": "Compact OCR review", "state": "Screenshot, editable text and actions remain reachable with larger text"}
+        {"id": "ocr-review.compact", "title": "Compact OCR review", "state": "Long literal speaker and text remain reachable at 22pt with a stable action footer"},
+        {"id": "ocr-review.draft-switched", "title": "Return to a drafted line", "state": "Switching to another line and back restores text drafts while keeping the explicitly selected dialog-wide scope"},
+        {"id": "ocr-review.long-text", "title": "Long literal captured text", "state": "Long OCR evidence containing HTML-like tags remains literal and copyable"},
+        {"id": "ocr-review.compact-scrolled", "title": "Compact correction fields", "state": "At 22pt the form scrolls to its lower fields while Save, Dismiss and Close remain reachable"},
+        {"id": "ocr-review.blank-source", "title": "No detected dialogue to match", "state": "Entering missing dialogue cannot create an empty-source dictionary rule; dismissal remains available"},
+        {"id": "ocr-review.stale-save", "title": "Correction file changed", "state": "A real revision conflict retains edits and blocks writes until review is reopened"},
+        {"id": "ocr-review.partial-save-failure", "title": "Rule saved, line still pending", "state": "The dictionary write succeeds but resolution fails; the draft and explicit partial-success recovery remain visible"},
+        {"id": "ocr-review.close-pending", "title": "Close waits for saving", "state": "Closing during a real pending write is deferred while edits and disabled competing controls remain visible"},
+        {"id": "ocr-review.next-sample", "title": "Continue after saving", "state": "A real successful rule save removes only the resolved sample and advances to another uncertain line"},
+        {"id": "ocr-review.complete", "title": "Review completed", "state": "Resolving the final sample enters the empty state with a save confirmation"},
+        {"id": "ocr-review.unavailable-image", "title": "Captured screenshot unavailable", "state": "A damaged captured file produces an explicit placeholder and disables enlargement without hiding OCR evidence"},
+        {"id": "ocr-review.compact-save-failure", "title": "Long failure at 22pt", "state": "A real failed write retains long literal drafts, scrollable error details and the visible action footer at 22pt"},
+        {"id": "ocr-review.compact-save-failure-end", "title": "Long failure and scope at end", "state": "At 22pt the form reaches its scope and impact while the error view reaches its final detail"},
+        {"id": "ocr-review.compact-partial-save-failure", "title": "Long partial failure at 22pt", "state": "After a real dictionary save and failed resolution, long drafts and saved-rule recovery remain available at 22pt"},
+        {"id": "ocr-review.compact-partial-save-failure-end", "title": "Partial failure and scope at end", "state": "At 22pt the lower form and final partial-save error remain reachable with all footer actions"},
+        {"id": "ocr-review.compact-stale-save", "title": "Long revision conflict at 22pt", "state": "A deterministic stale-write failure retains long copyable drafts and disables Save and Dismiss at 22pt"},
+        {"id": "ocr-review.compact-stale-save-end", "title": "Revision conflict details at end", "state": "The full stale-write detail can be scrolled to its end while scope, impact and Close remain reachable"}
       ]
     },
     {

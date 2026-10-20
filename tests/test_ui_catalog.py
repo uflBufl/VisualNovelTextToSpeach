@@ -10,6 +10,84 @@ from textwrap import dedent
 
 
 class UiCatalogTest(unittest.TestCase):
+    def test_ocr_review_catalog_uses_real_writes_and_recoverable_drafts(self):
+        script = dedent("""
+            from contextlib import ExitStack
+            from PySide6.QtWidgets import QApplication
+            from scripts.render_ui_catalog import (
+                _ocr_review_story, _close_catalog_widget, _prepare_ocr_review_screenshot,
+            )
+            from tests.qt_task_fixtures import ManualThreadPool
+
+            app = QApplication([])
+            states = (
+                "saving", "save-failure", "partial-save-failure", "stale-save",
+                "close-pending", "next-sample", "complete", "draft-switched",
+                "blank-source", "unavailable-image", "compact", "long-text",
+                "compact-save-failure", "compact-save-failure-end",
+                "compact-partial-save-failure", "compact-partial-save-failure-end",
+                "compact-stale-save", "compact-stale-save-end",
+            )
+            for state in states:
+                with ExitStack() as resources:
+                    pool = ManualThreadPool()
+                    dialog = _ocr_review_story(resources, state, pool, pool.run_next)
+                    if state.startswith("compact-") and state.endswith("-end"):
+                        dialog.show()
+                        app.processEvents()
+                        _prepare_ocr_review_screenshot(dialog, "ocr-review." + state, app)
+                        for bar in (
+                            dialog.status.verticalScrollBar(),
+                            dialog.details_scroll.verticalScrollBar(),
+                        ):
+                            assert bar.maximum() > 0
+                            assert bar.value() == bar.maximum()
+                        assert "END OF ERROR" in dialog.status.toPlainText()
+                    if state in {"saving", "close-pending"}:
+                        assert dialog._write_active and len(pool.tasks) == 1
+                        assert not dialog.resolve_button.isEnabled()
+                        assert dialog.corrected_character.text() == "Marcus"
+                    elif state == "stale-save":
+                        assert not dialog.save_button.isEnabled()
+                        assert not dialog.resolve_button.isEnabled()
+                        assert "reopen" in dialog.status.toPlainText()
+                    elif state in {"save-failure", "partial-save-failure"}:
+                        assert dialog.save_button.isEnabled()
+                        assert dialog.resolve_button.isEnabled()
+                        assert dialog.corrected_text.toPlainText() == "Hello timekeeper."
+                    elif state == "draft-switched":
+                        dialog.sample_list.setCurrentRow(1)
+                        assert dialog.corrected_character.text() == "Northern Keeper"
+                        assert dialog.scope.currentData() is None
+                    elif state == "blank-source":
+                        assert not dialog.save_button.isEnabled()
+                        assert dialog.resolve_button.isEnabled()
+                    elif state == "compact":
+                        assert dialog.font().pointSize() == 22
+                    elif state == "long-text":
+                        assert "<b>Stay here</b>" in dialog.source_text.toPlainText()
+                        dialog.show()
+                        app.processEvents()
+                        _prepare_ocr_review_screenshot(dialog, "ocr-review.long-text", app)
+                        for editor in (dialog.source_text, dialog.corrected_text):
+                            assert editor.height() > editor.minimumHeight()
+                            assert editor.maximumHeight() >= editor.height()
+                    if pool.tasks:
+                        pool.run_next()
+                        app.processEvents()
+                    _close_catalog_widget(dialog)
+        """)
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[1],
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_offline_catalog_inputs_match_selected_lines_and_captured_files(
         self,
     ) -> None:

@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
     from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
     from vntts.calibration import CalibrationReviewDialog, DialogRegionOverlay
+    from vntts.ocr_review_ui import OCRReviewDialog
     from vntts.onboarding_ui import OnboardingWizard
     from vntts.pregeneration_audition_ui import VoiceAuditionPanel
     from vntts.pregeneration_queue import PregenerationInput
@@ -390,6 +391,7 @@ def _prepare_catalog_screenshot(
     from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
     from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 
+    _prepare_ocr_review_screenshot(widget, story_id, app)
     if story_id in {
         "calibration.review-long-compact-scrolled",
         "calibration.review-long-enlarged-scrolled",
@@ -992,6 +994,244 @@ def _support_center(state: str) -> QWidget:
     return dialog
 
 
+def _ocr_review_samples(directory: Path, state: str) -> None:
+    from textwrap import fill
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    from vntts.ocr import OCRResult, UncertainFrameRecorder
+
+    long_text = (
+        "<b>Stay here</b> & wait for the keeper of the northern library. "
+        "The storm has passed, but the roads through the valley remain closed. "
+        "We must find every missing traveller before the last train leaves. "
+    ) * 3
+    samples = [
+        ("Mareus", "Hello tiniekeeper."),
+        ("N0rthern Keeper", "We cannot leave before dawn."),
+        ("Narrator", "The library doors closed behind them."),
+    ]
+    if state == "long-text" or state.startswith("compact"):
+        samples[0] = ("The Keeper of the Northern Library <b>IV</b>", long_text)
+    elif state == "shared-source-conflict":
+        samples[0] = ("No", "No")
+    elif state == "blank-source":
+        samples[0] = ("Narrator", "")
+    if state in {"complete", "enlarged-screenshot", "enlarged-long"}:
+        samples = samples[:1]
+    if state == "empty":
+        samples = []
+    for index, (speaker, dialogue) in enumerate(samples):
+        wrapped_dialogue = fill(dialogue or "[No dialogue detected]", width=65)
+        height = 130 + len(wrapped_dialogue.splitlines()) * 34
+        size = (1200, 1000) if state == "enlarged-long" else (1000, max(210, height))
+        image = Image.new("RGB", size, "#282b33")
+        draw = ImageDraw.Draw(image)
+        draw.text((24, 25), speaker, fill="white", font=ImageFont.load_default(size=34))
+        draw.multiline_text(
+            (24, 85),
+            wrapped_dialogue,
+            fill="white",
+            font=ImageFont.load_default(size=26),
+            spacing=8,
+        )
+        if state == "enlarged-long":
+            draw.text(
+                (720, 870),
+                "The last words remain visible.",
+                fill="white",
+                font=ImageFont.load_default(size=26),
+            )
+        image_path = UncertainFrameRecorder(directory).record(
+            image, OCRResult(speaker, dialogue, 42.5 + index, "balanced", 3), 60
+        )
+        assert image_path is not None
+        image_path.with_suffix(".json").rename(
+            directory / f"uncertain-{99 - index}.json"
+        )
+
+
+def _ocr_review_failure(dialog: OCRReviewDialog, state: str) -> None:
+    from vntts.ocr_corrections import OCRCorrectionStore
+    from vntts.versioned_json import StaleDocumentError
+
+    compact = state.startswith("compact-")
+    state = state.removeprefix("compact-").removesuffix("-end")
+    detail = (
+        "Application data is read-only: /Volumes/Long game recordings/Chapter 7/ " * 24
+        + "END OF ERROR"
+        if compact
+        else "Application data is read-only"
+    )
+    if state == "save-failure":
+        dialog.correction_store.upsert_entries = Mock(  # type: ignore[method-assign]
+            side_effect=OSError(detail)
+        )
+    elif state == "partial-save-failure":
+        dialog.review_store.mark_resolved = Mock(  # type: ignore[method-assign]
+            side_effect=OSError(detail)
+        )
+    elif state == "stale-save" and compact:
+        dialog.correction_store.upsert_entries = Mock(  # type: ignore[method-assign]
+            side_effect=StaleDocumentError(
+                "The corrections file changed elsewhere: " + detail
+            )
+        )
+    elif state == "stale-save":
+        external = OCRCorrectionStore.load(dialog.correction_store.path)
+        external.upsert_entries({"Vertln": "Vertin"})
+
+
+def _ocr_review_write_state(
+    dialog: OCRReviewDialog, state: str, finish_write: Callable[[], None]
+) -> None:
+    from PySide6.QtWidgets import QApplication
+
+    _ocr_review_failure(dialog, state)
+    state = state.removeprefix("compact-").removesuffix("-end")
+    sample = dialog.current_sample()
+    speaker_draft = dialog.corrected_character.text()
+    dialog.save_correction()
+    assert dialog._write_active
+    assert not dialog.sample_list.isEnabled()
+    assert not dialog.scope.isEnabled()
+    assert not dialog.save_button.isEnabled()
+    if state == "close-pending":
+        dialog.close()
+        assert dialog._close_pending
+    if state in {"saving", "close-pending"}:
+        return
+    finish_write()
+    QApplication.processEvents()
+    assert not dialog._write_active
+    assert dialog.sample_list.isEnabled()
+    if state in {"save-failure", "partial-save-failure", "stale-save"}:
+        assert dialog.current_sample() == sample
+        assert dialog.corrected_character.text() == speaker_draft
+        expected_status = (
+            "changed elsewhere" if state == "stale-save" else "Could not finish review"
+        )
+        assert expected_status in dialog.status.toPlainText()
+    elif state == "next-sample":
+        assert dialog.current_sample() != sample
+        assert len(dialog.samples) == 2
+    elif state == "complete":
+        assert not dialog.samples
+
+
+def _ocr_review_edit_state(dialog: OCRReviewDialog, state: str) -> None:
+    from PySide6.QtCore import QTimer
+
+    if state.startswith("compact"):
+        font = dialog.font()
+        font.setPointSize(22)
+        dialog.setFont(font)
+        dialog.resize(730, 560)
+    if state == "compact-scrolled":
+        QTimer.singleShot(
+            0, lambda: dialog.details_scroll.ensureWidgetVisible(dialog.scope)
+        )
+    if state not in {"pending", "long-text", "empty", "unavailable-image"}:
+        dialog.corrected_character.setText("Marcus")
+        replacement = "Hello timekeeper."
+        if state.startswith("compact"):
+            dialog.corrected_character.setText("The Keeper of the Northern Library IV")
+            replacement = dialog.corrected_text.toPlainText().replace(
+                "Stay here", "Stay with us"
+            )
+        dialog.corrected_text.setPlainText(replacement)
+    if state in {"all-games", "draft-switched"}:
+        dialog.scope.setCurrentIndex(0)
+    if state == "draft-switched":
+        dialog.sample_list.setCurrentRow(1)
+        dialog.corrected_character.setText("Northern Keeper")
+        dialog.sample_list.setCurrentRow(0)
+        assert dialog.corrected_character.text() == "Marcus"
+        assert dialog.scope.currentData() is None
+    elif state == "shared-source-conflict":
+        dialog.corrected_character.setText("Narrator")
+        dialog.corrected_text.setPlainText("Yes")
+        assert not dialog.save_button.isEnabled()
+    elif state == "blank-source":
+        dialog.corrected_character.setText("Narrator")
+        assert not dialog.save_button.isEnabled()
+    elif state == "unavailable-image":
+        sample = dialog.current_sample()
+        assert sample is not None
+        sample.image_path.write_bytes(b"This is a damaged screenshot")
+        dialog.show_sample(dialog.sample_list.currentRow())
+        assert not dialog.zoom_button.isEnabled()
+
+
+def _ocr_review_story(
+    resources: ExitStack,
+    state: str,
+    thread_pool: QThreadPool,
+    finish_write: Callable[[], None],
+) -> QWidget:
+    from vntts.ocr_corrections import OCRCorrectionStore
+    from vntts.ocr_review_ui import OCRReviewDialog
+
+    directory = Path(resources.enter_context(temporary_directory()))
+    _ocr_review_samples(directory, state)
+    dialog = OCRReviewDialog(
+        directory,
+        OCRCorrectionStore(directory / "corrections.json"),
+        "game",
+        "Reverse: 1999",
+        thread_pool=thread_pool,
+    )
+    if state in {"enlarged-screenshot", "enlarged-long", "resolve-confirm"}:
+        popup = (
+            dialog._dismissal_dialog()
+            if state == "resolve-confirm"
+            else dialog._screenshot_dialog()
+        )
+        assert popup is not None
+        resources.enter_context(
+            cleanup_on_exit(
+                lambda: _close_catalog_widget(dialog),
+                description="Catalog popup owner cleanup",
+            )
+        )
+        return popup
+    _ocr_review_edit_state(dialog, state)
+    write_state = state.removeprefix("compact-").removesuffix("-end")
+    if write_state in {
+        "saving",
+        "save-failure",
+        "partial-save-failure",
+        "stale-save",
+        "close-pending",
+        "next-sample",
+        "complete",
+    }:
+        _ocr_review_write_state(dialog, state, finish_write)
+    return dialog
+
+
+def _prepare_ocr_review_screenshot(
+    widget: QWidget, story_id: str, app: QApplication
+) -> None:
+    from vntts.ocr_review_ui import OCRReviewDialog
+
+    if not story_id.startswith("ocr-review."):
+        return
+    for _ in range(3):
+        app.processEvents()
+    if not story_id.endswith("-end"):
+        return
+    assert isinstance(widget, OCRReviewDialog)
+    for _ in range(3):
+        app.processEvents()
+        for bar in (
+            widget.details_scroll.verticalScrollBar(),
+            widget.status.verticalScrollBar(),
+        ):
+            bar.setValue(bar.maximum())
+        app.processEvents()
+
+
 def _ocr_corrections_story(resources: ExitStack, state: str) -> QWidget:
     from vntts.ocr_corrections import OCRCorrectionStore
     from vntts.ocr_corrections_ui import OCRCorrectionsDialog
@@ -1491,9 +1731,7 @@ def _render_stories(
     from vntts.game_narrator_ui import GameNarratorDialog
     from vntts.history import DialogueHistory
     from vntts.history_ui import DialogueHistoryDialog
-    from vntts.ocr import DialogRegion, OCRResult, UncertainFrameRecorder
-    from vntts.ocr_corrections import OCRCorrectionStore
-    from vntts.ocr_review_ui import OCRReviewDialog
+    from vntts.ocr import DialogRegion
     from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics
     from vntts.pregeneration_generation import OfflineGenerationProgress
     from vntts.pregeneration_setup import (
@@ -2547,91 +2785,9 @@ def _render_stories(
             state, offline_preparation("confirmation"), resources, write_silent_wav
         )
 
-    def ocr_review(state: str) -> QDialog:
-        temporary = resources.enter_context(temporary_directory())
-        directory = Path(temporary)
-        if state != "empty":
-            size = (1200, 1000) if state == "enlarged-long" else (640, 200)
-            image = Image.new("RGB", size, "#282b33")
-            draw = ImageDraw.Draw(image)
-            shared_source = state == "shared-source-conflict"
-            draw.text(
-                (24, 68),
-                "No" if shared_source else "Mareus: Hello tiniekeeper.",
-                fill="white",
-            )
-            if state == "enlarged-long":
-                draw.text(
-                    (760, 820),
-                    "Dialogue continues near the opposite corner.",
-                    fill="white",
-                )
-            UncertainFrameRecorder(directory).record(
-                image,
-                OCRResult(
-                    "No" if shared_source else "Mareus",
-                    "No" if shared_source else "Hello tiniekeeper.",
-                    42.5,
-                    "balanced",
-                    3,
-                ),
-                60,
-            )
-        dialog = OCRReviewDialog(
-            directory,
-            OCRCorrectionStore(directory / "corrections.json"),
-            "game",
-            "Reverse: 1999",
-        )
-
-        if state in {"enlarged-screenshot", "enlarged-long"}:
-            enlarged = dialog._screenshot_dialog()
-            if enlarged is None:
-                raise RuntimeError("OCR review screenshot could not be enlarged")
-
-            resources.enter_context(
-                cleanup_on_exit(
-                    lambda: _close_catalog_widget(dialog),
-                    description="Catalog popup owner cleanup",
-                )
-            )
-            return enlarged
-        if state in {"corrected", "all-games", "saving", "save-failure", "compact"}:
-            dialog.corrected_character.setText("Marcus")
-            dialog.corrected_text.setPlainText("Hello timekeeper.")
-        if state == "all-games":
-            dialog.scope.setCurrentIndex(0)
-        if state == "shared-source-conflict":
-            dialog.corrected_character.setText("Narrator")
-            dialog.corrected_text.setPlainText("Yes")
-        if state == "resolve-confirm":
-            dialog.corrected_character.setText("Marcus")
-            confirmation = dialog._dismissal_dialog()
-
-            resources.enter_context(
-                cleanup_on_exit(
-                    lambda: _close_catalog_widget(dialog),
-                    description="Catalog popup owner cleanup",
-                )
-            )
-            return confirmation
-        elif state == "saving":
-            dialog._write_active = True
-            dialog.save_button.setEnabled(False)
-            dialog.resolve_button.setEnabled(False)
-            dialog.sample_list.setEnabled(False)
-            dialog.corrected_character.setEnabled(False)
-            dialog.corrected_text.setEnabled(False)
-            dialog.scope.setEnabled(False)
-            dialog.status.setText("Saving review in the background...")
-        elif state == "save-failure":
-            dialog._write_finished(None, OSError("Application data is read-only"))
-        elif state == "compact":
-            font = dialog.font()
-            font.setPointSize(max(font.pointSize() + 3, 16))
-            dialog.setFont(font)
-            dialog.resize(730, 560)
-        return dialog
+    def ocr_review(state: str) -> QWidget:
+        pool = CapturedPool()
+        return _ocr_review_story(resources, state, pool, pool.finish_next)
 
     def ocr_corrections(state: str = "profile-rules") -> QWidget:
         return _ocr_corrections_story(resources, state)
@@ -3671,6 +3827,30 @@ def _render_stories(
         "ocr-review.save-failure": lambda: ocr_review("save-failure"),
         "ocr-review.empty": lambda: ocr_review("empty"),
         "ocr-review.compact": lambda: ocr_review("compact"),
+        "ocr-review.draft-switched": lambda: ocr_review("draft-switched"),
+        "ocr-review.long-text": lambda: ocr_review("long-text"),
+        "ocr-review.compact-scrolled": lambda: ocr_review("compact-scrolled"),
+        "ocr-review.blank-source": lambda: ocr_review("blank-source"),
+        "ocr-review.stale-save": lambda: ocr_review("stale-save"),
+        "ocr-review.partial-save-failure": lambda: ocr_review("partial-save-failure"),
+        "ocr-review.close-pending": lambda: ocr_review("close-pending"),
+        "ocr-review.next-sample": lambda: ocr_review("next-sample"),
+        "ocr-review.complete": lambda: ocr_review("complete"),
+        "ocr-review.unavailable-image": lambda: ocr_review("unavailable-image"),
+        "ocr-review.compact-save-failure": lambda: ocr_review("compact-save-failure"),
+        "ocr-review.compact-save-failure-end": lambda: ocr_review(
+            "compact-save-failure-end"
+        ),
+        "ocr-review.compact-partial-save-failure": lambda: ocr_review(
+            "compact-partial-save-failure"
+        ),
+        "ocr-review.compact-partial-save-failure-end": lambda: ocr_review(
+            "compact-partial-save-failure-end"
+        ),
+        "ocr-review.compact-stale-save": lambda: ocr_review("compact-stale-save"),
+        "ocr-review.compact-stale-save-end": lambda: ocr_review(
+            "compact-stale-save-end"
+        ),
         "ocr-corrections.profile-rules": ocr_corrections,
         "ocr-corrections.empty": lambda: ocr_corrections("empty"),
         "ocr-corrections.validation": lambda: ocr_corrections("validation"),

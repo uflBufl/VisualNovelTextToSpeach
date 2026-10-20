@@ -11,11 +11,21 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image  # noqa: E402
 from PySide6.QtCore import Qt, QThreadPool, QTimer  # noqa: E402
-from PySide6.QtGui import QCloseEvent  # noqa: E402
+from PySide6.QtGui import QCloseEvent, QKeySequence  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QDialogButtonBox,
+    QFormLayout,
+    QMessageBox,
+    QScrollArea,
+    QSizePolicy,
+)
 
-from tests.qt_task_fixtures import release_and_wait_for_pool  # noqa: E402
+from tests.qt_task_fixtures import (  # noqa: E402
+    ManualThreadPool,
+    release_and_wait_for_pool,
+)
 from tests.symlink_support import symlink_or_skip  # noqa: E402
 from vntts.ocr import OCRResult, UncertainFrameRecorder  # noqa: E402
 from vntts.ocr_corrections import OCRCorrectionStore  # noqa: E402
@@ -369,6 +379,185 @@ class OCRReviewDialogTest(unittest.TestCase):
             QTest.qWait(5)
         self.fail("Timed out waiting for OCR review write")
 
+    def test_blank_source_is_not_savable_but_other_field_can_be_corrected(self):
+        with TemporaryDirectory() as directory:
+            UncertainFrameRecorder(directory).record(
+                Image.new("RGB", (320, 100), "black"),
+                OCRResult("Mareus", "", 42, "balanced", 1),
+                60,
+            )
+            store = OCRCorrectionStore(Path(directory) / "rules.json")
+            dialog = OCRReviewDialog(directory, store)
+            dialog.corrected_text.setPlainText("New dialogue")
+            self.assertFalse(dialog.save_button.isEnabled())
+            self.assertIn("detected text to match", dialog.impact.text())
+            dialog.save_correction()
+            self.assertFalse(dialog._write_active)
+            self.assertFalse(store.path.exists())
+            dialog.corrected_text.clear()
+            dialog.corrected_character.setText("Marcus")
+            dialog.save_correction()
+            self.wait_for(lambda: not dialog._write_active)
+            self.assertEqual(store.global_entries, {"Mareus": "Marcus"})
+            dialog.deleteLater()
+
+    def test_stale_rules_disable_writes_even_after_editing_and_switching(self):
+        with TemporaryDirectory() as directory:
+            record_uncertain_sample(directory)
+            store = OCRCorrectionStore(Path(directory) / "rules.json")
+            dialog = OCRReviewDialog(directory, store)
+            OCRCorrectionStore.load(store.path).upsert_entries({"Other": "Current"})
+            speaker_draft = "<b>Marcus of the Northern Library</b> & " * 20
+            text_draft = "<b>The complete drafted dialogue</b> & " * 60
+            dialog.corrected_character.setText(speaker_draft)
+            dialog.corrected_text.setPlainText(text_draft)
+            dialog.save_correction()
+            self.wait_for(lambda: not dialog._write_active)
+            self.assertIn("reopen OCR review", dialog.status.toPlainText())
+            self.assertFalse(dialog.save_button.isEnabled())
+            self.assertFalse(dialog.resolve_button.isEnabled())
+            speaker_draft += "Another draft"
+            dialog.corrected_character.setText(speaker_draft)
+            dialog.show_sample(0)
+            self.assertFalse(dialog.save_button.isEnabled())
+            self.assertFalse(dialog.resolve_button.isEnabled())
+            dialog.save_correction()
+            dialog.resolve_without_correction()
+            self.assertFalse(dialog._write_active)
+            for editor, expected in (
+                (dialog.corrected_character, speaker_draft),
+                (dialog.corrected_text, text_draft),
+            ):
+                editor.setFocus()
+                editor.selectAll()
+                QTest.keySequence(editor, QKeySequence.StandardKey.Copy)
+                self.assertEqual(self.application.clipboard().text(), expected)
+            self.assertEqual(
+                OCRCorrectionStore.load(store.path).global_entries, {"Other": "Current"}
+            )
+            dialog.deleteLater()
+
+    def test_long_literal_values_and_error_remain_copyable_at_large_font(self):
+        with TemporaryDirectory() as directory:
+            source = "<b>literal dialogue</b> & " * 60
+            speaker = "<b>Speaker from the Northern Library</b> & " * 20
+            UncertainFrameRecorder(directory).record(
+                Image.new("RGB", (320, 100), "black"),
+                OCRResult(speaker, source, 42, "balanced", 1),
+                60,
+            )
+            dialog = OCRReviewDialog(directory)
+            font = dialog.font()
+            font.setPointSize(22)
+            dialog.setFont(font)
+            dialog.resize(730, 560)
+            dialog.show()
+            self.application.processEvents()
+            self.assertEqual(
+                dialog.source_character.textFormat(), Qt.TextFormat.PlainText
+            )
+            dialog.source_character.setFocus()
+            dialog.source_character.setSelection(0, len(speaker))
+            QTest.keySequence(dialog.source_character, QKeySequence.StandardKey.Copy)
+            self.assertEqual(self.application.clipboard().text(), speaker)
+            self.assertEqual(dialog.source_text.toPlainText(), source)
+            dialog.source_text.setFocus()
+            dialog.source_text.selectAll()
+            QTest.keySequence(dialog.source_text, QKeySequence.StandardKey.Copy)
+            self.assertEqual(self.application.clipboard().text(), source)
+            error = "<b>Disk error</b> " * 100
+            dialog._write_finished(None, OSError(error))
+            self.application.processEvents()
+            self.assertEqual(dialog.size().width(), 730)
+            self.assertEqual(dialog.size().height(), 560)
+            self.assertEqual(
+                dialog.form.rowWrapPolicy(), QFormLayout.RowWrapPolicy.WrapAllRows
+            )
+            self.assertTrue(dialog.save_button.isDefault())
+            self.assertGreater(dialog.details_scroll.verticalScrollBar().maximum(), 0)
+            self.assertGreater(dialog.status.verticalScrollBar().maximum(), 0)
+            self.assertIn(error, dialog.status.toPlainText())
+            dialog.status.setFocus()
+            dialog.status.selectAll()
+            QTest.keySequence(dialog.status, QKeySequence.StandardKey.Copy)
+            self.assertEqual(
+                self.application.clipboard().text(), dialog.status.toPlainText()
+            )
+            self.assertTrue(
+                dialog.rect().contains(dialog.save_button.geometry().bottomRight())
+            )
+            dialog.close()
+            dialog.deleteLater()
+
+    def test_resolving_does_not_resize_window_and_bad_image_has_explanation(self):
+        with TemporaryDirectory() as directory:
+            record_uncertain_sample(directory)
+            dialog = OCRReviewDialog(directory)
+            dialog.resize(730, 560)
+            dialog.show()
+            self.application.processEvents()
+            sample = dialog.current_sample()
+            sample.image_path.write_bytes(b"invalid png")
+            dialog.show_sample(0)
+            self.assertFalse(dialog.zoom_button.isEnabled())
+            self.assertIn("unavailable", dialog.preview.text())
+            dialog.reload_samples()
+            self.application.processEvents()
+            self.assertEqual(dialog.width(), 730)
+            dialog._start_write(
+                dialog.review_store.mark_resolved, sample, applies_corrections=False
+            )
+            self.wait_for(lambda: not dialog._write_active)
+            self.assertEqual(dialog.size().width(), 730)
+            self.assertEqual(dialog.size().height(), 560)
+            self.assertTrue(dialog.empty_message.isVisible())
+            self.assertFalse(dialog.save_button.isVisible())
+            dialog.close()
+            dialog.deleteLater()
+
+    def test_long_dialogue_editors_grow_with_window_and_shrink_for_short_text(self):
+        with TemporaryDirectory() as directory:
+            UncertainFrameRecorder(directory).record(
+                Image.new("RGB", (320, 100), "black"),
+                OCRResult(
+                    "Marcus", "The long literal dialogue. " * 80, 42, "balanced", 1
+                ),
+                60,
+            )
+            dialog = OCRReviewDialog(directory)
+            dialog.show()
+            self.application.processEvents()
+            editors = (dialog.source_text, dialog.corrected_text)
+            self.wait_for(
+                lambda: all(
+                    editor.height() > editor.minimumHeight() for editor in editors
+                )
+            )
+            heights = tuple(editor.height() for editor in editors)
+            for editor in editors:
+                self.assertGreater(editor.height(), editor.minimumHeight())
+            self.assertEqual(
+                dialog.source_character.sizePolicy().verticalPolicy(),
+                QSizePolicy.Policy.Maximum,
+            )
+            dialog.resize(960, 900)
+            self.wait_for(
+                lambda: all(
+                    editor.height() > previous_height
+                    for editor, previous_height in zip(editors, heights, strict=True)
+                )
+            )
+            for editor, previous_height in zip(editors, heights, strict=True):
+                self.assertGreater(editor.height(), previous_height)
+            for editor in editors:
+                old_maximum = editor.maximumHeight()
+                editor.setPlainText("Short dialogue.")
+                self.wait_for(lambda: editor.maximumHeight() == editor.minimumHeight())
+                self.assertLess(editor.maximumHeight(), old_maximum)
+                self.assertEqual(editor.maximumHeight(), editor.minimumHeight())
+            dialog.close()
+            dialog.deleteLater()
+
     def test_saves_profile_corrections_reloads_runtime_and_resolves_sample(self):
         with TemporaryDirectory() as temporary_directory:
             review_directory = Path(temporary_directory) / "review"
@@ -423,7 +612,7 @@ class OCRReviewDialogTest(unittest.TestCase):
             ):
                 dialog.resolve_without_correction()
             self.assertFalse(dialog._write_active)
-            self.assertEqual(dialog.progress.text(), "1 to review | 1 of 1")
+            self.assertEqual(dialog.progress.text(), "Line 1 of 1")
             self.assertEqual(len(OCRReviewStore(review_directory).pending_samples()), 1)
             confirmation = dialog._dismissal_dialog()
             self.assertEqual(
@@ -463,8 +652,8 @@ class OCRReviewDialogTest(unittest.TestCase):
                 dialog.resolve_without_correction()
             self.wait_for(lambda: not dialog._write_active)
 
-            self.assertIn("reopen OCR review", dialog.status.text())
-            self.assertNotIn("button to retry", dialog.status.text())
+            self.assertIn("reopen OCR review", dialog.status.toPlainText())
+            self.assertNotIn("button to retry", dialog.status.toPlainText())
             self.assertEqual(
                 OCRReviewStore(review_directory).pending_samples()[0].text,
                 "A newer observation.",
@@ -499,7 +688,8 @@ class OCRReviewDialogTest(unittest.TestCase):
             self.assertEqual(dialog.corrected_text.toPlainText(), "Hello timekeeper.")
             self.assertTrue(dialog.save_button.isEnabled())
             self.assertIn(
-                "Rule saved, but this line is still in review", dialog.status.text()
+                "Rule saved, but this line is still in review",
+                dialog.status.toPlainText(),
             )
             self.assertEqual(len(OCRReviewStore(review_directory).pending_samples()), 1)
             self.assertEqual(
@@ -529,7 +719,8 @@ class OCRReviewDialogTest(unittest.TestCase):
             dialog.reload_samples()
             dialog.corrected_character.setText("Marcus")
             self.assertIn("Future OCR for all games", dialog.impact.text())
-            self.assertIn("Mareus", dialog.impact.text())
+            self.assertNotIn("Mareus", dialog.impact.text())
+            self.assertIn("removes this line", dialog.impact.text())
             zoom = dialog._screenshot_dialog()
             self.assertIsNotNone(zoom)
             self.assertGreater(
@@ -538,6 +729,149 @@ class OCRReviewDialogTest(unittest.TestCase):
             )
             zoom.deleteLater()
             dialog.deleteLater()
+
+    def test_partial_failure_after_close_can_dismiss_without_removing_saved_rules(self):
+        with TemporaryDirectory() as directory:
+            record_uncertain_sample(directory)
+            store = OCRCorrectionStore(Path(directory) / "rules.json")
+            pool = ManualThreadPool()
+            refreshed = Mock()
+            dialog = OCRReviewDialog(
+                directory, store, corrections_changed=refreshed, thread_pool=pool
+            )
+            dialog.show()
+            dialog.corrected_character.setText("Marcus")
+            dialog.corrected_text.setPlainText("Hello timekeeper.")
+            original_resolve = dialog.review_store.mark_resolved
+            dialog.review_store.mark_resolved = Mock(side_effect=OSError("read-only"))
+            dialog.save_correction()
+            dialog.close()
+            self.assertTrue(dialog._close_pending)
+            pool.run_next()
+            self.application.processEvents()
+
+            self.assertTrue(dialog.isVisible())
+            self.assertFalse(dialog._close_pending)
+            self.assertFalse(dialog._write_active)
+            self.assertEqual(dialog.corrected_character.text(), "Marcus")
+            self.assertEqual(dialog.corrected_text.toPlainText(), "Hello timekeeper.")
+            self.assertTrue(dialog.save_button.isEnabled())
+            self.assertTrue(dialog.resolve_button.isEnabled())
+            self.assertIn("Rule saved", dialog.status.toPlainText())
+            saved_rules = OCRCorrectionStore.load(store.path).global_entries
+            self.assertEqual(len(saved_rules), 2)
+            refreshed.assert_called_once_with()
+            confirmation = dialog._dismissal_dialog()
+            self.assertIn("keeps any rules already saved", confirmation.text())
+            confirmation.deleteLater()
+
+            dialog.review_store.mark_resolved = original_resolve
+            with patch.object(
+                QMessageBox, "exec", return_value=QMessageBox.StandardButton.Yes
+            ):
+                dialog.resolve_without_correction()
+            pool.run_next()
+            self.application.processEvents()
+            self.assertEqual(OCRReviewStore(directory).pending_samples(), [])
+            self.assertEqual(
+                OCRCorrectionStore.load(store.path).global_entries, saved_rules
+            )
+            refreshed.assert_called_once_with()
+            dialog.close()
+            dialog.deleteLater()
+
+    def assert_review_tab_reaches_fields_and_footer(self, dialog, *, locked):
+        close_button = dialog.findChild(QDialogButtonBox).button(
+            QDialogButtonBox.StandardButton.Close
+        )
+        required = {
+            dialog.source_text,
+            dialog.corrected_character,
+            dialog.corrected_text,
+            dialog.scope,
+            dialog.status,
+            close_button,
+        }
+        if not locked:
+            required.update((dialog.save_button, dialog.resolve_button))
+        dialog.source_text.setFocus()
+        visited = set()
+        for _ in range(40):
+            current = self.application.focusWidget()
+            visited.add(current)
+            QTest.keyClick(current, Qt.Key.Key_Tab)
+            self.application.processEvents()
+        if not locked:
+            for _ in range(20):
+                current = self.application.focusWidget()
+                if current is dialog.save_button:
+                    break
+                QTest.keyClick(current, Qt.Key.Key_Tab)
+            self.assertIs(self.application.focusWidget(), dialog.save_button)
+            QTest.keyClick(dialog.save_button, Qt.Key.Key_Left)
+            visited.add(self.application.focusWidget())
+            self.assertIs(self.application.focusWidget(), close_button)
+        self.assertFalse(
+            required - visited,
+            [widget.text() for widget in required - visited],
+        )
+        self.assertTrue(
+            dialog.rect().contains(
+                close_button.mapTo(dialog, close_button.rect().bottomRight())
+            )
+        )
+
+    def test_long_errors_preserve_full_copy_and_keyboard_access_at_22pt(self):
+        for failure in ("ordinary", "partial", "stale"):
+            with self.subTest(failure=failure), TemporaryDirectory() as directory:
+                record_uncertain_sample(directory)
+                pool = ManualThreadPool()
+                store = OCRCorrectionStore(Path(directory) / "rules.json")
+                dialog = OCRReviewDialog(directory, store, thread_pool=pool)
+                font = dialog.font()
+                font.setPointSize(22)
+                dialog.setFont(font)
+                dialog.resize(730, 560)
+                dialog.show()
+                speaker = "<b>Correct speaker</b> & " * 20
+                text = "<b>Correct full dialogue</b> & " * 60
+                dialog.corrected_character.setText(speaker)
+                dialog.corrected_text.setPlainText(text)
+                detail = (
+                    "<b>Access denied</b>: /Volumes/Long recordings/" * 30
+                ) + " END OF ERROR"
+                error = (
+                    StaleDocumentError(detail)
+                    if failure == "stale"
+                    else OSError(detail)
+                )
+                owner = dialog.review_store if failure == "partial" else store
+                method = "mark_resolved" if failure == "partial" else "upsert_entries"
+                with patch.object(owner, method, side_effect=error):
+                    dialog.save_correction()
+                    pool.run_next()
+                    self.application.processEvents()
+                self.assertIn(detail, dialog.status.toPlainText())
+                self.assertGreater(dialog.status.verticalScrollBar().maximum(), 0)
+                for editor, expected in (
+                    (dialog.corrected_character, speaker),
+                    (dialog.corrected_text, text),
+                    (dialog.status, dialog.status.toPlainText()),
+                ):
+                    editor.setFocus()
+                    editor.selectAll()
+                    QTest.keySequence(editor, QKeySequence.StandardKey.Copy)
+                    self.assertEqual(self.application.clipboard().text(), expected)
+                status_bar = dialog.status.verticalScrollBar()
+                status_bar.setValue(status_bar.maximum())
+                self.assertEqual(status_bar.value(), status_bar.maximum())
+                dialog.details_scroll.ensureWidgetVisible(dialog.impact)
+                self.assert_review_tab_reaches_fields_and_footer(
+                    dialog, locked=failure == "stale"
+                )
+                self.assertEqual(dialog.corrected_text.toPlainText(), text)
+                dialog.close()
+                dialog.deleteLater()
 
     def test_single_field_correction_and_scope(self):
         with TemporaryDirectory() as temporary_directory:
@@ -569,6 +903,21 @@ class OCRReviewDialogTest(unittest.TestCase):
             scroll = zoom.findChild(QScrollArea)
             self.assertGreater(scroll.horizontalScrollBar().maximum(), 0)
             self.assertGreater(scroll.verticalScrollBar().maximum(), 0)
+            for at_end in (True, False):
+                for bar in (scroll.horizontalScrollBar(), scroll.verticalScrollBar()):
+                    bar.setValue(bar.maximum() if at_end else 0)
+                    self.assertEqual(bar.value(), bar.maximum() if at_end else 0)
+                self.application.processEvents()
+                image_corner = (
+                    scroll.widget().rect().bottomRight()
+                    if at_end
+                    else scroll.widget().rect().topLeft()
+                )
+                self.assertTrue(
+                    scroll.viewport()
+                    .rect()
+                    .contains(scroll.widget().mapTo(scroll.viewport(), image_corner))
+                )
             zoom.close()
             dialog.deleteLater()
 
@@ -656,27 +1005,37 @@ class OCRReviewDialogTest(unittest.TestCase):
             self.wait_for(lambda: not dialog._write_active)
             self.assertEqual(dialog.corrected_character.text(), "Marcus")
             self.assertTrue(dialog.save_button.isEnabled())
-            self.assertIn("Could not finish review", dialog.status.text())
+            self.assertIn("Could not finish review", dialog.status.toPlainText())
             dialog.deleteLater()
 
     def test_switching_samples_preserves_unsaved_draft(self):
         with TemporaryDirectory() as temporary_directory:
             record_uncertain_sample(temporary_directory)
-            UncertainFrameRecorder(temporary_directory).record(
-                Image.new("RGB", (320, 100), "black"),
-                OCRResult("Other", "Another phrase.", 41, "balanced", 2),
-                60,
+            for speaker in ("Other", "Third"):
+                UncertainFrameRecorder(temporary_directory).record(
+                    Image.new("RGB", (320, 100), "black"),
+                    OCRResult(speaker, f"{speaker} phrase.", 41, "balanced", 2),
+                    60,
+                )
+            dialog = OCRReviewDialog(
+                temporary_directory, profile_id="game", profile_name="Current game"
             )
-            dialog = OCRReviewDialog(temporary_directory)
-            first = dialog.current_sample()
-            dialog.corrected_character.setText("Edited speaker")
-            dialog.corrected_text.setPlainText("Edited phrase")
-            dialog.sample_list.setCurrentRow(1)
-            dialog.sample_list.setCurrentRow(0)
-
-            self.assertEqual(dialog.current_sample(), first)
-            self.assertEqual(dialog.corrected_character.text(), "Edited speaker")
-            self.assertEqual(dialog.corrected_text.toPlainText(), "Edited phrase")
+            dialog.scope.setCurrentIndex(0)
+            samples = tuple(dialog.samples)
+            for index in range(3):
+                dialog.sample_list.setCurrentRow(index)
+                dialog.corrected_character.setText(f"Edited speaker {index}")
+                dialog.corrected_text.setPlainText(f"Edited phrase {index}")
+            for index in (0, 2, 1, 0):
+                dialog.sample_list.setCurrentRow(index)
+                self.assertEqual(dialog.current_sample(), samples[index])
+                self.assertEqual(
+                    dialog.corrected_character.text(), f"Edited speaker {index}"
+                )
+                self.assertEqual(
+                    dialog.corrected_text.toPlainText(), f"Edited phrase {index}"
+                )
+                self.assertIsNone(dialog.scope.currentData())
             dialog.deleteLater()
 
     def test_slow_resolution_keeps_qt_responsive_and_defers_close(self):
@@ -720,10 +1079,12 @@ class OCRReviewDialogTest(unittest.TestCase):
             self.assertLess(elapsed, 0.1)
             self.assertTrue(dialog._write_active)
             self.assertFalse(dialog.resolve_button.isEnabled())
-            self.assertIn("background", dialog.status.text())
+            self.assertIn("background", dialog.status.toPlainText())
             dialog.reject()
             self.assertTrue(dialog._close_pending)
-            self.assertIn("Close is deferred", dialog.status.text())
+            self.assertIn(
+                "will close when saving finishes", dialog.status.toPlainText()
+            )
             close_event = QCloseEvent()
             dialog.closeEvent(close_event)
             self.assertFalse(close_event.isAccepted())

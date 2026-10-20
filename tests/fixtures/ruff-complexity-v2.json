@@ -41,7 +41,7 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 183
+      "maximum": 172
     },
     {
       "code": "C901",
@@ -979,7 +979,7 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 821
+      "maximum": 775
     },
     {
       "code": "PLR0915",
@@ -1343,7 +1343,7 @@
       "path": "vntts/ocr_review_ui.py",
       "scope": "OCRReviewDialog.__init__",
       "count": 1,
-      "maximum": 103
+      "maximum": 98
     },
     {
       "code": "PLR0915",
@@ -1414,13 +1414,6 @@
       "scope": "SupportCenterDialog.__init__",
       "count": 1,
       "maximum": 54
-    },
-    {
-      "code": "C901",
-      "path": "scripts/render_ui_catalog.py",
-      "scope": "_render_stories.ocr_review",
-      "count": 1,
-      "maximum": 12
     },
     {
       "code": "C901",
