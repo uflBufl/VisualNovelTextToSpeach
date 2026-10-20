@@ -942,6 +942,55 @@ def _configure_catalog_application() -> QApplication:
     return app
 
 
+def _support_center(state: str) -> QWidget:
+    from PySide6.QtGui import QTextCursor
+    from PySide6.QtWidgets import QApplication
+
+    from vntts.support_ui import SupportCenterDialog
+
+    events = _catalog_support_log(state)
+    dialog = SupportCenterDialog(events)
+    dialog.refresh()
+    if state == "new-events":
+        dialog.show()
+        QApplication.processEvents()
+        dialog.events.moveCursor(QTextCursor.MoveOperation.Start)
+        dialog.events.verticalScrollBar().setValue(0)
+        events.add("warning", "Selected game window is no longer available")
+        dialog.refresh()
+    elif state in {"choosing", "exporting"}:
+        dialog.request_export()
+        if state == "exporting":
+            dialog.set_export_started()
+    elif state == "cancelled":
+        dialog.request_export()
+        dialog.set_export_result(None, "Support report export cancelled.")
+    elif state in {"saved", "saved-launcher-failure", "compact-long-saved"}:
+        dialog.set_export_result(
+            True,
+            ("/Volumes/Support reports/" + "session-directory/" * 32 + "support.zip")
+            if state == "compact-long-saved"
+            else "/Users/player/Documents/Support reports/October session/vntts-support.zip",
+        )
+        if state == "saved-launcher-failure":
+            dialog.set_launcher_result(
+                "settings-folder", False, "Unable to open settings folder"
+            )
+    elif state in {"failure", "compact-failure", "compact-long-failure"}:
+        dialog.set_export_result(
+            False,
+            ("Unable to read log: " + "/long-folder" * 120 + "/last-log.json")
+            if state == "compact-long-failure"
+            else "The chosen folder is read-only: /Volumes/Game archive/Support",
+        )
+    if state.startswith("compact"):
+        font = dialog.font()
+        font.setPointSize(max(font.pointSize() + 3, 16))
+        dialog.setFont(font)
+        dialog.resize(620, 420)
+    return dialog
+
+
 def _render_stories(
     catalog: UICatalog, output: Path, selected_surface: str | None
 ) -> dict[str, str]:
@@ -959,7 +1008,6 @@ def _render_stories(
         QThreadPool,
         QTimer,
     )
-    from PySide6.QtGui import QTextCursor
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtWidgets import QDialog, QMessageBox
     from r1999extractor.story_voice_candidates import REPORT_SCHEMA, REPORT_VERSION
@@ -1038,7 +1086,6 @@ def _render_stories(
     from vntts.profiles_ui import GameProfilesDialog
     from vntts.readiness_ui import ReadinessDialog
     from vntts.settings import AppSettings
-    from vntts.support_ui import SupportCenterDialog
     from vntts.voice_library import VoiceLibrary
 
     app = _configure_catalog_application()
@@ -2357,7 +2404,7 @@ def _render_stories(
                 if state == "stopping"
                 else "Speaking as Believer IV with the current voice..."
             )
-        elif state in {"failure", "compact-failure"}:
+        elif state in {"failure", "compact-failure", "compact-long-failure"}:
             dialog._spoken_character = dialog.visible_entries[-1].character
             dialog._replay_finished(
                 None,
@@ -2472,28 +2519,6 @@ def _render_stories(
         parent.deleteLater()
         QCoreApplication.sendPostedEvents(parent, QEvent.Type.DeferredDelete)
         return enlarged
-
-    def support_center(state: str) -> SupportCenterDialog:
-        events = _catalog_support_log(state)
-        dialog = SupportCenterDialog(events)
-        dialog.refresh()
-        if state == "new-events":
-            dialog.show()
-            app.processEvents()
-            dialog.events.moveCursor(QTextCursor.MoveOperation.Start)
-            dialog.events.verticalScrollBar().setValue(0)
-            events.add("warning", "Selected game window is no longer available")
-            dialog.refresh()
-        elif state == "exporting":
-            dialog.request_export()
-        elif state == "failure":
-            dialog.set_export_result(False, "The chosen folder is read-only")
-        elif state == "compact":
-            font = dialog.font()
-            font.setPointSize(max(font.pointSize() + 3, 16))
-            dialog.setFont(font)
-            dialog.resize(640, 440)
-        return dialog
 
     def authoring_workbench(state: str) -> AuthoringWorkbenchDialog:
         temporary = resources.enter_context(
@@ -3273,12 +3298,25 @@ def _render_stories(
         "diagnostics.enlarged-speaker": lambda: diagnostics_enlarged(
             "enlarged-speaker"
         ),
-        "support-center.empty": lambda: support_center("empty"),
-        "support-center.events": lambda: support_center("events"),
-        "support-center.new-events": lambda: support_center("new-events"),
-        "support-center.exporting": lambda: support_center("exporting"),
-        "support-center.failure": lambda: support_center("failure"),
-        "support-center.compact": lambda: support_center("compact"),
+        "support-center.empty": lambda: _support_center("empty"),
+        "support-center.events": lambda: _support_center("events"),
+        "support-center.new-events": lambda: _support_center("new-events"),
+        "support-center.exporting": lambda: _support_center("exporting"),
+        "support-center.choosing": lambda: _support_center("choosing"),
+        "support-center.cancelled": lambda: _support_center("cancelled"),
+        "support-center.saved": lambda: _support_center("saved"),
+        "support-center.saved-launcher-failure": lambda: _support_center(
+            "saved-launcher-failure"
+        ),
+        "support-center.compact-failure": lambda: _support_center("compact-failure"),
+        "support-center.compact-long-saved": lambda: _support_center(
+            "compact-long-saved"
+        ),
+        "support-center.compact-long-failure": lambda: _support_center(
+            "compact-long-failure"
+        ),
+        "support-center.failure": lambda: _support_center("failure"),
+        "support-center.compact": lambda: _support_center("compact"),
         "authoring-workbench.ready": lambda: authoring_workbench("ready"),
         "cohort-review.pending": lambda: cohort_review("pending"),
         "cohort-review.heard": lambda: cohort_review("heard"),

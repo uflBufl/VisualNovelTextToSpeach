@@ -1413,7 +1413,7 @@
       "path": "vntts/support_ui.py",
       "scope": "SupportCenterDialog.__init__",
       "count": 1,
-      "maximum": 55
+      "maximum": 54
     },
     {
       "code": "C901",

@@ -485,6 +485,13 @@
         {"id": "support-center.events", "title": "Runtime events", "state": "Recent event evidence and report actions are visible"},
         {"id": "support-center.new-events", "title": "New events while reading", "state": "A reader's position is retained when more events arrive"},
         {"id": "support-center.exporting", "title": "Export in progress", "state": "Report action is unavailable during export"},
+        {"id": "support-center.choosing", "title": "Choosing report destination", "state": "Report action waits for the file picker"},
+        {"id": "support-center.cancelled", "title": "Export cancelled", "state": "Cancelling the file picker restores export"},
+        {"id": "support-center.saved", "title": "Report saved", "state": "The complete output path can be selected and copied"},
+        {"id": "support-center.saved-launcher-failure", "title": "Saved report and folder-open failure", "state": "A secondary action failure preserves the saved report path"},
+        {"id": "support-center.compact-failure", "title": "Compact export failure", "state": "Error details scroll at enlarged text while export and Close remain visible"},
+        {"id": "support-center.compact-long-saved", "title": "Long saved path", "state": "An overflowing saved path remains scrollable and copyable"},
+        {"id": "support-center.compact-long-failure", "title": "Long export error", "state": "Overflowing error details remain scrollable without moving actions"},
         {"id": "support-center.failure", "title": "Support export failed", "state": "Failure keeps an explicit retry"},
         {"id": "support-center.compact", "title": "Compact support center", "state": "Logs, related diagnostics and export stay reachable at larger text"}
       ]

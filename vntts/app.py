@@ -4157,6 +4157,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         self.set_status("Creating support bundle...")
         diagnostic = self.controller.get_latest_diagnostic()
+        if self.support_dialog is not None:
+            self.support_dialog.set_export_started()
         self.support_export_runner.start(self._build_support_bundle, path, diagnostic)
 
     def _build_support_bundle(

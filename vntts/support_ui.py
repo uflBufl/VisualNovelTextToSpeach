@@ -1,12 +1,14 @@
 from typing import Literal
 
-from PySide6.QtCore import QTimer, Signal
-from PySide6.QtGui import QHideEvent, QKeySequence, QShowEvent, QTextCursor
+from PySide6.QtCore import QEvent, QObject, QTimer, Signal
+from PySide6.QtGui import QHideEvent, QKeySequence, QShowEvent, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
+    QPlainTextEdit,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -34,19 +36,28 @@ class SupportCenterDialog(QDialog):
 
         self.events = QTextEdit()
         self.events.setReadOnly(True)
+        self.events.setAccessibleName("Runtime events")
+        self.events.document().setDocumentMargin(8)
         self.events.setPlaceholderText("No runtime events recorded yet.")
         self._rendered_lines: list[str] = []
         self.pending_event_count = 0
         self.new_events_button = QPushButton("Show new events")
         self.new_events_button.setAccessibleName("Show new runtime log events")
         self.new_events_button.clicked.connect(self.show_new_events)
+        policy = self.new_events_button.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self.new_events_button.setSizePolicy(policy)
         self.new_events_button.hide()
         self.privacy_note = QLabel(
-            "The support report excludes screenshots, recognized dialogue, voice "
-            "recordings and model files. Usernames in local paths and known secret "
-            "fields are redacted; game folder structure remains. Review the archive "
-            "before sharing."
+            "Exports logs and diagnostics. Paths and log messages may contain "
+            "personal information; review the ZIP before sharing."
         )
+        self.privacy_note.setToolTip(
+            "The report excludes screenshots, recognized dialogue, voice recordings "
+            "and model files. Local usernames and known secret fields are redacted; "
+            "game folder structure remains."
+        )
+        self.privacy_note.setAccessibleDescription(self.privacy_note.toolTip())
         self.privacy_note.setWordWrap(True)
         actions = QHBoxLayout()
         self.diagnostics_button = QPushButton("Live diagnostics")
@@ -57,7 +68,7 @@ class SupportCenterDialog(QDialog):
             "Open the latest capture, OCR, routing and latency diagnostics"
         )
         self.diagnostics_button.setShortcut(QKeySequence("Ctrl+D"))
-        self.export_button.setAccessibleName("Export privacy-safe support report")
+        self.export_button.setAccessibleName("Export support report")
         self.export_button.setShortcut(QKeySequence("Ctrl+E"))
         self.settings_button.setAccessibleName("Open application settings folder")
         self.settings_button.setAccessibleDescription(
@@ -67,43 +78,79 @@ class SupportCenterDialog(QDialog):
         self.diagnostics_button.clicked.connect(self.request_diagnostics)
         self.export_button.clicked.connect(self.request_export)
         self.settings_button.clicked.connect(self.request_settings_folder)
-        actions.addWidget(self.export_button)
         actions.addWidget(self.diagnostics_button)
         actions.addWidget(self.settings_button)
         actions.addStretch()
-        self.operation_status = QLabel()
+        self._export_status = ""
+        self._launcher_status = ""
+        self.operation_status = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
         self.operation_status.setAccessibleName("Support operation status")
-        self.operation_status.setWordWrap(True)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.close)
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Runtime events"))
-        layout.addWidget(self.events, 1)
-        layout.addWidget(self.new_events_button)
-        layout.addWidget(self.privacy_note)
-        layout.addLayout(actions)
-        layout.addWidget(self.operation_status)
-        layout.addWidget(buttons)
-        self.setTabOrder(self.events, self.new_events_button)
-        self.setTabOrder(self.new_events_button, self.export_button)
-        self.setTabOrder(self.export_button, self.diagnostics_button)
-        self.setTabOrder(self.diagnostics_button, self.settings_button)
+        self.operation_status.setFrameShape(QFrame.Shape.NoFrame)
+        self.operation_status.viewport().setAutoFillBackground(False)
+        self.operation_status.setWordWrapMode(
+            QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
+        )
+        self.operation_status.setFixedHeight(
+            self.operation_status.fontMetrics().lineSpacing() * 3 + 12
+        )
+        self.operation_status.installEventFilter(self)
+        self._create_layout(actions)
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self.refresh)
+
+    def _create_layout(self, actions: QHBoxLayout) -> None:
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.close)
+        footer = QHBoxLayout()
+        footer.addWidget(self.export_button)
+        footer.addStretch()
+        footer.addWidget(buttons)
+        heading = QHBoxLayout()
+        heading.addWidget(QLabel("Runtime events"))
+        heading.addStretch()
+        heading.addWidget(self.new_events_button)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+        layout.addLayout(heading)
+        layout.addWidget(self.events, 1)
+        layout.addLayout(actions)
+        layout.addWidget(self.privacy_note)
+        layout.addWidget(self.operation_status)
+        layout.addLayout(footer)
+        self.setTabOrder(self.events, self.new_events_button)
+        self.setTabOrder(self.new_events_button, self.diagnostics_button)
+        self.setTabOrder(self.diagnostics_button, self.settings_button)
+        self.setTabOrder(self.settings_button, self.operation_status)
+        self.setTabOrder(self.operation_status, self.export_button)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.operation_status and event.type() == QEvent.Type.FontChange:
+            self.operation_status.setFixedHeight(
+                self.operation_status.fontMetrics().lineSpacing() * 3 + 12
+            )
+        return super().eventFilter(watched, event)
+
+    def _show_status(self) -> None:
+        self.operation_status.setPlainText(
+            "\n".join(filter(None, (self._export_status, self._launcher_status)))
+        )
 
     def request_diagnostics(self) -> None:
         if not self.diagnostics_button.isEnabled():
             return
         self.diagnostics_button.setEnabled(False)
-        self.operation_status.setText("Opening live diagnostics...")
+        self._launcher_status = "Opening live diagnostics..."
+        self._show_status()
         self.diagnostics_requested.emit()
 
     def request_settings_folder(self) -> None:
         if not self.settings_button.isEnabled():
             return
         self.settings_button.setEnabled(False)
-        self.operation_status.setText("Opening the application settings folder...")
+        self._launcher_status = "Opening the application settings folder..."
+        self._show_status()
         self.settings_folder_requested.emit()
 
     def set_launcher_result(
@@ -118,10 +165,10 @@ class SupportCenterDialog(QDialog):
         }
         button = buttons[launcher]
         button.setEnabled(True)
-        if successful:
-            self.operation_status.setText(message)
-        else:
-            self.operation_status.setText(f"{message}. Select the action to retry.")
+        self._launcher_status = (
+            message if successful else f"{message}. Select {button.text()} to retry."
+        )
+        self._show_status()
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
@@ -208,6 +255,8 @@ class SupportCenterDialog(QDialog):
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.events.setTextCursor(cursor)
         self.events.ensureCursorVisible()
+        scroll_bar = self.events.verticalScrollBar()
+        scroll_bar.setValue(scroll_bar.maximum())
         self.pending_event_count = 0
         self.new_events_button.hide()
 
@@ -215,22 +264,27 @@ class SupportCenterDialog(QDialog):
         if not self.export_button.isEnabled():
             return
         self.export_button.setEnabled(False)
-        self.operation_status.setText(
-            "Choosing a destination for the support report..."
-        )
+        self._export_status = "Choosing a destination for the support report..."
+        self._show_status()
         self.export_requested.emit()
+
+    def set_export_started(self) -> None:
+        self.export_button.setEnabled(False)
+        self._export_status = "Creating support report..."
+        self._show_status()
 
     def set_export_result(self, successful: bool | None, message: str) -> None:
         self.export_button.setEnabled(True)
         if successful is True:
-            self.operation_status.setText(f"Support report saved to {message}")
+            self._export_status = f"Support report saved to {message}"
         elif successful is False:
-            self.operation_status.setText(
-                f"Support report export failed: {message}. Choose a writable folder "
-                "or free space, then select Export to retry."
+            self._export_status = (
+                f"Support report export failed: {message}. "
+                "Select Export support report to retry."
             )
         else:
-            self.operation_status.setText(message or "Support report export cancelled.")
+            self._export_status = message or "Support report export cancelled."
+        self._show_status()
 
 
 def _support_value(value: object) -> str:

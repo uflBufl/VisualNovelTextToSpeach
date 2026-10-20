@@ -6,7 +6,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtGui import QTextCursor  # noqa: E402
+from PySide6.QtGui import QKeySequence, QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QTabWidget  # noqa: E402
 
@@ -54,7 +54,8 @@ class SupportCenterDialogTest(unittest.TestCase):
     def test_report_privacy_is_visible_beside_export_without_empty_report_tab(self):
         dialog = SupportCenterDialog(FakeEventLog())
 
-        self.assertIn("excludes screenshots", dialog.privacy_note.text())
+        self.assertIn("review the ZIP", dialog.privacy_note.text())
+        self.assertIn("excludes screenshots", dialog.privacy_note.toolTip())
         self.assertTrue(dialog.privacy_note.wordWrap())
         self.assertEqual(dialog.findChildren(QTabWidget), [])
         self.assertFalse(dialog.export_button.isDefault())
@@ -95,6 +96,7 @@ class SupportCenterDialogTest(unittest.TestCase):
         cursor.setPosition(9, QTextCursor.MoveMode.KeepAnchor)
         dialog.events.setTextCursor(cursor)
         original_selection = cursor.selectedText()
+        original_geometry = dialog.events.geometry()
 
         log.entries.append(event(100))
         dialog.refresh()
@@ -102,6 +104,10 @@ class SupportCenterDialogTest(unittest.TestCase):
         self.assertEqual(dialog.events.textCursor().selectedText(), original_selection)
         self.assertTrue(dialog.new_events_button.isVisible())
         self.assertEqual(dialog.pending_event_count, 1)
+        dialog.events.copy()
+        self.assertEqual(self.application.clipboard().text(), original_selection)
+        self.application.processEvents()
+        self.assertEqual(dialog.events.geometry(), original_geometry)
         dialog.show_new_events()
         self.application.processEvents()
         self.assertFalse(dialog.new_events_button.isVisible())
@@ -138,20 +144,67 @@ class SupportCenterDialogTest(unittest.TestCase):
 
         self.assertEqual(requested, [True])
         self.assertFalse(dialog.export_button.isEnabled())
-        self.assertIn("Choosing", dialog.operation_status.text())
+        self.assertIn("Choosing", dialog.operation_status.toPlainText())
         dialog.set_export_result(None, "Support report export cancelled.")
         self.assertTrue(dialog.export_button.isEnabled())
-        self.assertIn("cancelled", dialog.operation_status.text())
+        self.assertIn("cancelled", dialog.operation_status.toPlainText())
 
         dialog.request_export()
+        dialog.set_export_started()
+        self.assertIn("Creating support report", dialog.operation_status.toPlainText())
+        dialog.request_diagnostics()
+        dialog.set_launcher_result("diagnostics", False, "Diagnostics unavailable")
+        self.assertIn("Creating support report", dialog.operation_status.toPlainText())
+        self.assertIn("Diagnostics unavailable", dialog.operation_status.toPlainText())
+        self.assertFalse(dialog.export_button.isEnabled())
         dialog.set_export_result(False, "disk full")
         self.assertTrue(dialog.export_button.isEnabled())
-        self.assertIn("disk full", dialog.operation_status.text())
+        self.assertIn("disk full", dialog.operation_status.toPlainText())
 
         dialog.request_export()
         dialog.set_export_result(True, "/tmp/support.zip")
         self.assertTrue(dialog.export_button.isEnabled())
-        self.assertIn("/tmp/support.zip", dialog.operation_status.text())
+        dialog.request_settings_folder()
+        dialog.set_launcher_result("settings-folder", True, "Settings folder opened")
+        self.assertIn("/tmp/support.zip", dialog.operation_status.toPlainText())
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_long_export_error_is_copyable_without_growing_the_window(self):
+        dialog = SupportCenterDialog(FakeEventLog(event(i) for i in range(10)))
+        font = dialog.font()
+        font.setPointSize(16)
+        dialog.setFont(font)
+        dialog.resize(620, 420)
+        dialog.show()
+        self.application.processEvents()
+        original_size = dialog.size()
+        original_geometry = dialog.events.geometry()
+        error = "<b>Unreadable log</b>: " + "long-folder/" * 100
+        path = "/Volumes/Reports/" + "session/" * 100 + "support.zip"
+        for successful, message in ((False, error), (True, path)):
+            with self.subTest(successful=successful):
+                dialog.set_export_result(successful, message)
+                self.application.processEvents()
+                self.assertEqual(dialog.size(), original_size)
+                self.assertEqual(dialog.events.geometry(), original_geometry)
+                self.assertIn(message, dialog.operation_status.toPlainText())
+                self.assertGreater(
+                    dialog.operation_status.verticalScrollBar().maximum(), 0
+                )
+                dialog.operation_status.setFocus()
+                QTest.keySequence(
+                    dialog.operation_status,
+                    QKeySequence(QKeySequence.StandardKey.SelectAll),
+                )
+                QTest.keySequence(
+                    dialog.operation_status, QKeySequence(QKeySequence.StandardKey.Copy)
+                )
+                self.assertIn(message, self.application.clipboard().text())
+                self.assertTrue(dialog.export_button.isEnabled())
+                dialog.hide()
+                dialog.show()
+                self.assertIn(message, dialog.operation_status.toPlainText())
         dialog.close()
         dialog.deleteLater()
 
@@ -171,12 +224,12 @@ class SupportCenterDialogTest(unittest.TestCase):
         self.assertFalse(dialog.diagnostics_button.isEnabled())
         self.assertTrue(dialog.export_button.isEnabled())
         self.assertTrue(dialog.settings_button.isEnabled())
-        self.assertIn("Opening live diagnostics", dialog.operation_status.text())
+        self.assertIn("Opening live diagnostics", dialog.operation_status.toPlainText())
         dialog.set_launcher_result(
             "diagnostics", False, "Unable to open live diagnostics"
         )
         self.assertTrue(dialog.diagnostics_button.isEnabled())
-        self.assertIn("retry", dialog.operation_status.text())
+        self.assertIn("retry", dialog.operation_status.toPlainText())
 
         dialog.settings_button.click()
         self.assertEqual(settings, [True])
@@ -186,7 +239,7 @@ class SupportCenterDialogTest(unittest.TestCase):
             "settings-folder", True, "Settings folder opened: /tmp/settings"
         )
         self.assertTrue(dialog.settings_button.isEnabled())
-        self.assertIn("/tmp/settings", dialog.operation_status.text())
+        self.assertIn("/tmp/settings", dialog.operation_status.toPlainText())
         for button in (
             dialog.diagnostics_button,
             dialog.export_button,

@@ -4064,6 +4064,7 @@ class TrayApplicationTest(unittest.TestCase):
         resume.assert_called_once_with()
 
     def test_support_bundle_export_runs_with_sanitized_runtime_inputs(self):
+        pool = ManualThreadPool()
         controller = Mock()
         diagnostic = DiagnosticSnapshot(None, confidence=88)
         controller.get_latest_diagnostic.return_value = diagnostic
@@ -4075,6 +4076,13 @@ class TrayApplicationTest(unittest.TestCase):
         builder = Mock()
         builder.build.return_value = Path("support.zip")
         tray_application.support_dialog = Mock()
+        tray_application.support_export_runner = LatestTaskRunner(
+            tray_application,
+            thread_pool=pool,
+        )
+        tray_application.support_export_runner.finished.connect(
+            tray_application._support_export_finished
+        )
 
         with (
             patch(
@@ -4084,7 +4092,12 @@ class TrayApplicationTest(unittest.TestCase):
             patch("vntts.app.SupportBundleBuilder", return_value=builder) as factory,
         ):
             tray_application.export_support_bundle()
-            self.wait_until(lambda: not tray_application.support_export_runner.active)
+            tray_application.support_dialog.set_export_started.assert_called_once_with()
+            tray_application.support_dialog.set_export_result.assert_not_called()
+            self.assertTrue(tray_application.support_export_runner.active)
+            builder.build.assert_not_called()
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
 
         factory.assert_called_once_with(
             tray_application.settings,
@@ -4117,9 +4130,41 @@ class TrayApplicationTest(unittest.TestCase):
         ):
             tray_application.export_support_bundle()
 
+        tray_application.support_dialog.set_export_started.assert_not_called()
         tray_application.support_dialog.set_export_result.assert_called_once_with(
             None,
             "Support report export cancelled.",
+        )
+        tray_application.shutdown()
+
+    def test_support_export_reports_worker_start_failure_after_starting(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        tray_application.support_dialog = Mock()
+
+        with (
+            patch(
+                "vntts.app.QFileDialog.getSaveFileName",
+                return_value=("support.zip", "ZIP archives (*.zip)"),
+            ),
+            patch.object(
+                tray_application.support_export_runner.thread_pool,
+                "start",
+                side_effect=RuntimeError("cannot start worker"),
+            ),
+        ):
+            tray_application.export_support_bundle()
+
+        self.assertFalse(tray_application.support_export_runner.active)
+        self.assertEqual(
+            tray_application.support_dialog.method_calls,
+            [
+                call.set_export_started(),
+                call.set_export_result(False, "cannot start worker"),
+            ],
         )
         tray_application.shutdown()
 
