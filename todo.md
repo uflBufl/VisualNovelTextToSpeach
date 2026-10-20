@@ -578,8 +578,13 @@ Planned implementation order after approval:
       approved recording, including while another window owns generation;
       confirm review decisions wait for the lease, saved review filters remain
       independent of collection selection, and the full selected dialogue text
-      stays visible and keyboard/screen-reader accessible. Retain the screenshots
-      and playback/decision evidence.
+      stays visible and keyboard/screen-reader accessible. Change collections
+      during reload and confirm Generate/Retry wait for the new scope. Stop a
+      real generation process, including Stop and close, and confirm the window
+      closes after termination. Trigger a workspace load failure, scroll/copy its
+      complete literal diagnostic, restore the input and Retry; confirm stale
+      counts disappear and recovered controls announce their current state.
+      Retain screenshots, native focus/announcement and playback/decision evidence.
 - [ ] **Validate cohort review on real macOS and Windows hosts:** at 200% text
       scaling, listen to every required sample to the end, mark one unclear
       defect and replace it with a specific reason, accept a clean cohort,

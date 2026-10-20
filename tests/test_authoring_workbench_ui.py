@@ -8,6 +8,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from unittest.mock import Mock, call, patch
 
 import numpy as np
@@ -52,6 +53,7 @@ try:
         QMessageBox,
         QPushButton,
     )
+    from shiboken6 import isValid
 
     from vntts.authoring.workbench_ui import (
         PROCESS_LOG_CHARACTER_LIMIT,
@@ -77,6 +79,7 @@ except ModuleNotFoundError as error:
     QMessageBox = None
     QPushButton = None
     QAbstractItemView = None
+    isValid = None
     AuthoringWorkbenchDialog = None
     VoiceReferenceController = None
     _load_workbench_projection = None
@@ -167,8 +170,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.media_player_patcher = patch("vntts.authoring.workbench_ui.QMediaPlayer")
-        media_player = cls.media_player_patcher.start()
-        media_player.MediaStatus = QMediaPlayer.MediaStatus
+        cls.media_player = cls.media_player_patcher.start()
+        cls.media_player.MediaStatus = QMediaPlayer.MediaStatus
         cls.application = QApplication.instance() or QApplication([])
 
     @classmethod
@@ -181,7 +184,10 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 widget.process = FakeProcess(QProcess.ProcessState.NotRunning)
                 widget.close()
                 widget.deleteLater()
+        self.application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self.application.processEvents()
+        # Shared mock call history must not retain deleted Qt wrappers.
+        self.media_player.reset_mock()
 
     def create_workspace(self, root):
         return create_test_workspace(root)[2].directory
@@ -341,7 +347,11 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             self.assertFalse(hasattr(dialog, "narrator_only"))
             self.assertFalse(hasattr(dialog, "exclude_narrator"))
-            self.assertEqual(dialog.review_character.currentText(), "All speakers")
+            self.assertEqual(dialog.review_character.currentText(), "All voice roles")
+            self.assertEqual(
+                dialog.review_character.accessibleName(), "Filter review by voice role"
+            )
+            self.assertEqual(dialog.review_filter_labels[0].text(), "Voice role")
             self.assertTrue(dialog.review_table.isColumnHidden(0))
             self.assertTrue(dialog.review_table.isColumnHidden(6))
             self.assertTrue(dialog.review_table.isColumnHidden(8))
@@ -398,6 +408,26 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertFalse(dialog.review_table.isColumnHidden(6))
             self.assertFalse(dialog.review_table.isColumnHidden(8))
 
+    def test_reflow_invalidates_replaced_layout_items(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            dialog = AuthoringWorkbenchDialog(
+                self.create_workspace(root), settings=self.settings(root)
+            )
+            layouts = (dialog.review_filters_layout, dialog.review_actions_layout)
+            previous_items = [
+                layout.itemAt(index)
+                for layout in layouts
+                for index in range(layout.count())
+            ]
+            self.assertEqual(len(previous_items), 14)
+            self.assertTrue(all(isValid(item) for item in previous_items))
+
+            dialog._reflow_controls()
+
+            self.assertFalse(any(isValid(item) for item in previous_items))
+            self.assertEqual([layout.count() for layout in layouts], [8, 6])
+
     def test_generation_and_saved_outcomes_have_discoverable_entry_points(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -417,6 +447,10 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertFalse(dialog.specialist_section.isChecked())
             self.assertTrue(dialog.choose_collections.isVisible())
             self.assertTrue(dialog.generate.isVisible())
+            self.assertTrue(dialog.reload_authority.isVisible())
+            self.assertIs(
+                dialog.reload_authority.parentWidget(), dialog.workbench_content
+            )
             dialog.choose_collections.click()
             self.application.processEvents()
             self.assertTrue(dialog.generation_section.isChecked())
@@ -663,7 +697,6 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 dialog.recent_choice,
                 dialog.process_log,
                 dialog.copy_diagnostics,
-                dialog.reload_authority,
                 dialog.reset_layout,
                 dialog.show_technical_columns,
             ):
@@ -686,7 +719,6 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 reopened.readiness_text,
                 reopened.recent_choice,
                 reopened.process_log,
-                reopened.reload_authority,
                 reopened.reset_layout,
                 reopened.show_technical_columns,
             ):
@@ -828,6 +860,77 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 )
             )
 
+    def test_generation_actions_wait_for_current_collection_projection(self):
+        for retry in (False, True):
+            with self.subTest(retry=retry), TemporaryDirectory() as directory:
+                root = Path(directory)
+                workspace = self.create_workspace(root)
+                if retry:
+                    state_path = workspace / "generated-audio/generation-state.json"
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    queue_id = next(iter(state["items"]))
+                    state["active"] = None
+                    state["items"][queue_id] = {
+                        "status": "failed",
+                        "attempts": 1,
+                        "seed": 0,
+                        "last_error": "synthesis failed",
+                        "updated_at": "2026-08-17T00:00:00+00:00",
+                    }
+                    atomic_write_json(state_path, state, sort_keys=True)
+                else:
+                    self.clear_authoring_state(workspace)
+                dialog = AuthoringWorkbenchDialog(
+                    workspace, settings=self.settings(root)
+                )
+                action = dialog.start_failed_retry if retry else dialog.start_generation
+                button = dialog.retry_failed if retry else dialog.generate
+                self.assertTrue(button.isEnabled())
+                dialog._start_child = Mock()
+                started = Event()
+                release = Event()
+
+                def slow_loader(*arguments):
+                    started.set()
+                    release.wait()
+                    return _load_workbench_projection(*arguments)
+
+                dialog._synchronous_projection = False
+                dialog._projection_loader = slow_loader
+                main = next(
+                    dialog.collection_tree.topLevelItem(index)
+                    for index in range(dialog.collection_tree.topLevelItemCount())
+                    if dialog.collection_tree.topLevelItem(index).data(
+                        0, Qt.ItemDataRole.UserRole
+                    )
+                    == "main"
+                )
+                try:
+                    main.setCheckState(0, Qt.CheckState.Unchecked)
+                    self.assertTrue(dialog._selection_refresh_pending)
+                    self.assertIn("UPDATING", dialog.status.text())
+                    self.assertFalse(button.isEnabled())
+                    action()
+                    dialog._start_child.assert_not_called()
+
+                    self.wait_for(started.is_set)
+                    self.assertTrue(dialog._projection_active)
+                    self.assertIn("UPDATING", dialog.status.text())
+                    self.assertFalse(button.isEnabled())
+                    action()
+                    dialog._start_child.assert_not_called()
+                finally:
+                    release.set()
+                    self.wait_for(lambda: not dialog._projection_active)
+
+                self.assertEqual(
+                    dialog.collection_selection.collection_ids, ("source-only",)
+                )
+                self.assertFalse(button.isEnabled())
+                dialog._synchronous_projection = True
+                action()
+                dialog._start_child.assert_not_called()
+
     def test_review_scope_is_independent_from_empty_generation_scope(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -968,7 +1071,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog.review_table.rowCount(), 0)
             self.assertIn("No outcomes match", dialog.review_scope.text())
             dialog.review_search.clear()
-            dialog.review_character.setCurrentText("All speakers")
+            dialog.review_character.setCurrentText("All voice roles")
             dialog.review_status.setCurrentText("Failed: audio limit")
             self.assertEqual(dialog.review_table.rowCount(), 1)
             self.assertEqual(dialog._selected_review_item().queue_id, "narrator-failed")
@@ -1230,7 +1333,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             self.assertFalse(event.isAccepted())
             self.assertTrue(dialog.close_after_stop)
-            self.assertEqual(process.terminate_calls, 2)
+            self.assertEqual(process.terminate_calls, 1)
 
     def test_reject_confirms_before_stopping_generation(self):
         with TemporaryDirectory() as directory:
@@ -1252,6 +1355,101 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             self.assertTrue(dialog.close_after_stop)
             self.assertEqual(process.terminate_calls, 1)
+
+    def test_stop_remains_visible_and_idempotent_after_refresh(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            process = FakeProcess(QProcess.ProcessState.Starting)
+            dialog = AuthoringWorkbenchDialog(
+                workspace, settings=self.settings(root), process=process
+            )
+
+            dialog.stop_child()
+            process.state_value = QProcess.ProcessState.Running
+            process.started.emit()
+            self.assertIn("STOPPING", dialog.status.text())
+            self.assertFalse(dialog.stop_generation.isEnabled())
+            dialog.refresh()
+
+            self.assertIn("STOPPING", dialog.status.text())
+            self.assertFalse(dialog.stop_generation.isEnabled())
+            self.assertFalse(dialog.generate.isEnabled())
+            self.assertFalse(dialog.retry_failed.isEnabled())
+            dialog.stop_child()
+            self.assertEqual(process.terminate_calls, 1)
+
+            dialog._kill_if_running(dialog._process_generation)
+            dialog.refresh()
+            self.assertEqual(process.kill_calls, 1)
+            self.assertIn("STOPPING", dialog.status.text())
+            self.assertFalse(dialog.stop_generation.isEnabled())
+
+            dialog._synchronous_projection = False
+            process.state_value = QProcess.ProcessState.NotRunning
+            with patch.object(dialog._projection_runner, "start"):
+                process.errorOccurred.emit(QProcess.ProcessError.Crashed)
+                self.assertTrue(dialog._forced_kill)
+                process.finished.emit(9, QProcess.ExitStatus.CrashExit)
+            self.assertIn("FORCIBLY STOPPED", dialog.status.text())
+            self.assertEqual(dialog.stop_generation.text(), "Stop")
+            self.assertFalse(dialog.stop_generation.isEnabled())
+            dialog._projection_finished(None, RuntimeError("Workspace unavailable"))
+            self.assertEqual(dialog.stop_generation.text(), "Stop")
+            self.assertFalse(dialog.stop_generation.isEnabled())
+
+    def test_stop_and_close_finishes_without_starting_async_projection(self):
+        for failed_start in (False, True):
+            with (
+                self.subTest(failed_start=failed_start),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                workspace = self.create_workspace(root)
+                process = FakeProcess(
+                    QProcess.ProcessState.Starting
+                    if failed_start
+                    else QProcess.ProcessState.Running
+                )
+                dialog = AuthoringWorkbenchDialog(
+                    workspace, settings=self.settings(root), process=process
+                )
+                dialog.show()
+                self.application.processEvents()
+                self.assertTrue(dialog.review_play.isEnabled())
+                dialog._synchronous_projection = False
+                dialog._projection_loader = Mock(wraps=_load_workbench_projection)
+                with patch.object(
+                    QMessageBox,
+                    "question",
+                    return_value=QMessageBox.StandardButton.Yes,
+                ):
+                    dialog.close()
+                self.assertTrue(dialog.isVisible())
+                self.assertTrue(dialog.close_after_stop)
+                self.assertFalse(dialog.review_play.isEnabled())
+                self.assertFalse(dialog.specialist_review.isEnabled())
+                dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+                self.assertIn("Closing", dialog.review_action_reason.text())
+                with patch.object(dialog._playback_runner, "start") as playback:
+                    dialog.review_play.click()
+                    playback.assert_not_called()
+
+                process.state_value = QProcess.ProcessState.NotRunning
+                if failed_start:
+                    process.errorOccurred.emit(QProcess.ProcessError.FailedToStart)
+                else:
+                    process.errorOccurred.emit(QProcess.ProcessError.Crashed)
+                    self.assertTrue(dialog.close_after_stop)
+                    self.assertTrue(dialog.isVisible())
+                    process.finished.emit(15, QProcess.ExitStatus.CrashExit)
+                    self.assertIn("STOPPED BY USER", dialog.process_outcome)
+                self.application.processEvents()
+
+                self.assertFalse(dialog.isVisible())
+                self.assertFalse(dialog.close_after_stop)
+                self.assertFalse(dialog._stop_requested)
+                dialog._projection_loader.assert_not_called()
 
     def test_output_folder_uses_contained_workspace_path(self):
         with TemporaryDirectory() as directory:
@@ -1459,6 +1657,36 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertFalse(dialog.approve.isEnabled())
             self.assertFalse(dialog._projection_active)
 
+    def test_collection_refresh_deferred_by_review_save_resumes_after_commit(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            self.mark_fixture_pending_review(workspace)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            first = dialog._selected_review_item()
+            dialog._all_reviews = (
+                first,
+                replace(first, queue_id="another-pending", line_id="another-line"),
+            )
+            dialog._apply_review_filters()
+            self.mark_selected_review_heard(dialog)
+            with patch.object(dialog._review_runner, "start"):
+                dialog.approve.click()
+            self.assertTrue(dialog._review_save_active)
+            for index in range(dialog.collection_tree.topLevelItemCount()):
+                dialog.collection_tree.topLevelItem(index).setCheckState(
+                    0, Qt.CheckState.Unchecked
+                )
+            self.application.processEvents()
+            self.assertTrue(dialog._projection_pending)
+            self.assertFalse(dialog.generate.isEnabled())
+            committed = workbench_module.review_selected_item(first, "approved")
+            dialog._review_save_finished(committed, None)
+            self.assertEqual(dialog.summary.generated, 1)
+            self.wait_for(lambda: not dialog._projection_pending)
+            self.assertEqual(dialog.collection_selection.collection_ids, ())
+            self.assertFalse(dialog._generation_refresh_pending())
+
     def test_large_authority_projection_keeps_qt_heartbeat_responsive(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1527,8 +1755,10 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertIsNone(dialog.summary)
             self.assertTrue(dialog.reload_authority.isEnabled())
             self.assertEqual(dialog.reload_authority.text(), "Retry workspace load")
-            self.assertTrue(dialog.technical.isChecked())
-            self.assertIn("transient review worker failure", dialog.status.text())
+            self.assertTrue(dialog.workspace_error.isVisibleTo(dialog))
+            self.assertIn(
+                "transient review worker failure", dialog.workspace_error.toPlainText()
+            )
             dialog.reload_authority.click()
 
             self.assertIsNotNone(dialog.summary)
@@ -1671,7 +1901,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertIsNotNone(displayed_authority)
             self.assertEqual(state["items"][queue_id]["review_status"], "approved")
             self.assertIsNone(dialog.summary)
-            self.assertIn("authority changed", dialog.status.text())
+            self.assertIn("authority changed", dialog.workspace_error.toPlainText())
 
     def test_async_review_failure_is_fail_closed_without_stale_actions(self):
         with TemporaryDirectory() as directory:
@@ -1689,7 +1919,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             self.assertIsNone(dialog.summary)
             self.assertIn("BLOCKED", dialog.status.text())
-            self.assertIn("Unable to save review", dialog.status.text())
+            self.assertIn("Unable to save review", dialog.workspace_error.toPlainText())
             self.assertEqual(dialog.review_table.rowCount(), 0)
             self.assertFalse(dialog.approve.isEnabled())
             self.assertFalse(dialog.reject_button.isEnabled())
@@ -1723,6 +1953,65 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 dialog.reference_play,
             ):
                 self.assertFalse(action.isEnabled(), action.accessibleName())
+
+    def test_failed_load_clears_stale_projection_and_recovers_without_error_tooltips(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            self.assertTrue(dialog.counts.text())
+            self.assertTrue(dialog.outcome_details_text.text())
+            self.assertIsNotNone(dialog.active_started_at)
+            self.assertIn("elapsed", dialog.active.text())
+            failure = "Transient workspace read failure: detailed diagnostic"
+            dialog._projection_loader = Mock(side_effect=RuntimeError(failure))
+
+            dialog.refresh()
+
+            self.assertEqual(
+                dialog.status.text(), "BLOCKED: workspace could not be loaded"
+            )
+            self.assertEqual(
+                dialog.review_action_reason.text(), "Reload the workspace to continue"
+            )
+            self.assertTrue(dialog.workspace_error.isReadOnly())
+            self.assertIn(failure, dialog.workspace_error.toPlainText())
+            self.assertEqual(dialog.counts.text(), "")
+            self.assertEqual(dialog.outcome_details_text.text(), "")
+            self.assertIsNone(dialog.active_started_at)
+            dialog.update_elapsed()
+            self.assertNotIn("elapsed", dialog.active.text())
+            self.assertNotIn(failure, dialog.readiness_text.text())
+            with patch.object(dialog, "refresh") as refresh:
+                dialog._poll_authoritative()
+                refresh.assert_not_called()
+                control = workspace / "workspace.json"
+                control.write_bytes(control.read_bytes() + b"\n")
+                dialog._poll_authoritative()
+                refresh.assert_called_once_with()
+            dialog.copy_diagnostic_text()
+            self.assertIn(failure, self.application.clipboard().text())
+
+            dialog._projection_loader = _load_workbench_projection
+            dialog.reload_authority.click()
+
+            self.assertIsNotNone(dialog.summary)
+            self.assertTrue(dialog.counts.text())
+            self.assertTrue(dialog.outcome_details_text.text())
+            self.assertIsNotNone(dialog.active_started_at)
+            self.assertEqual(dialog.workspace_error.toPlainText(), "")
+            for action in (
+                dialog.choose_collections,
+                dialog.open_output,
+                dialog.reference_previous,
+                dialog.reference_play,
+                dialog.reference_stop,
+                dialog.reference_next,
+            ):
+                self.assertTrue(action.isEnabled(), action.accessibleName())
+                self.assertNotIn(failure, action.toolTip())
 
     def test_mid_refresh_control_mutation_is_caught_and_fail_closed(self):
         with TemporaryDirectory() as directory:
@@ -1778,7 +2067,10 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             self.assertIsNone(dialog.summary)
             self.assertIn("BLOCKED", dialog.status.text())
-            self.assertIn("Voice reference snapshot was modified", dialog.status.text())
+            self.assertIn(
+                "Voice reference snapshot was modified",
+                dialog.workspace_error.toPlainText(),
+            )
             self.assertEqual(dialog.review_table.rowCount(), 0)
 
     def test_refresh_projects_one_bounded_authority_snapshot(self):
@@ -2052,6 +2344,22 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(
                 tuple(control.geometry().x() for control in controls), initial_positions
             )
+
+    def test_stopping_first_review_playback_keeps_decisions_blocked(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            self.mark_fixture_pending_review(workspace)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            selected = dialog._selected_review_item()
+            dialog.play_selected_outcome()
+            self.wait_for(lambda: not dialog._playback_prepare_active)
+            dialog.review_stop.click()
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.assertFalse(dialog._review_evidence.allows(selected))
+            self.assertFalse(dialog.approve.isEnabled())
+            self.assertFalse(dialog.reject_button.isEnabled())
+            self.assertIsNone(dialog._review_playback_buffer)
 
     def test_reference_playback_cannot_credit_interrupted_generated_review(self):
         with TemporaryDirectory() as directory:

@@ -17,12 +17,12 @@ from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Callable, Never
+from typing import TYPE_CHECKING, Callable, Never, cast
 from unittest.mock import Mock, patch
 
 if TYPE_CHECKING:
     from PIL import Image
-    from PySide6.QtCore import QThreadPool
+    from PySide6.QtCore import QProcess, QThreadPool
     from PySide6.QtWidgets import QApplication, QWidget
 
     from vntts.app import SettingsDialog
@@ -76,8 +76,211 @@ def _set_long_authoring_review(dialog: AuthoringWorkbenchDialog, state: str) -> 
     dialog._apply_review_filters()
     dialog.summary = replace(dialog.summary, generated=2)
     dialog._show_counts()
-    if state == "review-long-names-second":
+    if state.startswith("review-long-names-second"):
         dialog.review_table.setCurrentCell(1, 7)
+
+
+AUTHORING_CATALOG_ERROR = (
+    "The saved workspace could not be read. <b>Keep this diagnostic literal.</b>\n"
+    + "A workspace snapshot changed while saved generation results were being checked. "
+    * 60
+    + "\nEND OF ERROR: retry loading the workspace after checking the diagnostic."
+)
+
+
+def _authoring_catalog_workspace(root: Path, state: str) -> Path:
+    from tests.authoring_fixtures import create_test_workspace
+    from vntts.authoring.generation_lease import process_started_at
+    from vntts.document_identity import sha256_file
+
+    workspace = create_test_workspace(root)[2].directory
+    state_path = workspace / "generated-audio" / "generation-state.json"
+    document = json.loads(read_regular_text(state_path, encoding="utf-8"))
+    if state == "ready" or state.startswith("selection-refresh-"):
+        document["active"] = None
+        document["items"] = {}
+    elif state.startswith(("review", "compact", "load-failure")) or state in {
+        "recovered",
+        "technical-details",
+    }:
+        document["active"] = None
+        item = next(iter(document["items"].values()))
+        item["status"] = "generated"
+        item["review_status"] = "pending_review"
+    elif state == "approved":
+        document["active"] = None
+    elif state == "failed":
+        document["active"] = None
+        queue_id = next(iter(document["items"]))
+        document["items"][queue_id] = {
+            "status": "failed",
+            "attempts": 3,
+            "seed": 2,
+            "last_error": "Voice synthesis ended without usable speech",
+            "updated_at": "2026-08-17T00:00:00+00:00",
+        }
+    state_path.write_text(json.dumps(document), encoding="utf-8")
+    if state == "running-elsewhere" or state.startswith("stopping"):
+        (workspace / "generated-audio" / ".generation-lease.json").write_text(
+            json.dumps(
+                {
+                    "schema": "vntts.authoring-generation-lease",
+                    "schema_version": 1,
+                    "queue_sha256": sha256_file(workspace / "queue.jsonl"),
+                    "pid": os.getpid(),
+                    "hostname": socket.gethostname(),
+                    "process_started_at": process_started_at(os.getpid()),
+                    "lease_id": "catalog-running-owner",
+                    "started_at": "2026-08-17T00:00:00+00:00",
+                }
+            ),
+            encoding="utf-8",
+        )
+    return workspace
+
+
+def _hold_authoring_collection_refresh(
+    dialog: AuthoringWorkbenchDialog, state: str, resources: ExitStack
+) -> None:
+    from PySide6.QtCore import Qt
+
+    dialog._synchronous_projection = False
+    resources.enter_context(patch.object(dialog._projection_runner, "start"))
+    if state == "selection-refresh-pending":
+        resources.enter_context(patch.object(dialog, "_refresh_collection_selection"))
+    dialog.choose_collections.click()
+    main = next(
+        item
+        for index in range(dialog.collection_tree.topLevelItemCount())
+        if (item := dialog.collection_tree.topLevelItem(index)) is not None
+        and item.data(0, Qt.ItemDataRole.UserRole) == "main"
+    )
+    main.setCheckState(0, Qt.CheckState.Unchecked)
+
+
+def _authoring_catalog_process(state: str) -> QProcess | None:
+    from PySide6.QtCore import QProcess
+
+    if not state.startswith("stopping"):
+        return None
+    process = Mock(spec=QProcess)
+    process.state.return_value = QProcess.ProcessState.Running
+    process.processId.return_value = os.getpid()
+    process.readAllStandardOutput.return_value.data.return_value = b""
+    return cast(QProcess, process)
+
+
+def _stop_authoring_catalog_process(
+    dialog: AuthoringWorkbenchDialog, state: str
+) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    dialog._process_started()
+    if state.startswith("stopping-close"):
+        with patch.object(
+            QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
+        ):
+            dialog.close()
+    else:
+        dialog.stop_generation.click()
+    dialog.refresh()
+
+
+def _authoring_workbench_story(
+    resources: ExitStack, state: str
+) -> AuthoringWorkbenchDialog:
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QApplication
+
+    from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
+
+    root = Path(
+        resources.enter_context(temporary_directory(prefix="vntts-ui-catalog-"))
+    )
+    enlarged = "22pt" in state
+    if enlarged:
+        font = QApplication.font()
+        resources.callback(QApplication.setFont, QApplication.font())
+        font.setPointSize(22)
+        QApplication.setFont(font)
+    workspace = _authoring_catalog_workspace(root, state)
+    process = _authoring_catalog_process(state)
+    dialog = AuthoringWorkbenchDialog(
+        workspace,
+        settings=QSettings(str(root / "ui.ini"), QSettings.Format.IniFormat),
+        process=process,
+        synchronous_projection=True,
+    )
+    dialog.status_timer.stop()
+    _set_long_authoring_review(dialog, state)
+    if process is not None:
+        _stop_authoring_catalog_process(dialog, state)
+    if state == "filtered-empty":
+        dialog.review_status.setCurrentText("Awaiting review")
+    if state.startswith("load-failure") or state == "recovered":
+        with patch.object(
+            dialog,
+            "_projection_loader",
+            side_effect=ValueError(AUTHORING_CATALOG_ERROR),
+        ):
+            dialog.refresh()
+        if state == "recovered":
+            dialog.reload_authority.click()
+    if state.startswith("selection-refresh-"):
+        _hold_authoring_collection_refresh(dialog, state, resources)
+    if state == "technical-details":
+        dialog.technical.header.click()
+        dialog.show_technical_columns.click()
+        dialog._append_process_log(
+            "Generation completed: 1 saved recording awaits review.\n"
+            "Review decisions revalidate the exact recording before saving.\n"
+        )
+    if state in {
+        "compact",
+        "compact-actions",
+        "review-long-names",
+        "review-long-names-second",
+        "review-long-names-details",
+        "review-long-names-second-details",
+    }:
+        font = dialog.font()
+        font.setPointSize(max(font.pointSize() + 3, 16))
+        dialog.setFont(font)
+        dialog.resize(dialog.minimumSize())
+    if enlarged:
+        dialog.resize(dialog.minimumSize())
+    return dialog
+
+
+def _prepare_authoring_screenshot(
+    dialog: AuthoringWorkbenchDialog, story_id: str, app: QApplication
+) -> None:
+    for _ in range(3):
+        app.processEvents()
+    if story_id.endswith("review-play-focus"):
+        dialog.review_play.setFocus()
+    elif story_id.endswith(
+        (
+            "compact-actions",
+            "review-long-names-details",
+            "review-long-names-second-details",
+            "stopping-close-22pt-details",
+        )
+    ):
+        target = dialog.approve if "stopping-close" in story_id else dialog.review_play
+        dialog.workbench_scroll.ensureWidgetVisible(target)
+    elif story_id.endswith("technical-details"):
+        dialog._reveal_inspector_control(dialog.copy_diagnostics)
+    elif "selection-refresh-" in story_id:
+        dialog._reveal_inspector_control(dialog.collection_tree)
+    elif story_id.endswith(("stopping-22pt", "stopping-close-22pt")):
+        dialog.workbench_scroll.ensureWidgetVisible(dialog.stop_generation)
+    elif story_id.endswith("load-failure-22pt-end"):
+        dialog.workspace_error.verticalScrollBar().setValue(
+            dialog.workspace_error.verticalScrollBar().maximum()
+        )
+    for _ in range(3):
+        app.processEvents()
 
 
 def _voice_overview_story(
@@ -523,6 +726,9 @@ def _prepare_catalog_screenshot(
 
     _prepare_ocr_review_screenshot(widget, story_id, app)
     _prepare_settings_screenshot(widget, story_id, app)
+    if story_id.startswith("authoring-workbench."):
+        assert isinstance(widget, AuthoringWorkbenchDialog)
+        _prepare_authoring_screenshot(widget, story_id, app)
     if story_id in {
         "calibration.review-long-compact-scrolled",
         "calibration.review-long-enlarged-scrolled",
@@ -605,20 +811,21 @@ def _prepare_catalog_screenshot(
         )
         widget.content_scroll.ensureWidgetVisible(target)
         app.processEvents()
-    if story_id == "authoring-workbench.review-play-focus":
-        assert isinstance(widget, AuthoringWorkbenchDialog)
-        widget.review_play.setFocus()
-        app.processEvents()
 
 
 def _close_catalog_widget(widget: QWidget) -> None:
-    from PySide6.QtCore import QCoreApplication, QEvent, QTimer
+    from PySide6.QtCore import QCoreApplication, QEvent, QProcess, QTimer
     from PySide6.QtWidgets import QApplication
 
+    from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
     from vntts.ocr_corrections_ui import OCRCorrectionsDialog
 
     for timer in widget.findChildren(QTimer):
         timer.stop()
+    if isinstance(widget, AuthoringWorkbenchDialog) and isinstance(
+        widget.process, Mock
+    ):
+        widget.process.state.return_value = QProcess.ProcessState.NotRunning
     if isinstance(widget, OCRCorrectionsDialog):
         widget._initial_rows = widget._all_table_rows()
     widget.close()
@@ -1800,7 +2007,6 @@ def _render_stories(
         QCoreApplication,
         QEvent,
         QRunnable,
-        QSettings,
         QSignalBlocker,
         QThreadPool,
         QTimer,
@@ -1814,7 +2020,6 @@ def _render_stories(
         _legacy_bad_fixture,
         create_failed_reference_workspace,
         create_pending_cohort_workspace,
-        create_test_workspace,
     )
     from tests.listening_fixtures import FakePlayback, write_model_reports
     from tests.missing_voice_reuse_fixtures import (
@@ -1830,7 +2035,6 @@ def _render_stories(
     from vntts.authoring.cohort_bundle_ui import CohortReviewBundleDialog
     from vntts.authoring.failure_reference_audit import publish_failure_reference_audit
     from vntts.authoring.failure_reference_audit_ui import FailureReferenceAuditDialog
-    from vntts.authoring.generation_lease import process_started_at
     from vntts.authoring.legacy_reason_review import build_legacy_reason_review
     from vntts.authoring.legacy_reason_review_ui import LegacyReasonReviewDialog
     from vntts.authoring.listening import (
@@ -1850,7 +2054,6 @@ def _render_stories(
     from vntts.authoring.terminal_conflict_review_ui import (
         TerminalConflictReviewDialog,
     )
-    from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
     from vntts.controller import LiveSequenceStatus
     from vntts.dashboard_ui import (
         ControlDashboard,
@@ -3019,93 +3222,7 @@ def _render_stories(
         return enlarged
 
     def authoring_workbench(state: str) -> AuthoringWorkbenchDialog:
-        temporary = resources.enter_context(
-            temporary_directory(prefix="vntts-ui-catalog-")
-        )
-        root = Path(temporary)
-        workspace = create_test_workspace(root)[2].directory
-        state_path = workspace / "generated-audio" / "generation-state.json"
-        document = json.loads(read_regular_text(state_path, encoding="utf-8"))
-        if state == "ready":
-            document["active"] = None
-            document["items"] = {}
-        elif state in {
-            "review",
-            "review-play-focus",
-            "review-long-names",
-            "review-long-names-second",
-            "compact",
-            "compact-actions",
-        }:
-            document["active"] = None
-            item = next(iter(document["items"].values()))
-            item["status"] = "generated"
-            item["review_status"] = "pending_review"
-        elif state == "approved":
-            document["active"] = None
-        elif state == "failed":
-            document["active"] = None
-            queue_id = next(iter(document["items"]))
-            document["items"][queue_id] = {
-                "status": "failed",
-                "attempts": 3,
-                "seed": 2,
-                "last_error": "Voice synthesis ended without usable speech",
-                "updated_at": "2026-08-17T00:00:00+00:00",
-            }
-        if state in {
-            "ready",
-            "review",
-            "review-play-focus",
-            "review-long-names",
-            "review-long-names-second",
-            "approved",
-            "compact",
-            "compact-actions",
-            "failed",
-        }:
-            state_path.write_text(json.dumps(document), encoding="utf-8")
-        if state == "running-elsewhere":
-            (workspace / "generated-audio" / ".generation-lease.json").write_text(
-                json.dumps(
-                    {
-                        "schema": "vntts.authoring-generation-lease",
-                        "schema_version": 1,
-                        "queue_sha256": sha256_file(workspace / "queue.jsonl"),
-                        "pid": os.getpid(),
-                        "hostname": socket.gethostname(),
-                        "process_started_at": process_started_at(os.getpid()),
-                        "lease_id": "catalog-running-owner",
-                        "started_at": "2026-08-17T00:00:00+00:00",
-                    }
-                ),
-                encoding="utf-8",
-            )
-        dialog = AuthoringWorkbenchDialog(
-            workspace,
-            settings=QSettings(str(root / "ui.ini"), QSettings.Format.IniFormat),
-            synchronous_projection=True,
-        )
-
-        _set_long_authoring_review(dialog, state)
-        if state == "filtered-empty":
-            dialog.review_status.setCurrentText("Awaiting review")
-        if state in {
-            "compact",
-            "compact-actions",
-            "review-long-names",
-            "review-long-names-second",
-        }:
-            font = dialog.font()
-            font.setPointSize(max(font.pointSize() + 3, 16))
-            dialog.setFont(font)
-            dialog.resize(dialog.minimumSize())
-        if state == "compact-actions":
-            QTimer.singleShot(
-                0,
-                lambda: dialog.workbench_scroll.ensureWidgetVisible(dialog.approve),
-            )
-        return dialog
+        return _authoring_workbench_story(resources, state)
 
     def cohort_review(state: str) -> CohortReviewBundleDialog:
         temporary = resources.enter_context(
@@ -4067,6 +4184,12 @@ def _render_stories(
         "authoring-workbench.review-long-names-second": lambda: authoring_workbench(
             "review-long-names-second"
         ),
+        "authoring-workbench.review-long-names-details": lambda: authoring_workbench(
+            "review-long-names-details"
+        ),
+        "authoring-workbench.review-long-names-second-details": lambda: (
+            authoring_workbench("review-long-names-second-details")
+        ),
         "authoring-workbench.approved": lambda: authoring_workbench("approved"),
         "authoring-workbench.interrupted": lambda: authoring_workbench("interrupted"),
         "authoring-workbench.failed": lambda: authoring_workbench("failed"),
@@ -4079,6 +4202,36 @@ def _render_stories(
         "authoring-workbench.compact": lambda: authoring_workbench("compact"),
         "authoring-workbench.compact-actions": lambda: authoring_workbench(
             "compact-actions"
+        ),
+        "authoring-workbench.load-failure": lambda: authoring_workbench("load-failure"),
+        "authoring-workbench.load-failure-22pt": lambda: authoring_workbench(
+            "load-failure-22pt"
+        ),
+        "authoring-workbench.load-failure-22pt-end": lambda: authoring_workbench(
+            "load-failure-22pt-end"
+        ),
+        "authoring-workbench.recovered": lambda: authoring_workbench("recovered"),
+        "authoring-workbench.selection-refresh-pending": lambda: authoring_workbench(
+            "selection-refresh-pending"
+        ),
+        "authoring-workbench.selection-refresh-active": lambda: authoring_workbench(
+            "selection-refresh-active"
+        ),
+        "authoring-workbench.stopping": lambda: authoring_workbench("stopping"),
+        "authoring-workbench.stopping-22pt": lambda: authoring_workbench(
+            "stopping-22pt"
+        ),
+        "authoring-workbench.stopping-close": lambda: authoring_workbench(
+            "stopping-close"
+        ),
+        "authoring-workbench.stopping-close-22pt": lambda: authoring_workbench(
+            "stopping-close-22pt"
+        ),
+        "authoring-workbench.stopping-close-22pt-details": lambda: authoring_workbench(
+            "stopping-close-22pt-details"
+        ),
+        "authoring-workbench.technical-details": lambda: authoring_workbench(
+            "technical-details"
         ),
     }
     captured: dict[str, str] = {}

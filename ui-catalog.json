@@ -601,13 +601,27 @@
         {"id": "authoring-workbench.review-play-focus", "title": "Playback focused", "state": "Keyboard focus identifies Play recording without changing decision availability"},
         {"id": "authoring-workbench.review-long-names", "title": "Long review identities", "state": "Several distinct long game speakers and generated voices remain comparable at enlarged text"},
         {"id": "authoring-workbench.review-long-names-second", "title": "Second long review selected", "state": "Selecting a second truncated row reveals its complete speaker, voice and spoken text"},
+        {"id": "authoring-workbench.review-long-names-details", "title": "Full first review identity", "state": "Scrolling to playback reveals the first selected line's complete game speaker, voice role and dialogue alongside review actions at enlarged text"},
+        {"id": "authoring-workbench.review-long-names-second-details", "title": "Full second review identity", "state": "Scrolling after selecting the second row reveals its complete different speaker, voice role and dialogue alongside review actions at enlarged text"},
         {"id": "authoring-workbench.approved", "title": "Approved outcome", "state": "An approved recording remains discoverable and replayable"},
         {"id": "authoring-workbench.interrupted", "title": "Interrupted attempt", "state": "Preserved attempt and saved outcome remain distinguishable"},
         {"id": "authoring-workbench.failed", "title": "Failed synthesis", "state": "The failed line and retry route remain visible"},
         {"id": "authoring-workbench.running-elsewhere", "title": "Generation running elsewhere", "state": "Another process owns generation and this workbench cannot interrupt it"},
         {"id": "authoring-workbench.filtered-empty", "title": "No filtered results", "state": "An explicit user filter hides an existing approved recording"},
         {"id": "authoring-workbench.compact", "title": "Compact authoring", "state": "Primary generation and review actions remain reachable at enlarged text"},
-        {"id": "authoring-workbench.compact-actions", "title": "Compact review actions", "state": "Scrolling reveals the review action group without clipping"}
+        {"id": "authoring-workbench.compact-actions", "title": "Compact review actions", "state": "Scrolling reveals the review action group without clipping"},
+        {"id": "authoring-workbench.load-failure", "title": "Workspace unavailable", "state": "A failed workspace load clears stale outcomes and leaves Retry workspace load beside the status; the complete diagnostic is selectable"},
+        {"id": "authoring-workbench.load-failure-22pt", "title": "Enlarged workspace failure", "state": "At actual 22 point text, Retry workspace load and the bounded selectable diagnostic remain reachable"},
+        {"id": "authoring-workbench.load-failure-22pt-end", "title": "End of long workspace diagnostic", "state": "The final line of a long literal diagnostic can be reached and copied at 22 point text"},
+        {"id": "authoring-workbench.recovered", "title": "Workspace recovered", "state": "Retry workspace load restores saved outcomes and actions without the previous error"},
+        {"id": "authoring-workbench.selection-refresh-pending", "title": "Collection choice awaiting refresh", "state": "Changing generation collections immediately blocks generation while the new selection waits to load"},
+        {"id": "authoring-workbench.selection-refresh-active", "title": "Collection selection loading", "state": "Generation waits for the newly selected collections to finish loading; review decisions wait for the authoritative refresh"},
+        {"id": "authoring-workbench.stopping", "title": "Stopping generation", "state": "Stopping remains explicit after the workspace refresh and a second stop request is disabled"},
+        {"id": "authoring-workbench.stopping-22pt", "title": "Enlarged generation stop", "state": "At actual 22 point text, scrolling reaches Stop and retains the stopping state"},
+        {"id": "authoring-workbench.stopping-close", "title": "Stopping before closing", "state": "Confirming Stop and close disables the workbench while the current generation process finishes"},
+        {"id": "authoring-workbench.stopping-close-22pt", "title": "Enlarged close while stopping", "state": "At actual 22 point text, the stopping status and disabled controls remain visible after confirming Stop and close"},
+        {"id": "authoring-workbench.stopping-close-22pt-details", "title": "Enlarged closing review actions", "state": "Scrolling at actual 22 point text reveals the complete closing reason beside disabled Play, Approve and Reject actions"},
+        {"id": "authoring-workbench.technical-details", "title": "Technical generation details", "state": "Expanded process output and technical outcome columns remain secondary to review and generation controls"}
       ]
     },
     {

@@ -286,11 +286,160 @@ class UiCatalogTest(unittest.TestCase):
                 "review-play-focus",
                 "review-long-names",
                 "review-long-names-second",
+                "review-long-names-details",
+                "review-long-names-second-details",
                 "compact",
                 "compact-actions",
+                "load-failure",
+                "load-failure-22pt",
+                "load-failure-22pt-end",
+                "recovered",
+                "selection-refresh-pending",
+                "selection-refresh-active",
+                "stopping",
+                "stopping-22pt",
+                "stopping-close",
+                "stopping-close-22pt",
+                "stopping-close-22pt-details",
+                "technical-details",
             ):
                 path = output / "screenshots" / f"authoring-workbench.{state}.png"
                 self.assertGreater(path.stat().st_size, 0)
+            packet = json.loads(
+                (output / "review-packets" / "authoring-workbench.json").read_text()
+            )
+            self.assertEqual(packet["target"]["id"], "authoring-workbench")
+            self.assertEqual(
+                {surface["id"] for surface in packet["related_surfaces"]},
+                {"cohort-review", "missing-voice-review", "failed-reference-review"},
+            )
+            self.assertNotIn("source_path", json.dumps(packet))
+
+    def test_authoring_catalog_projects_real_failure_refresh_and_stopping_states(self):
+        script = dedent("""
+            from contextlib import ExitStack
+            from unittest.mock import patch
+            from PySide6.QtWidgets import QApplication
+            from scripts.render_ui_catalog import (
+                AUTHORING_CATALOG_ERROR, _authoring_workbench_story,
+                _close_catalog_widget, _prepare_catalog_screenshot,
+            )
+
+            app = QApplication([])
+            original_size = app.font().pointSize()
+            states = (
+                "load-failure", "load-failure-22pt", "load-failure-22pt-end",
+                "recovered", "selection-refresh-pending", "selection-refresh-active",
+                "stopping", "stopping-22pt", "technical-details",
+                "stopping-close", "stopping-close-22pt",
+                "stopping-close-22pt-details",
+                "review-long-names-details", "review-long-names-second-details",
+            )
+            for state in states:
+                with ExitStack() as resources:
+                    dialog = _authoring_workbench_story(resources, state)
+                    dialog.show()
+                    _prepare_catalog_screenshot(dialog, "authoring-workbench." + state, app)
+                    if "22pt" in state:
+                        assert app.font().pointSize() == 22
+                        assert dialog.font().pointSize() == 22
+                        assert dialog.reload_authority.font().pointSize() == 22
+                        assert dialog.stop_generation.font().pointSize() == 22
+                        assert dialog.workbench_scroll.horizontalScrollBar().maximum() == 0
+                        for action in (
+                            dialog.reload_authority, dialog.choose_collections,
+                            dialog.generate, dialog.retry_failed, dialog.stop_generation,
+                        ):
+                            assert action.width() >= action.minimumSizeHint().width()
+                    if state.startswith("load-failure"):
+                        assert dialog.summary is None
+                        assert dialog.counts.text() == ""
+                        assert dialog.workspace_error.isReadOnly()
+                        assert dialog.workspace_error.toPlainText() == AUTHORING_CATALOG_ERROR
+                        dialog.workspace_error.selectAll()
+                        dialog.workspace_error.copy()
+                        assert app.clipboard().text() == AUTHORING_CATALOG_ERROR
+                        assert dialog.reload_authority.isEnabled()
+                        assert not dialog.generate.isEnabled()
+                        assert not dialog.retry_failed.isEnabled()
+                        assert not dialog.previous_pending.isEnabled()
+                        assert not dialog.next_pending.isEnabled()
+                        if state.endswith("-end"):
+                            bar = dialog.workspace_error.verticalScrollBar()
+                            assert bar.maximum() > 0 and bar.value() == bar.maximum()
+                    elif state == "recovered":
+                        assert dialog.summary is not None
+                        assert dialog.workspace_error.toPlainText() == ""
+                        assert dialog.review_table.rowCount() == 1
+                        assert dialog.review_play.isEnabled()
+                    elif state.startswith("selection-refresh-"):
+                        assert dialog._selected_collection_ids == ("source-only",)
+                        assert "UPDATING" in dialog.status.text()
+                        assert "READY" not in dialog.status.text()
+                        assert not dialog.generate.isEnabled()
+                        assert not dialog.retry_failed.isEnabled()
+                        assert dialog._projection_active == state.endswith("active")
+                        assert dialog._selection_refresh_pending == state.endswith("pending")
+                        with patch.object(dialog, "_start_child") as start:
+                            dialog.start_generation()
+                            dialog.start_failed_retry()
+                            start.assert_not_called()
+                    elif state.startswith("stopping"):
+                        assert "STOPPING" in dialog.status.text()
+                        assert not dialog.stop_generation.isEnabled()
+                        assert not dialog.generate.isEnabled()
+                        dialog.stop_child()
+                        dialog.process.terminate.assert_called_once_with()
+                        viewport = dialog.workbench_scroll.viewport()
+                        controls = (
+                            (dialog.review_action_reason, dialog.review_play,
+                             dialog.approve, dialog.reject_button)
+                            if state.endswith("-details") else (dialog.stop_generation,)
+                        )
+                        for control in controls:
+                            top = control.mapTo(viewport, control.rect().topLeft()).y()
+                            assert 0 <= top and top + control.height() <= viewport.height()
+                            assert control.height() >= control.heightForWidth(control.width())
+                        if state.startswith("stopping-close"):
+                            assert dialog.close_after_stop
+                            assert not dialog.workbench_content.isEnabled()
+                            assert not dialog.review_play.isEnabled()
+                            assert not dialog.specialist_review.isEnabled()
+                            assert dialog.review_action_reason.isVisibleTo(dialog)
+                            assert dialog.review_action_reason.text() == "Closing: waiting for generation to stop"
+                            dialog.process.start.assert_not_called()
+                    elif state == "technical-details":
+                        assert dialog.technical.isChecked()
+                        assert not dialog.review_table.isColumnHidden(8)
+                        assert dialog.process_log.toPlainText()
+                    elif state.startswith("review-long-names"):
+                        selected = dialog._selected_review_item()
+                        assert selected.speaker in dialog.current_review.text()
+                        assert selected.voice_character in dialog.current_review.text()
+                        assert selected.text in dialog.review_text.text()
+                        expected = "The Traveling Hotelier" if "second" in state else "The Keeper of the Northern Library"
+                        assert selected.speaker == expected
+                        viewport = dialog.workbench_scroll.viewport()
+                        for control in (
+                            dialog.current_review, dialog.review_text,
+                            dialog.review_play, dialog.approve, dialog.reject_button,
+                        ):
+                            top = control.mapTo(viewport, control.rect().topLeft())
+                            assert 0 <= top.y() and top.y() + control.height() <= viewport.height()
+                            assert control.height() >= control.heightForWidth(control.width())
+                    _close_catalog_widget(dialog)
+                assert app.font().pointSize() == original_size
+        """)
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[1],
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_voice_route_catalog_covers_portraits_and_compact_actions(self):
         root = Path(__file__).resolve().parents[1]

@@ -41,7 +41,7 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 166
+      "maximum": 157
     },
     {
       "code": "C901",
@@ -979,7 +979,7 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 743
+      "maximum": 707
     },
     {
       "code": "PLR0915",
@@ -1421,20 +1421,6 @@
       "scope": "main",
       "count": 1,
       "maximum": 12
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/workbench_ui.py",
-      "scope": "AuthoringWorkbenchDialog._apply_projection",
-      "count": 1,
-      "maximum": 52
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/workbench_ui.py",
-      "scope": "AuthoringWorkbenchDialog._build_workbench_layout",
-      "count": 1,
-      "maximum": 65
     },
     {
       "code": "PLR0915",
