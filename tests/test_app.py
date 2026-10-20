@@ -70,7 +70,10 @@ from vntts.settings import (  # noqa: E402
     load_app_settings,
     settings_schema_version,
 )
-from vntts.versioned_json import read_versioned_json_snapshot  # noqa: E402
+from vntts.versioned_json import (  # noqa: E402
+    StaleDocumentError,
+    read_versioned_json_snapshot,
+)
 from vntts.voice_library import VoiceLibrary  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
 
@@ -3230,6 +3233,39 @@ class TrayApplicationTest(unittest.TestCase):
         )
         dialog.exec.assert_called_once_with()
         tray_application.shutdown()
+
+    def test_reopened_ocr_review_reloads_corrections_after_a_stale_save(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "corrections.json"
+            store = OCRCorrectionStore(path)
+            store.replace_entries({"Mareus": "Marcus"}, "other", {"Wrong": "Right"})
+            tray_application = TrayApplication(
+                self.application,
+                AppSettings(),
+                controller_factory=Mock(return_value=Mock()),
+                correction_store=store,
+            )
+            self.addCleanup(tray_application.shutdown)
+
+            with patch("vntts.app.OCRReviewDialog") as factory:
+                tray_application.open_ocr_review()
+                first_store = factory.call_args.args[1]
+                external = OCRCorrectionStore.load(path)
+                external.upsert_entries({"Vertln": "Vertin"})
+                with self.assertRaises(StaleDocumentError):
+                    first_store.upsert_entries({"Poaeher": "Poacher"})
+
+                tray_application.open_ocr_review()
+                reopened_store = factory.call_args.args[1]
+                self.assertIsNot(reopened_store, first_store)
+                reopened_store.upsert_entries({"Poaeher": "Poacher"})
+
+            saved = OCRCorrectionStore.load(path)
+            self.assertEqual(
+                saved.global_entries,
+                {"Mareus": "Marcus", "Vertln": "Vertin", "Poaeher": "Poacher"},
+            )
+            self.assertEqual(saved.profile_entries, {"other": {"Wrong": "Right"}})
 
     def test_settings_expose_minimum_ocr_confidence(self):
         dialog = SettingsDialog(

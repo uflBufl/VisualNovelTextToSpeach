@@ -3596,6 +3596,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def open_ocr_review(self) -> None:
         profile_id = self.settings.active_profile_id
         profile = self.profile_store.get(profile_id) if profile_id else None
+        self.correction_store = OCRCorrectionStore.load(self.correction_store.path)
         dialog = OCRReviewDialog(
             self.settings.ocr_diagnostics_directory,
             self.correction_store,
