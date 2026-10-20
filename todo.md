@@ -4,6 +4,10 @@
 
 - [ ] Refactor the oversized UI/catalog scopes reported by `uv run python scripts/check_ruff_complexity.py` on main: catalog screenshot preparation and asset stories, history constructor/keyboard test, diagnostics constructor/body, and profile constructor. Reconcile the baseline only after actual simplification; keep the current calibration behavior and catalog coverage. These failures reproduce on `197c8df1` before the calibration changes.
 
+## Qualify native OCR editor tooltips
+
+- [ ] Once native UI can be launched without interrupting the desktop, check saved OCR corrections on macOS and Windows at enlarged system text: put the narrow editor near screen edges, hover both long source/replacement cells and inspect each with F2/Escape. Confirm full values remain readable, hover stays usable, native tooltips remain on screen, and exiting inspection leaves Save disabled. Retain full-window/tooltip captures and keyboard evidence. Offscreen tests and cropped tooltips verify content, not native placement or focus.
+
 ## Qualify dialogue history on native audio and accessibility setups
 
 - [ ] On macOS and Windows with a real speech engine, capture two lines, open Dialogue history, start one line and select/search for another, then stop and retry after restoring an unavailable engine. Confirm the assigned voice, actual audible stop and named status agree; verify Tab/Enter/Escape and full error scrolling/copying at 200% text with VoiceOver/NVDA. Retain native screenshots, audio and focus/announcement evidence. Automated Qt state/keyboard/export tests and Mac window renders do not qualify hardware output or screen-reader/native focus behavior.

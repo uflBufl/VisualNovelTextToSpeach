@@ -991,6 +991,70 @@ def _support_center(state: str) -> QWidget:
     return dialog
 
 
+def _ocr_corrections_story(resources: ExitStack, state: str) -> QWidget:
+    from vntts.ocr_corrections import OCRCorrectionStore
+    from vntts.ocr_corrections_ui import OCRCorrectionsDialog
+    from vntts.versioned_json import StaleDocumentError
+
+    temporary = resources.enter_context(temporary_directory())
+    directory = Path(temporary)
+    profile_rules = {
+        "Mareus": "Marcus",
+        "Hello tiniekeeper.": "Hello timekeeper.",
+    }
+    if state == "empty":
+        profile_rules = {}
+    elif state == "long-values":
+        profile_rules = {
+            "The unknowable chronology of the distant island's memories": "The hidden chronology of the distant island's memories"
+        }
+    store = OCRCorrectionStore(
+        directory / "corrections.json",
+        global_entries={} if state == "empty" else {"tiniekeeper": "timekeeper"},
+        profile_entries={"game": profile_rules},
+    )
+    dialog = OCRCorrectionsDialog("game", "Reverse: 1999", store)
+
+    if state.startswith("compact"):
+        font = dialog.font()
+        font.setPointSize(max(font.pointSize() + 3, 16))
+        dialog.setFont(font)
+        dialog.resize(560, 440)
+    if state == "compact-validation":
+        for index in range(30):
+            dialog._append_row(dialog.profile_table, f"Unclear {index}", "")
+        dialog.save()
+    elif state == "validation":
+        dialog._append_row(dialog.global_table, "Unclear", "")
+        dialog._append_row(dialog.profile_table, "Mareus", "Different")
+        dialog.save()
+    elif state == "saving":
+        dialog._save_active = True
+        dialog.tabs.setEnabled(False)
+        dialog.buttons.setEnabled(False)
+        dialog.status.setPlainText("Saving OCR corrections in the background...")
+    elif state in {"stale-save", "compact-failure", "save-failure"}:
+        errors = {
+            "stale-save": StaleDocumentError("OCR corrections changed on disk"),
+            "compact-failure": OSError("Application data is read-only. " * 12),
+            "save-failure": OSError("Application data is read-only"),
+        }
+        dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
+        dialog._save_finished(None, errors[state])
+    elif state == "unsaved-close":
+        dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
+        confirmation = dialog._discard_dialog()
+
+        resources.enter_context(
+            cleanup_on_exit(
+                lambda: _close_catalog_widget(dialog),
+                description="Catalog popup owner cleanup",
+            )
+        )
+        return confirmation
+    return dialog
+
+
 def _render_stories(
     catalog: UICatalog, output: Path, selected_surface: str | None
 ) -> dict[str, str]:
@@ -1071,7 +1135,6 @@ def _render_stories(
     from vntts.macos_ui import MacOSPermissionsDialog, PermissionStatus
     from vntts.ocr import DialogRegion, OCRResult, UncertainFrameRecorder
     from vntts.ocr_corrections import OCRCorrectionStore
-    from vntts.ocr_corrections_ui import OCRCorrectionsDialog
     from vntts.ocr_review_ui import OCRReviewDialog
     from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics
     from vntts.onboarding_ui import OnboardingWizard
@@ -2322,57 +2385,8 @@ def _render_stories(
             dialog.resize(730, 560)
         return dialog
 
-    def ocr_corrections(
-        state: str = "profile-rules",
-    ) -> OCRCorrectionsDialog | QMessageBox:
-        temporary = resources.enter_context(temporary_directory())
-        directory = Path(temporary)
-        profile_rules = {
-            "Mareus": "Marcus",
-            "Hello tiniekeeper.": "Hello timekeeper.",
-        }
-        if state == "empty":
-            profile_rules = {}
-        elif state == "long-values":
-            profile_rules = {
-                "The unknowable chronology of the distant island's memories": "The hidden chronology of the distant island's memories"
-            }
-        store = OCRCorrectionStore(
-            directory / "corrections.json",
-            global_entries={} if state == "empty" else {"tiniekeeper": "timekeeper"},
-            profile_entries={"game": profile_rules},
-        )
-        dialog = OCRCorrectionsDialog("game", "Reverse: 1999", store)
-
-        if state == "validation":
-            dialog._append_row(dialog.global_table, "Unclear", "")
-            dialog._append_row(dialog.profile_table, "Mareus", "Different")
-            dialog.save()
-        elif state == "saving":
-            dialog._save_active = True
-            dialog.tabs.setEnabled(False)
-            dialog.buttons.setEnabled(False)
-            dialog.status.setText("Saving OCR corrections in the background...")
-        elif state == "save-failure":
-            dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
-            dialog._save_finished(None, OSError("Application data is read-only"))
-        elif state == "unsaved-close":
-            dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
-            confirmation = dialog._discard_dialog()
-
-            resources.enter_context(
-                cleanup_on_exit(
-                    lambda: _close_catalog_widget(dialog),
-                    description="Catalog popup owner cleanup",
-                )
-            )
-            return confirmation
-        elif state == "compact":
-            font = dialog.font()
-            font.setPointSize(max(font.pointSize() + 3, 16))
-            dialog.setFont(font)
-            dialog.resize(560, 400)
-        return dialog
+    def ocr_corrections(state: str = "profile-rules") -> QWidget:
+        return _ocr_corrections_story(resources, state)
 
     def dialogue_history(state: str) -> DialogueHistoryDialog:
         history = DialogueHistory(
@@ -3277,6 +3291,11 @@ def _render_stories(
         "ocr-corrections.profile-rules": ocr_corrections,
         "ocr-corrections.empty": lambda: ocr_corrections("empty"),
         "ocr-corrections.validation": lambda: ocr_corrections("validation"),
+        "ocr-corrections.compact-validation": lambda: ocr_corrections(
+            "compact-validation"
+        ),
+        "ocr-corrections.compact-failure": lambda: ocr_corrections("compact-failure"),
+        "ocr-corrections.stale-save": lambda: ocr_corrections("stale-save"),
         "ocr-corrections.saving": lambda: ocr_corrections("saving"),
         "ocr-corrections.save-failure": lambda: ocr_corrections("save-failure"),
         "ocr-corrections.unsaved-close": lambda: ocr_corrections("unsaved-close"),

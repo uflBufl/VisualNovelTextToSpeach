@@ -56,6 +56,7 @@ from vntts.ocr import (  # noqa: E402
     save_dialog_region,
 )
 from vntts.ocr_corrections import OCRCorrectionStore  # noqa: E402
+from vntts.ocr_corrections_ui import OCRCorrectionsDialog  # noqa: E402
 from vntts.onboarding import DiagnosticResult  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivationResult  # noqa: E402
 from vntts.pregeneration_audition import VoiceAuditionCancelled  # noqa: E402
@@ -3092,6 +3093,62 @@ class TrayApplicationTest(unittest.TestCase):
         controller.refresh_corrections.assert_called_once_with()
         self.assertEqual(tray_application.status_action.text(), "OCR corrections saved")
         tray_application.shutdown()
+
+    def test_reopened_ocr_corrections_reload_after_a_stale_save(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "corrections.json"
+            store = OCRCorrectionStore(path)
+            store.replace_entries({"Mareus": "Marcus"}, "other", {"Wrong": "Right"})
+            controller = Mock()
+            tray_application = TrayApplication(
+                self.application,
+                AppSettings(),
+                controller_factory=Mock(return_value=controller),
+                correction_store=store,
+            )
+            dialogs = []
+
+            def edit(dialog):
+                dialogs.append(dialog)
+                self.addCleanup(dialog.deleteLater)
+                pool = ManualThreadPool()
+                dialog.save_runner.thread_pool = pool
+                if len(dialogs) == 1:
+                    external = OCRCorrectionStore.load(path)
+                    external.upsert_entries({"Vertln": "Vertin"})
+                else:
+                    self.assertEqual(
+                        dialog.store.global_entries,
+                        {"Mareus": "Marcus", "Vertln": "Vertin"},
+                    )
+                dialog._append_row(dialog.global_table, "Poaeher", "Poacher")
+                dialog.save()
+                pool.run_next()
+                self.application.processEvents()
+                self.assertFalse(dialog._save_active)
+                if len(dialogs) == 1:
+                    self.assertIn("reopen OCR corrections", dialog.status.toPlainText())
+                    self.assertEqual(dialog.global_table.item(1, 1).text(), "Poacher")
+                    with patch.object(dialog, "_confirm_discard", return_value=True):
+                        dialog.reject()
+                return dialog.result()
+
+            with patch.object(OCRCorrectionsDialog, "exec", new=edit):
+                tray_application.open_corrections()
+                controller.refresh_corrections.assert_not_called()
+                tray_application.open_corrections()
+
+            self.assertEqual(len(dialogs), 2)
+            self.assertIsNot(dialogs[0].store, dialogs[1].store)
+            self.assertEqual(dialogs[1].result(), QDialog.DialogCode.Accepted)
+            saved = OCRCorrectionStore.load(path)
+            self.assertEqual(
+                saved.global_entries,
+                {"Mareus": "Marcus", "Vertln": "Vertin", "Poaeher": "Poacher"},
+            )
+            self.assertEqual(saved.profile_entries, {"other": {"Wrong": "Right"}})
+            controller.refresh_corrections.assert_called_once_with()
+            tray_application.shutdown()
 
     def test_ocr_review_uses_active_profile_and_runtime_reload(self):
         with TemporaryDirectory() as temporary_directory:

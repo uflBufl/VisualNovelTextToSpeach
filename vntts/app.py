@@ -3571,6 +3571,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def open_corrections(self) -> None:
         profile_id = self.settings.active_profile_id
         profile = self.profile_store.get(profile_id) if profile_id else None
+        self.correction_store = OCRCorrectionStore.load(self.correction_store.path)
         dialog = OCRCorrectionsDialog(
             self.settings.active_profile_id,
             profile.name if profile is not None else None,

@@ -1,3 +1,6 @@
+import csv
+from io import StringIO
+
 from PySide6.QtCore import (
     QEvent,
     QItemSelectionModel,
@@ -6,15 +9,25 @@ from PySide6.QtCore import (
     Qt,
     QThreadPool,
 )
-from PySide6.QtGui import QBrush, QCloseEvent, QColor, QKeyEvent
+from PySide6.QtGui import (
+    QBrush,
+    QCloseEvent,
+    QColor,
+    QKeyEvent,
+    QResizeEvent,
+    QTextOption,
+)
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDialogButtonBox,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -47,6 +60,7 @@ class OCRCorrectionsDialog(QDialog):
         self.save_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.save_runner.finished.connect(self._save_finished)
         self._save_active = False
+        self._reload_message = ""
         self.setWindowTitle("OCR corrections")
         self.resize(680, 460)
 
@@ -66,7 +80,7 @@ class OCRCorrectionsDialog(QDialog):
         profile_label = profile_name or "Current profile"
         profile_page = self._create_table_page(
             self.profile_table,
-            "Rules here override All games for this profile.",
+            "For matching OCR text, these rules override All games.",
         )
         profile_index = self.tabs.addTab(profile_page, profile_label)
         self.tabs.setTabEnabled(profile_index, profile_id is not None)
@@ -87,17 +101,41 @@ class OCRCorrectionsDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         self.save_button = self.buttons.button(QDialogButtonBox.StandardButton.Save)
         self.cancel_button = self.buttons.button(QDialogButtonBox.StandardButton.Cancel)
-        self.status = QLabel()
+        self.status = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
         self.status.setAccessibleName("OCR correction save status")
-        self.status.setWordWrap(True)
+        self.status.setFrameShape(QFrame.Shape.NoFrame)
+        self.status.viewport().setAutoFillBackground(False)
+        self.status.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.status.setFixedHeight(self.status.fontMetrics().lineSpacing() * 3 + 12)
+        self.status.installEventFilter(self)
+        self.copy_button = QPushButton("Copy rules")
+        self.copy_button.setToolTip(
+            "Copy all edited rules from both scopes, including unsaved changes"
+        )
+        self.copy_button.clicked.connect(self.copy_rules)
+        footer = QHBoxLayout()
+        footer.addWidget(self.copy_button)
+        footer.addStretch()
+        footer.addWidget(self.buttons)
 
         layout = QVBoxLayout(self)
         layout.addWidget(note)
-        layout.addWidget(self.tabs)
+        layout.addWidget(self.tabs, 1)
         layout.addWidget(self.status)
-        layout.addWidget(self.buttons)
+        layout.addLayout(footer)
         self._initial_rows = self._all_table_rows()
         self.save_button.setEnabled(False)
+        self.setTabOrder(self.status, self.copy_button)
+        self.setTabOrder(self.copy_button, self.save_button)
+        self.setTabOrder(self.save_button, self.cancel_button)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        layout = self.layout()
+        if layout is not None:
+            self.setMinimumHeight(
+                layout.totalMinimumHeightForWidth(event.size().width())
+            )
 
     def save(self) -> None:
         if self.validate_rows(focus_first=True):
@@ -107,7 +145,7 @@ class OCRCorrectionsDialog(QDialog):
         self._save_active = True
         self.tabs.setEnabled(False)
         self.buttons.setEnabled(False)
-        self.status.setText("Saving OCR corrections in the background...")
+        self.status.setPlainText("Saving OCR corrections in the background...")
         self.save_runner.start(
             self.store.replace_entries,
             global_entries,
@@ -121,21 +159,24 @@ class OCRCorrectionsDialog(QDialog):
         self.buttons.setEnabled(True)
         if error is not None:
             if isinstance(error, StaleDocumentError):
-                self.status.setText(
-                    f"Rules were not saved: {error}. Copy your edits, then close "
+                self._reload_message = (
+                    "Rules changed elsewhere. Select Copy rules to keep your edits, then close "
                     "and reopen OCR corrections to load the latest rules."
                 )
+                self.save_button.setEnabled(False)
+                self.status.setPlainText(self._reload_message)
             else:
-                self.status.setText(
-                    f"Rules were not saved: {error}. Check access to application "
-                    "data, then select Save again. Your edits are still here."
+                self.status.setPlainText(
+                    "Rules were not saved. Your edits are still here.\n"
+                    "Check access to application data, then select Save again.\n"
+                    f"{error}"
                 )
         else:
             self.accept()
 
     def reject(self) -> None:
         if self._save_active:
-            self.status.setText(
+            self.status.setPlainText(
                 "Saving OCR corrections. Close is deferred until the write finishes."
             )
             return
@@ -145,7 +186,7 @@ class OCRCorrectionsDialog(QDialog):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._save_active:
-            self.status.setText(
+            self.status.setPlainText(
                 "Saving OCR corrections. Close is deferred until the write finishes."
             )
             event.ignore()
@@ -153,7 +194,16 @@ class OCRCorrectionsDialog(QDialog):
         if self._has_unsaved_changes() and not self._confirm_discard():
             event.ignore()
             return
-        super().closeEvent(event)
+        super().reject()
+        event.accept()
+
+    def copy_rules(self) -> None:
+        output = StringIO()
+        writer = csv.writer(output, delimiter="\t", lineterminator="\n")
+        writer.writerow(("Scope", "OCR text", "Replace with"))
+        for index, rows in enumerate(self._all_table_rows()):
+            writer.writerows((self.tabs.tabText(index), *row) for row in rows)
+        QApplication.clipboard().setText(output.getvalue())
 
     def _create_table(self, entries: dict[str, str]) -> QTableWidget:
         table = QTableWidget(0, 2)
@@ -162,6 +212,7 @@ class OCRCorrectionsDialog(QDialog):
         for source, replacement in entries.items():
             OCRCorrectionsDialog._append_row(table, source, replacement)
         table.itemChanged.connect(self._mark_changed)
+        self._size_table(table)
         table.installEventFilter(self)
         return table
 
@@ -205,7 +256,26 @@ class OCRCorrectionsDialog(QDialog):
         layout.addWidget(inspection_hint)
         return page
 
+    @staticmethod
+    def _size_table(table: QTableWidget) -> None:
+        table.setMinimumHeight(
+            table.horizontalHeader().sizeHint().height()
+            + max(
+                table.verticalHeader().defaultSectionSize(),
+                table.fontMetrics().lineSpacing() + 8,
+            )
+            * 3
+            + table.frameWidth() * 2
+        )
+
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if isinstance(watched, QTableWidget) and event.type() == QEvent.Type.FontChange:
+            self._size_table(watched)
+        if (
+            isinstance(watched, QPlainTextEdit)
+            and event.type() == QEvent.Type.FontChange
+        ):
+            watched.setFixedHeight(watched.fontMetrics().lineSpacing() * 3 + 12)
         if (
             isinstance(watched, QTableWidget)
             and isinstance(event, QKeyEvent)
@@ -271,7 +341,9 @@ class OCRCorrectionsDialog(QDialog):
 
     def _mark_changed(self, *_args: object) -> None:
         self.save_button.setEnabled(
-            self._all_table_rows() != self._initial_rows and not self._save_active
+            self._all_table_rows() != self._initial_rows
+            and not self._save_active
+            and not self._reload_message
         )
         if not self._save_active:
             self.validate_rows(show_valid=False)
@@ -375,7 +447,7 @@ class OCRCorrectionsDialog(QDialog):
                 errors.extend(table_errors)
                 first_item = first_item or table_first_item
             if errors:
-                self.status.setText(
+                self.status.setPlainText(
                     f"Fix {len(errors)} correction row error(s) before saving:\n"
                     + "\n".join(f"- {message}" for message in errors)
                 )
@@ -388,8 +460,11 @@ class OCRCorrectionsDialog(QDialog):
                         table.setCurrentItem(
                             first_item, QItemSelectionModel.SelectionFlag.NoUpdate
                         )
+                        table.setFocus()
+            elif self._reload_message:
+                self.status.setPlainText(self._reload_message)
             elif show_valid and not self._save_active:
-                self.status.setText("All correction rows are valid.")
+                self.status.setPlainText("All correction rows are valid.")
             elif not errors and not self._save_active:
                 self.status.clear()
         return tuple(errors)
