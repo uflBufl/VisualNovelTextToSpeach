@@ -173,7 +173,7 @@ from vntts.support_ui import SupportCenterDialog
 from vntts.ui_text import add_composite_form_row as _add_composite_form_row
 from vntts.ui_text import make_text_copyable
 from vntts.versioned_json import file_revision
-from vntts.voice_library import VoiceLibrary
+from vntts.voice_library import VoiceLibrary, VoiceLibraryError
 from vntts.voices import (
     application_voice_library,
     find_default_voice_manifest,
@@ -329,6 +329,7 @@ class SettingsDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.voice_library = voice_library or application_voice_library()
+        self._voice_binding_rollback = self.voice_library.binding_rollback()
         self._initialize_settings(settings)
         window_layout = self._build_capture_controls(settings)
         self._build_engine_controls(settings)
@@ -1402,6 +1403,7 @@ class SettingsDialog(QDialog):
             self,
             voice_library=self.voice_library,
             use_offline_engine=offline_qwen,
+            voice_binding_rollback=self._voice_binding_rollback,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1549,6 +1551,29 @@ class SettingsDialog(QDialog):
             else "This engine uses normal speed. Reset to 100% to use prepared audio."
         )
         self.speech_rate_notice.setVisible(changed_speed)
+
+    def restore_initial_voice_bindings(self) -> None:
+        restored = self.voice_library.rollback_bindings(self._voice_binding_rollback)
+        self._voice_binding_rollback = self.voice_library.binding_rollback()
+        if not restored:
+            raise ValueError(
+                "A newer voice selection was kept. Other voice changes from these settings were undone."
+            )
+
+    def reject(self) -> None:
+        if self.result() == QDialog.DialogCode.Accepted:
+            super().reject()
+            return
+        try:
+            self.restore_initial_voice_bindings()
+        except (OSError, VoiceLibraryError) as error:
+            self._show_validation_message(
+                f"Unable to undo voice changes: {error}. Retry Cancel to restore them."
+            )
+            return
+        except ValueError as error:
+            QMessageBox.warning(self, "Newer voice selection kept", str(error))
+        super().reject()
 
     def validate_and_accept(self) -> None:
         errors = self.update_validation_summary()

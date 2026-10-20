@@ -1555,6 +1555,35 @@ class GameNarratorTest(unittest.TestCase):
             dialog.reject()
             self.run_task(pool)
 
+    def test_supplied_rollback_restores_bindings_before_multiple_picker_saves(self):
+        self.select_preset("preset:alba")
+        rollback = self._voice_library.binding_rollback()
+        for policy in ("automatic", "preset"):
+            pool = ManualThreadPool()
+            dialog = GameNarratorDialog(
+                AppSettings(),
+                importer=Mock(),
+                preview_service=Mock(),
+                thread_pool=pool,
+                player=Mock(),
+                voice_library=self._voice_library,
+                voice_binding_rollback=rollback,
+            )
+            dialog.source.setCurrentIndex(dialog.source.findData(policy))
+            dialog.presets.setCurrentIndex(dialog.presets.findData("preset:marius"))
+            dialog.save_button.click()
+            self.run_task(pool)
+            self.assertIs(dialog._voice_binding_rollback, rollback)
+        self.assertEqual(
+            self._voice_library.binding("Narrator").source_id, "preset:marius"
+        )
+
+        dialog.restore_initial_voice_bindings()
+
+        self.assertEqual(
+            self._voice_library.binding("Narrator").source_id, "preset:alba"
+        )
+
     def test_character_policies_restore_recording_priority_and_global_announcements(
         self,
     ):

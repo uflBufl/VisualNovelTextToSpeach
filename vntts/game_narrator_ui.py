@@ -131,6 +131,7 @@ class GameNarratorDialog(QDialog):
         player: QtPcmPlayer | None = None,
         binder: Binder = bind_voice_library_selection,
         voice_library: VoiceLibrary | None = None,
+        voice_binding_rollback: VoiceBindingRollback | None = None,
         use_offline_engine: bool = True,
     ) -> None:
         super().__init__(parent)
@@ -142,6 +143,7 @@ class GameNarratorDialog(QDialog):
             player,
             thread_pool,
             voice_library,
+            voice_binding_rollback,
             use_offline_engine,
         )
         self._build_status_and_assignment_controls()
@@ -163,6 +165,7 @@ class GameNarratorDialog(QDialog):
         player: QtPcmPlayer | None,
         thread_pool: QThreadPool | None,
         voice_library: VoiceLibrary | None,
+        voice_binding_rollback: VoiceBindingRollback | None,
         use_offline_engine: bool,
     ) -> None:
         self.setWindowTitle("Narrator and character voices")
@@ -181,7 +184,8 @@ class GameNarratorDialog(QDialog):
         )
         self.binder = binder
         self.voice_library = voice_library or application_voice_library()
-        self._voice_binding_rollback: VoiceBindingRollback | None = None
+        self._voice_binding_rollback = voice_binding_rollback
+        self._owns_voice_binding_rollback = voice_binding_rollback is None
         self.player = player or QtPcmPlayer(self)
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.runner.finished.connect(self._finished)
@@ -2243,7 +2247,8 @@ class GameNarratorDialog(QDialog):
         if not self.save_button.isEnabled():
             return
         self._saving_role = self.role.currentText().strip()
-        self._voice_binding_rollback = self.voice_library.binding_rollback()
+        if self._owns_voice_binding_rollback:
+            self._voice_binding_rollback = self.voice_library.binding_rollback()
         if self.source.currentData() in {"preset", "automatic", "narrator"}:
             self.result_settings = self._policy_settings(self._settings())
             self._cleanup()

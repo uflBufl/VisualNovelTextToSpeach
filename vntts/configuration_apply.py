@@ -21,10 +21,14 @@ if TYPE_CHECKING:
     from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 
 
-class _SettingsDialog(Protocol):
+class _ConfigurationDialog(Protocol):
     def exec(self) -> int: ...
 
     def settings(self) -> AppSettings: ...
+
+
+class _SettingsDialog(_ConfigurationDialog, Protocol):
+    def restore_initial_voice_bindings(self) -> None: ...
 
 
 class _Controller(Protocol):
@@ -132,7 +136,7 @@ class ConfigurationApplyMixin:
 
         def _create_settings_dialog(self) -> _SettingsDialog: ...
 
-        def _create_asset_manager_dialog(self) -> _SettingsDialog: ...
+        def _create_asset_manager_dialog(self) -> _ConfigurationDialog: ...
 
         def _configure_macos_launch_at_login(self, enabled: bool) -> None: ...
 
@@ -274,8 +278,21 @@ class ConfigurationApplyMixin:
         if after_apply is not None:
             after_apply()
 
+    def _report_settings_failure(
+        self, message: str, restore_voice_bindings: Callable[[], None]
+    ) -> None:
+        try:
+            restore_voice_bindings()
+        except (OSError, ValueError) as error:
+            message += f"; restoring the previous voice selection also failed: {error}"
+        self.show_error(message)
+
     def _save_settings_with_login_rollback(
-        self, updated_settings: AppSettings, original_settings: AppSettings
+        self,
+        updated_settings: AppSettings,
+        original_settings: AppSettings,
+        *,
+        restore_voice_bindings: Callable[[], None],
     ) -> Path | None:
         launch_changed = (
             updated_settings.launch_at_login != original_settings.launch_at_login
@@ -284,7 +301,10 @@ class ConfigurationApplyMixin:
             try:
                 self._configure_macos_launch_at_login(updated_settings.launch_at_login)
             except OSError as error:
-                self.show_error(f"Unable to configure launch at login: {error}")
+                self._report_settings_failure(
+                    f"Unable to configure launch at login: {error}",
+                    restore_voice_bindings,
+                )
                 return None
         try:
             path = self._save_settings_candidate(updated_settings)
@@ -300,7 +320,7 @@ class ConfigurationApplyMixin:
             message = f"Unable to save settings: {error}"
             if rollback_error is not None:
                 message += f"; launch-at-login rollback also failed: {rollback_error}"
-            self.show_error(message)
+            self._report_settings_failure(message, restore_voice_bindings)
             return None
         return path
 
@@ -319,10 +339,19 @@ class ConfigurationApplyMixin:
         dialog = self._create_settings_dialog()
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        updated_settings = dialog.settings()
+        try:
+            updated_settings = dialog.settings()
+        except (OSError, ValueError) as error:
+            self._report_settings_failure(
+                f"Unable to read settings: {error}",
+                dialog.restore_initial_voice_bindings,
+            )
+            return
         original_settings = self.settings
         path = self._save_settings_with_login_rollback(
-            updated_settings, original_settings
+            updated_settings,
+            original_settings,
+            restore_voice_bindings=dialog.restore_initial_voice_bindings,
         )
         if path is None:
             return

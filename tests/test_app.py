@@ -4001,6 +4001,76 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(dialog._raw_settings().offline_speech_backend, "qwen-tts")
         delete_dialog(dialog)
 
+    def test_settings_cancel_restores_repeated_voice_choices_and_keeps_peer_changes(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(Path(directory) / "voices")
+            library.select("Narrator", route="voice", source_id="preset:alba")
+            dialog = SettingsDialog(AppSettings(), voice_library=library)
+            dialog.show()
+            for source in ("preset:marius", "preset:jean"):
+                with patch("vntts.app.GameNarratorDialog") as picker:
+
+                    def choose():
+                        token = picker.call_args.kwargs["voice_binding_rollback"]
+                        library.select(
+                            "Narrator", route="voice", source_id=source, rollback=token
+                        )
+                        library.select(
+                            "Marcus", route="voice", source_id=source, rollback=token
+                        )
+                        return QDialog.DialogCode.Accepted
+
+                    picker.return_value.exec.side_effect = choose
+                    picker.return_value.result_settings = dialog.original_settings
+                    dialog.choose_narrator()
+            library.select("Marcus", route="voice", source_id="preset:cosette")
+            with patch("vntts.app.QMessageBox.warning") as warning:
+                dialog.reject()
+            self.assertFalse(dialog.isVisible())
+            self.assertEqual(library.binding("Narrator").source_id, "preset:alba")
+            self.assertEqual(library.binding("Marcus").source_id, "preset:cosette")
+            self.assertIn("newer voice selection", warning.call_args.args[2].lower())
+            delete_dialog(dialog)
+
+    def test_settings_cancel_failure_keeps_dialog_open_for_retry(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(Path(directory) / "voices")
+            dialog = SettingsDialog(AppSettings(), voice_library=library)
+            library.select(
+                "Narrator",
+                route="voice",
+                source_id="preset:marius",
+                rollback=dialog._voice_binding_rollback,
+            )
+            dialog.show()
+            with patch.object(
+                library, "rollback_bindings", side_effect=OSError("disk full")
+            ):
+                dialog.reject()
+            self.assertTrue(dialog.isVisible())
+            self.assertIn("disk full", dialog.validation_summary.toPlainText())
+            self.assertEqual(library.binding("Narrator").source_id, "preset:marius")
+            dialog.reject()
+            self.assertFalse(dialog.isVisible())
+            self.assertIsNone(library.binding("Narrator"))
+            delete_dialog(dialog)
+
+    def test_settings_accepted_voice_choice_survives_dialog_cleanup(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(Path(directory) / "voices")
+            dialog = SettingsDialog(AppSettings(), voice_library=library)
+            library.select(
+                "Narrator",
+                route="voice",
+                source_id="preset:marius",
+                rollback=dialog._voice_binding_rollback,
+            )
+            dialog.accept()
+            delete_dialog(dialog)
+            self.assertEqual(library.binding("Narrator").source_id, "preset:marius")
+
     def test_settings_allow_offline_moss_language_and_explicit_speed_reset(self):
         dialog = SettingsDialog(
             AppSettings(
@@ -4457,6 +4527,56 @@ class TrayApplicationTest(unittest.TestCase):
             dialog.save_button.click()
             self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
             delete_dialog(dialog)
+
+    def test_settings_failures_restore_voices_and_keep_original_error(self):
+        for stage in ("draft", "login", "write"):
+            with self.subTest(stage=stage):
+                original = AppSettings(launch_at_login=False)
+                controller = Mock(settings=original)
+                tray = TrayApplication(
+                    self.application,
+                    original,
+                    controller_factory=Mock(return_value=controller),
+                )
+                dialog = Mock()
+                dialog.exec.return_value = QDialog.DialogCode.Accepted
+                dialog.settings.return_value = original.updated(launch_at_login=True)
+                if stage == "draft":
+                    dialog.settings.side_effect = ValueError("invalid candidate")
+                dialog.restore_initial_voice_bindings.side_effect = OSError(
+                    "voice rollback unavailable"
+                )
+                with (
+                    patch.object(tray, "_create_settings_dialog", return_value=dialog),
+                    patch.object(
+                        tray,
+                        "_configure_macos_launch_at_login",
+                        side_effect=OSError("login unavailable")
+                        if stage == "login"
+                        else None,
+                    ),
+                    patch.object(
+                        tray,
+                        "_save_settings_candidate",
+                        side_effect=OSError("disk full") if stage == "write" else None,
+                    ),
+                    patch.object(tray, "show_error") as error,
+                ):
+                    tray.open_settings()
+                dialog.restore_initial_voice_bindings.assert_called_once_with()
+                message = error.call_args.args[0]
+                self.assertIn(
+                    {
+                        "draft": "invalid candidate",
+                        "login": "login unavailable",
+                        "write": "disk full",
+                    }[stage],
+                    message,
+                )
+                self.assertIn("voice rollback unavailable", message)
+                self.assertIs(tray.settings, original)
+                controller.apply_settings.assert_not_called()
+                tray.shutdown()
 
     def test_backend_setting_reloads_speech_without_app_restart(self):
         controller = Mock()
