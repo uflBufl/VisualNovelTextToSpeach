@@ -1466,6 +1466,9 @@ class TrayApplicationTest(unittest.TestCase):
                 return controller.is_live_running
 
             controller.toggle_live.side_effect = toggle_live
+            controller.stop_live.side_effect = lambda: setattr(
+                controller, "is_live_running", False
+            )
             picker = Mock(result_settings=tray.settings.updated(tts_speaker="marius"))
             with (
                 patch("vntts.app.GameNarratorDialog", return_value=picker),
@@ -1550,7 +1553,7 @@ class TrayApplicationTest(unittest.TestCase):
                     controller.is_live_running = False
                     return False
 
-                controller.toggle_live.side_effect = stop_live
+                controller.stop_live.side_effect = stop_live
                 controller.live_reader.wait.side_effect = lambda **_kwargs: (
                     release.wait(2)
                 )
@@ -1586,7 +1589,7 @@ class TrayApplicationTest(unittest.TestCase):
                         self.wait_until(lambda: overlay.called)
                     else:
                         self.wait_until(lambda: settings_dialog.called)
-                controller.toggle_live.assert_called_once_with()
+                controller.stop_live.assert_called_once_with()
                 if action == "calibrate":
                     controller.live_reader.wait.assert_called_once_with(
                         timeout_seconds=5.0, include_speech=False
@@ -2721,6 +2724,9 @@ class TrayApplicationTest(unittest.TestCase):
             return controller.is_live_running
 
         controller.toggle_live.side_effect = toggle_live
+        controller.stop_live.side_effect = lambda: setattr(
+            controller, "is_live_running", False
+        )
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -2750,7 +2756,8 @@ class TrayApplicationTest(unittest.TestCase):
             self.wait_until(lambda: controller.is_live_running)
 
         self.assertTrue(controller.is_live_running)
-        self.assertEqual(controller.toggle_live.call_count, 2)
+        controller.stop_live.assert_called_once_with()
+        controller.toggle_live.assert_called_once_with()
         controller.unresolved_live_speakers.assert_called_once_with()
         controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
         self.assertFalse(tray_application.resume_live_after_unknown_mapping)
@@ -3483,11 +3490,14 @@ class TrayApplicationTest(unittest.TestCase):
             game_pack = root / "game-pack.json"
             game_pack.write_text("{}", encoding="utf-8")
             dialog = SettingsDialog(AppSettings(screenshot_directory=str(root)))
+            pool = ManualThreadPool()
+            dialog.game_pack_runner.thread_pool = pool
             dialog.game_pack.setText(str(game_pack))
             dialog.show()
             self.application.processEvents()
 
             dialog.validate_and_accept()
+            pool.run_next()
             self.application.processEvents()
 
             self.assertNotEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
@@ -3518,6 +3528,8 @@ class TrayApplicationTest(unittest.TestCase):
                 )
 
             dialog = SettingsDialog(AppSettings(screenshot_directory=str(root)))
+            pool = ManualThreadPool()
+            dialog.game_pack_runner.thread_pool = pool
             dialog.voice_manifest.setText("hidden-stale-voices.json")
             dialog.story_index.setText("hidden-stale-story.jsonl")
             dialog.live_sequence_plan.setText("hidden-stale-sequence.json")
@@ -3526,6 +3538,8 @@ class TrayApplicationTest(unittest.TestCase):
                 dialog.game_pack.setText(str(game_pack))
                 dialog.validate_and_accept()
                 dialog.output_volume.setValue(45)
+                pool.run_next()
+                self.application.processEvents()
                 saved = dialog.settings()
 
             self.assertEqual(apply_mock.call_count, 1)
@@ -3537,6 +3551,166 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertEqual(saved.live_sequence_mode, "off")
             self.assertEqual(saved.generated_audio_manifest, str(generated_audio))
             delete_dialog(dialog)
+
+    def test_settings_open_and_edits_do_not_preflight_configured_pack(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack, manifest = root / "pack.json", root / "voices.json"
+            pack.touch()
+            manifest.touch()
+            with (
+                patch("vntts.app.apply_game_pack") as apply,
+                patch("vntts.app.find_default_voice_manifest") as discover,
+            ):
+                dialog = SettingsDialog(
+                    AppSettings(
+                        screenshot_directory=directory,
+                        game_pack=str(pack),
+                        voice_manifest=str(manifest),
+                    ),
+                    voice_library=VoiceLibrary(root / "library"),
+                )
+                dialog.game_window.setCurrentText("Another window")
+                dialog.screenshot_directory.setText(str(root / "screenshots"))
+                self.assertFalse(dialog.game_pack_runner.active)
+                apply.assert_not_called()
+                discover.assert_not_called()
+                delete_dialog(dialog)
+
+    def test_settings_pack_check_keeps_ui_responsive_and_cancel_ignores_result(self):
+        with TemporaryDirectory() as directory:
+            pack = Path(directory) / "pack.json"
+            pack.touch()
+            dialog = SettingsDialog(AppSettings(screenshot_directory=directory))
+            dialog.game_pack.setText(str(pack))
+            pool = QThreadPool()
+            dialog.game_pack_runner.thread_pool = pool
+            started, release = Event(), Event()
+            threads, heartbeat = [], []
+
+            def apply(settings, path=None):
+                threads.append(get_ident())
+                started.set()
+                release.wait(3)
+                return settings
+
+            with patch("vntts.app.apply_game_pack", side_effect=apply):
+                try:
+                    dialog.validate_and_accept()
+                    self.wait_until(started.is_set)
+                    self.assertFalse(dialog.save_button.isEnabled())
+                    self.assertIn(
+                        "Checking game pack", dialog.validation_summary.toPlainText()
+                    )
+                    QTimer.singleShot(0, lambda: heartbeat.append(True))
+                    self.wait_until(lambda: bool(heartbeat))
+                    self.assertNotEqual(threads, [get_ident()])
+                    self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                    dialog.reject()
+                    self.assertFalse(dialog.game_pack_runner.active)
+                finally:
+                    release.set()
+                    self.assertTrue(pool.waitForDone(3000))
+                self.application.processEvents()
+                self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+            delete_dialog(dialog)
+
+    def test_settings_pack_edit_discards_pending_result_and_validates_new_paths(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, second = root / "first.json", root / "second.json"
+            first.touch()
+            second.touch()
+            dialog = SettingsDialog(AppSettings(screenshot_directory=directory))
+            pool = ManualThreadPool()
+            dialog.game_pack_runner.thread_pool = pool
+            dialog.game_pack.setText(str(first))
+            with patch(
+                "vntts.app.apply_game_pack",
+                side_effect=lambda settings, path=None: settings.updated(
+                    story_index=str(root / "missing-story.jsonl")
+                ),
+            ) as apply:
+                dialog.validate_and_accept()
+                dialog.game_pack.setText(str(second))
+                self.assertTrue(dialog.save_button.isEnabled())
+                pool.run_next()
+                self.application.processEvents()
+                self.assertIsNone(dialog._game_pack_validation)
+                self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                dialog.validate_and_accept()
+                pool.run_next()
+                self.application.processEvents()
+                self.assertEqual(apply.call_count, 2)
+                self.assertEqual(apply.call_args.args[1], str(second))
+                self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                self.assertIn("Story index", dialog.validation_summary.toPlainText())
+            delete_dialog(dialog)
+
+    def test_settings_pack_validation_can_retry_after_repair_without_path_change(self):
+        with TemporaryDirectory() as directory:
+            pack = Path(directory) / "pack.json"
+            pack.touch()
+            dialog = SettingsDialog(AppSettings(screenshot_directory=directory))
+            pool = ManualThreadPool()
+            dialog.game_pack_runner.thread_pool = pool
+            dialog.game_pack.setText(str(pack))
+            with patch(
+                "vntts.app.apply_game_pack", side_effect=OSError("Unreadable pack")
+            ):
+                dialog.validate_and_accept()
+                pool.run_next()
+                self.application.processEvents()
+            self.assertIn("Unreadable pack", dialog.validation_summary.toPlainText())
+            with patch(
+                "vntts.app.apply_game_pack",
+                side_effect=lambda settings, path=None: settings,
+            ) as apply:
+                dialog.validate_and_accept()
+                pool.run_next()
+                self.application.processEvents()
+                self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                self.assertEqual(dialog.settings().game_pack, str(pack))
+                apply.assert_called_once()
+            delete_dialog(dialog)
+
+    def test_settings_pack_resolves_sequence_fields_before_validating_them(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack, plan, story = (
+                root / name for name in ("pack.json", "plan.json", "story.jsonl")
+            )
+            for path in (pack, plan, story):
+                path.touch()
+            for has_plan in (True, False):
+                with self.subTest(has_plan=has_plan):
+                    dialog = SettingsDialog(AppSettings(screenshot_directory=directory))
+                    pool = ManualThreadPool()
+                    dialog.game_pack_runner.thread_pool = pool
+                    dialog.game_pack.setText(str(pack))
+                    dialog.live_sequence_mode.setCurrentIndex(
+                        dialog.live_sequence_mode.findData("shadow")
+                    )
+                    self.assertEqual(dialog.live_sequence_plan.text(), "")
+                    self.assertEqual(dialog.story_index.text(), "")
+                    with patch(
+                        "vntts.app.apply_game_pack",
+                        side_effect=lambda settings, path=None: settings.updated(
+                            live_sequence_plan=str(plan) if has_plan else None,
+                            story_index=str(story),
+                            live_sequence_mode="shadow" if has_plan else "off",
+                        ),
+                    ):
+                        dialog.validate_and_accept()
+                        self.assertTrue(dialog.game_pack_runner.active)
+                        pool.run_next()
+                        self.application.processEvents()
+                        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                        self.assertEqual(
+                            dialog.settings().live_sequence_mode,
+                            "shadow" if has_plan else "off",
+                        )
+                    delete_dialog(dialog)
 
     def test_settings_existing_pack_preserves_external_sequence_override(self):
         with TemporaryDirectory() as temporary_directory:
@@ -4177,8 +4351,12 @@ class TrayApplicationTest(unittest.TestCase):
             pack = Path(directory) / "Northern-Library-long-game-pack-name.json"
             pack.write_text("{", encoding="utf-8")
             dialog = SettingsDialog(AppSettings())
+            pool = ManualThreadPool()
+            dialog.game_pack_runner.thread_pool = pool
             dialog.game_pack.setText(str(pack))
             dialog.save_button.click()
+            pool.run_next()
+            self.application.processEvents()
             self.assertEqual(
                 dialog.validation_summary.toPlainText(),
                 "Check these settings before saving:\n- Game pack: invalid JSON "
@@ -4735,6 +4913,9 @@ class TrayApplicationTest(unittest.TestCase):
             return controller.is_live_running
 
         controller.toggle_live.side_effect = toggle_live
+        controller.stop_live.side_effect = lambda: setattr(
+            controller, "is_live_running", False
+        )
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -4754,7 +4935,8 @@ class TrayApplicationTest(unittest.TestCase):
             self.wait_until(lambda: controller.is_live_running)
 
         self.assertTrue(controller.is_live_running)
-        self.assertEqual(controller.toggle_live.call_count, 2)
+        controller.stop_live.assert_called_once_with()
+        controller.toggle_live.assert_called_once_with()
         controller.unresolved_live_speakers.assert_called_once_with()
         controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
         tray_application.shutdown()
@@ -4821,6 +5003,9 @@ class TrayApplicationTest(unittest.TestCase):
             return controller.is_live_running
 
         controller.toggle_live.side_effect = toggle_live
+        controller.stop_live.side_effect = lambda: setattr(
+            controller, "is_live_running", False
+        )
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -4831,10 +5016,11 @@ class TrayApplicationTest(unittest.TestCase):
 
         with patch("vntts.app.DialogueHistoryDialog", return_value=dialog):
             tray_application.open_history()
-            self.wait_until(lambda: controller.is_live_running)
+            self.wait_until(lambda: dialog.exec.called and controller.is_live_running)
 
         self.assertTrue(controller.is_live_running)
-        self.assertEqual(controller.toggle_live.call_count, 2)
+        controller.stop_live.assert_called_once_with()
+        controller.toggle_live.assert_called_once_with()
         controller.unresolved_live_speakers.assert_called_once_with()
         controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
         tray_application.shutdown()
@@ -6340,7 +6526,7 @@ class TrayApplicationTest(unittest.TestCase):
             controller.is_live_running = False
             return False
 
-        controller.toggle_live.side_effect = stop_live
+        controller.stop_live.side_effect = stop_live
         controller.live_reader.wait.side_effect = lambda **_kwargs: release.wait(2)
         tray = TrayApplication(
             self.application,
@@ -6368,7 +6554,7 @@ class TrayApplicationTest(unittest.TestCase):
     def test_diagnostics_region_submission_failure_restores_calibration_button(self):
         controller = Mock(is_ready=True, is_live_running=True)
         controller.get_latest_diagnostic.return_value = None
-        controller.toggle_live.side_effect = lambda: False
+        controller.stop_live.side_effect = lambda: False
         tray = TrayApplication(
             self.application,
             AppSettings(),
@@ -6398,7 +6584,7 @@ class TrayApplicationTest(unittest.TestCase):
     def test_diagnostics_region_stop_timeout_allows_retry(self):
         controller = Mock(is_live_running=True)
         controller.get_latest_diagnostic.return_value = None
-        controller.toggle_live.side_effect = lambda: False
+        controller.stop_live.side_effect = lambda: False
         controller.live_reader.wait.side_effect = TimeoutError("reader stuck")
         tray = TrayApplication(
             self.application,
@@ -6725,7 +6911,7 @@ class TrayApplicationTest(unittest.TestCase):
             controller.is_live_running = False
             return False
 
-        controller.toggle_live.side_effect = toggle_live
+        controller.stop_live.side_effect = toggle_live
         controller.live_reader.wait.side_effect = lambda **_kwargs: release.wait(2)
         tray_application = TrayApplication(
             self.application,
@@ -6759,7 +6945,7 @@ class TrayApplicationTest(unittest.TestCase):
             controller.is_live_running = False
             return False
 
-        controller.toggle_live.side_effect = toggle_live
+        controller.stop_live.side_effect = toggle_live
         controller.live_reader.wait.side_effect = TimeoutError("reader stuck")
         tray_application = TrayApplication(
             self.application,
@@ -6781,7 +6967,84 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn(
             "Unable to stop live capture", tray_application.status_action.text()
         )
+        controller.live_reader.wait.side_effect = None
+        resumed = Mock()
+        tray_application._stop_live_then(resumed, "Retrying stop...")
+        self.wait_until(lambda: resumed.called)
+        self.assertEqual(controller.stop_live.call_count, 2)
+        controller.toggle_live.assert_not_called()
         tray_application.shutdown()
+
+    def test_live_modal_backend_stop_does_not_block_qt_events(self):
+        controller = Mock(is_live_running=True)
+        entered, release = Event(), Event()
+
+        def stop_live():
+            entered.set()
+            release.wait(2)
+            controller.is_live_running = False
+            return True
+
+        controller.stop_live.side_effect = stop_live
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        opened, heartbeat = Mock(), []
+        try:
+            tray._stop_live_then(opened, "Stopping before opening...")
+            self.wait_until(entered.is_set)
+            QTimer.singleShot(0, lambda: heartbeat.append(True))
+            self.wait_until(lambda: bool(heartbeat))
+            self.assertTrue(tray.live_stop_runner.active)
+            opened.assert_not_called()
+            controller.live_reader.wait.assert_not_called()
+        finally:
+            release.set()
+        self.wait_until(lambda: opened.called)
+        controller.toggle_live.assert_not_called()
+        tray.shutdown()
+
+    def test_stale_live_stop_worker_cannot_stop_or_open_a_new_session(self):
+        controller = Mock(is_live_running=True)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        self.addCleanup(tray.shutdown)
+        pool, opened = ManualThreadPool(), Mock()
+        tray.live_stop_runner.thread_pool = pool
+
+        tray._stop_live_then(opened, "Stopping before opening...")
+        tray._lifecycle_generation = tray.session_owner.begin()
+        pool.run_next()
+        self.application.processEvents()
+
+        controller.stop_live.assert_not_called()
+        controller.live_reader.wait.assert_not_called()
+        opened.assert_not_called()
+
+    def test_queued_live_stop_continuation_checks_shutdown_again(self):
+        controller = Mock(is_live_running=True)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        self.addCleanup(tray.shutdown)
+        opened = Mock()
+        generation = tray.session_owner.begin()
+        tray._lifecycle_generation = generation
+        tray._live_stop_generation = generation
+        tray._live_stop_continuation = opened
+
+        tray._live_stop_finished(True, None)
+        tray.shutdown()
+        self.application.processEvents()
+
+        opened.assert_not_called()
 
     def test_profile_restart_does_not_block_qt_events(self):
         with TemporaryDirectory() as temporary_directory:
@@ -7025,7 +7288,7 @@ class TrayApplicationTest(unittest.TestCase):
             controller.is_live_running = False
             return False
 
-        controller.toggle_live.side_effect = toggle_live
+        controller.stop_live.side_effect = toggle_live
         controller.live_reader.wait.side_effect = lambda **_kwargs: release.wait(2)
         tray_application = TrayApplication(
             self.application,

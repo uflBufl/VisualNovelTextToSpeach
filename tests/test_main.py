@@ -2013,6 +2013,7 @@ class MainTest(unittest.TestCase):
         def wait():
             waiting.set()
             released.wait(2)
+            live_reader.is_running = False
 
         live_reader.wait.side_effect = wait
         live_reader.release_waiters.side_effect = released.set
@@ -2035,6 +2036,7 @@ class MainTest(unittest.TestCase):
         self.assertEqual(result, [False])
         self.assertIs(controller.settings, original)
         live_reader.release_waiters.assert_called_once_with()
+        live_reader.stop.assert_called_once_with()
         live_reader.toggle.assert_called_once_with()
 
     def test_controller_end_to_end_test_recognizes_and_speaks_dialog(self):
@@ -2924,6 +2926,7 @@ class MainTest(unittest.TestCase):
             return reader.is_running
 
         reader.toggle.side_effect = toggle
+        reader.stop.side_effect = lambda: setattr(reader, "is_running", False) or True
         self.assertTrue(controller.resync_live_sequence("event-1"))
         self.assertTrue(controller.explicit_sequence_anchor_pending)
         anchored = controller.story_cursor.snapshot()
@@ -5326,7 +5329,8 @@ class MainTest(unittest.TestCase):
         controller.live_reader.is_running = False
         controller.live_reader.toggle.return_value = True
         self.assertTrue(controller.toggle_live())
-        self.assertEqual(controller.live_reader.toggle.call_count, 3)
+        self.assertEqual(controller.live_reader.toggle.call_count, 2)
+        controller.live_reader.stop.assert_called_once_with()
         self.assertFalse(controller._offer_unknown_speaker_mapping("Selone", "Line"))
 
     def test_paused_narrator_choice_survives_the_resumed_live_start(self):
@@ -5605,8 +5609,10 @@ class MainTest(unittest.TestCase):
 
     def test_live_mode_uses_playback_safe_backend_threads(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
-        controller.live_reader = Mock()
-        controller.live_reader.toggle.side_effect = [True, False]
+        controller.live_reader = Mock(is_running=False)
+        controller.live_reader.toggle.side_effect = lambda: (
+            setattr(controller.live_reader, "is_running", True) or True
+        )
         controller.speech_backend = Mock()
 
         self.assertTrue(controller.toggle_live())

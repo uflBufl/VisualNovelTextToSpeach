@@ -698,6 +698,9 @@ class AppController:
     def toggle_live(self) -> bool:
         return self.live_session.toggle()
 
+    def stop_live(self) -> bool:
+        return self.live_session.stop()
+
     def can_start_live_from_ocr(self) -> bool:
         return (
             not self._live_sequence_audio_active()

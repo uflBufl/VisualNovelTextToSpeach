@@ -92,6 +92,7 @@ class ControllerComponentsTest(unittest.TestCase):
         controller.cancel_settings_apply("token")
         controller.shutdown()
         controller.toggle_live()
+        controller.stop_live()
         controller.assign_voice("A", "voice")
         controller.inspect_current_dialog(notify=False)
 
@@ -105,6 +106,7 @@ class ControllerComponentsTest(unittest.TestCase):
         )
         controller.runtime_lifecycle.shutdown.assert_called_once_with()
         controller.live_session.toggle.assert_called_once_with()
+        controller.live_session.stop.assert_called_once_with()
         controller.voice_assignments.assign.assert_called_once_with(
             "A",
             "voice",
@@ -133,6 +135,7 @@ class ControllerComponentsTest(unittest.TestCase):
             "read_once": "live_session",
             "identify_live_scope": "live_session",
             "toggle_live": "live_session",
+            "stop_live": "live_session",
             "toggle_speech_pause": "live_session",
             "skip_current_speech": "live_session",
             "repeat_last_speech": "live_session",
@@ -277,6 +280,26 @@ class ControllerComponentsTest(unittest.TestCase):
 
         controller.schedule_dialog_read.cancel.assert_called_once_with()
         controller.live_reader.emergency_stop.assert_called_once_with()
+
+    def test_stop_live_never_starts_a_reader_that_finished_before_the_worker(self):
+        controller = AppController(AppSettings())
+        reader = Mock(is_running=False)
+        reader.stop.return_value = False
+        controller.live_reader = reader
+        controller.narrator_fallback_speakers.add("A")
+        controller.narrator_fallback_names["A"] = "A"
+        controller.allow_unscoped_live_reading = True
+        controller._set_backend_live_mode = Mock()
+
+        self.assertFalse(controller.stop_live())
+
+        reader.stop.assert_called_once_with()
+        reader.toggle.assert_not_called()
+        reader.start.assert_not_called()
+        self.assertFalse(controller.narrator_fallback_speakers)
+        self.assertFalse(controller.narrator_fallback_names)
+        self.assertFalse(controller.allow_unscoped_live_reading)
+        controller._set_backend_live_mode.assert_called_once_with(False)
 
     def test_settings_change_cancels_pending_one_time_read(self):
         controller = Mock(is_live_running=False)

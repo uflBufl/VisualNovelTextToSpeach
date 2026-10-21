@@ -93,7 +93,7 @@ from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.dialog_capture import format_runtime_error
 from vntts.durable_settings import DurableSettingsMixin
 from vntts.game_narrator_ui import GameNarratorDialog
-from vntts.game_pack import GamePackError, apply_game_pack
+from vntts.game_pack import apply_game_pack
 from vntts.generated_audio import AudioRouteTrace
 from vntts.history_ui import DialogueHistoryDialog
 from vntts.hotkey_ui import HotkeyRecorder, hotkey_recording_errors
@@ -386,8 +386,13 @@ class SettingsDialog(QDialog):
     def _initialize_settings(self, settings: AppSettings) -> None:
         self.original_settings = settings
         self._game_pack_validation: (
-            tuple[tuple[str, bool, str | None, str, str | None], AppSettings] | None
+            tuple[tuple[str | None, bool, str | None, str, str | None], AppSettings]
+            | None
         ) = None
+        self._game_pack_error: str | None = None
+        self._pending_pack_settings: AppSettings | None = None
+        self.game_pack_runner = LatestTaskRunner(self)
+        self.game_pack_runner.finished.connect(self._game_pack_checked)
         self.setWindowTitle(f"{application_name} settings")
 
     def _build_capture_controls(self, settings: AppSettings) -> QHBoxLayout:
@@ -499,7 +504,9 @@ class SettingsDialog(QDialog):
         self.narrator_reference.setAccessibleDescription(
             "Audio reference used for the narrator voice"
         )
-        default_voice_manifest = find_default_voice_manifest()
+        default_voice_manifest = (
+            None if settings.voice_manifest else find_default_voice_manifest()
+        )
         self.game_pack = QLineEdit(settings.game_pack or "")
         self.voice_manifest = QLineEdit(
             settings.voice_manifest
@@ -1182,16 +1189,41 @@ class SettingsDialog(QDialog):
         path_error = self._file_validation_error("Game pack", self.game_pack.text())
         if path_error:
             return None, path_error
-        try:
-            return self._settings_with_game_pack(self._raw_settings()), None
-        except (GamePackError, OSError) as error:
+        if self._game_pack_error is not None:
+            return None, self._game_pack_error
+        settings = self._raw_settings()
+        if self._game_pack_validation is not None and self._game_pack_validation[
+            0
+        ] == self._game_pack_key(settings):
+            return self._settings_with_game_pack(settings), None
+        return None, None
+
+    def _game_pack_checked(
+        self, settings: AppSettings | None, error: Exception | None
+    ) -> None:
+        pending = self._pending_pack_settings
+        self._pending_pack_settings = None
+        self.save_button.setEnabled(True)
+        if pending is None:
+            return
+        if error is not None:
             cause = error.__cause__
-            if isinstance(cause, JSONDecodeError):
-                return None, (
-                    f"Game pack: invalid JSON at line {cause.lineno}, "
-                    f"column {cause.colno}. Choose a valid game pack."
-                )
-            return None, f"Game pack: {error}."
+            self._game_pack_error = (
+                f"Game pack: invalid JSON at line {cause.lineno}, "
+                f"column {cause.colno}. Choose a valid game pack."
+                if isinstance(cause, JSONDecodeError)
+                else f"Game pack: {error}."
+            )
+            self._focus_validation_errors(self.update_validation_summary())
+            return
+        assert settings is not None
+        self._game_pack_validation = self._game_pack_key(pending), settings
+        self.validate_and_accept()
+
+    def _cancel_pack_check(self) -> None:
+        self.game_pack_runner.cancel()
+        self._pending_pack_settings = None
+        self.save_button.setEnabled(True)
 
     def validation_errors(self) -> tuple[ValidationError, ...]:
         errors: list[ValidationError] = []
@@ -1279,39 +1311,40 @@ class SettingsDialog(QDialog):
             if field is self.narrator_reference and narrator_binding is not None:
                 continue
             add(2, field, self._file_validation_error(label, field.text()))
-        if not game_pack or effective_settings is not None:
-            derived_paths = (
-                (
-                    "Voice manifest",
-                    self.voice_manifest,
-                    effective_settings.voice_manifest
-                    if effective_settings is not None
-                    else self.voice_manifest.text(),
-                ),
-                (
-                    "Story index",
-                    self.story_index,
-                    effective_settings.story_index
-                    if effective_settings is not None
-                    else self.story_index.text(),
-                ),
-                (
-                    "Live sequence plan",
-                    self.live_sequence_plan,
-                    effective_settings.live_sequence_plan
-                    if effective_settings is not None
-                    else self.live_sequence_plan.text(),
-                ),
-                (
-                    "Generated audio manifest",
-                    self.generated_audio_manifest,
-                    effective_settings.generated_audio_manifest
-                    if effective_settings is not None
-                    else self.generated_audio_manifest.text(),
-                ),
-            )
-            for label, field, value in derived_paths:
-                add(2, field, self._file_validation_error(label, value or ""))
+        if game_pack and effective_settings is None:
+            return tuple(errors)
+        derived_paths = (
+            (
+                "Voice manifest",
+                self.voice_manifest,
+                effective_settings.voice_manifest
+                if effective_settings is not None
+                else self.voice_manifest.text(),
+            ),
+            (
+                "Story index",
+                self.story_index,
+                effective_settings.story_index
+                if effective_settings is not None
+                else self.story_index.text(),
+            ),
+            (
+                "Live sequence plan",
+                self.live_sequence_plan,
+                effective_settings.live_sequence_plan
+                if effective_settings is not None
+                else self.live_sequence_plan.text(),
+            ),
+            (
+                "Generated audio manifest",
+                self.generated_audio_manifest,
+                effective_settings.generated_audio_manifest
+                if effective_settings is not None
+                else self.generated_audio_manifest.text(),
+            ),
+        )
+        for label, field, value in derived_paths:
+            add(2, field, self._file_validation_error(label, value or ""))
         sequence_mode = (
             effective_settings.live_sequence_mode
             if effective_settings is not None
@@ -1348,6 +1381,9 @@ class SettingsDialog(QDialog):
         return tuple(errors)
 
     def update_validation_summary(self, *_args: object) -> tuple[ValidationError, ...]:
+        if _args:
+            self._cancel_pack_check()
+            self._game_pack_error = None
         from vntts.speech_presentation import narrator_voice_label
 
         self.narrator_voice.setText(
@@ -1561,6 +1597,7 @@ class SettingsDialog(QDialog):
             )
 
     def reject(self) -> None:
+        self._cancel_pack_check()
         if self.result() == QDialog.DialogCode.Accepted:
             super().reject()
             return
@@ -1576,18 +1613,40 @@ class SettingsDialog(QDialog):
         super().reject()
 
     def validate_and_accept(self) -> None:
+        if self.game_pack_runner.active:
+            return
+        self._game_pack_error = None
         errors = self.update_validation_summary()
         if errors:
-            section, widget, _message = errors[0]
-            self.advanced_settings.setChecked(True)
-            if widget is self.narrator_reference:
-                self.advanced_narrator.setChecked(True)
-            self.section_navigation.setCurrentIndex(section)
-            self.show_settings_section(section)
-            widget.setFocus(Qt.FocusReason.OtherFocusReason)
-            self.settings_scroll.ensureWidgetVisible(widget, 0, 12)
+            self._focus_validation_errors(errors)
+            return
+        settings = self._raw_settings()
+        if settings.game_pack and (
+            self._game_pack_validation is None
+            or self._game_pack_validation[0] != self._game_pack_key(settings)
+        ):
+            self._pending_pack_settings = settings
+            self.save_button.setEnabled(False)
+            self._show_validation_message("Checking game pack before saving...")
+            self.game_pack_runner.start(
+                self._apply_game_pack,
+                settings,
+                settings.game_pack != self.original_settings.game_pack,
+            )
             return
         self.accept()
+
+    def _focus_validation_errors(self, errors: tuple[ValidationError, ...]) -> None:
+        if not errors:
+            return
+        section, widget, _message = errors[0]
+        self.advanced_settings.setChecked(True)
+        if widget is self.narrator_reference:
+            self.advanced_narrator.setChecked(True)
+        self.section_navigation.setCurrentIndex(section)
+        self.show_settings_section(section)
+        widget.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.settings_scroll.ensureWidgetVisible(widget, 0, 12)
 
     def _raw_settings(self) -> AppSettings:
         """Project draft controls; recorded shortcuts are applied on save."""
@@ -1654,39 +1713,45 @@ class SettingsDialog(QDialog):
             }
         )
 
-    def _settings_with_game_pack(self, settings: AppSettings) -> AppSettings:
-        if not settings.game_pack:
-            return settings
-        selected_new_pack = settings.game_pack != self.original_settings.game_pack
-        key = (
+    def _game_pack_key(
+        self, settings: AppSettings
+    ) -> tuple[str | None, bool, str | None, str, str | None]:
+        return (
             settings.game_pack,
-            selected_new_pack,
+            settings.game_pack != self.original_settings.game_pack,
             settings.live_sequence_plan,
             settings.live_sequence_mode,
             settings.voice_manifest,
         )
-        if self._game_pack_validation is None or self._game_pack_validation[0] != key:
-            started = perf_counter()
-            try:
-                validated = apply_game_pack(
-                    settings,
-                    settings.game_pack if selected_new_pack else None,
-                )
-            except Exception:
-                record_background_operation(
-                    "settings-game-pack-validation",
-                    (perf_counter() - started) * 1000,
-                    "failed",
-                )
-                raise
+
+    @staticmethod
+    def _apply_game_pack(settings: AppSettings, selected_new_pack: bool) -> AppSettings:
+        started = perf_counter()
+        try:
+            validated = apply_game_pack(
+                settings, settings.game_pack if selected_new_pack else None
+            )
+        except Exception:
             record_background_operation(
                 "settings-game-pack-validation",
                 (perf_counter() - started) * 1000,
-                "complete",
+                "failed",
             )
-            self._game_pack_validation = key, validated
-        else:
-            validated = self._game_pack_validation[1]
+            raise
+        record_background_operation(
+            "settings-game-pack-validation",
+            (perf_counter() - started) * 1000,
+            "complete",
+        )
+        return validated
+
+    def _settings_with_game_pack(self, settings: AppSettings) -> AppSettings:
+        if not settings.game_pack:
+            return settings
+        key = self._game_pack_key(settings)
+        if self._game_pack_validation is None or self._game_pack_validation[0] != key:
+            self._game_pack_validation = key, self._apply_game_pack(settings, key[1])
+        validated = self._game_pack_validation[1]
         return settings.updated(
             game_pack=validated.game_pack,
             story_index=validated.story_index,
@@ -3643,42 +3708,39 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.set_status("Live capture is already stopping; please wait")
             return False
         reader = self.controller.live_reader
-        running = self.controller.toggle_live()
-        self.signals.live_changed.emit(running)
-        if running:
-            self.set_status("Unable to stop live capture for this action")
-            return False
         self._lifecycle_generation = self.session_owner.begin()
         self._live_stop_generation = self._lifecycle_generation
         self._live_stop_continuation = continuation
         self._set_modal_launchers_enabled(False)
         self.set_status(status)
-        if reader is None:
-            QTimer.singleShot(0, self, lambda: self._live_stop_finished(True, None))
-        else:
-            self.live_stop_runner.start(
-                self._wait_for_live_reader, reader, wait_for_speech
-            )
+        self.live_stop_runner.start(
+            self.session_owner.run,
+            self._live_stop_generation,
+            lambda _cancellation: self._wait_for_live_reader(reader, wait_for_speech),
+            False,
+        )
         return True
 
-    @staticmethod
     def _wait_for_live_reader(
-        reader: LiveDialogReader, wait_for_speech: bool = True
+        self, reader: LiveDialogReader | None, wait_for_speech: bool = True
     ) -> bool:
+        self.controller.stop_live()
+        if reader is None:
+            return True
         if wait_for_speech:
             reader.wait(timeout_seconds=5.0)
         else:
             reader.wait(timeout_seconds=5.0, include_speech=False)
         return True
 
-    def _live_stop_finished(self, _result: object, error: Exception | None) -> None:
+    def _live_stop_finished(self, result: object, error: Exception | None) -> None:
         generation = self._live_stop_generation
         self._live_stop_generation = None
         continuation = self._live_stop_continuation
         self._live_stop_continuation = None
         if not self._shutting_down:
             self._apply_controller_action_state()
-        if self._shutting_down or generation != self._lifecycle_generation:
+        if not self._lifecycle_is_current(generation):
             return
         if self.diagnostics_dialog is not None:
             self.diagnostics_dialog.set_calibration_pending(False)
@@ -3689,10 +3751,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if continuation == self.calibrate and self.diagnostics_dialog is not None:
                 self.diagnostics_dialog.set_warning(message)
             return
+        if result is not True:
+            return
+        self.signals.live_changed.emit(False)
         if continuation is not None:
-            QTimer.singleShot(0, self, continuation)
+            QTimer.singleShot(
+                0,
+                self,
+                lambda: (
+                    continuation() if self._lifecycle_is_current(generation) else None
+                ),
+            )
         else:
-            self.signals.live_changed.emit(False)
             self.set_status("Reading and speech stopped")
 
     def open_corrections(self) -> None:

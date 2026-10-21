@@ -1,5 +1,9 @@
 # TODO
 
+## Preserve modal stop barriers after a timeout
+
+- [ ] Ensure retrying Settings or another paused-reading dialog after a live-stop timeout still waits for pending speech when capture has already stopped. The openers currently test `is_live_running`, and `RuntimeLifecycleComponent._stop_live_for_settings` also returns early for stopped capture. Reuse the background stop path and add a regression with stopped capture and blocked speech; the retry must neither open/apply early nor restart the reader.
+
 ## Qualify Settings on native Windows and macOS
 
 - [ ] With verified background workspace isolation or an explicitly approved native session, edit Settings across sections, open the file and engine selectors, save and cancel nested voice choices, and confirm keyboard focus/VoiceOver or NVDA announcements at enlarged system text. On Windows verify native shortcut symbols and application after Save; on macOS verify the unsupported-hotkey explanation. Start with a saved non-100% speed, reset to 100%, save, reopen, and play an existing prepared line; repeat reset with Cancel and verify the original setting remains. Retain native focus, popup placement and audible playback evidence. Offscreen Qt checks cover persistence, rollback, literal text, navigation and layout, not OS integration or physical output.

@@ -912,45 +912,55 @@ class LiveSessionComponent:
         reader = controller.live_reader
         if reader is None or controller.shutdown_requested.is_set() is True:
             return False
-        starting = not reader.is_running
-        if starting and not self._voice_preflight_allows_start():
+        if reader.is_running:
+            self.stop()
             return False
-        if starting and controller.capture_target is not None:
+        if not self._voice_preflight_allows_start():
+            return False
+        if controller.capture_target is not None:
             try:
                 controller.capture_target.get_geometry()
             except Exception as error:
                 controller.error_handler(ScreenCaptureError(str(error)))
                 controller.status_handler("Live reading could not start")
                 return False
-        if starting:
-            # Unknown-speaker prompts are deduplicated within one live session,
-            # not for the entire application lifetime.
-            controller.reported_unknown_speakers.clear()
-            controller.pending_unknown_speakers.clear()
-            controller.narrator_fallback_speakers.clear()
-            controller.narrator_fallback_names.clear()
-            controller.narrator_fallback_speakers.update(
-                controller.next_live_narrator_fallback_names
-            )
-            controller.narrator_fallback_names.update(
-                controller.next_live_narrator_fallback_names
-            )
-            with controller.speaker_announcement_lock:
-                controller.last_visible_speaker_key = None
-            controller._start_live_sequence_session()
+        # Unknown-speaker prompts are deduplicated within one live session,
+        # not for the entire application lifetime.
+        controller.reported_unknown_speakers.clear()
+        controller.pending_unknown_speakers.clear()
+        controller.narrator_fallback_speakers.clear()
+        controller.narrator_fallback_names.clear()
+        controller.narrator_fallback_speakers.update(
+            controller.next_live_narrator_fallback_names
+        )
+        controller.narrator_fallback_names.update(
+            controller.next_live_narrator_fallback_names
+        )
+        with controller.speaker_announcement_lock:
+            controller.last_visible_speaker_key = None
+        controller._start_live_sequence_session()
         running = reader.toggle()
         if running:
             controller.next_live_narrator_fallback_names.clear()
             reader.max_speech_jobs = controller.live_speech_backpressure.reset()
-        elif not starting:
-            controller.narrator_fallback_speakers.clear()
-            controller.narrator_fallback_names.clear()
-            controller.allow_unscoped_live_reading = False
         controller._set_backend_live_mode(running)
         controller.status_handler(
             "Live reading started" if running else "Live reading stopping"
         )
         return bool(running)
+
+    def stop(self) -> bool:
+        controller = self.controller
+        reader = controller.live_reader
+        if reader is None:
+            return False
+        stopped = reader.stop()
+        controller.narrator_fallback_speakers.clear()
+        controller.narrator_fallback_names.clear()
+        controller.allow_unscoped_live_reading = False
+        controller._set_backend_live_mode(False)
+        controller.status_handler("Live reading stopping")
+        return bool(stopped)
 
     def _voice_preflight_allows_start(self) -> bool:
         controller = self.controller
