@@ -364,10 +364,10 @@ class GeneratedAudioLibrary:
         _validate_generated_audio_paths(index)
         live_fallbacks = _live_fallback_index(index.metadata)
         audio_event_omissions = _audio_event_omission_index(index.metadata)
-        generated_identities = {
-            (entry.line_id, entry.text_sha256) for entry in index.entries
+        entries_by_identity = {
+            (entry.line_id, entry.text_sha256): entry for entry in index.entries
         }
-        if generated_identities.intersection(audio_event_omissions):
+        if entries_by_identity.keys() & audio_event_omissions.keys():
             raise GeneratedAudioManifestError(
                 "Generated audio conflicts with an audio-event omission"
             )
@@ -377,6 +377,7 @@ class GeneratedAudioLibrary:
             if (role := _narrator_fallback_role(entry)) is not None
         }
         self.index = index
+        self._entries_by_identity = entries_by_identity
         self.runtime_progress = index.metadata.get("vntts.runtime.progress") is True
         self.live_fallbacks = live_fallbacks
         self.audio_event_omissions = audio_event_omissions
@@ -429,6 +430,17 @@ class GeneratedAudioLibrary:
                 warn(f"Generated audio disabled: {error}")
             return None
 
+    def has_entry(self, line_id: str, text_sha256: str) -> bool:
+        """Check manifest membership without admitting the audio file for playback."""
+        self._reload_if_changed()
+        with self.reload_lock:
+            return self._entry(line_id, text_sha256) is not None
+
+    def _entry(self, line_id: str, text_sha256: str) -> GeneratedAudioEntryLike | None:
+        if not isinstance(line_id, str) or not isinstance(text_sha256, str):
+            return None
+        return self._entries_by_identity.get((line_id.strip(), text_sha256.strip()))
+
     def find(self, line_id: str, text_sha256: str) -> PreparedGeneratedAudio | None:
         prepared, _state = self.find_with_preflight(line_id, text_sha256)
         return prepared
@@ -438,9 +450,8 @@ class GeneratedAudioLibrary:
     ) -> tuple[PreparedGeneratedAudio | None, str]:
         self._reload_if_changed()
         with self.reload_lock:
-            index = self.index
+            entry = self._entry(line_id, text_sha256)
             narrator_fallback_roles = self.narrator_fallback_roles
-        entry = index.find(line_id, text_sha256, verify_file=False)
         if entry is None:
             return None, "generated-audio-entry-not-found"
         narrator_fallback_role = narrator_fallback_roles.get(

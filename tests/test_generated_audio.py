@@ -15,6 +15,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import (
     GeneratedAudioIndex,
     GeneratedAudioManifestError,
+    load_generated_audio_document,
     text_sha256,
     write_generated_audio_manifest,
 )
@@ -91,6 +92,22 @@ def write_wav(path, samples, sample_rate=24_000):
 
 
 class GeneratedAudioTest(unittest.TestCase):
+    def test_lossless_document_lookup_uses_the_library_identity_index(self):
+        with TemporaryDirectory() as directory:
+            legacy, audio = self.create_library(Path(directory))
+            document = load_generated_audio_document(legacy.manifest_path)
+            library = GeneratedAudioLibrary(document)
+            entry = document.records[0]
+            with patch.object(
+                type(document), "find", side_effect=AssertionError("linear scan")
+            ):
+                self.assertTrue(library.has_entry(entry.line_id, entry.text_sha256))
+                self.assertFalse(library.has_entry("missing", entry.text_sha256))
+                prepared = library.find(" " + entry.line_id, entry.text_sha256 + " ")
+                self.assertIsNotNone(prepared)
+                audio.write_bytes(b"damaged")
+                self.assertIsNone(library.find(entry.line_id, entry.text_sha256))
+
     def test_manual_override_restores_story_match_when_lookup_fails(self):
         for result_aware in (False, True):
             with self.subTest(result_aware=result_aware):
@@ -1432,15 +1449,15 @@ class GeneratedAudioTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             library, audio = self.create_library(root)
-            original_find = library.index.find
+            original_find = library._entry
 
-            def swap_after_lookup(line_id, text_hash, verify_file=False):
-                entry = original_find(line_id, text_hash, verify_file=verify_file)
+            def swap_after_lookup(line_id, text_hash):
+                entry = original_find(line_id, text_hash)
                 if entry is not None:
                     write_wav(audio, [0.75, 0.75, 0.75, 0.75])
                 return entry
 
-            library.index.find = swap_after_lookup
+            library._entry = swap_after_lookup
 
             prepared, state = library.find_with_preflight(
                 "game:1", text_sha256("Hello.")

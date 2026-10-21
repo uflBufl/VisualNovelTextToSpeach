@@ -7,7 +7,7 @@ import hashlib
 import os
 import shutil
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
@@ -160,6 +160,93 @@ class _StoryAudioPack:
     library: GeneratedAudioLibrary | None
 
 
+class StoryAudioInspector:
+    """Reuse validated pack metadata only within one background inspection batch."""
+
+    def __init__(
+        self,
+        content: GameContent,
+        job_store: PregenerationJobStore,
+        *,
+        cancel_event: Cancellation | None = None,
+    ) -> None:
+        self.content = content
+        self.job_store = job_store
+        self.cancel_event = cancel_event
+        self._packs: dict[Path, _StoryAudioPack | Exception] = {}
+        self._source: tuple[StoryIndexDocument, frozenset[str]] | None = None
+        self._source_records: dict[str, StoryIndexRecord] = {}
+
+    def _source_snapshot(self) -> tuple[StoryIndexDocument, frozenset[str]]:
+        if self._source is None:
+            try:
+                source = load_verified_story_index_document(
+                    self.content.story_index, self.content.story_index_sha256
+                )
+            except (OSError, StoryIndexError, ValueError) as error:
+                raise OfflinePackError(
+                    "Story content changed. Refresh the story list and retry."
+                ) from error
+            _raise_if_cancelled(self.cancel_event)
+            self._source = (
+                source,
+                _validated_source_audio_line_ids(self.content.story_index, source),
+            )
+            self._source_records = {record.line_id: record for record in source.records}
+        return self._source
+
+    def inspect(
+        self,
+        selection_id: str,
+        *,
+        manifest: str | Path | None = None,
+        imported_pack: GamePackImport | None = None,
+    ) -> StoryAudioCoverage:
+        content = self.content
+        cancel_event = self.cancel_event
+        _raise_if_cancelled(cancel_event)
+        selection = next(
+            value for value in content.selections if value.selection_id == selection_id
+        )
+        source, source_audio_line_ids = self._source_snapshot()
+        pack = _story_audio_pack(
+            content,
+            selection.line_ids,
+            self.job_store,
+            manifest=manifest,
+            imported_pack=imported_pack,
+            cancel_event=cancel_event,
+            pack_cache=self._packs,
+        )
+        _raise_if_cancelled(cancel_event)
+        counts = dict(
+            original=0,
+            generated=0,
+            live=0,
+            omitted=0,
+            non_spoken=0,
+            missing=0,
+        )
+        for line_id in selection.line_ids:
+            _raise_if_cancelled(cancel_event)
+            record = self._source_records.get(line_id)
+            if record is None:
+                raise OfflinePackError(
+                    "Selected story lines changed. Refresh the story list and retry."
+                )
+            saved = pack.records.get(record.line_id)
+            if saved is not None and saved.text_sha256 != record.text_sha256:
+                raise OfflinePackError(
+                    "Saved story text differs from the selected content. Prepare this story again."
+                )
+            route = _story_audio_route(
+                record, saved, source, source_audio_line_ids, pack
+            )
+            counts[route] += 1
+        _raise_if_cancelled(cancel_event)
+        return StoryAudioCoverage(selection.title, pack.manifest, **counts)
+
+
 def inspect_story_audio(
     content: GameContent,
     selection_id: str,
@@ -167,50 +254,12 @@ def inspect_story_audio(
     *,
     manifest: str | Path | None = None,
     imported_pack: GamePackImport | None = None,
+    cancel_event: Cancellation | None = None,
 ) -> StoryAudioCoverage:
-    """Verify one story against one saved pack; never combine incompatible packs."""
-    selection = next(
-        value for value in content.selections if value.selection_id == selection_id
+    """Verify one story against current saved files in a fresh inspection batch."""
+    return StoryAudioInspector(content, job_store, cancel_event=cancel_event).inspect(
+        selection_id, manifest=manifest, imported_pack=imported_pack
     )
-    try:
-        source = load_verified_story_index_document(
-            content.story_index, content.story_index_sha256
-        )
-    except (OSError, StoryIndexError, ValueError) as error:
-        raise OfflinePackError(
-            "Story content changed. Refresh the story list and retry."
-        ) from error
-    source_audio_line_ids = _validated_source_audio_line_ids(
-        content.story_index,
-        source,
-    )
-    pack = _story_audio_pack(
-        content,
-        selection.line_ids,
-        job_store,
-        manifest=manifest,
-        imported_pack=imported_pack,
-    )
-    counts = dict(
-        original=0,
-        generated=0,
-        live=0,
-        omitted=0,
-        non_spoken=0,
-        missing=0,
-    )
-    line_ids = set(selection.line_ids)
-    for record in source.records:
-        if record.line_id not in line_ids:
-            continue
-        saved = pack.records.get(record.line_id)
-        if saved is not None and saved.text_sha256 != record.text_sha256:
-            raise OfflinePackError(
-                "Saved story text differs from the selected content. Prepare this story again."
-            )
-        route = _story_audio_route(record, saved, source, source_audio_line_ids, pack)
-        counts[route] += 1
-    return StoryAudioCoverage(selection.title, pack.manifest, **counts)
 
 
 def _story_audio_pack(
@@ -220,7 +269,10 @@ def _story_audio_pack(
     *,
     manifest: str | Path | None,
     imported_pack: GamePackImport | None,
+    pack_cache: dict[Path, _StoryAudioPack | Exception],
+    cancel_event: Cancellation | None = None,
 ) -> _StoryAudioPack:
+    _raise_if_cancelled(cancel_event)
     explicit = manifest is not None or imported_pack is not None
     if imported_pack is not None:
         manifest_path = imported_pack.pack.manifest_path
@@ -228,12 +280,11 @@ def _story_audio_pack(
         manifest_path = Path(manifest).expanduser().resolve()
     else:
         selected = set(selection_line_ids)
-        manifests = [
-            path
-            for job in job_store.jobs_for_content(content)
-            if selected.issubset(job.selected_line_ids)
-            for path in job_store.published_packs(job)
-        ]
+        manifests: list[Path] = []
+        for job in job_store.jobs_for_content(content):
+            _raise_if_cancelled(cancel_event)
+            if selected.issubset(job.selected_line_ids):
+                manifests.extend(job_store.published_packs(job))
         manifest_path = max(
             manifests,
             key=lambda path: (path.stat().st_mtime_ns, str(path)),
@@ -241,26 +292,46 @@ def _story_audio_pack(
         )
     if manifest_path is None:
         return _StoryAudioPack(None, explicit, None, {}, frozenset(), None)
-    imported = imported_pack or import_game_pack(manifest_path)
-    story = load_verified_story_index_document(
-        imported.story_index, imported.pack.story_index.sha256
-    )
-    library = (
-        GeneratedAudioLibrary(
-            load_generated_audio_document(imported.generated_audio_manifest),
-            cache_size=1,
+    _raise_if_cancelled(cancel_event)
+    cache_key = manifest_path.resolve()
+    cached = pack_cache.get(cache_key)
+    if isinstance(cached, Exception):
+        raise cached
+    if cached is not None:
+        return replace(cached, explicit=explicit)
+    try:
+        imported = imported_pack or import_game_pack(manifest_path)
+        _raise_if_cancelled(cancel_event)
+        story = load_verified_story_index_document(
+            imported.story_index, imported.pack.story_index.sha256
         )
-        if imported.generated_audio_manifest is not None
-        else None
-    )
-    return _StoryAudioPack(
-        manifest_path,
-        explicit,
-        story,
-        {record.line_id: record for record in story.records},
-        _validated_source_audio_line_ids(imported.story_index, story),
-        library,
-    )
+        library = (
+            GeneratedAudioLibrary(
+                load_generated_audio_document(imported.generated_audio_manifest),
+                cache_size=1,
+            )
+            if imported.generated_audio_manifest is not None
+            else None
+        )
+        result = _StoryAudioPack(
+            manifest_path,
+            explicit,
+            story,
+            {record.line_id: record for record in story.records},
+            _validated_source_audio_line_ids(imported.story_index, story),
+            library,
+        )
+    except (
+        GamePackError,
+        GeneratedAudioManifestError,
+        OSError,
+        StoryIndexError,
+        ValueError,
+    ) as error:
+        pack_cache[cache_key] = error
+        raise
+    pack_cache[cache_key] = result
+    return result
 
 
 def _story_audio_route(
@@ -280,9 +351,7 @@ def _story_audio_route(
     effective = saved or record
     if not effective.speakable:
         return "non_spoken"
-    if library and library.index.find(
-        record.line_id, record.text_sha256, verify_file=False
-    ):
+    if library and library.has_entry(record.line_id, record.text_sha256):
         if library.find(record.line_id, record.text_sha256) is None:
             raise OfflinePackError(
                 f"Saved audio is missing or damaged for {record.line_id}. Prepare this story again."

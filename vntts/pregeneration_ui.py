@@ -74,6 +74,7 @@ from vntts.pregeneration_pack import (
     OfflinePackResult,
     OfflinePreparationChanges,
     StoryAudioCoverage,
+    StoryAudioInspector,
     inspect_story_audio,
     load_saved_pack,
 )
@@ -154,6 +155,11 @@ StoryAudioCheck: TypeAlias = tuple[
     StoryAudioCoverage | None,
     Exception | str | None,
 ]
+
+
+@dataclass(frozen=True)
+class _StoryAudioBatch:
+    results: tuple[tuple[StoryAudioKey, object, Exception | None], ...]
 
 
 @dataclass(frozen=True)
@@ -338,6 +344,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self.discovery_runner.finished.connect(self._discovery_finished)
         self.coverage_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.coverage_runner.finished.connect(self._story_audio_finished)
+        self._story_audio_cancel_event = Event()
+        self._checking_story_ids: tuple[str, ...] = ()
         self.saved_pack_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.saved_pack_runner.finished.connect(self._saved_pack_finished)
         self.import_runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -1220,8 +1228,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.discovery_message.setText(
             "Finding local stories. Controls unlock when loading finishes."
         )
-        self.coverage_runner.cancel()
-        self._checking_story = None
+        self._cancel_story_audio_check()
         self._story_audio_checks.clear()
         self._story_playback_speakers.clear()
         self._prepared_voice_manifest = None
@@ -1710,8 +1717,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self._awaiting_voice_confirmation and self._job is not None
         )
         self.settings = settings
-        self.coverage_runner.cancel()
-        self._checking_story = None
+        self._cancel_story_audio_check()
         self._story_audio_changed()
         with (
             QSignalBlocker(self.engine_choice),
@@ -3356,8 +3362,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._emit_task_progress()
 
     def _source_changed(self, _index: int) -> None:
-        self.coverage_runner.cancel()
-        self._checking_story = None
+        self._cancel_story_audio_check()
         self.step.setText("Step 1 of 4 - Choose stories")
         self._populate_stories(self.current_content())
 
@@ -3373,7 +3378,8 @@ class OfflineAudioPreparationDialog(QDialog):
                 f"Story details: {item.toolTip(0)} "
                 f"({item.data(0, Qt.ItemDataRole.UserRole + 5)} lines)\n"
                 f"{item.text(1)}: {item.data(0, Qt.ItemDataRole.UserRole + 4)}\n"
-                "Saved audio can be verified with Check story audio."
+                "Saved audio checks run in the background. You can continue preparation now "
+                "or use Check story audio."
             )
         if item is not None:
             checked = self._story_audio_checks.get(
@@ -3390,24 +3396,61 @@ class OfflineAudioPreparationDialog(QDialog):
             self.settings.game_pack,
         )
 
+    def _cancel_story_audio_check(self) -> None:
+        self._story_audio_cancel_event.set()
+        self.coverage_runner.cancel()
+        self._checking_story = None
+        self._checking_story_ids = ()
+
     def _inspect_story_audio(
-        self, content: GameContent, selection_id: str, active_manifest: Path | None
+        self,
+        content: GameContent,
+        selection_id: str,
+        active_manifest: Path | None,
+        cancel_event: Event | None = None,
+        inspector: StoryAudioInspector | None = None,
     ) -> tuple[StoryAudioCoverage | None, StoryAudioCoverage | None, tuple[str, ...]]:
-        active = None
-        if active_manifest:
-            active = inspect_story_audio(
-                content, selection_id, self.job_store, manifest=active_manifest
+        def inspect(manifest: Path | None = None) -> StoryAudioCoverage:
+            if inspector is not None:
+                return inspector.inspect(selection_id, manifest=manifest)
+            return inspect_story_audio(
+                content,
+                selection_id,
+                self.job_store,
+                manifest=manifest,
+                cancel_event=cancel_event,
             )
-        saved = (
-            active
-            if active is not None and not active.missing
-            else inspect_story_audio(content, selection_id, self.job_store)
-        )
+
+        active = inspect(active_manifest) if active_manifest else None
+        saved = active if active is not None and not active.missing else inspect()
         selection = next(
             value for value in content.selections if value.selection_id == selection_id
         )
-        speakers = selection.playback_speakers
-        return saved, active, speakers
+        return saved, active, selection.playback_speakers
+
+    def _inspect_story_audio_batch(
+        self,
+        content: GameContent,
+        keys: tuple[StoryAudioKey, ...],
+        active_manifest: Path | None,
+        cancel_event: Event,
+    ) -> _StoryAudioBatch:
+        inspector = StoryAudioInspector(
+            content, self.job_store, cancel_event=cancel_event
+        )
+        results: list[tuple[StoryAudioKey, object, Exception | None]] = []
+        for key in keys:
+            if cancel_event.is_set():
+                raise OfflineGenerationCancelled("Saved audio check was cancelled")
+            try:
+                result = self._inspect_story_audio(
+                    content, key[1], active_manifest, cancel_event, inspector
+                )
+            except Exception as error:
+                results.append((key, None, error))
+            else:
+                results.append((key, result, None))
+        return _StoryAudioBatch(tuple(results))
 
     def _reading_override_reason(
         self, selection_id: str, coverage: StoryAudioCoverage
@@ -3437,7 +3480,11 @@ class OfflineAudioPreparationDialog(QDialog):
         if item is None or content is None:
             return
         selection_id = item.data(0, Qt.ItemDataRole.UserRole)
+        self._cancel_story_audio_check()
+        self._story_audio_cancel_event = Event()
         self._checking_story = self._story_audio_key(selection_id)
+        self._checking_story_ids = (selection_id,)
+        self._story_audio_checks.pop(self._checking_story, None)
         self.check_story_audio.setEnabled(False)
         self.story_audio_status.setText(
             "Checking saved pack and recordings in the background..."
@@ -3448,7 +3495,10 @@ class OfflineAudioPreparationDialog(QDialog):
             content,
             selection_id,
             self.settings.game_pack,
+            self._story_audio_cancel_event,
         )
+        self._refresh_story_statuses()
+        self._selection_changed()
 
     def _queue_story_checks(self) -> None:
         if (
@@ -3462,22 +3512,30 @@ class OfflineAudioPreparationDialog(QDialog):
         content = self.current_content()
         if content is None:
             return
-        for selection_id in self.selected_story_ids():
-            key = self._story_audio_key(selection_id)
-            if key in self._story_audio_checks or not (
+        keys = tuple(
+            self._story_audio_key(selection_id)
+            for selection_id in self.selected_story_ids()
+            if self._story_audio_key(selection_id) not in self._story_audio_checks
+            and (
                 self.settings.game_pack
                 or self._story_job_statuses.get(selection_id) == "ready"
-            ):
-                continue
-            self._checking_story = key
-            self.check_story_audio.setEnabled(False)
-            self.coverage_runner.start(
-                self._inspect_story_audio,
-                content,
-                selection_id,
-                self.settings.game_pack,
             )
+        )
+        if not keys:
             return
+        self._story_audio_cancel_event = Event()
+        self._checking_story = keys[0]
+        self._checking_story_ids = tuple(key[1] for key in keys)
+        self.check_story_audio.setEnabled(False)
+        self.coverage_runner.start(
+            self._inspect_story_audio
+            if len(keys) == 1
+            else self._inspect_story_audio_batch,
+            content,
+            keys[0][1] if len(keys) == 1 else keys,
+            self.settings.game_pack,
+            self._story_audio_cancel_event,
+        )
 
     def _story_audio_finished(self, result: object, error: Exception | None) -> None:
         self.check_story_audio.setEnabled(
@@ -3486,25 +3544,32 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         if self._checking_story is None:
             return
-        key = self._checking_story
-        if error is None and not _is_story_audio_result(result):
-            error = TypeError("Story audio check returned an invalid result")
-        if error is None:
-            assert _is_story_audio_result(result)
-            saved, active, speakers = result
-        else:
-            saved, active, speakers = None, None, ()
-        self._story_playback_speakers[key] = speakers
-        self._story_audio_checks[key] = (saved, active, error)
+        results = (
+            result.results
+            if isinstance(result, _StoryAudioBatch) and error is None
+            else ((self._checking_story, result, error),)
+        )
+        for key, result, error in results:
+            if error is None and not _is_story_audio_result(result):
+                error = TypeError("Story audio check returned an invalid result")
+            if error is None:
+                assert _is_story_audio_result(result)
+                saved, active, speakers = result
+            else:
+                saved, active, speakers = None, None, ()
+            self._story_playback_speakers[key] = speakers
+            self._story_audio_checks[key] = (saved, active, error)
         self._checking_story = None
+        self._checking_story_ids = ()
         self._refresh_story_statuses()
         self._selection_changed()
         item = self.stories.current_story_item()
-        if (
-            item is not None
-            and self._story_audio_key(item.data(0, Qt.ItemDataRole.UserRole)) == key
-        ):
-            self._render_story_audio_check(saved, active, error)
+        if item is not None:
+            checked = self._story_audio_checks.get(
+                self._story_audio_key(item.data(0, Qt.ItemDataRole.UserRole))
+            )
+            if checked is not None:
+                self._render_story_audio_check(*checked)
 
     def _render_story_audio_check(
         self,
@@ -3912,13 +3977,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self, content: GameContent, selected: tuple[str, ...], manifest: Path
     ) -> OfflinePackResult:
         result = load_saved_pack(manifest)
+        inspector = StoryAudioInspector(content, self.job_store)
         for selection_id in selected:
-            coverage = inspect_story_audio(
-                content,
-                selection_id,
-                self.job_store,
-                imported_pack=result.imported,
-            )
+            coverage = inspector.inspect(selection_id, imported_pack=result.imported)
             if coverage.missing:
                 raise OfflinePackError(
                     "Saved audio no longer covers this selection. Prepare the missing stories again."
@@ -4240,15 +4301,22 @@ class OfflineAudioPreparationDialog(QDialog):
         self.continue_button.show()
         content = self.current_content()
         selected = self.selected_story_ids()
+        previously_selected = (
+            self._story_selection_drafts.get(content.story_index_sha256, set())
+            if content is not None
+            else set()
+        )
         if content is not None:
             self._remember_story_selection(content, selected)
         self._filter_stories()
+        if self._checking_story is not None and any(
+            value in previously_selected and value not in selected
+            for value in self._checking_story_ids
+        ):
+            self._cancel_story_audio_check()
         self._queue_story_checks()
         can_read = self._can_start_reading()
         saved_manifest = self._saved_manifest_for_selection()
-        checking = (
-            self._checking_story is not None and self._checking_story[1] in selected
-        )
         self.prepare_again.setVisible(
             can_read
             or saved_manifest is not None
@@ -4261,13 +4329,9 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         if self._pack_result is None and not self._awaiting_voice_confirmation:
             self.continue_button.setText(
-                self._selection_action_label(
-                    selected, checking, can_read, saved_manifest
-                )
+                self._selection_action_label(selected, can_read, saved_manifest)
             )
-        if self._show_selection_blocker(
-            content, selected, checking, can_read, saved_manifest
-        ):
+        if self._show_selection_blocker(content, selected, can_read, saved_manifest):
             return
         assert content is not None
         self._show_selection_summary(content, selected, can_read, saved_manifest)
@@ -4288,12 +4352,9 @@ class OfflineAudioPreparationDialog(QDialog):
     def _selection_action_label(
         self,
         selected: tuple[str, ...],
-        checking: bool,
         can_read: bool,
         saved_manifest: Path | None,
     ) -> str:
-        if checking:
-            return "Checking saved audio..."
         if can_read:
             return "Start reading"
         if saved_manifest is not None:
@@ -4317,16 +4378,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self,
         content: GameContent | None,
         selected: tuple[str, ...],
-        checking: bool,
         can_read: bool,
         saved_manifest: Path | None,
     ) -> bool:
-        if checking:
-            self.summary.setText(
-                "Checking saved recordings for the selected stories. No audio will be generated."
-            )
-            self.continue_button.setEnabled(False)
-            return True
         if (
             not can_read
             and saved_manifest is None
@@ -4514,11 +4568,9 @@ class OfflineAudioPreparationDialog(QDialog):
     def _continue_requested(self) -> None:
         if not self._save_story_selection_drafts():
             return
-        if self.has_pending_work() or (
-            self._checking_story is not None
-            and self._checking_story[1] in self.selected_story_ids()
-        ):
+        if self.has_pending_work():
             return
+        self._cancel_story_audio_check()
         if self._pack_result is None and self._can_start_reading():
             self.readingRequested.emit()
             return
@@ -4572,8 +4624,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self._selection_changed()
             return
         self._stale_job_retry_attempted = False
-        self.coverage_runner.cancel()
-        self._checking_story = None
+        self._cancel_story_audio_check()
         content = self.current_content()
         if content is None:
             return
@@ -5502,7 +5553,7 @@ class OfflineAudioPreparationDialog(QDialog):
             event.ignore()
             return
         self.import_runner.cancel()
-        self.coverage_runner.cancel()
+        self._cancel_story_audio_check()
         self.saved_pack_runner.cancel()
         self.discovery_runner.cancel()
         self.voice_runner.cancel()
@@ -5529,7 +5580,7 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         self._stop_generation_progress()
         self.discovery_runner.cancel()
-        self.coverage_runner.cancel()
+        self._cancel_story_audio_check()
         self.saved_pack_runner.cancel()
         self.progress_timer.stop()
         if not self.voice_panel.active:

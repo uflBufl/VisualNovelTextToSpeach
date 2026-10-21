@@ -40,6 +40,7 @@ from vntts.pregeneration_contract import OfflineGenerationCancelled
 from vntts.pregeneration_pack import (
     OfflinePackError,
     OfflinePackPublisher,
+    StoryAudioInspector,
     _copy_file,
     _copy_prepared_file,
     _ensure_pack_disk_space,
@@ -77,7 +78,12 @@ class SavedStoryPackSelectionTest(unittest.TestCase):
         store.jobs_for_content.return_value = (matching, other)
         store.published_packs.return_value = ()
         result = _story_audio_pack(
-            object(), iter(("selected",)), store, manifest=None, imported_pack=None
+            object(),
+            iter(("selected",)),
+            store,
+            manifest=None,
+            imported_pack=None,
+            pack_cache={},
         )
         store.published_packs.assert_called_once_with(matching)
         self.assertIsNone(result.manifest)
@@ -85,6 +91,161 @@ class SavedStoryPackSelectionTest(unittest.TestCase):
 
 
 class OfflinePackPublisherTest(unittest.TestCase):
+    def test_story_batch_reuses_each_pack_parse_but_new_batch_imports_again(self):
+        with TemporaryDirectory() as directory:
+            job, inputs, result, _items = fixture(Path(directory) / "source")
+            published = OfflinePackPublisher().publish(job, inputs, result)
+            content = inspect_story_index(inputs.story_index)
+            selection = content.selections[0]
+            content = replace(
+                content,
+                selections=tuple(
+                    replace(
+                        selection, selection_id=f"stage-{index}", line_ids=(line_id,)
+                    )
+                    for index, line_id in enumerate(selection.line_ids)
+                ),
+            )
+            store = Mock()
+            store.jobs_for_content.return_value = (job,)
+            store.published_packs.return_value = (published.manifest,)
+            with (
+                patch(
+                    "vntts.pregeneration_pack.import_game_pack", wraps=import_game_pack
+                ) as imported,
+                patch(
+                    "vntts.pregeneration_pack.load_generated_audio_document",
+                    wraps=load_generated_audio_document,
+                ) as parsed,
+                patch(
+                    "vntts.pregeneration_pack.load_verified_story_index_document",
+                    wraps=pack_module.load_verified_story_index_document,
+                ) as source,
+            ):
+                inspector = StoryAudioInspector(content, store)
+                first = inspector.inspect("stage-0", manifest=published.manifest)
+                second = inspector.inspect("stage-1")
+                self.assertEqual((first.generated, second.live), (1, 1))
+                self.assertEqual(imported.call_count, 1)
+                self.assertEqual(parsed.call_count, 1)
+                self.assertEqual(source.call_count, 2)  # Catalog and bound pack story.
+                StoryAudioInspector(content, store).inspect(
+                    "stage-0", manifest=published.manifest
+                )
+                self.assertEqual(imported.call_count, 2)
+                self.assertEqual(source.call_count, 4)
+
+    def test_story_coverage_rejects_a_missing_selected_line(self):
+        with TemporaryDirectory() as directory:
+            _job, inputs, _result, _items = fixture(Path(directory) / "source")
+            content = inspect_story_index(inputs.story_index)
+            selection = replace(content.selections[0], line_ids=("missing-line",))
+            content = replace(content, selections=(selection,))
+            with self.assertRaisesRegex(
+                OfflinePackError, "Selected story lines changed"
+            ):
+                inspect_story_audio(
+                    content,
+                    selection.selection_id,
+                    PregenerationJobStore(Path(directory) / "jobs"),
+                )
+
+    def test_story_batch_rechecks_current_source_when_a_new_batch_starts(self):
+        with TemporaryDirectory() as directory:
+            _job, inputs, _result, _items = fixture(Path(directory) / "source")
+            content = inspect_story_index(inputs.story_index)
+            store = PregenerationJobStore(Path(directory) / "jobs")
+            selection_id = content.selections[0].selection_id
+            inspector = StoryAudioInspector(content, store)
+            coverage = inspector.inspect(selection_id)
+            inputs.story_index.write_bytes(b"changed source")
+            self.assertEqual(inspector.inspect(selection_id), coverage)
+            with self.assertRaises(OfflinePackError):
+                StoryAudioInspector(content, store).inspect(selection_id)
+            with self.assertRaises(OfflinePackError):
+                inspect_story_audio(content, selection_id, store)
+
+    def test_story_batch_revalidates_wav_bytes_and_new_batch_rejects_changed_pack(self):
+        for changed in ("wav", "manifest"):
+            with self.subTest(changed=changed), TemporaryDirectory() as directory:
+                job, inputs, result, _items = fixture(Path(directory) / "source")
+                published = OfflinePackPublisher().publish(job, inputs, result)
+                content = inspect_story_index(inputs.story_index)
+                store = PregenerationJobStore(Path(directory) / "jobs")
+                inspector = StoryAudioInspector(content, store)
+                selection_id = content.selections[0].selection_id
+                inspector.inspect(selection_id, manifest=published.manifest)
+                if changed == "wav":
+                    document = load_generated_audio_document(
+                        published.imported.generated_audio_manifest
+                    )
+                    document.records[0].audio.write_bytes(b"damaged")
+                    with self.assertRaises(OfflinePackError):
+                        inspector.inspect(selection_id, manifest=published.manifest)
+                else:
+                    published.manifest.write_text("{}")
+                with self.assertRaises(GamePackError):
+                    StoryAudioInspector(content, store).inspect(
+                        selection_id, manifest=published.manifest
+                    )
+
+    def test_story_batch_reuses_a_pack_import_failure_only_within_that_batch(self):
+        with TemporaryDirectory() as directory:
+            _job, inputs, _result, _items = fixture(Path(directory) / "source")
+            content = inspect_story_index(inputs.story_index)
+            store = PregenerationJobStore(Path(directory) / "jobs")
+            manifest = Path(directory) / "missing.json"
+            selection_id = content.selections[0].selection_id
+            with patch(
+                "vntts.pregeneration_pack.import_game_pack",
+                side_effect=GamePackError("invalid pack"),
+            ) as imported:
+                inspector = StoryAudioInspector(content, store)
+                for _ in range(2):
+                    with self.assertRaises(GamePackError):
+                        inspector.inspect(selection_id, manifest=manifest)
+                self.assertEqual(imported.call_count, 1)
+                with self.assertRaises(GamePackError):
+                    StoryAudioInspector(content, store).inspect(
+                        selection_id, manifest=manifest
+                    )
+                self.assertEqual(imported.call_count, 2)
+
+    def test_story_coverage_cancels_before_loading_content(self):
+        cancellation = Event()
+        cancellation.set()
+        with patch(
+            "vntts.pregeneration_pack.load_verified_story_index_document"
+        ) as load:
+            with self.assertRaises(OfflineGenerationCancelled):
+                inspect_story_audio(
+                    object(), "story", object(), cancel_event=cancellation
+                )
+        load.assert_not_called()
+
+    def test_story_coverage_cancels_between_line_checks(self):
+        with TemporaryDirectory() as directory:
+            store = PregenerationJobStore(Path(directory) / "jobs")
+            _job, inputs, _result, _items = fixture(Path(directory) / "source")
+            content = inspect_story_index(inputs.story_index)
+            cancellation = Event()
+
+            def checked_line(*_arguments):
+                cancellation.set()
+                return "missing"
+
+            with patch(
+                "vntts.pregeneration_pack._story_audio_route", side_effect=checked_line
+            ) as route:
+                with self.assertRaises(OfflineGenerationCancelled):
+                    inspect_story_audio(
+                        content,
+                        content.selections[0].selection_id,
+                        store,
+                        cancel_event=cancellation,
+                    )
+            route.assert_called_once()
+
     def test_legacy_original_base_requires_repreparing_preserved_stories(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

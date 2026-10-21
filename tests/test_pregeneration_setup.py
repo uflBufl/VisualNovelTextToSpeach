@@ -2220,7 +2220,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 self.assertFalse(dialog.selection_panel.isHidden())
                 self.assertEqual(dialog.stories.item(0).text(1), "Not checked")
                 self.assertEqual(len(pool.tasks), 1)
-                self.assertFalse(dialog.continue_button.isEnabled())
+                self.assertTrue(dialog.continue_button.isEnabled())
+                self.assertEqual(dialog.continue_button.text(), "Continue preparation")
                 self.run_next_task(pool)
             self.assertEqual(dialog.stories.item(0).text(1), "Ready")
             self.assertEqual(dialog.continue_button.text(), "Start reading")
@@ -2232,6 +2233,222 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             QTest.keyClick(dialog.continue_button, Qt.Key.Key_Return)
             opened.assert_called_once_with()
             self.assertEqual(pool.tasks, [])
+            dialog.close()
+
+    def test_continue_during_audio_check_cancels_it_and_opens_voice_step(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            jobs.mark_prepared(jobs.create_or_resume(content, ("main-1",)))
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            pending = pool.tasks.pop()
+            cancelled = dialog._story_audio_cancel_event
+            self.assertTrue(dialog.coverage_runner.active)
+            self.assertTrue(dialog.continue_button.isEnabled())
+
+            dialog.continue_button.click()
+
+            self.assertTrue(cancelled.is_set())
+            self.assertFalse(dialog.coverage_runner.active)
+            self.assertTrue(dialog.planning_voices)
+            self.assertTrue(dialog.selection_panel.isHidden())
+            self.assertIn("Step 2", dialog.step.text())
+            # A late failure cannot replace the voice step or mark a different story.
+            pending.run()
+            self.application.processEvents()
+            self.assertTrue(dialog.planning_voices)
+            self.assertEqual(dialog._story_audio_checks, {})
+            dialog.voice_runner.cancel()
+            dialog.planning_voices = False
+            dialog.close()
+
+    def test_switching_checked_story_discards_pending_result_and_reuses_completed_check(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(
+                    game_pack=str(root / "active.json"),
+                    audio_source_policy="prefer-generated",
+                ),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
+            pending = pool.tasks.pop()
+            cancelled = dialog._story_audio_cancel_event
+            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Unchecked)
+            dialog.stories.item(1).setCheckState(0, Qt.CheckState.Checked)
+            key = dialog._story_audio_key("rhiannon")
+            self.assertTrue(cancelled.is_set())
+            self.assertEqual(dialog._checking_story, key)
+            pending.run()
+            self.application.processEvents()
+            self.assertEqual(dialog._checking_story, key)
+            self.assertEqual(dialog._story_audio_checks, {})
+            ready = StoryAudioCoverage("Rhiannon", root / "active.json", generated=1)
+            # The queued worker captured the bound method before this patch.
+            with patch(
+                "vntts.pregeneration_ui.inspect_story_audio", return_value=ready
+            ):
+                self.run_next_task(pool)
+            self.assertEqual(set(dialog._story_audio_checks), {key})
+            self.assertEqual(dialog.continue_button.text(), "Start reading")
+            dialog.stories.item(1).setCheckState(0, Qt.CheckState.Unchecked)
+            dialog.stories.item(1).setCheckState(0, Qt.CheckState.Checked)
+            self.assertEqual(pool.tasks, [])
+            self.assertTrue(dialog.continue_button.isEnabled())
+            dialog.close()
+
+    def test_recheck_invalidates_ready_action_and_close_cancels_pending_check(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(audio_source_policy="prefer-generated"),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
+            dialog.stories.setCurrentRow(0)
+            key = dialog._story_audio_key("main-1")
+            ready = StoryAudioCoverage(
+                "Main Story 1", root / "active.json", generated=2
+            )
+            dialog._story_audio_checks[key] = (ready, ready, None)
+            dialog._selection_changed()
+            self.assertEqual(dialog.continue_button.text(), "Start reading")
+            dialog.check_story_audio.click()
+            self.assertNotEqual(dialog.continue_button.text(), "Start reading")
+            self.assertTrue(dialog.continue_button.isEnabled())
+            self.assertNotIn(key, dialog._story_audio_checks)
+            cancelled = dialog._story_audio_cancel_event
+            dialog.close()
+            self.assertTrue(cancelled.is_set())
+            self.run_next_task(pool)
+            self.assertEqual(dialog._story_audio_checks, {})
+
+    def test_reading_and_activation_cancel_unselected_story_recheck(self):
+        for activate in (False, True):
+            with self.subTest(activate=activate), TemporaryDirectory() as directory:
+                root = Path(directory)
+                content = inspect_story_index(write_story_index(root / "content"))
+                pool = ManualThreadPool()
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(audio_source_policy="prefer-generated"),
+                    discovery=lambda: ContentDiscovery((content,)),
+                    job_store=PregenerationJobStore(root / "jobs"),
+                    thread_pool=pool,
+                )
+                self.addCleanup(dialog.deleteLater)
+                dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
+                key = dialog._story_audio_key("main-1")
+                ready = StoryAudioCoverage(
+                    "Main Story 1", root / "pack.json", generated=2
+                )
+                dialog._story_audio_checks[key] = (
+                    ready,
+                    None if activate else ready,
+                    None,
+                )
+                dialog._selection_changed()
+                dialog.stories.setCurrentRow(1)
+                dialog.check_story_audio.click()
+                pending = pool.tasks.pop()
+                cancellation = dialog._story_audio_cancel_event
+                self.assertFalse(cancellation.is_set())
+                opened = Mock()
+                dialog.readingRequested.connect(opened)
+                dialog.continue_button.click()
+                self.assertTrue(cancellation.is_set())
+                self.assertFalse(dialog.coverage_runner.active)
+                pending.run()
+                self.application.processEvents()
+                self.assertEqual(set(dialog._story_audio_checks), {key})
+                if activate:
+                    self.assertTrue(dialog.activating_saved)
+                    dialog.saved_pack_runner.cancel()
+                    dialog.activating_saved = False
+                    opened.assert_not_called()
+                else:
+                    opened.assert_called_once_with()
+                dialog.close()
+
+    def test_story_check_batch_keeps_each_result_and_error_with_its_story(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            jobs = PregenerationJobStore(root / "jobs")
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(game_pack=str(root / "active.json")),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.select_all_button.click()
+            self.assertEqual(len(pool.tasks), 1)
+            self.assertTrue(dialog.continue_button.isEnabled())
+            ready = StoryAudioCoverage(
+                "Main Story 1", root / "active.json", generated=2
+            )
+            error = ValueError("Second story is damaged")
+            with patch.object(
+                dialog, "_inspect_story_audio", side_effect=[(ready, ready, ()), error]
+            ):
+                self.run_next_task(pool)
+            first = dialog._story_audio_checks[dialog._story_audio_key("main-1")]
+            second = dialog._story_audio_checks[dialog._story_audio_key("rhiannon")]
+            self.assertEqual(first, (ready, ready, None))
+            self.assertEqual(second, (None, None, error))
+            self.assertEqual(pool.tasks, [])
+            self.assertTrue(dialog.continue_button.isEnabled())
+            self.assertIn("Second story is damaged", dialog.summary.text())
+            dialog.close()
+
+    def test_deselecting_later_stage_cancels_whole_batch_and_discards_its_results(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(game_pack=str(root / "active.json")),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.select_all_button.click()
+            pending = pool.tasks.pop()
+            cancellation = dialog._story_audio_cancel_event
+            dialog.stories.item(1).setCheckState(0, Qt.CheckState.Unchecked)
+            self.assertTrue(cancellation.is_set())
+            self.assertEqual(dialog._checking_story_ids, ("main-1",))
+            pending.run()
+            self.application.processEvents()
+            self.assertEqual(dialog._story_audio_checks, {})
+            self.assertEqual(dialog._checking_story_ids, ("main-1",))
+            self.run_next_task(pool)
+            self.assertEqual(
+                set(dialog._story_audio_checks), {dialog._story_audio_key("main-1")}
+            )
             dialog.close()
 
     def test_saved_job_does_not_prove_partial_audio_coverage(self):
@@ -2285,8 +2502,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.addCleanup(dialog.deleteLater)
             self.assertIn("Not checked", dialog.stories.item(0).text(1))
-            self.assertEqual(dialog.continue_button.text(), "Checking saved audio...")
-            self.assertFalse(dialog.continue_button.isEnabled())
+            self.assertEqual(dialog.continue_button.text(), "Continue preparation")
+            self.assertTrue(dialog.continue_button.isEnabled())
             dialog.stories.setCurrentRow(0)
             ready = StoryAudioCoverage(
                 "Main Story 1", active_path, original=1, generated=1
@@ -2299,7 +2516,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                     (ready, ready, ("Centurion", "Rhiannon")),
                 )
                 inspect.assert_called_once_with(
-                    content, "main-1", jobs, manifest=str(active_path)
+                    content,
+                    "main-1",
+                    jobs,
+                    manifest=str(active_path),
+                    cancel_event=None,
                 )
                 pool.tasks.pop(0).run()
                 self.application.processEvents()
