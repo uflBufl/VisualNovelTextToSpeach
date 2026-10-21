@@ -1,10 +1,32 @@
 # TODO
 
+## Support archive (20): current code defects and diagnostic gaps
+
+Evidence: `vntts-support (20).zip`, exported 2026-10-21 22:07 UTC, Windows build `4bad9c73`; code paths rechecked on `1f4caa46`. Times below are archive UTC. Keep the already-fixed Settings/selection/original-playback delays separate from these remaining items.
+
+- [ ] **S20.1 - Ready: remove duplicate full pack admission at startup.** `load_app_settings` applies the effective pack, then `TrayApplication.__init__.remember_settings_snapshot` reapplies the persisted pack for the saved baseline; admission is duplicated when both resolve to the same pack. The archive records 3.660 s + 2.875 s, each examining 1,513 files / 589.6 MB, inside the 6.551 s settings load. Share one admitted pack result for the same resolved pack within a startup operation while preserving the persisted baseline, environment overrides, corruption rejection and save/rollback revision semantics. Gate: one full preflight for an unchanged identical pack, correct distinct-pack overrides, and unchanged conflict/rollback behavior.
+
+- [ ] **S20.2 - Ready: batch unchanged voice-library discovery and projection during voice planning.** `_resolve_group` calls `discover_voice_source` for every inventory candidate, `VoiceLibrary.discover` reloads/validates the entire index even when the alternative is already present, and the outer group loop repeatedly rebuilds `registry_with_voice_library`. Routing took 50.971 s for 1,267 reference files; a bounded current-code probe rediscovered six unchanged alternatives with six full index loads and zero writes. Profile and replace per-candidate/per-binding document work with a bounded shared read snapshot/batch mutation, not an unchecked long-lived cache. Gate: identical candidates, linked identities and saved choices; substantially fewer full index reads on cold and unchanged reuse; cancellation, corruption and concurrent-choice rollback remain safe. Do not undo the existing per-role grouping cache.
+
+- [ ] **S20.3 - Ready: stop rebuilding the complete manifest on each audition-cache miss/hit.** `VoiceAuditionSession._restore_cached_preview` calls `authorization_stamp` before `lookup` checks whether the preview WAV exists. The stamp parses/builds the full registry; a hit then invokes uncached `_preflight_preview` and another stamp. The current path performs one complete parse/build on a missing WAV and three on a hit, for every candidate in the full inventory. Archive `read_cache` operations took 78.203, 39.289 and 26.984 s. Reuse the existing checksum-bound registry/captured-reference machinery across a batch and make absence cheap, retaining manifest/reference mutation checks and objective preflight. Gate: no full per-candidate manifest parse for an empty cache, identical warm previews/choices, changed authorities rejected, and bounded Cancel/reopen. Measure hit/miss, parse/read, reference-preflight, queue and render costs separately; `_prepare_requests` also includes real generation, so its 79.059 s is not all redundant I/O.
+
+- [ ] **S20.4 - Investigate: account for the remaining voice-plan wall time before choosing a broader fix.** `_create_voice_plan` took 408.915 s: candidate preparation 40.576 s and the misleadingly named `voice-plan-store` 368.334 s. Story/inventory/routing spans explain only about 59.372 s of the latter; about 308.962 s is not attributed by the retained spans. Possible owners include grouping, automatic reference qualification, applying choices, persistence and incidental waiting/overhead. Add bounded correlated spans/counters for these phases, including cache hits, preview rendering, model startup and ASR advice. Gate: cold and warm wall time is explained without double-counting nested spans; identify the actual dominant work, then plan its reuse/deferment without weakening reference quality or replacing explicit choices.
+
+- [ ] **S20.5 - Ready: preserve typed synthesis/configuration failures at the live playback boundary.** `AppController._play_live_chunk` converts every failed `PlaybackOutcome` into `AudioPlaybackError`, discarding `error_type` preserved by the speech worker. The same Pocket cloning restriction appears as a synthesis error at 21:47:53 / 21:58:08 and a playback error at 21:50:38. Reuse the safe type-preserving pattern in `live_speech.py`. Gate: configuration and synthesis failures retain their category before/during streaming, a genuine output-device failure remains an audio error, and interruption behavior stays unchanged. Gated-model access itself is an external requirement, not a proven consent/auth bug.
+
+- [ ] **S20.6 - Ready: classify a disappearing game window as an expected capture condition.** At 22:07:10, `WindowNotFoundError` from the focus probe becomes `Unexpected dialog processing failure` because `format_runtime_error` handles `ScreenCaptureError` but not the window-capture exception family. Report recoverable capture/window-unavailable state consistently and retain the existing failure debounce. Gate: closing/minimizing/reopening the selected window produces the correct capture status and recovery; genuine unexpected exceptions remain distinguishable. Do not infer new audible playback after closure solely from a recorded route.
+
+- [ ] **S20.7 - Ready: give each restarted Reading run a distinct timeline epoch.** The reader's session UUID is allocated only at runtime construction, but `LiveDialogReader.start` resets generation to zero; `GenerationTimelineLog` keys records by `(session_id, generation)`. Session `c630af40f5604d92b5ab329665a0dcdf`, generation 1 merges `314001:8` with `314001:15` 353.622 s later; generations 1-8 merge distinct runs, and previous-session generation 1 contains five routes over 887.248 s. Allocate a fresh run epoch or maintain a compatible monotonic identity, including all related events. Gate: stop/start of the same reader yields separate timelines, accurate capture/OCR/chunk/key correlation and unaffected sequence leases. Re-evaluate the retained auto-advance timeouts only after this attribution is reliable.
+
+- [ ] **S20.8 - Ready: record terminal outcomes and attempt identities for authoring playback.** `QtPcmPlayer.stop` clears its token without a lifecycle terminal, replacement overwrites it, and events identify only the parent class. The untruncated current log has 40 queued / 39 started / 30 finished / 2 failed events; examples at 21:24:42.936 and 21:24:47.707 have no terminal before subsequent same-class queued events; the code omits terminals on Stop/replacement. Add stable player/attempt correlation and exactly one stopped/interrupted terminal for Stop, replacement and hide/close; avoid an extra terminal when `_fail` calls `stop`. Gate: natural completion, replacement, explicit stop, queued cancellation and device errors are distinguishable; preserve the current voice-choice/listening-approval policy and exclude speech/audio from new telemetry. These missing records do not prove that sound kept playing.
+
 ## Preserve modal stop barriers after a timeout
 
 - [ ] Ensure retrying Settings or another paused-reading dialog after a live-stop timeout still waits for pending speech when capture has already stopped. The openers currently test `is_live_running`, and `RuntimeLifecycleComponent._stop_live_for_settings` also returns early for stopped capture. Reuse the background stop path and add a regression with stopped capture and blocked speech; the retry must neither open/apply early nor restart the reader.
 
 ## Qualify Settings on native Windows and macOS
+
+- [ ] Confirm the Settings opening fix on the reported Windows setup: archive (20) measured two pre-fix Settings pack checks at 3.487 s and 3.120 s, each scanning 1,513 files. After `1f4caa46`, measure click-to-first-frame while idle and while Reading is active; distinguish initial rendering, intentional speech draining and Save preflight. Preserve Save errors and Cancel behavior.
 
 - [ ] With verified background workspace isolation or an explicitly approved native session, edit Settings across sections, open the file and engine selectors, save and cancel nested voice choices, and confirm keyboard focus/VoiceOver or NVDA announcements at enlarged system text. On Windows verify native shortcut symbols and application after Save; on macOS verify the unsupported-hotkey explanation. Start with a saved non-100% speed, reset to 100%, save, reopen, and play an existing prepared line; repeat reset with Cancel and verify the original setting remains. Retain native focus, popup placement and audible playback evidence. Offscreen Qt checks cover persistence, rollback, literal text, navigation and layout, not OS integration or physical output.
 
@@ -392,6 +414,8 @@ Planned implementation order after approval:
       telemetry and measure the real game-plus-render headroom rather than inferring
       acceleration from configuration.
 
+- [ ] Investigate the two current authoring underflows from archive (20), at 21:23:54.642 (`VoiceAuditionPanel`) and 21:24:27.176 (`StoryVoicePreview`), after S20.8 supplies attempt correlation. Both attempts reported failed playback rather than natural completion, and subsequent playback also completed; the archive does not establish whether physical output starvation, cancellation or another host condition caused them. Retain output-buffer/owner timing in a bounded reproduction before changing PCM buffering or completion rules.
+
 ## P1 - Link character identities across story names
 
 - [ ] **Validate linked names on Windows:** in a story showing only Aderyn, type
@@ -429,7 +453,7 @@ Planned implementation order after approval:
       confirm only B is newly analyzed; compare the second run with the earlier
       90-cue/25-second run. Cancel and retry once to confirm incomplete private
       output is not reused as published evidence.
-- [ ] **Validate repeated Voice plan in the real UI:** on the local 253 MB reference
+- [ ] **Validate repeated Voice plan in the real UI after S20.2-S20.4:** on the local 253 MB reference
       index, repeated role selection fell from 9.18 to 0.37 seconds. The plan-store
       fixture now produces identical groups while reducing library reads from
       3646 to 214; warm creation took about 0.25 seconds. On an installed game,
@@ -444,8 +468,8 @@ Planned implementation order after approval:
       decoded/quality evidence across overlapping stage selections or defer
       decoding non-previewed references until inspection, without hiding the
       complete usable reference list or weakening voice-quality ranking. If
-      routing dominates, profile repeated reference reads before changing the
-      plan. Verify both cold and warm timings and identical voice choices.
+      routing dominates, use the per-candidate library/manifest counters in S20.2-S20.4
+      to isolate its remaining cost. Verify both cold and warm timings and identical voice choices.
 - [ ] **Validate combined PSM 6 OCR on Windows:** with an installed or bundled
       Tesseract, run the two sample-image parity/process-count tests and one live
       story. Require unchanged speaker/text/confidence/profile/attempts, working
@@ -743,6 +767,8 @@ Planned implementation order after approval:
 - [ ] **Windows job acquisition next gate:** qualify actual native failures before assignment, before resume and after resume on Windows. Current `__init__` closes job through raw cleanup and allocates `_ExtendedLimits` after handle acquisition outside its guard; assign/resume finally blocks can replace primary errors. Stage the existing cleanup leaf only after native ownership checks; prepare limits before acquisition. Four CloseHandle results are ignored and close clears `_handle` on FALSE. Microsoft documents FALSE as failure, but it can mean INVALID_HANDLE rather than a leaked valid handle; preserve returned status/last error and prove valid-handle cleanup and no runnable child with real Windows failure injection. Keep the two-second process wait budget; successful host-crash test and mock cleanup order do not qualify these failures.
 
 ## Active - Offline generation retry deadlock
+
+Archive (20) retains only historical October 14 lock-wait stacks for this incident. Its October 21 native requests return four bounded frame-limit outcomes; they do not establish a new deadlock or qualify current Cancel behavior.
 
 - [ ] Verify on the reported Windows/GPU setup that a frame-limited phrase reaches its bounded retry result and Cancel finishes. Incomplete audio must remain unpublished. Local Python 3.14.2 HTTP-fixture and retained-frame regressions pass; actual model EOS quality remains a separate hardware gate.
 
