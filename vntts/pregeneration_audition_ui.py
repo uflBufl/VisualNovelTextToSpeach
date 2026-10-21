@@ -42,10 +42,10 @@ from vntts.path_safety import read_regular_bytes
 from vntts.pregeneration_audition import (
     COMPARISON_PREVIEW_TEXT,
     VoiceAuditionCancelled,
-    VoiceAuditionError,
     VoiceAuditionIncomplete,
     VoiceAuditionPreview,
     VoiceAuditionPreviewService,
+    VoiceAuditionReference,
     VoiceAuditionRejected,
     preview_identity,
 )
@@ -114,7 +114,7 @@ class _VoiceAuditionPreviewer(Protocol):
 
     def reference_audio(
         self, plan: VoicePlan, group: VoiceGroup, candidate_source_id: str
-    ) -> Path | None: ...
+    ) -> VoiceAuditionReference | None: ...
 
     def cancel(self) -> None: ...
 
@@ -226,17 +226,13 @@ class VoiceAuditionPanel(QGroupBox):
         self.preview_service: _VoiceAuditionPreviewer = (
             preview_service or _preview_service_factory()
         )
-        self.preview_runner = LatestTaskRunner(self, thread_pool=thread_pool)
-        self.preview_runner.finished.connect(self._preview_finished)
-        self.decision_runner = LatestTaskRunner(self, thread_pool=thread_pool)
-        self.decision_runner.finished.connect(self._decision_finished)
         self.player: _PreviewPlayer | None = player
         self._plan: VoicePlan | None = None
         self._groups: tuple[VoiceGroup, ...] = ()
         self._group_index = 0
         self._candidate_offset = 0
         self._candidate_entries: tuple[CandidateEntry, ...] = ()
-        self._initialize_preview_state()
+        self._initialize_preview_state(thread_pool)
         self._failed_candidate_source_ids: set[str] = set()
         self._accepted_choice: str | None = None
         self._sample_text: str | None = None
@@ -517,7 +513,13 @@ class VoiceAuditionPanel(QGroupBox):
             self._size_transient_controls()
         return super().eventFilter(watched, event)
 
-    def _initialize_preview_state(self) -> None:
+    def _initialize_preview_state(self, thread_pool: QThreadPool | None) -> None:
+        self.preview_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.preview_runner.finished.connect(self._preview_finished)
+        self.original_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.original_runner.finished.connect(self._original_finished)
+        self.decision_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.decision_runner.finished.connect(self._decision_finished)
         self._previews: dict[PreviewKey, _PreviewAudio] = {}
         self._preview_errors: dict[PreviewKey, str] = {}
         self._auditioned: dict[PreviewKey, str] = {}
@@ -568,7 +570,11 @@ class VoiceAuditionPanel(QGroupBox):
 
     @property
     def active(self) -> bool:
-        return bool(self.preview_runner.active or self.decision_runner.active)
+        return bool(
+            self.preview_runner.active
+            or self.original_runner.active
+            or self.decision_runner.active
+        )
 
     def start(self, plan: VoicePlan, *, group_id: str | None = None) -> None:
         if not isinstance(plan, VoicePlan):
@@ -634,6 +640,8 @@ class VoiceAuditionPanel(QGroupBox):
             return
         if self.decision_runner.active or self._cancel_requested:
             return
+        if self.original_runner.active:
+            self._stop_player()
         candidate, _choice, _narrator = self._current_entry()
         preview = self._ready_preview(candidate)
         if preview is not None:
@@ -1117,7 +1125,7 @@ class VoiceAuditionPanel(QGroupBox):
             return
         if not self.decision_runner.active:
             self._set_decision_actions(True)
-            if self._playing_source is None:
+            if self._playing_source is None and not self.original_runner.active:
                 self._set_status(
                     "Preview preparation stopped. Browse voices or retry this preview."
                 )
@@ -1491,7 +1499,7 @@ class VoiceAuditionPanel(QGroupBox):
         self.advice_runner.cancel()
 
     def _play_original(self) -> None:
-        if self._playing_source == "original":
+        if self._playing_source == "original" or self.original_runner.active:
             self._stop_playback()
             return
         if (
@@ -1515,11 +1523,22 @@ class VoiceAuditionPanel(QGroupBox):
         self._stop_player()
         self._accepted_choice = None
         self.a_use.setEnabled(False)
-        try:
-            reference = self.preview_service.reference_audio(
-                self._require_plan(), self.current_group(), candidate.source_id
-            )
-        except (OSError, ValueError, VoiceAuditionError) as error:
+        self._set_status("Preparing original reference...")
+        self.original_runner.start(
+            self.preview_service.reference_audio,
+            self._require_plan(),
+            self.current_group(),
+            candidate.source_id,
+        )
+        self._set_playing_source(self._playing_source)
+
+    def _original_finished(
+        self, reference: VoiceAuditionReference | None, error: Exception | None
+    ) -> None:
+        from vntts.support import record_game_import
+
+        self._set_playing_source(None)
+        if error is not None:
             self._set_status(f"Unable to play original reference: {error}")
             record_game_import(
                 "voice-original-playback", outcome="failed", reason=str(error)
@@ -1529,19 +1548,12 @@ class VoiceAuditionPanel(QGroupBox):
             self._set_status("This voice has no recorded reference.")
             record_game_import("voice-original-playback", outcome="unavailable")
             return
-        try:
-            payload = _read_verified_audio(reference, reference_sha256)
-        except (OSError, VoiceAuditionUIError) as error:
-            self._set_status(f"Unable to play original reference: {error}")
-            record_game_import(
-                "voice-original-playback", outcome="failed", reason=str(error)
-            )
-            return
+        candidate = self._current_entry()[0]
         player = self._ensure_player()
         self._set_status(
             f"Starting the original reference for {_candidate_name(candidate)}..."
         )
-        if player.play_bytes(payload, source=str(reference)) is None:
+        if player.play_bytes(reference.payload, source=str(reference.path)) is None:
             return
         self._set_playing_source("original")
         self._accepted_choice = self._current_entry()[1]
@@ -1706,14 +1718,14 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self.a_original.setText(
             "Stop original"
-            if source == "original"
+            if source == "original" or self.original_runner.active
             else "Play first reference"
             if multiple
             else "Play original reference"
         )
         self.a_original.setAccessibleName(
             "Stop original reference"
-            if source == "original"
+            if source == "original" or self.original_runner.active
             else "Play first original reference"
             if multiple
             else "Play original reference"
@@ -1724,6 +1736,7 @@ class VoiceAuditionPanel(QGroupBox):
         )
 
     def _stop_player(self) -> None:
+        self.original_runner.cancel()
         if self.player is not None:
             self.player.stop()
         self._set_playing_source(None)

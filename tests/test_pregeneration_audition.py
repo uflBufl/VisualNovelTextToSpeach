@@ -2,6 +2,7 @@ import builtins
 import io
 import json
 import os
+import shutil
 import unittest
 import wave
 from concurrent.futures import ThreadPoolExecutor
@@ -25,6 +26,7 @@ from vntts.pregeneration_audition import (
     VoiceAuditionError,
     VoiceAuditionIncomplete,
     VoiceAuditionPreviewService,
+    VoiceAuditionReference,
     _staging_path,
     _validate_request,
     preview_identity,
@@ -526,7 +528,7 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
 
             self.assertEqual(
                 service.reference_audio(plan, group, group.anchor_source_id),
-                reference.resolve(),
+                VoiceAuditionReference(reference.resolve(), reference.read_bytes()),
             )
             service.close()
 
@@ -565,7 +567,7 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             try:
                 self.assertEqual(
                     service.reference_audio(plan, group, candidate.source_id),
-                    reference.resolve(),
+                    VoiceAuditionReference(reference.resolve(), reference.read_bytes()),
                 )
                 service.generate(plan, group, candidate.source_id)
                 self.assertEqual(backend.requests[0].voice, "Rhiannon")
@@ -1245,6 +1247,7 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             plan, group, manifest = ambiguous_fixture(root)
             candidate = group.candidates[0]
             reference = manifest.parent / "references" / "rhiannon.wav"
+            original_payload = reference.read_bytes()
             service = VoiceAuditionPreviewService(root / "auditions")
             probe = audition_module.probe_pcm16_mono_wav
 
@@ -1260,7 +1263,7 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                 ):
                     self.assertEqual(
                         service.reference_audio(plan, group, candidate.source_id),
-                        reference,
+                        VoiceAuditionReference(reference, original_payload),
                     )
                 self.assertEqual(reference.read_bytes(), b"replaced after checksum")
                 with self.assertRaisesRegex(
@@ -1269,6 +1272,199 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                     service.reference_audio(plan, group, candidate.source_id)
             finally:
                 service.close()
+
+    def test_original_reads_once_reuses_registry_and_never_waits_for_render(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan, group, _manifest = ambiguous_fixture(root)
+            factory = Mock()
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=factory
+            )
+            self.addCleanup(service.close)
+            with (
+                patch.object(
+                    audition_module,
+                    "capture_authority_file",
+                    wraps=audition_module.capture_authority_file,
+                ) as capture,
+                patch.object(
+                    audition_module.CharacterVoiceRegistry,
+                    "from_document",
+                    wraps=audition_module.CharacterVoiceRegistry.from_document,
+                ) as registry,
+                patch.object(
+                    audition_module,
+                    "read_voice_reference_bytes",
+                    wraps=audition_module.read_voice_reference_bytes,
+                ) as read,
+                ThreadPoolExecutor(max_workers=1) as pool,
+            ):
+                service._lock.acquire()
+                try:
+                    for _ in range(2):
+                        reference = pool.submit(
+                            service.reference_audio,
+                            plan,
+                            group,
+                            group.candidates[0].source_id,
+                        ).result(timeout=5)
+                        self.assertIsInstance(reference, VoiceAuditionReference)
+                finally:
+                    service._lock.release()
+                self.assertEqual(capture.call_count, 2)
+                registry.assert_called_once()
+                self.assertEqual(read.call_count, 2)
+            factory.assert_not_called()
+
+    def test_original_cached_registry_revalidates_changed_manifest(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan, group, manifest = ambiguous_fixture(root)
+            service = VoiceAuditionPreviewService(root / "auditions")
+            self.addCleanup(service.close)
+            source = group.candidates[0].source_id
+            service.reference_audio(plan, group, source)
+            document = json.loads(manifest.read_bytes())
+            document["voices"][0]["speaker"] = "changed-speaker"
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(VoiceAuditionError, "Character voices changed"):
+                service.reference_audio(plan, group, source)
+            with self.assertRaisesRegex(VoiceAuditionError, "Voice candidate changed"):
+                service.reference_audio(
+                    replace(plan, voice_manifest_sha256=sha256_file(manifest)),
+                    group,
+                    source,
+                )
+
+    def test_original_registry_cache_keeps_identical_manifest_roots_separate(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan, group, manifest = ambiguous_fixture(root)
+            copied_root = root / "copied-voices"
+            shutil.copytree(manifest.parent, copied_root)
+            service = VoiceAuditionPreviewService(root / "auditions")
+            self.addCleanup(service.close)
+            source = group.candidates[0].source_id
+            service.reference_audio(plan, group, source)
+            reference = service.reference_audio(
+                replace(plan, voice_manifest=str(copied_root / manifest.name)),
+                group,
+                source,
+            )
+            self.assertIsNotNone(reference)
+            self.assertEqual(
+                reference.path, copied_root / "references" / "rhiannon.wav"
+            )
+
+    def test_generated_preview_rechecks_manifest_after_capturing_references(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan, group, manifest = ambiguous_fixture(root)
+            factory = Mock()
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=factory
+            )
+            self.addCleanup(service.close)
+            read = audition_module.read_voice_reference_bytes
+
+            def change_manifest_after_read(*args):
+                payload = read(*args)
+                manifest.write_bytes(manifest.read_bytes() + b" ")
+                return payload
+
+            with patch.object(
+                audition_module,
+                "read_voice_reference_bytes",
+                side_effect=change_manifest_after_read,
+            ):
+                with self.assertRaisesRegex(
+                    VoiceAuditionError, "changed while they were read"
+                ):
+                    service.generate(plan, group, group.candidates[0].source_id)
+            factory.assert_not_called()
+
+    def test_original_cached_registry_rechecks_all_selected_references(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan, group, manifest = ambiguous_fixture(root)
+            sibling = manifest.parent / "references" / "second.wav"
+            sibling.write_bytes(clean_wav_bytes())
+            document = json.loads(manifest.read_bytes())
+            document["voices"][0]["references"].append("references/second.wav")
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+            candidate = replace(
+                group.candidates[0],
+                reference_sha256s=(
+                    *group.candidates[0].reference_sha256s,
+                    sha256_file(sibling),
+                ),
+            )
+            group = replace(group, candidates=(candidate,), candidate_inventory=())
+            plan = replace(
+                plan, groups=(group,), voice_manifest_sha256=sha256_file(manifest)
+            )
+            service = VoiceAuditionPreviewService(root / "auditions")
+            self.addCleanup(service.close)
+            with patch.object(
+                audition_module,
+                "read_voice_reference_bytes",
+                wraps=audition_module.read_voice_reference_bytes,
+            ) as read:
+                service.reference_audio(plan, group, candidate.source_id)
+                self.assertEqual(read.call_count, 2)
+            sibling.write_bytes(b"changed sibling")
+            with self.assertRaisesRegex(VoiceAuditionError, "Voice candidate changed"):
+                service.reference_audio(plan, group, candidate.source_id)
+
+    def test_original_cached_registry_refuses_new_reference_symlinks(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan, group, manifest = ambiguous_fixture(root)
+            service = VoiceAuditionPreviewService(root / "auditions")
+            self.addCleanup(service.close)
+            source = group.candidates[0].source_id
+            service.reference_audio(plan, group, source)
+            references = manifest.parent / "references"
+            moved = manifest.parent / "moved-references"
+            references.rename(moved)
+            try:
+                references.symlink_to(moved, target_is_directory=True)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"Directory symlinks are unavailable: {error}")
+            with self.assertRaisesRegex(VoiceAuditionError, "symlinks"):
+                service.reference_audio(plan, group, source)
+
+    def test_original_rejects_checksum_matching_malformed_pcm(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan, group, manifest = ambiguous_fixture(root)
+            reference = manifest.parent / "references" / "rhiannon.wav"
+            reference.write_bytes(b"not a WAV")
+            candidate = replace(
+                group.candidates[0], reference_sha256s=(sha256_file(reference),)
+            )
+            group = replace(group, candidates=(candidate,), candidate_inventory=())
+            plan = replace(plan, groups=(group,))
+            service = VoiceAuditionPreviewService(root / "auditions")
+            self.addCleanup(service.close)
+            with self.assertRaisesRegex(VoiceAuditionError, "not playable"):
+                service.reference_audio(plan, group, candidate.source_id)
+
+    def test_original_returns_none_for_presets_without_starting_tts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan, group, _manifest = ambiguous_fixture(root)
+            candidate = VoiceCandidate("preset:alba", "alba", "alba", ())
+            group = replace(group, candidates=(candidate,), candidate_inventory=())
+            plan = replace(plan, groups=(group,))
+            factory = Mock()
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=factory
+            )
+            self.addCleanup(service.close)
+            self.assertIsNone(service.reference_audio(plan, group, candidate.source_id))
+            factory.assert_not_called()
 
 
 if __name__ == "__main__":

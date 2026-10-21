@@ -28,10 +28,12 @@ from vntts_artifacts.audio import (
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.application_directories import get_local_data_directory
+from vntts.audio_cache import BoundedCache
 from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
     exclusive_advisory_lock,
 )
+from vntts.authoring.authority import AuthoringAuthorityError, capture_authority_file
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_manifest import (
     AudioQuality,
@@ -66,7 +68,7 @@ from vntts.synthesis import (
     SynthesisResult,
 )
 from vntts.tts_benchmark import create_backend
-from vntts.voices import CharacterVoiceRegistry
+from vntts.voices import CharacterVoiceRegistry, read_voice_reference_bytes
 
 COMPARISON_PREVIEW_TEXT = "The storm has passed. We can continue our journey."
 
@@ -138,6 +140,12 @@ class _DownloadOptions(TypedDict, total=False):
 
 
 @dataclass(frozen=True)
+class VoiceAuditionReference:
+    path: Path
+    payload: bytes
+
+
+@dataclass(frozen=True)
 class VoiceAuditionPreview:
     identity: str
     group_id: str
@@ -187,6 +195,9 @@ class VoiceAuditionPreviewService:
         self._closed = False
         self._failed_preview_attempts: dict[str, int] = {}
         self._preview_salt = secrets.token_bytes(32)
+        self._reference_registries: BoundedCache[
+            tuple[Path, str], CharacterVoiceRegistry
+        ] = BoundedCache(2)
 
     @property
     def backend(self) -> _PreviewBackend | None:
@@ -720,20 +731,17 @@ class VoiceAuditionPreviewService:
 
     def reference_audio(
         self, plan: VoicePlan, group: VoiceGroup, candidate_source_id: str
-    ) -> Path | None:
-        """Return one checksum-verified, playable original reference when present."""
+    ) -> VoiceAuditionReference | None:
+        """Return exact checksum-verified original bytes without starting TTS."""
         candidate = _validate_request(plan, group, candidate_source_id)
-        registry = _load_candidate_registry(plan, candidate)
+        _registry, reference = _load_candidate(
+            plan, candidate, registry_cache=self._reference_registries
+        )
+        if reference is None:
+            return None
         try:
-            voice = registry.resolve_source(candidate.source_id)
-            if voice is None or not voice.references:
-                return None
-            reference = voice.references[0]
-            payload = read_regular_bytes(reference)
-            if hashlib.sha256(payload).hexdigest() != candidate.reference_sha256s[0]:
-                raise VoiceAuditionError("Original voice anchor changed after planning")
-            probe_pcm16_mono_wav(BytesIO(payload))
-            return Path(reference)
+            probe_pcm16_mono_wav(BytesIO(reference.payload))
+            return reference
         except (OSError, ValueError, VoiceManifestError) as error:
             raise VoiceAuditionError(
                 f"Original voice anchor is not playable: {error}"
@@ -855,41 +863,67 @@ def _preview_text(group: VoiceGroup, text: str | None) -> str:
 def _load_candidate_registry(
     plan: VoicePlan, candidate: VoiceCandidate
 ) -> CharacterVoiceRegistry:
-    manifest = (
-        Path(plan.voice_manifest).expanduser().resolve()
-        if plan.voice_manifest
-        else None
-    )
-    if manifest is not None:
-        try:
-            before = sha256_file(manifest)
-        except OSError as error:
-            raise VoiceAuditionError(
-                f"Unable to read character voices: {error}"
-            ) from error
-        if before != plan.voice_manifest_sha256:
-            raise VoiceAuditionError("Character voices changed after planning")
-    try:
-        registry = (
-            CharacterVoiceRegistry.from_file(manifest)
-            if manifest is not None
-            else CharacterVoiceRegistry()
+    registry, _reference = _load_candidate(plan, candidate)
+    if (
+        plan.voice_manifest
+        and sha256_file(Path(plan.voice_manifest).expanduser())
+        != plan.voice_manifest_sha256
+    ):
+        raise VoiceAuditionError("Character voices changed while they were read")
+    return registry
+
+
+def _load_manifest_registry(
+    plan: VoicePlan,
+    registry_cache: BoundedCache[tuple[Path, str], CharacterVoiceRegistry] | None,
+) -> CharacterVoiceRegistry:
+    if not plan.voice_manifest:
+        return CharacterVoiceRegistry()
+    snapshot = capture_authority_file(plan.voice_manifest, "character voice manifest")
+    if snapshot.sha256 != plan.voice_manifest_sha256:
+        raise VoiceAuditionError("Character voices changed after planning")
+    key = (snapshot.path, snapshot.sha256)
+    registry = registry_cache.get(key) if registry_cache is not None else None
+    if registry is None:
+        registry = CharacterVoiceRegistry.from_document(
+            snapshot.json_document("character voice manifest"), snapshot.path
         )
+        if registry_cache is not None:
+            registry_cache.put(key, registry)
+    return registry
+
+
+def _load_candidate(
+    plan: VoicePlan,
+    candidate: VoiceCandidate,
+    *,
+    registry_cache: BoundedCache[tuple[Path, str], CharacterVoiceRegistry]
+    | None = None,
+) -> tuple[CharacterVoiceRegistry, VoiceAuditionReference | None]:
+    try:
+        registry = _load_manifest_registry(plan, registry_cache)
         voice = registry.resolve_source(candidate.source_id)
-    except (OSError, VoiceManifestError, ValueError) as error:
+    except (AuthoringAuthorityError, OSError, VoiceManifestError, ValueError) as error:
         raise VoiceAuditionError(
             f"Unable to resolve the voice candidate: {error}"
         ) from error
     if voice is None:
         raise VoiceAuditionError("Narrator fallback is not a voice candidate")
+    reference = None
     try:
+        checksums: list[str] = []
+        for path in voice.references:
+            payload = read_voice_reference_bytes(voice, path)
+            checksums.append(hashlib.sha256(payload).hexdigest())
+            if reference is None:
+                reference = VoiceAuditionReference(Path(path), payload)
         identity = VoiceCandidate(
             source_id=candidate.source_id,
             source_character=voice.source_character or voice.character,
             source_speaker=voice.speaker,
-            reference_sha256s=tuple(sha256_file(path) for path in voice.references),
+            reference_sha256s=tuple(checksums),
         )
-    except OSError as error:
+    except (OSError, VoiceManifestError, ValueError) as error:
         raise VoiceAuditionError(
             f"Unable to read the voice candidate: {error}"
         ) from error
@@ -900,11 +934,9 @@ def _load_candidate_registry(
         or identity.reference_sha256s != candidate.reference_sha256s
     ):
         raise VoiceAuditionError("Voice candidate changed after planning")
-    if manifest is not None and sha256_file(manifest) != plan.voice_manifest_sha256:
-        raise VoiceAuditionError("Character voices changed while they were read")
     if candidate.reference_transcript:
         voice = replace(voice, reference_transcript=candidate.reference_transcript)
-    return CharacterVoiceRegistry((voice,))
+    return CharacterVoiceRegistry((voice,)), reference
 
 
 def preview_identity(

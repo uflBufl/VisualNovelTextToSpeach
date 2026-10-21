@@ -23,6 +23,7 @@ from vntts.pregeneration_audition import (  # noqa: E402
     COMPARISON_PREVIEW_TEXT,
     VoiceAuditionCancelled,
     VoiceAuditionPreview,
+    VoiceAuditionReference,
     preview_identity,
 )
 from vntts.pregeneration_audition_ui import VoiceAuditionPanel  # noqa: E402
@@ -96,8 +97,9 @@ class ReferenceAdviceUITest(unittest.TestCase):
             return ready[source]
 
         service.generate.side_effect = generate
-        service.reference_audio.return_value = (
-            manifest.parent / "references" / "rhiannon.wav"
+        reference = manifest.parent / "references" / "rhiannon.wav"
+        service.reference_audio.return_value = VoiceAuditionReference(
+            reference, reference.read_bytes()
         )
         panel = VoiceAuditionPanel(
             decisions,
@@ -308,8 +310,11 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f.panel.voice_reference.setCurrentIndex(17)
             self.assertEqual(f.panel._current_entry()[0], candidates[17])
             original = Path(plan.voice_manifest).parent / "references" / "centurion.wav"
-            f.service.reference_audio.return_value = original
+            f.service.reference_audio.return_value = VoiceAuditionReference(
+                original, original.read_bytes()
+            )
             f.panel.a_original.click()
+            self.drain(f)
             f.service.reference_audio.assert_called_once_with(
                 plan, group, candidates[17].source_id
             )

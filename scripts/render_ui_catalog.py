@@ -50,6 +50,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from vntts.cleanup import cleanup_on_exit, temporary_directory  # noqa: E402
 from vntts.path_safety import read_regular_text  # noqa: E402
+from vntts.pregeneration_audition import VoiceAuditionReference  # noqa: E402
 from vntts.ui_catalog import (  # noqa: E402
     UICatalog,
     _write_catalog,
@@ -1280,7 +1281,7 @@ def _voice_audition_story(
         "alternate-phrase": lambda: panel.preview_phrase.setCurrentIndex(
             panel.preview_phrase.findData(panel.current_group().alternate_sample_text)
         ),
-        "original-playing": panel.a_original.click,
+        "original-playing": lambda: _voice_original_playback_story(panel),
         "preview-generating": panel.a_play.click,
         "details": lambda: panel.reference_details_toggle.setChecked(True),
     }
@@ -1299,7 +1300,7 @@ def _voice_audition_story(
                 RuntimeError("The speech engine stopped before producing audio."),
             )
     elif state in {"saving", "save-failure", "save-waiting"}:
-        panel.a_original.click()
+        _voice_original_playback_story(panel)
         panel.a_use.click()
         if state == "save-waiting":
             dialog.cancel_button.click()
@@ -1312,6 +1313,20 @@ def _voice_audition_story(
             assert not panel.active
             assert panel.retry_save_button.isEnabled()
     return dialog
+
+
+def _voice_original_playback_story(panel: VoiceAuditionPanel) -> None:
+    panel.a_original.click()
+    panel.original_runner._task_finished(
+        panel.original_runner._serial,
+        panel.preview_service.reference_audio(
+            panel._require_plan(),
+            panel.current_group(),
+            panel._current_entry()[0].source_id,
+        ),
+        None,
+    )
+    assert panel._playing_source == "original"
 
 
 def _voice_preview_playback_story(
@@ -3213,7 +3228,9 @@ def _render_stories(
         )
         original_reference = root / "original-reference.wav"
         write_silent_wav(original_reference)
-        audition_service.reference_audio.return_value = original_reference
+        audition_service.reference_audio.return_value = VoiceAuditionReference(
+            original_reference, original_reference.read_bytes()
+        )
         dialog = OfflineAudioPreparationDialog(
             offline_settings,
             discovery=discovery,

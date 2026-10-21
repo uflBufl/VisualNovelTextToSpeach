@@ -32,6 +32,7 @@ from vntts.pregeneration_audition import (  # noqa: E402
     VoiceAuditionCancelled,
     VoiceAuditionIncomplete,
     VoiceAuditionPreviewService,
+    VoiceAuditionReference,
 )
 from vntts.pregeneration_audition_queue import VoiceAuditionCoordinator  # noqa: E402
 from vntts.pregeneration_audition_ui import VoiceAuditionPanel  # noqa: E402
@@ -97,6 +98,10 @@ class VoiceAuditionPanelTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
+
+    def finish_task(self, task):
+        task.run()
+        self.application.processEvents()
 
     def test_one_play_click_generates_if_needed_and_starts_playback(self):
         for cached in (False, True):
@@ -762,7 +767,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                     self.assertTrue(panel.a_use.isEnabled())
                     self.assertEqual(service.generate.call_count, 2)
 
-    def test_original_playback_verifies_the_bytes_after_reference_resolution(self):
+    def test_original_plays_verified_snapshot_even_if_file_changes_after_preparation(
+        self,
+    ):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             plan, group, _manifest = ambiguous_fixture(root)
@@ -772,13 +779,14 @@ class VoiceAuditionPanelTest(unittest.TestCase):
 
             def replace_reference(*arguments):
                 reference = verifier.reference_audio(*arguments)
-                reference.write_bytes(clean_wav_bytes(amplitude=0.2))
+                reference.path.write_bytes(clean_wav_bytes(amplitude=0.2))
                 return reference
 
             service.reference_audio.side_effect = replace_reference
             player, decisions = Mock(), Mock()
+            pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
-                decisions, preview_service=service, player=player
+                decisions, preview_service=service, player=player, thread_pool=pool
             )
             self.addCleanup(panel.deleteLater)
             self.addCleanup(panel.shutdown)
@@ -786,9 +794,108 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.a_original.click()
             player.play_bytes.assert_not_called()
             self.assertFalse(panel.a_use.isEnabled())
-            self.assertIn("changed after validation", panel.status.toPlainText())
+            service.reference_audio.assert_not_called()
+            pool.run_next()
+            self.application.processEvents()
+            player.play_bytes.assert_called_once()
+            self.assertEqual(player.play_bytes.call_args.args[0], clean_wav_bytes())
+            self.assertTrue(panel.a_use.isEnabled())
             service.generate.assert_not_called()
             decisions.remember_many.assert_not_called()
+
+    def test_cancelled_preview_completion_preserves_pending_original_status(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, _group, manifest = ambiguous_fixture(root)
+            service = Mock(spec=VoiceAuditionPreviewService)
+            service.generate.return_value = generated_preview(root)
+            reference = manifest.parent / "references" / "rhiannon.wav"
+            service.reference_audio.return_value = VoiceAuditionReference(
+                reference, reference.read_bytes()
+            )
+            pool, player = ManualThreadPool(), Mock()
+            panel = VoiceAuditionPanel(
+                Mock(), preview_service=service, player=player, thread_pool=pool
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            panel.start(plan)
+            panel.a_play.click()
+            panel.a_original.click()
+            pool.run_next()
+            self.application.processEvents()
+            player.play_bytes.assert_not_called()
+            self.assertEqual(
+                panel.status.toPlainText(), "Preparing original reference..."
+            )
+            self.assertEqual(panel.a_original.text(), "Stop original")
+            pool.run_next()
+            self.application.processEvents()
+            player.play_bytes.assert_called_once_with(
+                reference.read_bytes(), source=str(reference)
+            )
+
+    def test_pending_original_can_be_stopped_or_superseded_without_late_playback(self):
+        for action in (
+            "stop",
+            "select",
+            "phrase",
+            "preview",
+            "cancel",
+            "shutdown",
+            "restart",
+            "save",
+        ):
+            with self.subTest(action=action), TemporaryDirectory() as directory:
+                root = Path(directory)
+                plan, group, manifest = ambiguous_fixture(root)
+                plan, group = with_second_candidate(plan, group)
+                reference = manifest.parent / "references" / "rhiannon.wav"
+                service = Mock(spec=VoiceAuditionPreviewService)
+                service.reference_audio.return_value = VoiceAuditionReference(
+                    reference, reference.read_bytes()
+                )
+                service.generate.return_value = generated_preview(root)
+                pool, player = ManualThreadPool(), Mock()
+                panel = VoiceAuditionPanel(
+                    Mock(), preview_service=service, player=player, thread_pool=pool
+                )
+                self.addCleanup(panel.deleteLater)
+                self.addCleanup(panel.shutdown)
+                panel.start(plan)
+                panel.a_original.click()
+                self.assertTrue(panel.original_runner.active)
+                self.assertEqual(panel.a_original.text(), "Stop original")
+                self.assertFalse(panel.a_use.isEnabled())
+                service.reference_audio.assert_not_called()
+                # UI actions remain usable while the disk task has not finished.
+                if action == "stop":
+                    panel.a_original.click()
+                elif action == "select":
+                    panel.voice_reference.setCurrentIndex(1)
+                elif action == "phrase":
+                    panel.preview_phrase.setCurrentIndex(1)
+                elif action == "preview":
+                    panel.a_play.click()
+                elif action == "restart":
+                    panel.start(plan)
+                elif action == "save":
+                    panel.choose_all_automatically()
+                else:
+                    getattr(panel, action)()
+                self.assertFalse(panel.original_runner.active)
+                pool.run_next()
+                self.application.processEvents()
+                player.play_bytes.assert_not_called()
+                self.assertIsNone(panel._accepted_choice)
+                while pool.tasks:
+                    pool.run_next()
+                    self.application.processEvents()
+                if action == "preview":
+                    player.play_bytes.assert_called_once()
+                    self.assertEqual(panel.a_play.text(), "Stop preview")
+                else:
+                    player.play_bytes.assert_not_called()
 
     def test_retry_after_shutdown_gets_a_usable_preview_service(self):
         with TemporaryDirectory() as temporary_directory:
@@ -882,12 +989,12 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertIn("Reference 2", panel.voice_reference.currentText())
             self.assertEqual(panel.a_box.title(), "Original game reference")
             panel.a_original.click()
+            self.finish_task(pool.tasks.pop())
             preview_service.reference_audio.assert_called_once_with(
                 plan, group, alternative.source_id
             )
             panel.a_use.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.finish_task(pool.tasks.pop())
             self.assertEqual(
                 decisions.choice_for(group.group_id, group.decision_context_sha256),
                 alternative.source_id,
@@ -1009,10 +1116,10 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.start(plan)
             self.assertFalse(panel.a_use.isEnabled())
             panel.a_original.click()
+            self.finish_task(pool.tasks.pop())
             self.assertTrue(panel.a_use.isEnabled())
             panel.a_use.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.finish_task(pool.tasks.pop())
             service.generate.assert_not_called()
             decisions.remember_many.assert_called_once_with(
                 ((group, group.candidates[0].source_id),)
@@ -1040,15 +1147,15 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.addCleanup(panel.shutdown)
             panel.start(plan, group_id=group.group_id)
             panel.a_original.click()
+            self.finish_task(pool.tasks.pop())
             self.assertFalse(panel.a_use.isEnabled())
             player.play_bytes.return_value = object()
             panel.a_original.click()
-            panel.a_original.click()
+            self.finish_task(pool.tasks.pop())
             self.assertTrue(panel.a_use.isEnabled())
             panel.a_play.click()
             with patch("vntts.support.record_game_import"):
-                pool.tasks.pop().run()
-                self.application.processEvents()
+                self.finish_task(pool.tasks.pop())
             self.assertIn(
                 "Listen to the original reference", panel.status.toPlainText()
             )
@@ -1057,10 +1164,10 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertIn("engine unavailable", panel.reference_details.toPlainText())
             self.assertTrue(panel.a_original.isEnabled())
             panel.a_original.click()
+            self.finish_task(pool.tasks.pop())
             self.assertTrue(panel.a_use.isEnabled())
             panel.a_play.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.finish_task(pool.tasks.pop())
             self.assertTrue(panel.a_use.isEnabled())
             self.assertEqual(panel.a_play.text(), "Stop preview")
             panel.a_play.click()
@@ -1160,18 +1267,17 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.addCleanup(panel.shutdown)
             panel.start(plan)
             panel.a_play.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.finish_task(pool.tasks.pop())
             for index, reference in enumerate((reference_a, reference_b)):
                 if index:
                     panel.voice_reference.setCurrentIndex(index)
                     panel.a_play.click()
-                    pool.tasks.pop().run()
-                    self.application.processEvents()
+                    self.finish_task(pool.tasks.pop())
                 calls_before = service.generate.call_count
                 self.assertTrue(panel.a_original.isEnabled())
                 with patch("vntts.support.record_game_import") as report:
                     panel.a_original.click()
+                    self.finish_task(pool.tasks.pop())
                 report.assert_any_call(
                     "voice-original-playback",
                     outcome="requested",
@@ -1185,7 +1291,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                     reference.resolve(),
                 )
                 self.assertEqual(service.generate.call_count, calls_before)
-            self.assertEqual(service.generate.call_count, 2)
             self.assertTrue(panel.a_use.isEnabled())
             panel.a_play.click()
             self.assertEqual(
@@ -1201,6 +1306,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.a_play.click()
             self.application.processEvents()
             panel.a_original.click()
+            self.finish_task(pool.tasks.pop())
             self.assertEqual(
                 player.play_bytes.call_args.args[0], reference_b.read_bytes()
             )
@@ -1215,6 +1321,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             player.reset_mock()
             panel.a_original.click()
             panel.a_original.click()
+            self.finish_task(pool.tasks.pop())
             player.play_bytes.assert_not_called()
             self.assertIn("changed", panel.status.toPlainText())
             self.assertEqual(service.generate.call_count, 2)
@@ -1315,8 +1422,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             decisions = Mock()
             previews = Mock()
             previews.generate.return_value = generated_preview(root)
-            previews.reference_audio.return_value = (
-                manifest.parent / "references" / "rhiannon.wav"
+            reference = manifest.parent / "references" / "rhiannon.wav"
+            previews.reference_audio.return_value = VoiceAuditionReference(
+                reference, reference.read_bytes()
             )
             previews.backend.runtime_status = "GPU: RTX 2070 SUPER <8 GB>"
             pool = ManualThreadPool()
@@ -1329,6 +1437,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             previews.generate.assert_not_called()
             self.assertEqual(pool.tasks, [])
             panel.a_original.click()
+            self.finish_task(pool.tasks.pop())
             previews.generate.assert_not_called()
             previews.reference_audio.assert_called_once_with(
                 plan, group, group.candidates[0].source_id
@@ -1338,8 +1447,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.a_play.click()
             self.assertEqual(panel.runtime.textFormat(), Qt.TextFormat.PlainText)
             self.assertIn("GPU: RTX 2070 SUPER", panel.runtime.text())
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.finish_task(pool.tasks.pop())
             self.assertEqual(pool.tasks, [])
             panel.voice_reference.setCurrentIndex(1)
             self.assertFalse(panel.a_use.isEnabled())

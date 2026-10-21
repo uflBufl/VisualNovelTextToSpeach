@@ -17,6 +17,7 @@ from vntts.pregeneration_audition import (
     VoiceAuditionError,
     VoiceAuditionPreview,
     VoiceAuditionPreviewService,
+    VoiceAuditionReference,
     _Cancellation,
     _validate_request,
 )
@@ -547,7 +548,7 @@ class VoiceAuditionSession:
 
     def reference_audio(
         self, plan: VoicePlan, group: VoiceGroup, source: str
-    ) -> Path | None:
+    ) -> VoiceAuditionReference | None:
         return self.owner.service.reference_audio(plan, group, source)
 
     def cancel(self) -> None:

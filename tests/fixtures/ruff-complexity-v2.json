@@ -1350,7 +1350,7 @@
       "path": "vntts/pregeneration_audition_ui.py",
       "scope": "VoiceAuditionPanel.__init__",
       "count": 1,
-      "maximum": 106
+      "maximum": 102
     },
     {
       "code": "PLR0915",
