@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import wave
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
 from typing import NamedTuple, Protocol, TypeAlias, TypedDict
+from uuid import uuid4
 
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
@@ -58,19 +59,20 @@ from vntts.pregeneration_setup import (
 )
 from vntts.services.tts_engine import default_tts_profile, get_tts_profile
 from vntts.settings import AppSettings
-from vntts.support import record_background_operation
+from vntts.support import performance_operation_id, record_background_operation
 from vntts.versioned_json import read_versioned_json, write_versioned_json
 from vntts.voice_library import (
     VoiceBinding,
     VoiceBindingRollback,
+    VoiceDiscovery,
     VoiceLibrary,
+    VoiceLibraryReadSnapshot,
     VoiceSelection,
 )
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
     default_voice_choice_id,
-    discover_voice_source,
     find_default_voice_manifest,
     is_narrator,
     pocket_tts_preset_voices,
@@ -80,6 +82,7 @@ from vntts.voices import (
     remember_voice_binding,
     synthesis_character_for_line,
     voice_binding_source_id,
+    voice_source_discoveries,
 )
 
 JsonObject: TypeAlias = dict[str, object]
@@ -554,13 +557,16 @@ class VoicePlanStore:
         ignore_decisions: bool = False,
         reference_qualifier: Callable[[VoicePlan], Mapping[str, str]] | None = None,
     ) -> VoicePlan:
+        operation_token = performance_operation_id.set(uuid4().hex)
+        started, cpu_started = perf_counter(), process_time()
+        outcome = "failed"
         rollback = (
             self.voice_library.binding_rollback()
             if self.voice_library is not None
             else None
         )
         try:
-            return self._create(
+            plan = self._create(
                 job,
                 settings,
                 manifest_path=manifest_path,
@@ -569,12 +575,19 @@ class VoicePlanStore:
                 rollback=rollback,
                 reference_qualifier=reference_qualifier,
             )
+            outcome = "complete"
+            return plan
         except Exception as error:
+            if isinstance(error, PregenerationVoiceCancelled):
+                outcome = "cancelled"
             if self.voice_library is not None and rollback is not None:
                 _rollback_voice_bindings(
                     self.voice_library, rollback, primary_error=error
                 )
             raise
+        finally:
+            _record_plan_phase("total", started, cpu_started, outcome=outcome)
+            performance_operation_id.reset(operation_token)
 
     def validate_saved_voice_access(
         self, job: PregenerationJob, settings: AppSettings
@@ -619,13 +632,6 @@ class VoicePlanStore:
         authoritative_source_lines = _validated_source_audio_line_ids(
             job.story_index, document
         )
-        _record_plan_phase(
-            "story",
-            phase_started,
-            cpu_started,
-            files_examined=1,
-            bytes_examined=_file_size(job.story_index),
-        )
         selected_line_ids = set(job.selected_line_ids)
         records: dict[str, StoryIndexRecord] = {
             record.line_id: record
@@ -636,11 +642,18 @@ class VoicePlanStore:
             raise PregenerationVoiceError(
                 "Selected dialogue changed after offline preparation was planned"
             )
+        _record_plan_phase(
+            "story",
+            phase_started,
+            cpu_started,
+            files_examined=1,
+            bytes_examined=_file_size(job.story_index),
+        )
         _raise_if_cancelled(cancellation)
         phase_started, cpu_started = perf_counter(), process_time()
         manifest_path = _selected_manifest(settings, manifest_path)
         registry, manifest_sha256, manifest_document = _load_registry(manifest_path)
-        registry = self._prepared_voice_library(
+        registry, library_snapshot = self._prepared_voice_library(
             registry,
             records.values(),
             settings,
@@ -671,6 +684,7 @@ class VoicePlanStore:
             files_examined=reference_files + (1 if manifest_path else 0),
             bytes_examined=reference_bytes + _file_size(manifest_path),
         )
+        phase_started, cpu_started = perf_counter(), process_time()
         controls = _synthesis_controls(settings)
         saved_groups = (
             self._saved_independent_groups(controls)
@@ -678,6 +692,8 @@ class VoicePlanStore:
             else ()
         )
         controls_sha256 = _digest(controls)
+        _record_plan_phase("settings-context", phase_started, cpu_started)
+        phase_started, cpu_started = perf_counter(), process_time()
         grouped = self._group_selected_lines(
             job,
             records,
@@ -686,41 +702,31 @@ class VoicePlanStore:
             authoritative_source_lines,
             queue_bindings,
         )
-
-        phase_started, cpu_started = perf_counter(), process_time()
-        person_aliases = (
-            self.voice_library.person_aliases()
-            if self.voice_library is not None
-            else {}
-        )
-        groups: list[VoiceGroup] = []
-        for group_id, values in grouped.items():
-            _raise_if_cancelled(cancellation)
-            groups.append(
-                self._resolve_group(
-                    group_id,
-                    values,
-                    settings,
-                    registry,
-                    candidate_variants,
-                    controls,
-                    ignore_decisions,
-                    saved_groups,
-                    person_aliases,
-                    rollback,
-                    reference_qualifier is not None,
-                )
-            )
-            if self.voice_library is not None:
-                registry = registry_with_voice_library(registry, self.voice_library)
         _record_plan_phase(
-            "routing",
+            "grouping",
             phase_started,
             cpu_started,
-            files_examined=reference_files,
-            bytes_examined=reference_bytes,
+            group_count=len(grouped),
+            count=len(records),
+        )
+
+        groups, registry, person_aliases = self._resolve_groups(
+            grouped,
+            settings,
+            registry,
+            candidate_variants,
+            controls,
+            ignore_decisions,
+            saved_groups,
+            library_snapshot,
+            rollback,
+            cancellation,
+            reference_qualifier is not None,
+            reference_files,
+            reference_bytes,
         )
         _raise_if_cancelled(cancellation)
+        phase_started, cpu_started = perf_counter(), process_time()
         plan = VoicePlan(
             job_id=job.job_id,
             created_at=self.clock().astimezone(timezone.utc).isoformat(),
@@ -739,14 +745,99 @@ class VoicePlanStore:
                 records.values(), person_aliases
             ),
         )
+        _record_plan_phase(
+            "assembly", phase_started, cpu_started, group_count=len(groups)
+        )
         if reference_qualifier is not None:
+            phase_started, cpu_started = perf_counter(), process_time()
             selections = reference_qualifier(plan)
+            _record_plan_phase(
+                "reference-qualification",
+                phase_started,
+                cpu_started,
+                group_count=len(groups),
+                count=len(selections),
+            )
             _raise_if_cancelled(cancellation)
+            phase_started, cpu_started = perf_counter(), process_time()
             plan = self._apply_automatic_references(
                 plan, selections, registry, controls, rollback, cancellation
             )
+            _record_plan_phase(
+                "apply-choices", phase_started, cpu_started, count=len(selections)
+            )
         _raise_if_cancelled(cancellation)
         return self._persist_plan(job, plan)
+
+    def _resolve_groups(
+        self,
+        grouped: Mapping[str, Sequence[GroupValue]],
+        settings: AppSettings,
+        registry: CharacterVoiceRegistry,
+        candidate_variants: Sequence[JsonObject],
+        controls: SynthesisControls,
+        ignore_decisions: bool,
+        saved_groups: Sequence[JsonObject],
+        library_snapshot: VoiceLibraryReadSnapshot | None,
+        rollback: VoiceBindingRollback | None,
+        cancellation: Cancellation | None,
+        defer_automatic_bindings: bool,
+        reference_files: int,
+        reference_bytes: int,
+    ) -> tuple[list[VoiceGroup], CharacterVoiceRegistry, dict[str, str]]:
+        phase_started, cpu_started = perf_counter(), process_time()
+        person_aliases = (
+            library_snapshot.person_aliases() if library_snapshot is not None else {}
+        )
+        cache_hits = cache_misses = registry_builds = 0
+        groups: list[VoiceGroup] = []
+        for group_id, values in grouped.items():
+            _raise_if_cancelled(cancellation)
+            if self.voice_library is not None and library_snapshot is not None:
+                fresh = self.voice_library.read_snapshot(library_snapshot)
+                if fresh is library_snapshot:
+                    cache_hits += 1
+                else:
+                    cache_misses += 1
+                    if not fresh.has_same_routing(library_snapshot):
+                        registry = registry_with_voice_library(registry, fresh)
+                        registry_builds += 1
+                    library_snapshot = fresh
+                    person_aliases = fresh.person_aliases()
+            groups.append(
+                self._resolve_group(
+                    group_id,
+                    values,
+                    settings,
+                    registry,
+                    candidate_variants,
+                    controls,
+                    ignore_decisions,
+                    saved_groups,
+                    person_aliases,
+                    rollback,
+                    defer_automatic_bindings,
+                    library_snapshot,
+                    cancellation,
+                )
+            )
+        if self.voice_library is not None:
+            person_aliases = self.voice_library.read_snapshot(
+                library_snapshot
+            ).person_aliases()
+        _record_plan_phase(
+            "routing",
+            phase_started,
+            cpu_started,
+            files_examined=reference_files,
+            bytes_examined=reference_bytes,
+            group_count=len(groups),
+            candidate_count=sum(len(group.candidate_inventory) for group in groups),
+            cache_hits=cache_hits,
+            cache_misses=cache_misses,
+            registry_builds=registry_builds,
+        )
+        return groups, registry, person_aliases
 
     def _apply_automatic_references(
         self,
@@ -828,6 +919,11 @@ class VoicePlanStore:
         authoritative_source_lines: frozenset[str],
         queue_bindings: Mapping[str, str],
     ) -> dict[str, list[GroupValue]]:
+        library = (
+            self.voice_library.read_snapshot()
+            if self.voice_library is not None
+            else None
+        )
         portrait_snapshots: dict[str, PortraitSnapshot] = {}
         grouped: dict[str, list[GroupValue]] = {}
         role_cache: dict[str, tuple[str, str | None]] = {}
@@ -841,12 +937,10 @@ class VoicePlanStore:
             role_values = role_cache.get(role)
             if role_values is None:
                 character = (
-                    self.voice_library.canonical_role(role)
-                    if self.voice_library is not None
-                    else role
+                    library.canonical_role(role) if library is not None else role
                 )
                 assignment = _effective_assignment_source(
-                    settings, character, library=self.voice_library
+                    settings, character, library=library
                 )
                 role_values = character, assignment
                 role_cache[role] = role_values
@@ -905,13 +999,14 @@ class VoicePlanStore:
         ignore_decisions: bool,
         rollback: VoiceBindingRollback | None,
         cancellation: Cancellation | None,
-    ) -> CharacterVoiceRegistry:
+    ) -> tuple[CharacterVoiceRegistry, VoiceLibraryReadSnapshot | None]:
         if self.voice_library is None:
-            return registry
+            return registry, None
+        snapshot = self.voice_library.read_snapshot()
         if ignore_decisions:
             reset_roles = {
                 normalize_character_name(
-                    self.voice_library.canonical_role(
+                    snapshot.canonical_role(
                         synthesis_character_for_line(
                             record.speaker, record.voice_character
                         )
@@ -923,7 +1018,7 @@ class VoicePlanStore:
                     record, source_completion, authoritative_source_lines
                 )
             }
-            for binding in self.voice_library.bindings():
+            for binding in snapshot.bindings():
                 _raise_if_cancelled(cancellation)
                 if (
                     not is_narrator(binding.role)
@@ -943,7 +1038,8 @@ class VoicePlanStore:
                 self.voice_library.clear(
                     binding.role, variant_key=binding.variant_key, rollback=rollback
                 )
-        return registry_with_voice_library(registry, self.voice_library)
+        snapshot = self.voice_library.read_snapshot(snapshot)
+        return registry_with_voice_library(registry, snapshot), snapshot
 
     def path_for(self, job: PregenerationJob) -> Path:
         return Path(self.job_store.path_for(job.job_id)).parent / "voice-plan.json"
@@ -1101,7 +1197,9 @@ class VoicePlanStore:
         saved_groups: Sequence[JsonObject],
         person_aliases: Mapping[str, str],
         rollback: VoiceBindingRollback | None,
-        defer_automatic_bindings: bool = False,
+        defer_automatic_bindings: bool,
+        library_snapshot: VoiceLibraryReadSnapshot | None,
+        cancellation: Cancellation | None,
     ) -> VoiceGroup:
         records = tuple(value.record for value in values)
         character = values[0].character
@@ -1129,19 +1227,15 @@ class VoicePlanStore:
         assignment_source = _effective_assignment_source(
             settings,
             routing_role,
-            library=self.voice_library,
+            library=library_snapshot,
         )
         binding = (
-            self.voice_library.binding(character)
-            if self.voice_library is not None
+            library_snapshot.binding(character)
+            if library_snapshot is not None
             else None
         )
-        if (
-            binding is None
-            and self.voice_library is not None
-            and variant_key is not None
-        ):
-            binding = self.voice_library.binding(routing_role)
+        if binding is None and library_snapshot is not None and variant_key is not None:
+            binding = library_snapshot.binding(routing_role)
         if (
             binding is not None
             and not is_narrator(character)
@@ -1163,8 +1257,8 @@ class VoicePlanStore:
             == normalize_character_name(character)
         )
         archived_sources: list[str] = []
-        if self.voice_library is not None:
-            for archived in self.voice_library.archived_bindings(character):
+        if library_snapshot is not None:
+            for archived in library_snapshot.archived_bindings(character):
                 if archived.route == "voice":
                     source_id = voice_binding_source_id(archived)
                     if source_id is not None:
@@ -1207,18 +1301,12 @@ class VoicePlanStore:
                 archived_sources=archived_sources,
             )
         if self.voice_library is not None:
-            for available in candidate_inventory:
-                discover_voice_source(
-                    self.voice_library,
-                    registry,
-                    character,
-                    available.source_id,
-                    variant_key=variant_key,
-                    method="automatic",
-                    evidence={"recommendation": available.recommendation},
-                    algorithm="voice-plan-v1",
-                    rollback=rollback,
-                )
+            self.voice_library.discover_many(
+                _group_voice_discoveries(
+                    registry, character, variant_key, candidate_inventory, cancellation
+                ),
+                rollback=rollback,
+            )
         eligible_candidates = _eligible_candidates(
             candidate_inventory,
             manually_selected_source=manually_selected_source,
@@ -1227,7 +1315,7 @@ class VoicePlanStore:
             settings,
             registry,
             assignment_source=_effective_assignment_source(
-                settings, "Narrator", library=self.voice_library
+                settings, "Narrator", library=library_snapshot
             ),
         )
         decision_context_sha256 = _digest(
@@ -1418,6 +1506,28 @@ class VoicePlanStore:
             routing_role=routing_role,
             variant_key=variant_key,
         )
+
+
+def _group_voice_discoveries(
+    registry: CharacterVoiceRegistry,
+    character: str,
+    variant_key: str | None,
+    candidates: Sequence[VoiceCandidate],
+    cancellation: Cancellation | None,
+) -> Iterator[VoiceDiscovery]:
+    for available in candidates:
+        _raise_if_cancelled(cancellation)
+        for discovery in voice_source_discoveries(
+            registry,
+            character,
+            available.source_id,
+            variant_key=variant_key,
+            method="automatic",
+            evidence={"recommendation": available.recommendation},
+            algorithm="voice-plan-v1",
+        ):
+            _raise_if_cancelled(cancellation)
+            yield discovery
 
 
 def _load_bound_story(job: PregenerationJob) -> StoryIndexDocument:
@@ -1924,13 +2034,23 @@ def _file_size(path: str | Path | None) -> int:
 
 
 def _record_plan_phase(
-    name: str, started: float, cpu_started: float, **details: object
+    name: str,
+    started: float,
+    cpu_started: float,
+    *,
+    outcome: str = "complete",
+    **details: object,
 ) -> None:
     record_background_operation(
         f"pregeneration-voice-plan-{name}",
         (perf_counter() - started) * 1000,
-        "complete",
+        outcome,
         cpu_ms=(process_time() - cpu_started) * 1000,
+        operation_id=performance_operation_id.get(),
+        parent_operation="pregeneration-voice-plan-total" if name != "total" else None,
+        timing_scope="inclusive"
+        if name in {"total", "reference-qualification"}
+        else "disjoint",
         **details,
     )
 

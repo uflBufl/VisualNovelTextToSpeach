@@ -60,6 +60,8 @@ audio_route_fields = (
 )
 
 audio_lifecycle_fields = (
+    "player_id",
+    "attempt_id",
     "session_id",
     "generation",
     "chunk_id",
@@ -769,7 +771,22 @@ def record_generation_stall(**details: object) -> None:
         pass
 
 
+performance_operation_id: ContextVar[str | None] = ContextVar(
+    "performance_operation_id", default=None
+)
+
 performance_fields = (
+    "operation_id",
+    "parent_operation",
+    "timing_scope",
+    "count",
+    "cache_hits",
+    "cache_misses",
+    "registry_builds",
+    "reference_reads",
+    "reference_preflights",
+    "candidate_count",
+    "group_count",
     "operation",
     "outcome",
     "elapsed_ms",
@@ -805,7 +822,7 @@ class PerformanceLog(RuntimeSupportLog):
         number = optional_finite_number(elapsed_ms)
         if number is None:
             return
-        if outcome == "complete" and number < 100:
+        if outcome == "complete" and number < 100 and not details.get("operation_id"):
             return
         self.add(
             "performance",
@@ -843,6 +860,7 @@ class PerformanceLog(RuntimeSupportLog):
                     )
         return {
             "threshold_ms": 100,
+            "correlated_threshold_ms": 0,
             "summary": {
                 operation: {
                     **aggregate,

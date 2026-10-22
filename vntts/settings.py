@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from threading import TIMEOUT_MAX
-from typing import Self, TypeAlias, TypedDict, Unpack
+from typing import TYPE_CHECKING, Self, TypeAlias, TypedDict, Unpack
 
 from pynput import keyboard
 
@@ -15,6 +15,9 @@ from vntts.application_directories import get_config_directory, get_local_data_d
 from vntts.hotkeys import default_hotkey
 from vntts.numeric_values import optional_milliseconds_seconds
 from vntts.versioned_json import load_versioned_json, write_versioned_json
+
+if TYPE_CHECKING:
+    from vntts.game_pack import GamePackImport
 
 settings_schema_version = 31
 main_sections = ("stories", "voices", "reading")
@@ -614,14 +617,24 @@ def load_app_settings(
         on_revision=remember_revision,
     )
 
+    # Reuse admission only for projections from this one decoded settings snapshot.
+    admitted_packs: dict[Path, GamePackImport] = {}
     settings = apply_app_settings_overrides(
         saved_settings,
         environment=environment,
         warn=report,
         on_game_pack_error=on_game_pack_error,
+        _admitted_packs=admitted_packs,
     )
     if on_snapshot is not None:
-        on_snapshot(saved_settings, revision)
+        persisted = apply_app_settings_overrides(
+            saved_settings,
+            environment={},
+            warn=lambda _message: None,
+            on_game_pack_error=lambda _error: None,
+            _admitted_packs=admitted_packs,
+        )
+        on_snapshot(persisted, revision)
     return settings
 
 
@@ -631,6 +644,7 @@ def apply_app_settings_overrides(
     environment: Environment | None = None,
     warn: WarningHandler | None = None,
     on_game_pack_error: Callable[[Exception], None] | None = None,
+    _admitted_packs: dict[Path, GamePackImport] | None = None,
 ) -> AppSettings:
     """Apply environment and pack settings to an already decoded snapshot."""
     environment = os.environ if environment is None else environment
@@ -639,10 +653,18 @@ def apply_app_settings_overrides(
     )
     settings = settings.with_environment_overrides(environment, warn=report)
     if settings.game_pack:
-        from vntts.game_pack import GamePackError, apply_game_pack
+        from vntts.game_pack import GamePackError, import_game_pack
 
         try:
-            settings = apply_game_pack(settings)
+            path = Path(settings.game_pack).expanduser().resolve()
+            imported = (
+                _admitted_packs.get(path) if _admitted_packs is not None else None
+            )
+            if imported is None:
+                imported = import_game_pack(path)
+                if _admitted_packs is not None:
+                    _admitted_packs[path] = imported
+            settings = imported.apply_to(settings, preserve_external_sequence=True)
         except (GamePackError, OSError) as error:
             if on_game_pack_error is None:
                 raise

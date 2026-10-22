@@ -21,6 +21,7 @@ from vntts.authoring.asr_model import (
 )
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.path_safety import open_regular_binary
+from vntts.pregeneration_audition import _count_audition, measure_audition_phase
 from vntts.speech_content_advice import (
     SPEECH_CONTENT_ADVICE_VERSION,
     SpeechContentAdvice,
@@ -291,6 +292,7 @@ class PreviewContentAdvisor:
                 f"ASR checker to enable content advice. {error}"
             ) from error
 
+    @measure_audition_phase("asr-advice")
     def check(
         self,
         previews: tuple[_Preview, ...],
@@ -299,6 +301,7 @@ class PreviewContentAdvisor:
         cancel_event: _Cancellation | None = None,
     ) -> tuple[PreviewContentCheck, ...]:
         """Check in a worker, sharing one loaded model for this bounded batch."""
+        _count_audition("count", len(previews))
         with exclusive_advisory_lock(
             self.root / "content-advice" / "checker.lock",
             blocking=True,
@@ -306,6 +309,12 @@ class PreviewContentAdvisor:
         ):
             if self._isolated:
                 cached = tuple(self.lookup(preview) for preview in previews)
+                _count_audition(
+                    "cache_hits", sum(result is not None for result in cached)
+                )
+                _count_audition(
+                    "cache_misses", sum(result is None for result in cached)
+                )
                 _raise_if_cancelled(cancel_event)
                 if all(result is not None for result in cached):
                     return cast(tuple[PreviewContentCheck, ...], cached)
@@ -343,6 +352,9 @@ class PreviewContentAdvisor:
                     check_cancelled=lambda: _raise_if_cancelled(cancel_event),
                 ):
                     cached = self.lookup(preview)
+                    _count_audition(
+                        "cache_hits" if cached is not None else "cache_misses"
+                    )
                     _raise_if_cancelled(cancel_event)
                     if cached is not None:
                         results.append(cached)

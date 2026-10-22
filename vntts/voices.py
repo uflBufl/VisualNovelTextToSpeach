@@ -24,7 +24,13 @@ from vntts.application_directories import get_local_data_directory
 from vntts.cleanup import cleanup_on_exit, temporary_directory
 from vntts.json_types import is_json_object
 from vntts.path_safety import open_regular_candidate, read_regular_text
-from vntts.voice_library import VoiceBinding, VoiceBindingRollback, VoiceLibrary
+from vntts.voice_library import (
+    VoiceBinding,
+    VoiceBindingRollback,
+    VoiceDiscovery,
+    VoiceLibrary,
+    VoiceLibraryReadSnapshot,
+)
 
 default_voice_choice_id = "default"
 pocket_tts_preset_voices = (
@@ -304,6 +310,33 @@ def discover_voice_source(
     algorithm: str | None = None,
     rollback: VoiceBindingRollback | None = None,
 ) -> tuple[str, ...]:
+    return tuple(
+        alternative.sha256
+        for alternative in library.discover_many(
+            voice_source_discoveries(
+                registry,
+                role,
+                source_id,
+                variant_key=variant_key,
+                method=method,
+                evidence=evidence,
+                algorithm=algorithm,
+            ),
+            rollback=rollback,
+        )
+    )
+
+
+def voice_source_discoveries(
+    registry: CharacterVoiceRegistry,
+    role: str,
+    source_id: str,
+    *,
+    variant_key: str | None = None,
+    method: Literal["automatic", "manual"] = "automatic",
+    evidence: object | None = None,
+    algorithm: str | None = None,
+) -> tuple[VoiceDiscovery, ...]:
     voice = registry.resolve_source(source_id)
     if voice is None or not voice.references:
         return ()
@@ -314,15 +347,14 @@ def discover_voice_source(
         "evidence": evidence,
     }
     return tuple(
-        library.discover(
+        VoiceDiscovery(
             role,
             reference,
             variant_key=variant_key,
             method=method,
             evidence=source_evidence,
             algorithm=algorithm,
-            rollback=rollback,
-        ).sha256
+        )
         for reference in voice.references
     )
 
@@ -409,6 +441,8 @@ def registry_with_voice_library(
     role: str | None = None,
 ) -> CharacterVoiceRegistry:
     """Project authoritative bindings into the in-memory routing registry."""
+    if not isinstance(library, VoiceLibraryReadSnapshot):
+        library = library.read_snapshot()
     bindings = library.bindings()
     aliases = library.person_aliases()
     archives = library.archived_bindings(role)

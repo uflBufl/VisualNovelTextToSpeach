@@ -1021,6 +1021,37 @@ class RuntimeSupportLogTest(unittest.TestCase):
 
 
 class PerformanceLogTest(unittest.TestCase):
+    def test_correlated_fast_spans_keep_counters_and_timing_scope(self):
+        log = PerformanceLog()
+        log.record(
+            "routing",
+            0.5,
+            "complete",
+            operation_id="operation-1",
+            parent_operation="plan",
+            timing_scope="inclusive",
+            registry_builds=1,
+            reference_preflights=2,
+            cache_hits=3,
+            cache_misses=4,
+            private_text="must not be retained",
+        )
+        event = log.report()["events"][0]
+        self.assertEqual(event["operation_id"], "operation-1")
+        self.assertEqual(event["timing_scope"], "inclusive")
+        self.assertEqual(event["registry_builds"], 1)
+        self.assertEqual(event["reference_preflights"], 2)
+        self.assertEqual(event["cache_hits"], 3)
+        self.assertEqual(event["cache_misses"], 4)
+        self.assertNotIn("private_text", event)
+
+    def test_audio_attempt_correlation_survives_support_export(self):
+        log = AudioLifecycleLog()
+        log.record("stopped", player_id="player-1", attempt_id="attempt-1")
+        event = log.report()["events"][0]
+        self.assertEqual(event["player_id"], "player-1")
+        self.assertEqual(event["attempt_id"], "attempt-1")
+
     def test_report_retains_oversized_event_marker_without_aggregating_it(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "performance.log"

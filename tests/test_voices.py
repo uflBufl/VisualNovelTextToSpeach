@@ -27,6 +27,21 @@ from vntts.voices import (
 
 
 class CharacterVoiceRegistryTest(unittest.TestCase):
+    def test_library_projection_reads_one_index_for_all_bindings(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            for index in range(6):
+                library.select(f"Role {index}", route="voice", source_id="preset:alba")
+            with patch.object(
+                library, "_read_index", wraps=library._read_index
+            ) as read:
+                projected = registry_with_voice_library(
+                    CharacterVoiceRegistry(), library
+                )
+            read.assert_called_once()
+            for index in range(6):
+                self.assertEqual(projected.resolve(f"Role {index}").speaker, "alba")
+
     def test_owned_voice_references_are_snapshotted_one_at_a_time(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory).resolve()

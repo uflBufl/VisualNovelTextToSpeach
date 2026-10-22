@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import Mock, patch
 
+import vntts.pregeneration_audition as audition_module
 from tests.pregeneration_fixtures import FakeBackend, ambiguous_fixture, clean_wav_bytes
 from vntts.pregeneration_audition import (
     VoiceAuditionCancelled,
@@ -17,9 +18,85 @@ from vntts.pregeneration_audition_queue import (
     _wait_for_preview,
 )
 from vntts.settings import AppSettings
+from vntts.support import PerformanceLog
 
 
 class VoiceAuditionQueueTest(unittest.TestCase):
+    def test_warm_batch_reuses_admission_and_correlates_worker_costs(self):
+        with TemporaryDirectory() as directory:
+            plan, group, _, _, owner = self.fixture(Path(directory))
+            requests = tuple(
+                (group, candidate.source_id, None) for candidate in group.candidates
+            )
+            performance = PerformanceLog()
+            with patch("vntts.support.performance_log", performance):
+                for _, source, _ in requests:
+                    owner.session().generate(plan, group, source)
+            events = performance.report()["events"]
+            request_ids = {
+                event["operation_id"]
+                for event in events
+                if event["operation"] == "pregeneration-audition-request"
+            }
+            self.assertEqual(len(request_ids), len(requests))
+            for event in events:
+                self.assertIn(event["operation_id"], request_ids)
+            root = owner.service.root
+            owner.close()
+            restored = VoiceAuditionCoordinator(VoiceAuditionPreviewService(root))
+            self.addCleanup(restored.close)
+            session = restored.session()
+            with (
+                patch.object(
+                    audition_module.CharacterVoiceRegistry,
+                    "from_document",
+                    wraps=audition_module.CharacterVoiceRegistry.from_document,
+                ) as parse,
+                patch.object(
+                    audition_module,
+                    "analyze_reference_bytes",
+                    wraps=audition_module.analyze_reference_bytes,
+                ) as preflight,
+            ):
+                session.restore_cached(plan, requests)
+                for _, source, _ in requests:
+                    self.assertIsNotNone(session.peek(plan, group, source))
+                parse.assert_called_once()
+                expected = {
+                    checksum
+                    for candidate in group.candidates
+                    for checksum in candidate.reference_sha256s
+                }
+                self.assertEqual(preflight.call_count, len(expected))
+                session.close()
+                restored.session().restore_cached(plan, requests)
+                parse.assert_called_once()
+                self.assertEqual(preflight.call_count, len(expected))
+
+    def test_empty_cache_never_loads_authority_and_reports_correlated_misses(self):
+        with TemporaryDirectory() as directory:
+            plan, group, _, _, owner = self.fixture(Path(directory))
+            session = owner.session()
+            requests = tuple(
+                (group, candidate.source_id, None) for candidate in group.candidates
+            )
+            performance = PerformanceLog()
+            with (
+                patch.object(owner.service, "authorization_stamp") as stamp,
+                patch.object(audition_module, "capture_authority_file") as capture,
+                patch("vntts.support.performance_log", performance),
+            ):
+                session.restore_cached(plan, requests)
+            stamp.assert_not_called()
+            capture.assert_not_called()
+            events = performance.report()["events"]
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["cache_misses"], len(requests))
+            self.assertEqual(events[0]["candidate_count"], len(requests))
+            self.assertEqual(events[0]["timing_scope"], "inclusive")
+            self.assertTrue(events[0]["operation_id"])
+            self.assertIsNone(owner.service.backend)
+
     def test_warmup_starts_early_and_suspend_cancels_its_startup(self):
         service = Mock()
         entered = Event()

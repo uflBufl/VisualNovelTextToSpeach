@@ -15,7 +15,12 @@ from unittest.mock import patch
 import vntts.voice_library as voice_library
 from tests.authoring_fixtures import tree_hashes
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
-from vntts.voice_library import VoiceLibrary, VoiceLibraryError, VoiceSelection
+from vntts.voice_library import (
+    VoiceDiscovery,
+    VoiceLibrary,
+    VoiceLibraryError,
+    VoiceSelection,
+)
 
 
 def write_wav(path: Path, frames: bytes) -> None:
@@ -99,6 +104,104 @@ class _CopySnapshotProbe:
 
 
 class VoiceLibraryTest(unittest.TestCase):
+    def test_discovery_batch_reads_once_and_only_publishes_changes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            references = tuple(root / f"reference-{index}.wav" for index in range(6))
+            for index, path in enumerate(references):
+                write_wav(path, bytes((index, 0)) * 24)
+            library = VoiceLibrary(root / "library")
+            requests = tuple(VoiceDiscovery("Role", path) for path in references)
+            with (
+                patch.object(library, "_load", wraps=library._load) as load,
+                patch.object(library, "_write", wraps=library._write) as write,
+            ):
+                first = library.discover_many(requests)
+                load.assert_called_once()
+                write.assert_called_once()
+                load.reset_mock()
+                write.reset_mock()
+                self.assertEqual(library.discover_many(requests), first)
+                load.assert_called_once()
+                write.assert_not_called()
+
+    def test_discovery_batch_failure_rolls_back_choices_and_unpublished_blobs(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "reference.wav"
+            write_wav(reference, b"\0\0" * 24)
+            library = VoiceLibrary(root / "library")
+            library.select("Existing", route="narrator")
+            before = library.path.read_bytes()
+            rollback = library.binding_rollback()
+            requests = (
+                VoiceDiscovery("Role", reference, bind_if_missing=True),
+                VoiceDiscovery("Invalid", root / "missing.wav"),
+            )
+            with self.assertRaises(VoiceLibraryError):
+                library.discover_many(requests, rollback=rollback)
+            self.assertEqual(library.path.read_bytes(), before)
+            self.assertFalse(tuple(library.blobs_path.glob("*.wav")))
+            self.assertFalse(rollback._before)
+            self.assertFalse(rollback._expected)
+
+    def test_failed_batch_cleans_new_blobs_with_one_fresh_index_read(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            library = VoiceLibrary(root / "library")
+            requests = []
+            for index in range(6):
+                reference = root / f"reference-{index}.wav"
+                write_wav(reference, index.to_bytes(2, "little") * 24)
+                requests.append(VoiceDiscovery("Role", reference))
+            requests.append(VoiceDiscovery("Role", root / "missing.wav"))
+            with patch.object(library, "_load", wraps=library._load) as load:
+                with self.assertRaises(VoiceLibraryError):
+                    library.discover_many(requests)
+                self.assertEqual(load.call_count, 2)  # admission and guarded cleanup
+            self.assertFalse(library.path.exists())
+            self.assertFalse(tuple(library.blobs_path.glob("*.wav")))
+
+    def test_read_snapshot_reuses_validation_and_detects_choices_and_corruption(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            library.select("Role", route="narrator")
+            with patch.object(
+                library, "_decode_index", wraps=library._decode_index
+            ) as decode:
+                first = library.read_snapshot()
+                self.assertIs(library.read_snapshot(first), first)
+                decode.assert_called_once()
+            with self.assertRaisesRegex(VoiceLibraryError, "read-only"):
+                first.clear("Role")
+            library.select("Role", route="live-fallback")
+            updated = library.read_snapshot(first)
+            self.assertIsNot(updated, first)
+            self.assertFalse(updated.has_same_routing(first))
+            self.assertEqual(updated.binding("Role").route, "live-fallback")
+            library.path.write_text("invalid JSON", encoding="utf-8")
+            with self.assertRaises(VoiceLibraryError):
+                library.read_snapshot(updated)
+
+    def test_snapshot_provenance_cannot_be_changed_through_returned_records(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "reference.wav"
+            write_wav(reference, b"\0\0" * 24)
+            library = VoiceLibrary(root / "library")
+            library.discover("Role", reference, evidence={"label": "original"})
+            library.select("Role", route="narrator", evidence={"label": "original"})
+            snapshot = library.read_snapshot()
+            snapshot.binding("Role").provenance["evidence"]["label"] = "changed"
+            snapshot.alternatives("Role")[0].discovery["evidence"]["label"] = "changed"
+            self.assertEqual(
+                snapshot.binding("Role").provenance["evidence"], {"label": "original"}
+            )
+            self.assertEqual(
+                snapshot.alternatives("Role")[0].discovery["evidence"],
+                {"label": "original"},
+            )
+
     def test_deep_library_json_reports_read_error_without_rewriting(self):
         with TemporaryDirectory() as directory:
             library = VoiceLibrary(directory)

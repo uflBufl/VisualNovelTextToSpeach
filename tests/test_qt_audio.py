@@ -2,10 +2,10 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
-from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QUrl
 from PySide6.QtWidgets import QApplication, QWidget
 
-from vntts.authoring.pcm_playback import PcmClip, PlaybackSnapshot
+from vntts.authoring.pcm_playback import PcmClip, PcmPlaybackError, PlaybackSnapshot
 from vntts.qt_audio import QtPcmPlayer
 
 
@@ -68,6 +68,12 @@ class QtAudioTest(unittest.TestCase):
         )
         self.assertEqual(
             lifecycle.call_args_list[0].kwargs["device_name"], "Test output"
+        )
+        self.assertEqual(
+            len({call.kwargs["player_id"] for call in lifecycle.call_args_list}), 1
+        )
+        self.assertEqual(
+            len({call.kwargs["attempt_id"] for call in lifecycle.call_args_list}), 1
         )
 
         self.assertIs(clip, pcm.clip)
@@ -180,13 +186,197 @@ class QtAudioTest(unittest.TestCase):
                 owner = QWidget()
                 pcm = _PcmPlayer()
                 player = QtPcmPlayer(owner, player_factory=lambda: pcm)
-                player.play_bytes(b"audio", "test.wav")
-                (owner if delete_owner else player).deleteLater()
-                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+                def check_cleanup_before_terminal(_operation, **details):
+                    if details["outcome"] == "interrupted":
+                        self.assertTrue(pcm.stopped if delete_owner else pcm.closed)
+
+                with patch(
+                    "vntts.support.record_audio_lifecycle",
+                    side_effect=check_cleanup_before_terminal,
+                ) as lifecycle:
+                    player.play_bytes(b"audio", "test.wav")
+                    (owner if delete_owner else player).deleteLater()
+                    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+                self.assertEqual(
+                    [call.kwargs["outcome"] for call in lifecycle.call_args_list],
+                    ["queued", "interrupted"],
+                )
+                self.assertEqual(
+                    len(
+                        {call.kwargs["attempt_id"] for call in lifecycle.call_args_list}
+                    ),
+                    1,
+                )
                 self.assertTrue(pcm.closed)
                 if not delete_owner:
                     owner.deleteLater()
                     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_stop_records_one_terminal_for_queued_or_started_attempt(self):
+        for started in (False, True):
+            with self.subTest(started=started):
+                pcm = _PcmPlayer()
+                player = QtPcmPlayer(player_factory=lambda: pcm)
+                finished = []
+                player.mediaStatusChanged.connect(finished.append)
+
+                def check_stop_before_terminal(_operation, **details):
+                    if details["outcome"] == "stopped":
+                        self.assertTrue(pcm.stopped)
+                        self.assertFalse(player._timer.isActive())
+                        self.assertIsNone(player._token)
+                        self.assertEqual(
+                            player._lifecycle["attempt_id"], details["attempt_id"]
+                        )
+
+                with patch(
+                    "vntts.support.record_audio_lifecycle",
+                    side_effect=check_stop_before_terminal,
+                ) as lifecycle:
+                    player.play_bytes(b"audio", "private-dialogue.wav")
+                    if started:
+                        pcm.snapshot_value = PlaybackSnapshot(
+                            pcm.token, 1, 4, True, True, False, False, None
+                        )
+                        player._poll()
+                    player.stop()
+                    player.stop()
+                    player._poll()
+                outcomes = [call.kwargs["outcome"] for call in lifecycle.call_args_list]
+                self.assertEqual(
+                    outcomes,
+                    ["queued", "started", "stopped"]
+                    if started
+                    else ["queued", "stopped"],
+                )
+                self.assertEqual(
+                    lifecycle.call_args_list[-1].kwargs["reason"],
+                    "stop" if started else "cancelled-before-start",
+                )
+                self.assertNotIn("private-dialogue", str(lifecycle.call_args_list))
+                self.assertEqual(finished, [])
+                player.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_replacement_uses_new_attempt_and_stable_player_identity(self):
+        pcm = _PcmPlayer()
+        player = QtPcmPlayer(player_factory=lambda: pcm)
+        states = []
+        player.playbackStateChanged.connect(states.append)
+        with patch("vntts.support.record_audio_lifecycle") as lifecycle:
+            player.play_bytes(b"first", "first.wav")
+            player.play_bytes(b"second", "second.wav")
+            player.stop()
+        events = [call.kwargs for call in lifecycle.call_args_list]
+        self.assertEqual(
+            [event["outcome"] for event in events],
+            ["queued", "interrupted", "queued", "stopped"],
+        )
+        self.assertEqual(events[1]["reason"], "replaced")
+        self.assertEqual(events[0]["attempt_id"], events[1]["attempt_id"])
+        self.assertEqual(events[2]["attempt_id"], events[3]["attempt_id"])
+        self.assertNotEqual(events[0]["attempt_id"], events[2]["attempt_id"])
+        self.assertEqual(len({event["player_id"] for event in events}), 1)
+        self.assertEqual(states, [QtPcmPlayer.PlaybackState.StoppedState])
+        other = QtPcmPlayer(player_factory=_PcmPlayer)
+        self.assertNotEqual(
+            player._lifecycle["player_id"], other._lifecycle["player_id"]
+        )
+        player.deleteLater()
+        other.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_failed_attempt_does_not_also_record_stop(self):
+        for failure in ("device", "underflow", "start", "decode"):
+            with self.subTest(failure=failure):
+                pcm = _PcmPlayer()
+                player = QtPcmPlayer(player_factory=lambda: pcm)
+                failures = []
+                player.errorOccurred.connect(
+                    lambda _error, message: failures.append(message)
+                )
+                with patch("vntts.support.record_audio_lifecycle") as lifecycle:
+                    if failure == "start":
+                        with patch.object(
+                            pcm,
+                            "play",
+                            side_effect=PcmPlaybackError("Device unavailable"),
+                        ):
+                            player.play_bytes(b"audio", "test.wav")
+                    elif failure == "decode":
+                        with patch.object(
+                            pcm,
+                            "load_bytes",
+                            side_effect=PcmPlaybackError("Invalid PCM"),
+                        ):
+                            player.play_bytes(b"audio", "test.wav")
+                    else:
+                        player.play_bytes(b"audio", "test.wav")
+                        pcm.snapshot_value = PlaybackSnapshot(
+                            pcm.token,
+                            4,
+                            4,
+                            True,
+                            False,
+                            True,
+                            failure == "underflow",
+                            "Device unavailable" if failure == "device" else None,
+                        )
+                        player._poll()
+                    player.stop()
+                    player._poll()
+                events = [call.kwargs for call in lifecycle.call_args_list]
+                self.assertEqual(
+                    [event["outcome"] for event in events].count("failed"), 1
+                )
+                self.assertFalse(
+                    {"stopped", "interrupted", "finished"}
+                    & {event["outcome"] for event in events}
+                )
+                self.assertEqual(len({event["attempt_id"] for event in events}), 1)
+                self.assertEqual(len(failures), 1)
+                player.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_hiding_owner_ancestor_interrupts_once_without_completion(self):
+        owner = QWidget()
+        service = QObject(owner)
+        pcm = _PcmPlayer()
+        player = QtPcmPlayer(service, player_factory=lambda: pcm)
+        finished = []
+        player.mediaStatusChanged.connect(finished.append)
+        with patch("vntts.support.record_audio_lifecycle") as lifecycle:
+            player.play_bytes(b"audio", "test.wav")
+            QCoreApplication.sendEvent(owner, QEvent(QEvent.Type.Hide))
+            player.stop()
+            owner.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.assertEqual(
+            [call.kwargs["outcome"] for call in lifecycle.call_args_list],
+            ["queued", "interrupted"],
+        )
+        self.assertEqual(lifecycle.call_args_list[-1].kwargs["reason"], "owner-hidden")
+        self.assertTrue(pcm.stopped)
+        self.assertTrue(pcm.closed)
+        self.assertEqual(finished, [])
+
+    def test_source_change_interrupts_queued_attempt_once(self):
+        pcm = _PcmPlayer()
+        player = QtPcmPlayer(player_factory=lambda: pcm)
+        with patch("vntts.support.record_audio_lifecycle") as lifecycle:
+            player.play_bytes(b"audio", "test.wav")
+            player.setSource(QUrl())
+            player.stop()
+        self.assertEqual(
+            [call.kwargs["outcome"] for call in lifecycle.call_args_list],
+            ["queued", "interrupted"],
+        )
+        self.assertEqual(
+            lifecycle.call_args_list[-1].kwargs["reason"], "source-replaced"
+        )
+        player.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 if __name__ == "__main__":

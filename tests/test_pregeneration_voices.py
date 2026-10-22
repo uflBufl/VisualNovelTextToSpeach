@@ -52,6 +52,36 @@ from vntts.voices import (
 
 
 class VoicePlanStoreTest(unittest.TestCase):
+    def test_failed_and_cancelled_plan_trace_restores_its_operation_context(self):
+        from vntts.support import performance_operation_id
+
+        for error, outcome in (
+            (PregenerationVoiceError("failed"), "failed"),
+            (PregenerationVoiceCancelled("cancelled"), "cancelled"),
+        ):
+            with self.subTest(outcome=outcome), TemporaryDirectory() as directory:
+                job, jobs = self.create_fixture(Path(directory))
+                store = VoicePlanStore(jobs)
+                token = performance_operation_id.set("enclosing-operation")
+                try:
+                    with (
+                        patch.object(store, "_create", side_effect=error),
+                        patch(
+                            "vntts.pregeneration_voices.record_background_operation"
+                        ) as record,
+                        self.assertRaises(type(error)),
+                    ):
+                        store.create(job, AppSettings())
+                    self.assertEqual(
+                        performance_operation_id.get(), "enclosing-operation"
+                    )
+                    self.assertEqual(record.call_args.args[2], outcome)
+                    self.assertNotEqual(
+                        record.call_args.kwargs["operation_id"], "enclosing-operation"
+                    )
+                finally:
+                    performance_operation_id.reset(token)
+
     def test_player_catalog_policy_matches_backend_for_cache_and_direct_admission(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -231,11 +261,22 @@ class VoicePlanStoreTest(unittest.TestCase):
                 group for group in first.groups if group.character == "Rhiannon"
             )
             binding = library.binding("Rhiannon")
-            second = planner.create(
-                job,
-                AppSettings(pocket_gated_model_accepted=True),
-                manifest_path=manifest,
+            with patch(
+                "vntts.pregeneration_voices.record_background_operation"
+            ) as record:
+                second = planner.create(
+                    job,
+                    AppSettings(pocket_gated_model_accepted=True),
+                    manifest_path=manifest,
+                )
+            routing = next(
+                call
+                for call in record.call_args_list
+                if call.args[0] == "pregeneration-voice-plan-routing"
             )
+            self.assertEqual(routing.kwargs["registry_builds"], 0)
+            self.assertEqual(routing.kwargs["cache_misses"], 0)
+            self.assertEqual(routing.kwargs["cache_hits"], len(second.groups))
             second_group = next(
                 group for group in second.groups if group.character == "Rhiannon"
             )
@@ -294,13 +335,21 @@ class VoicePlanStoreTest(unittest.TestCase):
                 [
                     "pregeneration-voice-plan-story",
                     "pregeneration-voice-plan-voice-inventory",
+                    "pregeneration-voice-plan-settings-context",
+                    "pregeneration-voice-plan-grouping",
                     "pregeneration-voice-plan-routing",
+                    "pregeneration-voice-plan-assembly",
                     "pregeneration-voice-plan-write",
+                    "pregeneration-voice-plan-total",
                 ],
             )
             self.assertTrue(
                 all("cpu_ms" in call.kwargs for call in record.call_args_list)
             )
+            self.assertEqual(
+                len({call.kwargs["operation_id"] for call in record.call_args_list}), 1
+            )
+            self.assertTrue(record.call_args_list[0].kwargs["operation_id"])
 
     def test_self_service_preserves_selected_backend_and_normalizes_profile(self):
         with patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=False):
@@ -632,6 +681,43 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             self.assertEqual(aderyn.route, "needs-audition")
             self.assertEqual(aderyn.resolution, "linked-reference-needs-preview")
+
+    def test_link_during_grouping_refreshes_alias_candidate_inventory(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "voices", job.story_index_sha256
+            )
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"][1]["character"] = (
+                "Aderyn"
+            )
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+            library = VoiceLibrary(root / "library")
+            store = VoicePlanStore(jobs, voice_library=library)
+            group_lines = store._group_selected_lines
+
+            def link_before_grouping(*args, **kwargs):
+                library.link_person("Aderyn", "Rhiannon")
+                return group_lines(*args, **kwargs)
+
+            with patch.object(
+                store, "_group_selected_lines", side_effect=link_before_grouping
+            ):
+                plan = store.create(
+                    job,
+                    AppSettings(pocket_gated_model_accepted=True),
+                    manifest_path=manifest,
+                )
+            group = next(group for group in plan.groups if group.character == "Aderyn")
+            self.assertEqual(
+                {candidate.source_id for candidate in group.candidate_inventory},
+                {
+                    "character:playercandidaterhiannon1",
+                    "character:playercandidaterhiannon2",
+                },
+            )
 
     def test_missing_named_role_and_unattributed_role_use_narrator_without_review(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1563,7 +1649,9 @@ class VoicePlanStoreTest(unittest.TestCase):
                 patch(
                     "vntts.pregeneration_voices._materialize_voice_catalog"
                 ) as catalog,
-                patch("vntts.pregeneration_voices.discover_voice_source") as discover,
+                patch(
+                    "vntts.pregeneration_voices.voice_source_discoveries"
+                ) as discover,
             ):
                 updated = store.apply_saved_choice(
                     job, before, settings, (group, choice)

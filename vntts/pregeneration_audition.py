@@ -9,12 +9,14 @@ import secrets
 import sys
 import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from io import BytesIO
 from pathlib import Path
 from stat import S_ISREG
-from time import monotonic
+from time import monotonic, process_time
 from typing import BinaryIO, NamedTuple, Protocol, TypeAlias, TypedDict
 
 import numpy as np
@@ -58,9 +60,10 @@ from vntts.document_identity import (
 from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_binary, read_regular_bytes
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
-from vntts.reference_quality import analyze_reference
+from vntts.reference_quality import analyze_reference_bytes
 from vntts.settings import AppSettings
 from vntts.speech_backend_runtime import shutdown_speech_backend
+from vntts.support import performance_operation_id, record_background_operation
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisCompletion,
@@ -71,6 +74,66 @@ from vntts.tts_benchmark import create_backend
 from vntts.voices import CharacterVoiceRegistry, read_voice_reference_bytes
 
 COMPARISON_PREVIEW_TEXT = "The storm has passed. We can continue our journey."
+
+_audition_counts: ContextVar[dict[str, int] | None] = ContextVar(
+    "audition_counts", default=None
+)
+_audition_phase_name: ContextVar[str | None] = ContextVar(
+    "audition_phase_name", default=None
+)
+
+
+def _count_audition(name: str, value: int = 1) -> None:
+    counts = _audition_counts.get()
+    if counts is not None:
+        counts[name] = counts.get(name, 0) + value
+
+
+@contextmanager
+def measure_audition_phase(name: str) -> Iterator[None]:
+    """Keep bounded correlated wall/CPU spans and checksum-admission counters."""
+    parent_counts = _audition_counts.get()
+    parent_name = _audition_phase_name.get()
+    counts: dict[str, int] = dict.fromkeys(
+        (
+            "cache_hits",
+            "cache_misses",
+            "registry_builds",
+            "reference_reads",
+            "reference_preflights",
+        ),
+        0,
+    )
+    counts_token = _audition_counts.set(counts)
+    phase_token = _audition_phase_name.set(name)
+    operation_token = None
+    if performance_operation_id.get() is None:
+        operation_token = performance_operation_id.set(secrets.token_hex(16))
+    started, cpu_started = monotonic(), process_time()
+    outcome = "complete"
+    try:
+        yield
+    except BaseException:
+        outcome = "failed"
+        raise
+    finally:
+        record_background_operation(
+            f"pregeneration-audition-{name}",
+            (monotonic() - started) * 1000,
+            outcome,
+            operation_id=performance_operation_id.get(),
+            parent_operation=parent_name,
+            timing_scope="inclusive",
+            cpu_ms=(process_time() - cpu_started) * 1000,
+            **counts,
+        )
+        if parent_counts is not None:
+            for key, value in counts.items():
+                parent_counts[key] = parent_counts.get(key, 0) + value
+        _audition_counts.reset(counts_token)
+        _audition_phase_name.reset(phase_token)
+        if operation_token is not None:
+            performance_operation_id.reset(operation_token)
 
 
 class VoiceAuditionError(RuntimeError):
@@ -198,6 +261,7 @@ class VoiceAuditionPreviewService:
         self._reference_registries: BoundedCache[
             tuple[Path, str], CharacterVoiceRegistry
         ] = BoundedCache(2)
+        self._reference_preflights: BoundedCache[str, bool] = BoundedCache(256)
 
     @property
     def backend(self) -> _PreviewBackend | None:
@@ -250,6 +314,30 @@ class VoiceAuditionPreviewService:
                 allow_download=False,
             )
 
+    def has_cached_preview(
+        self,
+        plan: VoicePlan,
+        group: VoiceGroup,
+        candidate_source_id: str,
+        *,
+        text: str | None = None,
+    ) -> bool:
+        """Check absence before admitting any manifest or reference bytes."""
+        candidate = _validate_request(plan, group, candidate_source_id)
+        identity = preview_identity(
+            candidate,
+            _preview_text(group, text),
+            backend=plan.synthesis_backend,
+            model=plan.synthesis_model,
+            language=plan.synthesis_language,
+            profile=plan.synthesis_profile,
+        )
+        exists = (self.root / f"{identity}.wav").exists()
+        if not exists:
+            _count_audition("cache_misses")
+        return exists
+
+    @measure_audition_phase("cache-lookup")
     def lookup(
         self,
         plan: VoicePlan,
@@ -274,9 +362,12 @@ class VoiceAuditionPreviewService:
         )
         target = self.root / f"{identity}.wav"
         if not target.exists():
+            _count_audition("cache_misses")
             _raise_if_cancelled(_CombinedCancellation(cancel_event))
             return None
-        _preflight_preview(plan, candidate, _CombinedCancellation(cancel_event))
+        _count_audition("cache_hits")
+        stamp = self.authorization_stamp(plan, group, candidate_source_id)
+        self._preflight_preview(plan, candidate, _CombinedCancellation(cancel_event))
         try:
             with exclusive_advisory_lock(self.root / f"{identity}.lock"):
                 preview, _seed = _cached_preview_for_request(
@@ -291,6 +382,8 @@ class VoiceAuditionPreviewService:
         except AdvisoryLockBusyError:
             return None
         _raise_if_cancelled(_CombinedCancellation(cancel_event))
+        if not self.authorization_unchanged(stamp):
+            raise VoiceAuditionError("Voice inputs changed during preview admission")
         return preview
 
     def authorization_stamp(
@@ -298,11 +391,17 @@ class VoiceAuditionPreviewService:
     ) -> tuple[tuple[object, ...], ...]:
         """Cheap change detection after checksum admission, never an admission check."""
         candidate = _validate_request(plan, group, candidate_source_id)
-        registry = (
-            CharacterVoiceRegistry.from_file(plan.voice_manifest)
-            if plan.voice_manifest
-            else CharacterVoiceRegistry()
+        key = (
+            (
+                Path(plan.voice_manifest).expanduser().resolve(),
+                plan.voice_manifest_sha256,
+            )
+            if plan.voice_manifest and plan.voice_manifest_sha256 is not None
+            else None
         )
+        registry = self._reference_registries.get(key) if key is not None else None
+        if registry is None:
+            registry = _load_manifest_registry(plan, self._reference_registries)
         voice = registry.resolve_source(candidate.source_id)
         if voice is None:
             raise VoiceAuditionError("Voice candidate is unavailable")
@@ -319,6 +418,7 @@ class VoiceAuditionPreviewService:
     ) -> tuple[tuple[object, ...], ...]:
         return _file_stamps([preview.path, _preview_manifest_path(preview.path)])
 
+    @measure_audition_phase("generate")
     def generate(
         self,
         plan: VoicePlan,
@@ -359,34 +459,28 @@ class VoiceAuditionPreviewService:
             started = monotonic()
             telemetry = _PreviewTelemetry()
             try:
-                try:
-                    registry = _preflight_preview(plan, candidate, cancellation)
-                except VoiceAuditionCancelled:
-                    raise
-                except VoiceAuditionError:
-                    telemetry.outcome, telemetry.reason = (
-                        "reference_preflight_failed",
-                        "reference-preflight-failed",
-                    )
-                    raise
+                telemetry.outcome, telemetry.reason = (
+                    "reference_preflight_failed",
+                    "reference-preflight-failed",
+                )
+                stamp = self.authorization_stamp(plan, group, candidate_source_id)
+                registry = self._preflight_preview(plan, candidate, cancellation)
+                telemetry.outcome, telemetry.reason = "backend_failed", "backend-failed"
                 with exclusive_advisory_lock(self.root / f"{identity}.lock"):
                     if target.exists():
-                        try:
-                            preview, telemetry.seed = _cached_preview_for_request(
-                                target,
-                                identity,
-                                plan,
-                                group,
-                                candidate,
-                                preview_text,
-                                notify,
-                            )
-                        except VoiceAuditionError:
-                            telemetry.outcome, telemetry.reason = (
-                                "cache_validation_failed",
-                                "cache-validation-failed",
-                            )
-                            raise
+                        telemetry.outcome, telemetry.reason = (
+                            "cache_validation_failed",
+                            "cache-validation-failed",
+                        )
+                        preview, telemetry.seed = _cached_preview_for_request(
+                            target,
+                            identity,
+                            plan,
+                            group,
+                            candidate,
+                            preview_text,
+                            notify,
+                        )
                         (
                             telemetry.outcome,
                             telemetry.reason,
@@ -398,20 +492,30 @@ class VoiceAuditionPreviewService:
                             "cache",
                             "preview-file",
                         )
-                        return preview
-                    return self._generate_new_preview(
-                        plan,
-                        group,
-                        candidate,
-                        preview_text,
-                        target,
-                        identity,
-                        registry,
-                        cancellation,
-                        progress,
-                        notify,
-                        telemetry,
-                    )
+                    else:
+                        preview = self._generate_new_preview(
+                            plan,
+                            group,
+                            candidate,
+                            preview_text,
+                            target,
+                            identity,
+                            registry,
+                            cancellation,
+                            progress,
+                            notify,
+                            telemetry,
+                        )
+                    _raise_if_cancelled(cancellation)
+                    if not self.authorization_unchanged(stamp):
+                        telemetry.outcome, telemetry.reason = (
+                            "reference_preflight_failed",
+                            "inputs-changed",
+                        )
+                        raise VoiceAuditionError(
+                            "Voice inputs changed during preview preparation"
+                        )
+                    return preview
             except AdvisoryLockBusyError as error:
                 raise VoiceAuditionError(
                     "This voice preview is already being generated; retry shortly"
@@ -511,6 +615,7 @@ class VoiceAuditionPreviewService:
             _backend_config(plan), registry, cancellation, progress, notify
         )
 
+    @measure_audition_phase("model-startup")
     def _ensure_backend(
         self,
         config: BackendConfig,
@@ -522,8 +627,10 @@ class VoiceAuditionPreviewService:
         allow_download: bool = True,
     ) -> None:
         if self._backend is not None and self._backend_config == config:
+            _count_audition("cache_hits")
             self._backend.registry = registry
             return
+        _count_audition("cache_misses")
         notify("Starting the preview model. First use also loads its weights...")
         shutdown_speech_backend(self._backend)
         self._backend = None
@@ -571,6 +678,7 @@ class VoiceAuditionPreviewService:
             _raise_if_cancelled(cancellation)
         self._backend_config = config
 
+    @measure_audition_phase("render")
     def _render_preview(
         self,
         plan: VoicePlan,
@@ -652,7 +760,9 @@ class VoiceAuditionPreviewService:
                     "quality-rejected",
                 )
                 raise
-            _load_candidate_registry(plan, candidate)
+            _load_candidate_registry(
+                plan, candidate, registry_cache=self._reference_registries
+            )
             _raise_if_cancelled(cancellation)
             telemetry.stage = "publish"
             try:
@@ -676,6 +786,20 @@ class VoiceAuditionPreviewService:
 
     def cancel(self) -> None:
         self._cancel.set()
+
+    def _preflight_preview(
+        self, plan: VoicePlan, candidate: VoiceCandidate, cancellation: _Cancellation
+    ) -> CharacterVoiceRegistry:
+        _raise_if_cancelled(cancellation)
+        registry = _load_candidate_registry(
+            plan,
+            candidate,
+            registry_cache=self._reference_registries,
+            preflight_cache=self._reference_preflights,
+            cancellation=cancellation,
+        )
+        _raise_if_cancelled(cancellation)
+        return registry
 
     def _record_failed_preview_attempt(self, plan: VoicePlan, identity: str) -> None:
         if plan.synthesis_backend == "moss-tts":
@@ -758,18 +882,8 @@ class VoiceAuditionPreviewService:
             finally:
                 self._backend = None
                 self._backend_config = None
-
-
-def _preflight_preview(
-    plan: VoicePlan,
-    candidate: VoiceCandidate,
-    cancellation: _Cancellation,
-) -> CharacterVoiceRegistry:
-    _raise_if_cancelled(cancellation)
-    registry = _load_candidate_registry(plan, candidate)
-    _preflight_candidate_references(registry, candidate)
-    _raise_if_cancelled(cancellation)
-    return registry
+                self._reference_registries.clear()
+                self._reference_preflights.clear()
 
 
 def _cached_preview_for_request(
@@ -861,15 +975,29 @@ def _preview_text(group: VoiceGroup, text: str | None) -> str:
 
 
 def _load_candidate_registry(
-    plan: VoicePlan, candidate: VoiceCandidate
+    plan: VoicePlan,
+    candidate: VoiceCandidate,
+    *,
+    registry_cache: BoundedCache[tuple[Path, str], CharacterVoiceRegistry]
+    | None = None,
+    preflight_cache: BoundedCache[str, bool] | None = None,
+    cancellation: _Cancellation | None = None,
 ) -> CharacterVoiceRegistry:
-    registry, _reference = _load_candidate(plan, candidate)
-    if (
-        plan.voice_manifest
-        and sha256_file(Path(plan.voice_manifest).expanduser())
-        != plan.voice_manifest_sha256
-    ):
-        raise VoiceAuditionError("Character voices changed while they were read")
+    registry, _reference = _load_candidate(
+        plan,
+        candidate,
+        registry_cache=registry_cache,
+        preflight_cache=preflight_cache,
+        cancellation=cancellation,
+    )
+    if plan.voice_manifest:
+        snapshot = capture_authority_file(
+            plan.voice_manifest, "character voice manifest"
+        )
+        _count_audition("files_examined")
+        _count_audition("bytes_examined", len(snapshot.payload))
+        if snapshot.sha256 != plan.voice_manifest_sha256:
+            raise VoiceAuditionError("Character voices changed while they were read")
     return registry
 
 
@@ -880,11 +1008,14 @@ def _load_manifest_registry(
     if not plan.voice_manifest:
         return CharacterVoiceRegistry()
     snapshot = capture_authority_file(plan.voice_manifest, "character voice manifest")
+    _count_audition("files_examined")
+    _count_audition("bytes_examined", len(snapshot.payload))
     if snapshot.sha256 != plan.voice_manifest_sha256:
         raise VoiceAuditionError("Character voices changed after planning")
     key = (snapshot.path, snapshot.sha256)
     registry = registry_cache.get(key) if registry_cache is not None else None
     if registry is None:
+        _count_audition("registry_builds")
         registry = CharacterVoiceRegistry.from_document(
             snapshot.json_document("character voice manifest"), snapshot.path
         )
@@ -899,6 +1030,8 @@ def _load_candidate(
     *,
     registry_cache: BoundedCache[tuple[Path, str], CharacterVoiceRegistry]
     | None = None,
+    preflight_cache: BoundedCache[str, bool] | None = None,
+    cancellation: _Cancellation | None = None,
 ) -> tuple[CharacterVoiceRegistry, VoiceAuditionReference | None]:
     try:
         registry = _load_manifest_registry(plan, registry_cache)
@@ -910,10 +1043,17 @@ def _load_candidate(
     if voice is None:
         raise VoiceAuditionError("Narrator fallback is not a voice candidate")
     reference = None
+    captured: list[tuple[Path, bytes]] = []
     try:
         checksums: list[str] = []
         for path in voice.references:
+            if cancellation is not None:
+                _raise_if_cancelled(cancellation)
             payload = read_voice_reference_bytes(voice, path)
+            _count_audition("reference_reads")
+            _count_audition("files_examined")
+            _count_audition("bytes_examined", len(payload))
+            captured.append((Path(path), payload))
             checksums.append(hashlib.sha256(payload).hexdigest())
             if reference is None:
                 reference = VoiceAuditionReference(Path(path), payload)
@@ -934,9 +1074,31 @@ def _load_candidate(
         or identity.reference_sha256s != candidate.reference_sha256s
     ):
         raise VoiceAuditionError("Voice candidate changed after planning")
+    if preflight_cache is not None:
+        _preflight_captured_references(
+            captured, checksums, preflight_cache, cancellation
+        )
     if candidate.reference_transcript:
         voice = replace(voice, reference_transcript=candidate.reference_transcript)
     return CharacterVoiceRegistry((voice,)), reference
+
+
+def _preflight_captured_references(
+    captured: list[tuple[Path, bytes]],
+    checksums: list[str],
+    cache: BoundedCache[str, bool],
+    cancellation: _Cancellation | None,
+) -> None:
+    for index, ((path, payload), checksum) in enumerate(
+        zip(captured, checksums, strict=True)
+    ):
+        if cancellation is not None:
+            _raise_if_cancelled(cancellation)
+        if cache.get(checksum):
+            continue
+        _count_audition("reference_preflights")
+        _preflight_candidate_reference(payload, path, index, checksum)
+        cache.put(checksum, True)
 
 
 def preview_identity(
@@ -1144,30 +1306,25 @@ def _cached_preview_metadata(
     return seed, audio_sha256
 
 
-def _preflight_candidate_references(
-    registry: CharacterVoiceRegistry, candidate: VoiceCandidate
+def _preflight_candidate_reference(
+    payload: bytes, path: Path, index: int, checksum: str
 ) -> None:
-    voice = registry.resolve_source(candidate.source_id)
-    if voice is None:
-        return
-    for index, reference in enumerate(voice.references):
-        try:
-            report = analyze_reference(reference)
-        except ValueError as error:
-            raise VoiceAuditionRejected(
-                f"Voice reference {index + 1} failed objective preflight: {error}"
-            ) from error
-        if report["sha256"] != candidate.reference_sha256s[index]:
-            raise VoiceAuditionError(
-                "Voice reference changed during objective preflight"
-            )
-        if report["objective_preflight"] != "pass":
-            reasons = ", ".join(report["rejection_reasons"])
-            raise VoiceAuditionRejected(
-                f"Voice reference {index + 1} failed objective preflight: {reasons}"
-            )
+    try:
+        report = analyze_reference_bytes(payload, path=path)
+    except ValueError as error:
+        raise VoiceAuditionRejected(
+            f"Voice reference {index + 1} failed objective preflight: {error}"
+        ) from error
+    if report["sha256"] != checksum:
+        raise VoiceAuditionError("Voice reference changed during objective preflight")
+    if report["objective_preflight"] != "pass":
+        reasons = ", ".join(report["rejection_reasons"])
+        raise VoiceAuditionRejected(
+            f"Voice reference {index + 1} failed objective preflight: {reasons}"
+        )
 
 
+@measure_audition_phase("preview-quality")
 def _inspect_preview(path: Path | BinaryIO, text: str) -> AudioQuality:
     audio_quality: AudioQuality | None = None
     try:

@@ -489,7 +489,7 @@
       "path": "vntts/pregeneration_voices.py",
       "scope": "VoicePlanStore._resolve_group",
       "count": 1,
-      "maximum": 28
+      "maximum": 27
     },
     {
       "code": "C901",
@@ -895,7 +895,7 @@
       "path": "vntts/pregeneration_voices.py",
       "scope": "VoicePlanStore._resolve_group",
       "count": 1,
-      "maximum": 30
+      "maximum": 29
     },
     {
       "code": "PLR0912",

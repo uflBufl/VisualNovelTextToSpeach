@@ -15,6 +15,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
+from itertools import chain
 from pathlib import Path
 from threading import Lock, RLock
 from typing import Literal, TypedDict, TypeGuard, TypeVar
@@ -135,6 +136,18 @@ class VoiceSelection:
     only_if_unbound: bool = False
 
 
+@dataclass(frozen=True)
+class VoiceDiscovery:
+    role: str
+    reference: str | Path
+    variant_key: str | None = None
+    method: Literal["automatic", "manual"] = "automatic"
+    evidence: object | None = None
+    algorithm: str | None = None
+    timestamp: str | None = None
+    bind_if_missing: bool = False
+
+
 @dataclass
 class VoiceBindingRollback:
     """One guarded rollback of bindings changed by a failed outer operation."""
@@ -170,8 +183,61 @@ class VoiceLibrary:
         rollback: VoiceBindingRollback | None = None,
     ) -> VoiceAlternative:
         """Store a WAV alternative; optionally bind it only when no choice exists."""
+        return self.discover_many(
+            (
+                VoiceDiscovery(
+                    role,
+                    reference,
+                    variant_key,
+                    method,
+                    evidence,
+                    algorithm,
+                    timestamp,
+                    bind_if_missing,
+                ),
+            ),
+            rollback=rollback,
+        )[0]
+
+    def discover_many(
+        self,
+        discoveries: Iterable[VoiceDiscovery],
+        *,
+        rollback: VoiceBindingRollback | None = None,
+    ) -> tuple[VoiceAlternative, ...]:
+        """Admit alternatives with one fresh index read and one atomic publication."""
+        prepared = ((value, self._discovery_payload(value)) for value in discoveries)
+        first = next(prepared, None)
+        if first is None:
+            return ()
+        created_blobs: list[Path] = []
+        before_rollback = deepcopy(rollback) if rollback is not None else None
+        with self._write_transaction():
+            document = self._load()
+            before = deepcopy(document)
+            results: list[VoiceAlternative] = []
+            try:
+                for discovery, payload in chain((first,), prepared):
+                    results.append(
+                        self._discover_in_document(
+                            document, discovery, payload, rollback, created_blobs
+                        )
+                    )
+                if document != before:
+                    self._write(document)
+            except Exception:
+                self._discard_unpublished_blobs(created_blobs)
+                if rollback is not None and before_rollback is not None:
+                    rollback._before = before_rollback._before
+                    rollback._expected = before_rollback._expected
+                raise
+        return tuple(results)
+
+    @staticmethod
+    def _discovery_payload(discovery: VoiceDiscovery) -> bytes:
+        role, reference = discovery.role, discovery.reference
         try:
-            payload = _read_wav(reference)
+            return _read_wav(reference)
         except VoiceLibraryError as error:
             recovery = (
                 " Select a WAV file or convert this audio to WAV."
@@ -182,56 +248,65 @@ class VoiceLibrary:
                 f"Unable to use voice reference for {role!r} from {reference}: "
                 f"{error}.{recovery}"
             ) from error
+
+    def _discover_in_document(
+        self,
+        document: _VoiceLibraryDocument,
+        discovery: VoiceDiscovery,
+        payload: bytes,
+        rollback: VoiceBindingRollback | None,
+        created_blobs: list[Path],
+    ) -> VoiceAlternative:
+        role = discovery.role
+        variant_key, method = discovery.variant_key, discovery.method
+        evidence, algorithm = discovery.evidence, discovery.algorithm
+        timestamp, bind_if_missing = discovery.timestamp, discovery.bind_if_missing
         checksum = hashlib.sha256(payload).hexdigest()
-        with self._write_transaction():
-            document = self._load()
-            identity, display_role, display_variant = self._role_identity(
-                role, variant_key, document
-            )
-            _remember_linked_variant(document, role, variant_key)
-            binding_identity, binding_role, _ = self._binding_identity(
-                role, variant_key, document
-            )
-            binding_added = (
-                bind_if_missing and binding_identity not in document["bindings"]
-            )
+        identity, display_role, display_variant = self._role_identity(
+            role, variant_key, document
+        )
+        _remember_linked_variant(document, role, variant_key)
+        binding_identity, binding_role, _ = self._binding_identity(
+            role, variant_key, document
+        )
+        binding_added = bind_if_missing and binding_identity not in document["bindings"]
+        if binding_added:
+            self._rollback_before(rollback, document, (binding_identity,))
+        group = document["alternatives"].setdefault(
+            identity,
+            {"role": display_role, "variant_key": display_variant, "items": []},
+        )
+        alternative_added = not any(
+            item["sha256"] == checksum for item in group["items"]
+        )
+        provenance = _provenance(method, evidence, algorithm, timestamp)
+        blob_path = self._blob_path(checksum)
+        blob_preexisting = blob_path.exists()
+        try:
+            self._store_blob(checksum, payload)
+            if not blob_preexisting:
+                created_blobs.append(blob_path)
+            if alternative_added:
+                group["items"].append({"sha256": checksum, "discovery": provenance})
+                group["items"].sort(key=lambda item: item["sha256"])
             if binding_added:
-                self._rollback_before(rollback, document, (binding_identity,))
-            group = document["alternatives"].setdefault(
-                identity,
-                {"role": display_role, "variant_key": display_variant, "items": []},
-            )
-            alternative_added = not any(
-                item["sha256"] == checksum for item in group["items"]
-            )
-            provenance = _provenance(method, evidence, algorithm, timestamp)
-            blob_path = self._blob_path(checksum)
-            blob_preexisting = blob_path.exists()
-            try:
-                self._store_blob(checksum, payload)
-                if alternative_added:
-                    group["items"].append({"sha256": checksum, "discovery": provenance})
-                    group["items"].sort(key=lambda item: item["sha256"])
-                if binding_added:
-                    _copy_selected_alternatives(
-                        document, binding_identity, binding_role, (checksum,)
-                    )
-                    document["bindings"][binding_identity] = _binding_document(
-                        binding_role,
-                        None,
-                        "voice",
-                        (checksum,),
-                        None,
-                        provenance,
-                    )
-                if alternative_added or binding_added:
-                    self._write(document)
-            except Exception:
-                if not blob_preexisting:
-                    self._discard_unpublished_blob(blob_path, checksum)
-                raise
-            if binding_added:
-                self._rollback_after(rollback, document, (binding_identity,))
+                _copy_selected_alternatives(
+                    document, binding_identity, binding_role, (checksum,)
+                )
+                document["bindings"][binding_identity] = _binding_document(
+                    binding_role,
+                    None,
+                    "voice",
+                    (checksum,),
+                    None,
+                    provenance,
+                )
+        except Exception:
+            if not blob_preexisting:
+                self._discard_unpublished_blobs((blob_path,))
+            raise
+        if binding_added:
+            self._rollback_after(rollback, document, (binding_identity,))
         return VoiceAlternative(
             display_role,
             display_variant,
@@ -499,7 +574,7 @@ class VoiceLibrary:
                 group["variant_key"],
                 item["sha256"],
                 self._blob_path(item["sha256"]),
-                dict(item["discovery"]),
+                deepcopy(dict(item["discovery"])),
             )
             for item in group["items"]
         )
@@ -645,7 +720,35 @@ class VoiceLibrary:
         return target
 
     def _load(self) -> _VoiceLibraryDocument:
+        return self._decode_index(self._read_index())
+
+    def _read_index(self) -> str | None:
+        if self.path.is_symlink():
+            raise VoiceLibraryError("Voice library index must not be a symlink")
         if not self.path.exists():
+            return None
+        try:
+            return read_regular_text(self.path, encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeError) as error:
+            raise VoiceLibraryError(f"Unable to read voice library: {error}") from error
+
+    def read_snapshot(
+        self, previous: VoiceLibraryReadSnapshot | None = None
+    ) -> VoiceLibraryReadSnapshot:
+        """Reuse a validated index only while its freshly read text is unchanged."""
+        payload = self._read_index()
+        if (
+            previous is not None
+            and previous.path == self.path
+            and previous._payload == payload
+        ):
+            return previous
+        return VoiceLibraryReadSnapshot(self, payload, self._decode_index(payload))
+
+    def _decode_index(self, payload: str | None) -> _VoiceLibraryDocument:
+        if payload is None:
             return {
                 "version": VOICE_LIBRARY_VERSION,
                 "alternatives": {},
@@ -655,10 +758,8 @@ class VoiceLibrary:
                 "person_link_migrations": {},
                 "person_link_restores": {},
             }
-        if self.path.is_symlink():
-            raise VoiceLibraryError("Voice library index must not be a symlink")
         try:
-            document = decode_json(read_regular_text(self.path, encoding="utf-8"))
+            document = decode_json(payload)
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise VoiceLibraryError(f"Unable to read voice library: {error}") from error
         if _validate_document(document):
@@ -743,15 +844,17 @@ class VoiceLibrary:
             staged.write_bytes(payload)
         return self._validate_blob(checksum)
 
-    def _discard_unpublished_blob(self, path: Path, checksum: str) -> None:
+    def _discard_unpublished_blobs(self, paths: Iterable[Path]) -> None:
         try:
             published = self._load()
-            if not any(
-                item["sha256"] == checksum
+            recorded = {
+                item["sha256"]
                 for group in published["alternatives"].values()
                 for item in group["items"]
-            ):
-                path.unlink(missing_ok=True)
+            }
+            for path in paths:
+                if path.stem not in recorded:
+                    path.unlink(missing_ok=True)
         except OSError:
             pass
         except VoiceLibraryError:
@@ -774,6 +877,54 @@ class VoiceLibrary:
                 f"Voice blob is not a WAV file: {checksum}"
             ) from error
         return path
+
+
+class VoiceLibraryReadSnapshot(VoiceLibrary):
+    """One read projection; mutations always go through the live library."""
+
+    def __init__(
+        self,
+        library: VoiceLibrary,
+        payload: str | None,
+        document: _VoiceLibraryDocument,
+    ) -> None:
+        self.root, self.path, self.blobs_path = (
+            library.root,
+            library.path,
+            library.blobs_path,
+        )
+        self._payload, self._document = payload, document
+        self._recorded = {
+            item["sha256"]
+            for group in document["alternatives"].values()
+            for item in group["items"]
+        }
+
+    def _load(self) -> _VoiceLibraryDocument:
+        return self._document
+
+    def has_same_routing(self, other: VoiceLibraryReadSnapshot) -> bool:
+        return (
+            self._document["bindings"],
+            self._document["archived_bindings"],
+            self._document["person_aliases"],
+        ) == (
+            other._document["bindings"],
+            other._document["archived_bindings"],
+            other._document["person_aliases"],
+        )
+
+    @contextmanager
+    def _write_transaction(self) -> Iterator[None]:
+        raise VoiceLibraryError("Voice library snapshot is read-only")
+        yield
+
+    def reference_paths(self, binding: VoiceBinding) -> tuple[Path, ...]:
+        if any(checksum not in self._recorded for checksum in binding.source_sha256s):
+            raise VoiceLibraryError("Voice reference is not recorded in this library")
+        return tuple(
+            self._validate_blob(checksum) for checksum in binding.source_sha256s
+        )
 
 
 def _role_identity(role: object, variant_key: object) -> tuple[str, str, str | None]:
@@ -1131,7 +1282,7 @@ def _to_binding(raw: _BindingDocument) -> VoiceBinding:
         raw["route"],
         tuple(raw["source_sha256s"]),
         raw["source_id"],
-        dict(raw["provenance"]),
+        deepcopy(dict(raw["provenance"])),
     )
 
 

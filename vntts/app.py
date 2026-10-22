@@ -145,7 +145,6 @@ from vntts.runtime_config import get_hotkey, get_live_hotkey
 from vntts.runtime_paths import configure_bundled_dependencies
 from vntts.settings import (
     AppSettings,
-    apply_app_settings_overrides,
     get_local_data_directory,
     get_settings_path,
     is_live_sequence_audio_mode,
@@ -1840,12 +1839,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             saved_settings: AppSettings, revision: bytes | None
         ) -> None:
             self._settings_revision = revision
-            self._last_saved_settings = apply_app_settings_overrides(
-                saved_settings,
-                environment={},
-                warn=lambda _message: None,
-                on_game_pack_error=lambda _error: None,
-            )
+            self._last_saved_settings = saved_settings
 
         if settings is None:
             self.settings = load_app_settings(

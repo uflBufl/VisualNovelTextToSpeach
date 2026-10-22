@@ -41,6 +41,90 @@ from vntts.synthesis import (
 
 
 class VoiceAuditionPreviewServiceTest(unittest.TestCase):
+    def test_warm_preview_reuses_registry_and_captured_checksum_preflight(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan, group, manifest = ambiguous_fixture(root)
+            source = group.candidates[0].source_id
+            backend = FakeBackend("moss-tts")
+            writer = VoiceAuditionPreviewService(
+                root / "previews", backend_factory=lambda *_args, **_kwargs: backend
+            )
+            writer.generate(plan, group, source)
+            writer.close()
+            service = VoiceAuditionPreviewService(root / "previews")
+            self.addCleanup(service.close)
+            with (
+                patch.object(
+                    audition_module.CharacterVoiceRegistry,
+                    "from_document",
+                    wraps=audition_module.CharacterVoiceRegistry.from_document,
+                ) as parse,
+                patch.object(
+                    audition_module,
+                    "read_voice_reference_bytes",
+                    wraps=audition_module.read_voice_reference_bytes,
+                ) as read,
+                patch.object(
+                    audition_module,
+                    "analyze_reference_bytes",
+                    wraps=audition_module.analyze_reference_bytes,
+                ) as preflight,
+            ):
+                first = service.lookup(plan, group, source)
+                self.assertEqual(service.lookup(plan, group, source), first)
+                parse.assert_called_once()
+                preflight.assert_called_once()
+                self.assertEqual(read.call_count, 2)
+            reference = manifest.parent / "references" / "rhiannon.wav"
+            original_stat = reference.stat()
+            payload = bytearray(reference.read_bytes())
+            payload[-1] ^= 1
+            reference.write_bytes(payload)
+            os.utime(
+                reference, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns)
+            )
+            with self.assertRaisesRegex(VoiceAuditionError, "changed after planning"):
+                service.lookup(plan, group, source)
+
+    def test_cached_generate_rejects_mutation_and_cancel_during_admission(self):
+        for action in ("reference", "manifest", "cancel"):
+            with self.subTest(action=action), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                plan, group, manifest = ambiguous_fixture(root)
+                backend = FakeBackend("moss-tts")
+                service = VoiceAuditionPreviewService(
+                    root / "previews", backend_factory=lambda *_args, **_kwargs: backend
+                )
+                self.addCleanup(service.close)
+                source = group.candidates[0].source_id
+                service.generate(plan, group, source)
+                cancel = Event()
+                cached = audition_module._cached_preview_for_request
+
+                def changed(*args, **kwargs):
+                    result = cached(*args, **kwargs)
+                    if action == "cancel":
+                        cancel.set()
+                    elif action == "manifest":
+                        manifest.write_bytes(manifest.read_bytes() + b" ")
+                    else:
+                        reference = manifest.parent / "references" / "rhiannon.wav"
+                        reference.write_bytes(b"changed reference")
+                    return result
+
+                with patch.object(
+                    audition_module, "_cached_preview_for_request", side_effect=changed
+                ):
+                    error = (
+                        VoiceAuditionCancelled
+                        if action == "cancel"
+                        else VoiceAuditionError
+                    )
+                    with self.assertRaises(error):
+                        service.generate(plan, group, source, cancel_event=cancel)
+                self.assertEqual(len(backend.requests), 1)
+
     def test_warmup_reuses_the_same_backend_for_real_preview(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

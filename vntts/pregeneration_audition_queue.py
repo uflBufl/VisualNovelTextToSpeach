@@ -6,8 +6,10 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from secrets import token_hex
 from stat import S_ISREG
 from threading import Event, Lock
+from time import monotonic
 
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
@@ -19,10 +21,13 @@ from vntts.pregeneration_audition import (
     VoiceAuditionPreviewService,
     VoiceAuditionReference,
     _Cancellation,
+    _count_audition,
     _validate_request,
+    measure_audition_phase,
 )
 from vntts.pregeneration_voices import VoiceGroup, VoicePlan
 from vntts.settings import AppSettings
+from vntts.support import performance_operation_id, record_background_operation
 
 PreviewInput = tuple[VoiceGroup, str, str | None]
 
@@ -64,6 +69,10 @@ class _Job:
     preview: VoiceAuditionPreview | None = None
     error: Exception | None = None
     progress: ProgressReporter | None = None
+    operation_id: str = field(
+        default_factory=lambda: performance_operation_id.get() or token_hex(16)
+    )
+    queued_at: float = field(default_factory=monotonic)
 
 
 class VoiceAuditionCoordinator:
@@ -185,10 +194,20 @@ class VoiceAuditionCoordinator:
                 self._pending.remove(job)
                 self._running = job
             ready_stamp: tuple[tuple[object, ...], ...] = ()
+            operation_token = performance_operation_id.set(job.operation_id)
+            record_background_operation(
+                "pregeneration-audition-queue-wait",
+                (monotonic() - job.queued_at) * 1000,
+                "complete",
+                operation_id=job.operation_id,
+                timing_scope="queue-wait",
+            )
             try:
                 ready_stamp = self._run_job(job)
             except Exception as error:
                 job.error = error
+            finally:
+                performance_operation_id.reset(operation_token)
             with self._lock:
                 if (
                     job.preview is not None
@@ -335,6 +354,7 @@ class VoiceAuditionSession:
             self.owner._warmup_session = self
             self.owner._pool.submit(self.owner._warmup, self, settings, cancel)
 
+    @measure_audition_phase("request")
     def generate(
         self,
         plan: VoicePlan,
@@ -426,6 +446,7 @@ class VoiceAuditionSession:
             self._ready.pop(key, None)
         return None
 
+    @measure_audition_phase("restore-cache")
     def restore_cached(
         self,
         plan: VoicePlan,
@@ -434,6 +455,7 @@ class VoiceAuditionSession:
         cancel_event: _Cancellation | None = None,
     ) -> None:
         """Admit existing disk samples in a worker without loading a TTS engine."""
+        _count_audition("candidate_count", len(requests))
         for group, source, text in requests:
             if cancel_event is not None and cancel_event.is_set():
                 raise VoiceAuditionCancelled("Cached audition loading was cancelled")
@@ -457,13 +479,15 @@ class VoiceAuditionSession:
     ) -> None:
         key = _context_key(plan, group, source, text)
         with self.owner._cache_lock:
+            if not self.owner.service.has_cached_preview(
+                plan, group, source, text=text
+            ):
+                return
             stamp = self.owner.service.authorization_stamp(plan, group, source)
             preview = self.owner.service.lookup(
                 plan, group, source, text=text, cancel_event=cancel_event
             )
-            if preview is None or stamp != self.owner.service.authorization_stamp(
-                plan, group, source
-            ):
+            if preview is None or not self.owner.service.authorization_unchanged(stamp):
                 return
             if cancel_event is not None and cancel_event.is_set():
                 raise VoiceAuditionCancelled("Cached audition loading was cancelled")

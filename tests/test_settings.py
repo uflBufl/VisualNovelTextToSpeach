@@ -19,6 +19,81 @@ from vntts.settings import (
 
 
 class SettingsTest(unittest.TestCase):
+    def test_snapshot_reuses_one_admission_for_the_same_resolved_pack(self):
+        from tests.story_fixtures import write_synthetic_game_pack
+        from vntts.game_pack import import_game_pack
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack, *_ = write_synthetic_game_pack(root / "pack")
+            path = root / "settings.json"
+            saved = AppSettings(
+                game_pack=str(pack),
+                game_window_title="Saved game",
+                live_sequence_plan="saved-external-sequence.json",
+                live_sequence_mode="shadow",
+            )
+            saved.save(path)
+            raw = path.read_bytes()
+            snapshots = []
+            with patch(
+                "vntts.game_pack.import_game_pack", wraps=import_game_pack
+            ) as admit:
+                loaded = load_app_settings(
+                    path,
+                    environment={
+                        "VNTTS_GAME_PACK": str(pack.parent / "." / pack.name),
+                        "VNTTS_GAME_WINDOW_TITLE": "Temporary game",
+                        "VNTTS_LIVE_SEQUENCE_PLAN": "temporary-external-sequence.json",
+                    },
+                    on_snapshot=lambda settings, revision: snapshots.append(
+                        (settings, revision)
+                    ),
+                )
+                admit.assert_called_once()
+            baseline, revision = snapshots[0]
+            self.assertEqual(revision, sha256(raw).digest())
+            self.assertEqual(baseline.game_window_title, "Saved game")
+            self.assertEqual(loaded.game_window_title, "Temporary game")
+            self.assertEqual(baseline.live_sequence_plan, saved.live_sequence_plan)
+            self.assertEqual(
+                loaded.live_sequence_plan, "temporary-external-sequence.json"
+            )
+            self.assertEqual(baseline.voice_manifest, loaded.voice_manifest)
+            self.assertNotEqual(baseline.voice_manifest, saved.voice_manifest)
+            self.assertEqual(path.read_bytes(), raw)
+
+            # Admission lives only for this load; later corruption is still rejected.
+            pack.write_text("not JSON", encoding="utf-8")
+            from vntts.game_pack import GamePackError
+
+            with self.assertRaises(GamePackError):
+                load_app_settings(path, environment={})
+
+    def test_snapshot_admits_a_distinct_saved_pack_without_environment_overrides(self):
+        from tests.story_fixtures import write_synthetic_game_pack
+        from vntts.game_pack import import_game_pack
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            saved_pack, *_ = write_synthetic_game_pack(root / "saved")
+            effective_pack, *_ = write_synthetic_game_pack(root / "effective")
+            path = root / "settings.json"
+            AppSettings(game_pack=str(saved_pack)).save(path)
+            snapshots = []
+            with patch(
+                "vntts.game_pack.import_game_pack", wraps=import_game_pack
+            ) as admit:
+                loaded = load_app_settings(
+                    path,
+                    environment={"VNTTS_GAME_PACK": str(effective_pack)},
+                    on_snapshot=lambda settings, _revision: snapshots.append(settings),
+                )
+                self.assertEqual(admit.call_count, 2)
+            self.assertEqual(loaded.game_pack, str(effective_pack.resolve()))
+            self.assertEqual(snapshots[0].game_pack, str(saved_pack.resolve()))
+            self.assertNotEqual(loaded.voice_manifest, snapshots[0].voice_manifest)
+
     def test_snapshot_reports_saved_values_before_environment_overrides(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"

@@ -15,6 +15,7 @@ from vntts.preview_content_advisor import (
     PreviewContentCheckError,
 )
 from vntts.speech_content_advice import SpeechContentAdvice
+from vntts.support import PerformanceLog, performance_operation_id
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,27 @@ class Preview:
 
 
 class PreviewContentAdvisorTest(unittest.TestCase):
+    def test_advice_reports_cold_and_warm_cost_in_enclosing_operation(self):
+        performance = PerformanceLog()
+        token = performance_operation_id.set("plan-operation")
+        try:
+            with patch("vntts.support.performance_log", performance):
+                first = self.advisor.check((self.preview,))
+                self.assertEqual(self.advisor.check((self.preview,)), first)
+        finally:
+            performance_operation_id.reset(token)
+        events = performance.report()["events"]
+        self.assertEqual(len(events), 2)
+        self.assertEqual(
+            [event["operation_id"] for event in events], ["plan-operation"] * 2
+        )
+        self.assertEqual(
+            [(event["cache_hits"], event["cache_misses"]) for event in events],
+            [(0, 1), (1, 0)],
+        )
+        self.assertNotIn(self.preview.text, repr(events))
+        self.assertNotIn(self.preview.audio_sha256, repr(events))
+
     def setUp(self):
         self.temporary = TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
