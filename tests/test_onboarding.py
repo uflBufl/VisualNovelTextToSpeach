@@ -326,6 +326,25 @@ class OnboardingWizardTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def test_incomplete_onboarding_preserves_saved_auto_advance_opt_out(self):
+        for reading_setup in (False, True):
+            with self.subTest(reading_setup=reading_setup):
+                settings = AppSettings(
+                    onboarding_completed=False,
+                    auto_advance_enabled=False,
+                    game_window_title="Game",
+                )
+                wizard = OnboardingWizard(settings, reading_setup=reading_setup)
+                try:
+                    self.assertFalse(wizard.configuration_page.auto_advance.isChecked())
+                    self.assertFalse(
+                        wizard.configuration_page.settings().auto_advance_enabled
+                    )
+                    wizard.reject()
+                    self.assertFalse(settings.auto_advance_enabled)
+                finally:
+                    wizard.deleteLater()
+
     def test_contextual_reading_setup_keeps_selected_voices_and_discovers_windows(self):
         settings = AppSettings(
             tts_model=None,

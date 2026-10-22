@@ -38,6 +38,7 @@ from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.app import (  # noqa: E402
     SettingsDialog,
     TrayApplication,
+    _OnboardingCaptureRequest,
     build_story_match_recovery_prompt,
     build_unknown_speaker_prompt,
     create_application_icon,
@@ -8174,6 +8175,154 @@ class TrayApplicationTest(unittest.TestCase):
                 tray._shutting_down = False
                 tray.shutdown()
 
+    def test_setup_capture_preserves_primary_error_when_restore_also_times_out(self):
+        for capture_fails in (False, True):
+            with self.subTest(capture_fails=capture_fails):
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=Mock()),
+                )
+                generation = tray._begin_controller_lifecycle()
+                request = _OnboardingCaptureRequest(generation, Event())
+                request.ready.set()
+                request.restored = Mock(wait=Mock(return_value=False))
+                primary = RuntimeError("capture failed")
+
+                def capture():
+                    with tray._onboarding_capture(generation, request.cancelled):
+                        if capture_fails:
+                            raise primary
+
+                try:
+                    with (
+                        patch(
+                            "vntts.app._OnboardingCaptureRequest", return_value=request
+                        ),
+                        ThreadPoolExecutor(max_workers=1) as pool,
+                    ):
+                        with self.assertRaises(RuntimeError) as caught:
+                            pool.submit(capture).result(timeout=1)
+                    if capture_fails:
+                        self.assertIs(caught.exception, primary)
+                        self.assertTrue(
+                            any(
+                                "Timed out restoring setup controls" in note
+                                for note in primary.__notes__
+                            )
+                        )
+                    else:
+                        self.assertIn(
+                            "Timed out restoring setup controls", str(caught.exception)
+                        )
+                    request.restored.wait.assert_called_once_with(5.0)
+                    self.assertTrue(request.finished.is_set())
+                    self.application.processEvents()
+                finally:
+                    tray.shutdown()
+
+    def test_setup_capture_discards_cancelled_late_requests_and_closed_wizard(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        visible, old_wizard, replacement = QWidget(), QWidget(), QWidget()
+        tray.onboarding_wizard = old_wizard
+        visible.show()
+        old_wizard.show()
+        generation = tray._begin_controller_lifecycle()
+        cancelled = Event()
+        cancelled.set()
+        late = _OnboardingCaptureRequest(generation, cancelled)
+        try:
+            tray._hide_onboarding_capture_windows(late)
+            self.assertTrue(visible.isVisible())
+            self.assertTrue(late.ready.is_set())
+            request = _OnboardingCaptureRequest(generation, Event())
+            tray._hide_onboarding_capture_windows(request)
+            self.assertFalse(visible.isVisible())
+            tray.onboarding_wizard = replacement
+            tray._restore_onboarding_capture_windows(request)
+            self.assertTrue(visible.isVisible())
+            self.assertFalse(old_wizard.isVisible())
+            self.assertFalse(replacement.isVisible())
+            self.assertTrue(request.restored.is_set())
+        finally:
+            tray.onboarding_wizard = None
+            tray.shutdown()
+            for window in (visible, old_wizard, replacement):
+                window.close()
+                window.deleteLater()
+
+    def test_setup_hides_windows_only_while_capture_pixels_are_acquired(self):
+        for outcome in ("success", "capture-error", "cancel"):
+            with self.subTest(outcome=outcome):
+                controller = Mock(is_live_running=False)
+                controller.start.return_value = True
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=controller),
+                )
+                pool = QThreadPool()
+                tray.onboarding_test_runner.thread_pool = pool
+                visible = QWidget()
+                hidden = QWidget()
+                visible.show()
+                self.application.processEvents()
+                results = []
+                tray.signals.onboarding_test_finished.connect(
+                    lambda success, text: results.append((success, text))
+                )
+                full_text = "Recognized dialogue. " * 30 + "The final sentence."
+                observed = []
+                controller.prepare_startup.side_effect = lambda: observed.append(
+                    ("prepare", visible.isVisible())
+                )
+
+                def capture(*, capture_context):
+                    with capture_context():
+                        observed.append(("capture", visible.isVisible()))
+                        if outcome == "capture-error":
+                            raise RuntimeError("capture failed")
+                        if outcome == "cancel":
+                            tray.onboarding_cancel_event.set()
+                    observed.append(("ocr-and-playback", visible.isVisible()))
+                    return "Ada", full_text
+
+                controller.test_current_dialog.side_effect = capture
+                try:
+                    tray.run_onboarding_test(AppSettings())
+                    self.wait_until(lambda: bool(results))
+                    self.assertEqual(observed[0], ("prepare", True))
+                    self.assertIn(("capture", False), observed)
+                    if outcome == "success":
+                        self.assertIn(("ocr-and-playback", True), observed)
+                    elif outcome == "cancel":
+                        self.assertNotIn(("ocr-and-playback", True), observed)
+                    self.assertTrue(visible.isVisible())
+                    self.assertFalse(hidden.isVisible())
+                    self.assertFalse(
+                        visible.testAttribute(
+                            Qt.WidgetAttribute.WA_ShowWithoutActivating
+                        )
+                    )
+                    if outcome == "success":
+                        self.assertEqual(
+                            results, [(True, f"Success. Recognized Ada: {full_text}")]
+                        )
+                    else:
+                        self.assertFalse(results[0][0])
+                    controller.toggle_live.assert_not_called()
+                finally:
+                    tray.shutdown()
+                    pool.waitForDone(3000)
+                    visible.close()
+                    hidden.close()
+                    visible.deleteLater()
+                    hidden.deleteLater()
+
     def test_onboarding_test_runs_controller_end_to_end(self):
         controller = Mock()
         controller.start.return_value = True
@@ -8198,7 +8347,7 @@ class TrayApplicationTest(unittest.TestCase):
 
         controller.apply_settings.assert_called_once()
         controller.model_assets.download.assert_called_once()
-        controller.test_current_dialog.assert_called_once_with()
+        controller.test_current_dialog.assert_called_once_with(capture_context=ANY)
         controller.shutdown.assert_not_called()
         self.assertTrue(results[0][0])
         self.assertIn("Marcus", results[0][1])

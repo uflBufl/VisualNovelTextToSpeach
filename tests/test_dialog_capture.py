@@ -1,5 +1,6 @@
 import json
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -139,6 +140,49 @@ class CaptureProvenanceTest(unittest.TestCase):
             self.assertTrue(image.info["capture_provenance"]["success"])
             with Image.open(output) as png:
                 self.assertTrue(json.loads(png.info["capture_provenance"])["success"])
+
+    def test_snapshot_capture_context_restores_controls_before_ocr_or_capture_error(
+        self,
+    ):
+        for fail in (False, True):
+            events = []
+
+            @contextmanager
+            def capture_context():
+                events.append("hide")
+                try:
+                    yield
+                finally:
+                    events.append("restore")
+
+            def pixels(*_args, **_kwargs):
+                events.append("pixels")
+                if fail:
+                    raise RuntimeError("capture failed")
+                return Image.new("RGB", (20, 20)), None
+
+            def recognize(*_args, **_kwargs):
+                events.append("ocr")
+                return OCRResult("Ada", "Full dialogue.", 99, "balanced", 1)
+
+            with (
+                self.subTest(fail=fail),
+                patch("vntts.dialog_capture.capture_dialog", side_effect=pixels),
+                patch(
+                    "vntts.dialog_capture.recognize_screenshot_result",
+                    side_effect=recognize,
+                ),
+            ):
+                if fail:
+                    with self.assertRaisesRegex(RuntimeError, "capture failed"):
+                        analyze_dialog_snapshot(
+                            "unused", capture_context=capture_context
+                        )
+                else:
+                    analyze_dialog_snapshot("unused", capture_context=capture_context)
+                self.assertEqual(
+                    events, ["hide", "pixels", "restore"] + ([] if fail else ["ocr"])
+                )
 
     def test_diagnostic_snapshot_receives_capture_provenance(self):
         snapshots = []

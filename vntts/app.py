@@ -1,8 +1,10 @@
 import argparse
 import sys
 from collections import deque
-from collections.abc import Callable, Sequence
-from dataclasses import asdict
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from json import JSONDecodeError
 from multiprocessing import freeze_support
 from pathlib import Path
@@ -22,6 +24,7 @@ from PySide6.QtCore import (
     QRectF,
     QSignalBlocker,
     Qt,
+    QThread,
     QTimer,
     QUrl,
     Signal,
@@ -62,6 +65,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid
 
 from vntts.asset_ui import AssetManagerDialog
 from vntts.async_ui import LatestTaskRunner
@@ -74,7 +78,7 @@ from vntts.calibration import (
     capture_calibration_background,
     show_calibration_overlay,
 )
-from vntts.cleanup import attempt_cleanup
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.configuration_apply import ConfigurationApplyMixin
 from vntts.controller import AppController, LiveSequenceStatus
 from vntts.dashboard_ui import (
@@ -190,9 +194,15 @@ default_xtts_model = "tts_models/multilingual/multi-dataset/xtts_v2"
 ValidationError = tuple[int, QWidget, str]
 
 
-def _onboarding_preview(text: str) -> str:
-    preview = " ".join(text.split())
-    return f"{preview[:157]}..." if len(preview) > 160 else preview
+@dataclass
+class _OnboardingCaptureRequest:
+    generation: int
+    cancelled: Event
+    ready: Event = dataclass_field(default_factory=Event)
+    finished: Event = dataclass_field(default_factory=Event)
+    restored: Event = dataclass_field(default_factory=Event)
+    windows: tuple[QWidget, ...] = ()
+    wizard: QWidget | None = None
 
 
 def create_application_icon(style: QStyle, *, platform: str | None = None) -> QIcon:
@@ -238,6 +248,8 @@ class AppSignals(QObject):
     error_reported = Signal(str)
     onboarding_test_finished = Signal(bool, str)
     onboarding_test_progress = Signal(object, str)
+    onboarding_capture_requested = Signal(object)
+    onboarding_capture_released = Signal(object)
     diagnostics_changed = Signal(object)
     sequence_status_changed = Signal(object)
     diagnostics_failed = Signal(str)
@@ -1949,6 +1961,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.onboarding_test_runner = LatestTaskRunner(self)
         self.onboarding_test_runner.finished.connect(self._onboarding_test_finished)
         self._onboarding_test_generation: int | None = None
+        self._onboarding_capture_request: _OnboardingCaptureRequest | None = None
         self._onboarding_preview_settings: AppSettings | None = None
         self.live_scope_runner = LatestTaskRunner(self)
         self.live_scope_runner.finished.connect(self._live_scope_finished)
@@ -2144,6 +2157,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._update_auto_advance_action()
 
     def _connect_application_signals(self) -> None:
+        self.signals.onboarding_capture_requested.connect(
+            self._hide_onboarding_capture_windows
+        )
+        self.signals.onboarding_capture_released.connect(
+            self._restore_onboarding_capture_windows
+        )
         self.signals.status_changed.connect(self.set_status)
         self.signals.dialog_changed.connect(self.set_dialog)
         self.signals.ready_changed.connect(self.set_ready)
@@ -3181,6 +3200,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 False, "Reading controls are updating. Try the test again when ready."
             )
             return
+        if self._calibration_capture_pending or self.calibration_overlay is not None:
+            self.signals.onboarding_test_finished.emit(
+                False, "Finish or cancel calibration before testing speech."
+            )
+            return
         model_name = settings.tts_model
         if settings.speech_backend == "coqui-xtts" and not model_name:
             self.signals.onboarding_test_finished.emit(
@@ -3200,7 +3224,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _run_onboarding_check(
-        self, settings: AppSettings, model_name: str | None, cancel_event: Event
+        self,
+        settings: AppSettings,
+        model_name: str | None,
+        cancel_event: Event,
+        generation: int,
     ) -> tuple[bool, str]:
         started = preview_succeeded = False
 
@@ -3221,15 +3249,21 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     self.last_controller_error
                     or "The speech engine could not be initialized.",
                 )
-            character, text = self.controller.test_current_dialog()
+            character, text = self.controller.test_current_dialog(
+                capture_context=lambda: self._onboarding_capture(
+                    generation, cancel_event
+                )
+            )
             if cancel_event.is_set():
                 return False, "OCR-to-speech test cancelled."
             preview_succeeded = True
             return (
                 True,
-                f"Success. Recognized {character}: {_onboarding_preview(text)}",
+                f"Success. Recognized {character}: {text}",
             )
         except Exception as error:
+            if cancel_event.is_set():
+                return False, "OCR-to-speech test cancelled."
             return False, format_runtime_error(error)
         finally:
             try:
@@ -3293,10 +3327,89 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         return self.session_owner.run(
             generation,
             lambda _cancellation: self._run_onboarding_check(
-                settings, model_name, cancel_event
+                settings, model_name, cancel_event, generation
             ),
             (False, "OCR-to-speech test cancelled."),
         )
+
+    @contextmanager
+    def _onboarding_capture(self, generation: int, cancelled: Event) -> Iterator[None]:
+        if QThread.currentThread() == self.thread():
+            raise RuntimeError("Setup capture must run in a background worker")
+        request = _OnboardingCaptureRequest(generation, cancelled)
+        self.signals.onboarding_capture_requested.emit(request)
+        deadline = perf_counter() + 5.0
+        with cleanup_on_exit(
+            lambda: self._release_onboarding_capture(request),
+            description="Setup capture control restoration",
+        ):
+            while not request.ready.wait(0.05):
+                if cancelled.is_set() or not self.session_owner.is_current(generation):
+                    raise RuntimeError("OCR-to-speech test cancelled.")
+                if perf_counter() >= deadline:
+                    raise RuntimeError(
+                        "Timed out preparing unobstructed dialogue capture"
+                    )
+            if cancelled.is_set() or not self.session_owner.is_current(generation):
+                raise RuntimeError("OCR-to-speech test cancelled.")
+            yield
+        if cancelled.is_set() or not self.session_owner.is_current(generation):
+            raise RuntimeError("OCR-to-speech test cancelled.")
+
+    def _release_onboarding_capture(self, request: _OnboardingCaptureRequest) -> None:
+        request.finished.set()
+        self.signals.onboarding_capture_released.emit(request)
+        if not request.restored.wait(5.0):
+            raise RuntimeError("Timed out restoring setup controls after capture")
+
+    def _hide_onboarding_capture_windows(
+        self, request: _OnboardingCaptureRequest
+    ) -> None:
+        if (
+            request.finished.is_set()
+            or request.cancelled.is_set()
+            or not self._lifecycle_is_current(request.generation)
+        ):
+            request.ready.set()
+            return
+        request.wizard = self.onboarding_wizard
+        request.windows = tuple(
+            window
+            for window in self.application.topLevelWidgets()
+            if window.isVisible()
+        )
+        self._onboarding_capture_request = request
+        for window in request.windows:
+            window.hide()
+        if request.windows:
+            QTimer.singleShot(200, self, request.ready.set)
+        else:
+            request.ready.set()
+
+    def _restore_onboarding_capture_windows(
+        self, request: _OnboardingCaptureRequest
+    ) -> None:
+        try:
+            if self._onboarding_capture_request is not request:
+                return
+            self._onboarding_capture_request = None
+            if self._shutting_down:
+                return
+            for window in request.windows:
+                if not isValid(window):
+                    continue
+                if window is request.wizard and window is not self.onboarding_wizard:
+                    continue
+                previous = window.testAttribute(
+                    Qt.WidgetAttribute.WA_ShowWithoutActivating
+                )
+                window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+                window.show()
+                window.setAttribute(
+                    Qt.WidgetAttribute.WA_ShowWithoutActivating, previous
+                )
+        finally:
+            request.restored.set()
 
     def _onboarding_test_finished(
         self, result: tuple[bool, str] | None, error: Exception | None

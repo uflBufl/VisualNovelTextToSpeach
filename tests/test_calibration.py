@@ -31,6 +31,16 @@ from vntts.ocr import DialogRegion, OCRResult  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
 
 
+class _ReviewDecision(QDialog):
+    def __init__(self, decision):
+        super().__init__()
+        self.decision = decision
+
+    def open(self):
+        super().open()
+        self.done(self.decision)
+
+
 class DialogRegionOverlayTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -45,11 +55,56 @@ class DialogRegionOverlayTest(unittest.TestCase):
             QTest.qWait(5)
         self.fail("Timed out waiting for calibration OCR")
 
+    def test_exact_bounds_editor_clamps_and_reviews_frozen_pixels(self):
+        saved = []
+        reviewer = Mock(return_value=_ReviewDecision(QDialog.DialogCode.Accepted))
+        background = Image.new("RGB", (800, 450), "navy")
+        overlay = DialogRegionOverlay(
+            background=background, reviewer=reviewer, save_region=saved.append
+        )
+        self.addCleanup(overlay.deleteLater)
+        self.addCleanup(overlay.close)
+        overlay.resize(800, 450)
+        overlay.show()
+        self.assertTrue(overlay.bounds_editor.isVisible())
+        for name, value in (
+            ("Left", 80),
+            ("Top", 270),
+            ("Width", 640),
+            ("Height", 144),
+        ):
+            control = overlay.bounds_inputs[name]
+            self.assertIn("pixels", control.accessibleName())
+            control.setValue(value)
+        self.assertEqual(
+            QRect(overlay.origin, overlay.current), QRect(80, 270, 640, 144)
+        )
+        overlay._review_bounds()
+        self.assertEqual(reviewer.call_args.args[0].size, (640, 144))
+        self.assertEqual(saved, [DialogRegion(0.1, 0.6, 0.8, 0.32)])
+        self.assertFalse(overlay.bounds_editor.isVisible())
+
+    def test_exact_bounds_editor_enforces_minimum_and_cancel_keeps_saved_region(self):
+        save = Mock()
+        overlay = DialogRegionOverlay(save_region=save)
+        self.addCleanup(overlay.deleteLater)
+        self.addCleanup(overlay.close)
+        overlay.resize(800, 450)
+        overlay.show()
+        for name in ("Left", "Top", "Width", "Height"):
+            overlay.bounds_inputs[name].setValue(10000)
+        self.assertEqual(
+            QRect(overlay.origin, overlay.current), QRect(780, 430, 20, 20)
+        )
+        QTest.keyClick(overlay, Qt.Key.Key_Left)
+        self.assertEqual(overlay.bounds_inputs["Left"].value(), 778)
+        QTest.keyClick(overlay, Qt.Key.Key_Escape)
+        self.assertFalse(overlay.bounds_editor.isVisible())
+        save.assert_not_called()
+
     def test_one_selection_reviews_and_saves_the_whole_capture(self):
         save = Mock()
-        reviewer = Mock(
-            return_value=Mock(exec=Mock(return_value=QDialog.DialogCode.Accepted))
-        )
+        reviewer = Mock(return_value=_ReviewDecision(QDialog.DialogCode.Accepted))
         overlay = DialogRegionOverlay(
             background=Image.new("RGB", (800, 450)),
             reviewer=reviewer,
@@ -68,12 +123,12 @@ class DialogRegionOverlayTest(unittest.TestCase):
     def test_review_failure_keeps_selection_visible_and_retryable(self):
         for stage in ("construction", "execution"):
             with self.subTest(stage=stage):
-                reviewer = Mock()
+                reviewer = Mock(return_value=QDialog())
                 if stage == "construction":
                     reviewer.side_effect = RuntimeError("review failed")
                 else:
-                    reviewer.return_value.exec.side_effect = RuntimeError(
-                        "review failed"
+                    reviewer.return_value.open = Mock(
+                        side_effect=RuntimeError("review failed")
                     )
                 save = Mock()
                 overlay = DialogRegionOverlay(
@@ -95,9 +150,7 @@ class DialogRegionOverlayTest(unittest.TestCase):
                 self.assertEqual(overlay.origin, QPoint(80, 270))
                 save.assert_not_called()
                 overlay.reviewer = Mock(
-                    return_value=Mock(
-                        exec=Mock(return_value=QDialog.DialogCode.Accepted)
-                    )
+                    return_value=_ReviewDecision(QDialog.DialogCode.Accepted)
                 )
                 overlay._review_rectangle(QRect(80, 270, 640, 144))
                 save.assert_called_once()
@@ -107,9 +160,7 @@ class DialogRegionOverlayTest(unittest.TestCase):
         for frozen_preview in (False, True):
             with self.subTest(frozen_preview=frozen_preview):
                 reviewer = Mock(
-                    return_value=Mock(
-                        exec=Mock(return_value=QDialog.DialogCode.Accepted)
-                    )
+                    return_value=_ReviewDecision(QDialog.DialogCode.Accepted)
                 )
                 save = Mock()
                 overlay = DialogRegionOverlay(
@@ -148,15 +199,70 @@ class DialogRegionOverlayTest(unittest.TestCase):
 
         def finish_after_close():
             overlay.close()
-            return QDialog.DialogCode.Accepted
+            review.accept()
 
-        overlay.reviewer = Mock(return_value=Mock(exec=finish_after_close))
+        review = QDialog()
+        review.open = Mock(side_effect=finish_after_close)
+        overlay.reviewer = Mock(return_value=review)
         overlay._review_rectangle(QRect(80, 270, 640, 144))
 
         save.assert_not_called()
         self.assertFalse(overlay.isVisible())
 
-    def test_closing_overlay_rejects_its_modal_review_and_cancels_ocr(self):
+    def test_old_review_completion_cannot_save_or_retire_current_review(self):
+        saved = []
+        overlay = DialogRegionOverlay(
+            background=Image.new("RGB", (800, 450)),
+            reviewer=lambda _image: QDialog(),
+            save_region=saved.append,
+        )
+        self.addCleanup(overlay.deleteLater)
+        self.addCleanup(overlay.close)
+        overlay.resize(800, 450)
+        overlay._review_rectangle(QRect(80, 270, 640, 144))
+        old = overlay._review
+        old.done(CalibrationReviewDialog.DrawAgain)
+        overlay._review_rectangle(QRect(160, 180, 400, 200))
+        current = overlay._review
+        old.accept()
+        self.assertIs(overlay._review, current)
+        self.assertTrue(current.isVisible())
+        self.assertFalse(overlay._closed)
+        self.assertEqual(saved, [])
+        current.accept()
+        self.assertEqual(saved, [DialogRegion(0.2, 0.4, 0.5, 200 / 450)])
+        self.assertTrue(overlay._closed)
+
+    def test_async_review_returns_immediately_and_keeps_owner_on_save_error(self):
+        save = Mock(side_effect=OSError("disk full"))
+        overlay = DialogRegionOverlay(
+            background=Image.new("RGB", (800, 450)),
+            reviewer=lambda _image: QDialog(),
+            save_region=save,
+        )
+        self.addCleanup(overlay.deleteLater)
+        self.addCleanup(overlay.close)
+        overlay.resize(800, 450)
+        overlay.origin, overlay.current = QPoint(80, 270), QPoint(719, 413)
+        overlay.show()
+        overlay._review_bounds()
+        review = overlay._review
+        self.assertIsNotNone(review)
+        self.assertIs(review.parent(), overlay)
+        self.assertTrue(review.isVisible())
+        self.assertFalse(overlay.isVisible())
+        save.assert_not_called()
+        review.accept()
+        self.assertTrue(overlay.isVisible())
+        self.assertIn("disk full", overlay.save_error)
+        self.assertIsNone(overlay._review)
+        save.side_effect = None
+        overlay._review_bounds()
+        overlay._review.accept()
+        self.assertFalse(overlay.isVisible())
+        self.assertEqual(save.call_count, 2)
+
+    def test_closing_overlay_rejects_its_async_review_and_cancels_ocr(self):
         reviews = []
 
         def reviewer(image):
@@ -176,24 +282,12 @@ class DialogRegionOverlayTest(unittest.TestCase):
         self.addCleanup(overlay.deleteLater)
         overlay.resize(800, 450)
         overlay.show()
-        QTimer.singleShot(0, overlay.close)
-        # Bound the regression run if the modal is not closed by its owner.
-        timed_out = []
-        timeout = QTimer()
-        timeout.setSingleShot(True)
-
-        def reject_after_timeout():
-            timed_out.append(True)
-            reviews[0].reject()
-
-        timeout.timeout.connect(reject_after_timeout)
-        self.addCleanup(timeout.stop)
-        timeout.start(500)
-
         overlay._review_rectangle(QRect(80, 270, 640, 144))
-        timeout.stop()
+        self.assertIs(overlay._review, reviews[0])
+        self.assertTrue(reviews[0].isVisible())
+        save.assert_not_called()
+        overlay.close()
 
-        self.assertFalse(timed_out)
         self.assertTrue(reviews[0]._ocr_cancelled.is_set())
         self.assertFalse(reviews[0].runner.active)
         self.assertEqual(reviews[0].result(), QDialog.DialogCode.Rejected)
@@ -492,9 +586,7 @@ class DialogRegionOverlayTest(unittest.TestCase):
             save_region=save,
             capture_region=region,
             reviewer=Mock(
-                return_value=Mock(
-                    exec=Mock(return_value=CalibrationReviewDialog.DrawAgain)
-                )
+                return_value=_ReviewDecision(CalibrationReviewDialog.DrawAgain)
             ),
         )
         self.addCleanup(overlay.deleteLater)
@@ -548,12 +640,10 @@ class DialogRegionOverlayTest(unittest.TestCase):
         )
         crop_sizes = []
 
-        class Reviewer:
+        class Reviewer(_ReviewDecision):
             def __init__(self, image):
+                super().__init__(next(decisions))
                 crop_sizes.append(image.size)
-
-            def exec(self):
-                return next(decisions)
 
         with TemporaryDirectory() as temporary_directory:
             selected = []
@@ -597,12 +687,9 @@ class DialogRegionOverlayTest(unittest.TestCase):
             overlay.deleteLater()
 
     def test_review_cancel_closes_the_calibration_flow(self):
-        class Reviewer:
+        class Reviewer(_ReviewDecision):
             def __init__(self, _image):
-                pass
-
-            def exec(self):
-                return QDialog.DialogCode.Rejected
+                super().__init__(QDialog.DialogCode.Rejected)
 
         with TemporaryDirectory() as temporary_directory:
             overlay = DialogRegionOverlay(
@@ -626,12 +713,9 @@ class DialogRegionOverlayTest(unittest.TestCase):
             overlay.deleteLater()
 
     def test_region_save_failure_keeps_selection_visible_and_retryable(self):
-        class Reviewer:
+        class Reviewer(_ReviewDecision):
             def __init__(self, _image):
-                pass
-
-            def exec(self):
-                return QDialog.DialogCode.Accepted
+                super().__init__(QDialog.DialogCode.Accepted)
 
         overlay = DialogRegionOverlay(
             background=Image.new("RGB", (800, 450), "black"),

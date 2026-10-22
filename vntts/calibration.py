@@ -4,7 +4,6 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from threading import Event
-from typing import Protocol
 
 import mss
 from PIL import Image
@@ -13,6 +12,7 @@ from PySide6.QtCore import (
     QObject,
     QPoint,
     QRect,
+    QSignalBlocker,
     Qt,
     QThreadPool,
     QTimer,
@@ -21,23 +21,28 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
+    QHideEvent,
     QKeyEvent,
     QKeySequence,
     QMouseEvent,
     QPainter,
     QPaintEvent,
     QPen,
+    QResizeEvent,
+    QShowEvent,
 )
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
+    QFormLayout,
     QFrame,
     QLabel,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -55,12 +60,7 @@ from vntts.ocr import (
 from vntts.qt_images import pixmap_from_pil
 from vntts.window_capture import WindowGeometry
 
-
-class _CalibrationReviewer(Protocol):
-    def exec(self) -> int: ...
-
-
-ReviewerFactory = Callable[[Image.Image], _CalibrationReviewer]
+ReviewerFactory = Callable[[Image.Image], QDialog]
 CALIBRATION_OCR_TIMEOUT_SECONDS = 10.0
 _active_overlay: DialogRegionOverlay | None
 
@@ -316,7 +316,7 @@ class DialogRegionOverlay(QWidget):
             pixmap_from_pil(background) if background is not None else None
         )
         self.reviewer = reviewer or CalibrationReviewDialog
-        self._review: _CalibrationReviewer | None = None
+        self._review: QDialog | None = None
         self._closed = False
         self.save_region = save_region or self.persist
         self.capture_region = capture_region or get_dialog_region()
@@ -337,8 +337,110 @@ class DialogRegionOverlay(QWidget):
             "Select the whole dialogue box, including the speaker name and continue indicator, "
             "with room for every dialogue line. OCR finds the name and text automatically. "
             "Press Enter for a suggested region, use arrows to move it, Shift plus "
-            "arrows to resize it, and Enter again to review. Escape cancels."
+            "arrows to resize it, and Enter again to review. Escape cancels. "
+            "F2 opens exact pixel coordinates."
         )
+        self._create_bounds_editor()
+
+    def _create_bounds_editor(self) -> None:
+        self.bounds_editor = QWidget(
+            self, Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.bounds_editor.setWindowTitle("Dialogue region coordinates")
+        self.bounds_editor.setAccessibleName("Exact dialogue region bounds")
+        self.bounds_editor.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.bounds_editor.setAttribute(
+            Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow,
+            self.testAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow),
+        )
+        layout = QFormLayout(self.bounds_editor)
+        self.bounds_inputs: dict[str, QSpinBox] = {}
+        for name in ("Left", "Top", "Width", "Height"):
+            control = QSpinBox()
+            control.setAccessibleName(f"Dialogue region {name.lower()} in pixels")
+            control.setObjectName(f"calibration_bounds_{name.lower()}")
+            control.valueChanged.connect(self._bounds_changed)
+            self.bounds_inputs[name] = control
+            layout.addRow(f"{name} (pixels)", control)
+        review = QPushButton("Review region")
+        review.clicked.connect(self._review_bounds)
+        review.setShortcut(QKeySequence("Ctrl+Return"))
+        layout.addRow(review)
+        reset = QPushButton("Reset region")
+        reset.clicked.connect(self._reset_selection)
+        layout.addRow(reset)
+        cancel = QPushButton("Cancel calibration")
+        cancel.clicked.connect(self.close)
+        cancel.setShortcut(QKeySequence("Esc"))
+        layout.addRow(cancel)
+
+    def _sync_bounds_editor(self) -> None:
+        if self.origin is None or self.current is None:
+            capture = self.capture_region
+            rectangle = QRect(
+                round(capture.left * self.width()),
+                round(capture.top * self.height()),
+                max(20, round(capture.width * self.width())),
+                max(20, round(capture.height * self.height())),
+            ).intersected(self.rect())
+        else:
+            rectangle = (
+                QRect(self.origin, self.current).normalized().intersected(self.rect())
+            )
+        values = (
+            rectangle.left(),
+            rectangle.top(),
+            rectangle.width(),
+            rectangle.height(),
+        )
+        ranges = (
+            (0, max(0, self.width() - 20)),
+            (0, max(0, self.height() - 20)),
+            (20, max(20, self.width() - rectangle.left())),
+            (20, max(20, self.height() - rectangle.top())),
+        )
+        for control, value, limits in zip(
+            self.bounds_inputs.values(), values, ranges, strict=True
+        ):
+            with QSignalBlocker(control):
+                control.setRange(*limits)
+                control.setValue(value)
+
+    def _bounds_changed(self) -> None:
+        left, top, width, height = (
+            control.value() for control in self.bounds_inputs.values()
+        )
+        rectangle = QRect(
+            left, top, min(width, self.width() - left), min(height, self.height() - top)
+        )
+        self.origin, self.current = rectangle.topLeft(), rectangle.bottomRight()
+        self._sync_bounds_editor()
+        self.update()
+
+    def _reset_selection(self) -> None:
+        self.origin = None
+        self.current = None
+        self.save_error = None
+        self._sync_bounds_editor()
+        self.update()
+
+    def _review_bounds(self) -> None:
+        self._bounds_changed()
+        assert self.origin is not None and self.current is not None
+        self._review_rectangle(QRect(self.origin, self.current))
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        self._sync_bounds_editor()
+        self.bounds_editor.show()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._sync_bounds_editor()
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        self.bounds_editor.hide()
+        super().hideEvent(event)
 
     def persist(self, region: DialogRegion) -> None:
         save_dialog_region(region, self.output)
@@ -348,11 +450,13 @@ class DialogRegionOverlay(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self.origin = event.position().toPoint()
             self.current = self.origin
+            self._sync_bounds_editor()
             self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self.origin is not None:
             self.current = event.position().toPoint()
+            self._sync_bounds_editor()
             self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
@@ -379,24 +483,37 @@ class DialogRegionOverlay(QWidget):
         )
 
     def _review_rectangle(self, rectangle: QRect) -> None:
-        if self._closed:
+        if self._closed or self._review is not None:
             return
         try:
             region = self._region_from_rectangle(rectangle)
             if self.background is None:
-                # Keeps the overlay directly usable in tests and by callers that
-                # deliberately opt out of the frozen preview workflow.
-                result: int = QDialog.DialogCode.Accepted
-            else:
-                crop = region.crop(self.background)
-                self.hide()
-                self._review = self.reviewer(crop)
-                result = self._review.exec()
+                self._save_selection(region)
+                return
+            crop = region.crop(self.background)
+            self.hide()
+            review = self.reviewer(crop)
+            review.setParent(self, review.windowFlags())
+            self._review = review
+            review.finished.connect(
+                lambda result, source=review, selected=region: self._complete_review(
+                    source, selected, result
+                )
+            )
+            review.open()
         except Exception as error:
-            self._selection_failed(f"Unable to review the dialogue area: {error}")
-            return
-        finally:
+            failed_review = self._review
             self._review = None
+            if failed_review is not None:
+                failed_review.reject()
+            self._selection_failed(f"Unable to review the dialogue area: {error}")
+
+    def _complete_review(
+        self, source: QDialog, region: DialogRegion, result: int
+    ) -> None:
+        if self._review is not source:
+            return
+        self._review = None
         if self._closed:
             return
         if result == QDialog.DialogCode.Accepted:
@@ -408,10 +525,7 @@ class DialogRegionOverlay(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
-        self.origin = None
-        self.current = None
-        self.save_error = None
-        self.update()
+        self._reset_selection()
 
     def _save_selection(self, region: DialogRegion) -> None:
         if self._closed:
@@ -447,6 +561,7 @@ class DialogRegionOverlay(QWidget):
         ).intersected(self.rect())
         self.origin = rectangle.topLeft()
         self.current = rectangle.bottomRight()
+        self._sync_bounds_editor()
         self.update()
 
     def _adjust_keyboard_region(
@@ -493,9 +608,17 @@ class DialogRegionOverlay(QWidget):
                 rectangle.moveBottom(self.height() - 1)
         self.origin = rectangle.topLeft()
         self.current = rectangle.bottomRight()
+        self._sync_bounds_editor()
         self.update()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_F2:
+            self._sync_bounds_editor()
+            self.bounds_editor.show()
+            self.bounds_editor.raise_()
+            self.bounds_editor.activateWindow()
+            self.bounds_inputs["Left"].setFocus()
+            return
         if event.key() == Qt.Key.Key_Escape:
             self.close()
             return
@@ -514,10 +637,7 @@ class DialogRegionOverlay(QWidget):
             self._adjust_keyboard_region(Qt.Key(event.key()), event.modifiers())
             return
         if event.key() == Qt.Key.Key_R:
-            self.origin = None
-            self.current = None
-            self.save_error = None
-            self.update()
+            self._reset_selection()
             return
         super().keyPressEvent(event)
 
@@ -586,7 +706,7 @@ class DialogRegionOverlay(QWidget):
                 if selected
                 else "Drag to select, or Enter suggests an area. "
             )
-            + "Arrows move; Shift + arrows resize; R starts again; Esc cancels."
+            + "Arrows move; Shift + arrows resize; F2 edits exact coordinates; R starts again; Esc cancels."
         )
 
 

@@ -35,7 +35,7 @@ class OCRRecognizer(Protocol):
 
 
 class RapidOCREngine(Protocol):
-    def __call__(self, image: NDArray[np.uint8], *, use_cls: bool) -> object: ...
+    def __call__(self, image: NDArray[np.uint8], /, *, use_cls: bool) -> object: ...
 
 
 class OCRBackend(Protocol):

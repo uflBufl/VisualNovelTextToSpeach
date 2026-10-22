@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable, Mapping
-from contextlib import ExitStack
+from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -1459,7 +1459,11 @@ class DiagnosticsComponent:
             else snapshot
         )
 
-    def test_current_dialog(self) -> tuple[str, str]:
+    def test_current_dialog(
+        self,
+        *,
+        capture_context: Callable[[], AbstractContextManager[None]] | None = None,
+    ) -> tuple[str, str]:
         controller = self.controller
         if not controller.is_ready:
             raise RuntimeError("The speech engine is not ready")
@@ -1478,6 +1482,7 @@ class DiagnosticsComponent:
             region=controller._capture_region(),
             ocr_regions=controller._capture_ocr_regions(),
             result_resolver=controller._resolve_story_ocr_result,
+            capture_context=capture_context,
         )
         if result.text and not result.is_confident(
             controller.settings.ocr_minimum_confidence

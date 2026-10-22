@@ -3,13 +3,14 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
-from threading import TIMEOUT_MAX, Condition, Event, RLock, Timer
+from functools import partial
+from threading import TIMEOUT_MAX, Condition, Event, Lock, RLock, Timer
 from time import monotonic
 from typing import Literal, ParamSpec, Protocol, TypeAlias, TypeVar
 from uuid import uuid4
 
 from vntts.audio_lifecycle import audio_lifecycle_context
-from vntts.cleanup import cleanup_on_exit
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.live_tracking import IncrementalDialogTracker, SpeechChunk
 from vntts.live_tracking import TrackerProbe as TrackerProbe
 from vntts.live_tracking import TrackerResolver as TrackerResolver
@@ -172,6 +173,21 @@ def _positive_count(value: object, name: str) -> int:
 def _recheck_interval_milliseconds(seconds: float) -> int | None:
     milliseconds = optional_finite_number(seconds * 1000)
     return round(milliseconds) if milliseconds is not None else None
+
+
+def _drain_reported_worker(
+    future: Future[object], wait_for: Callable[[Future[object]], None]
+) -> None:
+    if future.cancelled():
+        return
+    try:
+        wait_for(future)
+    except FutureTimeoutError as error:
+        if not future.done() or future.cancelled() or future.exception() is not error:
+            raise
+    except Exception:
+        # Failure was reported by the worker; still drain its paired worker.
+        pass
 
 
 class AdaptiveSpeechBackpressure:
@@ -517,6 +533,7 @@ class LiveDialogReader:
 
     def _initialize_worker_state(self, shutdown_requested: Event | None) -> None:
         self.state_lock = RLock()
+        self.start_lock = Lock()
         self.pause_condition = Condition(self.state_lock)
         self.stop_event = Event()
         self.shutdown_requested = shutdown_requested or Event()
@@ -552,6 +569,14 @@ class LiveDialogReader:
             }
 
     def start(self) -> bool:
+        if not self.start_lock.acquire(blocking=False):
+            return False
+        try:
+            return self._start_capture()
+        finally:
+            self.start_lock.release()
+
+    def _start_capture(self) -> bool:
         with self.state_lock:
             if self.is_shutting_down:
                 return False
@@ -605,16 +630,36 @@ class LiveDialogReader:
         """Signal the paired workers on partial submission; retain them for wait."""
         try:
             self.ocr_future = self.ocr_executor.submit(
+                self._run_capture_worker,
                 self._run_ocr,
                 self.stop_event,
             )
             self.capture_future = self.capture_executor.submit(
+                self._run_capture_worker,
                 self._run_capture,
                 self.stop_event,
             )
         except BaseException:
             self.stop_event.set()
             self.pause_condition.notify_all()
+            raise
+
+    def _run_capture_worker(
+        self, worker: Callable[[Event], None], stop_event: Event
+    ) -> None:
+        try:
+            worker(stop_event)
+        except BaseException as error:
+            # Setup failures happen outside the workers' per-frame error handlers.
+            with self.pause_condition:
+                stop_event.set()
+                self.pause_condition.notify_all()
+            if isinstance(error, Exception):
+                attempt_cleanup(
+                    partial(self.report_error, error),
+                    description="Reading worker failure reporting",
+                    primary_error=error,
+                )
             raise
 
     def stop(self) -> bool:
@@ -950,10 +995,9 @@ class LiveDialogReader:
         with self.state_lock:
             capture_future = self.capture_future
             ocr_future = self.ocr_future
-        if capture_future is not None:
-            wait_for(capture_future)
-        if ocr_future is not None:
-            wait_for(ocr_future)
+        for worker_future in (capture_future, ocr_future):
+            if worker_future is not None:
+                _drain_reported_worker(worker_future, wait_for)
         if not include_speech:
             return
         while True:

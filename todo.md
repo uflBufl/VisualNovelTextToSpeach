@@ -2,13 +2,14 @@
 
 ## Current scope and execution order
 
-Target: Windows Reading with a heavy offline model's already generated recordings,
-a distinct saved voice for each character, and routing **original game voice ->
-prepared recording -> live fallback**. Start a known prepared line during typing
-as soon as fresh, sufficient evidence identifies its occurrence; the first glyph
-can be sufficient only for an owned, deterministic successor, never arbitrary text.
-The Mac stage314001 experiment had only two prepared WAVs and mostly Pocket/Alba
-fallback: it diagnoses product defects, not Windows/per-character acceptance.
+Target: finish the Mac Reading follow-up by fixing every defect found in the prior
+Mac screenshot/video/live trial, then repeat the Mac run with real per-character
+heavy-voice preparation. Exercise **original game voice -> prepared recording ->
+live fallback** while chapter generation is active in the background. Start a
+known prepared line during typing as soon as fresh, sufficient evidence identifies
+its occurrence; the first glyph can be sufficient only for an owned, deterministic
+successor, never arbitrary text. Windows acceptance remains a separate future
+platform gate and does not block completion of this Mac work.
 
 **Ready** means implement in the shared product owner with caller/UI/test coverage;
 **Investigate** means obtain the missing causal evidence before choosing a repair;
@@ -19,18 +20,21 @@ matching, weakened admission, extra key presses or larger timeouts.
 
 Execution dependencies:
 
-1. Finish the T1-T4 real-host capture/evidence gates; reproduce R1 with
-   OCR-worker health and thread stacks captured before recovery. These changes must not
-   delay Stop or record new dialogue/audio in ordinary support logs.
-2. Investigate R1/R4/R6 and qualify R2/R3/R5/R7/R8; fix U1-U4 before calibration
-   acceptance. R4's exporter contract must be verified before enabling automatic
-   traversal of affected locale replacements; R5 remains usable for manual recovery.
-3. Investigate S20.4 with fresh correlated timings and qualify S20.6 window
-   recovery. Preserve upstream Settings/selection/original-audition fixes;
-   their remaining Windows checks below are qualification, not duplicate repairs.
-4. Run W1 with generation finished, then W2 with actual heavy generation active.
-   Preparation/finalization, Windows device-quiescence and existing chapter-specific
-   gates below remain prerequisites where applicable. Passing W1 does not pass W2.
+1. Activate/qualify the safe MCP bridge (T3) and unobscured setup/exact-region
+   controls on the native Mac (U1/U4).
+2. Capture bounded diagnostic evidence for the remaining unknown R1/R6/U2 causes
+   before selecting further repairs. Preserve bounded Stop, privacy-safe logs and
+   original -> prepared -> live route priority. Do not treat an independent worker
+   setup failure as proof of the historical OCR-stall cause.
+3. Regenerate and admit the actual source-backed chapter/voice pack (R4), then
+   qualify game/application audio correlation and provenance (T1/T2/T4). A
+   structural-only index/plan is not a voiced or source-authorized playback pack.
+4. Run two Mac scenarios: M0 repeats the live-fallback baseline; M1 reads prepared
+   per-character recordings while real heavy chapter generation, publication and
+   reader catch-up continue. M1 includes all prepared-playback correctness and
+   latency checks; a separate generation-idle prepared run is not required.
+   Preserve timing, gaps, continuation/OCR, Stop and provenance evidence. Windows
+   platform qualification remains deferred and must not gate this Mac suite.
 
 ## P0 - Repair Reading ownership, OCR and continuation
 
@@ -47,13 +51,13 @@ callers and focused regressions together when changing these contracts.
 
 - [ ] **R1 - Investigate the capture-only stall using independent OCR-worker health.**
       After accepted frame2676 at monotonic148117.451, OCR/gate events stop for
-      over 100s while capture continues; `LiveDialogReader.is_running` checks only
-      `capture_future`. Use recorded OCR future state/error type and stage-progress
-      age, then capture thread stacks before Stop; identify the blocked callback or exit before
-      implementing recovery. Gate: a dead/stalled OCR worker cannot present healthy
-      Reading indefinitely, failure/retry is actionable, Stop remains bounded,
+      over 100s while capture continues. Use recorded OCR future state/error type
+      and stage-progress age, then capture thread stacks before Stop; identify the
+      blocked callback or exit before implementing recovery. Gate: a dead/stalled
+      OCR worker cannot present healthy Reading indefinitely, failure/retry is
+      actionable, Stop remains bounded,
       and recovery cannot create a second worker or replay a claimed occurrence.
-- [ ] **R2 - Validate completed-text freshness on Windows.** Use completed left-edge
+- [ ] **R2 - Validate completed-text freshness on Mac.** Use completed left-edge
       `Ouch!`, absent names, changing brightness, animated cues and 1-2px auto-ROI
       translation/size changes with capture faster than OCR. Require prompt current
       recognition while real replacement, changed name, new punctuation/typewriter
@@ -61,7 +65,7 @@ callers and focused regressions together when changing these contracts.
       showing whether real antialiasing changes conservatively need another OCR pass.
       R1's later capture-only stall remains a separate unknown cause.
 
-- [ ] **R3 - Validate owned early prepared-successor playback on Windows.** Use a
+- [ ] **R3 - Validate owned early prepared-successor playback on Mac.** Use a
       fully admitted per-character recording and an authorized deterministic key
       transition, including an uncertain old narrator frame before the first valid
       prefix. Require one correct WAV start during typing and no new synthesis;
@@ -70,17 +74,15 @@ callers and focused regressions together when changing these contracts.
       manual boundaries. Uncertain frames cannot authorize speech; ordinary
       non-sequence prefixes still need unique sufficient evidence.
 
-- [ ] **R4 - Investigate: export the actual localized story control flow.**
-      The game displays 24->111; raw 25 is Chinese-only/type0 and appended 111 has the
-      same Chinese plus the displayed 143-character English/type1. The bound plan
-      instead uses numeric24->25(passive)->26; canonical 111 is present, not missing.
-      In `reverse1999-extractor`, trace locale replacement/insertion rules and
-      verify 111's outgoing edge before implementing a general exporter repair.
-      Gate: source-backed fixtures retain canonical identities, checksums, choices
-      and manual boundaries; republished index/plan follows observed order and the
-      VNTTS consumer rejects incompatible authority. Coordinate the extractor
-      release/pin explicitly; do not hardcode24->111->26 or widen lookahead.
-- [ ] **R5 - Validate explicit indexed-current recovery on Windows.** For an exact,
+- [ ] **R4 - Regenerate the actual compatible chapter/voice pack.** Use the pinned
+      extractor's graph order to build a fresh index, sequence plan, semantic source
+      authority and per-character generated manifest as one admitted set. Verify
+      24->25(hidden)->111->26 with stable game IDs, checksums, choices and manual
+      boundaries, and next-after111 lookahead of26. A structural-only installed-game
+      smoke does not qualify source audio or prepared recordings. Gate: the real
+      playback pack is admitted and UI readiness/coverage matches its immutable
+      inputs; incompatible old authorities remain rejected.
+- [ ] **R5 - Validate explicit indexed-current recovery on Mac.** For an exact,
       unique indexed line outside the expected graph, use Read indexed current line
       from Reading, compact controls and keyboard/tray without advanced settings.
       Confirm configured original -> prepared -> live priority, one explicit
@@ -96,34 +98,32 @@ callers and focused regressions together when changing these contracts.
       duration; retain partial-source lead and focus/visual guards. Gate: a known
       already-ended original does not restart its whole duration, active source
       speech is never cut off, and unknown timing cannot be declared measured.
-- [ ] **R7 - Validate shared Read once lifecycle on Windows.** Natural finish,
+- [ ] **R7 - Validate shared Read once lifecycle on Mac.** Natural finish,
       failure, Stop, cancel and recovery must clear Speaking/Stop in Reading,
       compact and tray controls. A displayed Stop and direct controller toggle must
       never start another read; late OCR/playback cannot overwrite a newer read.
       Retry Settings after a stop timeout while speech or cancelled OCR still drains;
       it must wait without opening/applying early or restarting capture.
 
-- [ ] **R8 - Validate transition/typing status with fresh Windows run IDs.** For
+- [ ] **R8 - Validate transition/typing status with fresh Mac run IDs.** For
       long successor typing, require ongoing typing or recognition wait instead of
       an ignored-key error. An unchanged new frame with unavailable OCR must reach
       an actionable unavailable status; harmless old-frame jitter must not prove
       a transition. Confirmation must resume without duplicate audio or another
-      key after a timeout. Reproduce historical Windows stalls before attributing
-      them to the Mac typing case.
+      key after a timeout. Keep historical Windows stalls as separate deferred
+      platform qualification.
 
 ## P0 - Make capture setup trustworthy and operable
 
-- [ ] **U1 - Investigate: test the unobscured game and the selected Reading route.**
-      Setup reported Success on truncated text while its window overlapped the game;
-      calibration had read the complete line. Compare actual test/calibration crops:
-      if overlays enter capture, exclude them or hide/restore VNTTS windows through
-      the capture lifecycle, including errors/cancel; otherwise trace the truncation
-      through the shared OCR/test path instead of assuming occlusion is the cause.
-      Label OCR/live preview separately from a real configured hybrid-route test.
-      Gate: full recognized text/speaker and selected source are inspectable; a
-      truncated/occluded test cannot qualify setup, and restoring windows never
-      steals game focus or starts continuous Reading.
-- [ ] **U2 - Investigate: calibrate dialogue, narrator and cue as separate evidence.**
+- [ ] **U1 - Validate unobscured setup capture on the native Mac.** Compare the
+      actual test/calibration crops with setup overlapping the game. Confirm setup
+      windows disappear only while pixels are acquired, return before OCR/playback,
+      and Cancel remains usable during model preparation/playback. Exercise capture
+      failure, cancellation, close and retry; restoration must not steal game focus,
+      reopen a closed wizard or start continuous Reading. Inspect/copy the complete
+      recognized text/speaker and retain the saved auto-advance opt-out. The setup
+      test qualifies OCR/live preview; M1 qualifies the configured hybrid route.
+- [ ] **U2 - Investigate: calibrate dialogue, narrator and cue as separate evidence on Mac.**
       The default bottom 32% crop misreads dialogue as a speaker (50.2%/44%); a tighter
       crop reads full dialogue 95.6% but invents an unreadable narrator name. Diagnose
       the stage314001:6 narrator scene through the existing adaptive-crop and
@@ -131,24 +131,18 @@ callers and focused regressions together when changing these contracts.
       reproducible fixture builder; a local screenshot must not be required.
       Gate: narrator scenes, named speech, short/punctuation-only/1-4-line text,
       scenery behind absent names, faint/unanchored/clipped labels and full continue
-      cues pass held-out Windows captures without lowering confidence or clipping
+      cues pass held-out Mac captures without lowering confidence or clipping
       text. Qualify local-background-check and fast RapidOCR latency tails before
       any backend switch; development controls alone do not establish general accuracy.
-- [ ] **U3 - Investigate: preserve saved auto-advance intent in Reading setup.**
-      Saved `auto_advance_enabled=false` appeared checked on the first page. Trace
-      first-run defaults versus persisted state before changing behavior. Gate:
-      reopen/retry/cancel retain saved intent and testing never enables automation
-      without an explicit user choice.
-- [ ] **U4 - Ready: make region selection usable without pointer-only gestures.**
-      Provide/reuse keyboard-accessible region bounds and review of dialogue/name/
-      cue areas, including multiline space. Gate: keyboard/MCP users can set and
-      inspect the exact region with enlarged text. The current MCP cannot drag and
-      treats modifier strings as literal text; fix/use supported tooling separately,
-      not OS event injection or a calibration-only product bypass.
+- [ ] **U4 - Validate exact region controls on the native Mac.** Use keyboard/MCP
+      to set Left/Top/Width/Height, inspect multiline dialogue/name/cue coverage and
+      review/save/cancel/retry at enlarged text. Confirm the nonmodal coordinate
+      panel remains reachable, values match drag/keyboard movement, stale review
+      callbacks cannot save another selection, and closing review cancels its OCR.
 
 ## P0 - Establish trustworthy latency evidence
 
-- [ ] **T1 - Validate timing provenance and overhead on Windows.** Retain correlated
+- [ ] **T1 - Validate timing provenance and overhead on Mac.** Retain correlated
       run/occurrence/playback/capture IDs through Stop/Start, identical lines,
       retries, failures, source leads and intentional pauses. Compare the measured
       first successful PCM-write return and software completion against independent
@@ -160,19 +154,16 @@ callers and focused regressions together when changing these contracts.
       and restart, including OCR-free visual successors. Measure capture/support-log
       overhead and Stop latency; ordinary logs must retain no pixels/dialogue.
 
-- [ ] **T2 - Investigate and repair before W1: keep native video recording alive.**
-      All 13 Mac live-run MOVs stopped after four frames despite later dialogue
-      changes; a preliminary check had the same four-frame result. Diagnose the
-      native stream/output lifetime and failure path before choosing the repair;
-      make recorder source, setup and a changing-scene reproduction available in
-      tracked tooling. Fix the recorder itself, not the analysis or a frame-count
-      limit. Gate: decoded video includes scene/text changes near the beginning,
-      middle and end of a bounded run lasting at least 60s, with monotonic timestamps
+- [ ] **T2 - Validate the native recorder with game and application audio on Mac.**
+      Use the tracked `scripts/mac_live_recording` recipe with explicit selected
+      game window/PID and VNTTS PID. Gate: decoded video includes scene/text changes
+      near the beginning, middle and end of a bounded run lasting at least 60s,
+      with monotonic timestamps
       aligned to separate game/app audio, visible drop/queue accounting and bounded
       Stop/cleanup. An idle scene must not be confused with a dead stream; a stalled
       or failed stream must produce an explicit incomplete/failed result, including
       native delegate errors, rather than Success from cleanup markers. Repeat
-      acceptance with a supported Windows recorder before W1. Digital recording is
+      acceptance in the Mac replay suite. Digital recording is
       not physical DAC/acoustic latency; do not claim 30fps precision without the
       corresponding verified frames. Keep overhead and missing intervals visible.
 - [ ] **T3 - Activate and qualify the screenshot-safe MCP tool.**
@@ -184,67 +175,68 @@ callers and focused regressions together when changing these contracts.
       errors without any other target, and successful PNG responses carry matching
       capture metadata. Reacquire process-specific IDs after restart; do not use
       implicit screenshots or desktop capture to validate activation.
-- [ ] **T4 - Validate product capture provenance; add native-video provenance with T2.**
-      On Windows, confirm saved PNG/sidecar, diagnostics and Reading timelines agree
+- [ ] **T4 - Validate Mac product, MCP and video capture provenance.**
+      Confirm saved PNG/sidecar, diagnostics and Reading timelines agree
       on capture ID, separate run ID, selected window ID/title/PID, bounds, dimensions,
       monotonic time, method/scope and outcome. MSS window-coordinate captures are
       desktop rectangles and may contain overlaps. Close/minimize/move/resize/reopen
       the selected window and confirm failures and new target identities remain
-      explicit; never enumerate unrelated titles or log pixels/dialogue. Add the
-      same target-change/frame-time contract to the tracked native recorder when
-      implementing T2; product screenshot metadata does not qualify video or MCP.
+      explicit; never enumerate unrelated titles or log pixels/dialogue. Validate
+      native-video target/frame timestamps and MCP contract1 independently;
+      product screenshot metadata does not qualify video or MCP.
 
-## P0 - Qualify the requested Windows prepared-voice workflow
+## P0 - Repeat the Mac prepared-voice workflow
 
-- [ ] **W1 - Validate after Reading fixes: fully prepared heavy character voices.**
-      On the user's Windows game/model hardware, finish preparation of a selected
-      chapter with the intended heavy offline model and saved distinct character
-      voices (record exact model/runtime/revision, voice bindings, asset hashes and
-      device). Admit the matching index, semantic source authority, sequence plan
-      and generated manifest as one compatible set; verify readiness/coverage in UI.
-      Run original, prepared and deliberate missing/failed-audio fallback cases,
-      not Pocket/Alba as a substitute for the prepared route. With generation idle,
-      compare cold start/reopen and consecutive linear segments: safe early prefix,
-      same-speaker/changed-speaker, common-prefix/short/narrator lines, source partials,
-      manual boundaries, re-anchor, pause/focus loss and mid-speech Stop/restart.
-      Gate: correct per-character recordings, original->prepared->live priority,
-      zero wrong/duplicate/skipped/truncated starts or stuck transitions; known WAVs
-      start during typing once safely identified instead of waiting 10-13s for full
-      text. Prepared hits must not invoke synthesis. Use R3 for early ownership and
-      the stage314501 sequence-plan acceptance below for the historical Windows case.
-      Report per occurrence first glyph / first sufficient prefix / full text ->
-      recorded speech, source end -> key -> next glyph/speech, within-line gaps,
-      OCR rejection tails and route/fallback reasons, with bounds and unfinished
-      lines included. Split cold/warm and routes; compare median/p95/max and faults.
-      Provisional investigation triggers: safe prefix->speech>500ms (serious>1s),
-      excess after full text>300ms, avoidable internal gap>200ms, eligible auto-key
-      excess over configured delay>300ms. Explain actor pauses/source silence and
-      gate waits before calling them regressions; these are UX targets, not standards.
-- [ ] **W2 - Investigate then validate: read while heavy chapter generation continues.**
-      First verify the coordinator's contract for essential chapter generation versus
-      speculative audition: cancelling speculative previews for Reading must not
-      silently cancel the user's chapter job. If concurrent heavy work cannot fit,
-      design explicit bounded scheduling/backpressure and truthful pause/wait states
-      in the product; no second uncoordinated model worker or forced thread count.
-      Then repeat W1 with generation actually rendering, starting from partially
-      prepared chapters, crossing ready/newly published boundaries and catching up
-      to the generator. Verify the documented missing/not-ready/failed route and
-      voice policy, wait/retry without polling storms, atomic admitted publication,
-      no partial WAV reads, and stable identity for an already playing occurrence.
-      Include generation cancel/retry, Reading Stop, app restart/resume, changed
-      voice/settings with deferred activation, device loss, and Settings/calibration
-      while preparation continues; completed lines/stages must not regenerate.
-      Gate: W1 correctness holds, reading/playback/Stop/UI retain bounded service,
-      generation keeps measurable progress or an explicit resource wait, and the
-      final validated pack matches uninterrupted preparation. Record game+model
-      CPU/GPU/VRAM/RAM/disk, queue pressure, underflows and W1-vs-W2 latency on the
-      actual Windows GPU; GPU configuration alone is not utilization evidence.
+- [ ] **M0 - Repeat the Mac live-fallback baseline after repairs.** Reproduce the
+      stage314001 setup and original-first hybrid policy with baseline coverage, then
+      run all repaired Reading, capture, setup and provenance gates. Record
+      model/runtime, voice bindings, asset hashes and device; confirm original ->
+      prepared -> live priority, timing from first glyph/sufficient prefix/full text
+      to speech, source end -> key -> next glyph/speech, gaps, continuation/OCR,
+      Stop, route/fallback reasons and explicit provenance gaps. Retain bounded-run
+      video longer than four frames with scene and text changes. This is the live
+      fallback control for M1.
+- [ ] **M1 - Read prepared character recordings while heavy chapter generation continues.**
+      On the Mac game/model setup, use the intended heavy offline model and
+      distinct saved character voices. Admit the matching index, semantic source
+      authority, sequence plan and generated manifest as one compatible set;
+      verify readiness/coverage in UI. Include cold start/reopen, safe early
+      prefix, same/changed speaker, common-prefix/short/narrator lines, source
+      partials, manual boundaries, re-anchor and pause/focus loss. Require correct
+      per-character recordings and original -> prepared -> live priority, with no
+      wrong/duplicate/skipped/truncated starts or stuck transitions. Known WAVs
+      should start during typing once safely identified; prepared hits must not
+      synthesize. Report per-occurrence first glyph / first sufficient prefix /
+      full text -> speech, OCR rejection tails, gaps, route reasons, bounds and
+      unfinished lines. Split cold/warm and routes; compare median/p95/max and
+      faults. Treat 500ms safe-prefix latency (serious at 1s), 300ms excess after
+      full text, 200ms avoidable gaps and 300ms auto-key excess as investigation
+      triggers, accounting for actor pauses, source silence and gate waits.
+      These are UX targets; no separate generation-idle prepared run is required.
+      Verify essential chapter generation is distinct from speculative audition;
+      cancelling previews for Reading must not cancel the chapter job. If concurrent
+      work cannot fit, use explicit bounded scheduling/backpressure and truthful
+      pause/wait states; no uncoordinated second model worker or forced thread count.
+      Start from a partially prepared chapter with real heavy generation rendering;
+      cross ready/newly published boundaries and catch up to the generator under
+      contention. Verify missing/not-ready/failed route and voice policy, wait/retry
+      without polling storms, atomic admitted publication, no partial WAV reads and
+      stable identity for a playing occurrence. Include generation cancel/retry,
+      Reading Stop, app restart/resume, changed voice/settings with deferred
+      activation, device loss, and Settings/calibration while preparation continues;
+      completed lines/stages must not regenerate. Require bounded
+      reading/playback/Stop/UI service, measurable generation progress or an explicit
+      resource wait, and a final pack matching uninterrupted preparation. Record
+      game+model CPU/GPU/VRAM/RAM/disk, queue pressure, underflows and playback latency
+      on actual Mac hardware; GPU configuration alone is not utilization evidence.
+      Include keyboard/screen-reader status and minimum-width/enlarged-text layout.
+      Stage314501 and other Windows hardware/platform checks remain deferred.
 
-## Support archive (20): current code defects and diagnostic gaps
+## Deferred - Windows support archive (20): defects and diagnostic gaps
 
 Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, Windows build `4bad9c73`; code paths rechecked on `1f4caa46`. Times below are archive UTC. Keep the already-fixed Settings/selection/original-playback delays separate from these remaining items.
 
-- [ ] **S20.4 - Investigate on Windows: account for remaining voice-plan wall time before choosing a broader fix.** The historical `_create_voice_plan` took 408.915 s: candidate preparation 40.576 s and `voice-plan-store` 368.334 s; about 308.962 s of the latter was not attributed by the retained spans. Capture fresh cold and warm runs with the actual Windows/model workload using correlated `operation_id` timings for settings context, grouping, routing, reference qualification, applying choices, persistence, audition cache admission, queue wait, model startup, render, preview quality and ASR advice. Compare disjoint phases with the inclusive total; do not add inclusive parent and child durations. Inspect cache hit/miss, registry-build, reference-read and reference-preflight counters, and retain any unexplained gap explicitly. Identify the measured dominant work before choosing further reuse/deferment; preserve quality, admitted bytes, explicit choices and responsiveness. Fixture improvements do not diagnose the historical 309 s or qualify Windows, large-pack finalization, GPU headroom, W1 or W2.
+- [ ] **S20.4 - Investigate on Windows: account for remaining voice-plan wall time before choosing a broader fix.** The historical `_create_voice_plan` took 408.915 s: candidate preparation 40.576 s and `voice-plan-store` 368.334 s; about 308.962 s of the latter was not attributed by the retained spans. Capture fresh cold and warm runs with the actual Windows/model workload using correlated `operation_id` timings for settings context, grouping, routing, reference qualification, applying choices, persistence, audition cache admission, queue wait, model startup, render, preview quality and ASR advice. Compare disjoint phases with the inclusive total; do not add inclusive parent and child durations. Inspect cache hit/miss, registry-build, reference-read and reference-preflight counters, and retain any unexplained gap explicitly. Identify the measured dominant work before choosing further reuse/deferment; preserve quality, admitted bytes, explicit choices and responsiveness. Fixture improvements do not diagnose the historical 309 s or qualify deferred Windows acceptance, large-pack finalization or GPU headroom.
 
 - [ ] **S20.6 - Validate selected-window disappearance/recovery on Windows.** Close,
       minimize and reopen the selected game window during Reading. Require a
@@ -489,7 +481,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       before claiming its double reading is fixed.
       Check that cancelling the one-time model
       download takes effect after its current file and never blocks a retry.
-- [ ] **Validate sequence-led prepared playback on Windows as part of W1:** safe linear stages
+- [ ] **Deferred Windows qualification - sequence-led prepared playback:** safe linear stages
       now acquire a checksum-bound raw-step plan in the background; runtime and
       published packs use audio-auto only with the plan and enabled auto-advance.
       Branches, gaps, missing bundles and incomplete cumulative coverage fall
@@ -933,9 +925,9 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       Retain runtime cancellation/timing logs and audible playback evidence;
       coordinator regression tests use a controlled renderer, not the real model.
 
-W2 owns the concurrent chapter-generation acceptance, including deferred activation,
-restart and completed-line reuse. Include keyboard/screen-reader status and
-minimum-width/enlarged-text layout in that run; retain macOS platform coverage too.
+M1 owns concurrent chapter-generation acceptance, including deferred activation,
+restart and completed-line reuse, on Mac. Windows platform acceptance remains a
+separate future gate.
 
 ## Investigate intermittent macOS Qt test crash
 
@@ -952,14 +944,6 @@ minimum-width/enlarged-text layout in that run; retain macOS platform coverage t
 ## Investigate calibration OCR test startup after full discovery
 
 - [ ] Reproduce/bisect the full remainder prefix preceding `tests.test_calibration.DialogRegionOverlayTest.test_cancelled_review_releases_stalled_ocr_subprocess`: one October 6 full run timed out before the fixture start marker, while the isolated case and all17 calibration tests passed. Record the current full-discovery order and capture worker/Qt/subprocess state before changing timeout or cancellation; the historical private log is not a prerequisite.
-
-## Restore the existing UI complexity gate
-
-- [ ] Reduce the nine Ruff complexity findings already reproduced on `origin/main` at
-      `45034b8f`: catalog screenshot/asset-manager helpers, the history keyboard test,
-      diagnostics body/constructor, and history/profile constructors. Run
-      `uv run python scripts/check_ruff_complexity.py`; preserve behavior and lower
-      stale allowances after refactoring, without raising limits to hide increases.
 
 ## Active - Continue cleanup ownership expansion
 

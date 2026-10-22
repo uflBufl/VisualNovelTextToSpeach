@@ -197,9 +197,7 @@ class ConfigurationPage(QWizardPage):
         )
         self.game_pack_help.setWordWrap(True)
         self.auto_advance = QCheckBox("Automatically advance after speech")
-        self.auto_advance.setChecked(
-            settings.auto_advance_enabled if settings.onboarding_completed else True
-        )
+        self.auto_advance.setChecked(settings.auto_advance_enabled)
         advance_key = settings.auto_advance_key.replace("-", " ").title()
         self.auto_advance_notice = QLabel(
             f"VNTTS automatically sends the {advance_key} key to the focused game "
@@ -1394,7 +1392,9 @@ class EndToEndTestPage(QWizardPage):
         self.setTitle("Test OCR and speech")
         instructions = QLabel(
             "Keep dialogue visible in the calibrated area. The first test may "
-            "download and load the speech model, then read the detected line aloud."
+            "download and load the speech model, then read the detected line aloud. "
+            "This test uses the selected live speech engine. Original game voices "
+            "and prepared recordings are verified during Reading."
         )
         instructions.setWordWrap(True)
         self.button = QPushButton("Run OCR-to-speech test")

@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from functools import partial
@@ -887,8 +888,12 @@ class AppController:
     ) -> DiagnosticSnapshot:
         return self._publish_diagnostic(snapshot, notify=False)
 
-    def test_current_dialog(self) -> tuple[str, str]:
-        return self.diagnostics.test_current_dialog()
+    def test_current_dialog(
+        self,
+        *,
+        capture_context: Callable[[], AbstractContextManager[None]] | None = None,
+    ) -> tuple[str, str]:
+        return self.diagnostics.test_current_dialog(capture_context=capture_context)
 
     def _resolve_initial_live_sequence_line(
         self, character: str, text: str

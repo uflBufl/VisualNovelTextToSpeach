@@ -95,6 +95,7 @@ class ControllerComponentsTest(unittest.TestCase):
         controller.stop_live()
         controller.assign_voice("A", "voice")
         controller.inspect_current_dialog(notify=False)
+        controller.test_current_dialog()
 
         controller.runtime_lifecycle.start.assert_called_once_with()
         controller.runtime_lifecycle.apply_settings.assert_called_once_with(
@@ -114,6 +115,9 @@ class ControllerComponentsTest(unittest.TestCase):
         )
         controller.diagnostics.inspect_current_dialog.assert_called_once_with(
             notify=False, publish=True
+        )
+        controller.diagnostics.test_current_dialog.assert_called_once_with(
+            capture_context=None
         )
 
     def test_facade_methods_do_not_reaccumulate_coordination_logic(self):

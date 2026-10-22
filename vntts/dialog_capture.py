@@ -5,6 +5,7 @@ import os
 import sys
 import warnings
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import blake2b
@@ -763,15 +764,17 @@ def analyze_dialog_snapshot(
     region: DialogRegion | None = None,
     ocr_regions: OCRRegions | None = None,
     result_resolver: Callable[[OCRResult], OCRResult] | None = None,
+    capture_context: Callable[[], AbstractContextManager[None]] | None = None,
 ) -> tuple[Image.Image, Path | None, OCRResult]:
-    capture_started = clock()
-    image, output = capture_dialog(
-        screenshot_directory,
-        save_screenshot=save_screenshot,
-        region=region,
-        capture_target=capture_target,
-    )
-    capture_ms = (clock() - capture_started) * 1000
+    with capture_context() if capture_context is not None else nullcontext():
+        capture_started = clock()
+        image, output = capture_dialog(
+            screenshot_directory,
+            save_screenshot=save_screenshot,
+            region=region,
+            capture_target=capture_target,
+        )
+        capture_ms = (clock() - capture_started) * 1000
 
     ocr_started = clock()
     result = recognize_screenshot_result(

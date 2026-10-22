@@ -3,7 +3,7 @@ import json
 import os
 import unittest
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -2103,6 +2103,15 @@ class MainTest(unittest.TestCase):
         )
         controller.capture_target = Mock()
         image = object()
+        capture_events = []
+
+        @contextmanager
+        def capture_context():
+            capture_events.append("hide")
+            try:
+                yield
+            finally:
+                capture_events.append("restore")
 
         with (
             patch("vntts.dialog_capture.capture_dialog", return_value=(image, None)),
@@ -2117,8 +2126,11 @@ class MainTest(unittest.TestCase):
                 ),
             ),
         ):
-            character, text = controller.test_current_dialog()
+            character, text = controller.test_current_dialog(
+                capture_context=capture_context
+            )
 
+        self.assertEqual(capture_events, ["hide", "restore"])
         self.assertEqual(character, "Marcus")
         self.assertEqual(text, "This is a complete test.")
         controller.voice_router.prepare_playback.assert_called_once_with(

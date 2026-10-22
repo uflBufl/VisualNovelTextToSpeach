@@ -1693,6 +1693,99 @@ class LiveDialogReaderTest(unittest.TestCase):
         options.update(overrides)
         return LiveDialogReader(**options)
 
+    def test_ocr_initialization_failure_stops_capture_and_reports_original_error(self):
+        failure = RuntimeError("OCR tracker initialization failed")
+        errors = []
+        with (
+            ThreadPoolExecutor(max_workers=1) as capture,
+            ThreadPoolExecutor(max_workers=1) as ocr,
+        ):
+            reader = self.create_reader(
+                capture_executor=capture,
+                ocr_executor=ocr,
+                tracker_factory=Mock(side_effect=failure),
+                report_error=errors.append,
+            )
+            reader.start()
+            try:
+                reader.wait(timeout_seconds=1)
+                self.assertTrue(reader.stop_event.is_set())
+                self.assertTrue(reader.capture_future.done())
+                self.assertFalse(reader.is_running)
+                self.assertIs(reader.ocr_future.exception(), failure)
+                self.assertEqual(errors, [failure])
+                reader.tracker_factory = IncrementalDialogTracker
+                self.assertTrue(reader.start())
+                self.assertTrue(reader.stop())
+                reader.wait(timeout_seconds=1)
+            finally:
+                reader.stop()
+
+    def test_capture_initialization_failure_wakes_ocr_without_replacing_primary_error(
+        self,
+    ):
+        failure = RuntimeError("capture policy initialization failed")
+        reader = self.create_reader(
+            adaptive_policy_factory=Mock(side_effect=failure),
+            report_error=Mock(side_effect=ValueError("error reporting failed")),
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, "capture policy initialization failed"
+        ) as raised:
+            reader._run_capture_worker(reader._run_capture, reader.stop_event)
+        self.assertIs(raised.exception, failure)
+        self.assertTrue(reader.stop_event.is_set())
+        self.assertTrue(
+            any("error reporting failed" in note for note in failure.__notes__)
+        )
+
+    def test_worker_timeout_failure_is_not_a_quiescence_timeout(self):
+        reader = self.create_reader()
+        reader.capture_future = Future()
+        reader.capture_future.set_exception(
+            TimeoutError("OCR initialization timed out")
+        )
+        reader.ocr_future = Future()
+        reader.ocr_future.set_result(None)
+
+        reader.wait(timeout_seconds=1)
+
+        self.assertTrue(reader.capture_future.done())
+        self.assertTrue(reader.ocr_future.done())
+
+    def test_concurrent_restart_claims_the_worker_pair_only_once(self):
+        reader = self.create_reader()
+        reader.capture_future = Future()
+        reader.capture_future.set_exception(RuntimeError("previous capture failed"))
+        reader.ocr_future = Future()
+        reader.ocr_future.set_result(None)
+        reader.capture_executor.submit.side_effect = lambda *_: Future()
+        reader.ocr_executor.submit.side_effect = lambda *_: Future()
+        draining = Event()
+        drained = Event()
+
+        def wait_for_previous(**_):
+            draining.set()
+            self.assertTrue(drained.wait(timeout=1))
+
+        with (
+            patch.object(reader, "wait", side_effect=wait_for_previous),
+            patch.object(reader, "clear_queue", wraps=reader.clear_queue) as clear,
+            ThreadPoolExecutor(max_workers=2) as callers,
+        ):
+            first = callers.submit(reader.start)
+            try:
+                self.assertTrue(draining.wait(timeout=1))
+                second = callers.submit(reader.start)
+                self.assertFalse(second.result(timeout=1))
+                clear.assert_called_once()
+            finally:
+                drained.set()
+            self.assertTrue(first.result(timeout=2))
+        self.assertEqual(reader.capture_executor.submit.call_count, 1)
+        self.assertEqual(reader.ocr_executor.submit.call_count, 1)
+        reader.stop()
+
     def test_stop_in_observation_callback_rejects_tracked_speech_but_allows_read_once(
         self,
     ):
