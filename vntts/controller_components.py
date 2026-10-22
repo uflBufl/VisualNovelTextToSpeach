@@ -27,6 +27,7 @@ from vntts.dialog_capture import (
     TTSInitializationError,
     analyze_dialog_snapshot,
     dialog_completion_cue_visible,
+    dialog_frames_equivalent,
     dialog_glyphs_visible,
     fingerprint_dialog_frame,
     fingerprint_dialog_render_activity,
@@ -474,6 +475,7 @@ class RuntimeLifecycleComponent:
             capture_frame=controller._capture_live_frame,
             recognize_frame=controller._recognize_live_frame,
             frame_fingerprint=fingerprint_dialog_frame,
+            frame_equivalent=dialog_frames_equivalent,
             frame_render_fingerprint=fingerprint_dialog_render_activity,
             frame_presence=dialog_glyphs_visible,
             frame_completion=dialog_completion_cue_visible,
@@ -558,15 +560,14 @@ class RuntimeLifecycleComponent:
         schedule = controller.schedule_dialog_read
         if schedule is not None:
             schedule.cancel()
-        if not controller.is_live_running:
-            return False
+        was_live = controller.is_live_running
         reader = controller.live_reader
         if reader is None:
-            return None
+            return None if was_live else False
         controller._set_backend_live_mode(False)
         reader.stop()
-        reader.wait()
-        return True
+        controller.wait_for_reading()
+        return was_live
 
     def _refresh_runtime_settings(self, settings: AppSettings) -> None:
         controller = self.controller
@@ -838,6 +839,9 @@ class LiveSessionComponent:
         schedule = controller.schedule_dialog_read
         if reader is None or schedule is None or reader.is_running:
             return False
+        facts = controller.runtime_control_snapshot()
+        if any(facts.get(name) is True for name in ("starting", "speaking", "queued")):
+            return False
         reader.resume_after_emergency()
         accepted = schedule()
         if accepted:
@@ -915,6 +919,10 @@ class LiveSessionComponent:
         if reader.is_running:
             self.stop()
             return False
+        facts = controller.runtime_control_snapshot()
+        if any(facts.get(name) is True for name in ("starting", "speaking", "queued")):
+            self.emergency_stop()
+            return False
         if not self._voice_preflight_allows_start():
             return False
         if controller.capture_target is not None:
@@ -951,6 +959,10 @@ class LiveSessionComponent:
 
     def stop(self) -> bool:
         controller = self.controller
+        with controller.story_cursor_lock:
+            controller.indexed_current_recovery = None
+            controller.observation_serial += 1
+            controller.sequence_prefix_dispatch_lease = None
         reader = controller.live_reader
         if reader is None:
             return False

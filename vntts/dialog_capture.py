@@ -1,7 +1,9 @@
 """Screen capture, OCR, and one-shot dialog processing."""
 
+import json
 import os
 import sys
+import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,8 +17,10 @@ import mss
 import numpy as np
 from numpy.typing import NDArray
 from PIL import Image, ImageFilter
+from PIL.PngImagePlugin import PngInfo
 from scipy.ndimage import label, maximum_filter
 
+from vntts.capture_provenance import CaptureProvenance
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.dialog import is_empty, speak_dialog
 from vntts.ocr import (
@@ -35,7 +39,11 @@ from vntts.ocr_backend import OCRBackend, TesseractOCRBackend
 from vntts.ocr_corrections import OCRCorrectionDictionary
 from vntts.services.tts_engine import AudioPlaybackError, TTSError
 from vntts.voices import VoiceManifestError
-from vntts.window_capture import ensure_screen_capture_supported
+from vntts.window_capture import (
+    WindowCaptureError,
+    WindowCaptureTarget,
+    ensure_screen_capture_supported,
+)
 
 default_screenshot_directory = Path("logs/screenshots")
 PathInput: TypeAlias = str | os.PathLike[str]
@@ -54,7 +62,7 @@ class DialogVoiceRouter(Protocol):
 
 
 class ScreenCaptureError(RuntimeError):
-    pass
+    provenance: CaptureProvenance | None = None
 
 
 class OCRError(RuntimeError):
@@ -80,6 +88,7 @@ class CapturedDialogFrame:
     image: Image.Image
     capture_ms: float
     ocr_regions: OCRRegions | None = None
+    provenance: CaptureProvenance | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -110,7 +119,43 @@ def capture_dialog(
     save_screenshot: bool = True,
     region: DialogRegion | None = None,
     capture_target: object | None = None,
+    run_id: str | None = None,
+    provenance_handler: Callable[[CaptureProvenance], object] | None = None,
 ) -> tuple[Image.Image, Path | None]:
+    capture_id = uuid4().hex
+    started = monotonic()
+    snapshot = None
+    dialog_box = None
+    image = None
+
+    def provenance(error: BaseException | None = None) -> CaptureProvenance:
+        window = None
+        if snapshot is not None:
+            window = snapshot.window
+        elif isinstance(capture_target, WindowCaptureTarget):
+            window = capture_target.last_window
+        return CaptureProvenance(
+            capture_id=capture_id,
+            run_id=run_id,
+            started_monotonic=started,
+            completed_monotonic=monotonic(),
+            requested_window_title=(
+                capture_target.window_title
+                if isinstance(capture_target, WindowCaptureTarget)
+                else None
+            ),
+            window_id=window.handle if window is not None else None,
+            window_title=window.title if window is not None else None,
+            owner_pid=window.process_id if window is not None else None,
+            window_bounds=(
+                snapshot.geometry.as_monitor() if snapshot is not None else None
+            ),
+            capture_bounds=dialog_box,
+            output_dimensions=image.size if image is not None else None,
+            success=error is None,
+            error_type=type(error).__name__ if error is not None else None,
+        )
+
     try:
         ensure_screen_capture_supported()
         if screenshot_directory is None:
@@ -123,26 +168,70 @@ def capture_dialog(
             region = region or get_dialog_region()
             if capture_target is None:
                 dialog_box = region.capture_box(sct.monitors[1])
+            elif isinstance(capture_target, WindowCaptureTarget):
+                snapshot = capture_target.capture_snapshot(region)
+                dialog_box = snapshot.capture_box
             else:
-                capture_box = getattr(capture_target, "capture_box")
-                dialog_box = capture_box(region)
+                dialog_box = getattr(capture_target, "capture_box")(region)
             screenshot = sct.grab(dialog_box)
-
             image = Image.frombytes(
-                "RGB",
-                screenshot.size,
-                screenshot.bgra,
-                "raw",
-                "BGRX",
+                "RGB", screenshot.size, screenshot.bgra, "raw", "BGRX"
             )
-
-        output = None
-        if save_screenshot:
-            output = create_screenshot_path(screenshot_directory)
-            image.save(output)
-        return image, output
+            if snapshot is not None and isinstance(capture_target, WindowCaptureTarget):
+                capture_target.validate_snapshot(snapshot)
     except Exception as error:
-        raise ScreenCaptureError(str(error)) from error
+        record = provenance(error)
+        failure = ScreenCaptureError(str(error))
+        failure.provenance = record
+        if provenance_handler is not None:
+            _notify_capture_provenance(provenance_handler, record)
+        raise failure from error
+
+    record = provenance()
+    image.info["capture_provenance"] = record.as_dict()
+    output = None
+    if save_screenshot:
+        output = create_screenshot_path(screenshot_directory)
+        metadata_json = json.dumps(record.as_dict(), sort_keys=True)
+        png_metadata = PngInfo()
+        png_metadata.add_text("capture_provenance", metadata_json)
+        try:
+            image.save(output, pnginfo=png_metadata)
+        except Exception as error:
+            record = provenance(error)
+            image.info["capture_provenance"] = record.as_dict()
+            failure = ScreenCaptureError(str(error))
+            failure.provenance = record
+            if provenance_handler is not None:
+                _notify_capture_provenance(provenance_handler, record)
+            raise failure from error
+        try:
+            output.with_suffix(".capture.json").write_text(
+                metadata_json + "\n", encoding="utf-8"
+            )
+        except OSError as error:
+            # The PNG still embeds provenance when its optional sidecar cannot be saved.
+            warnings.warn(
+                f"Unable to save capture provenance sidecar: {type(error).__name__}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+    if provenance_handler is not None:
+        _notify_capture_provenance(provenance_handler, record)
+    return image, output
+
+
+def _notify_capture_provenance(
+    handler: Callable[[CaptureProvenance], object], record: CaptureProvenance
+) -> None:
+    try:
+        handler(record)
+    except Exception as error:
+        warnings.warn(
+            f"Unable to record capture provenance: {type(error).__name__}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 def recognize_screenshot_result(
@@ -189,18 +278,30 @@ def capture_live_frame(
     region: DialogRegion | None = None,
     clock: Clock = monotonic,
     ocr_regions: OCRRegions | None = None,
+    run_id: str | None = None,
+    provenance_handler: Callable[[CaptureProvenance], object] | None = None,
 ) -> CapturedDialogFrame:
     capture_started = clock()
+    records: list[CaptureProvenance] = []
+
+    def captured(record: CaptureProvenance) -> None:
+        records.append(record)
+        if provenance_handler is not None:
+            _notify_capture_provenance(provenance_handler, record)
+
     image, _output = capture_dialog(
         screenshot_directory,
         save_screenshot=False,
         region=region,
         capture_target=capture_target,
+        run_id=run_id,
+        provenance_handler=captured,
     )
     return CapturedDialogFrame(
         image=image,
         capture_ms=(clock() - capture_started) * 1000,
         ocr_regions=ocr_regions,
+        provenance=records[-1] if records else None,
     )
 
 
@@ -293,6 +394,63 @@ def fingerprint_dialog_frame(frame: object) -> bytes:
     return blake2b(label + dialog, digest_size=16).digest()
 
 
+def dialog_frames_equivalent(previous: object, current: object) -> bool:
+    """Accept only identical glyph cores translated by at most two pixels."""
+    before, after = _frame_image(previous), _frame_image(current)
+    if before.size != after.size:
+        return False
+    if not dialog_glyphs_visible(previous) or not dialog_glyphs_visible(current):
+        return False
+
+    width, height = before.size
+    monitor = {"left": 0, "top": 0, "width": width, "height": height}
+    region_pairs = []
+    for frame in (previous, current):
+        regions = getattr(frame, "ocr_regions", None)
+        region_pairs.append(
+            (regions.speaker, regions.dialogue)
+            if isinstance(regions, OCRRegions)
+            else (DialogRegion(0, 0, 1, 0.36), DialogRegion(0, 0.25, 1, 0.75))
+        )
+    boxes = []
+    for first, second in zip(*region_pairs, strict=True):
+        a, b = first.capture_box(monitor), second.capture_box(monitor)
+        boxes.append(
+            (
+                min(a["left"], b["left"]),
+                min(a["top"], b["top"]),
+                max(a["left"] + a["width"], b["left"] + b["width"]),
+                max(a["top"] + a["height"], b["top"] + b["height"]),
+            )
+        )
+
+    def masks(frame: object) -> tuple[NDArray[np.bool_], ...]:
+        image = _frame_image(frame).convert("L")
+        for point in _dialog_completion_cue_pixels(frame):
+            image.putpixel(point, 0)
+        bands = tuple(image.crop(box) for box in boxes)
+        result: list[NDArray[np.bool_]] = []
+        for band in bands:
+            pixels = np.asarray(band)
+            result.extend((pixels >= 160, pixels >= max(160, int(pixels.max()) - 20)))
+        return tuple(result)
+
+    before_masks, after_masks = masks(previous), masks(current)
+    if not before_masks[-1].any() or not after_masks[-1].any():
+        return False
+    for left, right in zip(before_masks, after_masks, strict=True):
+        if left.shape != right.shape:
+            return False
+        first, second = np.argwhere(left), np.argwhere(right)
+        if first.shape != second.shape:
+            return False
+        if first.size:
+            offset = second[0] - first[0]
+            if np.any(np.abs(offset) > 2) or not np.array_equal(first + offset, second):
+                return False
+    return True
+
+
 def fingerprint_dialog_render_activity(frame: object) -> bytes:
     """Fingerprint high-fidelity dialogue glyph activity, not screen identity.
 
@@ -357,10 +515,9 @@ def _pixel_components(mask: NDArray[np.bool_]) -> list[list[tuple[int, int]]]:
     return components
 
 
-def dialog_completion_cue_visible(frame: object) -> bool:
-    """Detect the game's small downward continue indicator, not dialogue text."""
+def _dialog_completion_cue_pixels(frame: object) -> list[tuple[int, int]]:
     if not dialog_glyphs_visible(frame):
-        return False
+        return []
     grayscale = _frame_image(frame).convert("L")
     width, height = grayscale.size
     left = min(width - 1, round(width * 0.94))
@@ -392,8 +549,13 @@ def dialog_completion_cue_visible(frame: object) -> bool:
             and max_y < region.height - 1
             and len(component) / (component_width * component_height) >= 0.12
         ):
-            return True
-    return False
+            return [(left + x, top + y) for x, y in component]
+    return []
+
+
+def dialog_completion_cue_visible(frame: object) -> bool:
+    """Detect the game's small downward continue indicator, not dialogue text."""
+    return bool(_dialog_completion_cue_pixels(frame))
 
 
 def _without_continue_indicator(image: Image.Image) -> Image.Image:
@@ -496,6 +658,7 @@ def recognize_live_frame(
         speaker_confidence=result.speaker_confidence,
         dialogue_confidence=result.dialogue_confidence,
         speaker_note=result.speaker_note,
+        capture_provenance=getattr(image, "info", {}).get("capture_provenance"),
     )
     if diagnostic_handler is not None:
         diagnostic_handler(snapshot)
@@ -599,6 +762,7 @@ def analyze_dialog_snapshot(
         speaker_confidence=result.speaker_confidence,
         dialogue_confidence=result.dialogue_confidence,
         speaker_note=result.speaker_note,
+        capture_provenance=getattr(image, "info", {}).get("capture_provenance"),
     )
     if diagnostic_handler is not None:
         diagnostic_handler(snapshot)
@@ -696,7 +860,12 @@ def read_dialog_safely(
 
 
 def format_runtime_error(error: BaseException) -> str:
-    if isinstance(error, ScreenCaptureError):
+    if isinstance(error, WindowCaptureError) or (
+        isinstance(error, ScreenCaptureError)
+        and isinstance(error.__cause__, WindowCaptureError)
+    ):
+        message = f"Screen capture unavailable: {error}"
+    elif isinstance(error, ScreenCaptureError):
         message = f"Screen capture failed: {error}"
     elif isinstance(error, OCRError):
         message = f"Tesseract OCR failed: {error}"

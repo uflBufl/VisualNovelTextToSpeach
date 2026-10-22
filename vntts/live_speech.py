@@ -26,6 +26,11 @@ def play_typed_text(
     )
     if not isinstance(outcome, PlaybackOutcome):
         raise TypeError("Speech backend returned an untyped playback outcome")
+    raise_playback_failure(outcome)
+    return outcome.successful
+
+
+def raise_playback_failure(outcome: PlaybackOutcome) -> None:
     if outcome.status is PlaybackStatus.FAILED:
         message = outcome.error or "Audio playback failed"
         error_type = outcome.error_type
@@ -35,4 +40,3 @@ def play_typed_text(
         ):
             raise error_type(message)
         raise AudioPlaybackError(message)
-    return outcome.successful

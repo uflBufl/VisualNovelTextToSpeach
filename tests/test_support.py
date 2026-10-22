@@ -329,12 +329,90 @@ class GenerationTimelineLogTest(unittest.TestCase):
                 private_text="not retained",
             )
 
-        gate = timelines.snapshot()[0]["events"][0]
+        gate = timelines.snapshot()[0]["events"][-1]
         self.assertEqual(gate["observations"], 3)
         self.assertEqual(gate["candidate_restarts"], 1)
         self.assertEqual(gate["fingerprint_changes"], 1)
         self.assertEqual(gate["ready_observations"], 1)
         self.assertNotIn("private_text", gate)
+
+    def test_latency_summary_separates_route_cache_provenance_and_source_lead(self):
+        log = GenerationTimelineLog()
+        for index, (source, cache, lead) in enumerate(
+            (
+                ("generated", "generated-audio", 0),
+                ("live:moss", "fresh-generation", 1600),
+                ("live:moss", "memory-cache", 0),
+            ),
+            1,
+        ):
+            log.record(
+                "first-pcm",
+                index,
+                index,
+                playback_id=str(index),
+                timing_provenance="measured",
+                from_playback_started_ms=20 * index,
+            )
+            log.record(
+                "playback-outcome",
+                index,
+                index + 1,
+                playback_id=str(index),
+                effective_source=source,
+                cache_source=cache,
+                source_audio_lead_ms=lead,
+            )
+        cohorts = log.latency_summary()["cohorts"]
+        self.assertEqual(len(cohorts), 3)
+        self.assertEqual(
+            {c["cache_source"] for c in cohorts},
+            {"generated-audio", "fresh-generation", "memory-cache"},
+        )
+        self.assertEqual(sum(c["has_source_lead"] for c in cohorts), 1)
+        self.assertTrue(all(c["timing_provenance"] == "measured" for c in cohorts))
+
+    def test_runs_and_repeated_attempts_keep_one_clock_without_overwriting(self):
+        log = GenerationTimelineLog()
+        session, run1, run2 = uuid4().hex, uuid4().hex, uuid4().hex
+        for run, timestamp in ((run1, 10.0), (run2, 20.0)):
+            log.record(
+                "route-decision",
+                1,
+                timestamp,
+                session_id=session,
+                run_id=run,
+                playback_id="first",
+                line_id="same-line",
+            )
+            log.record(
+                "playback-outcome",
+                1,
+                timestamp + 1,
+                session_id=session,
+                run_id=run,
+                playback_id="first",
+                outcome="failed",
+                onset_provenance="unobserved",
+            )
+            log.record(
+                "playback-outcome",
+                1,
+                timestamp + 2,
+                session_id=session,
+                run_id=run,
+                playback_id="second",
+                outcome="completed",
+                onset_provenance="measured",
+            )
+        timelines = log.snapshot()
+        self.assertEqual(len(timelines), 2)
+        self.assertEqual([len(t["events"]) for t in timelines], [3, 3])
+        self.assertEqual(timelines[1]["events"][0]["clock_elapsed_ms"], 10000)
+        self.assertEqual(timelines[1]["events"][0]["monotonic_at"], 20)
+        self.assertEqual(
+            [e["outcome"] for e in timelines[0]["events"][1:]], ["failed", "completed"]
+        )
 
     def test_keeps_restarted_reader_generations_in_separate_timelines(self):
         timelines = GenerationTimelineLog()
@@ -508,7 +586,7 @@ class GenerationTimelineLogTest(unittest.TestCase):
         )
         self.assertNotIn("dialogue", str(events))
 
-    def test_keeps_every_chunk_scoped_stage_and_merges_same_chunk_reports(self):
+    def test_keeps_every_chunk_scoped_stage_and_repeated_reports(self):
         timelines = GenerationTimelineLog()
         stages = (
             "generation-start",
@@ -538,13 +616,13 @@ class GenerationTimelineLogTest(unittest.TestCase):
 
         events = timelines.snapshot()[0]["events"]
 
-        self.assertEqual(len(events), len(stages) * 2)
+        self.assertEqual(len(events), len(stages) * 2 + 1)
         self.assertEqual(
-            sum(event["stage"] == "playback-completion" for event in events), 2
+            sum(event["stage"] == "playback-completion" for event in events), 3
         )
         completion_a = next(
             event
-            for event in events
+            for event in reversed(events)
             if event["stage"] == "playback-completion"
             and event["chunk_id"] == "chunk-a"
         )

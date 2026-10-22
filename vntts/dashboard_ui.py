@@ -67,10 +67,33 @@ class RuntimeControlState:
     transition: str | None = None
     unavailable_reason: str | None = None
     needs_readiness_check: bool = False
+    indexed_current: bool = False
 
     @property
     def can_read(self) -> bool:
-        return self.ready and not self.active and self.transition is None
+        return (
+            self.ready
+            and (not self.active or self.indexed_current)
+            and self.transition is None
+            and not self.starting
+        )
+
+    @property
+    def read_label(self) -> str:
+        return (
+            "Read indexed current line"
+            if self.indexed_current
+            else "Read current dialogue"
+        )
+
+    @property
+    def read_tooltip(self) -> str:
+        return (
+            "Use original game audio, prepared audio or the configured live fallback "
+            "for the indexed line; continue manually in the game."
+            if self.indexed_current
+            else ""
+        )
 
     @property
     def active(self) -> bool:
@@ -103,6 +126,9 @@ def _apply_reading_capabilities(
     read_button: QPushButton,
     live_button: QPushButton,
 ) -> None:
+    read_button.setText(state.read_label)
+    read_button.setAccessibleName(state.read_label)
+    read_button.setAccessibleDescription(state.read_tooltip)
     read_button.setEnabled(state.can_read)
     live_button.setEnabled(state.can_toggle_live)
     _set_live_button_presentation(live_button, state.active)
@@ -121,7 +147,9 @@ def _apply_reading_capabilities(
             if state.transition == "starting"
             else "Wait for reading and speech to stop"
         )
-    read_button.setToolTip("" if state.can_read else state.reason_for("read"))
+    read_button.setToolTip(
+        state.read_tooltip if state.can_read else state.reason_for("read")
+    )
 
 
 def _set_live_button_presentation(button: QPushButton, running: bool) -> None:

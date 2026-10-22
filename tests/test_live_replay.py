@@ -221,6 +221,7 @@ class LiveReplayTest(unittest.TestCase):
                 "route-decision",
                 "voice-resolution",
                 "generation-start",
+                "playback-start",
                 "first-pcm",
                 "playback-completion",
                 "playback-outcome",

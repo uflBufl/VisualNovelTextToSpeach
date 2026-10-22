@@ -1935,6 +1935,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_stop_runner.finished.connect(self._live_stop_finished)
         self._live_stop_continuation: Callable[[], object] | None = None
         self._live_stop_generation: int | None = None
+        self._modal_stop_pending = False
+        self._live_stop_wait_for_speech = True
         self.calibration_capture_runner = LatestTaskRunner(self)
         self.calibration_capture_runner.finished.connect(
             self._calibration_capture_finished
@@ -2114,7 +2116,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.read_action.triggered.connect(self.read_once)
         self.show_dashboard_action.triggered.connect(self.show_dashboard)
         self.show_compact_action.triggered.connect(self.show_compact_controls)
-        self.live_action.triggered.connect(self.toggle_live)
+        self.live_action.triggered.connect(self._toggle_presented_reading)
         self.sequence_resync_action.triggered.connect(self.choose_sequence_position)
         self.sequence_expected_action.triggered.connect(
             self.choose_expected_sequence_event
@@ -2176,7 +2178,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _connect_dashboard(self) -> None:
         self.dashboard.main_section_changed.connect(self._save_main_section)
         self.dashboard.read_requested.connect(self.read_once)
-        self.dashboard.live_requested.connect(self.toggle_live)
+        self.dashboard.live_requested.connect(self._toggle_presented_reading)
         self.dashboard.auto_advance_requested.connect(self.toggle_auto_advance)
         self.dashboard.reading_setup_requested.connect(self.prepare_reading)
         self.dashboard.sequence_resync_requested.connect(self.choose_sequence_position)
@@ -2194,7 +2196,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.quit_requested.connect(self.request_quit)
         self.dashboard.hidden_to_background.connect(self.notify_background_mode)
         self.compact_controller.read_requested.connect(self.read_once)
-        self.compact_controller.live_requested.connect(self.toggle_live)
+        self.compact_controller.live_requested.connect(self._toggle_presented_reading)
         self.compact_controller.sequence_expected_requested.connect(
             self.choose_expected_sequence_event
         )
@@ -2216,6 +2218,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _refresh_speech_runtime(self) -> None:
+        self._apply_runtime_control_state(self._runtime_control_state())
         self.dashboard.set_speech_runtime(self._speech_runtime_label())
         loaded = self.moss_runtime.loaded
         label = (
@@ -2542,7 +2545,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         ):
             return
         self.voice_auditions.suspend()
-        self.controller.read_once()
+        if self._runtime_control_state().indexed_current:
+            self.controller.read_indexed_current_dialogue()
+        else:
+            self.controller.read_once()
+        self._apply_controller_action_state()
+
+    def _toggle_presented_reading(self) -> bool:
+        if self._presented_runtime_state.transition == "stopping":
+            return False
+        if self._presented_runtime_state.active:
+            self._request_stop_reading()
+            return False
+        return self.toggle_live()
 
     def toggle_live(self) -> bool:
         if self._shutting_down:
@@ -2830,6 +2845,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             reader.stop()
         self._live_stop_generation = self._lifecycle_generation
         self._live_stop_continuation = None
+        self._live_stop_wait_for_speech = True
+        self._modal_stop_pending = True
         self.signals.live_changed.emit(False)
         self.signals.speech_paused_changed.emit(False)
         self.set_status("Stopping reading and speech...")
@@ -2855,7 +2872,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             started = perf_counter()
             outcome = "failed"
             try:
-                reader.wait(timeout_seconds=5.0)
+                if callable(getattr(type(self.controller), "wait_for_reading", None)):
+                    self.controller.wait_for_reading(timeout_seconds=5.0)
+                else:
+                    reader.wait(timeout_seconds=5.0)
                 outcome = "complete"
             finally:
                 record_background_operation(
@@ -3351,7 +3371,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         ):
             self.dashboard.show_voices()
             return None
-        if self.controller.is_live_running is True:
+        if self._needs_modal_stop():
             self._stop_live_then(
                 self.open_pregeneration, "Stopping reading before story preparation..."
             )
@@ -3689,6 +3709,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.hotkeys_requested.emit()
         self.set_status(f"Profile {profile_name!r} selected")
 
+    def _needs_modal_stop(self) -> bool:
+        state = self._runtime_control_state()
+        return bool(
+            self._modal_stop_pending
+            or self.controller.is_live_running is True
+            or self.controller.is_one_shot_read_running is True
+            or state.speaking
+            or state.queued
+        )
+
     def _stop_live_then(
         self,
         continuation: Callable[[], object],
@@ -3705,6 +3735,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._lifecycle_generation = self.session_owner.begin()
         self._live_stop_generation = self._lifecycle_generation
         self._live_stop_continuation = continuation
+        self._live_stop_wait_for_speech = wait_for_speech
+        self._modal_stop_pending = self._modal_stop_pending or wait_for_speech
         self._set_modal_launchers_enabled(False)
         self.set_status(status)
         self.live_stop_runner.start(
@@ -3719,6 +3751,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self, reader: LiveDialogReader | None, wait_for_speech: bool = True
     ) -> bool:
         self.controller.stop_live()
+        if callable(getattr(type(self.controller), "wait_for_reading", None)):
+            self.controller.wait_for_reading(
+                timeout_seconds=5.0, include_speech=wait_for_speech
+            )
+            return True
         if reader is None:
             return True
         if wait_for_speech:
@@ -3747,6 +3784,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         if result is not True:
             return
+        if self._live_stop_wait_for_speech:
+            self._modal_stop_pending = False
         self.signals.live_changed.emit(False)
         if continuation is not None:
             QTimer.singleShot(
@@ -3826,7 +3865,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if resume_live is None
             else bool(resume_live)
         )
-        if self.controller.is_live_running:
+        if self._needs_modal_stop():
             self._stop_live_then(
                 lambda: self._open_narrator_picker(
                     should_resume_live,
@@ -4293,7 +4332,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.resume_live_after_unknown_mapping = bool(
             self.resume_live_after_unknown_mapping or self.controller.is_live_running
         )
-        if self.controller.is_live_running:
+        if self._needs_modal_stop():
             self._stop_live_then(
                 lambda: self._open_pending_speaker_mapping(speaker),
                 "Stopping live capture before speaker mapping...",
@@ -4365,9 +4404,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.set_status("Finish the current dialog read before opening history")
             return
         resume_live = bool(self.controller.is_live_running)
-        if resume_live:
+        if self._needs_modal_stop():
             self._stop_live_then(
-                lambda: self._open_history_dialog(True),
+                lambda: self._open_history_dialog(resume_live),
                 "Stopping live capture before dialogue history...",
             )
             return
@@ -4547,13 +4586,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 and not self._controller_busy
                 and not self._shutting_down
             )
-        snapshot = {}
+        snapshot = None
         reader = getattr(self.controller, "live_reader", None)
-        snapshot_loader = getattr(reader, "runtime_control_snapshot", None)
+        snapshot_loader = getattr(self.controller, "runtime_control_snapshot", None)
         if callable(snapshot_loader):
             loaded = snapshot_loader()
             if isinstance(loaded, dict):
                 snapshot = loaded
+        snapshot_loader = getattr(reader, "runtime_control_snapshot", None)
+        if snapshot is None and callable(snapshot_loader):
+            loaded = snapshot_loader()
+            if isinstance(loaded, dict):
+                snapshot = loaded
+        snapshot = snapshot or {}
         live = getattr(self.controller, "is_live_running", False)
         one_shot = getattr(self.controller, "is_one_shot_read_running", False)
         preparing = bool(
@@ -4570,10 +4615,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             unavailable_reason = (
                 "Save or cancel your narrator selection in Voices before reading."
             )
+        sequence_status = self.controller.get_live_sequence_status()
+        indexed_current = isinstance(
+            getattr(sequence_status, "indexed_current_event_id", None), str
+        )
         return RuntimeControlState(
             ready=bool(enabled),
+            indexed_current=indexed_current,
             live=live if isinstance(live, bool) else self._reported_live,
-            starting=self._live_scope_generation is not None or one_shot is True,
+            starting=self._live_scope_generation is not None
+            or bool(snapshot.get("starting", one_shot is True)),
             paused=bool(snapshot.get("paused", self._reported_speech_paused)),
             speaking=bool(snapshot.get("speaking", False)),
             queued=bool(snapshot.get("queued", False)),
@@ -4603,6 +4654,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _apply_runtime_control_state(self, state: RuntimeControlState) -> None:
+        self._presented_runtime_state = state
         if self.pregeneration_dialog is not None:
             self.pregeneration_dialog.setEnabled(
                 self.pregeneration_dialog.has_pending_work()
@@ -4615,6 +4667,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         for action, enabled, control in controls:
             action.setEnabled(enabled)
             action.setToolTip("" if enabled else state.reason_for(control))
+        self.read_action.setText(state.read_label)
+        if state.can_read:
+            self.read_action.setToolTip(state.read_tooltip)
         self.live_action.setText(
             "Cancel start"
             if state.transition == "starting"

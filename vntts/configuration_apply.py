@@ -116,6 +116,8 @@ class ConfigurationApplyMixin:
         _shutting_down: bool
         live_stop_runner: LatestTaskRunner
 
+        def _needs_modal_stop(self) -> bool: ...
+
         def _stop_live_then(
             self, continuation: Callable[[], object], status: str
         ) -> bool: ...
@@ -331,7 +333,7 @@ class ConfigurationApplyMixin:
         if self.live_stop_runner.active:
             self.set_status("Live capture is already stopping; please wait")
             return
-        if self.controller.is_live_running is True:
+        if self._needs_modal_stop():
             self._stop_live_then(
                 self.open_settings, "Stopping reading before opening Settings..."
             )

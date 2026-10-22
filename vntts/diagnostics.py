@@ -1,5 +1,5 @@
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Protocol
@@ -39,6 +39,7 @@ class DiagnosticSnapshot:
     speaker_confidence: float | None = None
     dialogue_confidence: float | None = None
     speaker_note: str = ""
+    capture_provenance: Mapping[str, object] | None = None
 
 
 def resolve_voice_label(

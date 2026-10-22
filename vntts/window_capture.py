@@ -46,6 +46,13 @@ class WindowGeometry:
         }
 
 
+@dataclass(frozen=True)
+class WindowCaptureSnapshot:
+    window: WindowInfo
+    geometry: WindowGeometry
+    capture_box: dict[str, int]
+
+
 class Win32WindowBackend:
     def __init__(self, user32: object | None = None) -> None:
         if sys.platform != "win32" and user32 is None:
@@ -548,6 +555,7 @@ class WindowCaptureTarget:
         self.window_title = (window_title or "").strip()
         self._backend = backend
         self._handle: int | None = None
+        self.last_window: WindowInfo | None = None
 
     @property
     def backend(self) -> _WindowBackend:
@@ -566,8 +574,36 @@ class WindowCaptureTarget:
             )
         return self.backend.get_client_geometry(window.handle)
 
+    def capture_snapshot(self, region: _CaptureRegion) -> WindowCaptureSnapshot:
+        window = self._resolve_window()
+        if window.minimized:
+            raise WindowMinimizedError(
+                f"Selected game window {window.title!r} is minimized"
+            )
+        geometry = self.backend.get_client_geometry(window.handle)
+        return WindowCaptureSnapshot(
+            window, geometry, region.capture_box(geometry.as_monitor())
+        )
+
+    def validate_snapshot(self, snapshot: WindowCaptureSnapshot) -> None:
+        window = self.backend.get_window(snapshot.window.handle)
+        if (
+            window is None
+            or window.process_id != snapshot.window.process_id
+            or window.title != snapshot.window.title
+            or window.minimized
+        ):
+            raise WindowNotFoundError("Selected game window changed during capture")
+        if (
+            self.backend.get_client_geometry(snapshot.window.handle)
+            != snapshot.geometry
+        ):
+            raise WindowCaptureError(
+                "Selected game window moved or resized during capture"
+            )
+
     def capture_box(self, region: _CaptureRegion) -> dict[str, int]:
-        return region.capture_box(self.get_geometry().as_monitor())
+        return self.capture_snapshot(region).capture_box
 
     def is_focused(self) -> bool:
         window = self._resolve_window()
@@ -587,6 +623,7 @@ class WindowCaptureTarget:
         if self._handle is not None:
             window = self.backend.get_window(self._handle)
             if window is not None and self._title_matches(window.title):
+                self.last_window = window
                 return window
             self._handle = None
 
@@ -607,6 +644,7 @@ class WindowCaptureTarget:
             )
 
         self._handle = window.handle
+        self.last_window = window
         return window
 
     def _title_matches(self, title: str) -> bool:

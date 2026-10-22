@@ -77,7 +77,11 @@ from vntts.live_sequence import (
 )
 from vntts.live_snapshot import read_live_snapshot as read_live_snapshot
 from vntts.live_speaker_corpus import LiveSpeakerCorpus
-from vntts.live_speech import TypedPlaybackBackend, play_typed_text
+from vntts.live_speech import (
+    TypedPlaybackBackend,
+    play_typed_text,
+    raise_playback_failure,
+)
 from vntts.model_assets import ModelAssetManager
 from vntts.ocr import (
     DialogRegion,
@@ -98,7 +102,7 @@ from vntts.runtime_config import (
     initialize_voice_registry,
     initialize_voice_router,
 )
-from vntts.services.tts_engine import AudioPlaybackError, TTSEngine
+from vntts.services.tts_engine import TTSEngine
 from vntts.settings import (
     AppSettings,
     is_live_sequence_audio_mode,
@@ -135,6 +139,8 @@ class _DialogReadFuture(Protocol):
     def done(self) -> bool: ...
 
     def cancel(self) -> bool: ...
+    def cancelled(self) -> bool: ...
+    def result(self, timeout: float | None = None) -> object: ...
 
 
 class _DialogReadExecutor(Protocol):
@@ -158,7 +164,7 @@ class _ExecutorFuture(Protocol):
     def cancel(self) -> bool: ...
     def done(self) -> bool: ...
     def cancelled(self) -> bool: ...
-    def result(self) -> object: ...
+    def result(self, timeout: float | None = None) -> object: ...
     def add_done_callback(
         self, callback: Callable[["_ExecutorFuture"], object]
     ) -> object: ...
@@ -336,6 +342,7 @@ class LiveSequenceStatus:
     ocr_activity: str = "-"
     expected_candidate_count: int = 0
     story_title: str | None = None
+    indexed_current_event_id: str | None = None
 
 
 class _ScheduledDialogRead:
@@ -352,6 +359,7 @@ class _ScheduledDialogRead:
         self._shutdown_requested = shutdown_requested
         self._active_read: _DialogReadFuture | None = None
         self._generation = 0
+        self._draining_reads: list[_DialogReadFuture] = []
         self._lock = RLock()
 
     @property
@@ -359,15 +367,34 @@ class _ScheduledDialogRead:
         with self._lock:
             return self._active_read is not None and not self._active_read.done()
 
+    @property
+    def has_pending_work(self) -> bool:
+        with self._lock:
+            return self.is_running or any(
+                not future.done() for future in self._draining_reads
+            )
+
     def cancel(self) -> bool:
         with self._lock:
             active = self.is_running
             self._generation += 1
             future = self._active_read
             self._active_read = None
+            if future is not None:
+                self._draining_reads.append(future)
         if future is not None:
             future.cancel()
         return active
+
+    def wait(self, timeout_seconds: float = 5.0) -> None:
+        deadline = monotonic() + timeout_seconds
+        with self._lock:
+            futures = tuple(self._draining_reads)
+        for future in futures:
+            if not future.cancelled():
+                future.result(timeout=max(0.0, deadline - monotonic()))
+        with self._lock:
+            self._draining_reads = [f for f in self._draining_reads if not f.done()]
 
     def __call__(self) -> bool:
         with self._lock:
@@ -581,6 +608,10 @@ class AppController:
             lambda _stage, _generation, _occurred_at, **_details: None
         )
         self.live_reader_session_id: str | None = None
+        self.indexed_current_recovery: (
+            tuple[ChapterDialogue, str, object, int, object | None] | None
+        ) = None
+        self.observation_serial = 0
         self.pipeline_event_handler = self._record_pipeline_event
         self.live_sequence_plan_factory = live_sequence_plan_factory
         self.sequence_prefetch_lock = Lock()
@@ -646,6 +677,15 @@ class AppController:
         occurred_at: float,
         **details: object,
     ) -> object:
+        context = audio_lifecycle_context.get() or {}
+        reader = getattr(self, "live_reader", None)
+        run_id = getattr(reader, "run_id", None)
+        details = {
+            **({"run_id": run_id} if isinstance(run_id, str) else {}),
+            **context,
+            **details,
+        }
+        details.pop("generation", None)
         session_id = details.pop("session_id", None)
         active_session_id = (
             session_id if isinstance(session_id, str) else self.live_reader_session_id
@@ -666,6 +706,33 @@ class AppController:
     def is_one_shot_read_running(self) -> bool:
         schedule = self.schedule_dialog_read
         return schedule is not None and schedule.is_running is True
+
+    def runtime_control_snapshot(self) -> dict[str, bool]:
+        reader = self.live_reader
+        snapshot = reader.runtime_control_snapshot() if reader is not None else {}
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+        starting = self.is_one_shot_read_running
+        draining = getattr(self.schedule_dialog_read, "has_pending_work", False) is True
+        return {
+            **snapshot,
+            "starting": starting,
+            "queued": bool(starting or draining or snapshot.get("queued")),
+        }
+
+    def wait_for_reading(
+        self, timeout_seconds: float = 5.0, *, include_speech: bool = True
+    ) -> None:
+        schedule = self.schedule_dialog_read
+        if schedule is not None:
+            schedule.cancel()
+            wait = getattr(schedule, "wait", None)
+            if callable(wait):
+                wait(timeout_seconds)
+        if self.live_reader is not None:
+            self.live_reader.wait(
+                timeout_seconds=timeout_seconds, include_speech=include_speech
+            )
 
     def start(self) -> bool:
         return self.runtime_lifecycle.start()
@@ -1019,6 +1086,32 @@ class AppController:
             self.capture_target,
             region=self._capture_region(),
             ocr_regions=self._capture_ocr_regions(),
+            run_id=getattr(self.live_reader, "run_id", None),
+            provenance_handler=self._record_capture_provenance,
+        )
+
+    def _record_capture_provenance(self, provenance: object) -> None:
+        from vntts.capture_provenance import CaptureProvenance
+
+        if not isinstance(provenance, CaptureProvenance):
+            return
+        reader = self.live_reader
+        health = (
+            reader.worker_health_snapshot()
+            if isinstance(reader, LiveDialogReader)
+            else {}
+        )
+        details = {
+            key: value
+            for key, value in provenance.as_dict().items()
+            if key not in {"requested_window_title", "window_title"}
+        }
+        details.update(health)
+        self.pipeline_event_handler(
+            "capture",
+            max(1, reader.active_generation if reader else 1),
+            provenance.completed_monotonic,
+            **details,
         )
 
     def _capture_region(self) -> DialogRegion:
@@ -1228,7 +1321,13 @@ class AppController:
         if self.shutdown_requested.is_set():
             return False
         if not text:
+            with self.story_cursor_lock:
+                self.observation_serial += 1
+                self.indexed_current_recovery = None
             return self._finish_observed_dialogue()
+        with self.story_cursor_lock:
+            self.observation_serial += 1
+            self.indexed_current_recovery = None
         observed_character = character or "Narrator"
         character = self._canonical_observed_character(character, text)
         canonical_routing = False
@@ -1556,6 +1655,14 @@ class AppController:
                 f"Full OCR idle in locked routing; {recognized_frames} anchor/recovery "
                 "frame(s) recognized"
             )
+        recovery = self._indexed_current_recovery_locked()
+        if recovery is not None:
+            recovery_required = True
+            guidance = (
+                "The visible line is indexed outside the expected story path. "
+                "Read indexed current line uses the configured audio priority; "
+                "then continue manually in the game, or set story position."
+            )
         expected_candidate_count = len(self._expected_live_sequence_events())
         return LiveSequenceStatus(
             mode,
@@ -1574,6 +1681,7 @@ class AppController:
             actual_audio_route=actual_audio_route,
             ocr_activity=ocr_activity,
             expected_candidate_count=expected_candidate_count,
+            indexed_current_event_id=recovery[1] if recovery is not None else None,
             story_title=(
                 self.chapter_voice_preloader.story_title_for(
                     event.chapter, event.line_id
@@ -1742,6 +1850,32 @@ class AppController:
                     if line is None or line.line_id is None
                     else cursor.observe_bounded_line(line.line_id, candidate_event_ids)
                 )
+        if line is None and cursor.state != StoryCursorState.PLAYING:
+            exact, exact_result = self.chapter_voice_preloader.resolve_exact_among(
+                character, text, plan.event_id_by_line_id, update_context=False
+            )
+            if exact_result not in {"expected-exact", "expected-normalized-exact"}:
+                exact = None
+            exact_event = (
+                plan.event_for_line(exact.line_id)
+                if exact is not None and exact.line_id
+                else None
+            )
+            allowed = {event.event_id for event in candidate_events}
+            if (
+                exact is not None
+                and exact_event is not None
+                and exact_event.event_id != previous_event_id
+                and exact_event.event_id not in allowed
+            ):
+                reader = self.live_reader
+                self.indexed_current_recovery = (
+                    exact,
+                    exact_event.event_id,
+                    getattr(reader, "run_id", None),
+                    self.observation_serial,
+                    getattr(reader, "latest_frame", None),
+                )
         if self._report_sequence_candidate_miss_if_needed(
             cursor,
             line,
@@ -1854,6 +1988,9 @@ class AppController:
         reader = self.live_reader
         if reader is not None and (
             reader.failed_auto_advance_generation == reader.active_generation
+            or reader.paused is True
+            or reader.emergency_stopped is True
+            or reader.stop_event.is_set() is True
         ):
             return None
         event = cursor.deterministic_visual_successor()
@@ -2207,7 +2344,69 @@ class AppController:
                 ),
             )
 
-    def _enqueue_selected_sequence_line(self, line: ChapterDialogue) -> bool:
+    def _indexed_current_recovery_locked(
+        self,
+    ) -> tuple[ChapterDialogue, str, object, int, object | None] | None:
+        recovery = self.indexed_current_recovery
+        reader = getattr(self, "live_reader", None)
+        if (
+            recovery is None
+            or reader is None
+            or self.shutdown_requested.is_set()
+            or reader.emergency_stopped is True
+            or recovery[2] != getattr(reader, "run_id", None)
+            or recovery[3] != self.observation_serial
+        ):
+            return None
+        if isinstance(reader, LiveDialogReader):
+            with reader.state_lock:
+                latest = reader.latest_frame
+                visible = reader.latest_frame_visible
+            captured = recovery[4]
+            if (
+                not visible
+                or captured is None
+                or latest is None
+                or (
+                    captured is not latest
+                    and not reader.frame_equivalent(captured, latest)
+                )
+            ):
+                return None
+        return recovery
+
+    def read_indexed_current_dialogue(self) -> bool:
+        """Explicitly read the displayed indexed recovery; never infer a graph edge."""
+        with self.story_cursor_lock:
+            recovery = self._indexed_current_recovery_locked()
+            reader = self.live_reader
+            cursor = self.story_cursor
+            if recovery is None or reader is None or cursor is None:
+                return False
+            line, event_id, _run, _serial, _frame = recovery
+            self.indexed_current_recovery = None
+            self.sequence_prefix_dispatch_lease = None
+            self.sequence_prefix_confirmation_event_id = None
+            reader.clear_queue()
+            cursor.anchor_event(event_id, "explicit-indexed-current-read")
+            accepted = self._enqueue_selected_sequence_line(
+                line, manual_continuation=True
+            )
+            if accepted:
+                reader.bind_current_frame_route()
+            else:
+                cursor.desynchronize("explicit-route-failed")
+            self._publish_live_sequence_status()
+        self.status_handler(
+            "Reading indexed current line; continue manually in the game"
+            if accepted
+            else "Indexed current line could not be queued"
+        )
+        return accepted
+
+    def _enqueue_selected_sequence_line(
+        self, line: ChapterDialogue, *, manual_continuation: bool = False
+    ) -> bool:
         self._prime_observed_voice(line.speaker)
         self._prime_likely_chapter_voice(line.speaker, line.text)
         self.history.finish_current()
@@ -2219,6 +2418,13 @@ class AppController:
             line.speaker,
             line.text,
             line_id=line.line_id,
+            **(
+                {
+                    "auto_advance_block_reason": "explicit-current-read-manual-continuation"
+                }
+                if manual_continuation
+                else {}
+            ),
         )
 
     def _record_and_display_dialogue(self, character: str | None, text: str) -> None:
@@ -3022,8 +3228,12 @@ class AppController:
 
     def _ocr_uncertain(self, result: OCRResult, minimum_confidence: float) -> None:
         with self.story_cursor_lock:
-            self.sequence_prefix_dispatch_lease = None
-        if self.live_reader is not None:
+            self.observation_serial += 1
+            self.indexed_current_recovery = None
+            transition_owned = self._expected_sequence_prefix_line_locked() is not None
+            if not transition_owned:
+                self.sequence_prefix_dispatch_lease = None
+        if self.live_reader is not None and not transition_owned:
             self.live_reader.clear_queue()
         preview = result.text if len(result.text) <= 80 else f"{result.text[:77]}..."
         self.dialog_handler(
@@ -3124,6 +3334,19 @@ class AppController:
         if state == "focus-wait":
             self.status_handler(
                 "Auto advance is waiting; focus the selected game window"
+            )
+        elif state == "typing":
+            self.status_handler(
+                "The game advanced; waiting for the next line to finish typing"
+            )
+        elif state == "recognition-wait":
+            self.status_handler(
+                "The game image changed; waiting to identify the next dialogue"
+            )
+        elif state == "successor-unavailable":
+            self.status_handler(
+                "The game image changed but the next dialogue is unavailable; "
+                "read the current line or continue manually"
             )
         elif state == "preparation-failed":
             self._report_preparation_failure(_generation)
@@ -3401,6 +3624,13 @@ class AppController:
         context_token = audio_lifecycle_context.set(
             {
                 "session_id": self.live_reader_session_id,
+                **(
+                    {"run_id": chunk.run_id or reader.run_id}
+                    if isinstance(chunk.run_id or getattr(reader, "run_id", None), str)
+                    else {}
+                ),
+                "playback_id": chunk.playback_id,
+                "capture_id": chunk.capture_id,
                 "generation": chunk.generation,
                 "chunk_id": chunk.chunk_id,
             }
@@ -3438,19 +3668,27 @@ class AppController:
             underflowed = outcome.underflowed
             generation_limited = outcome.generation_limited
             self._report_live_playback_outcome(chunk, outcome, source_audio_lead_ms)
+            if outcome.first_audio_at is not None:
+                reader.record_first_pcm(outcome.first_audio_at, chunk=chunk)
+            first_audio_ms = outcome.first_audio_ms
+            if (
+                outcome.first_audio_at is None
+                and isinstance(first_audio_ms, (int, float))
+                and not isinstance(first_audio_ms, bool)
+            ):
+                reader.record_first_pcm(
+                    playback_started + first_audio_ms / 1000,
+                    provenance="estimated",
+                    chunk=chunk,
+                )
             if outcome.status is PlaybackStatus.FAILED:
-                raise AudioPlaybackError(outcome.error or "Audio playback failed")
+                raise_playback_failure(outcome)
             if generation_limited:
                 self.status_handler(
                     "MOSS stopped at the dialogue safety limit; the line was not "
                     "cached. Auto advance remains safe after playback completes."
                 )
             self._observe_live_playback_backpressure(underflowed)
-            first_audio_ms = outcome.first_audio_ms
-            if isinstance(first_audio_ms, (int, float)) and not isinstance(
-                first_audio_ms, bool
-            ):
-                reader.record_first_pcm(playback_started + first_audio_ms / 1000)
             return bool(result)
         finally:
             audio_lifecycle_context.reset(context_token)
@@ -3526,6 +3764,15 @@ class AppController:
             "synthesis_ms": outcome.synthesis_ms,
             "playback_ms": outcome.playback_ms,
             "first_audio_ms": outcome.first_audio_ms,
+            "onset_provenance": (
+                outcome.onset_provenance
+                if outcome.first_audio_at is not None
+                else "estimated"
+                if outcome.first_audio_ms is not None
+                else "unobserved"
+            ),
+            "end_provenance": outcome.end_provenance,
+            "measurement": "software-output; physical-onset-unobserved",
             "cache_source": outcome.cache_source,
             "effective_source": outcome.audio_source,
             "source_audio_lead_ms": source_audio_lead_ms,
@@ -3727,11 +3974,10 @@ class AppController:
             with self.speaker_announcement_lock:
                 self.last_visible_speaker_key = speaker_key
         elif outcome.status is PlaybackStatus.FAILED:
-            self.error_handler(
-                AudioPlaybackError(
-                    outcome.error or "Speaker announcement playback failed"
-                )
-            )
+            try:
+                raise_playback_failure(outcome)
+            except Exception as error:
+                self.error_handler(error)
         return outcome
 
     def _observe_live_playback_backpressure(self, underflowed: bool) -> None:

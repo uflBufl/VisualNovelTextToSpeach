@@ -390,6 +390,8 @@ def write_pcm_chunks(
     audio: AudioData,
     sample_rate: int,
     cancelled: Callable[[], bool],
+    *,
+    first_write: Callable[[], None] | None = None,
 ) -> tuple[bool, bool]:
     """Write short blocks so only the owner thread ever stops the device."""
     samples = np.asarray(audio, dtype=np.float32)
@@ -404,6 +406,8 @@ def write_pcm_chunks(
         underflowed = (
             bool(stream.write(samples[offset : offset + block_frames])) or underflowed
         )
+        if not wrote and first_write is not None:
+            first_write()
         wrote = True
     return wrote and not cancelled(), underflowed
 
@@ -444,6 +448,19 @@ class SynchronousPcmPlaybackMixin:
             started = self.clock()
             underflowed = False
             first_audio_ms = None
+            first_audio_at = None
+
+            def first_write() -> None:
+                nonlocal first_audio_ms, first_audio_at
+                first_audio_at = self.clock()
+                first_audio_ms = (first_audio_at - started) * 1000
+                record_audio_lifecycle(
+                    "first-pcm",
+                    occurred_at=first_audio_at,
+                    timing_provenance="measured",
+                    reason="first-pcm-write-returned",
+                )
+
             try:
                 with self.playback_state_lock:
                     self.playback_active = True
@@ -466,13 +483,12 @@ class SynchronousPcmPlaybackMixin:
                             playback_guard is not None and not playback_guard()
                         )
 
-                    if len(audio) and not cancelled():
-                        first_audio_ms = (self.clock() - started) * 1000
                     completed, underflowed = write_pcm_chunks(
                         stream,
                         audio,
                         playback_sample_rate,
                         cancelled,
+                        first_write=first_write,
                     )
                 interrupted = not completed
             except Exception as error:
@@ -482,12 +498,14 @@ class SynchronousPcmPlaybackMixin:
                         PlaybackStatus.INTERRUPTED,
                         (self.clock() - started) * 1000,
                         first_audio_ms=first_audio_ms,
+                        first_audio_at=first_audio_at,
                     )
                 return outcome_for_prepared(
                     prepared,
                     PlaybackStatus.FAILED,
                     (self.clock() - started) * 1000,
                     first_audio_ms=first_audio_ms,
+                    first_audio_at=first_audio_at,
                     error=str(error),
                     error_type=type(error),
                 )
@@ -502,6 +520,7 @@ class SynchronousPcmPlaybackMixin:
             (self.clock() - started) * 1000,
             underflowed=underflowed,
             first_audio_ms=first_audio_ms,
+            first_audio_at=first_audio_at,
         )
 
     def stop(self) -> bool:

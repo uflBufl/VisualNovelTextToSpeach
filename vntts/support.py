@@ -43,10 +43,15 @@ SupportDetails = Mapping[str, object]
 class _Timeline(TypedDict):
     generation: int
     session_id: str | None
+    run_id: str | None
+    dropped_events: int
     events: OrderedDict[str, SupportDocument]
 
 
 audio_route_fields = (
+    "session_id",
+    "run_id",
+    "playback_id",
     "generation",
     "effective_source",
     "match_result",
@@ -62,6 +67,11 @@ audio_route_fields = (
 audio_lifecycle_fields = (
     "player_id",
     "attempt_id",
+    "run_id",
+    "playback_id",
+    "capture_id",
+    "occurred_at",
+    "timing_provenance",
     "session_id",
     "generation",
     "chunk_id",
@@ -116,6 +126,7 @@ runtime_event_fields = (*audio_route_fields, *live_scope_fields)
 
 generation_timeline_stages = (
     "capture",
+    "reading-control",
     "ocr",
     "stable-text",
     "route-decision",
@@ -123,6 +134,8 @@ generation_timeline_stages = (
     "generation-start",
     "canonical-full-text",
     "first-pcm",
+    "audio-onset-estimate",
+    "playback-start",
     "playback-completion",
     "playback-outcome",
     "key-dispatch",
@@ -156,6 +169,32 @@ sequence_timeline_stages = (
 )
 
 generation_timeline_detail_fields = (
+    "action",
+    "run_id",
+    "run_started_at",
+    "playback_id",
+    "timing_provenance",
+    "onset_provenance",
+    "end_provenance",
+    "measurement",
+    "capture_id",
+    "visibility_provenance",
+    "worker_stage",
+    "worker_state",
+    "worker_error_type",
+    "worker_progress_age_ms",
+    "frame_version",
+    "started_monotonic",
+    "completed_monotonic",
+    "window_id",
+    "owner_pid",
+    "window_bounds",
+    "capture_bounds",
+    "output_dimensions",
+    "success",
+    "error_type",
+    "mechanism",
+    "scope",
     "effective_source",
     "match_result",
     "fallback_reason",
@@ -228,7 +267,11 @@ class GenerationTimelineLog:
     ) -> None:
         self.maximum_entries = max(1, int(maximum_entries))
         self.path = Path(path).expanduser() if path is not None else None
-        self.timelines: OrderedDict[tuple[str | None, int], _Timeline] = OrderedDict()
+        self.timelines: OrderedDict[tuple[str | None, str | None, int], _Timeline] = (
+            OrderedDict()
+        )
+        self.clock_origin: float | None = None
+        self.event_sequence = 0
         self.lock = RLock()
 
     def record(
@@ -238,6 +281,7 @@ class GenerationTimelineLog:
         occurred_at: str | int | float,
         *,
         session_id: object | None = None,
+        run_id: object | None = None,
         **details: object,
     ) -> bool:
         if stage not in generation_timeline_stages + sequence_timeline_stages:
@@ -259,22 +303,43 @@ class GenerationTimelineLog:
             except (ValueError, AttributeError) as error:
                 raise ValueError("Timeline session ID must be a UUID") from error
 
+        if run_id is not None:
+            try:
+                run_id = UUID(str(run_id)).hex
+            except (ValueError, AttributeError) as error:
+                raise ValueError("Timeline run ID must be a UUID") from error
         with self.lock:
-            identity = session_id, generation
+            if self.clock_origin is None:
+                self.clock_origin = occurred_at
+            self.event_sequence += 1
+            identity = session_id, run_id, generation
             timeline = self.timelines.setdefault(
                 identity,
                 {
                     "generation": generation,
                     "session_id": session_id,
+                    "run_id": run_id,
+                    "dropped_events": 0,
                     "events": OrderedDict(),
                 },
             )
-            chunk_id = details.get("chunk_id")
-            event_key = f"{stage}:{chunk_id}" if chunk_id else stage
-            existing = timeline["events"].get(event_key, {})
+            existing = next(
+                (
+                    event
+                    for event in reversed(timeline["events"].values())
+                    if event.get("stage") == stage
+                ),
+                {},
+            )
             event = {
                 "stage": stage,
                 "occurred_at": occurred_at,
+                "monotonic_at": occurred_at,
+                "clock_origin": self.clock_origin,
+                "clock_elapsed_ms": _sanitize_event_value(
+                    (occurred_at - self.clock_origin) * 1000
+                ),
+                "event_sequence": self.event_sequence,
                 **{
                     key: _sanitize_event_value(details[key])
                     for key in generation_timeline_detail_fields
@@ -297,11 +362,16 @@ class GenerationTimelineLog:
                 event["ready_observations"] = _event_counter(
                     existing, "ready_observations"
                 ) + int(event.get("ready") is True)
-            # A stage can be reported by both the controller and the reader.
-            # Preserve richer source-specific details while updating its time.
-            timeline["events"][event_key] = {**existing, **event}
+            # Preserve repeats/retries; a later callback cannot rewrite evidence.
+            timeline["events"][str(self.event_sequence)] = event
+            while len(timeline["events"]) > 512:
+                timeline["events"].popitem(last=False)
+                timeline["dropped_events"] += 1
             self.timelines.move_to_end(identity)
-            while len(self.timelines) > self.maximum_entries:
+            while (
+                len(self.timelines) > self.maximum_entries
+                or sum(len(t["events"]) for t in self.timelines.values()) > 2000
+            ):
                 self.timelines.popitem(last=False)
             self._persist_locked()
         return True
@@ -344,9 +414,39 @@ class GenerationTimelineLog:
             ),
         }
         samples: dict[str, list[float]] = {name: [] for name in fields}
+        cohorts: dict[tuple[str, str, str, bool], dict[str, list[float]]] = {}
         with self.lock:
             for timeline in self.timelines.values():
+                attempts: dict[object, SupportDocument] = {}
                 for event in timeline["events"].values():
+                    playback_id = event.get("playback_id")
+                    if playback_id is not None:
+                        attempts.setdefault(playback_id, {}).update(event)
+                for event in timeline["events"].values():
+                    attempt = attempts.get(event.get("playback_id"), {})
+                    source = str(
+                        attempt.get("effective_source")
+                        or event.get("effective_source")
+                        or "unobserved"
+                    )
+                    cache = str(
+                        attempt.get("cache_source")
+                        or event.get("cache_source")
+                        or "unobserved"
+                    )
+                    provenance = str(
+                        event.get("timing_provenance")
+                        or attempt.get("onset_provenance")
+                        or attempt.get("timing_provenance")
+                        or "unobserved"
+                    )
+                    lead = optional_finite_number(attempt.get("source_audio_lead_ms"))
+                    identity = (
+                        source,
+                        cache,
+                        provenance,
+                        bool(lead is not None and lead > 0),
+                    )
                     for name, (stage, field) in fields.items():
                         value = optional_finite_number(event.get(field))
                         if (
@@ -355,15 +455,37 @@ class GenerationTimelineLog:
                             and value >= 0
                         ):
                             samples[name].append(value)
-        return {
-            name: {
+                            cohorts.setdefault(identity, {}).setdefault(
+                                name, []
+                            ).append(value)
+
+        def summarize(values: list[float]) -> SupportDocument:
+            return {
                 "samples": len(values),
                 "p50_ms": _percentile(values, 0.50),
                 "p95_ms": _percentile(values, 0.95),
             }
-            for name, values in samples.items()
-            if values
+
+        result: SupportDocument = {
+            name: summarize(values) for name, values in samples.items() if values
         }
+        if cohorts:
+            result["cohorts"] = [
+                {
+                    "effective_source": source,
+                    "cache_source": cache,
+                    "timing_provenance": provenance,
+                    "has_source_lead": has_lead,
+                    "model_warmth": "unobserved",
+                    "metrics": {
+                        name: summarize(values) for name, values in metrics.items()
+                    },
+                }
+                for (source, cache, provenance, has_lead), metrics in sorted(
+                    cohorts.items()
+                )
+            ]
+        return result
 
     def _persist_locked(self) -> None:
         if self.path is None:
@@ -390,6 +512,8 @@ class GenerationTimelineLog:
             result = {"generation": timeline["generation"], "events": []}
             if timeline["session_id"] is not None:
                 result["session_id"] = timeline["session_id"]
+            if timeline["run_id"] is not None:
+                result["run_id"] = timeline["run_id"]
             return result
         occurred_at = [
             value
@@ -417,9 +541,15 @@ class GenerationTimelineLog:
                     )
                 }
             )
-        result = {"generation": timeline["generation"], "events": serialized}
+        result = {
+            "generation": timeline["generation"],
+            "events": serialized,
+            "dropped_events": timeline["dropped_events"],
+        }
         if timeline["session_id"] is not None:
             result["session_id"] = timeline["session_id"]
+        if timeline["run_id"] is not None:
+            result["run_id"] = timeline["run_id"]
         return result
 
 
@@ -1230,7 +1360,7 @@ def _previous_generation_timelines(path: Path) -> list[SupportDocument]:
 def _read_previous_generation_timelines(path: Path) -> dict[str, object] | None:
     if path.is_symlink():
         return None
-    limit = 2 * 1024 * 1024
+    limit = 8 * 1024 * 1024
     try:
         with open_regular_binary(path) as source:
             payload = source.read(limit + 1)
@@ -1261,13 +1391,16 @@ def _sanitize_previous_timeline(timeline: object) -> SupportDocument | None:
         return None
     events = _sanitize_previous_events(timeline.get("events"))
     sanitized: SupportDocument = {"generation": generation, "events": events}
-    session_id = timeline.get("session_id")
-    if session_id is None:
-        return sanitized
-    try:
-        sanitized["session_id"] = UUID(str(session_id)).hex
-    except ValueError, AttributeError:
-        return None
+    dropped = timeline.get("dropped_events")
+    if isinstance(dropped, int) and not isinstance(dropped, bool) and dropped >= 0:
+        sanitized["dropped_events"] = dropped
+    for field in ("session_id", "run_id"):
+        value = timeline.get(field)
+        if value is not None:
+            try:
+                sanitized[field] = UUID(str(value)).hex
+            except ValueError, AttributeError:
+                return None
     return sanitized
 
 
@@ -1276,7 +1409,7 @@ def _sanitize_previous_events(raw_events: object) -> list[SupportDocument]:
         return []
     return [
         sanitized
-        for event in raw_events[-100:]
+        for event in raw_events[-512:]
         if (sanitized := _sanitize_previous_event(event)) is not None
     ]
 
@@ -1290,7 +1423,14 @@ def _sanitize_previous_event(event: object) -> SupportDocument | None:
         "stage": event["stage"],
         **{
             key: _sanitize_event_value(event[key])
-            for key in ("elapsed_ms", *generation_timeline_detail_fields)
+            for key in (
+                "elapsed_ms",
+                "monotonic_at",
+                "clock_origin",
+                "clock_elapsed_ms",
+                "event_sequence",
+                *generation_timeline_detail_fields,
+            )
             if key in event and event[key] is not None
         },
     }
@@ -2376,7 +2516,40 @@ def sanitize_diagnostic(snapshot: object) -> SupportDocument:
         "last_first_audio_ms": getattr(snapshot, "last_first_audio_ms", None),
         "cache_source": getattr(snapshot, "cache_source", None),
     }
-    return {key: _sanitize_event_value(value) for key, value in values.items()}
+    result = {key: _sanitize_event_value(value) for key, value in values.items()}
+    from vntts.capture_provenance import CaptureProvenance
+
+    provenance = getattr(snapshot, "capture_provenance", None)
+    if isinstance(provenance, Mapping):
+        allowed = {field.name for field in fields(CaptureProvenance)}
+        result["capture_provenance"] = {
+            key: (
+                _sanitize_capture_geometry(value)
+                if key in {"window_bounds", "capture_bounds", "output_dimensions"}
+                else _sanitize_event_value(value)
+            )
+            for key, value in provenance.items()
+            if key in allowed
+        }
+    return result
+
+
+def _sanitize_capture_geometry(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {
+            key: _sanitize_event_value(item)
+            for key, item in value.items()
+            if key in {"left", "top", "width", "height"}
+            and isinstance(item, (int, float))
+            and not isinstance(item, bool)
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _sanitize_event_value(item)
+            for item in value[:2]
+            if isinstance(item, (int, float)) and not isinstance(item, bool)
+        ]
+    return None
 
 
 def _ocr_metric_average(values: Sequence[int | float]) -> int | float | None:

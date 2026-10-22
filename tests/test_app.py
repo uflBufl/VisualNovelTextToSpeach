@@ -46,6 +46,7 @@ from vntts.app import (  # noqa: E402
 from vntts.async_ui import LatestTaskRunner  # noqa: E402
 from vntts.cli import CLIReportResult  # noqa: E402
 from vntts.controller import AppController, LiveSequenceStatus  # noqa: E402
+from vntts.dashboard_ui import RuntimeControlState
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.generated_audio import AudioRouteTrace  # noqa: E402
 from vntts.ocr import (  # noqa: E402
@@ -5640,6 +5641,7 @@ class TrayApplicationTest(unittest.TestCase):
     def test_manual_diagnostics_hides_window_before_capture(self):
         controller = Mock()
         controller.is_live_running = False
+        controller.commit_diagnostic_snapshot.side_effect = lambda snapshot: snapshot
         controller.inspect_current_dialog.return_value = DiagnosticSnapshot(
             None,
             text="Fresh manual capture",
@@ -6043,6 +6045,39 @@ class TrayApplicationTest(unittest.TestCase):
         settings.assert_called_once_with()
         tray_application.shutdown()
 
+    def test_indexed_current_read_is_available_on_all_controls_without_position_picker(
+        self,
+    ):
+        controller = Mock(is_live_running=True, is_one_shot_read_running=False)
+        controller.runtime_control_snapshot.return_value = {
+            "starting": False,
+            "speaking": False,
+            "queued": False,
+        }
+        controller.get_live_sequence_status.return_value = LiveSequenceStatus(
+            "audio-auto", "waiting-transition", indexed_current_event_id="event-111"
+        )
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        try:
+            tray.set_ready(True)
+            self.assertTrue(tray.read_action.isEnabled())
+            self.assertTrue(tray.dashboard.read_button.isEnabled())
+            self.assertTrue(tray.compact_controller.read_button.isEnabled())
+            self.assertEqual(
+                tray.dashboard.read_button.text(), "Read indexed current line"
+            )
+            with patch.object(tray, "choose_sequence_position") as picker:
+                tray.read_once()
+            controller.read_indexed_current_dialogue.assert_called_once_with()
+            controller.read_once.assert_not_called()
+            picker.assert_not_called()
+        finally:
+            tray.shutdown()
+
     def test_native_hotkey_callbacks_are_queued_on_the_qt_thread(self):
         read_threads, live_threads = [], []
         controller = Mock(is_live_running=False, live_reader=None)
@@ -6071,7 +6106,7 @@ class TrayApplicationTest(unittest.TestCase):
                 with patch.object(
                     tray,
                     "_runtime_control_state",
-                    return_value=Mock(can_read=True, active=False, transition=None),
+                    return_value=RuntimeControlState(ready=True),
                 ):
                     with ThreadPoolExecutor(max_workers=1) as executor:
                         executor.submit(activate).result(timeout=2)
@@ -6974,6 +7009,162 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(controller.stop_live.call_count, 2)
         controller.toggle_live.assert_not_called()
         tray_application.shutdown()
+
+    def test_modal_retry_waits_for_speech_after_capture_already_stopped(self):
+        for target in ("settings", "history", "voices", "preparation"):
+            with self.subTest(target=target):
+                controller = Mock(is_ready=True, is_live_running=True)
+                controller.live_reader.runtime_control_snapshot.return_value = {}
+                controller.stop_live.side_effect = lambda: setattr(
+                    controller, "is_live_running", False
+                )
+                controller.live_reader.wait.side_effect = TimeoutError("speech busy")
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=controller),
+                )
+                tray.set_ready(True)
+                tray.live_stop_runner.thread_pool = ImmediateTaskPool()
+                opener = {
+                    "settings": tray.open_settings,
+                    "history": tray.open_history,
+                    "voices": tray.open_voice_previews,
+                    "preparation": tray.open_pregeneration,
+                }[target]
+                with (
+                    patch.object(tray, "_create_settings_dialog") as settings,
+                    patch.object(tray, "_open_history_dialog") as history,
+                    patch.object(tray, "_open_narrator_picker") as voices,
+                    patch("vntts.app.OfflineAudioPreparationDialog") as preparation,
+                ):
+                    settings.return_value.exec.return_value = (
+                        QDialog.DialogCode.Rejected
+                    )
+                    opener()
+                    self.wait_until(lambda: not tray.live_stop_runner.active)
+                    self.assertFalse(controller.is_live_running)
+                    self.assertTrue(tray._needs_modal_stop())
+                    pool = ManualThreadPool()
+                    tray.live_stop_runner.thread_pool = pool
+                    controller.live_reader.wait.side_effect = None
+                    opener()
+                    self.assertTrue(tray.live_stop_runner.active)
+                    for opened in (settings, history, voices, preparation):
+                        opened.assert_not_called()
+                    heartbeat = []
+                    QTimer.singleShot(0, lambda: heartbeat.append(True))
+                    self.application.processEvents()
+                    self.assertEqual(heartbeat, [True])
+                    # Do not launch the preparation UI; its retry gate is the same.
+                    if target == "preparation":
+                        tray._live_stop_continuation = Mock()
+                    pool.run_next()
+                    self.wait_until(lambda: not tray.live_stop_runner.active)
+                    self.wait_until(lambda: not tray._needs_modal_stop())
+                    self.application.processEvents()
+                    if target == "settings":
+                        settings.assert_called_once_with()
+                    elif target == "history":
+                        history.assert_called_once_with(False)
+                    elif target == "voices":
+                        self.assertFalse(voices.call_args.args[0])
+                    controller.toggle_live.assert_not_called()
+                tray.shutdown()
+
+    def test_settings_waits_for_one_shot_capture_and_speech_without_live_capture(self):
+        class WaitingController(Mock):
+            def wait_for_reading(self, timeout_seconds=5.0, *, include_speech=True):
+                self.drain(
+                    timeout_seconds=timeout_seconds, include_speech=include_speech
+                )
+
+        controller = WaitingController(
+            is_ready=True, is_live_running=False, is_one_shot_read_running=True
+        )
+        controller.runtime_control_snapshot.return_value = {
+            "starting": True,
+            "queued": True,
+        }
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.set_ready(True)
+        pool = ManualThreadPool()
+        tray.live_stop_runner.thread_pool = pool
+
+        def drained(**_kwargs):
+            controller.is_one_shot_read_running = False
+            controller.runtime_control_snapshot.return_value = {}
+
+        controller.drain.side_effect = drained
+        with patch.object(tray, "_create_settings_dialog") as settings:
+            settings.return_value.exec.return_value = QDialog.DialogCode.Rejected
+            tray.open_settings()
+            self.assertTrue(tray.live_stop_runner.active)
+            settings.assert_not_called()
+            pool.run_next()
+            self.wait_until(lambda: settings.called)
+        controller.drain.assert_called_once_with(
+            timeout_seconds=5.0, include_speech=True
+        )
+        controller.live_reader.wait.assert_not_called()
+        controller.toggle_live.assert_not_called()
+
+    def test_one_shot_lifecycle_snapshot_refreshes_all_reading_controls(self):
+        controller = Mock(is_ready=True, is_live_running=False)
+        snapshot = {"starting": False, "speaking": True, "queued": False}
+        controller.runtime_control_snapshot.side_effect = lambda: dict(snapshot)
+        controller.live_reader.runtime_control_snapshot.return_value = {
+            "speaking": True
+        }
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.set_ready(True)
+        self.assertEqual(
+            tray.dashboard.reading_state.text(), "Speaking current dialogue"
+        )
+        self.assertEqual(tray.compact_controller.mode.text(), "Speaking")
+        self.assertEqual(tray.live_action.text(), "Stop reading")
+        self.assertFalse(tray.read_action.isEnabled())
+
+        snapshot["speaking"] = False
+        tray.speech_runtime_timer.timeout.emit()
+        self.assertEqual(tray.dashboard.reading_state.text(), "Reading stopped")
+        self.assertEqual(tray.compact_controller.mode.text(), "Ready")
+        self.assertEqual(tray.live_action.text(), "Start reading")
+        self.assertTrue(tray.read_action.isEnabled())
+        self.assertTrue(tray.dashboard.read_button.isEnabled())
+        self.assertTrue(tray.compact_controller.read_button.isEnabled())
+
+    def test_presented_stop_cannot_start_a_read_that_just_finished(self):
+        for control in ("tray", "dashboard", "compact"):
+            with self.subTest(control=control):
+                controller = Mock(is_ready=True, is_live_running=False)
+                snapshot = {"starting": False, "speaking": True}
+                controller.runtime_control_snapshot.side_effect = lambda: dict(snapshot)
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=controller),
+                )
+                tray.set_ready(True)
+                snapshot["speaking"] = False
+                with patch.object(tray, "_request_stop_reading") as stop:
+                    if control == "tray":
+                        tray.live_action.trigger()
+                    elif control == "dashboard":
+                        tray.dashboard.live_button.click()
+                    else:
+                        tray.compact_controller.live_button.click()
+                    stop.assert_called_once_with()
+                controller.toggle_live.assert_not_called()
+                controller.read_once.assert_not_called()
 
     def test_live_modal_backend_stop_does_not_block_qt_events(self):
         controller = Mock(is_live_running=True)

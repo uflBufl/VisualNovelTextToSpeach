@@ -76,7 +76,11 @@ from vntts.main import (
 )
 from vntts.ocr import DialogRegion, OCRResult
 from vntts.playback import PreparedPlayback
-from vntts.services.tts_engine import AudioPlaybackError, TTSSynthesisError
+from vntts.services.tts_engine import (
+    AudioPlaybackError,
+    TTSConfigurationError,
+    TTSSynthesisError,
+)
 from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.support import GenerationTimelineLog
@@ -726,6 +730,24 @@ class MainTest(unittest.TestCase):
             ocr_regions=None,
             result_resolver=None,
         )
+
+    def test_cancelled_one_time_read_stays_pending_until_its_worker_drains(self):
+        future = Future()
+        future.set_running_or_notify_cancel()
+        executor = Mock()
+        executor.submit.return_value = future
+        schedule = create_dialog_read_scheduler(
+            executor, Mock(), Path("captures"), speech_handler=Mock()
+        )
+        self.assertTrue(schedule())
+        schedule.cancel()
+        self.assertFalse(schedule.is_running)
+        self.assertTrue(schedule.has_pending_work)
+        with self.assertRaises(TimeoutError):
+            schedule.wait(0.001)
+        future.set_result(None)
+        schedule.wait(0.1)
+        self.assertFalse(schedule.has_pending_work)
 
     def test_cancelled_one_time_read_drops_late_ocr_speech(self):
         executor = Mock()
@@ -2010,7 +2032,7 @@ class MainTest(unittest.TestCase):
         released = Event()
         live_reader = Mock(is_running=True)
 
-        def wait():
+        def wait(**_kwargs):
             waiting.set()
             released.wait(2)
             live_reader.is_running = False
@@ -2703,6 +2725,123 @@ class MainTest(unittest.TestCase):
             pipeline_event_handler=pipeline,
         )
         return controller, lines, pipeline
+
+    def test_uncertain_old_frame_preserves_valid_owned_prefix_but_cannot_route(self):
+        controller, lines, _pipeline = self._sequence_controller()
+        backend = GeneratedAudioFallbackBackend(
+            Mock(), Mock(), controller.chapter_voice_preloader, audio_output=Mock()
+        )
+        backend.reserve_generated_line_for_early_playback = Mock(return_value=True)
+        controller.speech_backend = backend
+        controller.live_reader = Mock(
+            active_generation=1,
+            failed_auto_advance_generation=None,
+            paused=False,
+            emergency_stopped=False,
+        )
+        controller.live_reader.stop_event.is_set.return_value = False
+        cursor = controller.story_cursor
+        cursor.anchor_event("event-1")
+        cursor.begin_playback()
+        cursor.finish_playback()
+        cursor.dispatch_advance()
+        lease = SequenceEventLease("event-1", cursor.occurrence_id)
+        controller.sequence_prefix_dispatch_lease = lease
+        controller._ocr_uncertain(
+            OCRResult("Narrator", lines[0].text, 0, "test", 2), 60
+        )
+        self.assertEqual(controller.sequence_prefix_dispatch_lease, lease)
+        controller.live_reader.clear_queue.assert_not_called()
+        self.assertEqual(cursor.current_event_id, "event-1")
+        self.assertIsInstance(
+            controller._dialog_observed("Rhiannon", "N"), CanonicalDialogRoute
+        )
+        self.assertEqual(cursor.current_event_id, "event-2")
+
+    def test_indexed_out_of_order_recovery_is_explicit_once_and_manual(self):
+        controller, lines, _pipeline = self._sequence_controller()
+        third = replace(
+            lines[0],
+            line_id="reverse1999:1:111",
+            sequence=111,
+            text="An indexed replacement.",
+            text_sha256=text_sha256("An indexed replacement."),
+        )
+        controller.chapter_voice_preloader = ChapterVoicePreloader((*lines, third))
+        plan = controller.live_sequence_plan
+        plan.events["event-111"] = replace(
+            plan.events["event-2"],
+            event_id="event-111",
+            sequence=111,
+            line_id=third.line_id,
+        )
+        plan.event_id_by_line_id[third.line_id] = "event-111"
+        controller.live_reader = Mock(
+            run_id="run", active_generation=1, emergency_stopped=False, is_running=True
+        )
+        controller.story_cursor.anchor_event("event-1")
+        controller.story_cursor.begin_playback()
+        controller.story_cursor.finish_playback()
+        controller.story_cursor.dispatch_advance()
+        self.assertFalse(controller._dialog_observed(third.speaker, third.text))
+        self.assertEqual(
+            controller.get_live_sequence_status().indexed_current_event_id, "event-111"
+        )
+        self.assertEqual(controller.story_cursor.current_event_id, "event-1")
+        recovery = controller.indexed_current_recovery
+        controller._dialog_observed(None, "")
+        self.assertIsNone(
+            controller.get_live_sequence_status().indexed_current_event_id
+        )
+        controller.indexed_current_recovery = recovery
+        self.assertFalse(controller.read_indexed_current_dialogue())
+        self.assertFalse(controller._dialog_observed(third.speaker, third.text))
+        self.assertTrue(controller.read_indexed_current_dialogue())
+        controller.live_reader.bind_current_frame_route.assert_called_once_with()
+        controller.live_reader.enqueue.assert_called_once_with(
+            third.speaker,
+            third.text,
+            line_id=third.line_id,
+            auto_advance_block_reason="explicit-current-read-manual-continuation",
+        )
+        self.assertEqual(controller.story_cursor.current_event_id, "event-111")
+        self.assertFalse(controller.read_indexed_current_dialogue())
+
+    def test_live_playback_preserves_safe_failure_type_and_actual_pcm_clock(self):
+        for error_type in (
+            TTSConfigurationError,
+            TTSSynthesisError,
+            AudioPlaybackError,
+        ):
+            with self.subTest(error_type=error_type):
+                controller = AppController(AppSettings(), tts_factory=Mock())
+                controller.live_reader = Mock()
+                controller.speech_backend = StubTypedPlaybackBackend(
+                    PlaybackOutcome(
+                        PlaybackStatus.FAILED, 12, error="failed", error_type=error_type
+                    )
+                )
+                with self.assertRaises(error_type):
+                    controller._play_live_chunk(
+                        SpeechChunk(1, "Narrator", "text"),
+                        controller.speech_backend.prepared,
+                    )
+        controller.speech_backend = StubTypedPlaybackBackend(
+            PlaybackOutcome(
+                PlaybackStatus.COMPLETED,
+                12,
+                first_audio_at=123.456,
+                first_audio_ms=999,
+                onset_provenance="measured",
+            )
+        )
+        controller._play_live_chunk(
+            SpeechChunk(2, "Narrator", "text"), controller.speech_backend.prepared
+        )
+        controller.live_reader.record_first_pcm.assert_called_once()
+        self.assertEqual(
+            controller.live_reader.record_first_pcm.call_args.args, (123.456,)
+        )
 
     def test_reloading_sequence_plan_clears_prefix_transition_ownership(self):
         controller, _lines, _pipeline = self._sequence_controller()
@@ -5807,6 +5946,11 @@ class MainTest(unittest.TestCase):
         )
         completion, playback_outcome = playback_events
         expected_shared_telemetry = {
+            "playback_id": chunk.playback_id,
+            "capture_id": chunk.capture_id,
+            "onset_provenance": "estimated",
+            "end_provenance": "unobserved",
+            "measurement": "software-output; physical-onset-unobserved",
             "outcome": "completed",
             "underflowed": True,
             "generation_limited": True,

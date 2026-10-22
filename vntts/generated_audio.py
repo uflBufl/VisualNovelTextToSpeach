@@ -150,7 +150,7 @@ class GeneratedAudioRoute:
     prepared: PreparedGeneratedAudio
     trace: AudioRouteTrace
     synthesis_ms: float = 0.0
-    first_audio_ms: float | None = 0.0
+    first_audio_ms: float | None = None
     cache_source: str | None = "generated-audio"
     source_audio_lead_seconds: float = 0.0
 
@@ -1355,6 +1355,20 @@ class AudioRoutePlaybackOwner:
                     None,
                 )
             started = self.router.clock()
+            first_audio_at = None
+
+            def first_write() -> None:
+                nonlocal first_audio_at
+                first_audio_at = self.router.clock()
+                from vntts.audio_lifecycle import record_audio_lifecycle
+
+                record_audio_lifecycle(
+                    "first-pcm",
+                    occurred_at=first_audio_at,
+                    timing_provenance="measured",
+                    reason="first-pcm-write-returned",
+                )
+
             if not self._activate("generated", clear=self.generated_audio_stop):
                 return _route_outcome(route, PlaybackStatus.INTERRUPTED, None)
             try:
@@ -1409,6 +1423,7 @@ class AudioRoutePlaybackOwner:
                                 self.generated_audio_stop.is_set()
                                 or (playback_guard is not None and not playback_guard())
                             ),
+                            first_write=first_write,
                         )
                 else:
                     self.router.audio_output.play(
@@ -1416,6 +1431,7 @@ class AudioRoutePlaybackOwner:
                         sample_rate,
                         latency=self.router.playback_latency,
                     )
+                    # The compatibility play API exposes submission, not PCM onset.
                     status = self.router.audio_output.wait()
                     underflowed = bool(getattr(status, "output_underflow", False))
                     completed = not self.generated_audio_stop.is_set()
@@ -1430,7 +1446,16 @@ class AudioRoutePlaybackOwner:
                     playback_status,
                     (self.router.clock() - started) * 1000,
                     underflowed=underflowed,
-                    first_audio_ms=route.first_audio_ms,
+                    first_audio_ms=(
+                        None
+                        if first_audio_at is None
+                        else (first_audio_at - started) * 1000
+                    ),
+                    first_audio_at=first_audio_at,
+                    onset_provenance=(
+                        "measured" if first_audio_at is not None else "unobserved"
+                    ),
+                    end_provenance="measured",
                     source_sample_rate=route.prepared.sample_rate,
                     playback_sample_rate=sample_rate,
                     sample_count=sample_count,
@@ -1441,7 +1466,16 @@ class AudioRoutePlaybackOwner:
                     route,
                     PlaybackStatus.FAILED,
                     (self.router.clock() - started) * 1000,
-                    first_audio_ms=route.first_audio_ms,
+                    first_audio_ms=(
+                        None
+                        if first_audio_at is None
+                        else (first_audio_at - started) * 1000
+                    ),
+                    first_audio_at=first_audio_at,
+                    onset_provenance=(
+                        "measured" if first_audio_at is not None else "unobserved"
+                    ),
+                    end_provenance="measured",
                     error=str(error),
                 )
             finally:
@@ -1485,6 +1519,7 @@ class AudioRoutePlaybackOwner:
                 None,
                 first_audio_ms=route.first_audio_ms,
                 error=str(error),
+                error_type=type(error),
             )
         finally:
             self._deactivate()
@@ -2343,10 +2378,14 @@ def _route_outcome(
     generation_limited: bool = False,
     first_audio_ms: float | None = None,
     error: str | None = None,
+    error_type: type[Exception] | None = None,
     source_sample_rate: int | None = None,
     playback_sample_rate: int | None = None,
     sample_count: int | None = None,
     expected_playback_ms: float | None = None,
+    first_audio_at: float | None = None,
+    onset_provenance: str = "unobserved",
+    end_provenance: str = "estimated",
 ) -> PlaybackOutcome:
     return PlaybackOutcome(
         status,
@@ -2354,7 +2393,17 @@ def _route_outcome(
         underflowed=underflowed,
         generation_limited=generation_limited,
         first_audio_ms=first_audio_ms,
+        first_audio_at=first_audio_at,
+        onset_provenance=onset_provenance,
+        end_provenance=(
+            end_provenance
+            if playback_ms is not None
+            and status is not PlaybackStatus.PASSTHROUGH_UNOBSERVED
+            and not isinstance(route, AudioEventOmissionRoute)
+            else "unobserved"
+        ),
         error=error,
+        error_type=error_type,
         synthesis_ms=route.synthesis_ms,
         cache_source=route.cache_source,
         audio_source=route.trace.effective_source,

@@ -234,6 +234,17 @@ class ReplayAudioOutput:
     def query_devices(self, *, kind: str) -> dict[str, int]:
         return {"default_samplerate": 24_000}
 
+    @contextmanager
+    def OutputStream(
+        self, *, samplerate: int, **_options: object
+    ) -> Generator[_ReplayPcmStream, None, None]:
+        stream = _ReplayPcmStream(self, samplerate)
+        try:
+            yield stream
+        finally:
+            if stream.blocks:
+                self.play(np.concatenate(stream.blocks), samplerate, latency="replay")
+
     def play(
         self,
         audio: object,
@@ -255,6 +266,17 @@ class ReplayAudioOutput:
 
     def stop(self) -> None:
         return None
+
+
+class _ReplayPcmStream:
+    def __init__(self, output: ReplayAudioOutput, sample_rate: int) -> None:
+        self.output = output
+        self.sample_rate = sample_rate
+        self.blocks: list[np.ndarray] = []
+
+    def write(self, samples: object) -> bool:
+        self.blocks.append(np.asarray(samples, dtype="<f4").copy())
+        return False
 
 
 class ReplayLiveSpeechBackend:
@@ -301,6 +323,7 @@ class ReplayLiveSpeechBackend:
             PlaybackStatus.COMPLETED if completed else PlaybackStatus.INTERRUPTED,
             0.0,
             first_audio_ms=prepared.first_audio_ms if completed else None,
+            first_audio_at=monotonic() if completed else None,
         )
 
     def stop(self) -> bool:
@@ -920,13 +943,13 @@ class LiveReplayRunner:
                 dict(trace.support_fields()) | {"generation": chunk.generation}
             )
             occurred_at = monotonic()
-            timelines.record(
+            reader._report_pipeline_event(
                 "route-decision",
                 chunk.generation,
                 occurred_at,
                 **trace.support_details(),
             )
-            timelines.record(
+            reader._report_pipeline_event(
                 "voice-resolution",
                 chunk.generation,
                 occurred_at,
@@ -962,11 +985,15 @@ class LiveReplayRunner:
                 "chunk_ordinal": chunk.ordinal,
                 "chunk_characters": len(chunk.text),
             }
-            if outcome.first_audio_ms is not None:
+            if outcome.first_audio_at is not None:
+                reader.record_first_pcm(outcome.first_audio_at, chunk=chunk)
+            elif outcome.first_audio_ms is not None:
                 reader.record_first_pcm(
-                    playback_started + outcome.first_audio_ms / 1000
+                    playback_started + outcome.first_audio_ms / 1000,
+                    provenance="estimated",
+                    chunk=chunk,
                 )
-            timelines.record(
+            reader._report_pipeline_event(
                 "playback-outcome",
                 chunk.generation,
                 monotonic(),

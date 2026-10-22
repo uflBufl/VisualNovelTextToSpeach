@@ -6,7 +6,9 @@ from dataclasses import dataclass, replace
 from threading import TIMEOUT_MAX, Condition, Event, RLock, Timer
 from time import monotonic
 from typing import Literal, ParamSpec, Protocol, TypeAlias, TypeVar
+from uuid import uuid4
 
+from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.cleanup import cleanup_on_exit
 from vntts.live_tracking import IncrementalDialogTracker, SpeechChunk
 from vntts.live_tracking import TrackerProbe as TrackerProbe
@@ -74,6 +76,9 @@ class LivePipelineMetrics:
     max_speech_queue_depth: int = 0
     last_capture_at: float | None = None
     last_ocr_at: float | None = None
+    last_ocr_capture_at: float | None = None
+    last_ocr_capture_id: str | None = None
+    last_ocr_frame_version: int | None = None
     last_sentence_ready_at: float | None = None
     last_synthesis_at: float | None = None
     last_playback_at: float | None = None
@@ -267,6 +272,7 @@ class LiveDialogReader:
         report_error: Callable[[Exception], object],
         frame_fingerprint: Callable[[Frame], FrameFingerprint] | None = None,
         frame_render_fingerprint: Callable[[Frame], FrameFingerprint] | None = None,
+        frame_equivalent: Callable[[Frame, Frame], bool] | None = None,
         frame_presence: Callable[[Frame], bool] | None = None,
         frame_completion: Callable[[Frame], bool] | None = None,
         frame_recheck_required: Callable[[], bool] | None = None,
@@ -320,6 +326,7 @@ class LiveDialogReader:
         # activity. Keep that as a sentinel so capture does not compute an
         # expensive fingerprint twice for replay readers.
         self.frame_render_fingerprint = frame_render_fingerprint
+        self.frame_equivalent = frame_equivalent or (lambda _before, _after: False)
         self.frame_presence = frame_presence or (lambda _frame: True)
         self.frame_completion = frame_completion or (lambda _frame: False)
         self.frame_recheck_required = frame_recheck_required or (lambda: False)
@@ -395,6 +402,8 @@ class LiveDialogReader:
         self.interrupt_on_dialog_replacement = bool(interrupt_on_dialog_replacement)
         self.first_pcm_on_prepare = bool(first_pcm_on_prepare)
         self._initialize_worker_state(shutdown_requested)
+        self.run_id = uuid4().hex
+        self.run_started_at = monotonic()
         self.active_generation = 0
         self._explicit_generation_offset = 0
         self.suppressed_generation: int | None = None
@@ -426,6 +435,14 @@ class LiveDialogReader:
         self.auto_advance_timer: Timer | None = None
         self._auto_advance_timer_serial = 0
         self.focus_probe_failed = False
+        self.ocr_worker_stage = "not-started"
+        self.ocr_worker_progress_at = monotonic()
+        self.pending_transition_frame: Frame | None = None
+        self.pending_transition_progress_at: float | None = None
+        self.pending_transition_seen = False
+        self.pending_transition_typing = False
+        self.pending_transition_text = ""
+        self.latest_frame_captured_at: float | None = None
         self.latest_frame: Frame | None = None
         self.latest_frame_fingerprint: FrameFingerprint | None = None
         self.latest_frame_visible = False
@@ -433,6 +450,8 @@ class LiveDialogReader:
         self.latest_render_fingerprint: FrameFingerprint | None = None
         self.latest_render_owner: object | None = None
         self.latest_render_changed_at: float | None = None
+        self.routed_frame: Frame | None = None
+        self.candidate_frame: Frame | None = None
         self.routed_frame_fingerprint: FrameFingerprint | None = None
         self.frame_route_epoch = 0
         self.candidate_frame_fingerprint = object()
@@ -526,6 +545,8 @@ class LiveDialogReader:
                 return False
             self.emergency_stopped = False
             self.stop_event = Event()
+            self.run_id = uuid4().hex
+            self.run_started_at = monotonic()
             self.active_generation = 0
             self._explicit_generation_offset = 0
             self.suppressed_generation = None
@@ -544,6 +565,9 @@ class LiveDialogReader:
             self.auto_advance_visual_wait_generation = None
             self.focus_probe_failed = False
             self._cancel_auto_advance_locked()
+            self.pending_transition_seen = False
+            self.pending_transition_typing = False
+            self.pending_transition_text = ""
             self.latest_frame = None
             self.latest_frame_fingerprint = None
             self.latest_frame_visible = False
@@ -551,6 +575,8 @@ class LiveDialogReader:
             self.latest_render_fingerprint = None
             self.latest_render_owner = None
             self.latest_render_changed_at = None
+            self.routed_frame = None
+            self.candidate_frame = None
             self.routed_frame_fingerprint = None
             self.frame_route_epoch += 1
             self._reset_stable_frame_candidate_locked()
@@ -585,6 +611,7 @@ class LiveDialogReader:
             ):
                 return False
             self.stop_event.set()
+            self.frame_route_epoch += 1
             self.paused = False
             self.pending_auto_advance_generation = None
             self.auto_advance_attempts = 0
@@ -592,6 +619,9 @@ class LiveDialogReader:
             self.auto_advance_visual_wait_generation = None
             self.pause_condition.notify_all()
             self._cancel_auto_advance_locked()
+        self._report_pipeline_event(
+            "reading-control", self.active_generation, action="stop-capture"
+        )
         return True
 
     def set_auto_advance(self, callback: Callable[[], object] | None) -> bool:
@@ -684,9 +714,21 @@ class LiveDialogReader:
         if not self.paused:
             self._resume_auto_advance_confirmation()
             self._maybe_auto_advance()
+        self._report_pipeline_event(
+            "reading-control",
+            self.active_generation,
+            action="pause" if self.paused else "resume",
+        )
         return self.paused
 
-    def enqueue(self, character: str, text: str, *, line_id: str | None = None) -> bool:
+    def enqueue(
+        self,
+        character: str,
+        text: str,
+        *,
+        line_id: str | None = None,
+        auto_advance_block_reason: str | None = None,
+    ) -> bool:
         with self.state_lock:
             if self.is_shutting_down:
                 return False
@@ -694,6 +736,9 @@ class LiveDialogReader:
             # Explicit lines advance the shared queue without advancing the OCR tracker.
             self._explicit_generation_offset += 1
             self._set_generation(generation)
+            if auto_advance_block_reason is not None:
+                self.auto_advance_blocked_generation = generation
+                self.auto_advance_block_reason = auto_advance_block_reason
         self._schedule([SpeechChunk(generation, character, text, line_id=line_id)])
         return True
 
@@ -795,6 +840,9 @@ class LiveDialogReader:
                 self.stop_event.set()
                 self.pause_condition.notify_all()
             cleared = self.clear_queue()
+        self._report_pipeline_event(
+            "reading-control", self.active_generation, action="emergency-stop"
+        )
         return was_running or cleared
 
     def resume_after_emergency(self) -> bool:
@@ -942,6 +990,7 @@ class LiveDialogReader:
                     )
                     replaced = self.frame_version > self.processed_frame_version
                     self.latest_frame = frame
+                    self.latest_frame_captured_at = monotonic()
                     self.latest_frame_fingerprint = fingerprint
                     self.latest_frame_visible = visible
                     self.latest_frame_complete = complete
@@ -957,6 +1006,15 @@ class LiveDialogReader:
                         self.latest_render_owner = render_owner
                         self.latest_render_changed_at = captured_at
                     self.frame_version += 1
+                    if (
+                        self.pending_auto_advance_generation == self.active_generation
+                        and visible
+                        and fingerprint != self.routed_frame_fingerprint
+                    ):
+                        anchor = self.pending_transition_frame
+                        if anchor is None or not self.frame_equivalent(anchor, frame):
+                            self.pending_transition_seen = True
+                            self.pending_transition_progress_at = monotonic()
                     metrics = self.pipeline_metrics
                     self.pipeline_metrics = replace(
                         metrics,
@@ -996,7 +1054,12 @@ class LiveDialogReader:
         except Exception as error:
             self.report_error(error)
 
-    def _record_ocr_completion(self) -> None:
+    def _record_ocr_completion(
+        self,
+        frame: Frame | None = None,
+        frame_version: int | None = None,
+        captured_at: float | None = None,
+    ) -> None:
         with self.state_lock:
             metrics = self.pipeline_metrics
             now = monotonic()
@@ -1004,6 +1067,11 @@ class LiveDialogReader:
                 metrics,
                 recognized_frames=metrics.recognized_frames + 1,
                 last_ocr_at=now,
+                last_ocr_capture_at=captured_at,
+                last_ocr_capture_id=getattr(
+                    getattr(frame, "provenance", None), "capture_id", None
+                ),
+                last_ocr_frame_version=frame_version,
                 last_speaker_resolved_at=now,
             )
 
@@ -1016,31 +1084,88 @@ class LiveDialogReader:
         visible: bool,
         complete: bool,
         render_fingerprint: object,
+        frame: Frame | None = None,
     ) -> bool:
-        growing_expected_prefix = bool(
-            purpose == "expected-successor-prefix"
-            and self.ocr_purpose() == purpose
-            and recognition_owner == self.stable_frame_owner()
-            and self._is_focused()
-        )
+        # Ownership/focus are barriers even when pixels happen to match.
+        if (
+            self.ocr_purpose() != purpose
+            or recognition_owner != self.stable_frame_owner()
+            or not self._is_focused()
+        ):
+            return False
         with self.state_lock:
-            growing_expected_prefix = bool(
-                growing_expected_prefix
-                and recognition_epoch == self.frame_route_epoch
-                and self.latest_frame_visible
-            )
-            if not growing_expected_prefix and (
-                purpose == "expected-successor-prefix"
-                or fingerprint != self.latest_frame_fingerprint
+            if (
+                self.stop_event.is_set()
+                or self.paused
+                or self.emergency_stopped
+                or self.is_shutting_down
+                or recognition_epoch != self.frame_route_epoch
                 or visible != self.latest_frame_visible
+            ):
+                return False
+            if purpose == "expected-successor-prefix":
+                return bool(self.latest_frame_visible and not self.stop_event.is_set())
+            changed = (
+                fingerprint != self.latest_frame_fingerprint
                 or complete != self.latest_frame_complete
                 or (
                     self.tracker_options.get("complete_dialogue_only")
                     and render_fingerprint != self.latest_render_fingerprint
                 )
-            ):
-                return False
-        return True
+            )
+            latest = self.latest_frame
+        if not changed:
+            return True
+        # Compare the entire name/text evidence; a new glyph must invalidate OCR.
+        if frame is None or latest is None or not self.frame_equivalent(frame, latest):
+            return False
+        focused = self._is_focused()
+        purpose_current = self.ocr_purpose()
+        owner_current = self.stable_frame_owner()
+        with self.state_lock:
+            return (
+                focused
+                and purpose_current == purpose
+                and owner_current == recognition_owner
+                and not self.stop_event.is_set()
+                and not self.paused
+                and not self.emergency_stopped
+                and not self.is_shutting_down
+                and latest is self.latest_frame
+                and recognition_epoch == self.frame_route_epoch
+                and visible == self.latest_frame_visible
+            )
+
+    def worker_health_snapshot(self) -> dict[str, object]:
+        with self.state_lock:
+            future = self.ocr_future
+            state = (
+                "not-started"
+                if future is None
+                else "cancelled"
+                if future.cancelled()
+                else "finished"
+                if future.done()
+                else "running"
+            )
+            error = (
+                future.exception()
+                if future is not None and future.done() and not future.cancelled()
+                else None
+            )
+            return {
+                "worker_state": state,
+                "worker_stage": self.ocr_worker_stage,
+                "worker_error_type": type(error).__name__ if error else None,
+                "worker_progress_age_ms": round(
+                    (monotonic() - self.ocr_worker_progress_at) * 1000
+                ),
+            }
+
+    def _ocr_progress(self, stage: str) -> None:
+        with self.state_lock:
+            self.ocr_worker_stage = stage
+            self.ocr_worker_progress_at = monotonic()
 
     def _run_ocr(self, stop_event: Event) -> None:
         tracker = self.tracker_factory(**self.tracker_options)
@@ -1054,6 +1179,7 @@ class LiveDialogReader:
         cached_observation: Observation = (None, "")
         last_frame_recheck_at = None
         while True:
+            self._ocr_progress("waiting-for-frame")
             with self.pause_condition:
                 while (
                     self.processed_frame_version >= self.frame_version
@@ -1071,6 +1197,8 @@ class LiveDialogReader:
                 visible = self.latest_frame_visible
                 complete = self.latest_frame_complete
                 self.processed_frame_version = self.frame_version
+                recognition_version = self.frame_version
+                recognition_capture_at = self.latest_frame_captured_at
             try:
                 recheck_required = bool(self.frame_recheck_required())
                 focused = self._is_focused() if recheck_required else False
@@ -1189,7 +1317,9 @@ class LiveDialogReader:
                     recognition_owner = self.stable_frame_owner()
                     with self.state_lock:
                         recognition_epoch = self.frame_route_epoch
+                    self._ocr_progress("recognizing")
                     character, text = self.recognize_frame(frame)
+                    self._ocr_progress("validating-freshness")
                     if not self._recognition_is_current(
                         purpose,
                         recognition_owner,
@@ -1198,6 +1328,7 @@ class LiveDialogReader:
                         visible,
                         complete,
                         render_fingerprint,
+                        frame,
                     ):
                         continue
                     route_kind = "ocr"
@@ -1205,13 +1336,17 @@ class LiveDialogReader:
                     cached_render_fingerprint = render_fingerprint
                     cached_completion = complete
                     cached_observation = (character, text)
-                    self._record_ocr_completion()
+                    self._record_ocr_completion(
+                        frame, recognition_version, recognition_capture_at
+                    )
                 elif frame_route is not None:
                     raise TypeError(
                         "stable_frame_route must return None, False or "
                         "a SilentDialogRoute/CanonicalDialogRoute/"
                         "(character, text) route"
                     )
+                self._ocr_progress("routing")
+                self._observe_pending_transition_text(character, text)
                 routed_observation = (
                     frame_route
                     if isinstance(
@@ -1272,7 +1407,10 @@ class LiveDialogReader:
                 with self.state_lock:
                     self.next_capture_interval = self.interval_seconds
 
-        self._schedule_tracked_chunks(tracker, tracker.flush())
+        self._ocr_progress("flushing")
+        if not self.stop_event.is_set() and not self.is_shutting_down:
+            self._schedule_tracked_chunks(tracker, tracker.flush())
+        self._ocr_progress("finished")
 
     def _stable_frame_route_decision(
         self,
@@ -1305,15 +1443,24 @@ class LiveDialogReader:
         with self.state_lock:
             if self.routed_frame_fingerprint is None:
                 return None
-            if fingerprint == self.routed_frame_fingerprint:
+            if fingerprint == self.routed_frame_fingerprint or (
+                self.routed_frame is not None
+                and self.latest_frame is not None
+                and self.frame_equivalent(self.routed_frame, self.latest_frame)
+            ):
                 return False if expected_prefix else None
             route_epoch = self.frame_route_epoch
             if (
                 fingerprint == self.candidate_frame_fingerprint
-                and owner == self.candidate_frame_owner
-            ):
+                or (
+                    self.candidate_frame is not None
+                    and self.latest_frame is not None
+                    and self.frame_equivalent(self.candidate_frame, self.latest_frame)
+                )
+            ) and owner == self.candidate_frame_owner:
                 self.candidate_frame_count += 1
             else:
+                self.candidate_frame = self.latest_frame
                 self.candidate_frame_fingerprint = fingerprint
                 self.candidate_frame_count = 1
                 self.candidate_frame_owner = owner
@@ -1386,6 +1533,7 @@ class LiveDialogReader:
         return round(quiet_seconds * 1000)
 
     def _accept_routed_frame_locked(self, fingerprint: FrameFingerprint) -> None:
+        self.routed_frame = self.latest_frame
         self.routed_frame_fingerprint = fingerprint
         self.frame_route_epoch += 1
         self._reset_stable_frame_candidate_locked()
@@ -1473,12 +1621,19 @@ class LiveDialogReader:
             self._interrupt_speech()
         if changed and generation > 0:
             for stage, occurred_at in (
-                ("capture", metrics.last_capture_at),
+                ("capture", metrics.last_ocr_capture_at or metrics.last_capture_at),
                 ("ocr", metrics.last_ocr_at),
                 ("stable-text", monotonic()),
             ):
                 if occurred_at is not None:
-                    self._report_pipeline_event(stage, generation, occurred_at)
+                    self._report_pipeline_event(
+                        stage,
+                        generation,
+                        occurred_at,
+                        capture_id=metrics.last_ocr_capture_id,
+                        frame_version=metrics.last_ocr_frame_version,
+                        visibility_provenance="recognized-captured-frame",
+                    )
         if confirmed_advance is not None:
             confirmed_generation, attempt = confirmed_advance
             self._report_pipeline_event(
@@ -1495,6 +1650,13 @@ class LiveDialogReader:
 
     def _schedule(self, chunks: Iterable[SpeechChunk]) -> None:
         for chunk in chunks:
+            chunk = replace(
+                chunk,
+                run_id=self.run_id,
+                playback_id=uuid4().hex,
+                capture_id=chunk.capture_id
+                or self.pipeline_metrics.last_ocr_capture_id,
+            )
             with self.pause_condition:
                 if (
                     self.emergency_stopped
@@ -1537,6 +1699,22 @@ class LiveDialogReader:
         self._maybe_auto_advance()
 
     def _prepare_if_current(self, chunk: SpeechChunk) -> object | None:
+        token = audio_lifecycle_context.set(self._chunk_context(chunk))
+        try:
+            return self._prepare_current_chunk(chunk)
+        finally:
+            audio_lifecycle_context.reset(token)
+
+    def _chunk_context(self, chunk: SpeechChunk) -> dict[str, object]:
+        return {
+            "run_id": chunk.run_id or self.run_id,
+            "playback_id": chunk.playback_id,
+            "generation": chunk.generation,
+            "chunk_id": chunk.chunk_id,
+            "capture_id": chunk.capture_id,
+        }
+
+    def _prepare_current_chunk(self, chunk: SpeechChunk) -> object | None:
         if not self.wait_until_playable(chunk):
             return None
         if chunk.chunk_id is not None:
@@ -1639,6 +1817,13 @@ class LiveDialogReader:
             self._schedule_deferred_if_possible()
 
     def _play_if_current(self, chunk: SpeechChunk, prepared: object) -> None:
+        token = audio_lifecycle_context.set(self._chunk_context(chunk))
+        try:
+            self._play_current_chunk(chunk, prepared)
+        finally:
+            audio_lifecycle_context.reset(token)
+
+    def _play_current_chunk(self, chunk: SpeechChunk, prepared: object) -> None:
         from vntts.generated_audio import (
             GeneratedAudioRoute,
             LiveFallbackRoute,
@@ -1665,6 +1850,12 @@ class LiveDialogReader:
                 ),
             }
             self._record_speech_metrics_locked(playback_started=True)
+        self._report_pipeline_event(
+            "playback-start",
+            chunk.generation,
+            measurement="dispatch",
+            timing_provenance="measured",
+        )
         if self.first_pcm_on_prepare and not isinstance(
             prepared,
             (
@@ -1960,6 +2151,11 @@ class LiveDialogReader:
                     self.auto_advance_attempts = 1
                     attempt = 1
                     self.last_auto_advance_dispatched_generation = generation
+                    self.pending_transition_frame = self.latest_frame
+                    self.pending_transition_progress_at = None
+                    self.pending_transition_seen = False
+                    self.pending_transition_typing = False
+                    self.pending_transition_text = ""
                     self.pending_auto_advance_generation = generation
                     self.pipeline_metrics = replace(
                         self.pipeline_metrics,
@@ -2033,6 +2229,20 @@ class LiveDialogReader:
                 terminal=terminal,
             )
             return
+        with self.state_lock:
+            visual_transition = self.pending_transition_seen
+            typing = self.pending_transition_typing
+            progress_at = self.pending_transition_progress_at
+        progress_recent = (
+            progress_at is None
+            or monotonic() - progress_at < self.auto_advance_terminal_timeout_seconds
+        )
+        if visual_transition and progress_recent:
+            self._report_auto_advance_state(
+                "typing" if typing else "recognition-wait", generation, attempt
+            )
+            self._schedule_auto_advance_confirmation(generation, attempt, terminal=True)
+            return
         if not terminal:
             self._report_auto_advance_state("waiting", generation, attempt)
             self._schedule_auto_advance_confirmation(
@@ -2063,7 +2273,32 @@ class LiveDialogReader:
             monotonic(),
             attempt=attempt,
         )
-        self._report_auto_advance_state("failed", generation, attempt)
+        self._report_auto_advance_state(
+            "successor-unavailable" if visual_transition else "failed",
+            generation,
+            attempt,
+        )
+
+    def _observe_pending_transition_text(
+        self, character: str | None, text: str
+    ) -> None:
+        with self.state_lock:
+            if self.pending_auto_advance_generation != self.active_generation:
+                return
+            if not text:
+                return
+            if (character, text) == self.last_observation:
+                if self.pending_transition_text == "":
+                    self.pending_transition_seen = False
+                return
+            previous = self.pending_transition_text
+            self.pending_transition_typing = bool(
+                previous and text.startswith(previous) and len(text) > len(previous)
+            )
+            if text != previous:
+                self.pending_transition_progress_at = monotonic()
+            self.pending_transition_text = text
+            self.pending_transition_seen = True
 
     def _schedule_auto_advance_confirmation(
         self,
@@ -2118,6 +2353,18 @@ class LiveDialogReader:
         occurred_at: float | None = None,
         **details: object,
     ) -> None:
+        context = audio_lifecycle_context.get() or {}
+        if not context:
+            chunk = self.last_spoken_chunk
+            if chunk is not None and chunk.generation == generation:
+                context = self._chunk_context(chunk)
+        details = {
+            "run_id": self.run_id,
+            "run_started_at": self.run_started_at,
+            **context,
+            **details,
+        }
+        details.pop("generation", None)
         try:
             self.pipeline_event_handler(
                 stage,
@@ -2160,7 +2407,13 @@ class LiveDialogReader:
             last_synthesis_at=now if synthesis else metrics.last_synthesis_at,
             last_playback_at=now if playback else metrics.last_playback_at,
             last_text_visible_at=(
-                now if text_visible else metrics.last_text_visible_at
+                (
+                    metrics.last_ocr_capture_at
+                    if metrics.last_ocr_capture_at is not None
+                    else now
+                )
+                if text_visible
+                else metrics.last_text_visible_at
             ),
             last_speaker_resolved_at=(
                 now if text_visible else metrics.last_speaker_resolved_at
@@ -2183,17 +2436,26 @@ class LiveDialogReader:
             ),
         )
 
-    def record_first_pcm(self, timestamp: float | None = None) -> None:
+    def record_first_pcm(
+        self,
+        timestamp: float | None = None,
+        *,
+        provenance: str = "measured",
+        chunk: SpeechChunk | None = None,
+    ) -> None:
         occurred_at = monotonic() if timestamp is None else timestamp
         with self.state_lock:
             previous = self.pipeline_metrics
-            generation = self.active_generation
-            self.pipeline_metrics = replace(
-                previous,
-                last_first_pcm_at=occurred_at,
-                last_first_pcm_generation=generation,
+            chunk = chunk or self.current_chunk
+            generation = (
+                chunk.generation if chunk is not None else self.active_generation
             )
-            chunk = self.current_chunk
+            if provenance == "measured" and generation == self.active_generation:
+                self.pipeline_metrics = replace(
+                    previous,
+                    last_first_pcm_at=occurred_at,
+                    last_first_pcm_generation=generation,
+                )
             origins = self.current_chunk_pipeline_origins or {
                 "from_text_visible_ms": previous.last_text_visible_at,
                 "from_ocr_stable_ms": previous.last_ocr_stable_at,
@@ -2212,6 +2474,8 @@ class LiveDialogReader:
             )
         details = (
             {
+                "run_id": chunk.run_id or self.run_id,
+                "playback_id": chunk.playback_id,
                 "chunk_id": chunk.chunk_id,
                 "chunk_ordinal": chunk.ordinal,
                 "chunk_characters": len(chunk.text),
@@ -2222,8 +2486,21 @@ class LiveDialogReader:
         for name, origin in origins.items():
             if origin is not None and origin <= occurred_at:
                 details[name] = round((occurred_at - origin) * 1000)
-        self._report_pipeline_event("first-pcm", generation, occurred_at, **details)
-        if canonical_full_at is not None and canonical_full_at > occurred_at:
+        self._report_pipeline_event(
+            "first-pcm" if provenance == "measured" else "audio-onset-estimate",
+            generation,
+            occurred_at,
+            timing_provenance=provenance,
+            measurement="first-pcm-write-returned"
+            if provenance == "measured"
+            else "backend-offset-from-controller-dispatch",
+            **details,
+        )
+        if (
+            provenance == "measured"
+            and canonical_full_at is not None
+            and canonical_full_at > occurred_at
+        ):
             self._report_pipeline_event(
                 "canonical-full-text",
                 generation,

@@ -56,6 +56,9 @@ class PlaybackOutcome:
     playback_sample_rate: int | None = None
     sample_count: int | None = None
     expected_playback_ms: float | None = None
+    first_audio_at: float | None = None
+    onset_provenance: str = "unobserved"
+    end_provenance: str = "unobserved"
 
     @property
     def successful(self) -> bool:
@@ -135,10 +138,14 @@ def outcome_for_prepared(
     first_audio_ms: float | None = None,
     error: str | None = None,
     error_type: type[Exception] | None = None,
+    first_audio_at: float | None = None,
 ) -> PlaybackOutcome:
     return PlaybackOutcome(
         status=status,
         playback_ms=playback_ms,
+        first_audio_at=first_audio_at,
+        onset_provenance="measured" if first_audio_at is not None else "unobserved",
+        end_provenance="measured" if playback_ms is not None else "unobserved",
         underflowed=underflowed,
         generation_limited=generation_limited,
         first_audio_ms=first_audio_ms,

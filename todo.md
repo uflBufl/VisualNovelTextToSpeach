@@ -1,5 +1,18 @@
 # TODO
 
+## Active - Reading state repair execution
+
+- [ ] S20.7/T1: distinct Reading run/playback identities and append-only events on
+      one monotonic clock; label measured/estimated/unobserved timing and test restarts.
+- [ ] R2/R3: current completed jittering OCR and revalidatable deterministic early
+      successor ownership; retain replacement/name/focus/manual/Stop guards.
+- [ ] R5/R7/R8: indexed out-of-order explicit recovery, one-shot lifecycle and
+      typing/transition wait states; never resend a key because of a timeout.
+- [ ] S20.5/S20.6/T4 and modal barrier: typed failures, actual capture provenance
+      and waiting for speech on retry after capture stops.
+- [ ] Changed-test selection first, missed related regressions, integrated review,
+      fetch/rebase and ordinary push to origin/main. Preserve R1/R4/R6 and W1/W2 gates.
+
 ## Current scope and execution order
 
 Target: Windows Reading with a heavy offline model's already generated recordings,

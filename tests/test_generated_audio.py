@@ -1982,6 +1982,55 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(sample_rate, 24_000)
         self.assertEqual(options["latency"], "low")
 
+    def test_generated_first_pcm_is_measured_after_successful_write_not_route_default(
+        self,
+    ):
+        now = [10.0]
+        output = ExplicitStreamAudioOutput()
+        original = output.OutputStream
+
+        def stream_factory(**options):
+            stream = original(**options)
+            write = stream.write
+
+            def timed_write(samples):
+                result = write(samples)
+                now[0] = 10.115
+                return result
+
+            stream.write = timed_write
+            return stream
+
+        output.OutputStream = stream_factory
+        backend = GeneratedAudioFallbackBackend(
+            self.create_live_backend(),
+            Mock(),
+            Mock(),
+            audio_output=output,
+            clock=lambda: now[0],
+        )
+        route = GeneratedAudioRoute(
+            PreparedGeneratedAudio("game:1", "hash", np.zeros(24), 24000),
+            Mock(effective_source="generated"),
+        )
+        self.assertIsNone(route.first_audio_ms)
+        outcome = backend.play_route(route)
+        self.assertEqual(outcome.first_audio_at, 10.115)
+        self.assertAlmostEqual(outcome.first_audio_ms, 115)
+        self.assertEqual(outcome.onset_provenance, "measured")
+
+        def failed_stream(**options):
+            stream = original(**options)
+            stream.write = Mock(side_effect=RuntimeError("device failed"))
+            return stream
+
+        output.OutputStream = failed_stream
+        outcome = backend.play_route(route)
+        self.assertIs(outcome.status, PlaybackStatus.FAILED)
+        self.assertIsNone(outcome.first_audio_at)
+        self.assertIsNone(outcome.first_audio_ms)
+        self.assertEqual(outcome.onset_provenance, "unobserved")
+
     def test_generated_playback_uses_explicit_stream_across_mixed_rates(self):
         audio_output = ExplicitStreamAudioOutput(sample_rate=48_000)
         backend = GeneratedAudioFallbackBackend(
@@ -2191,7 +2240,8 @@ class GeneratedAudioTest(unittest.TestCase):
         outcome = backend.play_route(route, playback_guard=lambda: playable)
 
         self.assertIs(outcome.status, PlaybackStatus.INTERRUPTED)
-        self.assertEqual(outcome.first_audio_ms, 0.0)
+        self.assertIsNone(outcome.first_audio_ms)
+        self.assertEqual(outcome.onset_provenance, "unobserved")
 
     def test_preplay_guard_interruption_has_no_first_audio_or_device_output(self):
         output = FakeAudioOutput()

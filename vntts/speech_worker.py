@@ -1441,6 +1441,7 @@ class IsolatedSpeechBackend:
             )
             underflowed = False
             first_audio_ms: float | None = None
+            first_audio_at: float | None = None
             interrupted = False
             try:
                 first = next(rendered)
@@ -1468,12 +1469,21 @@ class IsolatedSpeechBackend:
                             interrupted = True
                             self._terminate_process(self.process)
                             break
-                        if first_audio_ms is None:
-                            first_audio_ms = (self.clock() - started) * 1000
                         underflowed = (
                             bool(stream.write(self._prepare_audio(chunk.pcm)))
                             or underflowed
                         )
+                        if first_audio_at is None:
+                            first_audio_at = self.clock()
+                            first_audio_ms = (first_audio_at - started) * 1000
+                            from vntts.audio_lifecycle import record_audio_lifecycle
+
+                            record_audio_lifecycle(
+                                "first-pcm",
+                                occurred_at=first_audio_at,
+                                timing_provenance="measured",
+                                reason="first-pcm-write-returned",
+                            )
                 if interrupted:
                     return outcome_for_prepared(
                         prepared,
@@ -1481,6 +1491,7 @@ class IsolatedSpeechBackend:
                         (self.clock() - started) * 1000,
                         underflowed=underflowed,
                         first_audio_ms=first_audio_ms,
+                        first_audio_at=first_audio_at,
                     )
                 result = rendered.result
                 completed = result.completion is not SynthesisCompletion.CANCELLED
@@ -1503,6 +1514,7 @@ class IsolatedSpeechBackend:
                     underflowed=underflowed,
                     generation_limited=result.completion is SynthesisCompletion.LIMITED,
                     first_audio_ms=first_audio_ms,
+                    first_audio_at=first_audio_at,
                 )
             except Exception as error:
                 return outcome_for_prepared(
@@ -1515,6 +1527,7 @@ class IsolatedSpeechBackend:
                     (self.clock() - started) * 1000,
                     underflowed=underflowed,
                     first_audio_ms=first_audio_ms,
+                    first_audio_at=first_audio_at,
                     error=None if self._stop_requested.is_set() else str(error),
                     error_type=None if self._stop_requested.is_set() else type(error),
                 )

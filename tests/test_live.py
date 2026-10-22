@@ -329,6 +329,8 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
                     tracker_options={"complete_dialogue_only": True},
                 )
                 reader = harness.reader
+                # End this bounded worker loop without cancelling the Reading run.
+                reader.stop_event = Event()
                 reader.latest_frame = object()
                 reader.latest_frame_fingerprint = "first-letter"
                 reader.latest_frame_visible = True
@@ -1691,6 +1693,184 @@ class LiveDialogReaderTest(unittest.TestCase):
         options.update(overrides)
         return LiveDialogReader(**options)
 
+    def test_pcm_after_replacement_keeps_old_attempt_and_estimates_do_not_change_measured_clock(
+        self,
+    ):
+        events = []
+        reader = self.create_reader(
+            pipeline_event_handler=lambda *a, **k: events.append((a, k))
+        )
+        old = SpeechChunk(1, "Alice", "Old line", run_id=reader.run_id)
+        reader.active_generation = 2
+        reader.pipeline_metrics = replace(
+            reader.pipeline_metrics, last_first_pcm_at=20, last_first_pcm_generation=2
+        )
+        reader.record_first_pcm(10, chunk=old)
+        self.assertEqual(events[-1][0][1], 1)
+        self.assertEqual(events[-1][1]["playback_id"], old.playback_id)
+        self.assertEqual(reader.pipeline_metrics.last_first_pcm_at, 20)
+        reader.record_first_pcm(30, provenance="estimated")
+        self.assertEqual(events[-1][0][0], "audio-onset-estimate")
+        self.assertEqual(reader.pipeline_metrics.last_first_pcm_at, 20)
+
+    def test_stop_and_focus_changes_during_equivalence_reject_the_observation(self):
+        for barrier in ("stop", "pause", "emergency", "focus", "owner"):
+            with self.subTest(barrier=barrier):
+                focused, owner = [True], ["event"]
+                reader = self.create_reader(
+                    focus_probe=lambda: focused[0], stable_frame_owner=lambda: owner[0]
+                )
+                reader.latest_frame = "jitter"
+                reader.latest_frame_fingerprint = "jitter"
+                reader.latest_frame_visible = True
+
+                def equivalent(_old, _new):
+                    if barrier == "stop":
+                        reader.stop_event.set()
+                    elif barrier == "pause":
+                        reader.paused = True
+                    elif barrier == "emergency":
+                        reader.emergency_stopped = True
+                    elif barrier == "focus":
+                        focused[0] = False
+                    else:
+                        owner[0] = "other"
+                    return True
+
+                reader.frame_equivalent = equivalent
+                self.assertFalse(
+                    reader._recognition_is_current(
+                        "legacy", "event", 0, "old", True, False, "old", "old"
+                    )
+                )
+
+    def test_capture_faster_than_ocr_accepts_completed_short_jittering_text(self):
+        from tests.test_dialog_capture import glyph_frame
+        from vntts.dialog_capture import (
+            dialog_frames_equivalent,
+            fingerprint_dialog_frame,
+        )
+
+        tracker = Mock(generation=0)
+        tracker.observe.return_value = []
+        tracker.flush.return_value = []
+        tracker.is_idle_complete.return_value = False
+        loop_stop = Event()
+        frames = [
+            glyph_frame("Ouch!", "", brightness=b, shift=s)
+            for b, s in ((230, (0, 0)), (210, (1, 1)), (250, (-1, -1)))
+        ]
+        count = [0]
+        reader = self.create_reader(
+            tracker_factory=lambda **_: tracker,
+            frame_equivalent=dialog_frames_equivalent,
+            frame_fingerprint=fingerprint_dialog_frame,
+        )
+
+        def recognize(_frame):
+            count[0] += 1
+            reader.latest_frame = frames[count[0]]
+            reader.latest_frame_fingerprint = fingerprint_dialog_frame(
+                reader.latest_frame
+            )
+            reader.latest_frame_captured_at = count[0] * 0.130
+            reader.frame_version += 1
+            if count[0] == 2:
+                loop_stop.set()
+            return None, "Ouch!"
+
+        reader.recognize_frame = recognize
+        reader.latest_frame = frames[0]
+        reader.latest_frame_fingerprint = fingerprint_dialog_frame(frames[0])
+        reader.latest_frame_visible = True
+        reader.latest_frame_captured_at = 0
+        reader.frame_version = 1
+        reader._run_ocr(loop_stop)
+        self.assertEqual(
+            tracker.observe.call_args_list,
+            [call("Narrator", "Ouch!"), call("Narrator", "Ouch!")],
+        )
+        self.assertEqual(reader.pipeline_metrics.recognized_frames, 2)
+        self.assertEqual(reader.pipeline_metrics.last_ocr_capture_at, 0.130)
+
+    def test_restarted_reader_uses_fresh_run_and_replays_have_distinct_attempts(self):
+        capture, ocr = QueuedExecutor(), QueuedExecutor()
+        events = []
+        reader = self.create_reader(
+            capture_executor=capture,
+            ocr_executor=ocr,
+            pipeline_event_handler=lambda stage, generation, timestamp, **details: (
+                events.append((stage, generation, details))
+            ),
+        )
+        self.assertTrue(reader.start())
+        first = reader.run_id
+        reader.enqueue("Alice", "Same line.")
+        reader.repeat_last()
+        reader.stop()
+        capture.run_next()
+        ocr.run_next()
+        self.assertTrue(reader.start())
+        second = reader.run_id
+        reader.enqueue("Alice", "Same line.")
+        self.assertNotEqual(first, second)
+        starts = [e[2] for e in events if e[0] == "generation-start"]
+        self.assertEqual({e["run_id"] for e in starts}, {first, second})
+        self.assertEqual(len({e["playback_id"] for e in starts}), 3)
+        reader.stop()
+        capture.run_next()
+        ocr.run_next()
+
+    def test_visual_equivalence_keeps_current_ocr_but_owner_epoch_focus_are_barriers(
+        self,
+    ):
+        focused = True
+        owner = "event"
+        reader = self.create_reader(
+            frame_equivalent=lambda a, b: a == "old" and b == "jitter",
+            focus_probe=lambda: focused,
+            stable_frame_owner=lambda: owner,
+        )
+        reader.latest_frame = "jitter"
+        reader.latest_frame_fingerprint = "jitter"
+        reader.latest_frame_visible = True
+        reader.latest_render_fingerprint = "new-render"
+
+        def current():
+            return reader._recognition_is_current(
+                "legacy", "event", 0, "old", True, False, "old-render", "old"
+            )
+
+        self.assertTrue(current())
+        reader.frame_route_epoch += 1
+        self.assertFalse(current())
+        reader.frame_route_epoch = 0
+        owner = "another"
+        self.assertFalse(current())
+        owner = "event"
+        focused = False
+        self.assertFalse(current())
+        focused = True
+        reader.latest_frame = "new-text"
+        self.assertFalse(current())
+
+    def test_visual_transition_waits_for_typing_instead_of_failed_key(self):
+        states = []
+        reader = self.create_reader(
+            auto_advance_state_changed=lambda *args: states.append(args)
+        )
+        reader.active_generation = 1
+        reader.pending_auto_advance_generation = 1
+        reader.auto_advance_attempts = 1
+        reader.pending_transition_seen = True
+        reader.pending_transition_typing = True
+        with patch.object(reader, "_schedule_auto_advance_confirmation") as reschedule:
+            reader._auto_advance_confirmation_expired(1, 1, True)
+        self.assertEqual(states[-1], ("typing", 1, 1))
+        self.assertIsNone(reader.failed_auto_advance_generation)
+        self.assertEqual(reader.pending_auto_advance_generation, 1)
+        reschedule.assert_called_once_with(1, 1, terminal=True)
+
     def test_failed_capture_submission_quiesces_ocr_and_allows_restart(self):
         with ThreadPoolExecutor(max_workers=1) as ocr_executor:
             capture_executor = Mock()
@@ -1892,6 +2072,19 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertIsNone(reader._prepare_if_current(chunk))
 
         prepare.assert_called_once_with(chunk)
+        events = [
+            (
+                stage,
+                generation,
+                {
+                    key: value
+                    for key, value in details.items()
+                    if key
+                    not in {"run_id", "run_started_at", "playback_id", "capture_id"}
+                },
+            )
+            for stage, generation, details in events
+        ]
         self.assertIn(
             (
                 "duplicate-chunk-suppressed",

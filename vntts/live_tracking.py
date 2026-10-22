@@ -8,6 +8,7 @@ from difflib import SequenceMatcher
 from hashlib import sha256
 from time import monotonic
 from unicodedata import normalize
+from uuid import uuid4
 
 
 def _punctuation_boundaries(text: str, punctuation: str) -> Iterator[int]:
@@ -35,6 +36,9 @@ class SpeechChunk:
     ordinal: int | None = field(default=None, compare=False)
     line_id: str | None = field(default=None, compare=False)
     explicit_replay: bool = False
+    run_id: str | None = field(default=None, compare=False)
+    capture_id: str | None = field(default=None, compare=False)
+    playback_id: str = field(default_factory=lambda: uuid4().hex, compare=False)
 
     @property
     def chunk_id(self) -> str | None:
