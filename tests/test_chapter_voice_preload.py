@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from vntts_artifacts.story_index import (
     load_story_index_document,
+    write_story_index,
 )
 
 import vntts.chapter_voice_preload as preload_module
@@ -119,6 +120,79 @@ class _EvidenceReadFailure:
 
 
 class ChapterVoicePreloaderTest(unittest.TestCase):
+    def test_story_order_preserves_nonmonotonic_ids_in_preflight_and_recommendation(
+        self,
+    ):
+        entries = [
+            {
+                "line_id": f"test:{sequence}",
+                "chapter": "1",
+                "sequence": sequence,
+                "story_order": position,
+                "speaker_name": speaker,
+                "text": text,
+                "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+            }
+            for position, sequence, speaker, text in (
+                (24, 24, "Cora", "Previous dialogue."),
+                (26, 111, "Ada", "The inserted dialogue."),
+                (27, 26, "Bea", "Next dialogue."),
+            )
+        ]
+        projected = ChapterVoicePreloader.from_document({"dialogue": entries})
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "story-index.jsonl"
+            write_story_index(
+                path,
+                {"game": "Test", "language": "en"},
+                [
+                    entry
+                    | {
+                        "record_type": "line",
+                        "speaker": entry["speaker_name"],
+                        "kind": "dialogue",
+                    }
+                    for entry in reversed(entries)
+                ],
+            )
+            indexed = ChapterVoicePreloader.load_optional(path)
+        for preloader in (projected, indexed):
+            with self.subTest(loader=preloader):
+                preloader.select_line_id("test:111")
+                self.assertEqual(preloader.current_match.sequence, 111)
+                self.assertEqual(
+                    [row.line_id for row in preloader.live_voice_preflight_rows()],
+                    ["test:111", "test:26"],
+                )
+                self.assertEqual(
+                    preloader.recommend("Ada", "The inserted dialogue.", limit=1),
+                    ("Bea",),
+                )
+                self.assertEqual(
+                    [row.line_id for row in preloader.by_chapter["1"]],
+                    ["test:24", "test:111", "test:26"],
+                )
+        self.assertEqual(projected.by_chapter, indexed.by_chapter)
+
+    def test_duplicate_exact_dialogue_uses_story_distance(self):
+        preloader = ChapterVoicePreloader(
+            [
+                ChapterDialogue(
+                    "old", "1", 110, "Bea", "Repeated text.", "a" * 64, story_order=1
+                ),
+                ChapterDialogue(
+                    "anchor", "1", 111, "Ada", "Current text.", "b" * 64, story_order=4
+                ),
+                ChapterDialogue(
+                    "next", "1", 26, "Bea", "Repeated text.", "a" * 64, story_order=5
+                ),
+            ]
+        )
+        preloader.select_line_id("anchor")
+        self.assertEqual(
+            preloader.resolve_exact("Bea", "Repeated text.").line_id, "next"
+        )
+
     def test_ranks_upcoming_unique_speakers_after_matching_partial_dialogue(self):
         preloader = ChapterVoicePreloader.from_document(dialogue_document())
 

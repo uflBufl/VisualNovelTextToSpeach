@@ -1,5 +1,6 @@
 import json
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -8,10 +9,12 @@ from vntts_artifacts.story_index import write_story_index
 from vntts.live_sequence import (
     LIVE_SEQUENCE_SCHEMA,
     LIVE_SEQUENCE_SCHEMA_VERSION,
+    LiveSequenceEvent,
     LiveSequencePlanError,
     StoryCursor,
     StoryCursorError,
     StoryCursorState,
+    _ordered_visible_events,
     load_live_sequence_plan,
     write_live_sequence_plan,
 )
@@ -99,6 +102,90 @@ class LiveSequencePlanTest(unittest.TestCase):
         write_story(story)
         plan = write_live_sequence_plan(plan_path, plan_input(), story)
         return story, plan_path, plan
+
+    def test_visible_order_follows_graph_through_hidden_event(self):
+        with TemporaryDirectory() as directory:
+            _story, _path, plan = self.create_plan(Path(directory))
+        events = {
+            "event-26": LiveSequenceEvent(
+                "event-26", "chapter-1", 26, "silent", "terminal", ()
+            ),
+            "event-111": LiveSequenceEvent(
+                "event-111", "chapter-1", 111, "speech", "automatic", ("event-26",)
+            ),
+            "event-25": LiveSequenceEvent(
+                "event-25", "chapter-1", 25, "transition", "passive", ("event-111",)
+            ),
+            "event-24": LiveSequenceEvent(
+                "event-24", "chapter-1", 24, "speech", "automatic", ("event-25",)
+            ),
+        }
+        plan = replace(
+            plan,
+            events=events,
+            chapters=(
+                replace(
+                    plan.chapters[0],
+                    entry_event_ids=("event-24",),
+                    event_ids=tuple(events),
+                ),
+            ),
+        )
+        self.assertEqual(
+            [
+                event.event_id
+                for event in _ordered_visible_events(plan, require_linear=True)
+            ],
+            ["event-24", "event-111", "event-26"],
+        )
+        for blocked in (
+            replace(events["event-25"], kind="wait", control="manual"),
+            replace(events["event-25"], successors=("event-111", "event-26")),
+        ):
+            with self.subTest(blocked=blocked):
+                invalid = replace(plan, events=events | {"event-25": blocked})
+                self.assertEqual(len(_ordered_visible_events(invalid)), 3)
+                with self.assertRaisesRegex(
+                    LiveSequencePlanError, "one deterministic path"
+                ):
+                    _ordered_visible_events(invalid, require_linear=True)
+
+    def test_visible_order_refuses_a_manual_cycle_after_all_visible_events(self):
+        with TemporaryDirectory() as directory:
+            _story, _path, plan = self.create_plan(Path(directory))
+        last = replace(
+            plan.events["event-3"], control="manual", successors=("event-1",)
+        )
+        plan = replace(plan, events=plan.events | {last.event_id: last})
+        with self.assertRaisesRegex(LiveSequencePlanError, "one deterministic path"):
+            _ordered_visible_events(plan, require_linear=True)
+
+    def test_complete_visible_path_rejects_manual_sources_and_hidden_tails(self):
+        with TemporaryDirectory() as directory:
+            _story, _path, plan = self.create_plan(Path(directory))
+        tail = LiveSequenceEvent("tail", "chapter-1", 4, "wait", "manual", ())
+        last = replace(
+            plan.events["event-3"], control="automatic", successors=("tail",)
+        )
+        for events in (
+            plan.events
+            | {"event-1": replace(plan.events["event-1"], control="manual")},
+            plan.events | {"event-3": last, "tail": tail},
+            plan.events
+            | {
+                "event-3": last,
+                "tail": replace(
+                    tail, kind="transition", control="passive", successors=("tail",)
+                ),
+            },
+        ):
+            with self.subTest(events=events):
+                invalid = replace(plan, events=events)
+                self.assertEqual(len(_ordered_visible_events(invalid)), 3)
+                with self.assertRaisesRegex(
+                    LiveSequencePlanError, "one deterministic path"
+                ):
+                    _ordered_visible_events(invalid, require_linear=True)
 
     def test_writer_binds_plan_to_exact_story_bytes_and_loads_silent_events(self):
         with TemporaryDirectory() as directory:

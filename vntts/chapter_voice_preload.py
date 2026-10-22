@@ -58,6 +58,7 @@ class ChapterDialogue:
     source_audio_completeness: str = "unknown"
     story_title: str | None = None
     source_audio_authoritative: bool = False
+    story_order: int | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,15 @@ class ChapterMatch:
     chapter: str
     sequence: int
     confidence: float
+    story_order: int | None = None
+
+
+def _story_order(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _story_position(row: ChapterDialogue | ChapterMatch) -> int:
+    return row.story_order if row.story_order is not None else row.sequence
 
 
 class ChapterVoicePreloader:
@@ -106,7 +116,7 @@ class ChapterVoicePreloader:
                 (speaker_key, self.normalized_text[row])
             ].append(row)
         for rows in self.by_chapter.values():
-            rows.sort(key=lambda row: row.sequence)
+            rows.sort(key=_story_position)
         self.current_match: ChapterMatch | None = None
 
     @classmethod
@@ -160,6 +170,7 @@ class ChapterVoicePreloader:
                     source_audio_duration_seconds,
                     source_audio_completeness,
                     source_audio_authoritative=source_audio_authoritative,
+                    story_order=_story_order(entry.get("story_order")),
                 )
             )
         return cls(rows, lookahead_rows=lookahead_rows)
@@ -258,6 +269,11 @@ class ChapterVoicePreloader:
                     source_audio_completeness,
                     story_titles.get(_line_text(line, "collection_id")),
                     source_audio_authoritative,
+                    _story_order(
+                        _string_mapping(_line_value(line, "document")).get(
+                            "story_order"
+                        )
+                    ),
                 )
 
         return cls(rows(), lookahead_rows=lookahead_rows)
@@ -284,7 +300,9 @@ class ChapterVoicePreloader:
         line = self.line_for_id(line_id)
         if line is None or not line.line_id or not line.text_sha256:
             return None
-        self.current_match = ChapterMatch(line.chapter, line.sequence, 1.0)
+        self.current_match = ChapterMatch(
+            line.chapter, line.sequence, 1.0, line.story_order
+        )
         return line
 
     def resolve_exact_with_result(
@@ -317,7 +335,8 @@ class ChapterVoicePreloader:
             if not nearby:
                 return None, "ambiguous"
             distances = [
-                (abs(row.sequence - self.current_match.sequence), row) for row in nearby
+                (abs(_story_position(row) - _story_position(self.current_match)), row)
+                for row in nearby
             ]
             closest_distance = min(distance for distance, _row in distances)
             closest = [
@@ -328,7 +347,9 @@ class ChapterVoicePreloader:
             selected = closest[0]
         else:
             return None, "ambiguous"
-        self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
+        self.current_match = ChapterMatch(
+            selected.chapter, selected.sequence, 1.0, selected.story_order
+        )
         return selected, match_result
 
     def resolve_exact_among(
@@ -378,7 +399,9 @@ class ChapterVoicePreloader:
             return None, "expected-ambiguous" if candidates else "expected-no-match"
         selected = candidates[0]
         if update_context:
-            self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
+            self.current_match = ChapterMatch(
+                selected.chapter, selected.sequence, 1.0, selected.story_order
+            )
         return selected, match_result
 
     def resolve_bounded_among(
@@ -490,7 +513,9 @@ class ChapterVoicePreloader:
             )
             return None, "expected-ambiguous"
         selected = best[2]
-        self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
+        self.current_match = ChapterMatch(
+            selected.chapter, selected.sequence, 1.0, selected.story_order
+        )
         self.last_resolution_diagnostics["match_result"] = best[3]
         return selected, best[3]
 
@@ -515,7 +540,9 @@ class ChapterVoicePreloader:
         if len(candidates) != 1:
             return None
         selected = candidates[0]
-        self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
+        self.current_match = ChapterMatch(
+            selected.chapter, selected.sequence, 1.0, selected.story_order
+        )
         return selected
 
     def resolve_unique_prefix_by_text(
@@ -543,6 +570,7 @@ class ChapterVoicePreloader:
                     selected.chapter,
                     selected.sequence,
                     1.0,
+                    selected.story_order,
                 )
                 return selected
             return None
@@ -551,7 +579,9 @@ class ChapterVoicePreloader:
         if len(candidates) != 1:
             return None
         selected = candidates[0]
-        self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
+        self.current_match = ChapterMatch(
+            selected.chapter, selected.sequence, 1.0, selected.story_order
+        )
         return selected
 
     def is_unique_incomplete_prefix(
@@ -652,9 +682,11 @@ class ChapterVoicePreloader:
 
         current_speaker = _normalize(character)
         chapter_rows = self.by_chapter.get(match.chapter, ())
-        nearby = [row for row in chapter_rows if row.sequence >= match.sequence][
-            : self.lookahead_rows
-        ]
+        nearby = [
+            row
+            for row in chapter_rows
+            if _story_position(row) >= _story_position(match)
+        ][: self.lookahead_rows]
         ranked = []
         seen = {current_speaker, "narrator", ""}
         for row in nearby:
@@ -680,7 +712,9 @@ class ChapterVoicePreloader:
             return None
         rows = self.by_chapter.get(self.current_match.chapter, ())
         return tuple(
-            row for row in rows if row.sequence >= self.current_match.sequence
+            row
+            for row in rows
+            if _story_position(row) >= _story_position(self.current_match)
         )[: self.lookahead_rows]
 
     def _match(self, character: object, text: object) -> ChapterMatch | None:
@@ -695,7 +729,7 @@ class ChapterVoicePreloader:
             chapters = {row.chapter for row in candidates}
             if speaker_matched and len(chapters) == 1:
                 row = next(iter(candidates))
-                return ChapterMatch(row.chapter, row.sequence, 0.5)
+                return ChapterMatch(row.chapter, row.sequence, 0.5, row.story_order)
             return None
 
         best_row = None
@@ -718,7 +752,9 @@ class ChapterVoicePreloader:
         minimum = 0.62 if speaker_matched else 0.88
         if best_row is None or best_score < minimum:
             return None
-        return ChapterMatch(best_row.chapter, best_row.sequence, best_score)
+        return ChapterMatch(
+            best_row.chapter, best_row.sequence, best_score, best_row.story_order
+        )
 
 
 def _bounded_text_match(

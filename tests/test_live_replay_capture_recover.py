@@ -313,21 +313,21 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
                     require_silent=False,
                 )
 
-    def test_recovers_explicit_speech_silent_run_and_preserves_concurrent_output(self):
+    def test_recovers_nonmonotonic_graph_and_preserves_concurrent_output(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             lines = [
                 {
                     "line_id": "story:1",
                     "chapter": "1",
-                    "sequence": 1,
+                    "sequence": 24,
                     "speaker": "Ada",
                     "text": "First line.",
                 },
                 {
                     "line_id": "story:2",
                     "chapter": "1",
-                    "sequence": 3,
+                    "sequence": 26,
                     "speaker": "Bea",
                     "text": "Second line.",
                 },
@@ -339,29 +339,36 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
                 [
                     {
                         "event_id": "event-1",
-                        "sequence": 1,
+                        "sequence": 24,
                         "kind": "speech",
                         "control": "automatic",
-                        "successors": ["event-silent"],
+                        "successors": ["event-hidden"],
                         "line_id": "story:1",
                     },
                     {
+                        "event_id": "event-hidden",
+                        "sequence": 25,
+                        "kind": "transition",
+                        "control": "passive",
+                        "successors": ["event-silent"],
+                    },
+                    {
                         "event_id": "event-silent",
-                        "sequence": 2,
+                        "sequence": 111,
                         "kind": "silent",
                         "control": "automatic",
                         "successors": ["event-silent-2"],
                     },
                     {
                         "event_id": "event-silent-2",
-                        "sequence": 3,
+                        "sequence": 26,
                         "kind": "silent",
                         "control": "automatic",
                         "successors": ["event-2"],
                     },
                     {
                         "event_id": "event-2",
-                        "sequence": 4,
+                        "sequence": 27,
                         "kind": "speech",
                         "control": "terminal",
                         "successors": [],
@@ -674,6 +681,18 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
             self.assertFalse((result.directory / "corpus.json").exists())
             self.assertFalse(report["sufficient"])
             self.assertEqual(report["recommended_follow_up_capture"]["events"], [])
+
+            with self.assertRaisesRegex(
+                LiveReplayCaptureRecoveryError, "one deterministic path"
+            ):
+                recover_live_replay_capture(
+                    captured.corpus,
+                    root / "invalid-complete",
+                    story_index=story,
+                    sequence_plan=plan,
+                    complete_visible_chapter=True,
+                )
+            self.assertFalse((root / "invalid-complete").exists())
 
             raw = json.loads(captured.corpus.read_text(encoding="utf-8"))
             frame = captured.directory / raw["dialogue"][0]["frames"][0]["path"]

@@ -91,17 +91,42 @@ def load_live_sequence_snapshot(
     return replace(plan, path=path, story_index_path=story_index)
 
 
-def _ordered_visible_events(plan: LiveSequencePlan) -> tuple[LiveSequenceEvent, ...]:
-    return tuple(
-        sorted(
-            (
-                event
-                for event in plan.events.values()
-                if event.kind in {"speech", "silent"}
-            ),
-            key=lambda event: (str(event.chapter), event.sequence, event.event_id),
-        )
+def _ordered_visible_events(
+    plan: LiveSequencePlan, *, require_linear: bool = False
+) -> tuple[LiveSequenceEvent, ...]:
+    """Follow one explicit visible path, retaining enumeration for partial capture."""
+    visible = tuple(
+        event for event in plan.events.values() if event.kind in {"speech", "silent"}
     )
+    ordered: list[LiveSequenceEvent] = []
+    linear = True
+    for chapter in plan.chapters:
+        pending = chapter.entry_event_ids
+        visited: set[str] = set()
+        while len(pending) == 1:
+            event = plan.events[pending[0]]
+            if event.event_id in visited:
+                linear = False
+                break
+            visited.add(event.event_id)
+            if event.kind in {"choice", "wait"} or event.control == "manual":
+                linear = False
+                break
+            if event.kind in {"speech", "silent"}:
+                ordered.append(event)
+            pending = event.successors
+        if len(pending) > 1:
+            linear = False
+    if linear and {event.event_id for event in ordered} == {
+        event.event_id for event in visible
+    }:
+        return tuple(ordered)
+    if require_linear:
+        raise LiveSequencePlanError(
+            "Complete visible chapter requires one deterministic path through all "
+            "visible events without manual boundaries"
+        )
+    return visible
 
 
 def _next_visible_events(

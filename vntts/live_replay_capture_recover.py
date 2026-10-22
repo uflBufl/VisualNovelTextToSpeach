@@ -48,6 +48,7 @@ from vntts.live_replay_sequence_seal import (
 from vntts.live_sequence import (
     LiveSequenceEvent,
     LiveSequencePlan,
+    LiveSequencePlanError,
     _next_visible_events,
     _ordered_visible_events,
 )
@@ -103,6 +104,20 @@ class _MappedEvent:
     absorbed_observation_indices: list[int]
     dialog_visible: bool
     bright_dialog_pixels: int
+
+
+def _recovery_visible_order(
+    plan: LiveSequencePlan, *, complete_visible_chapter: bool
+) -> tuple[tuple[LiveSequenceEvent, ...], bool]:
+    linear_visible_path = True
+    try:
+        expected_visible = _ordered_visible_events(plan, require_linear=True)
+    except LiveSequencePlanError as error:
+        if complete_visible_chapter:
+            raise LiveReplayCaptureRecoveryError(str(error)) from error
+        linear_visible_path = False
+        expected_visible = _ordered_visible_events(plan)
+    return expected_visible, linear_visible_path
 
 
 def recover_live_replay_capture(
@@ -248,7 +263,9 @@ def recover_live_replay_capture(
                 None,
             )
             selected = [] if end_index is None else selected[: end_index + 1]
-        expected_visible = _ordered_visible_events(plan)
+        expected_visible, linear_visible_path = _recovery_visible_order(
+            plan, complete_visible_chapter=complete_visible_chapter
+        )
         if (
             complete_visible_chapter
             and len({event.chapter for event in expected_visible}) != 1
@@ -263,7 +280,7 @@ def recover_live_replay_capture(
             len(expected_visible) if complete_visible_chapter else minimum_events
         )
         contains_silent = any(item.event.kind == "silent" for item in selected)
-        complete_visible = selected_ids == expected_visible_ids
+        complete_visible = linear_visible_path and selected_ids == expected_visible_ids
         sufficient = (
             len(selected) >= effective_minimum_events
             and (contains_silent or not require_silent)

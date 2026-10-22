@@ -16,14 +16,14 @@ from vntts.live_replay_coverage import (
 
 class LiveReplayCoverageTest(unittest.TestCase):
     @staticmethod
-    def _fixture(root):
+    def _fixture(root, *, sequences=(1, 2, 3), hidden_control="passive"):
         story = root / "story.jsonl"
         lines = [
             {
                 "record_type": "line",
                 "kind": "dialogue",
                 "chapter": "1",
-                "sequence": sequence,
+                "sequence": sequences[0 if sequence == 1 else 2],
                 "line_id": f"story:{sequence}",
                 "speaker": speaker,
                 "text": text,
@@ -64,22 +64,31 @@ class LiveReplayCoverageTest(unittest.TestCase):
                         "events": [
                             {
                                 "event_id": "event-1",
-                                "sequence": 1,
+                                "sequence": sequences[0],
                                 "kind": "speech",
                                 "control": "automatic",
-                                "successors": ["event-2"],
+                                "successors": ["event-hidden"],
                                 "line_id": "story:1",
                             },
                             {
+                                "event_id": "event-hidden",
+                                "sequence": 25,
+                                "kind": "wait"
+                                if hidden_control == "manual"
+                                else "transition",
+                                "control": hidden_control,
+                                "successors": ["event-2"],
+                            },
+                            {
                                 "event_id": "event-2",
-                                "sequence": 2,
+                                "sequence": sequences[1],
                                 "kind": "silent",
                                 "control": "automatic",
                                 "successors": ["event-3"],
                             },
                             {
                                 "event_id": "event-3",
-                                "sequence": 3,
+                                "sequence": sequences[2],
                                 "kind": "speech",
                                 "control": "terminal",
                                 "successors": [],
@@ -140,6 +149,34 @@ class LiveReplayCoverageTest(unittest.TestCase):
             review("first.json", ["event-1"], True),
             review("second.json", ["event-2", "event-3"], False),
         )
+
+    def test_coverage_uses_graph_order_with_nonmonotonic_ids(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story, plan, first, second = self._fixture(root, sequences=(24, 111, 26))
+            _path, report = audit_live_replay_coverage(
+                root / "coverage.json",
+                story_index=story,
+                sequence_plan=plan,
+                reviews=(first, second),
+            )
+            self.assertTrue(report["technical_coverage_complete"])
+            self.assertEqual(report["covered_visible_event_count"], 3)
+
+    def test_coverage_refuses_hidden_manual_boundary(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story, plan, first, second = self._fixture(root, hidden_control="manual")
+            with self.assertRaisesRegex(
+                LiveReplayCoverageError, "one deterministic path"
+            ):
+                audit_live_replay_coverage(
+                    root / "coverage.json",
+                    story_index=story,
+                    sequence_plan=plan,
+                    reviews=(first, second),
+                )
+            self.assertFalse((root / "coverage.json").exists())
 
     def test_unions_checksum_bound_sealed_segments(self):
         with TemporaryDirectory() as directory:

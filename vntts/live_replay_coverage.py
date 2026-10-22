@@ -16,6 +16,7 @@ from vntts.live_replay_evidence import _decode_json, _read_regular_file
 from vntts.live_sequence import (
     LiveSequenceEvent,
     LiveSequencePlan,
+    LiveSequencePlanError,
     _next_visible_events,
     _ordered_visible_events,
     load_live_sequence_snapshot,
@@ -78,7 +79,10 @@ def audit_live_replay_coverage(
     story_sha256 = hashlib.sha256(story_payload).hexdigest()
     plan_sha256 = hashlib.sha256(plan_payload).hexdigest()
     plan = _load_snapshot_plan(story_path, plan_path, story_payload, plan_payload)
-    visible = _ordered_visible_events(plan)
+    try:
+        visible = _ordered_visible_events(plan, require_linear=True)
+    except LiveSequencePlanError as error:
+        raise LiveReplayCoverageError(str(error)) from error
     if len({event.chapter for event in visible}) != 1:
         raise LiveReplayCoverageError(
             "Visible chapter coverage requires a one-chapter sequence plan"
