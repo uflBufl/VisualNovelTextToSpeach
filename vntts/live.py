@@ -106,6 +106,16 @@ DialogObservationDecision: TypeAlias = DialogRoute | bool | None
 StableFrameRoute: TypeAlias = DialogRoute | None | Literal[False]
 
 
+def _canonical_frame_observation(route: StableFrameRoute) -> Observation | None:
+    if isinstance(route, SilentDialogRoute):
+        return None, ""
+    if isinstance(route, CanonicalDialogRoute):
+        return route.character, route.text
+    if isinstance(route, tuple) and len(route) == 2:
+        return route
+    return None
+
+
 def _finite_seconds(value: object, name: str) -> float:
     seconds = optional_finite_number(int(value) if isinstance(value, bool) else value)
     if seconds is None:
@@ -442,23 +452,8 @@ class LiveDialogReader:
         self.focus_probe_failed = False
         self.ocr_worker_stage = "not-started"
         self.ocr_worker_progress_at = monotonic()
-        self.pending_transition_frame: Frame | None = None
-        self.pending_transition_progress_at: float | None = None
-        self.pending_transition_seen = False
-        self.pending_transition_typing = False
-        self.pending_transition_text = ""
-        self.observation_frame: Frame | None = None
-        self.latest_frame_captured_at: float | None = None
-        self.latest_frame: Frame | None = None
-        self.latest_frame_fingerprint: FrameFingerprint | None = None
-        self.latest_frame_visible = False
-        self.latest_frame_complete = False
-        self.latest_render_fingerprint: FrameFingerprint | None = None
-        self.latest_render_owner: object | None = None
-        self.latest_render_changed_at: float | None = None
-        self.routed_frame: Frame | None = None
-        self.candidate_frame: Frame | None = None
-        self.routed_frame_fingerprint: FrameFingerprint | None = None
+        self._reset_pending_transition(None)
+        self._reset_frame_observations()
         self.frame_route_epoch = 0
         self.candidate_frame_fingerprint = object()
         self.candidate_frame_count = 0
@@ -468,6 +463,30 @@ class LiveDialogReader:
         self.processed_frame_version = 0
         self.next_capture_interval = self.interval_seconds
         self.pipeline_metrics = LivePipelineMetrics()
+
+    def _reset_pending_transition(self, frame: Frame | None) -> None:
+        self.pending_transition_frame = frame
+        self.pending_transition_progress_at: float | None = None
+        self.pending_transition_seen = False
+        self.pending_transition_typing = False
+        self.pending_transition_text = ""
+
+    def _reset_render_observation(self) -> None:
+        self.latest_render_fingerprint: FrameFingerprint | None = None
+        self.latest_render_owner: object | None = None
+        self.latest_render_changed_at: float | None = None
+
+    def _reset_frame_observations(self) -> None:
+        self.observation_frame: Frame | None = None
+        self.latest_frame_captured_at: float | None = None
+        self.latest_frame: Frame | None = None
+        self.latest_frame_fingerprint: FrameFingerprint | None = None
+        self.latest_frame_visible = False
+        self.latest_frame_complete = False
+        self._reset_render_observation()
+        self.routed_frame: Frame | None = None
+        self.candidate_frame: Frame | None = None
+        self.routed_frame_fingerprint: FrameFingerprint | None = None
 
     @property
     def interval_seconds(self) -> float:
@@ -571,20 +590,8 @@ class LiveDialogReader:
             self.auto_advance_visual_wait_generation = None
             self.focus_probe_failed = False
             self._cancel_auto_advance_locked()
-            self.pending_transition_seen = False
-            self.pending_transition_typing = False
-            self.pending_transition_text = ""
-            self.observation_frame = None
-            self.latest_frame = None
-            self.latest_frame_fingerprint = None
-            self.latest_frame_visible = False
-            self.latest_frame_complete = False
-            self.latest_render_fingerprint = None
-            self.latest_render_owner = None
-            self.latest_render_changed_at = None
-            self.routed_frame = None
-            self.candidate_frame = None
-            self.routed_frame_fingerprint = None
+            self._reset_pending_transition(None)
+            self._reset_frame_observations()
             self.frame_route_epoch += 1
             self._reset_stable_frame_candidate_locked()
             self.frame_version = 0
@@ -961,6 +968,28 @@ class LiveDialogReader:
         with self.state_lock:
             return self.pipeline_metrics
 
+    def _observe_transition_frame(
+        self,
+        frame: Frame,
+        fingerprint: FrameFingerprint,
+        visible: bool,
+        changed: bool,
+        previous_frame: Frame | None,
+    ) -> None:
+        if (
+            self.pending_auto_advance_generation == self.active_generation
+            and visible
+            and fingerprint != self.routed_frame_fingerprint
+        ):
+            anchor = self.pending_transition_frame
+            if anchor is None or not self.frame_equivalent(anchor, frame):
+                self.pending_transition_seen = True
+                if changed and (
+                    previous_frame is None
+                    or not self.frame_equivalent(previous_frame, frame)
+                ):
+                    self.pending_transition_progress_at = monotonic()
+
     def _run_capture(self, stop_event: Event) -> None:
         policy = self.adaptive_policy_factory(
             base_interval=self.interval_seconds,
@@ -970,9 +999,7 @@ class LiveDialogReader:
             focused = self._is_focused()
             if not focused:
                 with self.state_lock:
-                    self.latest_render_fingerprint = None
-                    self.latest_render_owner = None
-                    self.latest_render_changed_at = None
+                    self._reset_render_observation()
                 interval = policy.observe(None, None, focused=False)
                 self._notify_capture_state(False, interval)
                 stop_event.wait(interval)
@@ -1003,9 +1030,7 @@ class LiveDialogReader:
                     self.latest_frame_visible = visible
                     self.latest_frame_complete = complete
                     if not visible:
-                        self.latest_render_fingerprint = None
-                        self.latest_render_owner = None
-                        self.latest_render_changed_at = None
+                        self._reset_render_observation()
                     elif (
                         render_fingerprint != self.latest_render_fingerprint
                         or render_owner != self.latest_render_owner
@@ -1014,19 +1039,13 @@ class LiveDialogReader:
                         self.latest_render_owner = render_owner
                         self.latest_render_changed_at = captured_at
                     self.frame_version += 1
-                    if (
-                        self.pending_auto_advance_generation == self.active_generation
-                        and visible
-                        and fingerprint != self.routed_frame_fingerprint
-                    ):
-                        anchor = self.pending_transition_frame
-                        if anchor is None or not self.frame_equivalent(anchor, frame):
-                            self.pending_transition_seen = True
-                            if (fingerprint_changed or render_changed) and (
-                                previous_frame is None
-                                or not self.frame_equivalent(previous_frame, frame)
-                            ):
-                                self.pending_transition_progress_at = monotonic()
+                    self._observe_transition_frame(
+                        frame,
+                        fingerprint,
+                        visible,
+                        fingerprint_changed or render_changed,
+                        previous_frame,
+                    )
                     metrics = self.pipeline_metrics
                     self.pipeline_metrics = replace(
                         metrics,
@@ -1311,22 +1330,9 @@ class LiveDialogReader:
                     with self.state_lock:
                         self.next_capture_interval = interval
                     continue
-                if isinstance(frame_route, SilentDialogRoute):
-                    character, text = None, ""
-                    route_kind = "canonical"
-                    cached_fingerprint = fingerprint
-                    cached_render_fingerprint = render_fingerprint
-                    cached_completion = complete
-                    cached_observation = (character, text)
-                elif isinstance(frame_route, CanonicalDialogRoute):
-                    character, text = frame_route.character, frame_route.text
-                    route_kind = "canonical"
-                    cached_fingerprint = fingerprint
-                    cached_render_fingerprint = render_fingerprint
-                    cached_completion = complete
-                    cached_observation = (character, text)
-                elif isinstance(frame_route, tuple) and len(frame_route) == 2:
-                    character, text = frame_route
+                canonical_observation = _canonical_frame_observation(frame_route)
+                if canonical_observation is not None:
+                    character, text = canonical_observation
                     route_kind = "canonical"
                     cached_fingerprint = fingerprint
                     cached_render_fingerprint = render_fingerprint
@@ -2200,49 +2206,44 @@ class LiveDialogReader:
                         self.failed_auto_advance_generation = generation
                 self._report_auto_advance_state("blocked", generation, 0)
             return
-        if advanced is not False:
-            dispatched = None
-            with self.state_lock:
-                if generation == self.active_generation:
-                    self.auto_advance_focus_wait_generation = None
-                    self.auto_advance_visual_wait_generation = None
-                    self.auto_advance_attempts = 1
-                    attempt = 1
-                    self.last_auto_advance_dispatched_generation = generation
-                    self.pending_transition_frame = self.latest_frame
-                    self.pending_transition_progress_at = None
-                    self.pending_transition_seen = False
-                    self.pending_transition_typing = False
-                    self.pending_transition_text = ""
-                    self.pending_auto_advance_generation = generation
-                    self.pipeline_metrics = replace(
-                        self.pipeline_metrics,
-                        last_auto_advance_dispatched_at=monotonic(),
-                    )
-                    self._auto_advance_timer_serial += 1
-                    timer = Timer(
-                        self.auto_advance_confirmation_timeout_seconds,
-                        self._auto_advance_confirmation_expired,
-                        args=(
-                            generation,
-                            attempt,
-                            False,
-                            self._auto_advance_timer_serial,
-                        ),
-                    )
-                    timer.daemon = True
-                    self.auto_advance_timer = timer
-                    dispatched = attempt, timer
-            if dispatched is not None:
-                attempt, timer = dispatched
-                self._report_pipeline_event(
-                    "key-dispatch",
-                    generation,
-                    monotonic(),
-                    attempt=attempt,
+        dispatched = None
+        with self.state_lock:
+            if generation == self.active_generation:
+                self.auto_advance_focus_wait_generation = None
+                self.auto_advance_visual_wait_generation = None
+                self.auto_advance_attempts = 1
+                attempt = 1
+                self.last_auto_advance_dispatched_generation = generation
+                self._reset_pending_transition(self.latest_frame)
+                self.pending_auto_advance_generation = generation
+                self.pipeline_metrics = replace(
+                    self.pipeline_metrics,
+                    last_auto_advance_dispatched_at=monotonic(),
                 )
-                self._report_auto_advance_state("dispatched", generation, attempt)
-                timer.start()
+                self._auto_advance_timer_serial += 1
+                timer = Timer(
+                    self.auto_advance_confirmation_timeout_seconds,
+                    self._auto_advance_confirmation_expired,
+                    args=(
+                        generation,
+                        attempt,
+                        False,
+                        self._auto_advance_timer_serial,
+                    ),
+                )
+                timer.daemon = True
+                self.auto_advance_timer = timer
+                dispatched = attempt, timer
+        if dispatched is not None:
+            attempt, timer = dispatched
+            self._report_pipeline_event(
+                "key-dispatch",
+                generation,
+                monotonic(),
+                attempt=attempt,
+            )
+            self._report_auto_advance_state("dispatched", generation, attempt)
+            timer.start()
 
     def _auto_advance_confirmation_expired(
         self,

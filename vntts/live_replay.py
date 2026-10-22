@@ -980,19 +980,9 @@ class LiveReplayRunner:
                 )
             if outcome.successful and isinstance(prepared, SourceAudioRoute):
                 reader.seal_generation(chunk.generation)
-            chunk_details = {
-                "chunk_id": chunk.chunk_id,
-                "chunk_ordinal": chunk.ordinal,
-                "chunk_characters": len(chunk.text),
-            }
-            if outcome.first_audio_at is not None:
-                reader.record_first_pcm(outcome.first_audio_at, chunk=chunk)
-            elif outcome.first_audio_ms is not None:
-                reader.record_first_pcm(
-                    playback_started + outcome.first_audio_ms / 1000,
-                    provenance="estimated",
-                    chunk=chunk,
-                )
+            onset = outcome.onset_observation(playback_started)
+            if onset is not None:
+                reader.record_first_pcm(onset[0], provenance=onset[1], chunk=chunk)
             reader._report_pipeline_event(
                 "playback-outcome",
                 chunk.generation,
@@ -1005,7 +995,9 @@ class LiveReplayRunner:
                 first_audio_ms=outcome.first_audio_ms,
                 cache_source=outcome.cache_source,
                 effective_source=outcome.audio_source,
-                **chunk_details,
+                chunk_id=chunk.chunk_id,
+                chunk_ordinal=chunk.ordinal,
+                chunk_characters=len(chunk.text),
             )
             if outcome.status is PlaybackStatus.FAILED:
                 raise RuntimeError(outcome.error or "Replay playback failed")

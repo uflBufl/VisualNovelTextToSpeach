@@ -953,6 +953,14 @@ minimum-width/enlarged-text layout in that run; retain macOS platform coverage t
 
 - [ ] Reproduce/bisect the full remainder prefix preceding `tests.test_calibration.DialogRegionOverlayTest.test_cancelled_review_releases_stalled_ocr_subprocess`: one October 6 full run timed out before the fixture start marker, while the isolated case and all17 calibration tests passed. Record the current full-discovery order and capture worker/Qt/subprocess state before changing timeout or cancellation; the historical private log is not a prerequisite.
 
+## Restore the existing UI complexity gate
+
+- [ ] Reduce the nine Ruff complexity findings already reproduced on `origin/main` at
+      `45034b8f`: catalog screenshot/asset-manager helpers, the history keyboard test,
+      diagnostics body/constructor, and history/profile constructors. Run
+      `uv run python scripts/check_ruff_complexity.py`; preserve behavior and lower
+      stale allowances after refactoring, without raising limits to hide increases.
+
 ## Active - Continue cleanup ownership expansion
 
 - [ ] **Windows job acquisition next gate:** qualify actual native failures before assignment, before resume and after resume on Windows. Current `__init__` closes job through raw cleanup and allocates `_ExtendedLimits` after handle acquisition outside its guard; assign/resume finally blocks can replace primary errors. Stage the existing cleanup leaf only after native ownership checks; prepare limits before acquisition. Four CloseHandle results are ignored and close clears `_handle` on FALSE. Microsoft documents FALSE as failure, but it can mean INVALID_HANDLE rather than a leaked valid handle; preserve returned status/last error and prove valid-handle cleanup and no runnable child with real Windows failure injection. Keep the two-second process wait budget; successful host-crash test and mock cleanup order do not qualify these failures.

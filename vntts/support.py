@@ -259,6 +259,32 @@ generation_timeline_detail_fields = (
 )
 
 
+def _timeline_uuid(value: object | None, name: str) -> str | None:
+    if value is None:
+        return None
+    try:
+        return UUID(str(value)).hex
+    except (ValueError, AttributeError) as error:
+        raise ValueError(f"Timeline {name} ID must be a UUID") from error
+
+
+def _record_stable_frame_gate(existing: SupportDetails, event: SupportDocument) -> None:
+    observations = _event_counter(existing, "observations")
+    candidate_frames = event.get("candidate_frames")
+    event["observations"] = observations + 1
+    event["candidate_restarts"] = _event_counter(existing, "candidate_restarts") + int(
+        observations > 0 and candidate_frames == 1
+    )
+    event["fingerprint_changes"] = _event_counter(
+        existing, "fingerprint_changes"
+    ) + int(
+        observations > 0 and event.get("fingerprint") != existing.get("fingerprint")
+    )
+    event["ready_observations"] = _event_counter(existing, "ready_observations") + int(
+        event.get("ready") is True
+    )
+
+
 class GenerationTimelineLog:
     """Keep one bounded, privacy-safe pipeline timeline per generation."""
 
@@ -297,17 +323,8 @@ class GenerationTimelineLog:
             raise ValueError("Timeline timestamp must be finite")
         if generation < 1:
             return False
-        if session_id is not None:
-            try:
-                session_id = UUID(str(session_id)).hex
-            except (ValueError, AttributeError) as error:
-                raise ValueError("Timeline session ID must be a UUID") from error
-
-        if run_id is not None:
-            try:
-                run_id = UUID(str(run_id)).hex
-            except (ValueError, AttributeError) as error:
-                raise ValueError("Timeline run ID must be a UUID") from error
+        session_id = _timeline_uuid(session_id, "session")
+        run_id = _timeline_uuid(run_id, "run")
         with self.lock:
             if self.clock_origin is None:
                 self.clock_origin = occurred_at
@@ -347,21 +364,7 @@ class GenerationTimelineLog:
                 },
             }
             if stage == "stable-frame-gate":
-                observations = _event_counter(existing, "observations")
-                candidate_frames = event.get("candidate_frames")
-                event["observations"] = observations + 1
-                event["candidate_restarts"] = _event_counter(
-                    existing, "candidate_restarts"
-                ) + int(observations > 0 and candidate_frames == 1)
-                event["fingerprint_changes"] = _event_counter(
-                    existing, "fingerprint_changes"
-                ) + int(
-                    observations > 0
-                    and event.get("fingerprint") != existing.get("fingerprint")
-                )
-                event["ready_observations"] = _event_counter(
-                    existing, "ready_observations"
-                ) + int(event.get("ready") is True)
+                _record_stable_frame_gate(existing, event)
             # Preserve repeats/retries; a later callback cannot rewrite evidence.
             timeline["events"][str(self.event_sequence)] = event
             while len(timeline["events"]) > 512:

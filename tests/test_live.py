@@ -1693,7 +1693,9 @@ class LiveDialogReaderTest(unittest.TestCase):
         options.update(overrides)
         return LiveDialogReader(**options)
 
-    def test_stop_in_observation_callback_rejects_tracked_speech_but_allows_read_once(self):
+    def test_stop_in_observation_callback_rejects_tracked_speech_but_allows_read_once(
+        self,
+    ):
         speech = QueuedExecutor()
         tracker = Mock(generation=1)
         tracker.observe_canonical.return_value = [SpeechChunk(1, "Alice", "Hello.")]

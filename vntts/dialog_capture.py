@@ -41,6 +41,7 @@ from vntts.services.tts_engine import AudioPlaybackError, TTSError
 from vntts.voices import VoiceManifestError
 from vntts.window_capture import (
     WindowCaptureError,
+    WindowCaptureSnapshot,
     WindowCaptureTarget,
     ensure_screen_capture_supported,
 )
@@ -113,6 +114,44 @@ def create_screenshot_path(screenshot_directory: PathInput) -> Path:
     return screenshot_directory / f"dialog-{formatted_date}-{uuid4().hex}.png"
 
 
+def _capture_provenance(
+    capture_id: str,
+    run_id: str | None,
+    started: float,
+    capture_target: object | None,
+    snapshot: WindowCaptureSnapshot | None,
+    dialog_box: dict[str, int] | None,
+    image: Image.Image | None,
+    error: BaseException | None = None,
+) -> CaptureProvenance:
+    window = None
+    if snapshot is not None:
+        window = snapshot.window
+    elif isinstance(capture_target, WindowCaptureTarget):
+        window = capture_target.last_window
+    return CaptureProvenance(
+        capture_id=capture_id,
+        run_id=run_id,
+        started_monotonic=started,
+        completed_monotonic=monotonic(),
+        requested_window_title=(
+            capture_target.window_title
+            if isinstance(capture_target, WindowCaptureTarget)
+            else None
+        ),
+        window_id=window.handle if window is not None else None,
+        window_title=window.title if window is not None else None,
+        owner_pid=window.process_id if window is not None else None,
+        window_bounds=(
+            snapshot.geometry.as_monitor() if snapshot is not None else None
+        ),
+        capture_bounds=dialog_box,
+        output_dimensions=image.size if image is not None else None,
+        success=error is None,
+        error_type=type(error).__name__ if error is not None else None,
+    )
+
+
 def capture_dialog(
     screenshot_directory: PathInput | None = None,
     *,
@@ -129,31 +168,15 @@ def capture_dialog(
     image = None
 
     def provenance(error: BaseException | None = None) -> CaptureProvenance:
-        window = None
-        if snapshot is not None:
-            window = snapshot.window
-        elif isinstance(capture_target, WindowCaptureTarget):
-            window = capture_target.last_window
-        return CaptureProvenance(
-            capture_id=capture_id,
-            run_id=run_id,
-            started_monotonic=started,
-            completed_monotonic=monotonic(),
-            requested_window_title=(
-                capture_target.window_title
-                if isinstance(capture_target, WindowCaptureTarget)
-                else None
-            ),
-            window_id=window.handle if window is not None else None,
-            window_title=window.title if window is not None else None,
-            owner_pid=window.process_id if window is not None else None,
-            window_bounds=(
-                snapshot.geometry.as_monitor() if snapshot is not None else None
-            ),
-            capture_bounds=dialog_box,
-            output_dimensions=image.size if image is not None else None,
-            success=error is None,
-            error_type=type(error).__name__ if error is not None else None,
+        return _capture_provenance(
+            capture_id,
+            run_id,
+            started,
+            capture_target,
+            snapshot,
+            dialog_box,
+            image,
+            error,
         )
 
     try:
@@ -180,12 +203,7 @@ def capture_dialog(
             if snapshot is not None and isinstance(capture_target, WindowCaptureTarget):
                 capture_target.validate_snapshot(snapshot)
     except Exception as error:
-        record = provenance(error)
-        failure = ScreenCaptureError(str(error))
-        failure.provenance = record
-        if provenance_handler is not None:
-            _notify_capture_provenance(provenance_handler, record)
-        raise failure from error
+        raise _capture_failure(error, provenance(error), provenance_handler) from error
 
     record = provenance()
     image.info["capture_provenance"] = record.as_dict()
@@ -200,30 +218,42 @@ def capture_dialog(
         except Exception as error:
             record = provenance(error)
             image.info["capture_provenance"] = record.as_dict()
-            failure = ScreenCaptureError(str(error))
-            failure.provenance = record
-            if provenance_handler is not None:
-                _notify_capture_provenance(provenance_handler, record)
-            raise failure from error
-        try:
-            output.with_suffix(".capture.json").write_text(
-                metadata_json + "\n", encoding="utf-8"
-            )
-        except OSError as error:
-            # The PNG still embeds provenance when its optional sidecar cannot be saved.
-            warnings.warn(
-                f"Unable to save capture provenance sidecar: {type(error).__name__}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-    if provenance_handler is not None:
-        _notify_capture_provenance(provenance_handler, record)
+            raise _capture_failure(error, record, provenance_handler) from error
+        _save_capture_sidecar(output, metadata_json)
+    _notify_capture_provenance(provenance_handler, record)
     return image, output
 
 
+def _save_capture_sidecar(output: Path, metadata_json: str) -> None:
+    try:
+        output.with_suffix(".capture.json").write_text(
+            metadata_json + "\n", encoding="utf-8"
+        )
+    except OSError as error:
+        # The PNG still embeds provenance when its optional sidecar cannot be saved.
+        warnings.warn(
+            f"Unable to save capture provenance sidecar: {type(error).__name__}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
+def _capture_failure(
+    error: BaseException,
+    record: CaptureProvenance,
+    handler: Callable[[CaptureProvenance], object] | None,
+) -> ScreenCaptureError:
+    failure = ScreenCaptureError(str(error))
+    failure.provenance = record
+    _notify_capture_provenance(handler, record)
+    return failure
+
+
 def _notify_capture_provenance(
-    handler: Callable[[CaptureProvenance], object], record: CaptureProvenance
+    handler: Callable[[CaptureProvenance], object] | None, record: CaptureProvenance
 ) -> None:
+    if handler is None:
+        return
     try:
         handler(record)
     except Exception as error:
@@ -394,15 +424,10 @@ def fingerprint_dialog_frame(frame: object) -> bytes:
     return blake2b(label + dialog, digest_size=16).digest()
 
 
-def dialog_frames_equivalent(previous: object, current: object) -> bool:
-    """Accept only identical glyph cores translated by at most two pixels."""
-    before, after = _frame_image(previous), _frame_image(current)
-    if before.size != after.size:
-        return False
-    if not dialog_glyphs_visible(previous) or not dialog_glyphs_visible(current):
-        return False
-
-    width, height = before.size
+def _dialog_equivalence_boxes(
+    previous: object, current: object
+) -> list[tuple[int, int, int, int]]:
+    width, height = _frame_image(previous).size
     monitor = {"left": 0, "top": 0, "width": width, "height": height}
     region_pairs = []
     for frame in (previous, current):
@@ -424,18 +449,34 @@ def dialog_frames_equivalent(previous: object, current: object) -> bool:
             )
         )
 
-    def masks(frame: object) -> tuple[NDArray[np.bool_], ...]:
-        image = _frame_image(frame).convert("L")
-        for point in _dialog_completion_cue_pixels(frame):
-            image.putpixel(point, 0)
-        bands = tuple(image.crop(box) for box in boxes)
-        result: list[NDArray[np.bool_]] = []
-        for band in bands:
-            pixels = np.asarray(band)
-            result.extend((pixels >= 160, pixels >= max(160, int(pixels.max()) - 20)))
-        return tuple(result)
+    return boxes
 
-    before_masks, after_masks = masks(previous), masks(current)
+
+def _dialog_equivalence_masks(
+    frame: object, boxes: list[tuple[int, int, int, int]]
+) -> tuple[NDArray[np.bool_], ...]:
+    image = _frame_image(frame).convert("L")
+    for point in _dialog_completion_cue_pixels(frame):
+        image.putpixel(point, 0)
+    bands = tuple(image.crop(box) for box in boxes)
+    result: list[NDArray[np.bool_]] = []
+    for band in bands:
+        pixels = np.asarray(band)
+        result.extend((pixels >= 160, pixels >= max(160, int(pixels.max()) - 20)))
+    return tuple(result)
+
+
+def dialog_frames_equivalent(previous: object, current: object) -> bool:
+    """Accept only identical glyph cores translated by at most two pixels."""
+    before, after = _frame_image(previous), _frame_image(current)
+    if before.size != after.size:
+        return False
+    if not dialog_glyphs_visible(previous) or not dialog_glyphs_visible(current):
+        return False
+
+    boxes = _dialog_equivalence_boxes(previous, current)
+    before_masks = _dialog_equivalence_masks(previous, boxes)
+    after_masks = _dialog_equivalence_masks(current, boxes)
     if not before_masks[-1].any() or not after_masks[-1].any():
         return False
     for left, right in zip(before_masks, after_masks, strict=True):

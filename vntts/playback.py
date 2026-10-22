@@ -60,6 +60,15 @@ class PlaybackOutcome:
     onset_provenance: str = "unobserved"
     end_provenance: str = "unobserved"
 
+    def onset_observation(self, playback_started: float) -> tuple[float, str] | None:
+        if self.first_audio_at is not None:
+            return self.first_audio_at, "measured"
+        if isinstance(self.first_audio_ms, (int, float)) and not isinstance(
+            self.first_audio_ms, bool
+        ):
+            return playback_started + self.first_audio_ms / 1000, "estimated"
+        return None
+
     @property
     def successful(self) -> bool:
         return self.status in {

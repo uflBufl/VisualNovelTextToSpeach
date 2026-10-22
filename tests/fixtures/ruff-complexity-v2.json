@@ -258,7 +258,7 @@
       "path": "vntts/controller.py",
       "scope": "AppController._get_live_sequence_status_locked",
       "count": 1,
-      "maximum": 16
+      "maximum": 14
     },
     {
       "code": "C901",
@@ -307,14 +307,14 @@
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_auto_advance",
       "count": 1,
-      "maximum": 22
+      "maximum": 21
     },
     {
       "code": "C901",
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_ocr",
       "count": 1,
-      "maximum": 25
+      "maximum": 24
     },
     {
       "code": "C901",
@@ -762,7 +762,7 @@
       "path": "vntts/controller.py",
       "scope": "AppController._get_live_sequence_status_locked",
       "count": 1,
-      "maximum": 18
+      "maximum": 15
     },
     {
       "code": "PLR0912",
@@ -804,14 +804,14 @@
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_auto_advance",
       "count": 1,
-      "maximum": 23
+      "maximum": 22
     },
     {
       "code": "PLR0912",
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_ocr",
       "count": 1,
-      "maximum": 29
+      "maximum": 28
     },
     {
       "code": "PLR0912",
@@ -1238,7 +1238,7 @@
       "path": "vntts/controller.py",
       "scope": "AppController.__init__",
       "count": 1,
-      "maximum": 84
+      "maximum": 79
     },
     {
       "code": "PLR0915",
@@ -1273,7 +1273,7 @@
       "path": "vntts/live.py",
       "scope": "LiveDialogReader.__init__",
       "count": 1,
-      "maximum": 95
+      "maximum": 94
     },
     {
       "code": "PLR0915",
@@ -1287,7 +1287,7 @@
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_ocr",
       "count": 1,
-      "maximum": 140
+      "maximum": 138
     },
     {
       "code": "PLR0915",
