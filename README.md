@@ -787,17 +787,34 @@ uv run ruff check --fix .
 uv run ruff format .
 ```
 
-Verify formatting, linting, and tests affected by branch and local changes:
+Verify formatting and linting:
 
 ```sh
 uv run ruff format --check .
 uv run ruff check .
+```
+
+### Test selection
+
+After code changes, run the changed-test selector in local mode first:
+
+```sh
+uv run python -m scripts.run_changed_unittests --local
+```
+
+This selects tests affected by staged, unstaged and untracked files. To validate
+all changes in the current branch against the merge base with `origin/main`,
+including local edits, omit `--local`:
+
+```sh
 uv run python -m scripts.run_changed_unittests
 ```
 
-Use `--local` to check only staged, unstaged, and untracked changes, or `--list`
-to inspect the selected test modules. Changes to shared dependency configuration
-run the full suite. To run all tests explicitly:
+Add `--list` to either command to inspect its selection without running tests.
+The selector follows static imports; run additional focused checks when an
+affected runtime or integration boundary is not represented by that analysis.
+Shared dependency configuration changes or an unsafe/incomplete import mapping
+make the selector fall back to the full suite. To run all tests explicitly:
 
 ```sh
 uv run python scripts/run_ci_unittests.py discover -s tests
