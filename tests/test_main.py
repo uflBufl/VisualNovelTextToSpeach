@@ -731,6 +731,36 @@ class MainTest(unittest.TestCase):
             result_resolver=None,
         )
 
+    def test_one_shot_routes_from_its_diagnostic_frame_not_previous_live_capture(self):
+        from tests.test_dialog_capture import glyph_frame
+        from vntts.live import LiveDialogReader
+
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        reader = LiveDialogReader(
+            capture_executor=Mock(),
+            ocr_executor=Mock(),
+            speech_executor=Mock(),
+            playback_executor=Mock(),
+            capture_frame=Mock(),
+            recognize_frame=Mock(),
+            prepare_chunk=Mock(),
+            play_prepared=Mock(),
+            report_error=Mock(),
+        )
+        old = glyph_frame("old")
+        fresh = glyph_frame("new")
+        reader.latest_frame = old
+        reader.observation_frame = old
+        controller.live_reader = reader
+        controller.last_diagnostic = DiagnosticSnapshot(
+            fresh.image, character="Name", text="new", capture_ms=1
+        )
+        controller._dialog_observed = Mock(return_value=False)
+        self.assertFalse(controller._enqueue_dialog("Name", "new"))
+        self.assertIs(reader.observation_frame.image, fresh.image)
+        self.assertIs(reader.latest_frame, reader.observation_frame)
+        self.assertEqual(reader.pipeline_metrics.last_route_kind, "ocr")
+
     def test_cancelled_one_time_read_stays_pending_until_its_worker_drains(self):
         future = Future()
         future.set_running_or_notify_cancel()

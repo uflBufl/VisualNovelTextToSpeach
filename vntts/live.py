@@ -79,6 +79,11 @@ class LivePipelineMetrics:
     last_ocr_capture_at: float | None = None
     last_ocr_capture_id: str | None = None
     last_ocr_frame_version: int | None = None
+    last_route_capture_at: float | None = None
+    last_route_capture_id: str | None = None
+    last_route_frame_version: int | None = None
+    last_route_ocr_at: float | None = None
+    last_route_kind: str | None = None
     last_sentence_ready_at: float | None = None
     last_synthesis_at: float | None = None
     last_playback_at: float | None = None
@@ -442,6 +447,7 @@ class LiveDialogReader:
         self.pending_transition_seen = False
         self.pending_transition_typing = False
         self.pending_transition_text = ""
+        self.observation_frame: Frame | None = None
         self.latest_frame_captured_at: float | None = None
         self.latest_frame: Frame | None = None
         self.latest_frame_fingerprint: FrameFingerprint | None = None
@@ -568,6 +574,7 @@ class LiveDialogReader:
             self.pending_transition_seen = False
             self.pending_transition_typing = False
             self.pending_transition_text = ""
+            self.observation_frame = None
             self.latest_frame = None
             self.latest_frame_fingerprint = None
             self.latest_frame_visible = False
@@ -989,6 +996,7 @@ class LiveDialogReader:
                         render_fingerprint != self.latest_render_fingerprint
                     )
                     replaced = self.frame_version > self.processed_frame_version
+                    previous_frame = self.latest_frame
                     self.latest_frame = frame
                     self.latest_frame_captured_at = monotonic()
                     self.latest_frame_fingerprint = fingerprint
@@ -1014,7 +1022,11 @@ class LiveDialogReader:
                         anchor = self.pending_transition_frame
                         if anchor is None or not self.frame_equivalent(anchor, frame):
                             self.pending_transition_seen = True
-                            self.pending_transition_progress_at = monotonic()
+                            if (fingerprint_changed or render_changed) and (
+                                previous_frame is None
+                                or not self.frame_equivalent(previous_frame, frame)
+                            ):
+                                self.pending_transition_progress_at = monotonic()
                     metrics = self.pipeline_metrics
                     self.pipeline_metrics = replace(
                         metrics,
@@ -1073,6 +1085,30 @@ class LiveDialogReader:
                 ),
                 last_ocr_frame_version=frame_version,
                 last_speaker_resolved_at=now,
+            )
+
+    def _record_route_observation(
+        self,
+        frame: Frame,
+        frame_version: int,
+        captured_at: float | None,
+        route_kind: str,
+    ) -> None:
+        with self.state_lock:
+            self.observation_frame = frame
+            self.pipeline_metrics = replace(
+                self.pipeline_metrics,
+                last_route_capture_at=captured_at,
+                last_route_capture_id=getattr(
+                    getattr(frame, "provenance", None), "capture_id", None
+                ),
+                last_route_frame_version=frame_version,
+                last_route_ocr_at=(
+                    self.pipeline_metrics.last_ocr_at
+                    if route_kind in {"ocr", "cached"}
+                    else None
+                ),
+                last_route_kind=route_kind,
             )
 
     def _recognition_is_current(
@@ -1345,6 +1381,9 @@ class LiveDialogReader:
                         "a SilentDialogRoute/CanonicalDialogRoute/"
                         "(character, text) route"
                     )
+                self._record_route_observation(
+                    frame, recognition_version, recognition_capture_at, route_kind
+                )
                 self._ocr_progress("routing")
                 self._observe_pending_transition_text(character, text)
                 routed_observation = (
@@ -1621,8 +1660,13 @@ class LiveDialogReader:
             self._interrupt_speech()
         if changed and generation > 0:
             for stage, occurred_at in (
-                ("capture", metrics.last_ocr_capture_at or metrics.last_capture_at),
-                ("ocr", metrics.last_ocr_at),
+                ("capture", metrics.last_route_capture_at or metrics.last_capture_at),
+                (
+                    "ocr",
+                    metrics.last_route_ocr_at
+                    if metrics.last_route_kind is not None
+                    else metrics.last_ocr_at,
+                ),
                 ("stable-text", monotonic()),
             ):
                 if occurred_at is not None:
@@ -1630,9 +1674,21 @@ class LiveDialogReader:
                         stage,
                         generation,
                         occurred_at,
-                        capture_id=metrics.last_ocr_capture_id,
-                        frame_version=metrics.last_ocr_frame_version,
-                        visibility_provenance="recognized-captured-frame",
+                        capture_id=(
+                            metrics.last_ocr_capture_id
+                            if stage == "ocr"
+                            else metrics.last_route_capture_id
+                        ),
+                        frame_version=(
+                            metrics.last_ocr_frame_version
+                            if stage == "ocr"
+                            else metrics.last_route_frame_version
+                        ),
+                        visibility_provenance=(
+                            "canonical-visual-frame"
+                            if metrics.last_route_kind == "canonical"
+                            else "recognized-captured-frame"
+                        ),
                     )
         if confirmed_advance is not None:
             confirmed_generation, attempt = confirmed_advance
@@ -1655,7 +1711,7 @@ class LiveDialogReader:
                 run_id=self.run_id,
                 playback_id=uuid4().hex,
                 capture_id=chunk.capture_id
-                or self.pipeline_metrics.last_ocr_capture_id,
+                or self.pipeline_metrics.last_route_capture_id,
             )
             with self.pause_condition:
                 if (
@@ -1945,13 +2001,15 @@ class LiveDialogReader:
         self, tracker: IncrementalDialogTracker, chunks: Iterable[SpeechChunk]
     ) -> None:
         with self.state_lock:
+            if self.stop_event.is_set() or self.is_shutting_down:
+                return
             offset = self._explicit_generation_offset
             generation = tracker.generation + offset
             self._set_generation(generation)
-        self._schedule(
-            replace(chunk, generation=chunk.generation + offset) for chunk in chunks
-        )
-        self._update_dialog_ready(tracker, generation)
+            self._schedule(
+                replace(chunk, generation=chunk.generation + offset) for chunk in chunks
+            )
+            self._update_dialog_ready(tracker, generation)
 
     def _update_dialog_ready(
         self, tracker: IncrementalDialogTracker, generation: int
@@ -2356,7 +2414,19 @@ class LiveDialogReader:
         context = audio_lifecycle_context.get() or {}
         if not context:
             chunk = self.last_spoken_chunk
-            if chunk is not None and chunk.generation == generation:
+            if (
+                chunk is not None
+                and chunk.generation == generation
+                and chunk.run_id == self.run_id
+                and stage
+                in {
+                    "key-dispatch",
+                    "confirmed-next-dialogue",
+                    "auto-advance-withheld",
+                    "auto-advance-timeout",
+                    "reading-control",
+                }
+            ):
                 context = self._chunk_context(chunk)
         details = {
             "run_id": self.run_id,

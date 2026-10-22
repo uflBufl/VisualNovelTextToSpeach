@@ -29,6 +29,7 @@ from vntts.audio_cache import BoundedCache
 from vntts.audio_output import (
     PlaybackAudioOutput,
     match_output_sample_rate,
+    playback_cancelled,
     resolve_audio_output,
     write_pcm_chunks,
 )
@@ -1395,9 +1396,7 @@ class AudioRoutePlaybackOwner:
                 )
                 sample_count = len(samples)
                 expected_playback_ms = sample_count * 1000 / sample_rate
-                if self.generated_audio_stop.is_set() or (
-                    playback_guard is not None and not playback_guard()
-                ):
+                if playback_cancelled(self.generated_audio_stop, playback_guard):
                     return _route_outcome(
                         route,
                         PlaybackStatus.INTERRUPTED,
@@ -1419,9 +1418,8 @@ class AudioRoutePlaybackOwner:
                             stream,
                             samples,
                             sample_rate,
-                            lambda: (
-                                self.generated_audio_stop.is_set()
-                                or (playback_guard is not None and not playback_guard())
+                            lambda: playback_cancelled(
+                                self.generated_audio_stop, playback_guard
                             ),
                             first_write=first_write,
                         )

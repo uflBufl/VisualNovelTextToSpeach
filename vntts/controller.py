@@ -33,8 +33,11 @@ from vntts.controller_components import speak_live_chunk as speak_live_chunk
 from vntts.diagnostics import resolve_voice_label
 from vntts.dialog import speak_dialog
 from vntts.dialog_capture import (
+    CapturedDialogFrame,
     DiagnosticSnapshot,
     capture_live_frame,
+    dialog_glyphs_visible,
+    fingerprint_dialog_frame,
     get_screenshot_directory,
     read_dialog_safely,
     recognize_live_frame,
@@ -1852,7 +1855,10 @@ class AppController:
                 )
         if line is None and cursor.state != StoryCursorState.PLAYING:
             exact, exact_result = self.chapter_voice_preloader.resolve_exact_among(
-                character, text, plan.event_id_by_line_id, update_context=False
+                character,
+                text,
+                (event.line_id for event in plan.events.values() if event.is_speech),
+                update_context=False,
             )
             if exact_result not in {"expected-exact", "expected-normalized-exact"}:
                 exact = None
@@ -1874,7 +1880,7 @@ class AppController:
                     exact_event.event_id,
                     getattr(reader, "run_id", None),
                     self.observation_serial,
-                    getattr(reader, "latest_frame", None),
+                    getattr(reader, "observation_frame", None),
                 )
         if self._report_sequence_candidate_miss_if_needed(
             cursor,
@@ -3206,6 +3212,43 @@ class AppController:
     def _enqueue_dialog(self, character: str, text: str) -> bool:
         if self.shutdown_requested.is_set():
             return False
+        reader = self.live_reader
+        if isinstance(reader, LiveDialogReader) and not reader.is_running:
+            with self.diagnostic_lock:
+                snapshot = self.last_diagnostic
+            if (
+                snapshot is not None
+                and snapshot.image is not None
+                and (snapshot.character, snapshot.text) == (character, text)
+            ):
+                from vntts.capture_provenance import CaptureProvenance
+
+                provenance = snapshot.capture_provenance
+                frame = CapturedDialogFrame(
+                    snapshot.image,
+                    snapshot.capture_ms or 0,
+                    self._capture_ocr_regions(),
+                    CaptureProvenance(**provenance)
+                    if isinstance(provenance, dict)
+                    else None,
+                )
+                captured_at = (
+                    frame.provenance.completed_monotonic if frame.provenance else None
+                )
+                with reader.state_lock:
+                    reader.latest_frame = frame
+                    reader.latest_frame_fingerprint = fingerprint_dialog_frame(frame)
+                    reader.latest_frame_visible = dialog_glyphs_visible(frame)
+                    reader.latest_frame_captured_at = captured_at
+                    reader.frame_version += 1
+                    reader._record_ocr_completion(
+                        frame, reader.frame_version, captured_at
+                    )
+                    reader._record_route_observation(
+                        frame, reader.frame_version, captured_at, "ocr"
+                    )
+            else:
+                reader.observation_frame = None
         canonical_character = self._canonical_observed_character(character, text)
         resolved_text = self._resolve_early_indexed_dialogue(canonical_character, text)
         if resolved_text is not None:

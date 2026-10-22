@@ -1,18 +1,5 @@
 # TODO
 
-## Active - Reading state repair execution
-
-- [ ] S20.7/T1: distinct Reading run/playback identities and append-only events on
-      one monotonic clock; label measured/estimated/unobserved timing and test restarts.
-- [ ] R2/R3: current completed jittering OCR and revalidatable deterministic early
-      successor ownership; retain replacement/name/focus/manual/Stop guards.
-- [ ] R5/R7/R8: indexed out-of-order explicit recovery, one-shot lifecycle and
-      typing/transition wait states; never resend a key because of a timeout.
-- [ ] S20.5/S20.6/T4 and modal barrier: typed failures, actual capture provenance
-      and waiting for speech on retry after capture stops.
-- [ ] Changed-test selection first, missed related regressions, integrated review,
-      fetch/rebase and ordinary push to origin/main. Preserve R1/R4/R6 and W1/W2 gates.
-
 ## Current scope and execution order
 
 Target: Windows Reading with a heavy offline model's already generated recordings,
@@ -32,14 +19,14 @@ matching, weakened admission, extra key presses or larger timeouts.
 
 Execution dependencies:
 
-1. Implement S20.7 and T1-T4 capture/evidence prerequisites; reproduce R1/R2 with
-   worker state captured before recovery. These observability changes must not
+1. Finish the T1-T4 real-host capture/evidence gates; reproduce R1 with
+   OCR-worker health and thread stacks captured before recovery. These changes must not
    delay Stop or record new dialogue/audio in ordinary support logs.
-2. Repair R1-R8 and the modal stop barrier below; fix U1-U4 before calibration
+2. Investigate R1/R4/R6 and qualify R2/R3/R5/R7/R8; fix U1-U4 before calibration
    acceptance. R4's exporter contract must be verified before enabling automatic
    traversal of affected locale replacements; R5 remains usable for manual recovery.
-3. Investigate S20.4 with fresh correlated timings, and implement S20.5/S20.6
-   error handling. Preserve upstream Settings/selection/original-audition fixes;
+3. Investigate S20.4 with fresh correlated timings and qualify S20.6 window
+   recovery. Preserve upstream Settings/selection/original-audition fixes;
    their remaining Windows checks below are qualification, not duplicate repairs.
 4. Run W1 with generation finished, then W2 with actual heavy generation active.
    Preparation/finalization, Windows device-quiescence and existing chapter-specific
@@ -58,37 +45,31 @@ Shared Reading owners are `vntts/live.py`, `vntts/controller.py`,
 `vntts/app.py`, exported timelines in `vntts/support.py`. Update the relevant
 callers and focused regressions together when changing these contracts.
 
-- [ ] **R1 - Investigate: expose OCR-worker health independently of capture.**
+- [ ] **R1 - Investigate the capture-only stall using independent OCR-worker health.**
       After accepted frame2676 at monotonic148117.451, OCR/gate events stop for
       over 100s while capture continues; `LiveDialogReader.is_running` checks only
-      `capture_future`. Capture OCR future/exception, thread stacks and bounded
-      stage progress before Stop; identify the blocked callback or exit before
+      `capture_future`. Use recorded OCR future state/error type and stage-progress
+      age, then capture thread stacks before Stop; identify the blocked callback or exit before
       implementing recovery. Gate: a dead/stalled OCR worker cannot present healthy
       Reading indefinitely, failure/retry is actionable, Stop remains bounded,
       and recovery cannot create a second worker or replay a claimed occurrence.
-- [ ] **R2 - Ready: admit current completed text despite harmless visual jitter.**
-      On canonical116 `Ouch!`, 21/22 initial OCR results are rejected because newer
-      captures change glyph/render fingerprints; correct OCR is 96%, not low quality.
-      Adaptive ROI shifts 1-2px, but fixed-ROI hashes also vary: fix the shared
-      capture/OCR freshness contract, not only rectangle coordinates. Reproduce
-      with completed left-edge `Ouch!`, changing glyph brightness and1-2px auto-ROI
-      shifts, capture about130ms versus OCR about170ms. Gate: current completed
-      text reaches recognition with capture faster than OCR;
-      left-edge short text, absent names and animated cues work; real replacements
-      and typewriter additions still reject stale speech. Never crop away short
-      text or disable freshness checking. R1 is a separate, unresolved later stall.
-- [ ] **R3 - Ready: retain and revalidate safe early prepared-successor ownership.**
-      After the authorized 6->7 key, a transitional old-narrator frame has 95.72%
-      dialogue confidence but 0% speaker confidence; `_ocr_uncertain` clears
-      `sequence_prefix_dispatch_lease`, so later valid prefixes wait for full text.
-      Define the transition in the shared cursor/controller contract and reserve,
-      validate and prebuffer the admitted next recording outside the onset path.
-      Gate: uncertain frames never authorize speech, but do not alone destroy a
-      still-valid deterministic transition; first sufficient fresh prefix starts
-      the correct character's WAV once, before full typing. Ambiguous/common
-      prefixes, wrong names, manual input, focus loss, Stop/pause, branches and
-      manual boundaries cannot use stale ownership. Ordinary non-sequence prefixes
-      still require sufficient unique evidence; no unconditional first-glyph rule.
+- [ ] **R2 - Validate completed-text freshness on Windows.** Use completed left-edge
+      `Ouch!`, absent names, changing brightness, animated cues and 1-2px auto-ROI
+      translation/size changes with capture faster than OCR. Require prompt current
+      recognition while real replacement, changed name, new punctuation/typewriter
+      glyphs, focus/owner changes and Stop still reject stale speech. Retain captures
+      showing whether real antialiasing changes conservatively need another OCR pass.
+      R1's later capture-only stall remains a separate unknown cause.
+
+- [ ] **R3 - Validate owned early prepared-successor playback on Windows.** Use a
+      fully admitted per-character recording and an authorized deterministic key
+      transition, including an uncertain old narrator frame before the first valid
+      prefix. Require one correct WAV start during typing and no new synthesis;
+      reserve/prebuffer before onset. Check wrong names/text, common or ambiguous
+      prefixes, missing audio, manual input, focus loss, Stop/pause, branches and
+      manual boundaries. Uncertain frames cannot authorize speech; ordinary
+      non-sequence prefixes still need unique sufficient evidence.
+
 - [ ] **R4 - Investigate: export the actual localized story control flow.**
       The game displays 24->111; raw 25 is Chinese-only/type0 and appended 111 has the
       same Chinese plus the displayed 143-character English/type1. The bound plan
@@ -99,14 +80,14 @@ callers and focused regressions together when changing these contracts.
       and manual boundaries; republished index/plan follows observed order and the
       VNTTS consumer rejects incompatible authority. Coordinate the extractor
       release/pin explicitly; do not hardcode24->111->26 or widen lookahead.
-- [ ] **R5 - Ready: make out-of-order current-dialogue recovery an ordinary action.**
-      Recognized canonical 111 lies outside the permitted successors; Read current
-      currently opens a position picker and recovery required an advanced mode switch.
-      Show indexed-but-out-of-order separately from unrecognized text, offer explicit
-      current-text reading and controlled re-anchor/manual continuation, and explain
-      route/voice consequences. Gate: keyboard/compact controls can recover without
-      editing advanced settings, preserve hybrid priority, and cannot silently skip,
-      guess a graph edge, duplicate speech or restart after Stop/cancel.
+- [ ] **R5 - Validate explicit indexed-current recovery on Windows.** For an exact,
+      unique indexed line outside the expected graph, use Read indexed current line
+      from Reading, compact controls and keyboard/tray without advanced settings.
+      Confirm configured original -> prepared -> live priority, one explicit
+      re-anchor, manual continuation, and no guessed edge, silent skip, duplicate
+      speech, stale/blank-frame recovery or restart after Stop/cancel. Distinguish
+      this action from unrecognized text and an explicit position-picker choice.
+
 - [ ] **R6 - Investigate: account for elapsed original speech before completion.**
       Native reference 47 ends 148093.107, route selection 148093.559, completion timer
       fires 148094.402 and key 148094.765. Identify a trustworthy onset/elapsed basis
@@ -115,20 +96,20 @@ callers and focused regressions together when changing these contracts.
       duration; retain partial-source lead and focus/visual guards. Gate: a known
       already-ended original does not restart its whole duration, active source
       speech is never cut off, and unknown timing cannot be declared measured.
-- [ ] **R7 - Ready: finish Read once consistently across UI and actions.**
-      Read once remained Speaking/Stop after playback ended; its toggle could start
-      another read. Use shared lifecycle facts for dashboard, compact controls and
-      enabled actions. Gate: natural finish, failure, Stop and recovery clear stale
-      status, Stop never becomes an implicit replay, and a late callback cannot
-      overwrite the state of a newer read.
-- [ ] **R8 - Ready after S20.7: distinguish typing from failed auto-advance.**
-      Long successor typing on 15/16 produces a 10s advance-timeout despite a
-      successful key transition. Represent visual transition, ongoing typing,
-      recognition, unavailable successor and ignored key separately. Gate: status
-      explains the actual wait, a timeout never authorizes a second key, and normal
-      confirmation resumes after full/early identification without duplicate audio.
-      Validate historical Windows stalls with fresh run identities before assigning
-      the same cause; this Mac evidence does not diagnose every Windows timeout.
+- [ ] **R7 - Validate shared Read once lifecycle on Windows.** Natural finish,
+      failure, Stop, cancel and recovery must clear Speaking/Stop in Reading,
+      compact and tray controls. A displayed Stop and direct controller toggle must
+      never start another read; late OCR/playback cannot overwrite a newer read.
+      Retry Settings after a stop timeout while speech or cancelled OCR still drains;
+      it must wait without opening/applying early or restarting capture.
+
+- [ ] **R8 - Validate transition/typing status with fresh Windows run IDs.** For
+      long successor typing, require ongoing typing or recognition wait instead of
+      an ignored-key error. An unchanged new frame with unavailable OCR must reach
+      an actionable unavailable status; harmless old-frame jitter must not prove
+      a transition. Confirmation must resume without duplicate audio or another
+      key after a timeout. Reproduce historical Windows stalls before attributing
+      them to the Mac typing case.
 
 ## P0 - Make capture setup trustworthy and operable
 
@@ -167,15 +148,18 @@ callers and focused regressions together when changing these contracts.
 
 ## P0 - Establish trustworthy latency evidence
 
-- [ ] **T1 - Ready after S20.7: report audio timing with provenance and one clock.**
-      Generated `first_audio_ms=0.0` is unmeasured; digital output actually starts
-      about 110-120ms after dispatch. Original onset is unobserved and its timer is
-      not an audio end. Carry distinct run/occurrence/playback IDs through append-only
-      capture, OCR, route, output and key events; do not reset common origin or
-      overwrite repeats in exports. Gate: fixture timelines preserve failed/repeated
-      attempts and separate measured/estimated/unobserved onset/end, original/
-      prepared/live, cold/warm, source leads and intentional pauses. Ordinary support
-      logs remain privacy-safe; retained dialogue/audio are explicit test evidence.
+- [ ] **T1 - Validate timing provenance and overhead on Windows.** Retain correlated
+      run/occurrence/playback/capture IDs through Stop/Start, identical lines,
+      retries, failures, source leads and intentional pauses. Compare the measured
+      first successful PCM-write return and software completion against independent
+      recording; neither is physical DAC/acoustic onset. Original onset stays
+      unobserved and its duration timer stays estimated. Split original/prepared/live
+      and cache states; collect actual cold/warm model evidence separately rather
+      than replacing `model_warmth=unobserved` with an inference. Confirm append-only
+      events, explicit retention gaps and common monotonic offsets survive export
+      and restart, including OCR-free visual successors. Measure capture/support-log
+      overhead and Stop latency; ordinary logs must retain no pixels/dialogue.
+
 - [ ] **T2 - Investigate and repair before W1: keep native video recording alive.**
       All 13 Mac live-run MOVs stopped after four frames despite later dialogue
       changes; a preliminary check had the same four-frame result. Diagnose the
@@ -200,18 +184,15 @@ callers and focused regressions together when changing these contracts.
       errors without any other target, and successful PNG responses carry matching
       capture metadata. Reacquire process-specific IDs after restart; do not use
       implicit screenshots or desktop capture to validate activation.
-- [ ] **T4 - Ready with T3: record the actual capture target and scope.**
-      For remaining product screenshot requests and native video sessions, record
-      a correlation ID, time,
-      selected window ID/title, owner PID/application, optional widget ID, bounds,
-      output dimensions, capture mechanism/scope and success/failure. Distinguish
-      isolated-window pixels from a desktop rectangle tied to window coordinates;
-      the latter can contain overlapping windows. Record target changes against
-      frame timestamps and preserve provenance beside saved images/video and in
-      diagnostics; do not enumerate unrelated window titles or add image content
-      to ordinary logs. Gate: every successful capture can be attributed to its
-      actual target, failed/disappearing targets remain explicit, and a restart or
-      focus/window change cannot silently label another window as the original.
+- [ ] **T4 - Validate product capture provenance; add native-video provenance with T2.**
+      On Windows, confirm saved PNG/sidecar, diagnostics and Reading timelines agree
+      on capture ID, separate run ID, selected window ID/title/PID, bounds, dimensions,
+      monotonic time, method/scope and outcome. MSS window-coordinate captures are
+      desktop rectangles and may contain overlaps. Close/minimize/move/resize/reopen
+      the selected window and confirm failures and new target identities remain
+      explicit; never enumerate unrelated titles or log pixels/dialogue. Add the
+      same target-change/frame-time contract to the tracked native recorder when
+      implementing T2; product screenshot metadata does not qualify video or MCP.
 
 ## P0 - Qualify the requested Windows prepared-voice workflow
 
@@ -265,15 +246,11 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 - [ ] **S20.4 - Investigate on Windows: account for remaining voice-plan wall time before choosing a broader fix.** The historical `_create_voice_plan` took 408.915 s: candidate preparation 40.576 s and `voice-plan-store` 368.334 s; about 308.962 s of the latter was not attributed by the retained spans. Capture fresh cold and warm runs with the actual Windows/model workload using correlated `operation_id` timings for settings context, grouping, routing, reference qualification, applying choices, persistence, audition cache admission, queue wait, model startup, render, preview quality and ASR advice. Compare disjoint phases with the inclusive total; do not add inclusive parent and child durations. Inspect cache hit/miss, registry-build, reference-read and reference-preflight counters, and retain any unexplained gap explicitly. Identify the measured dominant work before choosing further reuse/deferment; preserve quality, admitted bytes, explicit choices and responsiveness. Fixture improvements do not diagnose the historical 309 s or qualify Windows, large-pack finalization, GPU headroom, W1 or W2.
 
-- [ ] **S20.5 - Ready: preserve typed synthesis/configuration failures at the live playback boundary.** `AppController._play_live_chunk` converts every failed `PlaybackOutcome` into `AudioPlaybackError`, discarding `error_type` preserved by the speech worker. The same Pocket cloning restriction appears as a synthesis error at 21:47:53 / 21:58:08 and a playback error at 21:50:38. Reuse the safe type-preserving pattern in `live_speech.py`. Gate: configuration and synthesis failures retain their category before/during streaming, a genuine output-device failure remains an audio error, and interruption behavior stays unchanged. Gated-model access itself is an external requirement, not a proven consent/auth bug.
-
-- [ ] **S20.6 - Ready: classify a disappearing game window as an expected capture condition.** At 22:07:10, `WindowNotFoundError` from the focus probe becomes `Unexpected dialog processing failure` because `format_runtime_error` handles `ScreenCaptureError` but not the window-capture exception family. Report recoverable capture/window-unavailable state consistently and retain the existing failure debounce. Gate: closing/minimizing/reopening the selected window produces the correct capture status and recovery; genuine unexpected exceptions remain distinguishable. Do not infer new audible playback after closure solely from a recorded route.
-
-- [ ] **S20.7 - Ready: give each restarted Reading run a distinct timeline epoch.** The reader's session UUID is allocated only at runtime construction, but `LiveDialogReader.start` resets generation to zero; `GenerationTimelineLog` keys records by `(session_id, generation)`. Session `c630af40f5604d92b5ab329665a0dcdf`, generation 1 merges `314001:8` with `314001:15` 353.622 s later; generations 1-8 merge distinct runs, and previous-session generation 1 contains five routes over 887.248 s. Allocate a fresh run epoch or maintain a compatible monotonic identity, including all related events. Gate: stop/start of the same reader yields separate timelines, accurate capture/OCR/chunk/key correlation and unaffected sequence leases. The Mac trial independently reused the same session/generation/chunk for line314001:6 at147019.735 and147044.749; cover repeated identical lines too. Re-evaluate timeouts only after attribution is reliable; T1 adds timing provenance, not another run-ID implementation.
-
-## Preserve modal stop barriers after a timeout
-
-- [ ] Ensure retrying Settings or another paused-reading dialog after a live-stop timeout still waits for pending speech when capture has already stopped. The openers currently test `is_live_running`, and `RuntimeLifecycleComponent._stop_live_for_settings` also returns early for stopped capture. Reuse the background stop path and add a regression with stopped capture and blocked speech; the retry must neither open/apply early nor restart the reader.
+- [ ] **S20.6 - Validate selected-window disappearance/recovery on Windows.** Close,
+      minimize and reopen the selected game window during Reading. Require a
+      recoverable capture/window-unavailable status with debounce and normal recovery;
+      unexpected exceptions must remain distinguishable. Use the new run/playback
+      evidence before inferring any audible output after window closure.
 
 ## Qualify Settings on native Windows and macOS
 

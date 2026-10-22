@@ -28,6 +28,7 @@ from numpy.typing import NDArray
 from vntts.audio_output import (
     AudioOutput,
     StreamingAudioStream,
+    playback_cancelled,
     resolve_audio_output,
     sanitize_playback_audio,
 )
@@ -1463,9 +1464,7 @@ class IsolatedSpeechBackend:
                 ) as stream:
                     self._active_stream = stream
                     for chunk in chain((first,), rendered):
-                        if self._stop_requested.is_set() or (
-                            playback_guard is not None and not playback_guard()
-                        ):
+                        if playback_cancelled(self._stop_requested, playback_guard):
                             interrupted = True
                             self._terminate_process(self.process)
                             break

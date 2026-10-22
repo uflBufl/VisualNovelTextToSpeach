@@ -385,6 +385,16 @@ def match_output_sample_rate(
     return resampled, target_sample_rate
 
 
+def playback_cancelled(
+    stop_requested: Event, playback_guard: Callable[[], bool] | None
+) -> bool:
+    if stop_requested.is_set():
+        return True
+    playable = playback_guard is None or bool(playback_guard())
+    # The guard may wait for resume while Stop remains nonblocking.
+    return stop_requested.is_set() or not playable
+
+
 def write_pcm_chunks(
     stream: StreamingAudioStream,
     audio: AudioData,
@@ -479,9 +489,7 @@ class SynchronousPcmPlaybackMixin:
                 ) as stream:
 
                     def cancelled() -> bool:
-                        return stop_requested.is_set() or (
-                            playback_guard is not None and not playback_guard()
-                        )
+                        return playback_cancelled(stop_requested, playback_guard)
 
                     completed, underflowed = write_pcm_chunks(
                         stream,
@@ -543,6 +551,7 @@ __all__ = [
     "StreamingAudioStream",
     "SynchronousPcmPlaybackMixin",
     "match_output_sample_rate",
+    "playback_cancelled",
     "resolve_audio_output",
     "sanitize_playback_audio",
     "write_pcm_chunks",

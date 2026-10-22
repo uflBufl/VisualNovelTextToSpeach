@@ -1982,6 +1982,41 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(sample_rate, 24_000)
         self.assertEqual(options["latency"], "low")
 
+    def test_stop_during_waiting_generated_guard_cannot_write_the_first_block(self):
+        output = ExplicitStreamAudioOutput()
+        backend = GeneratedAudioFallbackBackend(
+            self.create_live_backend(), Mock(), Mock(), audio_output=output
+        )
+        entered, resume = Event(), Event()
+        outcomes = []
+
+        def guard():
+            if backend.playback_owner.playback_active:
+                entered.set()
+                resume.wait(2)
+            return True
+
+        route = GeneratedAudioRoute(
+            PreparedGeneratedAudio("game:1", "hash", np.zeros(24), 24000),
+            Mock(effective_source="generated"),
+        )
+        thread = Thread(
+            target=lambda: outcomes.append(
+                backend.play_route(route, playback_guard=guard)
+            )
+        )
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            self.assertTrue(backend.stop())
+        finally:
+            resume.set()
+            thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(output.streams, [])
+        self.assertIs(outcomes[0].status, PlaybackStatus.INTERRUPTED)
+        self.assertIsNone(outcomes[0].first_audio_at)
+
     def test_generated_first_pcm_is_measured_after_successful_write_not_route_default(
         self,
     ):

@@ -1693,6 +1693,92 @@ class LiveDialogReaderTest(unittest.TestCase):
         options.update(overrides)
         return LiveDialogReader(**options)
 
+    def test_stop_in_observation_callback_rejects_tracked_speech_but_allows_read_once(self):
+        speech = QueuedExecutor()
+        tracker = Mock(generation=1)
+        tracker.observe_canonical.return_value = [SpeechChunk(1, "Alice", "Hello.")]
+        reader = self.create_reader(
+            speech_executor=speech,
+            tracker_factory=lambda **_: tracker,
+            line_id_resolver=lambda *_: "line-1",
+        )
+        reader.capture_future = Future()
+        reader.latest_frame = object()
+        reader.latest_frame_fingerprint = "frame"
+        reader.latest_frame_visible = True
+        reader.frame_version = 1
+
+        def stop_after_observation(*_):
+            self.assertTrue(reader.stop())
+            return CanonicalDialogRoute("Alice", "Hello.")
+
+        reader.dialog_observed = stop_after_observation
+        reader._run_ocr(reader.stop_event)
+
+        tracker.observe_canonical.assert_called_once()
+        self.assertEqual(speech.jobs, [])
+        self.assertEqual(reader.active_generation, 0)
+        self.assertTrue(reader.enqueue("Alice", "Explicit read."))
+        self.assertEqual(len(speech.jobs), 1)
+
+    def test_static_successor_does_not_refresh_transition_progress_forever(self):
+        loop_stop = Event()
+        captures = [0]
+        progress = []
+        states = []
+        reader = self.create_reader(
+            frame_fingerprint=lambda frame: frame,
+            auto_advance_state_changed=lambda *a: states.append(a),
+        )
+        reader.active_generation = 1
+        reader.pending_auto_advance_generation = 1
+        reader.auto_advance_attempts = 1
+        reader.pending_transition_frame = "old"
+        reader.latest_frame = "old"
+        reader.latest_frame_fingerprint = "old"
+        reader.routed_frame_fingerprint = "old"
+
+        def capture():
+            if captures[0]:
+                progress.append(reader.pending_transition_progress_at)
+            captures[0] += 1
+            if captures[0] == 3:
+                loop_stop.set()
+            return "unchanged-new"
+
+        reader.capture_frame = capture
+        reader._run_capture(loop_stop)
+        self.assertEqual(progress[0], progress[1])
+        with (
+            patch("vntts.live.monotonic", return_value=progress[0] + 20),
+            patch.object(reader, "_schedule_auto_advance_confirmation") as reschedule,
+        ):
+            reader._auto_advance_confirmation_expired(1, 1, True)
+        self.assertEqual(states[-1], ("successor-unavailable", 1, 1))
+        reschedule.assert_not_called()
+
+    def test_canonical_visual_route_uses_its_frame_and_does_not_fabricate_ocr(self):
+        from types import SimpleNamespace
+
+        events = []
+        reader = self.create_reader(
+            pipeline_event_handler=lambda stage, g, t, **d: events.append(
+                (stage, g, t, d)
+            )
+        )
+        first = SimpleNamespace(provenance=SimpleNamespace(capture_id="capture-a"))
+        second = SimpleNamespace(provenance=SimpleNamespace(capture_id="capture-b"))
+        reader._record_ocr_completion(first, 1, 10)
+        reader._record_route_observation(second, 2, 20, "canonical")
+        reader._set_generation(2)
+        reader._schedule([SpeechChunk(2, "Narrator", "canonical")])
+        capture = next(e for e in events if e[0] == "capture")
+        self.assertEqual((capture[2], capture[3]["capture_id"]), (20, "capture-b"))
+        self.assertFalse(any(e[0] == "ocr" for e in events))
+        generation = next(e for e in events if e[0] == "generation-start")
+        self.assertEqual(generation[3]["capture_id"], "capture-b")
+        self.assertIs(reader.observation_frame, second)
+
     def test_pcm_after_replacement_keeps_old_attempt_and_estimates_do_not_change_measured_clock(
         self,
     ):
@@ -1814,6 +1900,8 @@ class LiveDialogReaderTest(unittest.TestCase):
         second = reader.run_id
         reader.enqueue("Alice", "Same line.")
         self.assertNotEqual(first, second)
+        stable_runs = [d["run_id"] for stage, _, d in events if stage == "stable-text"]
+        self.assertEqual(stable_runs, [first, second])
         starts = [e[2] for e in events if e[0] == "generation-start"]
         self.assertEqual({e["run_id"] for e in starts}, {first, second})
         self.assertEqual(len({e["playback_id"] for e in starts}), 3)
