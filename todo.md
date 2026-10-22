@@ -178,18 +178,22 @@ callers and focused regressions together when changing these contracts.
       acceptance with a supported Windows recorder before W1. Digital recording is
       not physical DAC/acoustic latency; do not claim 30fps precision without the
       corresponding verified frames. Keep overhead and missing intervals visible.
-- [ ] **T3 - Ready before further MCP capture: remove automatic desktop fallback.**
-      The MCP screenshot bridge currently uses `QWidget.grab()` for a selected or
-      visible app window, but falls back to `primaryScreen().grabWindow(0)` when no
-      visible window exists. Require an explicit valid window/widget target or
-      return an actionable capture error; never expand scope to the whole desktop.
-      Fix the owning `pyside6-mcp` implementation/dependency through a reproducible
-      integration, not a launcher monkey patch or an edited temporary injection.
-      Gate: absent, hidden, closed and stale targets cannot invoke screen capture;
-      retries retain the requested target and valid window/widget captures still
-      work. Add focused regressions that assert the full-desktop API is never called.
+- [ ] **T3 - Activate and qualify the screenshot-safe MCP tool.**
+      Use the pinned source patch and installer in `scripts/pyside6-mcp/README.md`.
+      Restart the MCP client/server and relaunch bridged apps: existing processes
+      retain their old code. Read `get_widget_tree` first, then capture only its
+      explicit window/widget ID with the selected app PID. Confirm the running
+      bridge exposes screenshot contract1, missing/hidden/closed/stale IDs return
+      errors without any other target, and successful PNG responses carry matching
+      capture metadata. Reacquire process-specific IDs after restart; do not use
+      implicit screenshots or desktop capture to validate activation.
+      Run the project selector in a fully installed VNTTS test environment: full
+      discovery currently fails without Pillow, PySide6, durable-file and other
+      application dependencies. The MCP source/HTTP/protocol and installer checks
+      are separate from product/Windows acceptance.
 - [ ] **T4 - Ready with T3: record the actual capture target and scope.**
-      For each screenshot request and video session, record a correlation ID, time,
+      For remaining product screenshot requests and native video sessions, record
+      a correlation ID, time,
       selected window ID/title, owner PID/application, optional widget ID, bounds,
       output dimensions, capture mechanism/scope and success/failure. Distinguish
       isolated-window pixels from a desktop rectangle tied to window coordinates;

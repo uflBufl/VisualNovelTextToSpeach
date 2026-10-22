@@ -7,3 +7,4 @@
 samples/*.fixture -text -eol
 # Unified patches need space-prefixed empty context lines.
 scripts/native/*.patch text eol=lf whitespace=-blank-at-eol
+scripts/pyside6-mcp/*.patch text eol=lf whitespace=-blank-at-eol

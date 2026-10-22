@@ -1,0 +1,804 @@
+diff --git a/README.md b/README.md
+index 6bfd858..9bbdce8 100644
+--- a/README.md
++++ b/README.md
+@@ -179,7 +179,7 @@ Your assistant uses the `launch_app`, `screenshot`, `get_widget_tree`, `find_wid
+ | `wait_for_idle(timeout, quiet_ms, pid?)` | Wait until UI has been quiet after an action |
+ | `get_app_status(pid?)` | Process + bridge health; detects likely modal blocks |
+ | `stop_app(pid?)` | Stop a launched app |
+-| `screenshot(widget_id?, pid?)` | Capture window or specific widget (modal/active-window aware) |
++| `screenshot(widget_id, pid?)` | Capture an explicit visible window/widget; returns PNG and capture provenance |
+ | `get_widget_tree(pid?)` | Full widget hierarchy with IDs |
+ | `get_widget_info(widget_id, pid?)` | Detailed properties of one widget |
+ | `get_app_state(pid?)` | Active window, focus, screen info |
+diff --git a/pyproject.toml b/pyproject.toml
+index e8f0329..315e755 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -13,7 +13,7 @@ classifiers = [
+     "Topic :: Software Development :: Debuggers",
+ ]
+ dependencies = [
+-    "fastmcp>=2.0",
++    "fastmcp>=3.3.1",
+     "httpx>=0.27",
+ ]
+ 
+diff --git a/pyside6_mcp/bridge.py b/pyside6_mcp/bridge.py
+index 99d7503..3440eba 100644
+--- a/pyside6_mcp/bridge.py
++++ b/pyside6_mcp/bridge.py
+@@ -11,7 +11,12 @@ import logging
+ import os
+ import sys
+ import threading
++import time
+ import weakref
++import uuid
++from datetime import datetime, timezone
++
++from shiboken6 import isValid
+ from http.server import BaseHTTPRequestHandler, HTTPServer
+ from socketserver import ThreadingMixIn
+ from urllib.parse import parse_qs, urlparse
+@@ -25,6 +30,7 @@ logger = logging.getLogger("pyside6_mcp.bridge")
+ _log_records: list[dict] = []
+ _widget_registry: dict[str, weakref.ref] = {}
+ _widget_by_ptr: dict[int, str] = {}
++_widget_session = uuid.uuid4().hex
+ 
+ # ---------------------------------------------------------------------------
+ # Readiness tracking (pure helpers + shared state)
+@@ -135,7 +141,7 @@ def _widget_id(w: QWidget) -> str:
+         wid = _widget_by_ptr[ptr]
+         if _widget_registry.get(wid, lambda: None)() is not None:
+             return wid
+-    wid = str(len(_widget_registry))
++    wid = f"{_widget_session}:{len(_widget_registry)}"
+     _widget_registry[wid] = weakref.ref(w)
+     _widget_by_ptr[ptr] = wid
+     return wid
+@@ -226,10 +232,18 @@ class _Handler(BaseHTTPRequestHandler):
+         qs = parse_qs(p.query)
+         path = p.path
+         try:
+-            if path == "/screenshot":
++            if path == "/capture-capabilities":
++                self._send({"screenshot_contract": 1, "requires_widget_id": True})
++            elif path == "/screenshot":
+                 wid = qs.get("widget_id", [None])[0]
+-                img = _call_main(lambda: _qt_screenshot(wid))
+-                self._send({"image": img})
++                capture = _capture_record(wid)
++                deadline = time.monotonic() + 5.0
++                try:
++                    result = _call_main(lambda: _qt_screenshot(wid, capture, deadline))
++                except Exception:
++                    result = _capture_failure(capture, "qt_call_failed",
++                                              "Qt capture did not complete; inspect app status before retrying.")
++                self._send(result, 409 if "error" in result else 200)
+             elif path == "/widgets":
+                 self._send({"widgets": _call_main(_qt_widget_tree)})
+             elif path.startswith("/widget/"):
+@@ -291,36 +305,90 @@ class _ThreadedHTTP(ThreadingMixIn, HTTPServer):
+ # Qt operations (always called via _call_main → runs in main thread)
+ # ---------------------------------------------------------------------------
+ 
+-def _topmost_capture_target(app) -> QWidget | None:
+-    """Prefer the active window, then a visible modal dialog, then first visible top-level."""
+-    active = app.activeWindow()
+-    if active is not None and active.isVisible():
+-        return active
+-    visible = [w for w in app.topLevelWidgets() if w.isVisible()]
+-    modal = [w for w in visible if w.isModal()]
+-    if modal:
+-        return modal[-1]
+-    return visible[0] if visible else None
+-
+-
+-def _qt_screenshot(widget_id: str | None = None) -> str:
+-    if widget_id:
+-        w = _resolve(widget_id)
+-        if not w:
+-            raise ValueError(f"Widget {widget_id!r} not found")
+-        pixmap = w.grab()
+-    else:
+-        app = QApplication.instance()
+-        target = _topmost_capture_target(app)
+-        if target is not None:
+-            pixmap = target.grab()
+-        else:
+-            pixmap = app.primaryScreen().grabWindow(0)
+-
+-    buf = QBuffer()
+-    buf.open(QIODevice.OpenMode.ReadWrite)
+-    pixmap.save(buf, "PNG")
+-    return base64.b64encode(bytes(buf.data())).decode()
++def _capture_record(widget_id: str | None) -> dict:
++    return {
++        "correlation_id": uuid.uuid4().hex,
++        "requested_at": datetime.now(timezone.utc).isoformat(),
++        "captured_at": None,
++        "owner_pid": os.getpid(),
++        "application": os.path.basename(sys.argv[0]),
++        "widget_id": widget_id,
++        "window_widget_id": None,
++        "window_id": None,
++        "window_title": None,
++        "bounds": None,
++        "output_dimensions": None,
++        "method": "QWidget.grab",
++        "scope": None,
++        "status": "failure",
++    }
++
++
++def _capture_failure(capture: dict, code: str, message: str) -> dict:
++    capture["status"] = "failure"
++    capture["error_code"] = code
++    logger.info("screenshot_capture %s", json.dumps(capture))
++    return {"error": message, "capture": capture}
++
++
++def _target_details(target: QWidget, window: QWidget) -> dict:
++    origin = target.mapToGlobal(QPoint(0, 0))
++    return {
++        "window_widget_id": _widget_id(window),
++        "window_id": str(int(window.winId())),
++        "window_title": window.windowTitle(),
++        "scope": "isolated-window" if target is window else "isolated-widget",
++        "bounds": {"x": origin.x(), "y": origin.y(),
++                   "width": target.width(), "height": target.height()},
++    }
++
++
++def _qt_screenshot(widget_id: str | None = None, capture: dict | None = None,
++                   deadline: float | None = None) -> dict:
++    # Resolve once on the Qt thread; focus changes must never retarget a request.
++    capture = dict(capture) if capture is not None else _capture_record(widget_id)
++    if deadline is not None and time.monotonic() >= deadline:
++        return _capture_failure(capture, "request_expired", "Screenshot request expired before Qt capture.")
++    if not widget_id:
++        return _capture_failure(capture, "target_required",
++                                "Screenshot requires widget_id from get_widget_tree; no desktop fallback is allowed.")
++    target = _resolve(widget_id)
++    if target is None or not isValid(target):
++        return _capture_failure(capture, "target_missing",
++                                "Screenshot target is missing or stale; inspect get_widget_tree before retrying.")
++    try:
++        window = target.window()
++        if not isValid(window):
++            return _capture_failure(capture, "target_missing", "Screenshot window is stale.")
++        capture["application"] = QApplication.instance().applicationName() or capture["application"]
++        details = _target_details(target, window)
++        capture.update(details)
++        if not target.isVisible() or not window.isVisible() or window.isMinimized():
++            return _capture_failure(capture, "target_hidden", "Screenshot target is hidden, closed or minimized.")
++        if target.width() <= 0 or target.height() <= 0:
++            return _capture_failure(capture, "target_empty", "Screenshot target has no drawable area.")
++        pixmap = target.grab()
++        # grab() can invoke paint handlers; revalidate the same object, never resolve another.
++        if not isValid(target) or not isValid(window) or not target.isVisible() or not window.isVisible() or window.isMinimized():
++            return _capture_failure(capture, "target_changed", "Screenshot target disappeared during capture.")
++        if target.window() is not window or _target_details(target, window) != details:
++            return _capture_failure(capture, "target_changed", "Screenshot target geometry or identity changed during capture.")
++        if deadline is not None and time.monotonic() >= deadline:
++            return _capture_failure(capture, "request_expired", "Screenshot request expired during capture.")
++        if pixmap.isNull():
++            return _capture_failure(capture, "empty_image", "Screenshot target returned an empty image.")
++        buf = QBuffer()
++        if not buf.open(QIODevice.OpenMode.ReadWrite) or not pixmap.save(buf, "PNG"):
++            return _capture_failure(capture, "encoding_failed", "Could not encode screenshot as PNG.")
++        capture.update(
++            captured_at=datetime.now(timezone.utc).isoformat(),
++            output_dimensions={"width": pixmap.width(), "height": pixmap.height()},
++            status="success",
++        )
++        logger.info("screenshot_capture %s", json.dumps(capture))
++        return {"image": base64.b64encode(bytes(buf.data())).decode(), "capture": capture}
++    except Exception:
++        return _capture_failure(capture, "capture_failed", "Screenshot target could not be captured; inspect app status.")
+ 
+ 
+ def _qt_widget_tree() -> list:
+diff --git a/pyside6_mcp/server.py b/pyside6_mcp/server.py
+index 601ad07..d63ad40 100644
+--- a/pyside6_mcp/server.py
++++ b/pyside6_mcp/server.py
+@@ -18,6 +18,9 @@ from typing import Annotated, IO
+ import httpx
+ from fastmcp import FastMCP
+ from fastmcp.utilities.types import Image
++from fastmcp.exceptions import ToolError
++from fastmcp.tools import ToolResult
++from mcp.types import TextContent
+ from pydantic import Field
+ 
+ from pyside6_mcp.launch import (
+@@ -68,7 +71,7 @@ mcp = FastMCP(
+         "screenshot/click/stop_app omit pid to target the last launched app; "
+         "pass pid= when several are running.\n\n"
+         "=== AFTER LAUNCH ===\n"
+-        "screenshot() + get_widget_tree() to orient yourself, then use widget IDs "
++        "get_widget_tree() then screenshot(widget_id=<observed ID>) to orient yourself; use widget IDs "
+         "from the tree for subsequent operations.\n"
+         "If launch fails: get_app_output() for stderr; get_app_status() for process health."
+     ),
+@@ -285,16 +288,36 @@ def _request_app_quit(port: int, timeout: float = 5.0) -> dict:
+ 
+ 
+ @mcp.tool()
+-def screenshot(widget_id: str | None = None, pid: PidParam = None) -> Image:
++def screenshot(widget_id: str | None = None, pid: PidParam = None) -> ToolResult:
+     """
+-    Capture a screenshot of the app window (or a specific widget by ID).
+-    Returns the image so you can see the current UI state.
+-    Call this first to orient yourself.
++    Capture an explicit visible window/widget ID from get_widget_tree.
++    Returns PNG image content and metadata from the same capture operation.
++    No implicit window selection or desktop capture is allowed.
+     """
+-    data = _get("/screenshot", pid=pid, widget_id=widget_id)
+     import base64
+ 
+-    return Image(data=base64.b64decode(data["image"]), format="png")
++    capabilities = _get("/capture-capabilities", pid=pid)
++    if capabilities.get("screenshot_contract") != 1:
++        raise RuntimeError("Restart the app with the updated MCP server before capturing.")
++    try:
++        response = _request_with_retry(
++            "GET", "/screenshot", pid=pid,
++            params={"widget_id": widget_id} if widget_id is not None else {},
++        )
++        data = response.json()
++    except httpx.HTTPStatusError as exc:
++        data = exc.response.json()
++        # A legacy bridge cannot supply trustworthy target provenance.
++        if "capture" not in data:
++            raise _bridge_http_error(exc)
++    if "capture" not in data:
++        raise RuntimeError("Screenshot bridge lacks capture provenance; restart the app with the updated MCP server.")
++    if "error" in data:
++        raise ToolError(json.dumps(data))
++    content = [TextContent(type="text", text=json.dumps({"capture": data["capture"]}))]
++    if "image" in data:
++        content.insert(0, Image(data=base64.b64decode(data["image"]), format="png").to_image_content())
++    return ToolResult(content=content, meta={"capture": data["capture"]})
+ 
+ 
+ @mcp.tool()
+diff --git a/skills/pyside6-mcp/SKILL.md b/skills/pyside6-mcp/SKILL.md
+index 924a2c5..bfb3d7d 100644
+--- a/skills/pyside6-mcp/SKILL.md
++++ b/skills/pyside6-mcp/SKILL.md
+@@ -69,7 +69,7 @@ One MCP server can run many apps. `launch_app` returns `{pid}` of the **Qt app p
+ launch_app(cwd="/abs/project-a", script="app.py")
+ launch_app(cwd="/abs/project-b", script="examples/test_app.py")
+ list_apps()                 # [{pid}, {pid}, ...]
+-screenshot(pid=111)         # required when more than one is running
++screenshot(widget_id="observed-window-id", pid=111)         # required when more than one is running
+ get_widget_tree(pid=222)
+ stop_app(pid=111)
+ ```
+@@ -79,17 +79,21 @@ Omit `pid` only when a single app is running, or to target the last launched app
+ ### 2. Orient yourself — always do both first
+ 
+ ```
+-screenshot()        # see current UI state (captures active/modal window)
+ get_widget_tree()   # full hierarchy with IDs
++screenshot(widget_id="observed-window-id")        # explicit ID from the tree
+ ```
+ 
++Read get_widget_tree first. Pass its observed window/widget ID to every screenshot.
++Missing, stale or hidden targets return an error; there is no desktop fallback.
++IDs are unique to the app process, so reacquire them after restart. Successful
++responses retain PNG image content and include same-operation capture metadata.
+ Widget IDs from the tree are used in all other tools.
+ 
+ ### 2b. After UI-changing actions
+ 
+ ```
+ wait_for_idle()     # wait for layout/paint to settle
+-screenshot()        # then capture
++screenshot(widget_id="observed-window-id")        # then capture
+ ```
+ 
+ ### 3. Find a widget
+@@ -113,7 +117,7 @@ scroll(dy=-3, widget_id="2")          # scroll up
+ ### 5. Verify
+ 
+ ```python
+-screenshot()            # see result
++screenshot(widget_id="observed-window-id")            # see result
+ get_widget_info("4")    # check properties/state
+ get_logs(n=20)          # check Python logging records from the app
+ get_app_output(n=50)    # check raw stdout/stderr (prints, tracebacks)
+@@ -132,7 +136,7 @@ get_app_output(n=50)    # check raw stdout/stderr (prints, tracebacks)
+ | `wait_for_idle(timeout, quiet_ms, pid?)` | Wait until UI quiet after an action (before screenshot) |
+ | `get_app_status(pid?)` | Process + bridge health; detects likely modal blocks |
+ | `stop_app(pid?)` | Stop a previously launched app |
+-| `screenshot(widget_id?, pid?)` | Capture window or specific widget (modal/active-window aware) |
++| `screenshot(widget_id, pid?)` | Capture explicit visible window/widget with provenance |
+ | `get_widget_tree(pid?)` | Full widget hierarchy as JSON with IDs |
+ | `get_widget_info(widget_id, pid?)` | Detailed properties of one widget |
+ | `get_app_state(pid?)` | Active window, focus widget, screen info |
+@@ -169,10 +173,10 @@ eval_python("widgets['5'].isChecked()")
+ ### Debug why a button does nothing
+ 
+ ```
+-screenshot()                     # state before
++screenshot(widget_id="observed-window-id")                     # state before
+ find_widget(text="Submit")       # get widget ID
+ click(widget_id="X")
+-screenshot()                     # state after
++screenshot(widget_id="observed-window-id")                     # state after
+ get_logs()                       # did the handler fire?
+ ```
+ 
+@@ -192,7 +196,7 @@ type_text("value1", widget_id="1")
+ press_key("tab")
+ type_text("value2", widget_id="2")
+ click(widget_id="submit_id")
+-screenshot()
++screenshot(widget_id="observed-window-id")
+ ```
+ 
+ ---
+@@ -205,6 +209,6 @@ screenshot()
+ - **Bridge must be running** — if tools return a connection error, call `launch_app` first
+ - **Qt operations run on the main thread** — the bridge marshals automatically, but if the app is hung, tools will timeout after 5 s
+ - **Modal dialogs block the main thread** — `QDialog.exec()` / `QMessageBox` run a nested event loop; tools that marshal to the main thread will time out. Use `trigger_action()` / `list_actions()` to drive menus without opening modals, and `get_app_status()` to confirm a modal block
+-- **After UI-changing actions** — call `wait_for_idle()` before `screenshot()` so layout/paint has settled
++- **After UI-changing actions** — call `wait_for_idle()` before `screenshot(widget_id="observed-window-id")` so layout/paint has settled
+ - **`eval_python` runs real code in the app process** — use for inspection only, not production state changes
+ - **`get_logs` vs `get_app_output`** — `get_logs` returns Python `logging` records via the bridge; `get_app_output` returns the raw stdout/stderr (`print()`, uncaught tracebacks). If the app crashes on startup, use `get_app_output` — it reads from a file and works even when the bridge never came up (only for apps started via `launch_app`)
+diff --git a/tests/test_integration_ready.py b/tests/test_integration_ready.py
+index 9f3d9d8..63aebef 100644
+--- a/tests/test_integration_ready.py
++++ b/tests/test_integration_ready.py
+@@ -137,7 +137,11 @@ def test_screenshot_returns_png_base64(free_port):
+             except httpx.HTTPError:
+                 pass
+             time.sleep(0.2)
+-        img = httpx.get(f"{base}/screenshot", timeout=5).json()["image"]
++        widgets = httpx.get(f"{base}/widgets", timeout=5).json()["widgets"]
++        data = httpx.get(f"{base}/screenshot", params={"widget_id": widgets[0]["id"]}, timeout=5).json()
++        assert data["capture"]["status"] == "success"
++        assert data["capture"]["scope"] == "isolated-window"
++        img = data["image"]
+         raw = _b64.b64decode(img)
+         assert raw[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+     finally:
+diff --git a/tests/test_screenshot_capture.py b/tests/test_screenshot_capture.py
+new file mode 100644
+index 0000000..1d5dfd9
+--- /dev/null
++++ b/tests/test_screenshot_capture.py
+@@ -0,0 +1,245 @@
++"""Focused offscreen coverage for target-bound screenshot capture."""
++
++import base64
++import json
++from unittest.mock import Mock
++
++import pytest
++from PySide6.QtCore import QByteArray
++from PySide6.QtGui import QImage, QScreen
++from PySide6.QtWidgets import QApplication, QLabel, QWidget
++from shiboken6 import delete
++
++from pyside6_mcp import bridge
++
++
++@pytest.fixture
++def app():
++    instance = QApplication.instance() or QApplication([])
++    instance.setApplicationName("capture-test")
++    yield instance
++
++
++def _target(app, title="Private dialogue"):
++    window = QWidget()
++    window.setWindowTitle(title)
++    label = QLabel("SECRET DIALOGUE: never log these pixels", window)
++    label.resize(180, 32)
++    window.resize(240, 100)
++    window.show()
++    app.processEvents()
++    return window, label
++
++
++def _assert_no_desktop_capture(monkeypatch):
++    primary_screen = Mock(
++        side_effect=AssertionError("desktop capture must never be invoked")
++    )
++    grab_window = Mock(
++        side_effect=AssertionError("desktop capture must never be invoked")
++    )
++    monkeypatch.setattr(QApplication, "primaryScreen", primary_screen)
++    monkeypatch.setattr(QScreen, "grabWindow", grab_window)
++    return primary_screen, grab_window
++
++
++def _assert_desktop_capture_not_called(mocks):
++    for mock in mocks:
++        mock.assert_not_called()
++
++
++def test_requires_explicit_widget_id_without_desktop_capture(app, monkeypatch):
++    desktop_calls = _assert_no_desktop_capture(monkeypatch)
++
++    result = bridge._qt_screenshot()
++
++    assert result["capture"]["error_code"] == "target_required"
++    assert "widget_id" in result["error"]
++    assert "image" not in result
++    _assert_desktop_capture_not_called(desktop_calls)
++
++
++@pytest.mark.parametrize("state", ["hidden", "closed"])
++def test_hidden_or_closed_target_fails_without_retargeting(app, monkeypatch, state):
++    window, _ = _target(app, "Original")
++    other, _ = _target(app, "Other visible window")
++    widget_id = bridge._widget_id(window)
++    if state == "hidden":
++        window.hide()
++    else:
++        window.close()
++    other.activateWindow()
++    app.processEvents()
++    desktop_calls = _assert_no_desktop_capture(monkeypatch)
++
++    result = bridge._qt_screenshot(widget_id)
++
++    assert result["capture"]["error_code"] == "target_hidden"
++    assert result["capture"]["widget_id"] == widget_id
++    assert "image" not in result
++    _assert_desktop_capture_not_called(desktop_calls)
++    window.deleteLater()
++    other.close()
++    other.deleteLater()
++    app.processEvents()
++
++
++def test_missing_and_stale_targets_fail_without_desktop_capture(app, monkeypatch):
++    desktop_calls = _assert_no_desktop_capture(monkeypatch)
++    missing = bridge._qt_screenshot("no-such-widget-id")
++    assert missing["capture"]["error_code"] == "target_missing"
++
++    window, child = _target(app)
++    widget_id = bridge._widget_id(child)
++    delete(child)
++    stale = bridge._qt_screenshot(widget_id)
++    assert stale["capture"]["error_code"] == "target_missing"
++    assert "image" not in stale
++    _assert_desktop_capture_not_called(desktop_calls)
++    window.close()
++    window.deleteLater()
++    app.processEvents()
++
++
++@pytest.mark.parametrize("widget", [False, True])
++def test_success_is_scoped_to_requested_window_or_widget(
++    app, monkeypatch, caplog, widget
++):
++    caplog.set_level("INFO", logger="pyside6_mcp.bridge")
++    window, child = _target(app)
++    other, _ = _target(app, "Unrequested window")
++    target = child if widget else window
++    widget_id = bridge._widget_id(target)
++    desktop_calls = _assert_no_desktop_capture(monkeypatch)
++
++    result = bridge._qt_screenshot(widget_id)
++
++    assert "error" not in result
++    capture = result["capture"]
++    assert capture["status"] == "success"
++    assert capture["widget_id"] == widget_id
++    assert capture["window_widget_id"] == bridge._widget_id(window)
++    assert capture["window_title"] == "Private dialogue"
++    assert capture["owner_pid"] > 0
++    assert capture["bounds"]["width"] == target.width()
++    assert capture["bounds"]["height"] == target.height()
++    assert capture["output_dimensions"] == {
++        "width": target.width(),
++        "height": target.height(),
++    }
++    assert capture["scope"] == ("isolated-widget" if widget else "isolated-window")
++    raw = base64.b64decode(result["image"])
++    image = QImage()
++    assert image.loadFromData(QByteArray(raw), "PNG")
++    assert (image.width(), image.height()) == (target.width(), target.height())
++    records = [
++        record.message
++        for record in caplog.records
++        if "screenshot_capture" in record.message
++    ]
++    assert records
++    logged = "\n".join(records)
++    assert "SECRET DIALOGUE" not in logged
++    assert result["image"] not in logged
++    assert (
++        json.loads(logged.split("screenshot_capture ", 1)[-1])["widget_id"] == widget_id
++    )
++    _assert_desktop_capture_not_called(desktop_calls)
++    window.close()
++    other.close()
++    window.deleteLater()
++    other.deleteLater()
++    app.processEvents()
++
++
++def test_focus_change_does_not_retarget_explicit_request(app, monkeypatch):
++    original, _ = _target(app, "Requested")
++    other, _ = _target(app, "Focused later")
++    widget_id = bridge._widget_id(original)
++    other.activateWindow()
++    app.processEvents()
++    desktop_calls = _assert_no_desktop_capture(monkeypatch)
++
++    result = bridge._qt_screenshot(widget_id)
++
++    assert result["capture"]["status"] == "success"
++    assert result["capture"]["widget_id"] == widget_id
++    assert result["capture"]["window_title"] == "Requested"
++    _assert_desktop_capture_not_called(desktop_calls)
++    original.close()
++    other.close()
++    original.deleteLater()
++    other.deleteLater()
++    app.processEvents()
++
++
++def test_expired_qt_callback_never_grabs_target(app, monkeypatch):
++    from unittest.mock import Mock
++
++    window, _ = _target(app)
++    grab = Mock()
++    monkeypatch.setattr(window, "grab", grab)
++    result = bridge._qt_screenshot(bridge._widget_id(window), deadline=0)
++    assert result["capture"]["error_code"] == "request_expired"
++    grab.assert_not_called()
++    window.close()
++
++
++def test_target_closed_during_paint_is_not_returned_or_retargeted(app):
++    class ClosingWindow(QWidget):
++        def grab(self):
++            result = super().grab()
++            self.close()
++            return result
++
++    window = ClosingWindow()
++    window.resize(100, 100)
++    window.show()
++    other, _ = _target(app, "Neighbor")
++    widget_id = bridge._widget_id(window)
++    result = bridge._qt_screenshot(widget_id)
++    assert result["capture"]["error_code"] == "target_changed"
++    assert result["capture"]["widget_id"] == widget_id
++    assert "image" not in result
++    other.close()
++
++
++def test_target_resized_during_paint_cannot_mislabel_image_bounds(app):
++    class ResizingWindow(QWidget):
++        def grab(self):
++            result = super().grab()
++            self.resize(self.width() + 10, self.height())
++            return result
++
++    window = ResizingWindow()
++    window.resize(100, 100)
++    window.show()
++    result = bridge._qt_screenshot(bridge._widget_id(window))
++    assert result["capture"]["error_code"] == "target_changed"
++    assert "image" not in result
++    window.close()
++
++
++def test_widget_ids_cannot_alias_a_restarted_application(app):
++    import os
++    import subprocess
++    import sys
++
++    window, _ = _target(app)
++    widget_id = bridge._widget_id(window)
++    other_session = subprocess.check_output(
++        [
++            sys.executable,
++            "-c",
++            "from pyside6_mcp.bridge import _widget_session; print(_widget_session)",
++        ],
++        env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
++        text=True,
++    ).strip()
++    assert widget_id.startswith(bridge._widget_session + ":")
++    assert other_session != bridge._widget_session
++    assert (
++        bridge._qt_screenshot(other_session + ":0")["capture"]["error_code"]
++        == "target_missing"
++    )
++    window.close()
+diff --git a/tests/test_screenshot_server.py b/tests/test_screenshot_server.py
+new file mode 100644
+index 0000000..f489a7c
+--- /dev/null
++++ b/tests/test_screenshot_server.py
+@@ -0,0 +1,163 @@
++import base64
++import json
++from types import SimpleNamespace
++from unittest.mock import Mock
++
++import httpx
++import pytest
++
++from pyside6_mcp import server
++from pyside6_mcp.launch import inject_root_for
++
++
++def _screenshot(**kwargs):
++    return getattr(server.screenshot, "fn", server.screenshot)(**kwargs)
++
++
++def test_mcp_keeps_png_content_and_same_operation_provenance(monkeypatch):
++    capture = {
++        "correlation_id": "one-operation",
++        "widget_id": "target",
++        "status": "success",
++    }
++    data = {"image": base64.b64encode(b"png").decode(), "capture": capture}
++    monkeypatch.setattr(server, "_get", lambda *a, **k: {"screenshot_contract": 1})
++    monkeypatch.setattr(
++        server,
++        "_request_with_retry",
++        lambda *a, **k: SimpleNamespace(json=lambda: data),
++    )
++    result = _screenshot(widget_id="target", pid=123)
++    assert result.content[0].type == "image"
++    assert base64.b64decode(result.content[0].data) == b"png"
++    assert json.loads(result.content[1].text)["capture"] == capture
++    assert result.meta["capture"] == capture
++
++
++def test_mcp_returns_capture_failure_without_image(monkeypatch):
++    data = {
++        "error": "Target is hidden",
++        "capture": {"status": "failure", "widget_id": "closed"},
++    }
++    response = httpx.Response(
++        409, json=data, request=httpx.Request("GET", "http://bridge/screenshot")
++    )
++    monkeypatch.setattr(server, "_get", lambda *a, **k: {"screenshot_contract": 1})
++
++    def fail(*a, **k):
++        response.raise_for_status()
++
++    monkeypatch.setattr(server, "_request_with_retry", fail)
++    from fastmcp.exceptions import ToolError
++
++    with pytest.raises(ToolError) as error:
++        _screenshot(widget_id="closed", pid=123)
++    assert json.loads(str(error.value)) == data
++
++
++def test_legacy_bridge_is_rejected_before_any_capture(monkeypatch):
++    def legacy(*a, **k):
++        raise RuntimeError("Bridge returned 404")
++
++    monkeypatch.setattr(server, "_get", legacy)
++    request = Mock()
++    monkeypatch.setattr(server, "_request_with_retry", request)
++    with pytest.raises(RuntimeError):
++        _screenshot(widget_id="original", pid=123)
++    request.assert_not_called()
++
++
++def test_transport_retry_keeps_pid_and_widget_after_focus_change(monkeypatch):
++    session = SimpleNamespace(port=54321)
++    resolve = Mock(return_value=session)
++    monkeypatch.setattr(server._sessions, "resolve", resolve)
++    original = {"widget_id": "original-window"}
++    calls = []
++
++    def request(method, path, **kwargs):
++        calls.append((method, path, dict(kwargs["params"])))
++        if len(calls) == 1:
++            raise httpx.ReadError("response lost after focus changed")
++        return httpx.Response(
++            409,
++            json={"error": "original target closed"},
++            request=httpx.Request(method, "http://bridge" + path),
++        )
++
++    monkeypatch.setattr(
++        server, "_client_for", lambda port: SimpleNamespace(request=request)
++    )
++    monkeypatch.setattr(server.time, "sleep", lambda seconds: None)
++    with pytest.raises(httpx.HTTPStatusError):
++        server._request_with_retry("GET", "/screenshot", pid=123, params=original)
++    assert calls == [("GET", "/screenshot", original)] * 2
++    resolve.assert_called_once_with(123)
++
++
++def test_source_injection_contains_fixed_bridge(tmp_path):
++    from pathlib import Path
++
++    import pyside6_mcp
++
++    source = Path(pyside6_mcp.__file__).parent
++    root = Path(inject_root_for(source, dest_root=tmp_path / "inject"))
++    assert (root / "pyside6_mcp/bridge.py").read_bytes() == (
++        source / "bridge.py"
++    ).read_bytes()
++    assert b"grabWindow(" not in (root / "pyside6_mcp/bridge.py").read_bytes()
++
++
++def test_mcp_protocol_still_returns_image_content(monkeypatch):
++    import asyncio
++
++    from fastmcp import Client
++
++    capture = {"correlation_id": "protocol-test", "status": "success"}
++    monkeypatch.setattr(server, "_get", lambda *a, **k: {"screenshot_contract": 1})
++    data = {"image": base64.b64encode(b"png").decode(), "capture": capture}
++    monkeypatch.setattr(
++        server,
++        "_request_with_retry",
++        lambda *a, **k: SimpleNamespace(json=lambda: data),
++    )
++
++    async def check():
++        async with Client(server.mcp) as client:
++            result = await client.call_tool(
++                "screenshot", {"widget_id": "target", "pid": 123}
++            )
++            assert result.content[0].type == "image"
++            assert json.loads(result.content[1].text)["capture"] == capture
++
++    asyncio.run(check())
++
++
++def test_mcp_protocol_returns_failure_provenance_without_image(monkeypatch):
++    import asyncio
++
++    from fastmcp import Client
++
++    data = {
++        "error": "Target is hidden",
++        "capture": {"status": "failure", "widget_id": "closed"},
++    }
++    response = httpx.Response(
++        409, json=data, request=httpx.Request("GET", "http://bridge/screenshot")
++    )
++    monkeypatch.setattr(server, "_get", lambda *a, **k: {"screenshot_contract": 1})
++
++    def fail(*a, **k):
++        response.raise_for_status()
++
++    monkeypatch.setattr(server, "_request_with_retry", fail)
++
++    async def check():
++        async with Client(server.mcp) as client:
++            result = await client.call_tool(
++                "screenshot", {"widget_id": "closed", "pid": 123}, raise_on_error=False
++            )
++            assert result.is_error
++            assert [item.type for item in result.content] == ["text"]
++            assert json.loads(result.content[0].text) == data
++
++    asyncio.run(check())
+diff --git a/uv.lock b/uv.lock
+index d40624c..ad41c75 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -985,7 +985,7 @@ dev = [
+ 
+ [package.metadata]
+ requires-dist = [
+-    { name = "fastmcp", specifier = ">=2.0" },
++    { name = "fastmcp", specifier = ">=3.3.1" },
+     { name = "httpx", specifier = ">=0.27" },
+     { name = "pyside6", marker = "extra == 'bridge'", specifier = ">=6.6" },
+ ]
