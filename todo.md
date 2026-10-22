@@ -26,9 +26,10 @@ Execution dependencies:
    before selecting further repairs. Preserve bounded Stop, privacy-safe logs and
    original -> prepared -> live route priority. Do not treat an independent worker
    setup failure as proof of the historical OCR-stall cause.
-3. Regenerate and admit the actual source-backed chapter/voice pack (R4), then
-   qualify game/application audio correlation and provenance (T1/T2/T4). A
-   structural-only index/plan is not a voiced or source-authorized playback pack.
+3. Start with matched, admitted source-backed chapter inputs and a validated
+   prepared segment (R4), then qualify game/application audio correlation and
+   provenance (T1/T2/T4). Complete remaining generation and final-pack publication
+   during M1; a structural-only index/plan is not playable prepared-voice coverage.
 4. Run two Mac scenarios: M0 repeats the live-fallback baseline; M1 reads prepared
    per-character recordings while real heavy chapter generation, publication and
    reader catch-up continue. M1 includes all prepared-playback correctness and
@@ -74,17 +75,19 @@ callers and focused regressions together when changing these contracts.
       manual boundaries. Uncertain frames cannot authorize speech; ordinary
       non-sequence prefixes still need unique sufficient evidence.
 
-- [ ] **R4 - Regenerate the actual compatible chapter/voice pack.** Use the pinned
-      extractor's graph order to build a fresh index, sequence plan, semantic source
-      authority and per-character generated manifest as one admitted set. Verify
-      24->25(hidden)->111->26 with stable game IDs, checksums, choices and manual
-      boundaries, and next-after111 lookahead of26. A structural-only installed-game
-      smoke does not qualify source audio or prepared recordings. Gate: the real
-      playback pack is admitted and UI readiness/coverage matches its immutable
-      inputs; incompatible old authorities remain rejected. Resolve Bob's missing
-      character reference explicitly for stage314001 before preparing that pack;
-      the two existing prepared lines and an old numeric-order index cannot qualify
-      M1. Validate the actual heavy model and semantic-ASR assets before generation.
+- [ ] **R4 - Finish chapter preparation during the concurrent Mac run.**
+      Resume the partially prepared stage314001 through the normal player job:
+      preserve validated existing WAVs and generate the remaining lines while
+      Reading is active. Use separate configured character voices and the standard
+      narrator fallback for unresolved roles, including Bob; retain original speaker
+      and line identities. Admit every new recording through the matching current
+      index, semantic source evidence, graph plan and progressive manifest. Keep
+      original -> prepared -> live route priority and explicit missing/failed states.
+      Publish the final portable pack only after the actual selected queue reaches
+      its required terminal states; an initial playable segment is not whole-chapter
+      completion. Gate: completed work survives resume unchanged, newly published
+      lines become playable atomically, coverage is truthful, and the final pack
+      passes normal admission. No separate generation-idle prepared run is required.
 - [ ] **R5 - Validate explicit indexed-current recovery on Mac.** For an exact,
       unique indexed line outside the expected graph, use Read indexed current line
       from Reading, compact controls and keyboard/tray without advanced settings.
@@ -147,7 +150,11 @@ callers and focused regressions together when changing these contracts.
 
 - [ ] **T1 - Validate timing provenance and overhead on Mac.** Retain correlated
       run/occurrence/playback/capture IDs through Stop/Start, identical lines,
-      retries, failures, source leads and intentional pauses. Compare the measured
+      retries, failures, source leads and intentional pauses. Record resolved heavy
+      model/codec revision and weight hashes for new synthesis; historical cached
+      MOSS items retain an unobserved checkpoint revision when only the repository
+      identifier was recorded. A matching cache key is not proof of equal historical
+      weight bytes. Compare the measured
       first successful PCM-write return and software completion against independent
       recording; neither is physical DAC/acoustic onset. Original onset stays
       unobserved and its duration timer stays estimated. Split original/prepared/live
