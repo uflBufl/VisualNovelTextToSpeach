@@ -3296,6 +3296,31 @@ class TrayApplicationTest(unittest.TestCase):
         )
         delete_dialog(dialog)
 
+    def test_settings_window_refresh_preserves_explicit_and_empty_titles(self):
+        for saved_title in (None, "Saved game"):
+            with self.subTest(saved_title=saved_title):
+                dialog = SettingsDialog(
+                    AppSettings(capture_mode="window", game_window_title=saved_title)
+                )
+                with patch(
+                    "vntts.app.list_windows",
+                    return_value=(Mock(title="Unrelated window"), Mock(title="Game")),
+                ):
+                    dialog.refresh_windows()
+                    self.assertEqual(dialog.game_window.count(), 2)
+                    self.assertEqual(
+                        dialog.game_window.currentText(), saved_title or ""
+                    )
+
+                    for chosen_title in ("Game", "Manual game", ""):
+                        dialog.game_window.setCurrentText(chosen_title)
+                        dialog.refresh_windows()
+                        self.assertEqual(dialog.game_window.currentText(), chosen_title)
+                        self.assertEqual(
+                            dialog.settings().game_window_title, chosen_title or None
+                        )
+                delete_dialog(dialog)
+
     def test_settings_are_scrollable_and_grouped_into_visual_regions(self):
         dialog = SettingsDialog(AppSettings())
 

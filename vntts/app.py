@@ -1521,8 +1521,7 @@ class SettingsDialog(QDialog):
             return
         self.game_window.clear()
         self.game_window.addItems([window.title for window in windows])
-        if selected_title:
-            self.game_window.setCurrentText(selected_title)
+        self.game_window.setCurrentText(selected_title)
 
     def update_capture_controls(self) -> None:
         window_capture = self.capture_mode.currentData() == "window"

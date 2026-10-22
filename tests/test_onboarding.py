@@ -369,6 +369,7 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertFalse(page.tts_model.isVisibleTo(wizard))
         self.assertFalse(page.advanced_toggle.isVisibleTo(wizard))
         self.assertIn("Alba", page.speech_summary.text())
+        page.game_window.setCurrentText("Reverse: 1999")
         self.assertTrue(page.validatePage())
         self.assertEqual(
             wizard.draft_settings,
@@ -1110,6 +1111,39 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertFalse(page.settings().auto_advance_enabled)
         wizard.deleteLater()
 
+    def test_window_discovery_requires_selection_and_preserves_cleared_selection(self):
+        for reading_setup in (False, True):
+            with self.subTest(reading_setup=reading_setup):
+                wizard = OnboardingWizard(
+                    AppSettings(),
+                    reading_setup=reading_setup,
+                    window_loader=lambda: (
+                        SimpleNamespace(title="Unrelated window"),
+                        SimpleNamespace(title="Reverse: 1999"),
+                    ),
+                    auto_discover_windows=True,
+                )
+                try:
+                    wizard.show_page(0 if reading_setup else 1)
+                    page = wizard.configuration_page
+                    self.assertEqual(page.game_window.count(), 2)
+                    self.assertEqual(page.game_window.currentText(), "")
+                    self.assertFalse(page.isComplete())
+                    self.assertFalse(wizard.next_button.isEnabled())
+
+                    page.game_window.setCurrentIndex(1)
+                    page.refresh_windows()
+                    self.assertEqual(page.game_window.currentText(), "Reverse: 1999")
+                    self.assertTrue(wizard.next_button.isEnabled())
+
+                    page.game_window.setCurrentText("")
+                    page.refresh_windows()
+                    self.assertEqual(page.game_window.currentText(), "")
+                    self.assertFalse(page.isComplete())
+                    self.assertFalse(wizard.next_button.isEnabled())
+                finally:
+                    wizard.deleteLater()
+
     def test_window_discovery_runs_on_entry_and_preserves_manual_title(self):
         loaded = []
 
@@ -1390,6 +1424,8 @@ class OnboardingWizardTest(unittest.TestCase):
 
         wizard.next_page()
         self.assertEqual(wizard.current_page_index, 1)
+        self.assertEqual(wizard.configuration_page.game_window.currentText(), "")
+        wizard.configuration_page.game_window.setCurrentText("Reverse: 1999")
         self.assertEqual(
             wizard.configuration_page.game_window.currentText(),
             "Reverse: 1999",

@@ -502,8 +502,7 @@ class ConfigurationPage(QWizardPage):
         self.game_window.blockSignals(True)
         self.game_window.clear()
         self.game_window.addItems(titles)
-        if selected:
-            self.game_window.setCurrentText(selected)
+        self.game_window.setCurrentText(selected)
         self.game_window.blockSignals(False)
         self.window_help.setText(
             f"Found {len(titles)} capturable window(s). Select the running game."

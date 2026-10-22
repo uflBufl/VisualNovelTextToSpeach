@@ -81,7 +81,10 @@ callers and focused regressions together when changing these contracts.
       boundaries, and next-after111 lookahead of26. A structural-only installed-game
       smoke does not qualify source audio or prepared recordings. Gate: the real
       playback pack is admitted and UI readiness/coverage matches its immutable
-      inputs; incompatible old authorities remain rejected.
+      inputs; incompatible old authorities remain rejected. Resolve Bob's missing
+      character reference explicitly for stage314001 before preparing that pack;
+      the two existing prepared lines and an old numeric-order index cannot qualify
+      M1. Validate the actual heavy model and semantic-ASR assets before generation.
 - [ ] **R5 - Validate explicit indexed-current recovery on Mac.** For an exact,
       unique indexed line outside the expected graph, use Read indexed current line
       from Reading, compact controls and keyboard/tray without advanced settings.
@@ -166,15 +169,15 @@ callers and focused regressions together when changing these contracts.
       acceptance in the Mac replay suite. Digital recording is
       not physical DAC/acoustic latency; do not claim 30fps precision without the
       corresponding verified frames. Keep overhead and missing intervals visible.
-- [ ] **T3 - Activate and qualify the screenshot-safe MCP tool.**
-      Use the pinned source patch and installer in `scripts/pyside6-mcp/README.md`.
-      Restart the MCP client/server and relaunch bridged apps: existing processes
-      retain their old code. Read `get_widget_tree` first, then capture only its
-      explicit window/widget ID with the selected app PID. Confirm the running
-      bridge exposes screenshot contract1, missing/hidden/closed/stale IDs return
-      errors without any other target, and successful PNG responses carry matching
-      capture metadata. Reacquire process-specific IDs after restart; do not use
-      implicit screenshots or desktop capture to validate activation.
+- [ ] **T3 - Finish native screenshot-safe MCP activation.**
+      Reconnect the desktop chat's MCP host: its current connection fails importing
+      `fastmcp.server.providers.prefab_payload`, while a fresh official stdio client
+      against the installed patched server works. Follow
+      `scripts/pyside6-mcp/README.md`; qualify the host connection independently.
+      From a fresh widget tree, check an explicitly selected minimized native window
+      without retargeting. The fresh client already qualifies contract1 metadata and
+      missing/hidden/closed/process-stale rejection; retain those guarantees after
+      reconnecting and relaunching. No implicit screenshots or desktop fallback.
 - [ ] **T4 - Validate Mac product, MCP and video capture provenance.**
       Confirm saved PNG/sidecar, diagnostics and Reading timelines agree
       on capture ID, separate run ID, selected window ID/title/PID, bounds, dimensions,
@@ -182,8 +185,23 @@ callers and focused regressions together when changing these contracts.
       desktop rectangles and may contain overlaps. Close/minimize/move/resize/reopen
       the selected window and confirm failures and new target identities remain
       explicit; never enumerate unrelated titles or log pixels/dialogue. Validate
-      native-video target/frame timestamps and MCP contract1 independently;
-      product screenshot metadata does not qualify video or MCP.
+      native-video target/frame timestamps and MCP contract1 independently.
+      Label window-ID namespaces: Qt WId/Cocoa view handles in MCP are not Quartz
+      CGWindowIDs used by native recording; correlate owners without equating these
+      numeric values. Product screenshot metadata does not qualify video or MCP.
+- [ ] **T5 - Make native MCP interaction outcomes reliable.** Reproduce a VNTTS
+      `stop_app` timeout where the owned process actually exits, using a minimal
+      Qt fixture and VNTTS separately; qualify quit acknowledgement versus process
+      termination before repairing the shared connector. A simple fixture already
+      quits successfully, so do not assume every shutdown is broken or raise timeouts.
+      Reproduce a QComboBox internal editor ID disappearing between widget-tree
+      inspection and typing while its parent combo remains usable; inspect transient
+      PySide wrapper lifetime versus Qt object lifetime before changing identity
+      ownership. Never keep closed windows alive or silently retarget stale IDs.
+      Return actionable tool errors for missing targets. Support documented key
+      chords or reject them explicitly: `Ctrl+A` must not become literal input.
+      Gate: deterministic lifecycle regressions, truthful bounded shutdown and
+      stable live-control IDs with closed/restarted targets still rejected.
 
 ## P0 - Repeat the Mac prepared-voice workflow
 
