@@ -187,10 +187,6 @@ callers and focused regressions together when changing these contracts.
       errors without any other target, and successful PNG responses carry matching
       capture metadata. Reacquire process-specific IDs after restart; do not use
       implicit screenshots or desktop capture to validate activation.
-      Run the project selector in a fully installed VNTTS test environment: full
-      discovery currently fails without Pillow, PySide6, durable-file and other
-      application dependencies. The MCP source/HTTP/protocol and installer checks
-      are separate from product/Windows acceptance.
 - [ ] **T4 - Ready with T3: record the actual capture target and scope.**
       For remaining product screenshot requests and native video sessions, record
       a correlation ID, time,
