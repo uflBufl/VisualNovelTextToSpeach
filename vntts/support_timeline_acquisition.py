@@ -4,6 +4,8 @@ import json
 import math
 import re
 from datetime import datetime, timezone
+from hashlib import sha256
+from itertools import islice
 from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
@@ -14,6 +16,13 @@ from vntts.cleanup import attempt_cleanup
 
 _IDENTITY_FIELDS = {
     "stage",
+    "category",
+    "operation",
+    "backend",
+    "provider",
+    "completion",
+    "cache_source",
+    "stream_id",
     "action",
     "session_id",
     "run_id",
@@ -33,7 +42,145 @@ _IDENTITY_FIELDS = {
     "worker_stage",
     "worker_state",
     "error_type",
+    "bootstrap_id",
+    "match_result",
+    "phase",
+    "worker_id",
 }
+# Reasons are application symbols, never user, OCR or exception text.
+CONTINUATION_GATE_REASONS = frozenset(
+    {
+        "armed",
+        "cancelled",
+        "capture-failed",
+        "timeout",
+        "recorder-stopped",
+        "ocr-uncertain",
+        "clear-queue",
+        "start-capture",
+        "emergency-stop",
+        "explicit-sequence-replacement",
+        "indexed-current-recovery",
+        "prefix-cursor-unavailable",
+        "prefix-owner-changed",
+        "prefix-render-not-quiet",
+        "prefix-observation-unavailable",
+        "schedule-precondition",
+        "dispatch-precondition",
+        "stale-auto-advance-timer",
+        "ownership-changed-after-focus",
+        "ownership-changed-after-render",
+        "game-focus-not-owned",
+        "owned-frame-not-visible-and-stable",
+        "game-focus-lost-before-dispatch",
+        "canonical-full-text-not-confirmed",
+        "reading-control-barrier",
+        "callback-blocked",
+        "cursor-not-auto-advance-eligible",
+        "event-route-not-terminal",
+        "event-advance-already-dispatched",
+        "dispatch-disabled",
+        "cursor-dispatch-failed",
+        "audio-preparation-failed",
+        "owner-render-quiet",
+        "context-enter",
+        "context-exit",
+        "caller-request",
+        "native-probe-identity-changed",
+        "native-probe-recovered",
+        "qt-audio-outputs-changed",
+        "output-stream-construction",
+        "convenience-play",
+        "convenience-stop",
+        "convenience-replaced",
+        "isolated-preloaded-pcm",
+        "blocking-pcm-loop",
+        "first-pcm-write-returned",
+        "playback-started",
+        "playback-completed",
+        "playback-failed",
+        "advance-dispatched",
+        "visual-transition-confirmed",
+        "transition-confirmed",
+        "passive-transition-confirmed",
+        "observation-anchor",
+        "observation-successor",
+        "observation-successor-chain",
+    }
+)
+_NUMERIC_FIELDS = (
+    frozenset(
+        """
+ocr_text_characters active_generation dialog_ready_generation pending_auto_advance_generation
+failed_auto_advance_generation blocked_generation suppressed_generation auto_advance_enabled
+already_dispatched timer_pending timer_serial current_timer_serial processed_frame_version
+frame_equivalence_ms routed_frame_equivalent frame_route_epoch routed_latest_equal routed_frame_present latest_frame_present
+observation_uncertain candidate_owner_present candidate_started_at stable_minimum_ms
+render_owner_present render_changed_at render_quiet_minimum_ms current_chunk_present
+speech_future_count deferred_chunk_present paused emergency_stopped shutting_down stop_requested
+prefix_confirmation_pending prefix_owner_current cursor_present reader_present line_present
+bind_frame_available capture_target_present render_quiet_ms
+
+ocr_confidence minimum_confidence wait_ms
+generation occurred_at monotonic_at clock_origin clock_elapsed_ms event_sequence run_started_at
+worker_progress_age_ms worker_frame_version latest_frame_version frame_version started_monotonic
+completed_monotonic window_id owner_pid success attempt underflowed generation_limited synthesis_ms
+playback_ms first_audio_ms chunk_ordinal chunk_characters occurrence_id next_event_count visible
+focused completion_cue recheck_interval_ms candidate_frames settled_ms ready prefetch_ms
+from_text_visible_ms from_ocr_stable_ms from_generation_started_ms from_playback_started_ms
+from_canonical_full_text_ms source_audio_lead_ms first_pcm_before_canonical_full_ms
+source_sample_rate playback_sample_rate sample_count expected_playback_ms allowed_line_count
+eligible_line_count prefix_matches speaker_matches reservation_ready normalized_text_characters
+normalized_text_tokens speaker_candidate_count missing_identity_candidate_count
+bounded_candidate_count best_bounded_similarity best_bounded_coverage observations
+candidate_restarts fingerprint_changes ready_observations
+
+worker_pid worker_startup_ms preload_ms frames_played callback_count elapsed_ms
+first_callback_received_ms output_latency_seconds actual_sample_rate total_frames position_frames
+audible_position_frames system_write_attempts system_write_failures device_reopens
+max_output_lock_ms max_stream_lock_ms max_refresh_ms max_conversion_ms max_native_write_ms
+sample_rate channels written_frames write_count underflow_count producer_starvation_count
+first_underflow_frame max_guard_ms max_write_ms max_write_gap_ms source_samples timing_output_frames
+timing_sample_rate process_id generation_owner_pid seed chunk_count first_chunk_ms
+""".split()
+    )
+    | {
+        f"{prefix}_{field}"
+        for prefix in ("first_underflow", "max_write", "max_native_write")
+        for field in (
+            "write_index",
+            "input_frame_offset",
+            "input_frames",
+            "sample_rate",
+            "native_sample_rate",
+            "native_frames",
+            "started_monotonic",
+            "ended_monotonic",
+            "guard_ms",
+            "write_gap_ms",
+            "write_ms",
+            "attempt",
+            "output_lock_ms",
+            "refresh_ms",
+            "conversion_ms",
+            "stream_lock_ms",
+            "native_write_ms",
+        )
+    }
+    | {
+        f"{prefix}_{field}"
+        for prefix in ("callback_timing", "dac_timing")
+        for field in (
+            "observation_count",
+            "unavailable_count",
+            "discontinuity_count",
+            "max_gap_seconds",
+            "max_offset_seconds",
+            "max_offset_position_frames",
+            "max_offset_output_frame",
+        )
+    }
+)
 _FINAL_RESERVE = 2048
 
 
@@ -110,12 +257,29 @@ class TimelineAcquisition:
     def record(self, event: Mapping[str, object]) -> None:
         # Only bounded symbolic identities and numeric evidence, never free-text reasons.
         safe: dict[str, object] = {}
-        for key, value in event.items():
-            if isinstance(value, (bool, int)):
+        for key, value in islice(event.items(), 128):
+            if key in _NUMERIC_FIELDS and isinstance(value, (bool, int)):
                 if isinstance(value, bool) or value.bit_length() <= 64:
                     safe[key] = value
-            elif isinstance(value, float) and math.isfinite(value):
+            elif (
+                key in _NUMERIC_FIELDS
+                and isinstance(value, float)
+                and math.isfinite(value)
+            ):
                 safe[key] = value
+            elif key == "reason" and isinstance(value, str):
+                if value in CONTINUATION_GATE_REASONS:
+                    safe[key] = value
+            elif key == "source_sha256" and isinstance(value, str):
+                if re.fullmatch(r"[a-f0-9]{64}", value):
+                    safe[key] = value
+            elif key == "fingerprint" and isinstance(value, str):
+                if re.fullmatch(r"[a-f0-9]{16}", value):
+                    safe[key] = value
+            elif key == "owner" and isinstance(value, str) and len(value) <= 160:
+                safe[key] = sha256(value.encode("utf-8", errors="replace")).hexdigest()[
+                    :16
+                ]
             elif (
                 key in _IDENTITY_FIELDS
                 and isinstance(value, str)

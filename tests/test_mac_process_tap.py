@@ -58,6 +58,7 @@ class ProcessTapRecorderTest(unittest.TestCase):
         result = self.run_helper("--selfcheck")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("no capture or playback", result.stdout)
+        self.assertIn("controlled Stop metadata", result.stdout)
 
     def test_capture_requires_explicit_authorization_and_valid_target_arguments(self):
         output = Path(self.directory.name) / "must-not-exist"

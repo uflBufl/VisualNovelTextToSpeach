@@ -48,6 +48,11 @@ class ReleaseSmokeTest(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
     def test_real_sample_reaches_speech_stage(self):
+        from vntts.ocr_worker import close_ocr_worker, open_ocr_worker
+
+        open_ocr_worker()
+        self.addCleanup(open_ocr_worker)
+        self.addCleanup(close_ocr_worker)
         sample = Path(__file__).resolve().parents[1] / "samples" / "01.jpeg"
         engine = Mock(speak=Mock(return_value=True))
         with TemporaryDirectory() as temporary_directory:

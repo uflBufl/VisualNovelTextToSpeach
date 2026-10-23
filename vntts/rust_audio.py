@@ -7,20 +7,24 @@ import importlib.util
 import json
 import os
 import queue
+import shutil
 import struct
 import subprocess
 import sys
 import tempfile
+from contextvars import copy_context
 from dataclasses import dataclass, field
+from math import isfinite
 from pathlib import Path
 from threading import Event, Lock, RLock, Thread, current_thread
 from time import monotonic
 from typing import Any
+from uuid import uuid4
 from weakref import WeakSet
 
 import numpy as np
 
-from vntts.audio_lifecycle import record_audio_lifecycle
+from vntts.audio_lifecycle import audio_lifecycle_context, record_audio_lifecycle
 
 MAX_PCM_BYTES = 128 * 1024 * 1024
 MAX_EVENT_BYTES = 65536
@@ -84,12 +88,22 @@ class RustAudioWorker:
         self.closed = Event()
         self.next_id = 0
         self._active_id: int | None = None
+        self._diagnostic_clip: dict[str, Any] = {}
+        self.diagnostic_worker_id = uuid4().hex
+        self._audio_used = False
         self.stderr = tempfile.TemporaryFile()
         started = monotonic()
         try:
+            command = command or [
+                str(worker_executable()),
+                "--portaudio",
+                portaudio_library(),
+            ]
+            self.executable_path = str(
+                Path(shutil.which(command[0]) or command[0]).resolve()
+            )
             self.process = subprocess.Popen(
-                command
-                or [str(worker_executable()), "--portaudio", portaudio_library()],
+                command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=self.stderr,
@@ -149,6 +163,11 @@ class RustAudioWorker:
             raise
         if isinstance(value, BaseException):
             raise RuntimeError(str(value)) from value
+        if value.get("event") in {"opened", "started", "first_callback"}:
+            with self.state_lock:
+                self._audio_used = True
+        if value.get("event") == "finished":
+            self._record_finished_diagnostics(value)
         return value
 
     @property
@@ -162,6 +181,26 @@ class RustAudioWorker:
             if value is not None and self.closed.is_set():
                 raise RuntimeError("Rust audio worker is closed")
             self._active_id = value
+
+    def _arm_recording(self, interrupted: Any = None) -> bool:
+        # Publish the real owner before any PCM can reach its output callback.
+        with self.state_lock:
+            self._audio_used = True
+            identity = {
+                "worker_pid": self.process.pid,
+                "worker_path": self.executable_path,
+                "worker_id": self.diagnostic_worker_id,
+            }
+        from vntts.reading_diagnostics import arm_audio_worker_recording
+
+        return arm_audio_worker_recording(
+            identity,
+            lambda: (
+                self.closed.is_set()
+                or self.device_changed.is_set()
+                or (interrupted is not None and interrupted())
+            ),
+        )
 
     def send(
         self,
@@ -183,6 +222,54 @@ class RustAudioWorker:
                 if written is None or written <= 0:
                     raise RuntimeError("Rust audio worker input closed")
                 remaining = remaining[written:]
+            if message.get("op") in {"load", "open_stream"}:
+                with self.state_lock:
+                    self._diagnostic_clip = {
+                        "id": message.get("id"),
+                        "sample_rate": message.get("sample_rate"),
+                        "channels": message.get("channels"),
+                        "source_frames": message.get("frames", 0),
+                        "context": dict(audio_lifecycle_context.get() or {}),
+                    }
+            elif message.get("op") == "append":
+                with self.state_lock:
+                    if self._diagnostic_clip.get("id") == message.get("id"):
+                        self._diagnostic_clip["source_frames"] += message.get(
+                            "frames", 0
+                        )
+
+    def _record_finished_diagnostics(self, event: dict[str, Any]) -> None:
+        _validate_timing_diagnostics(event)
+        with self.state_lock:
+            source = self._diagnostic_clip.copy()
+        if not source or event.get("id") != source["id"]:
+            return
+        if event.get("outcome") not in {"complete", "interrupted", "failed"}:
+            return
+        if (event.get("sample_rate"), event.get("channels")) != (
+            source["sample_rate"],
+            source["channels"],
+        ):
+            return
+        if any(
+            type(event.get(name)) is not int or event[name] < 0
+            for name in ("frames_played", "underflow_count", "callback_count")
+        ):
+            return
+        details = {
+            **source["context"],
+            **{key: value for key, value in event.items() if key != "event"},
+            "source_samples": source["source_frames"] * source["channels"],
+            "sample_rate": source["sample_rate"],
+            "channels": source["channels"],
+            "worker_pid": self.process.pid,
+            "worker_path": self.executable_path,
+            "worker_id": self.diagnostic_worker_id,
+        }
+        record_audio_lifecycle("rust-worker-finished", **details)
+        with self.state_lock:
+            if self._diagnostic_clip.get("id") == source["id"]:
+                self._diagnostic_clip = {}
 
     def _send_bounded(
         self, message: dict[str, Any], payload: bytes, stop_requested: Event | None
@@ -198,7 +285,10 @@ class RustAudioWorker:
             finally:
                 done.set()
 
-        writer = Thread(target=write, name="vntts-rust-upload", daemon=True)
+        context = copy_context()
+        writer = Thread(
+            target=context.run, args=(write,), name="vntts-rust-upload", daemon=True
+        )
         writer.start()
         deadline = monotonic() + 10
         while not done.wait(0.02):
@@ -219,7 +309,10 @@ class RustAudioWorker:
 
         def cancel() -> None:
             try:
-                self.send({"op": "stop", "id": clip_id}, only_active=clip_id)
+                with self.state_lock:
+                    admitted = self._diagnostic_clip.get("id") == clip_id
+                if admitted:
+                    self.send({"op": "stop", "id": clip_id}, only_active=clip_id)
             except Exception:
                 self.close()
 
@@ -333,13 +426,24 @@ class _ClipPlayback:
         self.clip_id = self.worker.next_id
         self.worker.active_id = self.clip_id
         watcher: Thread | None = None
+
+        def interrupted() -> bool:
+            return bool(
+                (self.stop_requested is not None and self.stop_requested.is_set())
+                or self.cancelled()
+            )
+
         try:
+            if not self.worker._arm_recording(interrupted):
+                return False, False
             self._load()
             if (
                 self.stop_requested is not None and self.stop_requested.is_set()
             ) or self.cancelled():
                 self.worker.send({"op": "stop", "id": self.clip_id})
-                self.worker._expect("finished", self.clip_id, 3)
+                self._validate_finished(
+                    self.worker._expect("finished", self.clip_id, 3)
+                )
                 return False, False
             self.worker.send({"op": "start", "id": self.clip_id})
             watcher = Thread(
@@ -450,15 +554,16 @@ class _ClipPlayback:
 
     def _finish(self, event: dict[str, Any]) -> tuple[bool, bool]:
         self._validate_finished(event)
-        record_audio_lifecycle(
-            "rust-pcm-summary",
-            **{k: v for k, v in event.items() if k != "event"},
+        details = {k: v for k, v in event.items() if k != "event"}
+        details.update(
             reason="isolated-preloaded-pcm",
             preload_ms=round(self.preload_ms, 3),
             worker_startup_ms=round(self.worker.startup_ms, 3),
             worker_pid=self.worker.process.pid,
+            worker_path=self.worker.executable_path,
             first_callback_received_ms=self.first_callback_received_ms,
         )
+        record_audio_lifecycle("rust-pcm-summary", **details)
         if self.worker.device_changed.is_set():
             raise RuntimeError("System audio device changed during Rust playback")
         if event.get("outcome") == "failed":
@@ -470,6 +575,67 @@ class _ClipPlayback:
         if complete and count != len(self.pcm):
             raise RuntimeError("Rust audio completed without playing the whole buffer")
         return complete and not self.stop_sent.is_set(), event["underflow_count"] > 0
+
+
+def _validate_timing_diagnostics(event: dict[str, Any]) -> None:
+    for clock in ("callback_timing", "dac_timing"):
+        if clock not in event:
+            continue  # Protocol 2 peers built before timing diagnostics remain supported.
+        metric = event[clock]
+        if not isinstance(metric, dict):
+            raise RuntimeError(f"Rust audio returned invalid {clock}")
+        for name in (
+            "observation_count",
+            "unavailable_count",
+            "discontinuity_count",
+            "max_offset_position_frames",
+            "max_offset_output_frame",
+        ):
+            if type(metric.get(name)) is not int or metric[name] < 0:
+                raise RuntimeError(f"Rust audio returned invalid {clock}.{name}")
+        for name in ("max_gap_seconds", "max_offset_seconds"):
+            value = metric.get(name)
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not isfinite(value)
+                or (name == "max_gap_seconds" and value < 0)
+            ):
+                raise RuntimeError(f"Rust audio returned invalid {clock}.{name}")
+    for name in ("timing_output_frames", "timing_sample_rate"):
+        if name in event:
+            value = event[name]
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not isfinite(value)
+                or value < 0
+                or (name == "timing_output_frames" and type(value) is not int)
+            ):
+                raise RuntimeError(f"Rust audio returned invalid {name}")
+
+
+def active_audio_workers() -> tuple[dict[str, object], ...]:
+    """Snapshot live audio owners before PCM, including idle owners, for process recording."""
+    with _workers_lock:
+        workers = tuple(_workers)
+    result = []
+    for worker in sorted(workers, key=lambda worker: worker.process.pid):
+        with worker.state_lock:
+            if (
+                worker._audio_used
+                and not worker.closed.is_set()
+                and worker.process.poll() is None
+            ):
+                result.append(
+                    {
+                        "worker_pid": worker.process.pid,
+                        "worker_path": worker.executable_path,
+                        "worker_id": worker.diagnostic_worker_id,
+                        "clip_id": worker._active_id,
+                    }
+                )
+    return tuple(result)
 
 
 def notify_audio_device_changed() -> None:

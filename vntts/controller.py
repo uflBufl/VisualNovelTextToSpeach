@@ -602,6 +602,7 @@ class AppController:
         self.correction_dictionary = self.correction_store.dictionary_for(
             self.settings.active_profile_id
         )
+        self.live_scope_identification_token: str | None = None
         self.live_scope_identification_failure = None
         self.live_scope_identification_match_result = None
         self.live_scope_identification_diagnostics: dict[str, object] = {}
@@ -763,8 +764,8 @@ class AppController:
     def read_once(self) -> bool:
         return self.live_session.read_once()
 
-    def identify_live_scope(self) -> bool:
-        return self.live_session.identify_scope()
+    def identify_live_scope(self, *, cancellation: _Cancellation | None = None) -> bool:
+        return self.live_session.identify_scope(cancellation=cancellation)
 
     def toggle_live(self) -> bool:
         return self.live_session.toggle()
@@ -2350,7 +2351,7 @@ class AppController:
     def _clear_explicit_sequence_queue(self) -> None:
         reader = self.live_reader
         if reader is not None:
-            reader.clear_queue()
+            reader.clear_queue(reason="explicit-sequence-replacement")
 
     def _deliver_explicit_sequence_line(self, line: ChapterDialogue | None) -> bool:
         if not self._enqueue_explicit_sequence_line(line):
@@ -2505,7 +2506,7 @@ class AppController:
             self.indexed_current_recovery = None
             self.sequence_prefix_dispatch_lease = None
             self.sequence_prefix_confirmation_event_id = None
-            reader.clear_queue()
+            reader.clear_queue(reason="indexed-current-recovery")
             cursor.anchor_event(event_id, "explicit-indexed-current-read")
             accepted = self._enqueue_selected_sequence_line(
                 line, manual_continuation=True
@@ -2872,41 +2873,67 @@ class AppController:
 
     def _confirm_sequence_render_completion(self) -> bool:
         """Close only the current prefix barrier from owner-bound render quiet."""
+        quiet_ms = None
         with self.story_cursor_lock:
             cursor = self.story_cursor
             reader = self.live_reader
+            target_event_id = self.sequence_prefix_confirmation_event_id
+            event_id = None if cursor is None else cursor.current_event_id
             if (
                 cursor is None
                 or reader is None
                 or self.settings.live_sequence_mode != "audio-auto"
                 or cursor.state != StoryCursorState.LOCKED
-                or self.sequence_prefix_confirmation_event_id != cursor.current_event_id
+                or target_event_id != cursor.current_event_id
             ):
-                return False
-            quiet_probe = getattr(reader, "current_frame_render_quiet_ms", None)
-            quiet_ms = (
-                quiet_probe(expected_owner=cursor.current_event_id)
-                if callable(quiet_probe)
-                else None
-            )
-            if quiet_ms is None:
-                return False
-            event = cursor.current_event
-            line = self._canonical_sequence_line_locked(
-                None if event is None else event.event_id
-            )
-            bind_frame = getattr(reader, "bind_current_frame_route", None)
-            if line is None or not callable(bind_frame) or not bind_frame():
-                return False
-            self.sequence_prefix_confirmation_event_id = None
-            record_full_text = getattr(reader, "record_canonical_full_text", None)
-            if callable(record_full_text):
-                record_full_text(
-                    line_id=line.line_id,
-                    reason="owner-render-quiet",
-                    settled_ms=quiet_ms,
+                reason = (
+                    "prefix-owner-changed"
+                    if cursor is not None and target_event_id != cursor.current_event_id
+                    else "prefix-cursor-unavailable"
                 )
-            return True
+            else:
+                quiet_probe = getattr(reader, "current_frame_render_quiet_ms", None)
+                quiet_ms = (
+                    quiet_probe(expected_owner=cursor.current_event_id)
+                    if callable(quiet_probe)
+                    else None
+                )
+                if quiet_ms is None:
+                    reason = "prefix-render-not-quiet"
+                else:
+                    event = cursor.current_event
+                    line = self._canonical_sequence_line_locked(
+                        None if event is None else event.event_id
+                    )
+                    bind_frame = getattr(reader, "bind_current_frame_route", None)
+                    if (
+                        line is None
+                        or not callable(bind_frame)
+                        or not bind_frame(expected_render_owner=cursor.current_event_id)
+                    ):
+                        reason = "prefix-observation-unavailable"
+                    else:
+                        self.sequence_prefix_confirmation_event_id = None
+                        record_full_text = getattr(
+                            reader, "record_canonical_full_text", None
+                        )
+                        if callable(record_full_text):
+                            record_full_text(
+                                line_id=line.line_id,
+                                reason="owner-render-quiet",
+                                settled_ms=quiet_ms,
+                            )
+                        return True
+        if reader is not None and target_event_id is not None:
+            record_wait = getattr(reader, "record_prefix_confirmation_wait", None)
+            if callable(record_wait):
+                record_wait(
+                    reason,
+                    event_id=event_id,
+                    target_event_id=target_event_id,
+                    quiet_ms=quiet_ms,
+                )
+        return False
 
     def _live_sequence_line_id(self, character: str, text: str) -> str | None:
         """Return the exact cursor-owned line identity for a routed observation."""
@@ -3136,7 +3163,11 @@ class AppController:
         return prepared
 
     def _finish_sequence_playback(
-        self, lease: SequenceEventLease | None, outcome: PlaybackOutcome | None
+        self,
+        lease: SequenceEventLease | None,
+        outcome: PlaybackOutcome | None,
+        *,
+        interrupted_for_pause: bool = False,
     ) -> bool:
         with self.story_cursor_lock:
             if not isinstance(lease, SequenceEventLease):
@@ -3150,7 +3181,8 @@ class AppController:
                 and isinstance(outcome.first_audio_ms, (int, float))
                 and not isinstance(outcome.first_audio_ms, bool)
             )
-            if (successful or audible) and isinstance(outcome, PlaybackOutcome):
+            terminal = (successful or audible) and not interrupted_for_pause
+            if terminal and isinstance(outcome, PlaybackOutcome):
                 route = str(outcome.audio_source or "unknown")
                 if not self._seal_sequence_route_locked(cursor, lease, route):
                     return False
@@ -3169,9 +3201,7 @@ class AppController:
                 line_id=cursor.snapshot().current_line_id,
                 occurrence_id=lease.occurrence_id,
                 terminal_route=(
-                    self.sequence_event_terminal_routes.get(lease)
-                    if successful or audible
-                    else None
+                    self.sequence_event_terminal_routes.get(lease) if terminal else None
                 ),
                 outcome="completed" if successful else "failed",
             )
@@ -3436,10 +3466,26 @@ class AppController:
                     if not transition_owned:
                         self.sequence_prefix_dispatch_lease = None
                     if reader is not None and not transition_owned:
-                        if self._current_canonical_occurrence_owned_locked():
-                            reader.invalidate_observation()
-                        else:
-                            reader._clear_queue_locked(cleanup)
+                        # Uncertain OCR cannot revoke speech admitted by a trusted frame.
+                        reader.invalidate_observation()
+                        chunk = reader.current_chunk or next(
+                            iter(reader.speech_futures.values()), None
+                        )
+                        context = {} if chunk is None else reader._chunk_context(chunk)
+                        context.pop("generation", None)
+                        cleanup.callback(
+                            reader._report_pipeline_event,
+                            "observation-invalidated",
+                            reader.active_generation,
+                            monotonic(),
+                            reason="ocr-uncertain",
+                            ocr_confidence=result.confidence,
+                            minimum_confidence=minimum_confidence,
+                            speech_future_count=len(reader.speech_futures),
+                            current_chunk_present=reader.current_chunk is not None,
+                            suppressed_generation=reader.suppressed_generation,
+                            **context,
+                        )
         preview = result.text if len(result.text) <= 80 else f"{result.text[:77]}..."
         self.dialog_handler(
             "OCR uncertain",
@@ -3838,6 +3884,7 @@ class AppController:
                 self.status_handler(reason)
         playback_started = monotonic()
         outcome = None
+        interrupted_for_pause = False
         context_token = audio_lifecycle_context.set(
             {
                 "session_id": self.live_reader_session_id,
@@ -3855,10 +3902,14 @@ class AppController:
         try:
             outcome = self._dispatch_live_playback(reader, chunk, audio)
             result = outcome.successful
+            interrupted_for_pause = (
+                outcome.status is PlaybackStatus.INTERRUPTED
+                and reader.was_playback_paused(chunk) is True
+            )
             audible = isinstance(
                 outcome.first_audio_ms, (int, float)
             ) and not isinstance(outcome.first_audio_ms, bool)
-            if not result and not chunk.explicit_replay:
+            if not result and not chunk.explicit_replay and not interrupted_for_pause:
                 reader.block_auto_advance_for_generation(
                     chunk.generation,
                     "Playback was interrupted; retry or wait for a new dialogue",
@@ -3866,6 +3917,7 @@ class AppController:
             if (
                 (result or audible)
                 and not chunk.explicit_replay
+                and not interrupted_for_pause
                 and (
                     self._live_sequence_audio_active()
                     or isinstance(
@@ -3899,7 +3951,9 @@ class AppController:
             return bool(result)
         finally:
             audio_lifecycle_context.reset(context_token)
-            self._finish_sequence_playback(sequence_lease, outcome)
+            self._finish_sequence_playback(
+                sequence_lease, outcome, interrupted_for_pause=interrupted_for_pause
+            )
             self._refresh_diagnostic_metrics(outcome, source)
 
     def _live_sequence_playback_suppressed(
@@ -4431,6 +4485,7 @@ class AppController:
         self.diagnostic_handler(snapshot)
 
     def _interrupt_speech(self) -> bool | None:
-        if self.tts is not None and hasattr(self.tts, "stop"):
-            return bool(self.tts.stop())
-        return False
+        stop = getattr(self.speech_backend, "stop", None)
+        if not callable(stop):
+            stop = getattr(self.tts, "stop", None)
+        return bool(stop()) if callable(stop) else False

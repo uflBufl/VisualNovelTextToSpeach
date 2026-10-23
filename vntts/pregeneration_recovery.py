@@ -30,6 +30,7 @@ from vntts.authoring.generation_fallback import (
 )
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
+    generation_item_status,
     load_stable_generation_queue,
 )
 from vntts.document_identity import is_lowercase_sha256, sha256_file
@@ -114,6 +115,7 @@ class OfflineRecoveryPlan:
     deferred_action_counts: tuple[tuple[str, int], ...]
     deferred_batches: tuple[OfflineRecoveryBatch, ...] = ()
     live_fallback_queue_ids: tuple[str, ...] = ()
+    cancelled_queue_ids: tuple[str, ...] = ()
 
     @property
     def automatic_count(self) -> int:
@@ -163,6 +165,7 @@ def plan_automatic_recovery(
     grouped: dict[str, list[str]] = {action: [] for action in AUTOMATIC_ACTION_ORDER}
     deferred_queue_ids: dict[str, list[str]] = {}
     live_fallback_queue_ids: list[str] = []
+    cancelled_queue_ids: list[str] = []
     seen_queue_ids: set[str] = set()
     for record in records:
         if not isinstance(record, dict):
@@ -179,6 +182,8 @@ def plan_automatic_recovery(
         ):
             raise OfflineRecoveryError("Offline recovery record is malformed")
         seen_queue_ids.add(queue_id)
+        if record.get("failure_kind") == "cancelled":
+            cancelled_queue_ids.append(queue_id)
         provider = record.get("provider")
         if action in grouped and not (
             provider == "pocket-tts"
@@ -218,6 +223,7 @@ def plan_automatic_recovery(
             for action, queue_ids in sorted(deferred_queue_ids.items())
         ),
         live_fallback_queue_ids=tuple(sorted(live_fallback_queue_ids)),
+        cancelled_queue_ids=tuple(sorted(cancelled_queue_ids)),
     )
 
 
@@ -266,7 +272,13 @@ class OfflineRecoveryWorker:
         )
         if not isinstance(voice_plan, VoicePlan):
             raise OfflineRecoveryError("Offline voice plan is invalid")
-        if generation_result.failed == 0:
+        if generation_result.failed == 0 and (
+            generation_result.total >= generation_input.ready_items
+            or "cancelled"
+            not in _generation_queue_statuses(
+                generation_result, generation_input
+            ).values()
+        ):
             return OfflineRecoveryResult(generation_result, 0, 0, 0, ())
         initial_failures = generation_result.failed
         current = generation_result
@@ -277,9 +289,9 @@ class OfflineRecoveryWorker:
         while True:
             plan = self.planner(generation_input, voice_plan, current)
             if queue_id is not None and scoped_initial_failures is None:
-                scoped_initial_failures = int(_plan_contains(plan, queue_id))
-                if not scoped_initial_failures:
+                if not _plan_contains(plan, queue_id):
                     return OfflineRecoveryResult(current, 0, 0, 0, ())
+                scoped_initial_failures = int(queue_id not in plan.cancelled_queue_ids)
             next_batch = _next_recovery_batch(plan, applied, queue_id)
             if next_batch is None:
                 terminal_queue_ids = tuple(
@@ -316,7 +328,10 @@ class OfflineRecoveryWorker:
                 remaining_failed = (
                     current.failed
                     if queue_id is None
-                    else int(_plan_contains(plan, queue_id))
+                    else int(
+                        _plan_contains(plan, queue_id)
+                        and queue_id not in plan.cancelled_queue_ids
+                    )
                 )
                 return OfflineRecoveryResult(
                     generation=current,
@@ -404,7 +419,7 @@ class OfflineRecoveryWorker:
                 "not_reproducible",
             }:
                 continue
-            if statuses.get(queue_id) != "failed" or current is None:
+            if statuses.get(queue_id) not in {"failed", "cancelled"} or current is None:
                 current = self.generator.generate(
                     generation_input,
                     voice_plan,
@@ -557,7 +572,7 @@ def _generation_queue_statuses(
     for queue_id, item in items.items():
         if not isinstance(item, dict):
             continue
-        status = item.get("status")
+        status = generation_item_status(item)
         if isinstance(queue_id, str) and isinstance(status, str):
             statuses[queue_id] = status
     return statuses
@@ -579,7 +594,7 @@ def _saved_generation_state(
     items = _state_items(state)
     statuses: dict[str, str] = {}
     for queue_id, item in items.items():
-        status = item.get("status")
+        status = generation_item_status(item)
         if not isinstance(status, str):
             raise OfflineRecoveryError("Saved offline generation status is invalid")
         statuses[queue_id] = status
@@ -591,7 +606,10 @@ def _saved_generation_state(
         manifest=output / "manifest.json",
         generated=generated,
         failed=failed,
-        other_terminal=len(statuses) - generated - failed,
+        other_terminal=sum(
+            status in {"live_fallback", "omitted", "not_reproducible"}
+            for status in statuses.values()
+        ),
         pending_review=sum(
             item.get("review_status") == "pending_review" for item in items.values()
         ),

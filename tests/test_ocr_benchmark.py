@@ -12,7 +12,7 @@ from PIL import Image, UnidentifiedImageError
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts import ocr_benchmark
-from vntts.ocr import OCRResult, VoiceRegistry
+from vntts.ocr import DialogRegion, OCRRegions, OCRResult, VoiceRegistry
 from vntts.ocr_benchmark import benchmark_ocr, main, write_report
 
 
@@ -54,15 +54,63 @@ class OCRBenchmarkTest(unittest.TestCase):
 
         median_latency = report["summary"]["median_latency_ms"]
         p95_latency = report["summary"]["p95_latency_ms"]
-        cpu_utilization = report["summary"]["median_cpu_utilization_percent"]
+        cpu_utilization = report["summary"]["median_process_cpu_utilization_percent"]
         assert median_latency is not None
         assert p95_latency is not None
         assert cpu_utilization is not None
+        self.assertEqual(report["version"], 2)
+        self.assertEqual(
+            report["cpu_scope"], "current_process_all_threads_excluding_children"
+        )
+        self.assertFalse(report["total_cpu_available"])
+        self.assertNotIn("cpu_ms", report["samples"][0])
+        self.assertAlmostEqual(report["samples"][0]["process_cpu_ms"]["median"], 125.0)
         self.assertAlmostEqual(median_latency, 200.0)
         self.assertAlmostEqual(p95_latency, 300.0)
         self.assertAlmostEqual(cpu_utilization, 58.33333333333333)
         self.assertTrue(report["samples"][0]["speaker_match"])
         self.assertEqual(report["samples"][0]["text_similarity"], 1.0)
+
+    def test_explicit_regions_and_live_threshold_reach_warmups_and_measurements(self):
+        regions = OCRRegions(DialogRegion(0, 0, 1, 0.2), DialogRegion(0, 0.3, 1, 0.7))
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "dialog.png"
+            Image.new("RGB", (20, 10), "white").save(path)
+            backend = Mock(wraps=FakeOCRBackend())
+            backend.name = "fake-ocr"
+            report = benchmark_ocr(
+                [path],
+                backend=backend,
+                repeats=2,
+                warmups=1,
+                minimum_confidence=60,
+                expectations={path.name: {"ocr_regions": regions.to_json()}},
+            )
+        self.assertEqual(backend.recognize.call_count, 3)
+        for call in backend.recognize.call_args_list:
+            self.assertEqual(call.kwargs["ocr_regions"], regions)
+            self.assertEqual(call.kwargs["minimum_confidence"], 60)
+        self.assertEqual(report["minimum_confidence"], 60)
+        self.assertEqual(report["samples"][0]["ocr_regions"], regions.to_json())
+        self.assertIsNone(report["samples"][0]["text_similarity"])
+
+    def test_rejects_invalid_minimum_confidence_before_recognition(self):
+        for confidence in (-1, 101, float("nan"), float("inf")):
+            with self.subTest(confidence=confidence):
+                backend = Mock()
+                with self.assertRaisesRegex(ValueError, "minimum confidence"):
+                    benchmark_ocr([], backend=backend, minimum_confidence=confidence)
+                backend.recognize.assert_not_called()
+
+    def test_malformed_regions_are_rejected_before_image_decode(self):
+        backend = Mock()
+        with self.assertRaisesRegex(ValueError, "ocr_regions must be an object"):
+            benchmark_ocr(
+                ["missing.png"],
+                backend=backend,
+                expectations={"missing.png": {"ocr_regions": []}},
+            )
+        backend.recognize.assert_not_called()
 
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
@@ -208,7 +256,7 @@ class OCRBenchmarkTest(unittest.TestCase):
                 cpu_clock=lambda: 1.0,
             )
 
-        self.assertIsNone(report["summary"]["median_cpu_utilization_percent"])
+        self.assertIsNone(report["summary"]["median_process_cpu_utilization_percent"])
 
     def test_empty_image_input_has_empty_timing_summary(self):
         report = benchmark_ocr(
@@ -221,7 +269,7 @@ class OCRBenchmarkTest(unittest.TestCase):
         )
 
         self.assertEqual(report["summary"]["images"], 0)
-        self.assertIsNone(report["summary"]["median_cpu_utilization_percent"])
+        self.assertIsNone(report["summary"]["median_process_cpu_utilization_percent"])
 
     def test_cli_refuses_report_over_input_files_before_backend_creation(self):
         for input_name in ("dialog.png", "expectations.json", "manifest.json"):
@@ -309,15 +357,17 @@ class OCRBenchmarkTest(unittest.TestCase):
                             str(output),
                             "--repeats",
                             "1",
+                            "--minimum-confidence",
+                            "60",
                             "--warmups",
                             "0",
                         ]
                     ),
                     0,
                 )
-            self.assertEqual(
-                json.loads(output.read_text(encoding="utf-8"))["summary"]["images"], 1
-            )
+            report = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(report["summary"]["images"], 1)
+            self.assertEqual(report["minimum_confidence"], 60)
             self.assertEqual(image.read_bytes(), original)
 
     def test_cli_reports_malformed_expectations_without_traceback(self):

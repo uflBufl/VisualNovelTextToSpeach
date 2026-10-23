@@ -318,8 +318,16 @@ class OnboardingDiagnostics:
 
 def probe_tesseract() -> object:
     import pytesseract
+    from PIL import Image
 
-    return pytesseract.get_tesseract_version()
+    from vntts.ocr_worker import recognize_dialog_image_result
+
+    version = pytesseract.get_tesseract_version()
+    # Verify the shared library as well as the executable and warm the OCR owner.
+    recognize_dialog_image_result(
+        Image.new("L", (32, 32), 255), minimum_confidence=0, timeout=15
+    )
+    return version
 
 
 def probe_audio_output() -> object:

@@ -33,11 +33,11 @@ from vntts.ocr import (
     default_minimum_ocr_confidence,
     detect_standalone_ellipsis_frame,
     get_dialog_region,
-    recognize_dialog_image_result,
     resolve_ocr_regions,
 )
 from vntts.ocr_backend import OCRBackend, TesseractOCRBackend
 from vntts.ocr_corrections import OCRCorrectionDictionary
+from vntts.ocr_worker import recognize_dialog_image_result
 from vntts.services.tts_engine import AudioPlaybackError, TTSError
 from vntts.voices import VoiceManifestError
 from vntts.window_capture import (
@@ -453,22 +453,45 @@ def _dialog_equivalence_boxes(
     return boxes
 
 
-def _dialog_equivalence_masks(
+def _dialog_equivalence_bands(
     frame: object, boxes: list[tuple[int, int, int, int]]
-) -> tuple[NDArray[np.bool_], ...]:
+) -> tuple[NDArray[np.int16], ...]:
     image = _frame_image(frame).convert("L")
     for point in _dialog_completion_cue_pixels(frame):
         image.putpixel(point, 0)
-    bands = tuple(image.crop(box) for box in boxes)
-    result: list[NDArray[np.bool_]] = []
-    for band in bands:
-        pixels = np.asarray(band)
-        result.extend((pixels >= 160, pixels >= max(160, int(pixels.max()) - 20)))
-    return tuple(result)
+    # Padding retains edge glyphs when the comparison translates a whole band.
+    return tuple(
+        np.pad(np.asarray(image.crop(box), dtype=np.int16), 2) for box in boxes
+    )
 
 
-def dialog_frames_equivalent(previous: object, current: object) -> bool:
-    """Accept only identical glyph cores translated by at most two pixels."""
+def _dialog_band_equivalent(
+    before: NDArray[np.int16], after: NDArray[np.int16]
+) -> bool:
+    difference = np.abs(before - after)
+    thresholds = zip(
+        (160, max(160, int(before.max()) - 20)),
+        (160, max(160, int(after.max()) - 20)),
+        strict=True,
+    )
+    for first, second in thresholds:
+        changed = (before >= first) != (after >= second)
+        if not changed.any():
+            continue
+        if np.any(difference[changed] > 4):
+            return False
+        # Only tiny intensity crossings beside stable glyph cores are edge noise;
+        # a new isolated punctuation pixel must still invalidate the comparison.
+        stable_core = (before >= first + 4) & (after >= second + 4) & (difference <= 4)
+        supported = maximum_filter(stable_core, size=3, mode="constant")
+        if not supported[changed].all():
+            return False
+    return True
+
+
+def _dialog_frames_equivalent(
+    previous: object, current: object, maximum_translation: int
+) -> bool:
     before, after = _frame_image(previous), _frame_image(current)
     if before.size != after.size:
         return False
@@ -476,21 +499,29 @@ def dialog_frames_equivalent(previous: object, current: object) -> bool:
         return False
 
     boxes = _dialog_equivalence_boxes(previous, current)
-    before_masks = _dialog_equivalence_masks(previous, boxes)
-    after_masks = _dialog_equivalence_masks(current, boxes)
-    if not before_masks[-1].any() or not after_masks[-1].any():
+    before_bands = _dialog_equivalence_bands(previous, boxes)
+    after_bands = _dialog_equivalence_bands(current, boxes)
+    if not (before_bands[-1] >= 160).any() or not (after_bands[-1] >= 160).any():
         return False
-    for left, right in zip(before_masks, after_masks, strict=True):
-        if left.shape != right.shape:
-            return False
-        first, second = np.argwhere(left), np.argwhere(right)
-        if first.shape != second.shape:
-            return False
-        if first.size:
-            offset = second[0] - first[0]
-            if np.any(np.abs(offset) > 2) or not np.array_equal(first + offset, second):
-                return False
-    return True
+    offsets = sorted(range(-maximum_translation, maximum_translation + 1), key=abs)
+    for dy in offsets:
+        for dx in offsets:
+            if all(
+                _dialog_band_equivalent(np.roll(left, (dy, dx), axis=(0, 1)), right)
+                for left, right in zip(before_bands, after_bands, strict=True)
+            ):
+                return True
+    return False
+
+
+def dialog_frames_equivalent(previous: object, current: object) -> bool:
+    """Compare glyphs with one shared translation bounded by two pixels."""
+    return _dialog_frames_equivalent(previous, current, 2)
+
+
+def dialog_render_frames_equivalent(previous: object, current: object) -> bool:
+    """Compare a fixed render anchor, allowing only supported intensity noise."""
+    return _dialog_frames_equivalent(previous, current, 0)
 
 
 def fingerprint_dialog_render_activity(frame: object) -> bytes:

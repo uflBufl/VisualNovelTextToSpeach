@@ -595,19 +595,14 @@ class ChapterVoicePreloader:
         prefix = _normalize(text)
         if len(prefix) < minimum_characters:
             return False
-        candidates = self._prefix_candidates(
-            speaker_key,
-            prefix,
-            incomplete_only=True,
-        )
-        return len(candidates) == 1
+        candidates = self._prefix_candidates(speaker_key, prefix)
+        return len(candidates) == 1 and self.normalized_text[candidates[0]] != prefix
 
     def _prefix_candidates(
         self,
         speaker_key: str,
         prefix: str,
         *,
-        incomplete_only: bool = False,
         candidate_filter: Callable[[ChapterDialogue], bool] | None = None,
     ) -> list[ChapterDialogue]:
         def matches(rows: Iterable[ChapterDialogue]) -> list[ChapterDialogue]:
@@ -617,7 +612,6 @@ class ChapterVoicePreloader:
                 if row.line_id
                 and row.text_sha256
                 and self.normalized_text[row].startswith(prefix)
-                and (not incomplete_only or self.normalized_text[row] != prefix)
                 and (candidate_filter is None or candidate_filter(row))
             ]
 

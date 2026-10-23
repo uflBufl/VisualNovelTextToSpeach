@@ -4,9 +4,10 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from functools import partial
+from hashlib import sha256
 from threading import TIMEOUT_MAX, Condition, Event, Lock, RLock, Timer
 from time import monotonic
-from typing import Literal, ParamSpec, Protocol, TypeAlias, TypeVar
+from typing import Literal, ParamSpec, Protocol, TypeAlias, TypeVar, cast
 from uuid import uuid4
 
 from vntts.audio_lifecycle import audio_lifecycle_context
@@ -16,6 +17,8 @@ from vntts.live_tracking import IncrementalDialogTracker, SpeechChunk
 from vntts.live_tracking import TrackerProbe as TrackerProbe
 from vntts.live_tracking import TrackerResolver as TrackerResolver
 from vntts.numeric_values import optional_finite_number
+from vntts.reading_diagnostics import retain_visual_wait_frames
+from vntts.support_timeline_acquisition import CONTINUATION_GATE_REASONS
 
 Frame: TypeAlias = object
 FrameFingerprint: TypeAlias = object
@@ -307,6 +310,7 @@ class LiveDialogReader:
         frame_fingerprint: Callable[[Frame], FrameFingerprint] | None = None,
         frame_render_fingerprint: Callable[[Frame], FrameFingerprint] | None = None,
         frame_equivalent: Callable[[Frame, Frame], bool] | None = None,
+        frame_render_equivalent: Callable[[Frame, Frame], bool] | None = None,
         frame_presence: Callable[[Frame], bool] | None = None,
         frame_completion: Callable[[Frame], bool] | None = None,
         frame_recheck_required: Callable[[], bool] | None = None,
@@ -361,6 +365,7 @@ class LiveDialogReader:
         # expensive fingerprint twice for replay readers.
         self.frame_render_fingerprint = frame_render_fingerprint
         self.frame_equivalent = frame_equivalent or (lambda _before, _after: False)
+        self.frame_render_equivalent = frame_render_equivalent
         self.frame_presence = frame_presence or (lambda _frame: True)
         self.frame_completion = frame_completion or (lambda _frame: False)
         self.frame_recheck_required = frame_recheck_required or (lambda: False)
@@ -450,6 +455,7 @@ class LiveDialogReader:
         self.current_chunk_pipeline_origins: dict[str, float | None] | None = None
         self.last_spoken_chunk: SpeechChunk | None = None
         self.cancelled_chunk_ids: set[int] = set()
+        self.pause_interrupted_chunk_ids: set[int] = set()
         self.prepared_chunk_ids: set[str] = set()
         self.sealed_generation: int | None = None
         self.paused = False
@@ -468,6 +474,7 @@ class LiveDialogReader:
         self.auto_advance_visual_wait_generation: int | None = None
         self.auto_advance_timer: Timer | None = None
         self._auto_advance_timer_serial = 0
+        self._auto_advance_gate_reports: dict[str, tuple[object, int, float]] = {}
         self.focus_probe_failed = False
         self.ocr_worker_stage = "not-started"
         self.ocr_worker_progress_at = monotonic()
@@ -499,6 +506,8 @@ class LiveDialogReader:
         self.pending_transition_text = ""
 
     def _reset_render_observation(self) -> None:
+        self.render_anchor_frame: Frame | None = None
+        self.render_anchor_fingerprint: FrameFingerprint | None = None
         self.latest_render_fingerprint: FrameFingerprint | None = None
         self.latest_render_owner: object | None = None
         self.latest_render_changed_at: float | None = None
@@ -595,7 +604,7 @@ class LiveDialogReader:
             if self.capture_future is not None and not self.capture_future.done():
                 return False
             restarting = self.capture_future is not None or self.ocr_future is not None
-        self.clear_queue()
+        self.clear_queue(reason="start-capture")
         if restarting:
             try:
                 self.wait(timeout_seconds=5.0)
@@ -768,18 +777,23 @@ class LiveDialogReader:
                 self._cancel_auto_advance_locked()
                 if self.current_chunk is not None:
                     current_chunk = self.current_chunk
+                    self.pause_interrupted_chunk_ids.add(id(current_chunk))
                 for future, chunk in tuple(self.speech_futures.items()):
                     if future.running() and chunk is self.current_chunk:
                         continue
                     if future.cancel():
                         self.paused_chunks.append(chunk)
-        if current_chunk is not None and self._interrupt_speech():
+        if current_chunk is not None:
+            interrupted = self._interrupt_speech()
             with self.pause_condition:
-                if (
+                if not interrupted:
+                    self.pause_interrupted_chunk_ids.discard(id(current_chunk))
+                elif (
                     self.paused
                     and current_chunk.generation == self.active_generation
                     and self.suppressed_generation != current_chunk.generation
                 ):
+                    self.prepared_chunk_ids.discard(current_chunk.chunk_id)
                     self.paused_chunks.insert(0, current_chunk)
         if chunks_to_resume:
             self._schedule(chunks_to_resume)
@@ -815,11 +829,28 @@ class LiveDialogReader:
         self._schedule([SpeechChunk(generation, character, text, line_id=line_id)])
         return True
 
-    def bind_current_frame_route(self) -> bool:
-        """Bind explicit cursor recovery to the latest captured dialogue frame."""
+    def bind_current_frame_route(
+        self, *, expected_render_owner: str | None = None
+    ) -> bool:
+        """Bind recovery, optionally requiring current owner-bound render quiet."""
+        if expected_render_owner is not None:
+            if not self._is_focused():
+                return False
+            owner = self.stable_frame_owner()
+            now = self.stable_frame_clock()
         with self.state_lock:
             fingerprint = self.latest_frame_fingerprint
             if fingerprint is None:
+                return False
+            if expected_render_owner is not None and (
+                self.stop_event.is_set()
+                or self.paused
+                or self.emergency_stopped
+                or self.is_shutting_down
+                or self.observation_uncertain
+                or self._render_quiet_ms_locked(now, owner, expected_render_owner)
+                is None
+            ):
                 return False
             self._accept_routed_frame_locked(fingerprint)
         return True
@@ -857,12 +888,18 @@ class LiveDialogReader:
         )
         return True
 
-    def clear_queue(self) -> bool:
+    def clear_queue(self, *, reason: str = "clear-queue") -> bool:
         with ExitStack() as cleanup:
             with self.pause_condition:
-                return self._clear_queue_locked(cleanup)
+                return self._clear_queue_locked(cleanup, reason=reason)
 
-    def _clear_queue_locked(self, cleanup: ExitStack) -> bool:
+    def _clear_queue_locked(
+        self, cleanup: ExitStack, *, reason: str = "clear-queue"
+    ) -> bool:
+        chunk = self.current_chunk or next(iter(self.speech_futures.values()), None)
+        context = {} if chunk is None else self._chunk_context(chunk)
+        context.pop("generation", None)
+        cancelled_at = monotonic()
         self.frame_route_epoch += 1
         self.suppressed_generation = self.active_generation
         futures = tuple(self.speech_futures)
@@ -891,6 +928,18 @@ class LiveDialogReader:
                 cleanup_on_exit(future.cancel, description="Queued speech cancellation")
             )
         self._cancel_auto_advance_locked()
+        # Capture the cause before cleanup can finish or replace current playback.
+        cleanup.callback(
+            self._report_pipeline_event,
+            "queue-cancelled",
+            self.active_generation,
+            cancelled_at,
+            reason=reason,
+            speech_future_count=len(futures),
+            current_chunk_present=has_current_speech,
+            suppressed_generation=self.suppressed_generation,
+            **context,
+        )
         return (
             has_current_speech
             or bool(futures)
@@ -924,7 +973,7 @@ class LiveDialogReader:
                 self.emergency_stopped = True
                 self.stop_event.set()
                 self.pause_condition.notify_all()
-            cleared = self.clear_queue()
+            cleared = self.clear_queue(reason="emergency-stop")
         self._report_pipeline_event(
             "reading-control", self.active_generation, action="emergency-stop"
         )
@@ -942,6 +991,17 @@ class LiveDialogReader:
         with self.pause_condition:
             self.paused = False
             self.pause_condition.notify_all()
+
+    def was_playback_paused(self, chunk: SpeechChunk) -> bool:
+        with self.state_lock:
+            return (
+                id(chunk) in self.pause_interrupted_chunk_ids
+                and id(chunk) not in self.cancelled_chunk_ids
+                and chunk.generation == self.active_generation
+                and self.suppressed_generation != chunk.generation
+                and not self.emergency_stopped
+                and not self.is_shutting_down
+            )
 
     def wait_until_playable(self, chunk: SpeechChunk) -> bool:
         with self.pause_condition:
@@ -1112,6 +1172,20 @@ class LiveDialogReader:
                 render_owner = self.stable_frame_owner()
                 recheck_required = bool(self.frame_recheck_required())
                 captured_at = self.stable_frame_clock()
+                with self.state_lock:
+                    render_anchor = self.render_anchor_frame
+                    anchor_fingerprint = self.render_anchor_fingerprint
+                    anchor_owner = self.latest_render_owner
+                same_render = bool(
+                    visible
+                    and render_anchor is not None
+                    and render_owner == anchor_owner
+                    and (
+                        self.frame_render_equivalent(render_anchor, frame)
+                        if self.frame_render_equivalent is not None
+                        else render_fingerprint == anchor_fingerprint
+                    )
+                )
                 with self.pause_condition:
                     fingerprint_changed = fingerprint != self.latest_frame_fingerprint
                     render_changed = (
@@ -1126,13 +1200,19 @@ class LiveDialogReader:
                     self.latest_frame_complete = complete
                     if not visible:
                         self._reset_render_observation()
-                    elif (
-                        render_fingerprint != self.latest_render_fingerprint
-                        or render_owner != self.latest_render_owner
-                    ):
+                    else:
+                        if (
+                            not same_render
+                            or render_anchor is not self.render_anchor_frame
+                            or render_owner != self.latest_render_owner
+                        ):
+                            # Compare every frame to this fixed anchor, never to
+                            # successive tolerated edges that could slowly drift.
+                            self.render_anchor_frame = frame
+                            self.render_anchor_fingerprint = render_fingerprint
+                            self.latest_render_changed_at = captured_at
                         self.latest_render_fingerprint = render_fingerprint
                         self.latest_render_owner = render_owner
-                        self.latest_render_changed_at = captured_at
                     self.frame_version += 1
                     metrics = self.pipeline_metrics
                     self.pipeline_metrics = replace(
@@ -1811,8 +1891,12 @@ class LiveDialogReader:
     @staticmethod
     def _privacy_safe_fingerprint(fingerprint: FrameFingerprint) -> str:
         if isinstance(fingerprint, bytes):
-            return fingerprint.hex()[:16]
-        return str(fingerprint)[:64]
+            payload = fingerprint
+        elif isinstance(fingerprint, (str, int, float)):
+            payload = str(fingerprint).encode("utf-8", errors="replace")
+        else:
+            return "unavailable"
+        return sha256(payload).hexdigest()[:16]
 
     def _accept_routed_frame(self, fingerprint: FrameFingerprint) -> None:
         with self.state_lock:
@@ -1831,17 +1915,22 @@ class LiveDialogReader:
         owner = self.stable_frame_owner()
         now = self.stable_frame_clock()
         with self.state_lock:
-            if (
-                not self.latest_frame_visible
-                or self.latest_render_fingerprint is None
-                or self.latest_render_changed_at is None
-                or owner != self.latest_render_owner
-                or (expected_owner is not None and owner != expected_owner)
-            ):
-                return None
-            quiet_seconds = now - self.latest_render_changed_at
-            if quiet_seconds < self.render_quiet_minimum_seconds:
-                return None
+            return self._render_quiet_ms_locked(now, owner, expected_owner)
+
+    def _render_quiet_ms_locked(
+        self, now: float, owner: object, expected_owner: object | None
+    ) -> int | None:
+        if (
+            not self.latest_frame_visible
+            or self.latest_render_fingerprint is None
+            or self.latest_render_changed_at is None
+            or owner != self.latest_render_owner
+            or (expected_owner is not None and owner != expected_owner)
+        ):
+            return None
+        quiet_seconds = now - self.latest_render_changed_at
+        if quiet_seconds < self.render_quiet_minimum_seconds:
+            return None
         return round(quiet_seconds * 1000)
 
     def _accept_routed_frame_locked(self, fingerprint: FrameFingerprint) -> None:
@@ -2215,6 +2304,7 @@ class LiveDialogReader:
                     self.current_chunk = None
                     self.current_chunk_pipeline_origins = None
                 self.cancelled_chunk_ids.discard(id(chunk))
+                self.pause_interrupted_chunk_ids.discard(id(chunk))
             self._report_pipeline_event(
                 "playback-completion",
                 chunk.generation,
@@ -2301,6 +2391,104 @@ class LiveDialogReader:
                 self._cancel_auto_advance_locked()
         self._maybe_auto_advance()
 
+    def _auto_advance_gate_details_locked(
+        self, timer_serial: int | None = None
+    ) -> dict[str, object]:
+        return {
+            "run_id": self.run_id,
+            "active_generation": self.active_generation,
+            "dialog_ready_generation": self.dialog_ready_generation,
+            "pending_auto_advance_generation": self.pending_auto_advance_generation,
+            "failed_auto_advance_generation": self.failed_auto_advance_generation,
+            "blocked_generation": self.auto_advance_blocked_generation,
+            "suppressed_generation": self.suppressed_generation,
+            "auto_advance_enabled": self.auto_advance is not None,
+            "already_dispatched": (
+                self.last_auto_advance_dispatched_generation == self.active_generation
+            ),
+            "timer_pending": self.auto_advance_timer is not None,
+            "timer_serial": timer_serial,
+            "current_timer_serial": self._auto_advance_timer_serial,
+            "frame_version": self.frame_version,
+            "processed_frame_version": self.processed_frame_version,
+            "frame_route_epoch": self.frame_route_epoch,
+            "routed_latest_equal": (
+                self.routed_frame_fingerprint == self.latest_frame_fingerprint
+            ),
+            "routed_frame_present": self.routed_frame_fingerprint is not None,
+            "latest_frame_present": self.latest_frame_fingerprint is not None,
+            "visible": self.latest_frame_visible,
+            "completion_cue": self.latest_frame_complete,
+            "observation_uncertain": self.observation_uncertain,
+            "candidate_frames": self.candidate_frame_count,
+            "candidate_owner_present": self.candidate_frame_owner is not None,
+            "candidate_started_at": self.candidate_frame_started_at,
+            "stable_minimum_ms": self.stable_frame_minimum_seconds * 1000,
+            "render_owner_present": self.latest_render_owner is not None,
+            "render_changed_at": self.latest_render_changed_at,
+            "render_quiet_minimum_ms": self.render_quiet_minimum_seconds * 1000,
+            "current_chunk_present": self.current_chunk is not None,
+            "speech_future_count": len(self.speech_futures),
+            "deferred_chunk_present": self.deferred_chunk is not None,
+            "paused": self.paused,
+            "emergency_stopped": self.emergency_stopped,
+            "shutting_down": self.is_shutting_down,
+            "stop_requested": self.stop_event.is_set(),
+        }
+
+    def _report_auto_advance_gate(
+        self,
+        generation: int,
+        reason: str,
+        details: dict[str, object] | None = None,
+        *,
+        focused: bool | None = None,
+    ) -> None:
+        reason = reason if reason in CONTINUATION_GATE_REASONS else "callback-blocked"
+        now = monotonic()
+        with self.state_lock:
+            if details is None:
+                details = self._auto_advance_gate_details_locked()
+            previous = self._auto_advance_gate_reports.get(reason)
+            if (
+                previous is not None
+                and previous[:2] == (details["run_id"], generation)
+                and now - previous[2] < 1.0
+            ):
+                return
+            self._auto_advance_gate_reports[reason] = details["run_id"], generation, now
+            if len(self._auto_advance_gate_reports) > 16:
+                oldest = next(iter(self._auto_advance_gate_reports))
+                del self._auto_advance_gate_reports[oldest]
+        self._report_pipeline_event(
+            "auto-advance-withheld",
+            generation,
+            now,
+            reason=reason,
+            focused=focused,
+            **details,
+        )
+
+    def record_prefix_confirmation_wait(
+        self,
+        reason: str,
+        *,
+        event_id: str | None,
+        target_event_id: str,
+        quiet_ms: int | None = None,
+    ) -> None:
+        with self.state_lock:
+            generation = self.active_generation
+            details = self._auto_advance_gate_details_locked()
+        details.update(
+            event_id=event_id,
+            target_event_id=target_event_id,
+            prefix_confirmation_pending=True,
+            prefix_owner_current=event_id == target_event_id,
+            render_quiet_ms=quiet_ms,
+        )
+        self._report_auto_advance_gate(generation, reason, details)
+
     def _maybe_auto_advance(self) -> None:
         with self.state_lock:
             generation = self.active_generation
@@ -2319,42 +2507,65 @@ class LiveDialogReader:
                 or self.observation_uncertain
                 or self.stop_event.is_set()
             ):
-                return
-            self._auto_advance_timer_serial += 1
-            timer = Timer(
-                self.auto_advance_delay_seconds,
-                self._run_auto_advance,
-                args=(generation, self._auto_advance_timer_serial),
-            )
-            timer.daemon = True
-            self.auto_advance_timer = timer
+                details = (
+                    self._auto_advance_gate_details_locked()
+                    if self.auto_advance is not None
+                    else None
+                )
+                timer = None
+            else:
+                details = None
+                self._auto_advance_timer_serial += 1
+                timer = Timer(
+                    self.auto_advance_delay_seconds,
+                    self._run_auto_advance,
+                    args=(generation, self._auto_advance_timer_serial),
+                )
+                timer.daemon = True
+                self.auto_advance_timer = timer
+        if timer is None:
+            if self.auto_advance is not None:
+                self._report_auto_advance_gate(
+                    generation, "schedule-precondition", details
+                )
+            return
         timer.start()
 
     def _run_auto_advance(
         self, generation: int, timer_serial: int | None = None
     ) -> None:
+        reason = None
         with self.state_lock:
             if (
                 timer_serial is not None
                 and timer_serial != self._auto_advance_timer_serial
             ):
-                return
-            self.auto_advance_timer = None
-            if (
-                self.auto_advance is None
-                or generation != self.active_generation
-                or self.dialog_ready_generation != generation
-                or self.failed_auto_advance_generation == generation
-                or self.last_auto_advance_dispatched_generation == generation
-                or self.current_chunk is not None
-                or self.speech_futures
-                or self.deferred_chunk is not None
-                or self.paused
-                or self.suppressed_generation == generation
-                or self.observation_uncertain
-                or self.stop_event.is_set()
-            ):
-                return
+                reason = "stale-auto-advance-timer"
+            else:
+                self.auto_advance_timer = None
+                if (
+                    self.auto_advance is None
+                    or generation != self.active_generation
+                    or self.dialog_ready_generation != generation
+                    or self.failed_auto_advance_generation == generation
+                    or self.last_auto_advance_dispatched_generation == generation
+                    or self.current_chunk is not None
+                    or self.speech_futures
+                    or self.deferred_chunk is not None
+                    or self.paused
+                    or self.suppressed_generation == generation
+                    or self.observation_uncertain
+                    or self.stop_event.is_set()
+                ):
+                    reason = "dispatch-precondition"
+            details = (
+                self._auto_advance_gate_details_locked(timer_serial)
+                if reason is not None
+                else None
+            )
+        if reason is not None:
+            self._report_auto_advance_gate(generation, reason, details)
+            return
         focused = self._is_focused()
         with self.state_lock:
             if (
@@ -2366,7 +2577,14 @@ class LiveDialogReader:
                 or self.paused
                 or self.stop_event.is_set()
             ):
-                return
+                invalidated = self._auto_advance_gate_details_locked(timer_serial)
+            else:
+                invalidated = None
+        if invalidated is not None:
+            self._report_auto_advance_gate(
+                generation, "ownership-changed-after-focus", invalidated
+            )
+            return
         if not focused:
             # A nonmodal voice prompt can own focus exactly when speech ends.
             # Keep a delayed attempt alive so returning to the game cannot
@@ -2376,12 +2594,11 @@ class LiveDialogReader:
                     self.auto_advance_focus_wait_generation != generation
                 )
                 self.auto_advance_focus_wait_generation = generation
+                focus_details = self._auto_advance_gate_details_locked(timer_serial)
+            self._report_auto_advance_gate(
+                generation, "game-focus-not-owned", focus_details, focused=False
+            )
             if report_focus_wait:
-                self._report_pipeline_event(
-                    "auto-advance-withheld",
-                    generation,
-                    reason="game-focus-not-owned",
-                )
                 self._report_auto_advance_state("focus-wait", generation, 0)
             self._maybe_auto_advance()
             return
@@ -2390,41 +2607,104 @@ class LiveDialogReader:
         except Exception as error:
             self.report_error(error)
         with self.state_lock:
+            routed_frame = self.routed_frame
+            latest_frame = self.latest_frame
+            frame_version = self.frame_version
+            route_epoch = self.frame_route_epoch
+            run_id = self.run_id
+            same_routed = self.routed_frame_fingerprint == self.latest_frame_fingerprint
+        same_fingerprint = same_routed
+        comparison_started = monotonic()
+        # Keep the original route anchor: accepting successive offsets would drift.
+        if (
+            self.require_visible_auto_advance
+            and not same_routed
+            and routed_frame is not None
+            and latest_frame is not None
+        ):
+            try:
+                same_routed = self.frame_equivalent(routed_frame, latest_frame)
+            except Exception as error:
+                self.report_error(error)
+        frame_equivalence_ms = (monotonic() - comparison_started) * 1000
+        focused = self._is_focused()
+        with self.state_lock:
             if (
                 (
                     timer_serial is not None
                     and timer_serial != self._auto_advance_timer_serial
                 )
                 or generation != self.active_generation
+                or run_id != self.run_id
+                or self.dialog_ready_generation != generation
+                or self.failed_auto_advance_generation == generation
+                or self.last_auto_advance_dispatched_generation == generation
+                or self.current_chunk is not None
+                or self.speech_futures
+                or self.deferred_chunk is not None
+                or self.suppressed_generation == generation
+                or self.observation_uncertain
                 or self.paused
+                or self.emergency_stopped
+                or self.is_shutting_down
                 or self.stop_event.is_set()
             ):
-                return
-            visual_ready = bool(
-                not self.require_visible_auto_advance
-                or (
-                    self.latest_frame_visible
-                    and self.routed_frame_fingerprint == self.latest_frame_fingerprint
+                invalidated = self._auto_advance_gate_details_locked(timer_serial)
+            else:
+                invalidated = None
+            if invalidated is None:
+                visual_ready = bool(
+                    not self.require_visible_auto_advance
+                    or (
+                        focused
+                        and self.latest_frame_visible
+                        and same_routed
+                        and frame_version == self.frame_version
+                        and route_epoch == self.frame_route_epoch
+                        and latest_frame is self.latest_frame
+                        and routed_frame is self.routed_frame
+                        and not self.observation_uncertain
+                    )
                 )
+                report_visual_wait = (
+                    not visual_ready
+                    and self.auto_advance_visual_wait_generation != generation
+                )
+                if not visual_ready:
+                    self.auto_advance_visual_wait_generation = generation
+                visual_details = (
+                    self._auto_advance_gate_details_locked(timer_serial)
+                    if not visual_ready
+                    else None
+                )
+        if invalidated is not None:
+            self._report_auto_advance_gate(
+                generation, "ownership-changed-after-render", invalidated
             )
-            report_visual_wait = (
-                not visual_ready
-                and self.auto_advance_visual_wait_generation != generation
-            )
-            if not visual_ready:
-                self.auto_advance_visual_wait_generation = generation
+            return
+        if not focused:
+            self._handle_auto_advance_refusal(generation, "focus-wait")
+            return
         if not visual_ready:
+            retain_visual_wait_frames(
+                routed_frame,
+                latest_frame,
+                run_id=run_id,
+                generation=generation,
+                frame_version=frame_version,
+            )
+            self._report_auto_advance_gate(
+                generation,
+                "owned-frame-not-visible-and-stable",
+                visual_details,
+                focused=True,
+            )
             if report_visual_wait:
-                self._report_pipeline_event(
-                    "auto-advance-withheld",
-                    generation,
-                    reason="owned-frame-not-visible-and-stable",
-                )
                 self._report_auto_advance_state("visual-wait", generation, 0)
             self._maybe_auto_advance()
             return
         try:
-            attempt = self.auto_advance()
+            attempt = cast(Callable[[], object], self.auto_advance)()
         except Exception as error:
             self.report_error(error)
             return
@@ -2472,6 +2752,8 @@ class LiveDialogReader:
                 generation,
                 monotonic(),
                 attempt=attempt,
+                routed_frame_equivalent=bool(same_routed and not same_fingerprint),
+                frame_equivalence_ms=frame_equivalence_ms,
             )
             self._report_auto_advance_state("dispatched", generation, attempt)
             timer.start()
@@ -2480,6 +2762,7 @@ class LiveDialogReader:
         self, generation: int, refusal_reason: str | None
     ) -> None:
         if refusal_reason == "reading-control-barrier":
+            self._report_auto_advance_gate(generation, "reading-control-barrier")
             # Resume rearms Pause; Clear and Stop retain their own barriers.
             return
         if refusal_reason == "focus-wait" or (
@@ -2490,12 +2773,10 @@ class LiveDialogReader:
                     self.auto_advance_focus_wait_generation != generation
                 )
                 self.auto_advance_focus_wait_generation = generation
+            self._report_auto_advance_gate(
+                generation, "game-focus-lost-before-dispatch", focused=False
+            )
             if report_focus_wait:
-                self._report_pipeline_event(
-                    "auto-advance-withheld",
-                    generation,
-                    reason="game-focus-lost-before-dispatch",
-                )
                 self._report_auto_advance_state("focus-wait", generation, 0)
             self._maybe_auto_advance()
         elif refusal_reason == "visual-wait":
@@ -2504,19 +2785,15 @@ class LiveDialogReader:
                     self.auto_advance_visual_wait_generation != generation
                 )
                 self.auto_advance_visual_wait_generation = generation
+            self._report_auto_advance_gate(
+                generation, "canonical-full-text-not-confirmed"
+            )
             if report_visual_wait:
-                self._report_pipeline_event(
-                    "auto-advance-withheld",
-                    generation,
-                    reason="canonical-full-text-not-confirmed",
-                )
                 self._report_auto_advance_state("visual-wait", generation, 0)
             self._maybe_auto_advance()
         else:
-            self._report_pipeline_event(
-                "auto-advance-withheld",
-                generation,
-                reason=refusal_reason or "callback-blocked",
+            self._report_auto_advance_gate(
+                generation, refusal_reason or "callback-blocked"
             )
             with self.state_lock:
                 if generation == self.active_generation:

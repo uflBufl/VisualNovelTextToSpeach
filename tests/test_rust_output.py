@@ -144,6 +144,45 @@ class RustOutputProtocolTest(unittest.TestCase):
             return []
         return [json.loads(line) for line in self.trace.read_text().splitlines()]
 
+    def test_stream_abort_interrupts_tap_arming_without_open_or_pcm(self):
+        module = self.module()
+        stream = module.OutputStream(
+            samplerate=48000, channels=1, dtype="float32", latency="low"
+        )
+        stream.start()
+        entered, failures = threading.Event(), []
+
+        def arm(identity, interrupted):
+            entered.set()
+            deadline = time.monotonic() + 2
+            while not interrupted():
+                if time.monotonic() > deadline:
+                    self.fail("Stream abort did not interrupt tap arming")
+                time.sleep(0.01)
+            return False
+
+        def write():
+            try:
+                stream.write(np.zeros((4, 1), dtype=np.float32))
+            except RuntimeError as error:
+                failures.append(error)
+
+        with patch(
+            "vntts.reading_diagnostics.arm_audio_worker_recording", side_effect=arm
+        ):
+            owner = threading.Thread(target=write)
+            owner.start()
+            self.assertTrue(entered.wait(1))
+            started = time.monotonic()
+            stream.abort()
+            owner.join(1)
+            self.assertFalse(owner.is_alive())
+            self.assertLess(time.monotonic() - started, 1)
+            self.assertTrue(failures)
+            self.assertEqual(stream.sent_frames, 0)
+            self.assertFalse(stream.opened)
+        stream.close()
+
     def test_chunks_are_bounded_ordered_and_final_drain_counters_are_retained(self):
         pcm = np.arange(100001 * 2, dtype=np.float32).reshape(-1, 2) / 1000
         module = self.module(pcm)

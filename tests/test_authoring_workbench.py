@@ -4593,6 +4593,42 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         inspect_workspace_mock.assert_not_called()
         inspect_readiness_mock.assert_not_called()
 
+    def test_cancelled_outcome_is_pending_and_ready_to_resume_in_workbench(self):
+        from vntts.synthesis import SynthesisCompletion
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+            queue = VoiceGenerationQueue.load(created.directory / "queue.jsonl")
+            item = queue.items[0]
+            state_path = created.directory / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text())
+            record = state["items"][item.queue_id]
+            for field in ("path", "file_sha256", "quality", "review_status"):
+                record.pop(field, None)
+            record.update(
+                status="failed",
+                last_error="User cancelled synthesis",
+                updated_at="2999-01-01T00:00:00+00:00",
+                failure=bulk_generation_module._failure_record(
+                    RuntimeError("cancelled"),
+                    text=item.text,
+                    completion=SynthesisCompletion.CANCELLED,
+                ),
+            )
+            state["active"] = None
+            state_path.write_text(json.dumps(state))
+            summary = inspect_workspace(created.directory)
+            ready = inspect_generation_readiness(
+                created.directory, queue_ids=(item.queue_id,)
+            )
+            review = list_review_items(created.directory)
+        self.assertEqual((summary.failed, summary.pending), (0, 1))
+        self.assertEqual(summary.latest_status, "cancelled")
+        self.assertEqual((ready.failed, ready.pending, ready.ready), (0, 1, 1))
+        self.assertEqual(ready.queue_ids, (item.queue_id,))
+        self.assertEqual(review, ())
+
     def test_scoped_regeneration_accepts_only_pending_review_outcomes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

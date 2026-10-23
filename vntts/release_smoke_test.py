@@ -14,8 +14,8 @@ from vntts.cli import CLIReportResult
 from vntts.ocr import (
     default_dialog_region,
     default_minimum_ocr_confidence,
-    recognize_dialog_image_result,
 )
+from vntts.ocr_worker import recognize_dialog_image_result
 from vntts.path_safety import ensure_separate_output, open_regular_binary
 from vntts.services.tts_engine import TTSEngine
 from vntts.settings import get_local_data_directory

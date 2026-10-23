@@ -13,7 +13,7 @@ from PIL import Image
 
 from vntts.cli import cli_error, cli_messages
 from vntts.json_types import decode_json, is_json_object
-from vntts.ocr import VoiceRegistry
+from vntts.ocr import OCRRegions, VoiceRegistry
 from vntts.ocr_backend import OCRBackend, RapidOCRBackend, TesseractOCRBackend
 from vntts.path_safety import (
     ensure_separate_output,
@@ -39,7 +39,8 @@ class OCRSampleReport(TypedDict):
     width: int
     height: int
     latency_ms: TimingReport
-    cpu_ms: TimingReport
+    process_cpu_ms: TimingReport
+    ocr_regions: dict[str, dict[str, float]] | None
     speaker: str
     text: str
     confidence: float
@@ -52,7 +53,7 @@ class OCRSummaryReport(TypedDict):
     images: int
     median_latency_ms: float | None
     p95_latency_ms: float | None
-    median_cpu_utilization_percent: float | None
+    median_process_cpu_utilization_percent: float | None
 
 
 class OCRBenchmarkReport(TypedDict):
@@ -63,6 +64,9 @@ class OCRBenchmarkReport(TypedDict):
     language: str
     warmups: int
     repeats: int
+    minimum_confidence: float
+    cpu_scope: str
+    total_cpu_available: bool
     installed_python_package_size_mb: float
     summary: OCRSummaryReport
     samples: list[OCRSampleReport]
@@ -143,6 +147,8 @@ def benchmark_ocr(
         raise ValueError(
             "OCR benchmark repeats must be positive and warmups non-negative"
         )
+    if not 0 <= minimum_confidence <= 100:
+        raise ValueError("OCR minimum confidence must be between 0 and 100")
     backend = backend or TesseractOCRBackend()
     expectations = expectations or {}
     samples: list[OCRSampleReport] = []
@@ -151,6 +157,15 @@ def benchmark_ocr(
         image_path = Path(image_path).expanduser().resolve()
         expected_text, expected_speaker = _expected_dialog(
             expectations.get(image_path.name), image_path.name
+        )
+        expected = expectations.get(image_path.name)
+        regions_value = (
+            expected.get("ocr_regions") if isinstance(expected, dict) else None
+        )
+        regions = (
+            OCRRegions.from_mapping(regions_value)
+            if regions_value is not None
+            else None
         )
         with (
             open_regular_binary(image_path) as stream,
@@ -163,6 +178,7 @@ def benchmark_ocr(
                 registry,
                 minimum_confidence=minimum_confidence,
                 language=language,
+                ocr_regions=regions,
             )
         latencies: list[float] = []
         cpu_times: list[float] = []
@@ -175,6 +191,7 @@ def benchmark_ocr(
                 registry,
                 minimum_confidence=minimum_confidence,
                 language=language,
+                ocr_regions=regions,
             )
             cpu_times.append((cpu_clock() - cpu_started) * 1000)
             latencies.append((clock() - started) * 1000)
@@ -191,11 +208,12 @@ def benchmark_ocr(
                     "p95": _percentile(latencies, 0.95),
                     "runs": latencies,
                 },
-                "cpu_ms": {
+                "process_cpu_ms": {
                     "median": median(cpu_times),
                     "p95": _percentile(cpu_times, 0.95),
                     "runs": cpu_times,
                 },
+                "ocr_regions": regions.to_json() if regions is not None else None,
                 "speaker": result.character,
                 "text": result.text,
                 "confidence": result.confidence,
@@ -220,20 +238,23 @@ def benchmark_ocr(
         cpu_ms / wall_ms * 100
         for sample in samples
         for cpu_ms, wall_ms in zip(
-            sample["cpu_ms"]["runs"],
+            sample["process_cpu_ms"]["runs"],
             sample["latency_ms"]["runs"],
             strict=True,
         )
         if wall_ms > 0
     ]
     return {
-        "version": 1,
+        "version": 2,
         "backend": backend.name,
         "platform": platform.platform(),
         "python": platform.python_version(),
         "language": language,
         "warmups": warmups,
         "repeats": repeats,
+        "minimum_confidence": minimum_confidence,
+        "cpu_scope": "current_process_all_threads_excluding_children",
+        "total_cpu_available": False,
         "installed_python_package_size_mb": distribution_size_mb(
             _distribution_names(backend)
         ),
@@ -241,7 +262,7 @@ def benchmark_ocr(
             "images": len(samples),
             "median_latency_ms": median(all_latencies) if all_latencies else None,
             "p95_latency_ms": _percentile(all_latencies, 0.95),
-            "median_cpu_utilization_percent": (
+            "median_process_cpu_utilization_percent": (
                 median(cpu_utilizations) if cpu_utilizations else None
             ),
         },
@@ -265,6 +286,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--language", default="eng")
+    parser.add_argument("--minimum-confidence", type=float, default=0)
     parser.add_argument(
         "--backend",
         choices=("tesseract", "rapidocr"),
@@ -296,6 +318,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             repeats=arguments.repeats,
             warmups=arguments.warmups,
             language=arguments.language,
+            minimum_confidence=arguments.minimum_confidence,
             expectations=load_expectations(arguments.expectations),
         )
         output = write_report(report, arguments.output)

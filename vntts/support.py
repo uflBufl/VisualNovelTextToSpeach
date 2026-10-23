@@ -6,6 +6,7 @@ import marshal
 import math
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -18,7 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 from statistics import mean
 from threading import RLock
-from typing import Callable, Mapping, TypedDict
+from typing import TYPE_CHECKING, Callable, Mapping, TypedDict
 from uuid import UUID
 
 from vntts_artifacts.atomic_io import atomic_output_path
@@ -35,6 +36,12 @@ from vntts.settings import AppSettings
 from vntts.support_timeline_acquisition import TimelineAcquisition
 from vntts.versioned_json import read_versioned_json
 from vntts.voice_library import VoiceLibrary
+
+if TYPE_CHECKING:
+    from vntts.reading_diagnostics import (
+        ReadingDiagnosticSession,
+        SavedDiagnosticSession,
+    )
 
 SupportDocument = dict[str, object]
 SupportEntries = list[SupportDocument]
@@ -67,8 +74,21 @@ audio_route_fields = (
 
 audio_lifecycle_fields = (
     "backend",
+    "process_id",
+    "generation_owner_pid",
+    "source_sha256",
+    "source_samples",
+    "source_sample_rate",
+    "source_audio_lead_ms",
+    "callback_timing",
+    "dac_timing",
+    "timing_output_frames",
+    "timing_sample_rate",
     "worker_pid",
+    "worker_id",
     "worker_startup_ms",
+    "wait_ms",
+    "ready",
     "preload_ms",
     "frames_played",
     "callback_count",
@@ -206,6 +226,8 @@ sequence_timeline_stages = (
     "stable-frame-gate",
     "canonical-prefix-visual-recheck",
     "late-chunk-suppressed",
+    "queue-cancelled",
+    "observation-invalidated",
     "sequence-candidate-miss",
     "sequence-prefix-gate",
     "sequence-shadow",
@@ -223,6 +245,8 @@ sequence_timeline_stages = (
 )
 
 generation_timeline_detail_fields = (
+    "ocr_confidence",
+    "minimum_confidence",
     "action",
     "run_id",
     "run_started_at",
@@ -315,6 +339,47 @@ generation_timeline_detail_fields = (
     "best_candidate_line_id",
     "best_bounded_similarity",
     "best_bounded_coverage",
+    "generation_owner_pid",
+    "active_generation",
+    "dialog_ready_generation",
+    "pending_auto_advance_generation",
+    "failed_auto_advance_generation",
+    "blocked_generation",
+    "suppressed_generation",
+    "auto_advance_enabled",
+    "already_dispatched",
+    "timer_pending",
+    "timer_serial",
+    "current_timer_serial",
+    "processed_frame_version",
+    "frame_route_epoch",
+    "routed_latest_equal",
+    "routed_frame_equivalent",
+    "frame_equivalence_ms",
+    "routed_frame_present",
+    "latest_frame_present",
+    "observation_uncertain",
+    "candidate_owner_present",
+    "candidate_started_at",
+    "stable_minimum_ms",
+    "render_owner_present",
+    "render_changed_at",
+    "render_quiet_minimum_ms",
+    "current_chunk_present",
+    "speech_future_count",
+    "deferred_chunk_present",
+    "paused",
+    "emergency_stopped",
+    "shutting_down",
+    "stop_requested",
+    "prefix_confirmation_pending",
+    "prefix_owner_current",
+    "cursor_present",
+    "reader_present",
+    "line_present",
+    "bind_frame_available",
+    "capture_target_present",
+    "render_quiet_ms",
 )
 
 timeline_retention_bounds_note = (
@@ -1655,7 +1720,7 @@ class AudioLifecycleLog(RuntimeSupportLog):
             "audio-lifecycle",
             f"Audio stream: {fields['operation']}",
             **{
-                key: _sanitize_audio_lifecycle_value(value)
+                key: _sanitize_audio_lifecycle_value(value, key)
                 for key, value in fields.items()
                 if key in audio_lifecycle_fields and value is not None
             },
@@ -1665,11 +1730,40 @@ class AudioLifecycleLog(RuntimeSupportLog):
         return {"schema_version": 1, "events": self.snapshot()}
 
 
-def _sanitize_audio_lifecycle_value(value: object) -> object:
+def _sanitize_audio_lifecycle_value(value: object, key: str | None = None) -> object:
+    if key in {"callback_timing", "dac_timing"}:
+        if not isinstance(value, Mapping):
+            return None
+        safe: SupportDocument = {}
+        for field in (
+            "observation_count",
+            "unavailable_count",
+            "discontinuity_count",
+            "max_offset_position_frames",
+            "max_offset_output_frame",
+        ):
+            number = value.get(field)
+            if type(number) is int and 0 <= number < 2**64:
+                safe[field] = number
+        for field in ("max_gap_seconds", "max_offset_seconds"):
+            number = value.get(field)
+            if (
+                isinstance(number, (int, float))
+                and not isinstance(number, bool)
+                and (not isinstance(number, int) or number.bit_length() <= 64)
+                and math.isfinite(number)
+                and (field != "max_gap_seconds" or number >= 0)
+            ):
+                safe[field] = round(number, 9)
+        return safe
+    if key == "source_sha256":
+        return value if is_lowercase_sha256(value) else None
     if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, float):
-        return round(value, 3) if math.isfinite(value) else None
+        return round(value, 9) if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return None
     return _redact_game_import_text(value)[:256]
 
 
@@ -1685,9 +1779,17 @@ def configure_audio_lifecycle_log(
 
 
 def record_audio_lifecycle(operation: object, **details: object) -> None:
+    fields = {**(audio_lifecycle_context.get() or {}), **details}
     try:
-        audio_lifecycle_log.record(operation, **details)
+        audio_lifecycle_log.record(operation, **fields)
     except Exception:
+        pass
+    try:
+        from vntts.reading_diagnostics import record_diagnostic_event
+
+        record_diagnostic_event("audio", str(operation)[:64], **fields)
+    except Exception:
+        # The optional journal must not interrupt playback or its ordinary log.
         pass
 
 
@@ -2305,6 +2407,7 @@ class SupportBundleBuilder:
         previous_session: SupportDocument | None = None,
         audio_lifecycle: AudioLifecycleLog | None = None,
         voice_library: VoiceLibrary | None = None,
+        diagnostic_session: "ReadingDiagnosticSession | SavedDiagnosticSession | None" = None,
     ) -> None:
         self.settings = settings
         self.event_log = event_log
@@ -2316,12 +2419,18 @@ class SupportBundleBuilder:
         self.previous_session = previous_session or {"available": False}
         self.audio_lifecycle = audio_lifecycle or AudioLifecycleLog()
         self.voice_library = voice_library
+        self.diagnostic_session = diagnostic_session
 
     def build(self, path: str | Path) -> Path:
         path = Path(path).expanduser()
         if path.suffix.casefold() != ".zip":
             path = path.with_suffix(".zip")
         path.parent.mkdir(parents=True, exist_ok=True)
+        session_entries = (
+            self.diagnostic_session.export_entries()
+            if self.diagnostic_session is not None
+            else ()
+        )
         active_content = collect_active_content_identity(self.settings)
         preparation = pregeneration_support.report()
         files = {
@@ -2329,7 +2438,11 @@ class SupportBundleBuilder:
                 "version": 1,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "privacy": (
-                    "Screenshots, recognized dialogue, voice audio, model files, "
+                    "Explicit diagnostic session evidence is included. Selected recordings "
+                    "and source WAVs may contain game images, dialogue and voice audio. "
+                    "Model files and environment-variable values are excluded."
+                    if self.diagnostic_session is not None
+                    else "Screenshots, recognized dialogue, voice audio, model files, "
                     "and environment-variable values are excluded."
                 ),
             },
@@ -2398,6 +2511,12 @@ class SupportBundleBuilder:
                         filename,
                         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                     )
+                for filename, source in session_entries:
+                    with (
+                        open_regular_binary(source) as original,
+                        archive.open(filename, "w") as output,
+                    ):
+                        shutil.copyfileobj(original, output)
         return path
 
 
@@ -2495,7 +2614,7 @@ def sanitize_event(entry: SupportDetails) -> SupportDocument:
         sanitized["native"] = _sanitize_native_details(entry["native"])
     if entry.get("level") == "audio-lifecycle":
         sanitized.update(
-            (key, _sanitize_audio_lifecycle_value(entry[key]))
+            (key, _sanitize_audio_lifecycle_value(entry[key], key))
             for key in audio_lifecycle_fields
             if key in entry and entry[key] is not None
         )

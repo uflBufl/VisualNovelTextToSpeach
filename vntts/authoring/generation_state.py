@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 from typing import Callable, TypeAlias
@@ -131,6 +131,33 @@ def generation_state_items(state: StateObject) -> StateItems:
     ):
         raise BulkGenerationError("Generation state items are malformed")
     return items
+
+
+def generation_item_status(result: Mapping[str, object]) -> object:
+    """Cancellation is resumable pending work, even in preserved failed records."""
+    failure = result.get("failure")
+    if (
+        result.get("status") == "failed"
+        and isinstance(failure, Mapping)
+        and failure.get("kind") == "cancelled"
+    ):
+        return "cancelled"
+    return result.get("status")
+
+
+def _legacy_counted_cancellation(result: Mapping[str, object]) -> bool:
+    failure = result.get("failure")
+    return (
+        generation_item_status(result) == "cancelled"
+        and isinstance(failure, Mapping)
+        and failure.get("attempt_counted") is not False
+    )
+
+
+def completed_generation_attempts(result: Mapping[str, object]) -> int:
+    """Exclude the last legacy cancellation without rewriting its stored evidence."""
+    attempts = _nonnegative_int(result.get("attempts", 0), "Attempts")
+    return max(0, attempts - int(_legacy_counted_cancellation(result)))
 
 
 def load_stable_generation_queue(
@@ -494,6 +521,25 @@ def _validate_failure_record(
     _required_text(
         failure.get("error_type"), f"State item {queue_id!r} failure error_type"
     )
+    if "attempt_counted" in failure and (
+        type(failure["attempt_counted"]) is not bool
+        or failure.get("kind") != "cancelled"
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} cancellation attempt marker is invalid"
+        )
+    previous = failure.get("previous_failure")
+    if previous is not None:
+        if (
+            failure.get("kind") != "cancelled"
+            or not isinstance(previous, dict)
+            or previous.get("status") != "failed"
+            or generation_item_status(previous) == "cancelled"
+        ):
+            raise BulkGenerationError(
+                f"State item {queue_id!r} previous cancellation outcome is invalid"
+            )
+        _validate_failure_record(previous.get("failure"), queue_id, result=previous)
     features = failure.get("text_features")
     expected_features = {
         "character_count",
@@ -2640,7 +2686,11 @@ def _provider_attempts(
     if value is None:
         previous = result.get("provider") or default_provider
         if total_attempts and isinstance(previous, str) and previous.strip():
-            return {previous: total_attempts}
+            return {
+                previous: max(
+                    0, total_attempts - int(_legacy_counted_cancellation(result))
+                )
+            }
         return {}
     if not isinstance(value, dict):
         raise BulkGenerationError("Attempts by provider must be an object")
@@ -2655,6 +2705,10 @@ def _provider_attempts(
         )
     if sum(canonical.values()) > total_attempts:
         raise BulkGenerationError("Attempts by provider exceed cumulative attempts")
+    if _legacy_counted_cancellation(result):
+        previous = result.get("provider") or default_provider
+        if isinstance(previous, str) and canonical.get(previous, 0):
+            canonical[previous] -= 1
     return canonical
 
 

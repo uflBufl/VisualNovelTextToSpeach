@@ -1,5 +1,4 @@
 import os
-import shlex
 import time
 import unittest
 from pathlib import Path
@@ -28,7 +27,6 @@ from PySide6.QtWidgets import (  # noqa: E402
     QTextEdit,
     QWidget,
 )
-from pytesseract import pytesseract as pytesseract_runtime  # noqa: E402
 
 from tests.qt_task_fixtures import release_and_wait_for_pool  # noqa: E402
 from vntts.calibration import (  # noqa: E402
@@ -497,38 +495,36 @@ class DialogRegionOverlayTest(unittest.TestCase):
                     self.assertNotIn("Late text", dialog.result_text.toPlainText())
                     dialog.deleteLater()
 
-    @unittest.skipIf(os.name == "nt", "Requires a POSIX OCR executable fixture")
-    def test_cancelled_review_releases_stalled_ocr_subprocess(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            started = root / "started"
-            executable = root / "stall-ocr"
-            executable.write_text(
-                f"#!/bin/sh\ntouch {shlex.quote(str(started))}\nexec sleep 5\n"
-            )
-            executable.chmod(0o755)
-            pool = QThreadPool()
-            pool.setMaxThreadCount(1)
-            try:
-                with (
-                    patch.object(pytesseract_runtime, "tesseract_cmd", str(executable)),
-                    patch("vntts.calibration.CALIBRATION_OCR_TIMEOUT_SECONDS", 1.5),
-                    patch(
-                        "vntts.ocr.preprocess_dialog_image",
-                        side_effect=lambda image, _profile: image,
-                    ),
-                ):
-                    dialog = CalibrationReviewDialog(
-                        Image.new("RGB", (320, 100), "black"), thread_pool=pool
+    def test_cancelled_review_releases_stalled_ocr_worker(self):
+        from tests.test_ocr_worker import hanging_worker
+        from vntts import ocr_worker
+
+        ocr_worker.close_ocr_worker()
+        ocr_worker.open_ocr_worker()
+        self.addCleanup(ocr_worker.open_ocr_worker)
+        self.addCleanup(ocr_worker.close_ocr_worker)
+        pool = QThreadPool()
+        pool.setMaxThreadCount(1)
+        try:
+            with patch.object(ocr_worker, "_worker_main", hanging_worker):
+                dialog = CalibrationReviewDialog(
+                    Image.new("RGB", (320, 100), "black"), thread_pool=pool
+                )
+                self.wait_for(
+                    lambda: (
+                        ocr_worker._service is not None
+                        and ocr_worker._service.pid is not None
                     )
-                    self.wait_for(started.exists)
-                    dialog.reject()
-                    self.assertFalse(dialog.runner.active)
-                    self.assertTrue(pool.waitForDone(3_000))
-                    self.assertEqual(pool.activeThreadCount(), 0)
-                    dialog.deleteLater()
-            finally:
-                pool.waitForDone(6_000)
+                )
+                dialog.reject()
+                self.assertFalse(dialog.runner.active)
+                self.assertTrue(pool.waitForDone(3_000))
+                self.assertEqual(pool.activeThreadCount(), 0)
+                self.assertIsNone(ocr_worker._service.pid)
+                dialog.deleteLater()
+        finally:
+            ocr_worker.cancel_pending_ocr()
+            pool.waitForDone(6_000)
 
     def test_accept_close_and_escape_cancel_pending_recognition(self):
         for outcome in ("accept", "close", "escape"):

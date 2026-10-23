@@ -1,17 +1,43 @@
 # TODO
 
+## Active - Finish diagnostic-session native acceptance
+
+- [ ] Preserve usable diagnostics after process/OS interruption. A native run left
+      `session.json` at its initial preparing state, omitted source evidence and
+      produced an unreadable MOV (`moov atom not found`) despite persisted event
+      journals. Persist recorder identity/readiness and source references during
+      acquisition; use recoverable video fragments or bounded finalized segments.
+      On startup mark interrupted sessions explicitly. Gate: abrupt termination
+      retains a playable completed segment and honest partial-analysis coverage.
+- [ ] Diagnose simultaneous process-tap sample-time discontinuities under live
+      chapter generation. Both game and Rust taps stopped around 114 seconds while
+      Reading continued, each reporting `Sample-time discontinuity`. Preserve the
+      previous expected and current sample/host timestamps and device-change
+      evidence at the failure. Do not infer playback underrun from recorder failure;
+      qualify recovery/coverage in a fresh uninterrupted native run.
+
+- [ ] **D1 - Finish recorder turnover and bounded-stop qualification.**
+      After forced Rust-worker exit, the repaired session retains a partial segment,
+      explicit worker identity/loss evidence and independent game video/audio plus
+      journals until the original deadline. Verify a replacement worker within the
+      same session and actual default-device change. The corrected bounded-stop
+      contract passes a native deadline run with both process taps finalized and no
+      acquisition errors. Wait for media readiness before starting Reading: cold
+      native-tool preparation took58s of a300s session and missed the first clip.
+      Qualify captured intervals without claiming uncovered startup/tail time. Private aggregate-tap
+      creation alone did not reproduce device-refresh feedback; retain refresh-origin
+      events and choose an audio-owner repair only if evidence supports it.
+
 ## Rust audio native acceptance gaps
 
-- [ ] Qualify `scripts/mac_live_recording/process_tap.m` against the actual Rust
-      audio owner using the build/activation instructions in the adjacent README.
-      Confirm recorder identity and Audio Capture consent separately from Screen
-      Recording. Require positive PCM correlated with the exact approved source
-      WAV, matching worker PID/path/start time/HAL identity, no queue/timestamp gaps,
-      full capture interval and exact-window video. `captured_unqualified` is not
-      acceptance. Check native permission denial, worker exit/restart, device change
-      and reverse teardown; never fall back to the parent or global system audio.
-      Keep scope probes separate from acceptance; investigate ScreenCaptureKit
-      -3805 recorder lifetime interference only if serialized ownership reproduces it.
+- [ ] Complete adverse-path qualification of `scripts/mac_live_recording/process_tap.m`:
+      native permission denial, worker exit/restart, device change and reverse
+      teardown. The positive-path native gate now has exact-source PCM correlation
+      and full 300s/180s exact-window recordings; do not repeat it as an untested
+      prerequisite. Keep explicit PID/path/start time/HAL ownership and no parent,
+      desktop or global-audio fallback. Investigate ScreenCaptureKit -3805 lifetime
+      interference only if serialized ownership reproduces it. See R12 for the
+      remaining source/output discontinuities; positive capture is not gap removal.
 - [ ] Validate the Rust owner in the real game with genuine concurrent heavy chapter
       generation/publication, using the same approved WAVs, device, rate and
       latency as the retained Python baseline evidence. Controlled GIL stress
@@ -20,6 +46,99 @@
       Mac R12 acceptance from callback counters alone. Include native Pause/Stop,
       restart, worker crash and actual default-device-change checks; retain the
       existing interrupt/requeue Pause behavior rather than implying a new seek.
+## Reading setup blockers found during persistent-OCR preflight
+
+- [ ] Verify Stories-page scrolling and action reachability in compact-height windows.
+      At860x560 the story list and preparation actions extend below the visible
+      scroll area; MCP wheel events on both the scroll area and viewport leave its
+      scrollbar at0 despite maximum285. Determine whether this is an app wheel/
+      layout issue or MCP event routing before changing behavior. Gate: a user and
+      MCP can reach story selection and Prepare without resizing or targeting
+      clipped widgets; preserve ordinary keyboard navigation.
+- [ ] Allow prepared-audio Reading setup to validate its actual source route.
+      The final wizard page currently requires successful live synthesis before
+      saving, even when prepared recordings exist. Imported narrator + the default
+      Pocket fallback failed with the gated-model error. Check the selected
+      prepared/original route and audio output independently; retain explicit
+      fallback readiness/error reporting and do not silently mark setup complete.
+      Gate: existing prepared first line can complete setup without generating it
+      again, while missing or invalid prepared audio remains actionable.
+- [ ] Reject off-screen game geometry before calibration capture and ask to show
+      the selected game. AeroSpace can park an inactive workspace window at
+      (1727,1089) while Quartz still reports it onscreen on a1728x1117 display;
+      calibration then accepted an almost entirely off-screen area and displayed
+      a blank preview. Require usable display intersection and revalidate after
+      workspace/window changes. Gate: no blank capture is offered for approval,
+      and activating the game permits normal calibration with the same target.
+
+## Persistent OCR remaining qualification
+
+- [ ] Run the prepared-dialogue + background-generation scenario on the current
+      Mac with the persistent OCR worker. Include Stop/restart, process failure
+      and actual mixed-language game frames. Wait for game/window/Rust recording
+      readiness before Start; verify real generation progress and prepared/original
+      routes, then Pause/Stop/restart. Saved-frame parity and calibration recognition
+      do not qualify live timing.
+- [ ] Separately verify native library/model loading on Windows and a clean
+      packaged Mac; offline process parity and mocked DLL layouts do not qualify
+      these platforms. These checks do not block the current Mac trial.
+- [ ] Choose multilingual model sets using labelled genuine game captures with
+      Russian within English lines, French/German accents, partial text and moving
+      names. Keep current configured languages until quality is qualified.
+- [ ] Retain the command-line OCR path only as an explicit benchmark/parity
+      reference while native platform qualification is unfinished. After Windows
+      and packaged-Mac parity pass, remove the CLI reference backend/helpers and
+      replace their comparison tests with the qualified fixed fixtures.
+
+## Active - Qualify portable observation changes
+
+- [ ] Repeat the native prepared + background-generation run after the fixed-anchor
+      render/equivalence repair. Measure completion-to-key and next-glyph-to-audio
+      alongside CPU; verify real punctuation/prefix growth, moving names, overlays,
+      Pause/Resume/Stop and no stale occurrence or duplicate dispatch. Offline
+      synthetic regressions and retained frame equivalence do not qualify timing.
+- [ ] Evaluate a persistent MSS capture owner per Reading session on Windows and
+      Mac. Preserve before/after window geometry validation and capture provenance;
+      close only after the capture worker drains and recreate on target/settings/
+      display changes (MSS caches monitor topology). Compare against per-frame MSS
+      construction before choosing a resource-lifecycle change.
+- [ ] Qualify the selected OCR candidate with partial/full text, narrator and
+      speaker changes on a labelled corpus, then under concurrent generation.
+      Preserve confidence/uncertainty handling, source routing, cancellation and
+      language coverage. Mac offline latency/CPU does not establish Windows speed;
+      parent-process CPU cannot compare Tesseract subprocesses with in-process OCR.
+
+## Investigate - Reduce observation latency before choosing an OCR replacement
+
+- [ ] Separate capture-to-observation latency into frame age/queue wait, region
+      preprocessing, each OCR invocation/profile, canonical matching and admission
+      waits in built-in diagnostic journals. `ocr_ms` exists in the current UI
+      snapshot but accepted `ocr` timeline events do not retain this breakdown.
+      Keep capture IDs, occurrence/owner and monotonic timestamps; cached/canonical
+      observations must not count as fresh OCR. Gate: replay reports distinguish
+      actual recognition time from stability waits and first PCM submission from
+      captured audible onset, including rejected/uncertain attempts.
+- [ ] Check whether Reverse:1999 exposes a usable runtime dialogue event/line ID,
+      occurrence and render-complete signal. Static extracted story order is not
+      runtime position. Bound the feasibility investigation before building an
+      adapter; require evidence across transitions, repeats, choices and resume.
+      Preserve focus/Stop/ownership gates. If no reliable source exists, retain
+      visual observation and document the specific unavailable signal.
+- [ ] Qualify RapidOCR with crop-appropriate detector scaling before rejecting it.
+      Assert actual tensors: the default short-side736 rule expands narrow game
+      ROIs drastically. Max-side mode restores the missed Cornerstone name but
+      currently loses the ellipsis in "Well, um ..."; fix/qualify punctuation and
+      long-line latency before production selection. Compare tiny/English models,
+      known speaker-line recognition without detection, blank-name early rejection,
+      and bounded CPU threads/spinning settings against persistent Tesseract.
+      Change one factor at a time and retain per-stage timing and raw detector/
+      recognizer results; language="eng" on the wrapper does not select an English
+      RapidOCR model. Expand the labelled corpus with partial prefixes, repeated text, raised
+      names, punctuation and animation. Compare wrong occurrence/speaker,
+      missed/duplicate transitions and p50/p95 wall/total CPU under concurrent
+      generation. Keep OCR choice independent of capture lifecycle and R18;
+      accept a replacement only on measured improvement without relaxed admission.
+
 ## Current scope and execution order
 
 Target: finish the Mac Reading follow-up by fixing every defect found in the prior
@@ -210,21 +329,53 @@ callers and focused regressions together when changing these contracts.
       announcement succeeds. Require one announcement and one unchanged dialogue,
       bounded interruption and no orphan worker. A genuine announcement error
       must still preserve dialogue playback.
-- [ ] **R12 - Qualify Rust output under the actual Mac Reading load.**
-      Repeat prepared and live reading with OCR, logging and genuine heavy chapter
-      generation/publication active. Use the qualified Rust-process capture above
-      to correlate source/output PCM and identify added gaps; callback counters
-      alone cannot prove audible continuity. Preserve WAV/order/rate/device and
-      record capture/profiler overhead. Distinguish native device underflow from
-      live producer starvation: model IPC still passes through Python before the
-      bounded Rust ring. Compare against the retained historical six-underflow
-      Mac/MOSS capture and live Pocket failure, without attributing those old
-      failures to GIL contention solely from synthetic stress. If gaps remain,
-      correlate the same occurrence, native counter and time-indexed stack before
-      selecting another repair. Keep profiling separate from clean acceptance;
-      user-run spindump must omit -automation while audio runs. Verify real device
-      changes, worker crash/restart, Stop, and existing interrupt/requeue Pause.
-      No launcher/library monkey patch, arbitrary latency/QoS increase or WAV editing.
+- [ ] **R12 - Investigate short output discontinuities under real MOSS load.**
+      On Mac build fee2f818, prepared stage314001 with concurrent MOSS generation,
+      exact approved-source correlation found line 8 +192 output frames (4.354ms
+      at 44100Hz) inside an existing quiet span, and line 54 +960 frames (21.769ms)
+      during speech, including a new 16.984ms exact-zero span. Rust reported no
+      underflow and both explicit-process tap streams had continuous timestamps
+      and no queue loss. Most other energetic windows retained alignment within
+      0.125ms. These observations do not yet identify Rust, CoreAudio/device or
+      capture as the source. Reproduce the same approved WAV/device/rate under
+      controlled heavy load, correlate source/output and native counters, then
+      capture time-indexed stacks separately from clean performance acceptance.
+      Do not count intentional source lead waits (line11/20/38:1350/3466/1213ms),
+      speaker announcements or original WAV silences as underruns. Stop's native
+      positive path is measured at 81ms to last nonzero output; retain remaining
+      worker crash/restart and actual default-device-change gates.
+      Compare historical Python evidence only with matched source/device/rate;
+      no GIL-only attribution, launcher monkeypatch, WAV editing or buffer inflation.
+      Disambiguate repeated identical WAV occurrences before treating an NCC peak
+      as an authoritative onset; a matching source alone does not identify playback.
+
+- [ ] **R18 - Validate visual-ownership repair and trace remaining long waits.**
+      Mac build fee2f818, stage314001, prepared voices + background MOSS: after
+      line 15 playback completion, key dispatch waits 10.24s; after 16 it waits 18.99s.
+      Exact-window video shows the same complete text, name and continue cue;
+      focus remains owned and canonical-full-text was confirmed before completion.
+      Stable-frame readiness flickers and fingerprint changes accumulate while
+      the character/background animates. Use Support's diagnostic session and its
+      symbolic refusal/prefix-barrier snapshots plus routed/latest fingerprint
+      equality to trace the actual mask/owner which invalidates admission. A repeat
+      with built-in journals proves the immediate refusal gate: visible/focused/cue
+      are true, speech queues empty, but routed/latest equality is false. Ordinary
+      completion-to-key waits span0.438..2.058s; after Resume on line40 a separate
+      4.975s wait remains after completion (exclude the intentional30s pause).
+      The shared gate now compares against the fixed routed anchor using existing
+      frame equivalence and rechecks focus/epoch/queues. The next native run still
+      found a4.248s wait on42 and2.936s on68; all12retained mismatch pairs reject
+      strict equivalence. Verify the shared fixed-anchor comparison and atomic
+      render-quiet binding on the real game. Native retained pair68 now compares
+      equivalent on shared bounds, including its217->218 dialogue edge and dim
+      name edges; actual prefix42 remains different. New punctuation, changed
+      names, overlays and cumulative edge drift must still invalidate evidence.
+      Trace current-line confirmation/rebinding after early prefix playback: on42,
+      full text was visible297ms after playback but confirmation took3876ms.
+      The render anchor now survives supported edge noise; establish whether that
+      removes the remaining wait before making further changes. Repeat15 ->16,
+      16 ->17 and Pause/Resume with intermediate render-reset evidence, preserving
+      all Stop/focus/epoch/source guards and exactly one key per occurrence.
 
 ## P0 - Make capture setup trustworthy and operable
 
@@ -298,19 +449,24 @@ callers and focused regressions together when changing these contracts.
       synthesis separately, without unit-test load or comparing different texts
       as a speed claim. Do not replace `model_warmth=unobserved` with an inference. Confirm append-only
       events, explicit retention gaps and common monotonic offsets survive export
-      and restart, including OCR-free visual successors. The current 2000-event
-      budget evicted the early 14 -> 15 rejection evidence before export; use
-      `vntts-app --timeline-journal NEW_JSONL` during the next run. Verify its
-      acquisition identity, early events, cap/drop/pending counters and explicit
-      cutoff against exported retention gaps; neither cutoff-written nor nonzero
-      recorder PCM establishes complete native timing evidence. Measure capture/support-log
+      and restart, including OCR-free visual successors. Use the built-in Support
+      diagnostic session and explicit export, including exact-window/process
+      recording when needed. Validate early events, symbolic refusal reasons,
+      owner/fingerprint hashes, native callback/DAC clocks, source-WAV hashes and
+      fresh-render/cache evidence against independent recordings. Verify restored
+      media-session export after restart and actual recorder permission/worker failure.
+      Journal-only export/restart has passed with byte-identical session files;
+      D1 must pass before treating native media acquisition as qualified.
+      Keep generation-owner and actual model-worker PID distinct, with unavailable
+      placement explicit. Qualify resolved checkpoint evidence instead of inferring
+      runtime identity from generic status or previously recorded cache metadata.
+      Preserve truthful cutoff/file-close semantics and measure capture/support-log
       overhead and Stop latency; ordinary logs must retain no pixels/dialogue.
 
-- [ ] **T3 - Finish native screenshot-safe MCP activation.**
-      Reconnect the desktop chat's MCP host: its current connection fails importing
-      `fastmcp.server.providers.prefab_payload`, while a fresh official stdio client
-      against the installed patched server works. Follow
-      `scripts/pyside6-mcp/README.md`; qualify the host connection independently.
+- [ ] **T3 - Finish native screenshot-safe MCP edge cases.**
+      The desktop MCP host now launches and controls the app and returns explicit
+      widget capture metadata successfully. Keep that path while finishing the
+      remaining native rejection checks in `scripts/pyside6-mcp/README.md`.
       From a fresh widget tree, check an explicitly selected minimized native window
       without retargeting. The fresh client already qualifies contract1 metadata and
       missing/hidden/closed/process-stale rejection; retain those guarantees after
@@ -334,9 +490,13 @@ callers and focused regressions together when changing these contracts.
       then activate through the normal installer/restart path without interrupting
       a game run or discarding generation. A202 acknowledgement is not completed
       work; inspect current state and existing invocation-ID logs before another
-      action. Keep the desktop-host reconnect gate inT3 separate. For VNTTS close,
+      action. Keep the remaining native screenshot edge cases in T3 separate. For VNTTS close,
       verify bounded real-process exit and report actual returncode; do not infer
       graceful shutdown from quit acknowledgement or bridge disappearance.
+      Reproduce numeric-input replacement through MCP: selecting the diagnostic
+      duration editor with Ctrl/Meta+A then type_text appended digits (0600) instead
+      of replacing them. Native QSpinBox scroll changes the value correctly; fix
+      the tool selection/key contract and verify both Qt value and displayed text.
 
 ## P0 - Repeat the Mac prepared-voice workflow
 
@@ -370,7 +530,10 @@ callers and focused regressions together when changing these contracts.
       cancelling previews for Reading must not cancel the chapter job. If concurrent
       work cannot fit, use explicit bounded scheduling/backpressure and truthful
       pause/wait states; no uncoordinated second model worker or forced thread count.
-      Start from a partially prepared chapter with real heavy generation rendering;
+      The native concurrent-load case is established: 27 fresh MOSS renders plus
+      one cache reuse, 424 -> 452 published entries, unchanged approved baseline WAVs,
+      45 prepared routes and one original route in Reading through line 56. Retain
+      the actual remaining gate: start from a partially prepared active chapter,
       cross ready/newly published boundaries and catch up to the generator under
       contention. Verify missing/not-ready/failed route and voice policy, wait/retry
       without polling storms, atomic admitted publication, no partial WAV reads and
@@ -602,6 +765,20 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       clothing) after the tracker accepts equivalent OCR spelling and line-wrap
       variants. Confirm each completed playback advances once without extra
       audio; a genuinely changed line must still remain blocked.
+- [ ] **Complete remaining native acceptance after OCR-cancellation repair.**
+      Repeat prepared reading with background MOSS and selected-window/process-audio
+      recording. Verify genuine incomplete phrases wait, and lines7/10/16 complete
+      without unsolicited interruption. Inspect `observation-invalidated` and
+      `queue-cancelled` with confidence/threshold and playback ownership to identify
+      any remaining interruption; uncertain OCR must withhold auto-advance without
+      suppressing admitted speech. Retain the already passing short-line15
+      Narrator fallback, one-key-per-completion, mid-clip Pause/Resume and Stop/restart
+      as regression gates. Run from a cold worker after the capture-arming repair
+      so the first clip is qualified too, and verify a replacement worker arms its
+      own process tap before PCM. Explicit recording failure must remain visible
+      and mark the measurement incomplete while allowing Reading to continue.
+      Do not qualify the whole run from only
+      successful clips; keep interrupted and missing-source attempts separate.
 - [ ] **Validate other short and known-speaker OCR in Stage 1:** test very short
       utterances (`hmm`/interjections), a known speaker such as Ever-Echo, and
       legitimate numeric names. The nameplate must stay separate from dialogue

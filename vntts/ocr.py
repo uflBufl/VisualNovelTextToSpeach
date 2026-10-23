@@ -39,6 +39,9 @@ class VoiceRegistry(Protocol):
 
 OcrTextRecognizer = Callable[..., str]
 OcrDataRecognizer = Callable[..., OcrData]
+OcrCombinedRecognizer = Callable[
+    [Image.Image, str, Callable[[], float | None]], tuple[str, OcrData]
+]
 _OcrValue = TypeVar("_OcrValue")
 
 
@@ -710,6 +713,8 @@ def recognize_dialog_image(
     recognize_text: OcrTextRecognizer | None = None,
     recognize_data: OcrDataRecognizer | None = None,
     language: str = "eng",
+    *,
+    recognize_combined: OcrCombinedRecognizer | None = None,
 ) -> tuple[str, str]:
     result = recognize_dialog_image_result(
         image,
@@ -717,6 +722,7 @@ def recognize_dialog_image(
         recognize_text,
         recognize_data,
         language=language,
+        recognize_combined=recognize_combined,
     )
     return result.character, result.text
 
@@ -733,9 +739,11 @@ def recognize_dialog_image_result(
     timeout: float | None = None,
     cancelled: Callable[[], bool] | None = None,
     ocr_regions: OCRRegions | None = None,
+    recognize_combined: OcrCombinedRecognizer | None = None,
 ) -> OCRResult:
     remaining_timeout = _ocr_budget(timeout, cancelled)
-    combine_outputs = recognize_text is None and recognize_data is None
+    if recognize_combined is None and recognize_text is None and recognize_data is None:
+        recognize_combined = _recognize_psm6_text_data
     if recognize_text is None:
         recognize_text = pytesseract.image_to_string
     if recognize_data is None:
@@ -753,7 +761,7 @@ def recognize_dialog_image_result(
             remaining_timeout,
             minimum_confidence,
             speaker=True,
-            combine_outputs=combine_outputs,
+            recognize_combined=recognize_combined,
         )
         dialogue = _recognize_isolated_region(
             ocr_regions.dialogue.crop(image),
@@ -764,7 +772,7 @@ def recognize_dialog_image_result(
             remaining_timeout,
             minimum_confidence,
             speaker=False,
-            combine_outputs=combine_outputs,
+            recognize_combined=recognize_combined,
         )
         unreadable_speaker = not speaker.text.strip() and speaker_glyphs_visible(
             speaker_image
@@ -799,7 +807,7 @@ def recognize_dialog_image_result(
             profile.name,
             attempt,
             language,
-            combine_outputs,
+            recognize_combined,
             remaining_timeout,
         )
         if best_result is None or _result_rank(result) > _result_rank(best_result):
@@ -822,7 +830,7 @@ def _recognize_isolated_region(
     minimum_confidence: float,
     *,
     speaker: bool,
-    combine_outputs: bool,
+    recognize_combined: OcrCombinedRecognizer | None,
 ) -> OCRResult:
     best_result: OCRResult | None = None
     has_speaker_glyphs = not speaker or speaker_glyphs_visible(image)
@@ -848,10 +856,8 @@ def _recognize_isolated_region(
                 else ""
             )
         else:
-            if combine_outputs:
-                text, data = _recognize_psm6_text_data(
-                    processed, language, remaining_timeout
-                )
+            if recognize_combined is not None:
+                text, data = recognize_combined(processed, language, remaining_timeout)
             else:
                 text = _call_ocr(
                     recognize_text,
@@ -908,13 +914,11 @@ def _recognize_preprocessed_dialog(
     profile_name: str,
     attempt: int,
     language: str,
-    combine_outputs: bool,
+    recognize_combined: OcrCombinedRecognizer | None,
     remaining_timeout: Callable[[], float | None],
 ) -> OCRResult:
-    if combine_outputs:
-        recognized_text, data = _recognize_psm6_text_data(
-            image, language, remaining_timeout
-        )
+    if recognize_combined is not None:
+        recognized_text, data = recognize_combined(image, language, remaining_timeout)
     else:
         recognized_text = None
         data = _call_ocr(
@@ -953,8 +957,8 @@ def _recognize_preprocessed_dialog(
     if speaker is not None:
         character, speaker_line = speaker
         dialog_image = crop_dialog_text(image, speaker_line)
-        if combine_outputs:
-            dialog_text, dialog_data = _recognize_psm6_text_data(
+        if recognize_combined is not None:
+            dialog_text, dialog_data = recognize_combined(
                 dialog_image, language, remaining_timeout
             )
         else:

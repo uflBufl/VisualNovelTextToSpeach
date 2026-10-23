@@ -121,7 +121,22 @@ static double seconds(uint64_t ticks) {
     return (double)ticks * base.numer / base.denom / 1e9;
 }
 
+static void record_stop(NSMutableDictionary *metadata, bool requested, double begin, double end, double duration) {
+    metadata[@"stop_requested"] = @(requested);
+    metadata[@"stop_reason"] = requested ? @"requested_stop" : @"duration";
+    metadata[@"capture_stopped_monotonic_s"] = @(end);
+    metadata[@"captured_seconds"] = @(end - begin);
+    metadata[@"duration_completed"] = @(end - begin >= duration);
+}
+
 static void selfcheck(void) {
+    NSMutableDictionary *stopped = [NSMutableDictionary dictionary];
+    record_stop(stopped, true, 10, 11, 2);
+    require([stopped[@"stop_reason"] isEqual:@"requested_stop"] && ![stopped[@"duration_completed"] boolValue] &&
+        [stopped[@"captured_seconds"] doubleValue] == 1, @"Requested Stop must retain partial duration");
+    record_stop(stopped, false, 10, 12, 2);
+    require([stopped[@"stop_reason"] isEqual:@"duration"] && [stopped[@"duration_completed"] boolValue],
+        @"Duration completion must be explicit");
     Queue *q = calloc(1, sizeof(*q));
     require(q != NULL, @"Allocation failed");
     require(atomic_is_lock_free(&q->produced) && atomic_is_lock_free(&q->failure), @"IO atomics must be lock free");
@@ -146,7 +161,7 @@ static void selfcheck(void) {
     receive(0, NULL, (AudioBufferList *)&planar, &stamp, NULL, NULL, q);
     require(atomic_load(&q->failure) == 2, @"Mismatched buffers must fail closed");
     free(q);
-    puts("selfcheck passed: bounded FIFO, wrap, overflow, interleaved/planar PCM, malformed buffers; no capture or playback");
+    puts("selfcheck passed: bounded FIFO, wrap, overflow, interleaved/planar PCM, malformed buffers, controlled Stop metadata; no capture or playback");
 }
 
 static int capture(pid_t pid, NSString *expectedPath, double duration, NSString *root) {
@@ -246,10 +261,10 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
             }
             if (interrupted || seconds(now - begin) >= duration) {
                 check(AudioDeviceStop(aggregate, io), @"Stop capture"); started = false;
+                record_stop(metadata, interrupted != 0, seconds(begin), seconds(mach_absolute_time()), duration);
                 require([identity(pid, expectedPath) isEqual:selected], @"Target changed at completion");
             } else usleep(5000);
         }
-        require(!interrupted, @"Capture interrupted; partial output");
         require(frames > 0 && peak > 0, @"No nonzero PCM; silence/consent is unqualified");
         metadata[@"capture_consent"] = @"nonzero process PCM observed; source correlation still required";
     } @catch (NSException *error) { [errors addObject:error.reason ?: error.name]; }

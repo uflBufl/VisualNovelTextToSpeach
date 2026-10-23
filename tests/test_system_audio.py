@@ -142,7 +142,62 @@ class SystemAudioTest(unittest.TestCase):
             probe.side_effect = None
             probe.return_value = ("headphones",)
             monitor.check()
-            self.assertEqual(record.call_count, 2)
+            self.assertEqual(record.call_count, 3)
+            self.assertEqual(record.call_args.args, ("device-refresh-request",))
+            self.assertEqual(
+                record.call_args.kwargs["reason"], "native-probe-recovered"
+            )
+        self.assertTrue(output.pending.is_set())
+
+    def test_refresh_requests_report_distinct_origins_without_device_identity(self):
+        from vntts import system_audio
+
+        module, output = self.create_output()
+        probe, monitor = self.create_monitor(output)
+        with (
+            patch("vntts.system_audio.record_audio_lifecycle") as record,
+            patch("vntts.rust_audio.notify_audio_device_changed") as notify,
+            patch.object(system_audio, "_system_output", output),
+        ):
+            output.request_refresh()
+            monitor.check()
+            monitor.check()
+            probe.side_effect = OSError("PRIVATE device name")
+            monitor.check()
+            probe.side_effect = None
+            monitor.check()
+            system_audio._request_system_refresh()
+        refresh = [
+            call
+            for call in record.call_args_list
+            if call.args == ("device-refresh-request",)
+        ]
+        self.assertEqual(
+            [call.kwargs["reason"] for call in refresh],
+            [
+                "caller-request",
+                "native-probe-identity-changed",
+                "native-probe-recovered",
+                "qt-audio-outputs-changed",
+            ],
+        )
+        self.assertTrue(all(call.kwargs["outcome"] == "requested" for call in refresh))
+        self.assertNotIn("PRIVATE", repr(record.call_args_list))
+        self.assertEqual(notify.call_count, 4)
+        self.assertTrue(output.pending.is_set())
+        self.assertEqual(module.events, [])
+
+    def test_failed_refresh_observation_does_not_prevent_native_invalidation(self):
+        _module, output = self.create_output()
+        with (
+            patch(
+                "vntts.system_audio.record_audio_lifecycle",
+                side_effect=OSError("journal unavailable"),
+            ),
+            patch("vntts.rust_audio.notify_audio_device_changed") as notify,
+        ):
+            output.request_refresh()
+        notify.assert_called_once_with()
         self.assertTrue(output.pending.is_set())
 
     def test_no_output_and_its_return_are_real_identity_changes(self):

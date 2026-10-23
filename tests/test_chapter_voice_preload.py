@@ -24,6 +24,7 @@ from vntts.chapter_voice_preload import (
     ChapterVoicePreloader,
     _normalize,
 )
+from vntts.live_tracking import IncrementalDialogTracker
 
 
 def dialogue_document():
@@ -915,6 +916,95 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
 
         self.assertTrue(partial)
         self.assertFalse(complete)
+
+    def test_complete_short_prefix_emits_once_despite_longer_known_line(self):
+        short = ChapterDialogue(
+            "reverse1999:314002:15",
+            "314002",
+            15,
+            "Rossella",
+            "Ms. Cornerstone ...",
+            "a" * 64,
+        )
+        for longer_chapter in ("314002", "314004"):
+            with self.subTest(longer_chapter=longer_chapter):
+                longer = ChapterDialogue(
+                    f"reverse1999:{longer_chapter}:6",
+                    longer_chapter,
+                    6,
+                    "Rossella",
+                    "Ms. Cornerstone and I have entered the main building.",
+                    "b" * 64,
+                )
+                preloader = ChapterVoicePreloader((short, longer))
+                preloader.current_match = ChapterMatch("314002", 14, 1.0)
+                self.assertFalse(
+                    preloader.is_unique_incomplete_prefix(
+                        short.speaker,
+                        short.text,
+                    )
+                )
+                self.assertIsNone(
+                    preloader.resolve_unique_prefix(short.speaker, short.text)
+                )
+                self.assertEqual(
+                    preloader.resolve_exact(short.speaker, short.text), short
+                )
+
+                now = [0.0]
+                tracker = IncrementalDialogTracker(
+                    stability_frames=2,
+                    idle_flush_seconds=0.4,
+                    complete_dialogue_only=True,
+                    incomplete_dialogue_probe=preloader.is_unique_incomplete_prefix,
+                    early_dialogue_resolver=lambda speaker, text: (
+                        line.text
+                        if (line := preloader.resolve_unique_prefix(speaker, text))
+                        else None
+                    ),
+                    clock=lambda: now[0],
+                )
+                emitted = []
+                for frame in range(20):
+                    now[0] = frame * 0.2
+                    chunks = tracker.observe(short.speaker, short.text)
+                    if now[0] < 0.4:
+                        self.assertEqual(chunks, [])
+                    emitted.extend(chunks)
+                self.assertEqual([chunk.text for chunk in emitted], [short.text])
+
+    def test_incomplete_prefix_preserves_scope_and_ambiguity(self):
+        first = ChapterDialogue(
+            "first",
+            "current",
+            1,
+            "Rossella",
+            "Ms. Cornerstone and I have entered the main building.",
+            "a" * 64,
+        )
+        second = ChapterDialogue(
+            "second",
+            "elsewhere",
+            2,
+            "Rossella",
+            "Ms. Cornerstone and I stayed outside.",
+            "b" * 64,
+        )
+        for rows, chapter, expected in (
+            ((first,), "current", True),
+            ((first,), "elsewhere", True),
+            ((first, second), "current", True),
+            ((first, second), "unknown", False),
+        ):
+            with self.subTest(rows=len(rows), chapter=chapter):
+                preloader = ChapterVoicePreloader(rows)
+                preloader.current_match = ChapterMatch(chapter, 0, 1.0)
+                self.assertEqual(
+                    preloader.is_unique_incomplete_prefix(
+                        "Rossella", "Ms. Cornerstone"
+                    ),
+                    expected,
+                )
 
     def test_canonical_speaker_corrects_unique_high_confidence_ocr_drift(self):
         document = dialogue_document()

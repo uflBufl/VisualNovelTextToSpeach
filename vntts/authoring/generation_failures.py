@@ -18,9 +18,15 @@ from vntts.authoring.failure_repair import (
     safe_sentence_segments,
 )
 from vntts.authoring.generation_lease import BulkGenerationError
-from vntts.authoring.generation_state import FAILURE_KINDS, load_stable_generation_queue
+from vntts.authoring.generation_state import (
+    FAILURE_KINDS,
+    completed_generation_attempts,
+    load_stable_generation_queue,
+)
 from vntts.authoring.generation_state import generation_state_items as _state_items
-from vntts.authoring.generation_state import provider_attempts as _provider_attempts
+from vntts.authoring.generation_state import (
+    provider_attempts as _provider_attempts,
+)
 from vntts.authoring.generation_state import required_state_text as _generation_text
 from vntts.authoring.generation_state import state_nonnegative_int as _nonnegative_int
 from vntts.authoring.generation_state import (
@@ -232,7 +238,7 @@ def generation_failure_report(
                 "model": result.get("model"),
                 "generation_profile": result.get("generation_profile"),
                 "synthesis_control_digest": result.get("synthesis_provenance_sha256"),
-                "attempts": attempts,
+                "attempts": completed_generation_attempts(result),
                 "attempts_by_provider": _provider_attempts(
                     result, attempts, default_provider=result.get("provider")
                 ),
@@ -365,6 +371,8 @@ def _bound_failure_repair_action(
     record: _FailureReportRecord, previous_strategy: object
 ) -> tuple[str, str]:
     kind = record["failure"]["kind"]
+    if kind in {"cancelled", "interrupted"}:
+        return "safe_resume", "the attempt did not reach a terminal synthesis result"
     if previous_strategy == BOUNDED_SEED_RETRY and kind == "missed_eos_audio_limit":
         return _bounded_repair_action(
             record,
@@ -383,8 +391,6 @@ def _bound_failure_repair_action(
         return _silence_failure_repair_action(record)
     if kind == "reference_unavailable":
         return "reference_discovery", "no exact synthesis reference was available"
-    if kind in {"cancelled", "interrupted"}:
-        return "safe_resume", "the attempt did not reach a terminal synthesis result"
     return "backend_diagnosis", "the typed backend failure has no safe automatic repair"
 
 

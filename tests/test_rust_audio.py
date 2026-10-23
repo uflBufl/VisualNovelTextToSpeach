@@ -48,7 +48,7 @@ for line in sys.stdin.buffer:
             sys.exit(3)
         emit(event="started", id=clip_id)
         emit(event="first_callback", id=clip_id, frames_written=0 if mode == "zero-first" else 1)
-        if mode in ("normal", "bad-count", "stale-id", "zero-first", "bad-outcome", "bad-underflow"):
+        if mode in ("normal", "bad-count", "stale-id", "zero-first", "bad-outcome", "bad-underflow") or (mode == "pause-first" and clip_id > 1):
             emit(event="finished", id=clip_id + (mode == "stale-id"), outcome="invalid" if mode == "bad-outcome" else "complete",
                  frames_played=clip["frames"] - (mode == "bad-count"),
                  underflow_count="0" if mode == "bad-underflow" else 0, callback_count=1,
@@ -165,6 +165,95 @@ class RustAudioProtocolTest(unittest.TestCase):
                 owner.join(3)
             self.assertFalse(owner.is_alive())
             self.assertEqual(result, [(False, False)])
+
+    def test_reading_pause_stops_prepared_rust_pcm_and_resume_replays_once(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from queue import Queue
+
+        from vntts.controller import AppController
+        from vntts.generated_audio import (
+            GeneratedAudioFallbackBackend,
+            GeneratedAudioRoute,
+            PreparedGeneratedAudio,
+        )
+        from vntts.live import LiveDialogReader, SpeechChunk
+        from vntts.settings import AppSettings
+
+        pcm = np.arange(40, dtype=np.float32).reshape(-1, 1) / 100
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "stopped"
+            worker = self.worker("pause-first", str(marker), pcm=pcm)
+            module = RustAudioModule()
+            module.idle.append(worker)
+            module.query_devices = Mock(return_value={"default_samplerate": 24000})
+            live = Mock()
+            live.stop.return_value = False
+            backend = GeneratedAudioFallbackBackend(
+                live, None, Mock(), audio_output=module
+            )
+            controller = AppController(AppSettings(), tts_factory=Mock())
+            controller.tts = live
+            controller.speech_backend = backend
+            route = GeneratedAudioRoute(
+                PreparedGeneratedAudio("game:1", "hash", pcm.reshape(-1), 24000),
+                Mock(effective_source="generated"),
+            )
+            started = threading.Event()
+            finished = Queue()
+            errors = []
+
+            def record(operation, **_details):
+                if operation == "first-pcm":
+                    started.set()
+
+            def play(chunk, prepared):
+                finished.put(controller._play_live_chunk(chunk, prepared))
+
+            with (
+                ThreadPoolExecutor(max_workers=1) as speech,
+                ThreadPoolExecutor(max_workers=1) as playback,
+                patch(
+                    "vntts.audio_lifecycle.record_audio_lifecycle", side_effect=record
+                ),
+            ):
+                reader = LiveDialogReader(
+                    capture_executor=Mock(),
+                    ocr_executor=Mock(),
+                    speech_executor=speech,
+                    playback_executor=playback,
+                    capture_frame=Mock(),
+                    recognize_frame=Mock(),
+                    prepare_chunk=lambda _chunk: route,
+                    play_prepared=play,
+                    interrupt_speech=controller._interrupt_speech,
+                    report_error=errors.append,
+                )
+                controller.live_reader = reader
+                reader.active_generation = 1
+                try:
+                    reader._schedule([SpeechChunk(1, "Ada", "Hello.", ordinal=0)])
+                    self.assertTrue(started.wait(2))
+                    self.assertTrue(reader.toggle_pause())
+                    deadline = time.monotonic() + 1
+                    while not marker.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(
+                        marker.exists(), "Pause did not reach the prepared PCM owner"
+                    )
+                    self.assertEqual(worker.next_id, 1)
+                    self.assertEqual(len(reader.paused_chunks), 1)
+                    self.assertFalse(reader.toggle_pause())
+                    self.assertFalse(finished.get(timeout=2))
+                    self.assertTrue(finished.get(timeout=2))
+                    self.assertEqual(worker.next_id, 2)
+                    self.assertEqual(reader.sealed_generation, 1)
+                    self.assertIsNone(reader.auto_advance_blocked_generation)
+                    self.assertFalse(reader.pause_interrupted_chunk_ids)
+                    self.assertEqual(errors, [])
+                finally:
+                    reader.emergency_stop()
+                    reader.release_waiters()
+                    module._terminate()
 
     def test_stop_watchdog_kills_unresponsive_worker_while_guard_remains_blocked(self):
         worker = self.worker("ignore-stop")

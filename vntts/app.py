@@ -137,6 +137,13 @@ from vntts.pregeneration_voices import VoicePlan, resolve_pregeneration_settings
 from vntts.profiles import GameProfileStore
 from vntts.profiles_ui import GameProfilesDialog
 from vntts.readiness_ui import ReadinessDialog
+from vntts.reading_diagnostics import (
+    ReadingDiagnosticSession,
+    SavedDiagnosticSession,
+    latest_finished_diagnostic_session,
+    record_diagnostic_event,
+    selected_recording_target,
+)
 from vntts.release_backends import (
     packaged_speech_backend_available,
     speech_backend_options,
@@ -1940,6 +1947,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 else None
             )
         )
+        self.reading_diagnostic_session: (
+            ReadingDiagnosticSession | SavedDiagnosticSession | None
+        ) = (
+            latest_finished_diagnostic_session(
+                get_local_data_directory() / "reading-diagnostics"
+            )
+            if uses_saved_settings
+            else None
+        )
         self.moss_runtime = moss_runtime or RetainedMossRuntime()
         self.pocket_runtime = pocket_runtime or RetainedWorkerRuntime("pocket-tts")
         self.voice_auditions = VoiceAuditionCoordinator(
@@ -1991,6 +2007,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_scope_runner = LatestTaskRunner(self)
         self.live_scope_runner.finished.connect(self._live_scope_finished)
         self._live_scope_generation: int | None = None
+        self._live_scope_cancellation: Event | None = None
+        self._live_scope_target: object | None = None
+        self._live_scope_settings: object | None = None
+        self._live_scope_observation_serial: object | None = None
+        self._live_scope_window: object | None = None
+        self.live_scope_focus_timer = QTimer(self)
+        self.live_scope_focus_timer.setSingleShot(True)
+        self.live_scope_focus_timer.setInterval(200)
+        self.live_scope_focus_timer.timeout.connect(self._retry_live_scope_when_focused)
         self.diagnostics_refresh_runner = LatestTaskRunner(self)
         self.diagnostics_refresh_runner.finished.connect(
             self._diagnostics_refresh_finished
@@ -2026,6 +2051,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._quit_requested = False
         self._reported_live = False
         self._reported_speech_paused = False
+        self._reported_diagnostic_failure: str | None = None
         self.correction_store = correction_store or OCRCorrectionStore.load()
         self.hotkey_listener = None
         self.calibration_overlay: DialogRegionOverlay | None = None
@@ -2268,6 +2294,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _refresh_speech_runtime(self) -> None:
+        self._refresh_reading_diagnostic_status()
         self._apply_runtime_control_state(self._runtime_control_state())
         self.dashboard.set_speech_runtime(self._speech_runtime_label())
         loaded = self.moss_runtime.loaded
@@ -2847,29 +2874,129 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return False
         self.voice_auditions.suspend()
         self._live_scope_generation = self._lifecycle_generation
+        self._live_scope_cancellation = Event()
+        self._live_scope_target = self.controller.capture_target
+        self._live_scope_settings = self.controller.settings
+        self._live_scope_observation_serial = self.controller.observation_serial
+        self._live_scope_window = getattr(self._live_scope_target, "last_window", None)
         self.set_status("Identifying the current story chapter...")
-        self.live_scope_runner.start(identify)
+        self.live_scope_runner.start(
+            identify, cancellation=self._live_scope_cancellation
+        )
         self._apply_controller_action_state()
         return False
+
+    def _cancel_live_scope(self) -> None:
+        pending = self._live_scope_generation is not None
+        if self._live_scope_cancellation is not None:
+            self._live_scope_cancellation.set()
+        self._live_scope_cancellation = None
+        self._live_scope_generation = None
+        self._live_scope_target = None
+        self._live_scope_settings = None
+        self._live_scope_observation_serial = None
+        self._live_scope_window = None
+        self.live_scope_focus_timer.stop()
+        if pending or self.live_scope_runner.active:
+            self.live_scope_runner.cancel()
+
+    def _wait_for_live_scope_focus(self) -> None:
+        self.set_status(
+            "Waiting for the selected game window: switch to the game to start reading."
+        )
+        self.live_scope_focus_timer.start()
+        self._apply_controller_action_state()
+
+    def _live_scope_request_refusal(self) -> str | None:
+        if (
+            self._live_scope_cancellation is None
+            or self._live_scope_cancellation.is_set()
+            or self.controller.observation_serial != self._live_scope_observation_serial
+        ):
+            return "cancelled"
+        if (
+            self.controller.capture_target is not self._live_scope_target
+            or self.controller.settings is not self._live_scope_settings
+            or (
+                self._live_scope_window is not None
+                and getattr(self._live_scope_target, "last_window", None)
+                != self._live_scope_window
+            )
+        ):
+            return "target-changed"
+        return None
+
+    def _retry_live_scope_when_focused(self) -> None:
+        if not self._lifecycle_is_current(self._live_scope_generation):
+            self._cancel_live_scope()
+            self._apply_controller_action_state()
+            return
+        refusal = self._live_scope_request_refusal()
+        if refusal is not None:
+            self.controller.live_scope_identification_failure = refusal
+            self._live_scope_finished(False, None)
+            return
+        try:
+            focused = self.controller._is_game_focused()
+            refusal = self._live_scope_request_refusal()
+            if refusal is not None:
+                self.controller.live_scope_identification_failure = refusal
+                self._live_scope_finished(False, None)
+                return
+            self._live_scope_window = getattr(
+                self._live_scope_target, "last_window", None
+            )
+        except Exception as error:
+            self._live_scope_finished(None, error)
+            return
+        if not focused:
+            self.live_scope_focus_timer.start()
+            return
+        self.set_status("Identifying the current story chapter...")
+        self.live_scope_runner.start(
+            self.controller.identify_live_scope,
+            cancellation=self._live_scope_cancellation,
+        )
 
     def _live_scope_finished(
         self, identified: bool | None, error: Exception | None
     ) -> None:
         generation = self._live_scope_generation
-        self._live_scope_generation = None
-        self._apply_controller_action_state()
         if not self._lifecycle_is_current(generation):
+            self._cancel_live_scope()
+            self._apply_controller_action_state()
             return
+        failure = getattr(self.controller, "live_scope_identification_failure", None)
+        if error is None and identified is True:
+            refusal = self._live_scope_request_refusal()
+            if refusal is not None:
+                identified, failure = False, refusal
+            else:
+                try:
+                    focused = self.controller._is_game_focused()
+                    refusal = self._live_scope_request_refusal()
+                    if refusal is not None:
+                        identified, failure = False, refusal
+                    elif not focused:
+                        identified, failure = False, "focus-lost"
+                        record_diagnostic_event(
+                            "runtime",
+                            "live-scope-bootstrap",
+                            outcome="focus-lost",
+                            phase="before-start",
+                        )
+                except Exception as focus_error:
+                    error = focus_error
+        if error is None and failure in {"focus-wait", "focus-lost"}:
+            self._wait_for_live_scope_focus()
+            return
+        self._cancel_live_scope()
+        self._apply_controller_action_state()
         if error is not None:
             self.show_error(f"Unable to identify the current story chapter: {error}")
             self.signals.live_changed.emit(False)
             return
         if identified is not True:
-            failure = getattr(
-                self.controller,
-                "live_scope_identification_failure",
-                None,
-            )
             match_result = getattr(
                 self.controller,
                 "live_scope_identification_match_result",
@@ -2894,6 +3021,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     "Live reading could not start: no dialog text was recognized "
                     "in the selected game window"
                 )
+            elif failure == "capture-target-unavailable":
+                message = (
+                    "Live reading could not start: select a game window in Settings"
+                )
+            elif failure == "target-changed":
+                message = "Live reading cancelled: the selected game window changed"
+            elif failure == "cancelled":
+                message = "Live reading start cancelled"
             elif failure == "story-line-no-match":
                 message = (
                     "The visible dialogue does not match the prepared story "
@@ -2973,8 +3108,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self.narrator_dialog is not None:
             self._resume_live_after_narrator = False
             self.narrator_dialog.reject()
-        self._live_scope_generation = None
-        self.live_scope_runner.cancel()
+        self._cancel_live_scope()
         self.controller.emergency_stop()
         self.signals.live_changed.emit(False)
         self.signals.speech_paused_changed.emit(False)
@@ -2987,8 +3121,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self.narrator_dialog is not None:
             self._resume_live_after_narrator = False
             self.narrator_dialog.reject()
-        self._live_scope_generation = None
-        self.live_scope_runner.cancel()
+        self._cancel_live_scope()
         reader = self.controller.live_reader
         if reader is not None:
             reader.stop()
@@ -4595,6 +4728,23 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def open_support_center(self) -> None:
         if self.support_dialog is None:
             self.support_dialog = SupportCenterDialog(self.support_log, self.dashboard)
+            self.support_dialog.reading_status_provider = lambda: (
+                self.reading_diagnostic_session.status()
+                if self.reading_diagnostic_session
+                else None
+            )
+            self.support_dialog.reading_start_requested.connect(
+                self.start_reading_diagnostics
+            )
+            self.support_dialog.reading_stop_requested.connect(
+                self.stop_reading_diagnostics
+            )
+            self.support_dialog.reading_export_requested.connect(
+                self.export_reading_diagnostics
+            )
+            self.support_dialog.reading_folder_requested.connect(
+                self.open_reading_diagnostics_folder
+            )
             self.support_dialog.diagnostics_requested.connect(
                 self.open_support_diagnostics
             )
@@ -4605,6 +4755,92 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.support_dialog.show()
         self.support_dialog.raise_()
         self.support_dialog.activateWindow()
+
+    def start_reading_diagnostics(self, media: bool, seconds: int) -> None:
+        try:
+            target = (
+                selected_recording_target(self.controller.capture_target)
+                if media
+                else None
+            )
+            self.reading_diagnostic_session = ReadingDiagnosticSession(
+                get_local_data_directory() / "reading-diagnostics",
+                self.generation_timelines,
+                seconds=seconds,
+                target=target,
+            )
+            if self.support_dialog is not None:
+                self.support_dialog.set_reading_start_error("")
+                self.support_dialog.refresh_reading_session()
+            identity = (
+                f" Window {target['window_id']}, PID {target['pid']}: {target['title']}."
+                if target
+                else ""
+            )
+            self.set_status("Diagnostic session started." + identity)
+        except Exception as error:
+            if self.support_dialog is not None:
+                self.support_dialog.set_reading_start_error(
+                    f"Unable to start diagnostics: {error}"
+                )
+
+    def _refresh_reading_diagnostic_status(self) -> None:
+        session = self.reading_diagnostic_session
+        if session is None or isinstance(session, SavedDiagnosticSession):
+            return
+        status = session.status()
+        session_id = status.get("session_id")
+        if (
+            not isinstance(session_id, str)
+            or status.get("media_status") not in {"degraded", "failed"}
+            or session_id == self._reported_diagnostic_failure
+        ):
+            return
+        self._reported_diagnostic_failure = session_id
+        message = (
+            "Diagnostic media recording is incomplete. Reading logs continue until "
+            "Stop or the session deadline; open Support to inspect the capture failure."
+            if status.get("status") == "recording"
+            else "Diagnostic media recording is incomplete; open Support to inspect the capture failure."
+        )
+        self.support_log.add(
+            "diagnostic-recording",
+            message,
+            session_id=status.get("session_id"),
+            media_status=status.get("media_status"),
+        )
+        self.set_status(message)
+
+    def stop_reading_diagnostics(self) -> None:
+        if self.reading_diagnostic_session is not None and not isinstance(
+            self.reading_diagnostic_session, SavedDiagnosticSession
+        ):
+            self.reading_diagnostic_session.stop()
+            if self.support_dialog is not None:
+                self.support_dialog.refresh_reading_session()
+
+    def open_reading_diagnostics_folder(self) -> None:
+        path = get_local_data_directory() / "reading-diagnostics"
+        path.mkdir(parents=True, exist_ok=True)
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            self.show_error("Unable to open the diagnostic sessions folder")
+
+    def export_reading_diagnostics(self) -> None:
+        session = self.reading_diagnostic_session
+        if session is None or (
+            not isinstance(session, SavedDiagnosticSession)
+            and not session.finished.is_set()
+        ):
+            return
+        path = session.directory.parent / (session.session_id + ".zip")
+        if self.support_dialog is not None:
+            self.support_dialog.set_export_started()
+        self.support_export_runner.start(
+            self._build_support_bundle,
+            str(path),
+            self.controller.get_latest_diagnostic(),
+            session,
+        )
 
     def open_support_diagnostics(self) -> None:
         try:
@@ -4691,13 +4927,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.support_export_runner.start(self._build_support_bundle, path, diagnostic)
 
     def _build_support_bundle(
-        self, path: str, diagnostic: DiagnosticSnapshot | None
+        self,
+        path: str,
+        diagnostic: DiagnosticSnapshot | None,
+        diagnostic_session: ReadingDiagnosticSession
+        | SavedDiagnosticSession
+        | None = None,
     ) -> str:
         return str(
             SupportBundleBuilder(
                 self.settings,
                 self.support_log,
                 diagnostic=diagnostic,
+                diagnostic_session=diagnostic_session,
                 generation_timelines=self.generation_timelines,
                 previous_session=self.previous_session,
                 audio_lifecycle=self.audio_lifecycle,
@@ -5058,8 +5300,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self.unknown_speaker_prompt is not None:
             self.unknown_speaker_prompt.close()
         self.voice_auditions.cancel_warmup()
-        self._live_scope_generation = None
-        self.live_scope_runner.cancel()
+        self._cancel_live_scope()
         self._cancel_diagnostics_refresh()
         self._pregeneration_activation_restore_runtime.clear()
         self._lifecycle_generation = self.session_owner.begin(cancellation)
@@ -5152,13 +5393,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.pregeneration_dialog.close()
         self._pregeneration_activation_restore_runtime.clear()
         self._lifecycle_generation = self.session_owner.close()
+        if self.reading_diagnostic_session is not None and not isinstance(
+            self.reading_diagnostic_session, SavedDiagnosticSession
+        ):
+            self.reading_diagnostic_session.stop(timeout=15)
         self._controller_busy = True
         self._live_stop_continuation = None
         self._live_stop_generation = None
         self.live_stop_runner.cancel()
         self._cancel_calibration()
-        self._live_scope_generation = None
-        self.live_scope_runner.cancel()
+        self._cancel_live_scope()
         self._cancel_diagnostics_refresh()
         self.initial_start_runner.cancel()
         self.profile_restart_runner.cancel()

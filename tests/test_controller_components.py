@@ -50,6 +50,20 @@ class ControllerComponentsTest(unittest.TestCase):
                 backend.guard()
                 reader.wait_until_playable.assert_called_with(chunk)
 
+    def test_interruption_uses_the_playback_backend_before_the_synthesis_engine(self):
+        controller = AppController(AppSettings())
+        controller.tts = Mock()
+        controller.speech_backend = Mock()
+        controller.speech_backend.stop.return_value = True
+
+        self.assertTrue(controller._interrupt_speech())
+        controller.speech_backend.stop.assert_called_once_with()
+        controller.tts.stop.assert_not_called()
+        controller.speech_backend = object()
+        controller.tts.stop.return_value = False
+        self.assertFalse(controller._interrupt_speech())
+        controller.tts.stop.assert_called_once_with()
+
     def test_controller_is_the_composition_root(self):
         controller = AppController(AppSettings())
 

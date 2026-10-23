@@ -52,7 +52,7 @@ If controls remain unavailable, use **Check readiness** for the required fix.
 
 - Python 3.14 or newer
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
-- [Tesseract](https://tesseract-ocr.github.io/tessdoc/Installation.html) with English language data
+- [Tesseract](https://tesseract-ocr.github.io/tessdoc/Installation.html) with its shared library and the configured language data
 - [eSpeak-NG](https://github.com/espeak-ng/espeak-ng/blob/master/docs/guide.md)
 - A working audio output device
 
@@ -61,6 +61,13 @@ Put the Tesseract executable in `PATH`, or configure its location in code:
 ```py
 pytesseract.pytesseract.tesseract_cmd = r"<path-to-tesseract>"
 ```
+
+OCR uses a persistent worker that keeps Tesseract's language models loaded.
+The installation must include its shared library (`libtesseract` on macOS/Linux,
+a Tesseract DLL on Windows). If discovery fails, set `VNTTS_TESSERACT_LIBRARY`
+to the library's full path. `TESSDATA_PREFIX` can select the language-data folder.
+Missing libraries or models produce an error; OCR does not silently revert to
+launching the command-line tool for every frame.
 
 Install the external tools on macOS with:
 

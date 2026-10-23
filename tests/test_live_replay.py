@@ -227,6 +227,7 @@ class LiveReplayTest(unittest.TestCase):
                 "playback-outcome",
                 "key-dispatch",
                 "confirmed-next-dialogue",
+                "auto-advance-withheld",
             },
         )
 

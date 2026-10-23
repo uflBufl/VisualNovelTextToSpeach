@@ -9,7 +9,11 @@ import io
 import json
 import os
 import re
+import signal
+import socket
 import stat
+import subprocess
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
@@ -186,17 +190,21 @@ from vntts.authoring.generation_state import (
 )
 from vntts.authoring.generation_state import StateItems as StateItems
 from vntts.authoring.generation_state import (
+    completed_generation_attempts,
+    generation_item_status,
+    load_stable_generation_queue,
+)
+from vntts.authoring.generation_state import (
     contained_state_path as _within,
 )
 from vntts.authoring.generation_state import (
     control_directory_digest as _control_directory_digest,
 )
-from vntts.authoring.generation_state import generation_state_items as _state_items
 from vntts.authoring.generation_state import (
-    load_generation_state as load_generation_state,
+    generation_state_items as _state_items,
 )
 from vntts.authoring.generation_state import (
-    load_stable_generation_queue,
+    load_generation_state as load_generation_state,
 )
 from vntts.authoring.generation_state import (
     provider_attempts as _provider_attempts,
@@ -287,6 +295,7 @@ from vntts.document_identity import file_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import read_regular_bytes
+from vntts.reading_diagnostics import record_diagnostic_event
 from vntts.speech_presentation import speech_runtime_label
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -816,6 +825,23 @@ def _validate_failure_repair_item(
     provider: str,
 ) -> None:
     failure = normalized_failure_record(result, text=item.text)
+    previous_repair = result.get("failure_repair")
+    if generation_item_status(result) == "cancelled":
+        if (
+            not isinstance(previous_repair, dict)
+            or previous_repair.get("strategy") != strategy
+            or result.get("provider") != provider
+            or _provider_repair_attempts(result, queue_id, provider)
+            >= (
+                1
+                if strategy == OFFLINE_FALLBACK_BACKEND
+                else MAX_BOUNDED_TOTAL_ATTEMPTS
+            )
+        ):
+            raise BulkGenerationError(
+                f"Cancelled repair cannot resume under changed or exhausted controls for {queue_id!r}"
+            )
+        return
     validators = {
         SENTENCE_BOUNDARY_SEGMENTATION: _validate_sentence_repair,
         EDGE_SILENCE_TRIM: _validate_edge_silence_repair,
@@ -1215,7 +1241,12 @@ def _generation_item_attempts(
             attempt_limit,
             MAX_BOUNDED_TOTAL_ATTEMPTS - provider_attempts,
         )
-    return attempts, attempts_by_provider, provider_attempts, attempt_limit
+    return (
+        completed_generation_attempts(existing),
+        attempts_by_provider,
+        provider_attempts,
+        attempt_limit,
+    )
 
 
 def _prepare_generation_item(
@@ -1414,6 +1445,10 @@ def _store_failed_generation_attempt(
         completion is SynthesisCompletion.CANCELLED or request.cancellation_requested()
     )
     last_error = str(error) or error.__class__.__name__
+    if is_cancelled:
+        attempts -= 1
+        attempts_by_provider = dict(attempts_by_provider)
+        attempts_by_provider[run.provider] -= 1
     value: JsonDocument = {
         "status": "failed",
         "attempts": attempts,
@@ -1448,6 +1483,18 @@ def _store_failed_generation_attempt(
         "synthesis_configuration": run.synthesis_configuration,
         "updated_at": _now(),
     }
+    if is_cancelled:
+        failure = value["failure"]
+        assert isinstance(failure, dict)
+        failure["attempt_counted"] = False
+        previous: object = plan.existing
+        if generation_item_status(plan.existing) == "cancelled":
+            stored = plan.existing.get("failure")
+            previous = (
+                stored.get("previous_failure") if isinstance(stored, dict) else None
+            )
+        if isinstance(previous, dict) and previous.get("status") == "failed":
+            failure["previous_failure"] = copy.deepcopy(previous)
     if plan.synthesis_fallback is not None:
         value["synthesis_fallback"] = plan.synthesis_fallback
         value["narrator_character"] = run.narrator_character
@@ -1539,6 +1586,7 @@ def _begin_generation_attempt(
         failure_repair=attempt_repair,
         phase="generating",
         runtime_status=speech_runtime_label(run.backend),
+        runtime_worker_pid=_runtime_worker_pid(run.backend),
         attempt=run_attempts,
         attempt_limit=plan.attempt_limit,
         total_attempts=attempts,
@@ -1621,6 +1669,26 @@ def _render_and_publish_generation_attempt(
         )
     else:
         attempt.rendered = run.render(attempt.request).collect()
+    rendered = attempt.rendered
+    worker_pid = _runtime_worker_pid(run.backend)
+    record_diagnostic_event(
+        "generation",
+        "generation-render-result",
+        line_id=plan.item.line_id,
+        process_id=os.getpid(),
+        worker_pid=worker_pid,
+        provider=rendered.diagnostics.backend,
+        cache_source=rendered.diagnostics.cache_source,
+        completion=rendered.completion.value,
+        synthesis_ms=rendered.timing.total_ms,
+        first_chunk_ms=rendered.timing.first_chunk_ms,
+        seed=rendered.diagnostics.seed,
+        sample_count=rendered.diagnostics.sample_count,
+        chunk_count=rendered.diagnostics.chunk_count,
+    )
+    active = run.state.get("active")
+    if _is_json_document(active):
+        active["runtime_worker_pid"] = worker_pid
     _validate_render_result(attempt.rendered, attempt.request, run.provider)
     _assert_control_files_unchanged(run.controls)
     if run.workspace_output_identity is not None:
@@ -1676,6 +1744,15 @@ def _render_and_publish_generation_attempt(
         file_sha256=file_sha256,
         quality=quality,
         speech_quality=speech_quality,
+    )
+    record_diagnostic_event(
+        "generation",
+        "generation-published",
+        line_id=plan.item.line_id,
+        process_id=os.getpid(),
+        source_sha256=file_sha256,
+        sample_count=quality.sample_count,
+        sample_rate=quality.sample_rate,
     )
     return prefetched_render
 
@@ -1881,7 +1958,8 @@ def _finalize_generation_run(
         except (SilenceFailureEvidenceError, OSError) as error:
             raise BulkGenerationError(str(error)) from error
     failed = sum(
-        value.get("status") == "failed" for value in _state_items(state).values()
+        generation_item_status(value) == "failed"
+        for value in _state_items(state).values()
     )
     return BulkGenerationResult(
         generated=execution.generated,
@@ -2638,6 +2716,128 @@ _GenerationLease = GenerationLease
 _process_started_at = process_started_at
 
 
+@dataclass(frozen=True)
+class GenerationCancellationWitness:
+    output: Path
+    directory_identity: tuple[int, int]
+    queue: Path
+    queue_sha256: str
+    lease: JsonDocument
+    requested_at: str
+
+
+def capture_generation_cancellation(
+    output: Path, queue: Path, queue_sha256: str, process: subprocess.Popen[str]
+) -> GenerationCancellationWitness | None:
+    """Witness explicit Cancel only while this exact owned child is still live."""
+    pid = getattr(process, "pid", None)
+    if type(pid) is not int or pid <= 0 or process.poll() is not None:
+        return None
+    output = output.resolve()
+    lease_path = output / ".generation-lease.json"
+    if not lease_path.exists():
+        return None
+    lease = _load_json(lease_path, "generation lease")
+    started = process_started_at(process.pid, timeout=0.5)
+    if (
+        lease.get("schema") != LEASE_SCHEMA
+        or type(lease.get("schema_version")) is not int
+        or lease.get("schema_version") != LEASE_VERSION
+        or lease.get("pid") != process.pid
+        or lease.get("hostname") != socket.gethostname()
+        or lease.get("queue_sha256") != queue_sha256
+        or not isinstance(lease.get("lease_id"), str)
+        or re.fullmatch(r"[a-f0-9]{32}", str(lease["lease_id"])) is None
+        or started is None
+        or lease.get("process_started_at") != started
+        or process.poll() is not None
+    ):
+        return None
+    identity = output.stat()
+    return GenerationCancellationWitness(
+        output,
+        (identity.st_dev, identity.st_ino),
+        queue.resolve(),
+        queue_sha256,
+        lease,
+        _now(),
+    )
+
+
+def reconcile_generation_cancellation(
+    witness: GenerationCancellationWitness, process: subprocess.Popen[str]
+) -> bool:
+    """Reconcile a confirmed owned exit without taking authority from a new writer."""
+    if process.pid != witness.lease["pid"] or process.poll() is None:
+        raise BulkGenerationError("Cancelled generation child has not confirmed exit")
+    if sys.platform != "win32" and process.returncode not in {
+        -signal.SIGTERM,
+        -signal.SIGKILL,
+    }:
+        return False
+    identity = witness.output.stat()
+    if (identity.st_dev, identity.st_ino) != witness.directory_identity:
+        raise BulkGenerationError("Cancelled generation output identity changed")
+    if not (witness.output / ".generation-lease.json").exists():
+        return False
+    with _GenerationLease(
+        witness.output,
+        witness.queue_sha256,
+        process_checker=process_is_alive,
+        expected_previous=witness.lease,
+    ) as lease:
+        identity = witness.output.stat()
+        if (identity.st_dev, identity.st_ino) != witness.directory_identity:
+            raise BulkGenerationError("Cancelled generation output identity changed")
+        queue, queue_sha256 = load_stable_generation_queue(witness.queue)
+        if queue_sha256 != witness.queue_sha256:
+            raise BulkGenerationError("Cancelled generation queue changed")
+        state_path = witness.output / "generation-state.json"
+        state = load_generation_state(state_path, witness.queue)
+        lease.assert_owned()
+        _assert_sources_unchanged(witness.queue, witness.queue_sha256, ())
+        active = state.get("active")
+        if _is_json_document(active):
+            if active.get("generation_owner_pid") != process.pid:
+                raise BulkGenerationError("Cancelled generation active owner changed")
+            queue_id = _generation_text(active.get("queue_id"), "Cancelled queue ID")
+            existing = _state_items(state).get(queue_id, {})
+            if active.get("phase") != "retrying" and existing.get("status") not in {
+                "generated",
+                "approved",
+            }:
+                voice = _generation_text(
+                    active.get("synthesis_voice_character"), "Cancelled synthesis voice"
+                )
+                audio = _within(
+                    witness.output,
+                    _audio_relative_path(voice, queue_id),
+                    "Cancelled audio",
+                )
+                for artifact in (audio.with_suffix(".partial.wav"), audio):
+                    if artifact.exists() or artifact.is_symlink():
+                        _archive_interrupted_artifact(witness.output, artifact)
+            _reconcile_interrupted_attempt(
+                state_path,
+                state,
+                queue,
+                cancellation={
+                    "owner_pid": process.pid,
+                    "owner_started_at": witness.lease["process_started_at"],
+                    "lease_id": witness.lease["lease_id"],
+                    "queue_sha256": witness.queue_sha256,
+                    "requested_at": witness.requested_at,
+                    "returncode": process.returncode,
+                },
+            )
+        lease.assert_owned()
+        publish_generated_manifest(state_path, _lease_held=True)
+        write_runtime_progress_manifest_from_state(
+            state, witness.output, witness.output / RUNTIME_PROGRESS_MANIFEST_NAME
+        )
+    return True
+
+
 def _load_or_create_state(
     state_path: Path,
     output_directory: Path,
@@ -2666,7 +2866,11 @@ _validate_success_file = validate_success_file
 
 
 def _reconcile_interrupted_attempt(
-    state_path: Path, state: JsonDocument, queue: VoiceGenerationQueue
+    state_path: Path,
+    state: JsonDocument,
+    queue: VoiceGenerationQueue,
+    *,
+    cancellation: JsonDocument | None = None,
 ) -> None:
     active = state.get("active")
     if not _is_json_document(active):
@@ -2680,6 +2884,9 @@ def _reconcile_interrupted_attempt(
         )
     interrupted = dict(active)
     interrupted["detected_at"] = _now()
+    if cancellation is not None:
+        interrupted["cancellation"] = cancellation
+        interrupted["attempt_counted"] = active.get("phase") == "retrying"
     interrupted_attempts = state.get("interrupted_attempts")
     if interrupted_attempts is None:
         interrupted_attempts = []
@@ -2692,6 +2899,27 @@ def _reconcile_interrupted_attempt(
         raise BulkGenerationError("Generation state items are malformed")
     existing_value = items.get(queue_id, {})
     existing = existing_value if _is_json_document(existing_value) else {}
+    if cancellation is not None and active.get("phase") == "retrying":
+        if (
+            generation_item_status(existing) != "failed"
+            or existing.get("attempts") != active.get("total_attempts")
+            or any(
+                existing.get(field) != active.get(field)
+                for field in (
+                    "provider",
+                    "model",
+                    "generation_profile",
+                    "seed",
+                    "synthesis_provenance_sha256",
+                )
+            )
+        ):
+            raise BulkGenerationError(
+                "Retrying cancellation has no matching completed failure"
+            )
+        state["active"] = None
+        atomic_write_json(state_path, state, sort_keys=True)
+        return
     if existing.get("status") not in {"generated", "approved"}:
         attempts = max(
             _nonnegative_int(existing.get("attempts", 0), "Attempts"),
@@ -2712,6 +2940,59 @@ def _reconcile_interrupted_attempt(
             },
             "updated_at": _now(),
         }
+        if cancellation is not None:
+            attempts = _nonnegative_int(
+                active.get("total_attempts"), "Cancelled attempts"
+            )
+            provider = _generation_text(active.get("provider"), "Cancelled provider")
+            providers = _provider_attempts(active, attempts, default_provider=provider)
+            if attempts < 1 or providers.get(provider, 0) < 1:
+                raise BulkGenerationError(
+                    "Cancelled generation attempt counts are unavailable"
+                )
+            attempts -= 1
+            providers[provider] -= 1
+            previous_total = _nonnegative_int(
+                existing.get("attempts", 0), "Previous attempts"
+            )
+            previous_providers = _provider_attempts(
+                existing, previous_total, default_provider=provider
+            )
+            if completed_generation_attempts(existing) > attempts or any(
+                providers.get(name, 0) < count
+                for name, count in previous_providers.items()
+            ):
+                raise BulkGenerationError(
+                    "Cancelled generation cannot refund a completed failure"
+                )
+            failure: JsonDocument = {
+                "schema_version": 1,
+                "kind": "cancelled",
+                "completion": SynthesisCompletion.CANCELLED.value,
+                "error_type": "CancelledGenerationProcess",
+                "attempt_counted": False,
+                "text_features": _text_failure_features(
+                    active["text"] if isinstance(active.get("text"), str) else ""
+                ),
+            }
+            previous: object = existing
+            if generation_item_status(existing) == "cancelled":
+                stored = existing.get("failure")
+                previous = (
+                    stored.get("previous_failure") if isinstance(stored, dict) else None
+                )
+            if isinstance(previous, dict) and previous.get("status") == "failed":
+                failure["previous_failure"] = copy.deepcopy(previous)
+            interrupted_result.update(
+                attempts=attempts,
+                attempts_by_provider=providers,
+                last_error="Generation cancelled by user",
+                failure=failure,
+            )
+            if _is_json_document(existing.get("carry_forward")):
+                interrupted_result["carry_forward"] = copy.deepcopy(
+                    existing["carry_forward"]
+                )
         for field in (
             "provider",
             "model",
@@ -2740,6 +3021,20 @@ def _reconcile_interrupted_attempt(
         items[queue_id] = interrupted_result
     state["active"] = None
     atomic_write_json(state_path, state, sort_keys=True)
+
+
+def _runtime_worker_pid(backend: object) -> int | None:
+    # In-process generation has no separate worker; never label its owner as one.
+    try:
+        for name in ("process", "server"):
+            process = getattr(backend, name, None)
+            pid = getattr(process, "pid", None)
+            poll = getattr(process, "poll", None)
+            if type(pid) is int and pid > 0 and callable(poll) and poll() is None:
+                return pid
+    except Exception:
+        pass
+    return None
 
 
 def _write_active(
@@ -2771,6 +3066,7 @@ def _write_active(
     started_at: str,
     last_error: str | None,
     runtime_status: str | None = None,
+    runtime_worker_pid: int | None = None,
 ) -> None:
     active: JsonDocument = {
         "queue_id": item.queue_id,
@@ -2785,7 +3081,8 @@ def _write_active(
         "text": item.text,
         "phase": phase,
         "runtime_status": runtime_status,
-        "runtime_worker_pid": os.getpid(),
+        "generation_owner_pid": os.getpid(),
+        "runtime_worker_pid": runtime_worker_pid,
         "attempt": attempt,
         "attempt_limit": attempt_limit,
         "total_attempts": total_attempts,

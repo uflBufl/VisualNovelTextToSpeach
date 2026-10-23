@@ -10,6 +10,18 @@ from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class RapidOCRBackendTest(unittest.TestCase):
+    def test_numpy_engine_receives_bgr_while_diagnostics_keep_rgb(self):
+        image = Image.new("RGB", (2, 1))
+        image.putdata([(255, 0, 0), (0, 0, 255)])
+
+        def engine(pixels, **_options):
+            self.assertEqual(pixels.tolist(), [[[0, 0, 255], [255, 0, 0]]])
+            self.assertTrue(pixels.flags.c_contiguous)
+            return SimpleNamespace(boxes=None, txts=None, scores=None)
+
+        result = RapidOCRBackend(engine).recognize(image)
+        self.assertEqual(result.processed_image.tobytes(), image.tobytes())
+
     def test_configured_regions_read_name_and_short_dialogue_independently(self):
         inputs = []
         outputs = iter(
@@ -43,8 +55,12 @@ class RapidOCRBackendTest(unittest.TestCase):
         self.assertEqual((result.character, result.text), ("X", "Hey!"))
         self.assertEqual(inputs[0].shape, (40, 120, 3))
         self.assertEqual(inputs[1].shape, (80, 280, 3))
-        self.assertTrue(np.array_equal(np.asarray(result.speaker_image), inputs[0]))
-        self.assertTrue(np.array_equal(np.asarray(result.processed_image), inputs[1]))
+        self.assertTrue(
+            np.array_equal(np.asarray(result.speaker_image)[:, :, ::-1], inputs[0])
+        )
+        self.assertTrue(
+            np.array_equal(np.asarray(result.processed_image)[:, :, ::-1], inputs[1])
+        )
         self.assertEqual(result.speaker_confidence, 96)
         self.assertEqual(result.dialogue_confidence, 95)
 
@@ -90,7 +106,7 @@ class RapidOCRBackendTest(unittest.TestCase):
         def engine(image, **options):
             self.assertEqual(options, {"use_cls": False})
             self.assertEqual(image.shape, (160, 640, 3))
-            self.assertTrue(np.all(image == [10, 20, 30]))
+            self.assertTrue(np.all(image == [30, 20, 10]))
             return output
 
         registry = CharacterVoiceRegistry([CharacterVoice("Kamuta", "kamuta")])

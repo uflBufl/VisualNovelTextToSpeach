@@ -53,6 +53,8 @@ class OCRBackend(Protocol):
 
 
 class TesseractOCRBackend:
+    """CLI reference by default; application callers inject the persistent service."""
+
     name = "tesseract"
     distribution_names = ("pytesseract",)
 
@@ -147,7 +149,9 @@ class RapidOCRBackend:
         self, image: Image.Image
     ) -> tuple[Image.Image, list[RapidOCRLine], float]:
         processed_image = image.convert("RGB")
-        output = self.engine(np.asarray(processed_image), use_cls=False)
+        # RapidOCR treats NumPy input as BGR; diagnostics retain the RGB image.
+        pixels = np.ascontiguousarray(np.asarray(processed_image)[:, :, ::-1])
+        output = self.engine(pixels, use_cls=False)
         lines = self._ordered_lines(output)
         total_characters = sum(max(1, len(text)) for _box, text, _score in lines)
         confidence = (

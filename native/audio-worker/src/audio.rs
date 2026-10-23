@@ -1,3 +1,4 @@
+use super::timing::CallbackTiming;
 use super::{c_int, c_ulong, c_void, CallbackTimeInfo, PA_ABORT, PA_COMPLETE, PA_OUTPUT_UNDERFLOW};
 use std::cell::UnsafeCell;
 use std::ptr;
@@ -79,6 +80,7 @@ impl Ring {
 }
 
 pub(super) struct CallbackState {
+    pub(super) timing: CallbackTiming,
     pcm: Vec<f32>,
     ring: Option<Ring>,
     pub(super) channels: usize,
@@ -107,6 +109,7 @@ impl CallbackState {
     pub(super) fn new(pcm: Vec<f32>, channels: u8) -> Self {
         let total = (pcm.len() / usize::from(channels)) as u64;
         Self {
+            timing: CallbackTiming::default(),
             pcm,
             ring: None,
             channels: usize::from(channels),
@@ -219,6 +222,9 @@ pub(super) unsafe extern "C" fn audio_callback(
         return PA_ABORT;
     }
     let before = state.position.load(Ordering::Relaxed);
+    state
+        .timing
+        .observe(time.as_ref(), frame_count as u64, before);
     let seek_before = state.seek_applied.load(Ordering::Relaxed);
     let result = state.render(
         std::slice::from_raw_parts_mut(output.cast::<f32>(), samples),
@@ -257,6 +263,61 @@ pub(super) unsafe extern "C" fn audio_callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callback_stop_retains_timing_without_consuming_audio() {
+        let mut state = CallbackState::new(vec![0.5; 1440], 1);
+        state.timing.sample_rate = 48000.0;
+        let mut output = [0.0_f32; 480];
+        let user = (&mut state as *mut CallbackState).cast();
+        for (index, current) in [10.0, 10.01, 10.04].into_iter().enumerate() {
+            if index == 2 {
+                state.cancelled.store(true, Ordering::Release);
+            }
+            let time = CallbackTimeInfo {
+                input_buffer_adc_time: 0.0,
+                current_time: current,
+                output_buffer_dac_time: current + 0.1,
+            };
+            let result = unsafe {
+                audio_callback(ptr::null(), output.as_mut_ptr().cast(), 480, &time, 0, user)
+            };
+            assert_eq!(result, if index == 2 { PA_ABORT } else { 0 });
+        }
+        assert_eq!(state.position.load(Ordering::Acquire), 960);
+        assert_eq!(output, [0.0; 480]);
+        assert_eq!(state.underflows.load(Ordering::Relaxed), 0);
+        let mut event = serde_json::json!({});
+        state.timing.add_to(&mut event);
+        assert_eq!(event["callback_timing"]["discontinuity_count"], 1);
+        assert_eq!(event["callback_timing"]["max_offset_position_frames"], 960);
+        assert_eq!(event["timing_output_frames"], 1440);
+    }
+
+    #[test]
+    fn null_time_info_keeps_first_audio_and_timing_unknown() {
+        let mut state = CallbackState::new(vec![0.5; 480], 1);
+        state.timing.sample_rate = 48000.0;
+        let mut output = [0.0_f32; 480];
+        let user = (&mut state as *mut CallbackState).cast();
+        let result = unsafe {
+            audio_callback(
+                ptr::null(),
+                output.as_mut_ptr().cast(),
+                480,
+                ptr::null(),
+                0,
+                user,
+            )
+        };
+        assert_eq!(result, PA_COMPLETE);
+        assert_eq!(output, [0.5; 480]);
+        assert_eq!(state.first_written.load(Ordering::Acquire), 480);
+        let mut event = serde_json::json!({});
+        state.timing.add_to(&mut event);
+        assert_eq!(event["callback_timing"]["unavailable_count"], 1);
+        assert_eq!(event["dac_timing"]["observation_count"], 0);
+    }
 
     #[test]
     fn ring_preserves_stereo_order_across_wrap_and_full_backpressure() {

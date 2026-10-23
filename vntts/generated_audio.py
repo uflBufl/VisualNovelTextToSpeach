@@ -78,6 +78,8 @@ class PreparedGeneratedAudio:
     model: str | None = None
     voice_character: str | None = None
     recorded_voice: RecordedVoice | None = None
+    audio_path: Path | None = None
+    audio_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -509,6 +511,8 @@ class GeneratedAudioLibrary:
             model=getattr(entry, "model", None),
             voice_character=getattr(entry, "voice_character", None),
             recorded_voice=recorded_voice_identity(entry),
+            audio_path=entry.audio,
+            audio_sha256=entry.audio_sha256,
         )
         return prepared, "generated-audio-entry-verified"
 
@@ -1326,10 +1330,12 @@ class AudioRoutePlaybackOwner:
                 interrupted = self.source_audio_completion_stop.wait(
                     prepared.completion_seconds
                 )
-                playable = playback_guard is None or bool(playback_guard())
                 status = (
                     PlaybackStatus.INTERRUPTED
-                    if interrupted or not playable
+                    if interrupted
+                    or playback_cancelled(
+                        self.source_audio_completion_stop, playback_guard
+                    )
                     else PlaybackStatus.COMPLETED
                 )
                 return _route_outcome(
@@ -1356,6 +1362,21 @@ class AudioRoutePlaybackOwner:
                     PlaybackStatus.INTERRUPTED,
                     None,
                 )
+            from vntts.audio_lifecycle import record_audio_lifecycle
+            from vntts.reading_diagnostics import retain_diagnostic_source
+
+            record_audio_lifecycle(
+                "prepared-source",
+                line_id=route.prepared.line_id,
+                source_sha256=route.prepared.audio_sha256,
+                source_sample_rate=route.prepared.sample_rate,
+                source_audio_lead_ms=route.source_audio_lead_seconds * 1000,
+            )
+            retain_diagnostic_source(
+                route.prepared.line_id,
+                route.prepared.audio_path,
+                route.prepared.audio_sha256,
+            )
             started = self.router.clock()
             first_audio_at = None
 
@@ -1436,10 +1457,10 @@ class AudioRoutePlaybackOwner:
                     status = self.router.audio_output.wait()
                     underflowed = bool(getattr(status, "output_underflow", False))
                     completed = not self.generated_audio_stop.is_set()
-                playable = playback_guard is None or bool(playback_guard())
                 playback_status = (
                     PlaybackStatus.INTERRUPTED
-                    if not completed or not playable
+                    if not completed
+                    or playback_cancelled(self.generated_audio_stop, playback_guard)
                     else PlaybackStatus.COMPLETED
                 )
                 return _route_outcome(

@@ -53,7 +53,11 @@ from vntts.authoring.generation_lease import (
     process_started_at,
 )
 from vntts.authoring.generation_review import ReviewAuthority
-from vntts.authoring.generation_state import load_generation_state_from_snapshot
+from vntts.authoring.generation_state import (
+    completed_generation_attempts,
+    generation_item_status,
+    load_generation_state_from_snapshot,
+)
 from vntts.authoring.missing_voice_policy import (
     NARRATOR_ALL_UNRESOLVED,
     NARRATOR_ROLES,
@@ -352,7 +356,7 @@ def _inspect_workspace_from_read(
     failed_ids = {
         queue_id
         for queue_id, value in relevant.items()
-        if value.get("status") == "failed"
+        if generation_item_status(value) == "failed"
     }
     live_fallback_ids = {
         queue_id
@@ -404,7 +408,7 @@ def _inspect_workspace_from_read(
     failures = Counter(
         str(value.get("last_error") or "Unknown failure")
         for value in relevant.values()
-        if value.get("status") == "failed"
+        if generation_item_status(value) == "failed"
     )
     latest_line, latest_text, latest_status, latest_updated_at = _latest_outcome(
         queue, relevant
@@ -698,7 +702,7 @@ def _list_review_items_from_read(
         result = state_items.get(item.queue_id)
         if not isinstance(result, dict):
             continue
-        status = str(result.get("status") or "unknown")
+        status = str(generation_item_status(result) or "unknown")
         if status not in {"generated", "approved", "failed"}:
             continue
         audio = None
@@ -732,7 +736,7 @@ def _list_review_items_from_read(
                 text=item.text,
                 status=status,
                 review_status=_optional_text(result.get("review_status")),
-                attempts=_integer(result.get("attempts") or 0, "Review attempts"),
+                attempts=completed_generation_attempts(result),
                 seed=_optional_integer(result.get("seed")),
                 last_error=_optional_text(result.get("last_error")),
                 audio=audio,
@@ -923,14 +927,14 @@ def _generation_candidates(
         ):
             continue
         result = state_items.get(item.queue_id)
-        status = result.get("status") if isinstance(result, dict) else None
+        status = generation_item_status(result) if isinstance(result, dict) else None
         review_status = (
             result.get("review_status") if isinstance(result, dict) else None
         )
         if status == "failed":
             failed += 1
             candidates.append(item)
-        elif status is None:
+        elif status in {None, "cancelled"}:
             pending += 1
             candidates.append(item)
         elif (
@@ -2012,7 +2016,7 @@ def _latest_outcome(
     return (
         None if item is None else item.line_id,
         None if item is None else item.text,
-        str(value.get("review_status") or value.get("status") or "unknown"),
+        str(value.get("review_status") or generation_item_status(value) or "unknown"),
         _optional_text(value.get("updated_at")),
     )
 

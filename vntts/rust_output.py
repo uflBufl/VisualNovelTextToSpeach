@@ -223,6 +223,9 @@ class RustOutputStream:
         worker.next_id += 1
         self.clip_id = worker.next_id
         worker.active_id = self.clip_id
+        if not worker._arm_recording(self.aborted.is_set) or self.aborted.is_set():
+            worker.active_id = None
+            raise RuntimeError("Rust output stream is interrupted")
         worker.send(
             {
                 "op": "open_stream",

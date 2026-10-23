@@ -19,7 +19,7 @@ from vntts.synthesis import (
     SynthesisRequest,
     SynthesisResult,
 )
-from vntts.tts_benchmark import BenchmarkBackend, create_backend
+from vntts.tts_benchmark import create_backend
 from vntts.voices import CharacterVoiceRegistry
 
 BackendOptions: TypeAlias = dict[str, object]
@@ -232,10 +232,10 @@ class RetainedMossRuntime:
 
     def backend_for(
         self, registry: CharacterVoiceRegistry, **options: object
-    ) -> _MossBackend | _MossBackendLease:
+    ) -> object:
         model_name = options.get("model_name")
         if not moss_cpp_requested(model_name):
-            return self._create_backend(registry, **options)
+            return self.backend_factory(registry, **options)
         with self._operation_lock:
             self._ensure_backend(registry, options, load=True)
         return _MossBackendLease(self, registry, dict(options))
@@ -279,7 +279,7 @@ class RetainedMossRuntime:
 
     def __call__(
         self, registry: CharacterVoiceRegistry, **options: object
-    ) -> _MossBackend | _MossBackendLease:
+    ) -> object:
         return self.backend_for(registry, **options)
 
     def benchmark_backend(
@@ -288,7 +288,7 @@ class RetainedMossRuntime:
         registry: CharacterVoiceRegistry,
         cache_root: str | Path,
         **options: object,
-    ) -> BenchmarkBackend | _MossBackendLease:
+    ) -> object:
         if name != "moss-tts" or not moss_cpp_requested(options.get("model_name")):
             return create_backend(name, registry, cache_root, **options)
         options.pop("terms_accepted", None)

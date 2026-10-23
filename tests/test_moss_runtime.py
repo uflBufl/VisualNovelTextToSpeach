@@ -4,7 +4,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from vntts.moss_runtime import RetainedMossRuntime, _is_moss_backend, _LockedStream
+from vntts.speech_worker import IsolatedSpeechBackend
 from vntts.synthesis import SynthesisChunkStream, SynthesisRequest
+from vntts.voices import CharacterVoiceRegistry
 
 
 class _Backend:
@@ -59,6 +61,35 @@ class _Backend:
 
 
 class RetainedMossRuntimeTests(unittest.TestCase):
+    @patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=False)
+    @patch("vntts.moss_runtime.moss_cpp_requested", return_value=False)
+    def test_mlx_backend_bypasses_the_native_runtime_contract(self, *_):
+        for entrypoint in ("backend_for", "__call__"):
+            with self.subTest(entrypoint=entrypoint):
+                runtime = RetainedMossRuntime()
+                registry = CharacterVoiceRegistry()
+                backend = getattr(runtime, entrypoint)(
+                    registry,
+                    model_name="shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+                    defer_startup=True,
+                )
+                self.addCleanup(backend.shutdown)
+
+                self.assertIsInstance(backend, IsolatedSpeechBackend)
+                self.assertIs(backend.registry, registry)
+                self.assertFalse(hasattr(backend, "runtime_status"))
+                self.assertIsNone(backend.process)
+                self.assertIsNone(runtime.backend)
+
+    @patch("vntts.moss_runtime.moss_cpp_requested", return_value=True)
+    def test_native_backend_still_requires_the_native_runtime_contract(self, _):
+        runtime = RetainedMossRuntime(
+            "/tmp/vntts-moss-runtime-test",
+            backend_factory=lambda *_args, **_options: object(),
+        )
+        with self.assertRaisesRegex(TypeError, "factory returned an invalid backend"):
+            runtime.backend_for(CharacterVoiceRegistry(), model_name="model.gguf")
+
     def test_stream_close_failure_still_releases_the_operation_lock(self):
         finalized = Event()
 

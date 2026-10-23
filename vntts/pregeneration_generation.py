@@ -22,11 +22,16 @@ from vntts_artifacts.story_index import StoryIndexError
 from vntts.authoring.bulk_generation import (
     _assert_control_files_unchanged,
     _GenerationControl,
+    capture_generation_cancellation,
+    reconcile_generation_cancellation,
     snapshot_generation_control_files,
 )
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
-from vntts.authoring.generation_state import load_generation_state
+from vntts.authoring.generation_state import (
+    generation_item_status,
+    load_generation_state,
+)
 from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _source_audio_evidence_payload,
@@ -324,18 +329,48 @@ class OfflineGenerationWorker:
         queue_ids = _queue_ids(queue_ids)
         projection_ids = set(generation_input.audio_event_projection_queue_ids)
         current = generation_result
-        for selected, is_projection in (
-            (tuple(value for value in queue_ids if value not in projection_ids), False),
-            (tuple(value for value in queue_ids if value in projection_ids), True),
-        ):
+        resumed_items = (
+            _state_items(
+                load_generation_state(generation_result.state, generation_input.queue)
+            )
+            if action == "safe_resume"
+            else {}
+        )
+        batches = (
+            tuple(((value,), value in projection_ids) for value in queue_ids)
+            if action == "safe_resume"
+            else (
+                (
+                    tuple(value for value in queue_ids if value not in projection_ids),
+                    False,
+                ),
+                (tuple(value for value in queue_ids if value in projection_ids), True),
+            )
+        )
+        for selected, is_projection in batches:
             if not selected:
                 continue
+            resume_options: list[str] = []
+            if action == "safe_resume":
+                saved = resumed_items.get(selected[0], {})
+                repair = saved.get("failure_repair")
+                if generation_item_status(saved) == "cancelled" and isinstance(
+                    repair, dict
+                ):
+                    option, retries = _repair_option(str(repair["strategy"]))
+                    if repair["strategy"] == "sentence_boundary_segmentation":
+                        resume_options = ["--segment-pause-ms", str(repair["pause_ms"])]
+                    elif repair["strategy"] == "inline_pause_marker":
+                        resume_options = ["--inline-pause-ms", str(repair["pause_ms"])]
+                else:
+                    option, retries = _repair_option(action)
             arguments = self._base_arguments(
                 generation_input,
                 voice_plan,
                 output,
                 retries=retries,
             )
+            arguments.extend(resume_options)
             for queue_id in selected:
                 arguments.extend(("--queue-id", queue_id))
                 if option is not None:
@@ -408,7 +443,7 @@ class OfflineGenerationWorker:
         generated = failed = other_terminal = 0
         items = _state_items(state)
         for item in items.values():
-            status = item.get("status") if isinstance(item, dict) else None
+            status = generation_item_status(item)
             if status in {"generated", "approved"}:
                 generated += 1
             elif status == "failed":
@@ -417,17 +452,19 @@ class OfflineGenerationWorker:
                 other_terminal += 1
         active = state.get("active")
         runtime_status = None
+        owner_pid = (
+            active.get("generation_owner_pid", active.get("runtime_worker_pid"))
+            if isinstance(active, dict)
+            else None
+        )
         process = self._process
         if isinstance(active, dict) and (
             (
                 process is not None
-                and active.get("runtime_worker_pid") == process.pid
+                and owner_pid == process.pid
                 and process.poll() is None
             )
-            or (
-                self._in_process_active
-                and active.get("runtime_worker_pid") == os.getpid()
-            )
+            or (self._in_process_active and owner_pid == os.getpid())
         ):
             reported = active.get("runtime_status")
             if isinstance(reported, str) and reported.strip():
@@ -578,12 +615,18 @@ class OfflineGenerationWorker:
                 return _load_result(output, generation_input)
         with GenerationStallWatchdog(cancel_event) as watchdog:
             watchdog.progress({"active": {"phase": "subprocess"}})
-            self._run_subprocess(arguments, cancel_event)
+            self._run_subprocess(
+                arguments, cancel_event, generation_input=generation_input
+            )
             watchdog.progress()
             return _load_result(output, generation_input)
 
     def _run_subprocess(
-        self, arguments: list[str], cancel_event: _Cancellation | None
+        self,
+        arguments: list[str],
+        cancel_event: _Cancellation | None,
+        *,
+        generation_input: PregenerationInput | None = None,
     ) -> None:
         with self._progress_lock:
             self._memory_progress_enabled = False
@@ -600,9 +643,18 @@ class OfflineGenerationWorker:
             ) from error
 
         self._process = process
+        cancellation_witness = None
+        terminated_owned_child = False
+
+        def stop_owned_process() -> None:
+            nonlocal terminated_owned_child
+            if process.poll() is None:
+                terminate_running_process(process)
+                terminated_owned_child = process.poll() is not None
+
         try:
             with cleanup_on_exit(
-                lambda: terminate_running_process(process),
+                stop_owned_process,
                 description="Offline generation process cleanup",
             ):
                 while True:
@@ -611,9 +663,37 @@ class OfflineGenerationWorker:
                         break
                     except subprocess.TimeoutExpired:
                         if cancel_event is not None and cancel_event.is_set():
-                            raise OfflineGenerationCancelled(
+                            cancellation_error = OfflineGenerationCancelled(
                                 "Offline speech generation was cancelled"
-                            ) from None
+                            )
+                            if generation_input is not None:
+                                try:
+                                    cancellation_witness = (
+                                        capture_generation_cancellation(
+                                            _generation_output(generation_input),
+                                            generation_input.queue,
+                                            generation_input.queue_sha256,
+                                            process,
+                                        )
+                                    )
+                                except (
+                                    BulkGenerationError,
+                                    OSError,
+                                    ValueError,
+                                ) as witness_error:
+                                    cancellation_error.add_note(
+                                        f"Cancellation authority unavailable: {witness_error}"
+                                    )
+                            raise cancellation_error from None
+        except OfflineGenerationCancelled as error:
+            if cancellation_witness is not None and terminated_owned_child:
+                try:
+                    reconcile_generation_cancellation(cancellation_witness, process)
+                except (BulkGenerationError, OSError, ValueError) as reconcile_error:
+                    error.add_note(
+                        f"Cancellation state could not be reconciled: {reconcile_error}"
+                    )
+            raise
         finally:
             self._process = None
         if process.returncode:
@@ -860,12 +940,12 @@ def _state_items(
 def _terminal_counts(state: Mapping[str, object]) -> tuple[int, int, int]:
     counts = {"generated": 0, "failed": 0, "other": 0}
     for item in _state_items(state).values():
-        status = item.get("status")
+        status = generation_item_status(item)
         if status in {"generated", "approved"}:
             counts["generated"] += 1
         elif status == "failed":
             counts["failed"] += 1
-        else:
+        elif status in {"live_fallback", "omitted", "not_reproducible"}:
             counts["other"] += 1
     return counts["generated"], counts["failed"], counts["other"]
 
@@ -889,6 +969,7 @@ def _repair_option(action: str) -> tuple[str | None, int]:
         "sentence_boundary_segmentation": ("--sentence-segment-failed", 0),
         "edge_silence_trim": ("--trim-edge-silence-failed", 0),
         "bounded_seed_retry": ("--bounded-seed-failed", 2),
+        "inline_pause_marker": ("--inline-pause-failed", 0),
         "offline_fallback_backend": ("--offline-fallback-failed", 0),
     }
     try:

@@ -1,6 +1,7 @@
 import json
 import os
 import unittest
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
@@ -281,6 +282,106 @@ class TrayApplicationTest(unittest.TestCase):
         runtime.shutdown.assert_called_once_with()
         delete_dialog(tray.dashboard)
         delete_dialog(tray.compact_controller)
+
+    def test_reading_session_ui_records_exports_and_restores_after_restart(self):
+        from vntts.reading_diagnostics import (
+            ReadingDiagnosticSession,
+            SavedDiagnosticSession,
+        )
+
+        with (
+            TemporaryDirectory() as directory,
+            patch("vntts.app.get_local_data_directory", return_value=Path(directory)),
+            patch("vntts.support.collect_dependency_status", return_value={}),
+            patch("vntts.support.collect_build_identity", return_value={}),
+        ):
+            tray = TrayApplication(self.application, pocket_runtime=Mock())
+            tray.open_support_center()
+            dialog = tray.support_dialog
+            self.assertFalse(dialog.reading_media.isChecked())
+            dialog.reading_start.click()
+            session = tray.reading_diagnostic_session
+            self.assertIsInstance(session, ReadingDiagnosticSession)
+            tray.generation_timelines.record("capture", 1, 1.0)
+            dialog.reading_stop.click()
+            self.wait_until(session.finished.is_set, timeout_ms=3000)
+            dialog.refresh_reading_session()
+            self.assertTrue(dialog.reading_export.isEnabled())
+            dialog.reading_export.click()
+            archive_path = (
+                Path(directory) / "reading-diagnostics" / (session.session_id + ".zip")
+            )
+            self.wait_until(
+                lambda: (
+                    archive_path.is_file() and not tray.support_export_runner.active
+                ),
+                timeout_ms=3000,
+            )
+            with zipfile.ZipFile(archive_path) as archive:
+                timeline = archive.read("reading-session/timeline.jsonl")
+            tray.shutdown()
+            restored = TrayApplication(self.application, pocket_runtime=Mock())
+            self.assertIsInstance(
+                restored.reading_diagnostic_session, SavedDiagnosticSession
+            )
+            self.assertEqual(
+                restored.reading_diagnostic_session.session_id, session.session_id
+            )
+            restored.open_support_center()
+            self.assertTrue(restored.support_dialog.reading_export.isEnabled())
+            restored.support_dialog.reading_export.click()
+            self.wait_until(
+                lambda: not restored.support_export_runner.active, timeout_ms=3000
+            )
+            with zipfile.ZipFile(archive_path) as archive:
+                self.assertEqual(
+                    archive.read("reading-session/timeline.jsonl"), timeline
+                )
+                self.assertIn("reading-session/runtime.jsonl", archive.namelist())
+            restored.shutdown()
+
+    def test_diagnostic_capture_failure_is_visible_once_outside_support(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        self.addCleanup(tray.shutdown)
+        status = {
+            "session_id": "session-1",
+            "status": "recording",
+            "media_status": "degraded",
+            "media_error": "capture exited",
+        }
+        tray.reading_diagnostic_session = Mock()
+        tray.reading_diagnostic_session.status.return_value = status
+        tray._refresh_speech_runtime()
+        self.assertIsNone(tray.support_dialog)
+        self.assertIn(
+            "Diagnostic media recording is incomplete", tray.dashboard.status.text()
+        )
+        self.assertIn(
+            "Reading logs continue", tray.compact_controller.status.toPlainText()
+        )
+        tray.set_status("Reading current dialogue")
+        tray._refresh_speech_runtime()
+        self.assertEqual(tray.dashboard.status.text(), "Reading current dialogue")
+        events = [
+            event
+            for event in tray.support_log.snapshot()
+            if event["level"] == "diagnostic-recording"
+        ]
+        self.assertEqual(len(events), 1)
+
+    def test_quit_closes_reading_authority_before_waiting_for_recorders(self):
+        tray = TrayApplication(self.application, AppSettings(), pocket_runtime=Mock())
+        session = Mock()
+        session.stop.side_effect = lambda **kwargs: self.assertTrue(
+            tray.controller.shutdown_requested.is_set()
+        )
+        tray.reading_diagnostic_session = session
+        tray.shutdown()
+        session.stop.assert_called_once_with(timeout=15)
 
     def test_quit_waits_for_live_worker_before_closing_retained_runtime(self):
         started = Event()
@@ -2344,7 +2445,9 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertFalse(tray_application.toggle_live())
 
-        runner.start.assert_called_once_with(controller.identify_live_scope)
+        runner.start.assert_called_once_with(
+            controller.identify_live_scope, cancellation=ANY
+        )
         controller.toggle_live.assert_not_called()
 
         tray_application._live_scope_finished(True, None)
@@ -2352,6 +2455,131 @@ class TrayApplicationTest(unittest.TestCase):
         controller.toggle_live.assert_called_once_with()
         controller.read_once.assert_not_called()
         tray_application.shutdown()
+
+    def test_dashboard_start_waits_for_game_then_retries_without_a_second_start(self):
+        controller = Mock(is_live_running=False)
+        controller.unresolved_live_speakers.side_effect = [None, ()]
+        controller.live_scope_identification_failure = "focus-wait"
+        controller._is_game_focused.return_value = False
+        controller.toggle_live.return_value = True
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        self.addCleanup(tray.shutdown)
+        runner = Mock(active=False)
+        tray.live_scope_runner = runner
+        tray.show_dashboard()
+        self.assertFalse(tray.toggle_live())
+        cancellation = tray._live_scope_cancellation
+        tray._live_scope_finished(False, None)
+        with patch.object(tray, "_offer_story_match_recovery") as recovery:
+            self.assertIn("switch to the game", tray.dashboard.status.text())
+            self.assertEqual(tray.live_action.text(), "Cancel start")
+            tray._retry_live_scope_when_focused()
+            self.assertEqual(runner.start.call_count, 1)
+            recovery.assert_not_called()
+        controller._is_game_focused.return_value = True
+        tray._retry_live_scope_when_focused()
+        self.assertEqual(runner.start.call_count, 2)
+        runner.start.assert_called_with(
+            controller.identify_live_scope, cancellation=cancellation
+        )
+        controller.live_scope_identification_failure = None
+        tray._live_scope_finished(True, None)
+        controller.toggle_live.assert_called_once_with()
+        self.assertFalse(tray.live_scope_focus_timer.isActive())
+
+    def test_stop_while_waiting_for_focus_cancels_request_and_timer(self):
+        controller = Mock(is_live_running=False)
+        controller.unresolved_live_speakers.return_value = None
+        controller.live_scope_identification_failure = "focus-wait"
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        self.addCleanup(tray.shutdown)
+        runner = Mock(active=False)
+        tray.live_scope_runner = runner
+        tray.toggle_live()
+        cancellation = tray._live_scope_cancellation
+        tray._live_scope_finished(False, None)
+        tray.emergency_stop()
+        self.assertTrue(cancellation.is_set())
+        self.assertFalse(tray.live_scope_focus_timer.isActive())
+        tray._retry_live_scope_when_focused()
+        self.assertEqual(runner.start.call_count, 1)
+        controller.toggle_live.assert_not_called()
+
+    def test_focus_lost_before_start_defers_success_and_recaptures(self):
+        controller = Mock(is_live_running=False)
+        controller.unresolved_live_speakers.return_value = None
+        controller.live_scope_identification_failure = None
+        controller._is_game_focused.return_value = False
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        self.addCleanup(tray.shutdown)
+        tray.live_scope_runner = Mock(active=False)
+        tray.toggle_live()
+        with patch("vntts.app.record_diagnostic_event") as event:
+            tray._live_scope_finished(True, None)
+        controller.toggle_live.assert_not_called()
+        self.assertTrue(tray.live_scope_focus_timer.isActive())
+        self.assertEqual(event.call_args.kwargs["outcome"], "focus-lost")
+        controller._is_game_focused.return_value = True
+        tray._retry_live_scope_when_focused()
+        self.assertEqual(tray.live_scope_runner.start.call_count, 2)
+
+    def test_late_scope_success_cannot_restart_after_stop_or_target_turnover(self):
+        for changed in ("observation_serial", "capture_target", "settings", "window"):
+            with self.subTest(changed=changed):
+                controller = Mock(is_live_running=False)
+                controller.unresolved_live_speakers.return_value = None
+                controller.live_scope_identification_failure = None
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=controller),
+                )
+                self.addCleanup(tray.shutdown)
+                tray.live_scope_runner = Mock(active=False)
+                tray.toggle_live()
+                if changed == "window":
+                    controller.capture_target.last_window = object()
+                else:
+                    setattr(controller, changed, object())
+                tray._live_scope_finished(True, None)
+                controller.toggle_live.assert_not_called()
+                self.assertFalse(tray.live_scope_focus_timer.isActive())
+                self.assertIsNone(tray._live_scope_generation)
+
+    def test_focus_wait_rejects_controller_stop_or_target_change(self):
+        for changed in ("observation_serial", "capture_target", "settings"):
+            with self.subTest(changed=changed):
+                controller = Mock(is_live_running=False)
+                controller.unresolved_live_speakers.return_value = None
+                controller.live_scope_identification_failure = "focus-wait"
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=controller),
+                )
+                self.addCleanup(tray.shutdown)
+                tray.live_scope_runner = Mock(active=False)
+                tray.toggle_live()
+                cancellation = tray._live_scope_cancellation
+                tray._live_scope_finished(False, None)
+                setattr(controller, changed, object())
+                tray._retry_live_scope_when_focused()
+                self.assertTrue(cancellation.is_set())
+                self.assertFalse(tray.live_scope_focus_timer.isActive())
+                self.assertEqual(tray.live_scope_runner.start.call_count, 1)
+                controller.toggle_live.assert_not_called()
 
     def test_live_scope_identification_failure_does_not_start(self):
         controller = Mock(is_live_running=False)
@@ -2505,7 +2733,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertFalse(tray._offer_story_match_recovery("No match"))
         controller.start_live_from_ocr.assert_not_called()
         tray.live_scope_runner.start.assert_called_once_with(
-            controller.identify_live_scope
+            controller.identify_live_scope, cancellation=ANY
         )
         self.assertIn("Identifying", tray.dashboard.status.text())
         self.assertEqual(tray._live_scope_generation, tray._lifecycle_generation)
@@ -2616,7 +2844,9 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray_application.live_action.text(), "Cancel start")
         self.assertFalse(tray_application.toggle_live())
 
-        runner.start.assert_called_once_with(controller.identify_live_scope)
+        runner.start.assert_called_once_with(
+            controller.identify_live_scope, cancellation=ANY
+        )
         runner.cancel.assert_called_once_with()
         self.wait_until(lambda: controller.emergency_stop.called)
         controller.emergency_stop.assert_called_once_with()
@@ -2738,7 +2968,9 @@ class TrayApplicationTest(unittest.TestCase):
 
             controller.read_once.side_effect = start_reading
             controller.toggle_live.side_effect = start_reading
-            tray.live_scope_runner.start.side_effect = lambda _identify: start_reading()
+            tray.live_scope_runner.start.side_effect = lambda _identify, **_kwargs: (
+                start_reading()
+            )
             if start == "read_once":
                 tray.read_once()
                 controller.read_once.assert_called_once_with()
@@ -2746,7 +2978,7 @@ class TrayApplicationTest(unittest.TestCase):
                 tray.toggle_live()
                 if start == "identify_scope":
                     tray.live_scope_runner.start.assert_called_once_with(
-                        controller.identify_live_scope
+                        controller.identify_live_scope, cancellation=ANY
                     )
                 else:
                     controller.toggle_live.assert_called_once_with()
@@ -5397,6 +5629,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.settings,
             tray_application.support_log,
             diagnostic=diagnostic,
+            diagnostic_session=None,
             generation_timelines=tray_application.generation_timelines,
             previous_session=tray_application.previous_session,
             audio_lifecycle=tray_application.audio_lifecycle,

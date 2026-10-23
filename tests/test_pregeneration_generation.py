@@ -26,6 +26,7 @@ from vntts.pregeneration_generation import (
     OfflineGenerationWorker,
     _cached_static_ready_line_ids,
     _static_ready_line_ids,
+    _terminal_counts,
 )
 from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_setup import load_verified_story_index_document
@@ -233,6 +234,10 @@ class OfflineGenerationSessionTest(unittest.TestCase):
 
         with (
             patch("vntts.authoring.cli_generation.run_generation", side_effect=run),
+            patch(
+                "vntts.pregeneration_generation.load_generation_state",
+                return_value={"items": {}},
+            ),
             patch("vntts.pregeneration_generation._load_result", return_value=result),
             patch("vntts.pregeneration_generation._ensure_remaining_disk_space"),
             self.worker.generation_session(self.generation_input, self.plan),
@@ -430,6 +435,78 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         self.assertEqual(arguments.count("--queue-id"), 1)
         self.assertIn("mixed-event", arguments)
         self.assertIn("--audio-event-spoken-projection", arguments)
+
+    def test_cancelled_records_are_pending_in_progress_and_terminal_counts(self):
+        with TemporaryDirectory() as directory:
+            inputs, _plan = generation_inputs(Path(directory))
+            state = {
+                "queue_sha256": inputs.queue_sha256,
+                "active": None,
+                "items": {
+                    "cancelled": {"status": "failed", "failure": {"kind": "cancelled"}},
+                    "failure": {
+                        "status": "failed",
+                        "failure": {"kind": "backend_error"},
+                    },
+                    "ready": {"status": "approved"},
+                    "omitted": {"status": "omitted"},
+                },
+            }
+            with patch(
+                "vntts.pregeneration_generation._ready_line_ids", return_value=()
+            ):
+                progress = OfflineGenerationWorker()._progress_from_state(state, inputs)
+        self.assertEqual(
+            (progress.generated, progress.failed, progress.other_terminal), (1, 1, 1)
+        )
+        self.assertEqual(progress.completed, 3)
+        self.assertEqual(_terminal_counts(state), (1, 1, 1))
+
+    def test_safe_resume_restores_the_cancelled_repair_and_custom_pause(self):
+        with TemporaryDirectory() as directory:
+            inputs, plan = generation_inputs(
+                Path(directory), backend="moss-tts", model="model-id"
+            )
+            output = inputs.output_directory
+            result = OfflineGenerationResult(
+                output,
+                output / "generation-state.json",
+                output / "manifest.json",
+                0,
+                0,
+                0,
+            )
+            state = {
+                "items": {
+                    "one": {
+                        "status": "failed",
+                        "failure": {"kind": "cancelled"},
+                        "failure_repair": {
+                            "strategy": "sentence_boundary_segmentation",
+                            "pause_ms": 250,
+                        },
+                    }
+                }
+            }
+            worker = OfflineGenerationWorker(command=("worker",))
+            with (
+                patch(
+                    "vntts.pregeneration_generation.load_generation_state",
+                    return_value=state,
+                ),
+                patch.object(worker, "_execute", return_value=result) as execute,
+            ):
+                worker.repair(
+                    inputs, plan, result, action="safe_resume", queue_ids=("one",)
+                )
+            arguments = execute.call_args.args[0]
+            self.assertEqual(
+                arguments[arguments.index("--sentence-segment-failed") + 1], "one"
+            )
+            self.assertEqual(
+                arguments[arguments.index("--segment-pause-ms") + 1], "250"
+            )
+            self.assertEqual(arguments[arguments.index("--retries") + 1], "0")
 
     def test_progress_reports_generated_and_already_playable_story_lines(self):
         with TemporaryDirectory() as directory:

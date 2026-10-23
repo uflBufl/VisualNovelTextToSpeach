@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 mod audio;
 mod portaudio;
 mod protocol;
+mod timing;
 use audio::{audio_callback, CallbackState};
 #[cfg(test)]
 use portaudio::StreamInfo;
@@ -155,6 +156,7 @@ impl<'a> Active<'a> {
         stream_info.validate()?;
         active.output_latency_seconds = stream_info.output_latency;
         active.actual_sample_rate = stream_info.sample_rate;
+        active.state.timing.sample_rate = stream_info.sample_rate;
         Ok(active)
     }
 
@@ -289,6 +291,7 @@ impl<'a> Active<'a> {
         if let Some(ref error) = error {
             event["error"] = json!(error);
         }
+        self.state.timing.add_to(&mut event);
         event["producer_starvation_count"] = json!(self.state.starvations.load(Ordering::Relaxed));
         let mut status = self.status(true, error.clone());
         status["outcome"] = json!(outcome);
@@ -359,6 +362,7 @@ fn finish_status(status: Value) -> io::Result<Value> {
     event["event"] = json!("finished");
     event["callback_count"] = json!(0);
     event["elapsed_ms"] = json!(0.0);
+    timing::CallbackTiming::default().add_to(&mut event);
     emit(event)?;
     Ok(status)
 }

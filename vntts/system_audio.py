@@ -63,7 +63,11 @@ class _DefaultOutputMonitor:
             self.failed = False
         if recovered or identity != self.identity:
             self.identity = identity
-            self.output.request_refresh()
+            self.output.request_refresh(
+                reason="native-probe-recovered"
+                if recovered
+                else "native-probe-identity-changed"
+            )
 
     def _run(self) -> None:
         while not self.stopping.is_set():
@@ -90,9 +94,16 @@ class SystemAudioOutput:
         self.initialized = True
         self.device_monitor: _DefaultOutputMonitor | None = None
 
-    def request_refresh(self) -> None:
+    def request_refresh(self, *, reason: str = "caller-request") -> None:
         # The Qt/main thread must never wait for a blocking device write.
         self.pending.set()
+        try:
+            record_audio_lifecycle(
+                "device-refresh-request", outcome="requested", reason=reason
+            )
+        except Exception:
+            # The trigger journal cannot prevent native invalidation.
+            pass
         from vntts.rust_audio import notify_audio_device_changed
 
         notify_audio_device_changed()
@@ -531,7 +542,7 @@ def initialize_audio_device_monitor() -> None:
 
 def _request_system_refresh() -> None:
     if _system_output is not None:
-        _system_output.request_refresh()
+        _system_output.request_refresh(reason="qt-audio-outputs-changed")
 
 
 __all__ = [

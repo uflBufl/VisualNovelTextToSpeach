@@ -3177,9 +3177,7 @@ class MainTest(unittest.TestCase):
                     self.assertTrue(attempted.wait(3))
                     return current
 
-                mutation_name = (
-                    "invalidate_observation" if canonical else "_clear_queue_locked"
-                )
+                mutation_name = "invalidate_observation"
                 mutation = getattr(reader, mutation_name)
 
                 def mutate(*args):
@@ -3200,10 +3198,10 @@ class MainTest(unittest.TestCase):
                     caller.join(3)
                 self.assertFalse(caller.is_alive())
                 self.assertEqual(order, ["validated", "mutation", "control"])
-                self.assertEqual(reader.observation_uncertain, canonical)
-                self.assertEqual(reader.suppressed_generation, None if canonical else 1)
+                self.assertTrue(reader.observation_uncertain)
+                self.assertIsNone(reader.suppressed_generation)
 
-    def test_uncertainty_queue_cleanup_runs_after_story_and_reader_locks(self):
+    def test_uncertainty_diagnostics_run_after_story_and_reader_locks(self):
         controller, _lines, _pipeline = self._sequence_controller()
         reader = self._sequence_reader(controller)
         reader.active_generation = 1
@@ -3227,14 +3225,171 @@ class MainTest(unittest.TestCase):
 
         pending.add_done_callback(lambda _future: cleanup("future"))
         reader.interrupt_speech = lambda: cleanup("interrupt")
+        reader.pipeline_event_handler = lambda *_args, **_details: cleanup("event")
         controller._ocr_uncertain(
             OCRResult("Narrator", "noise", 0, "test", 1),
             60,
             observation_is_current=lambda: True,
         )
-        self.assertTrue(pending.cancelled())
-        self.assertEqual(cleanups, ["future", "interrupt"])
-        self.assertEqual(reader.suppressed_generation, 1)
+        self.assertFalse(pending.cancelled())
+        self.assertEqual(cleanups, ["event"])
+        self.assertIsNone(reader.suppressed_generation)
+        self.assertTrue(reader.observation_uncertain)
+
+    def test_nonsequence_uncertainty_retains_admitted_audio_and_recovery_deduplicates(
+        self,
+    ):
+        from tests.test_live import QueuedExecutor
+
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        speech, playback = QueuedExecutor(), QueuedExecutor()
+        tracker = IncrementalDialogTracker()
+        advance, interrupt = Mock(), Mock()
+        events = []
+        played = []
+        reader = self._sequence_reader(
+            controller,
+            speech_executor=speech,
+            playback_executor=playback,
+            tracker_factory=lambda **_: tracker,
+            dialog_observed=lambda *_: None,
+            stable_frame_route=lambda *_: None,
+            line_id_resolver=lambda *_: "story:1",
+            ocr_purpose=lambda: "legacy",
+            prepare_chunk=lambda _chunk: "admitted audio",
+            interrupt_speech=interrupt,
+            auto_advance=advance,
+            pipeline_event_handler=lambda stage, generation, at, **details: (
+                events.append((stage, generation, details))
+            ),
+        )
+        chunks = tracker.observe_canonical("Alice", "Trusted line.", "story:1")
+        reader._schedule_tracked_chunks(tracker, chunks)
+        generation = reader.active_generation
+        controller._ocr_uncertain(OCRResult("Narrator", "noise", 12, "test", 1), 60)
+        self.assertTrue(reader.observation_uncertain)
+        self.assertIsNone(reader.suppressed_generation)
+        self.assertFalse(speech.jobs[0][0].cancelled())
+        speech.run_next()
+        self.assertEqual(len(playback.jobs), 1)
+
+        reader.latest_frame = object()
+        reader.latest_frame_fingerprint = "trusted-frame"
+        reader.latest_frame_visible = True
+        reader.frame_version = 1
+        stopped_worker = Event()
+
+        def recognize(_frame):
+            stopped_worker.set()
+            return "Alice", "Trusted line."
+
+        reader.recognize_frame = recognize
+        with patch("vntts.live.Timer"):
+            reader._run_ocr(stopped_worker)
+        self.assertFalse(reader.observation_uncertain)
+        self.assertEqual(reader.active_generation, generation)
+        self.assertFalse(speech.jobs)
+        self.assertEqual(len(playback.jobs), 1)
+
+        def play(chunk, audio):
+            controller._ocr_uncertain(
+                OCRResult("Narrator", "more noise", 10, "test", 1), 60
+            )
+            self.assertTrue(reader.wait_until_playable(chunk))
+            played.append(audio)
+
+        reader.play_prepared = play
+        playback.run_next()
+        self.assertEqual(played, ["admitted audio"])
+        self.assertTrue(reader.observation_uncertain)
+        self.assertIsNone(reader.auto_advance_timer)
+        advance.assert_not_called()
+        interrupt.assert_not_called()
+        self.assertFalse(any(stage == "queue-cancelled" for stage, _, _ in events))
+        invalidations = [
+            item for item in events if item[0] == "observation-invalidated"
+        ]
+        self.assertEqual(len(invalidations), 2)
+        details = invalidations[-1][2]
+        self.assertEqual(details["reason"], "ocr-uncertain")
+        self.assertEqual(details["ocr_confidence"], 10)
+        self.assertEqual(details["minimum_confidence"], 60)
+        self.assertEqual(details["run_id"], reader.run_id)
+        self.assertEqual(details["playback_id"], reader.last_spoken_chunk.playback_id)
+        self.assertNotIn("noise", repr(details))
+        reader.report_error.assert_not_called()
+
+    def test_confirmed_replacement_after_uncertainty_cancels_old_queued_synthesis(self):
+        from tests.test_live import QueuedExecutor
+
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        speech, playback = QueuedExecutor(), QueuedExecutor()
+        prepare = Mock(return_value="replacement audio")
+        reader = self._sequence_reader(
+            controller,
+            speech_executor=speech,
+            playback_executor=playback,
+            prepare_chunk=prepare,
+        )
+        tracker = IncrementalDialogTracker()
+        reader._schedule_tracked_chunks(
+            tracker, tracker.observe_canonical("Alice", "First line.", "story:1")
+        )
+        old_preparation = speech.jobs[0][0]
+        controller._ocr_uncertain(OCRResult("Narrator", "noise", 10, "test", 1), 60)
+        reader._schedule_tracked_chunks(
+            tracker, tracker.observe_canonical("Bob", "Replacement line.", "story:2")
+        )
+
+        self.assertTrue(old_preparation.cancelled())
+        speech.run_next()
+        speech.run_next()
+        playback.run_next()
+
+        prepare.assert_called_once()
+        replacement = prepare.call_args.args[0]
+        self.assertEqual(replacement.text, "Replacement line.")
+        reader.play_prepared.assert_called_once_with(replacement, "replacement audio")
+        reader.report_error.assert_not_called()
+
+    def test_nonsequence_uncertainty_preserves_explicit_cancellation_and_replacement(
+        self,
+    ):
+        from tests.test_live import QueuedExecutor
+
+        for control in ("skip", "clear", "stop", "replacement"):
+            with self.subTest(control=control):
+                controller = AppController(AppSettings(), tts_factory=Mock())
+                speech, playback = QueuedExecutor(), QueuedExecutor()
+                reader = self._sequence_reader(
+                    controller,
+                    speech_executor=speech,
+                    playback_executor=playback,
+                    prepare_chunk=lambda _chunk: "admitted audio",
+                    interrupt_speech=Mock(return_value=True),
+                    interrupt_on_dialog_replacement=True,
+                )
+                reader.enqueue("Alice", "Trusted line.")
+                speech.run_next()
+                pending, _, (chunk, _) = playback.jobs[0]
+                reader.current_chunk = chunk
+                if control == "skip":
+                    reader.skip_current()
+                elif control == "clear":
+                    reader.clear_queue()
+                elif control == "stop":
+                    reader.emergency_stop()
+                else:
+                    reader._set_generation(reader.active_generation + 1)
+                controller._ocr_uncertain(
+                    OCRResult("Narrator", "noise", 10, "test", 1), 60
+                )
+                self.assertFalse(reader.wait_until_playable(chunk))
+                playback.run_next()
+                reader.play_prepared.assert_not_called()
+                if control in {"clear", "stop"}:
+                    self.assertTrue(pending.cancelled())
+                reader.report_error.assert_not_called()
 
     def test_stale_uncertainty_cannot_invalidate_current_occurrence(self):
         controller, _lines, _pipeline = self._sequence_controller()
@@ -3545,6 +3700,39 @@ class MainTest(unittest.TestCase):
                 )
                 if not completed:
                     self.assertFalse(controller.story_cursor.can_auto_advance)
+
+    def test_pause_interruption_keeps_the_sequence_occurrence_replayable(self):
+        controller, lines, _pipeline = self._sequence_controller()
+        controller.story_cursor.anchor_event("event-1")
+        chunk = SpeechChunk(
+            1, lines[0].speaker, lines[0].text, line_id=lines[0].line_id
+        )
+        lease = controller._begin_sequence_playback(chunk)
+        interrupted = PlaybackOutcome(
+            PlaybackStatus.INTERRUPTED,
+            1.0,
+            first_audio_ms=0.0,
+            audio_source="generated",
+        )
+
+        self.assertFalse(
+            controller._finish_sequence_playback(
+                lease, interrupted, interrupted_for_pause=True
+            )
+        )
+        self.assertEqual(controller.sequence_event_terminal_routes, {})
+        self.assertEqual(controller._begin_sequence_playback(chunk), lease)
+        self.assertTrue(
+            controller._finish_sequence_playback(
+                lease,
+                PlaybackOutcome(
+                    PlaybackStatus.COMPLETED, 1.0, audio_source="generated"
+                ),
+            )
+        )
+        self.assertEqual(
+            controller.sequence_event_terminal_routes, {lease: "generated"}
+        )
 
     def test_terminal_route_conflicts_keep_the_first_route_and_desynchronize(self):
         for silent in (True, False):
@@ -5054,7 +5242,9 @@ class MainTest(unittest.TestCase):
 
         self.assertTrue(controller.resync_live_sequence("event-1"))
 
-        running_reader.clear_queue.assert_called_once_with()
+        running_reader.clear_queue.assert_called_once_with(
+            reason="explicit-sequence-replacement"
+        )
         running_reader.bind_current_frame_route.assert_called_once_with()
         running_reader.enqueue.assert_called_once_with(
             "Rhiannon",
@@ -5265,6 +5455,7 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock()
+        controller.capture_target = Mock()
         controller.last_diagnostic = DiagnosticSnapshot(
             None, confidence=97.237, corrections=("Corrected OCR text",)
         )
@@ -5321,6 +5512,7 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock()
+        controller.capture_target = Mock()
         observed = canonical.replace("Dŵr", "DWr")
 
         with patch(
@@ -5367,6 +5559,7 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock()
+        controller.capture_target = Mock()
 
         with patch(
             "vntts.controller_components.read_live_snapshot",
@@ -5402,6 +5595,7 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock()
+        controller.capture_target = Mock()
 
         with patch(
             "vntts.controller_components.read_live_snapshot",
@@ -5450,6 +5644,7 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock()
+        controller.capture_target = Mock()
 
         with patch(
             "vntts.controller_components.read_live_snapshot",
@@ -5704,6 +5899,7 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock()
+        controller.capture_target = Mock()
 
         with patch(
             "vntts.controller_components.read_live_snapshot",
@@ -7186,7 +7382,8 @@ class MainTest(unittest.TestCase):
 
         self.assertEqual(dialogs[-1][0], "OCR uncertain")
         self.assertIn("42% (requires 60%)", dialogs[-1][1])
-        self.assertEqual(reader.suppressed_generation, 3)
+        self.assertIsNone(reader.suppressed_generation)
+        self.assertTrue(reader.observation_uncertain)
 
     def test_focus_loss_pauses_capture_without_suppressing_live_speech(self):
         statuses = []

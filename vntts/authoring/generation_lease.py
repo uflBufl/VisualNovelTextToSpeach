@@ -9,6 +9,7 @@ import secrets
 import socket
 import subprocess
 import sys
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
@@ -117,7 +118,7 @@ def _inspect_windows_process(pid: int) -> Literal["live", "dead", "unknown"]:
         kernel32.CloseHandle(handle)
 
 
-def process_started_at(pid: object) -> str | None:
+def process_started_at(pid: object, *, timeout: float | None = None) -> str | None:
     """Return the operating-system process start identity when inspectable."""
     process_id = _process_id(pid)
     if process_id is None:
@@ -128,7 +129,10 @@ def process_started_at(pid: object) -> str | None:
             check=True,
             capture_output=True,
             text=True,
+            timeout=timeout,
         )
+    except subprocess.TimeoutExpired:
+        return None
     except OSError, subprocess.CalledProcessError:
         output = ""
     else:
@@ -201,7 +205,9 @@ class GenerationLease:
         queue_sha256: str,
         *,
         process_checker: Callable[[object], bool],
+        expected_previous: Mapping[str, object] | None = None,
     ) -> None:
+        self.expected_previous = expected_previous
         self.output_directory = Path(output_directory)
         self.path = self.output_directory / ".generation-lease.json"
         self.queue_sha256 = queue_sha256
@@ -213,6 +219,10 @@ class GenerationLease:
     def __enter__(self) -> GenerationLease:
         try:
             with exclusive_advisory_lock(self.path.with_suffix(".guard")):
+                if self.expected_previous is not None and not self.path.exists():
+                    raise BulkGenerationError(
+                        "Cancelled generation lease is no longer current"
+                    )
                 if self.path.exists():
                     try:
                         lease_payload = read_regular_bytes(self.path)
@@ -233,6 +243,13 @@ class GenerationLease:
                             f"Unrecognized generation lease blocks output: {self.path}"
                         )
                     existing: dict[str, object] = parsed
+                    if (
+                        self.expected_previous is not None
+                        and existing != self.expected_previous
+                    ):
+                        raise BulkGenerationError(
+                            "Cancelled generation lease ownership changed"
+                        )
                     same_host = existing.get("hostname") in {
                         None,
                         socket.gethostname(),

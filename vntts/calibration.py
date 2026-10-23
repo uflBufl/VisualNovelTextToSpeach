@@ -56,9 +56,9 @@ from vntts.ocr import (
     OCRResult,
     get_dialog_region,
     get_dialog_region_file,
-    recognize_dialog_image_result,
     save_dialog_region,
 )
+from vntts.ocr_worker import recognize_dialog_image_result
 from vntts.qt_images import pixmap_from_pil
 from vntts.window_capture import WindowGeometry
 

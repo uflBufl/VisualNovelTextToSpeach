@@ -1,8 +1,9 @@
-from typing import Literal
+from typing import Callable, Literal
 
-from PySide6.QtCore import QEvent, QObject, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QHideEvent, QKeySequence, QShowEvent, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFrame,
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -22,6 +24,10 @@ class SupportCenterDialog(QDialog):
     diagnostics_requested = Signal()
     export_requested = Signal()
     settings_folder_requested = Signal()
+    reading_start_requested = Signal(bool, int)
+    reading_stop_requested = Signal()
+    reading_export_requested = Signal()
+    reading_folder_requested = Signal()
 
     def __init__(
         self,
@@ -30,6 +36,9 @@ class SupportCenterDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.event_log = event_log
+        self.reading_status_provider: Callable[[], dict[str, object] | None] | None = (
+            None
+        )
         self.setWindowTitle("Support and logs")
         self.setMinimumSize(620, 420)
         self.resize(760, 520)
@@ -83,6 +92,7 @@ class SupportCenterDialog(QDialog):
         actions.addStretch()
         self._export_status = ""
         self._launcher_status = ""
+        self._reading_start_error = ""
         self.operation_status = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
         self.operation_status.setAccessibleName("Support operation status")
         self.operation_status.setFrameShape(QFrame.Shape.NoFrame)
@@ -94,6 +104,43 @@ class SupportCenterDialog(QDialog):
             self.operation_status.fontMetrics().lineSpacing() * 3 + 12
         )
         self.operation_status.installEventFilter(self)
+        self.reading_media = QCheckBox(
+            "Record selected game window and game/Rust audio (macOS)"
+        )
+        self.reading_media.setToolTip(
+            "Opt-in: includes dialogue visible in the selected window, process audio and used source WAVs in the diagnostic export. Never records the desktop or microphone."
+        )
+        self.reading_seconds = QSpinBox()
+        self.reading_seconds.setRange(1, 600)
+        self.reading_seconds.setValue(600)
+        self.reading_seconds.setSuffix(" s")
+        self.reading_seconds.setAccessibleName("Diagnostic session duration limit")
+        self.reading_start = QPushButton("Start diagnostic session")
+        self.reading_stop = QPushButton("Stop session")
+        self.reading_export = QPushButton("Export diagnostic session")
+        self.reading_folder = QPushButton("Open sessions folder")
+        self.reading_status = QLabel(
+            "No session. Logs exclude dialogue text. Media requires the checkbox above."
+        )
+        self.reading_status.setWordWrap(True)
+        self.reading_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.reading_start.clicked.connect(
+            lambda: self.reading_start_requested.emit(
+                self.reading_media.isChecked(), self.reading_seconds.value()
+            )
+        )
+        self.reading_stop.clicked.connect(self.reading_stop_requested.emit)
+        self.reading_export.clicked.connect(self.reading_export_requested.emit)
+        self.reading_folder.clicked.connect(self.reading_folder_requested.emit)
+        for button in (
+            self.reading_start,
+            self.reading_stop,
+            self.reading_export,
+            self.reading_folder,
+        ):
+            button.setAutoDefault(False)
+        self.reading_stop.setEnabled(False)
+        self.reading_export.setEnabled(False)
         self._create_layout(actions)
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
@@ -117,6 +164,20 @@ class SupportCenterDialog(QDialog):
         layout.addWidget(self.events, 1)
         layout.addLayout(actions)
         layout.addWidget(self.privacy_note)
+        recording_options = QHBoxLayout()
+        recording_options.addWidget(self.reading_media, 1)
+        recording_options.addWidget(self.reading_seconds)
+        layout.addLayout(recording_options)
+        recording_actions = QHBoxLayout()
+        for button in (
+            self.reading_start,
+            self.reading_stop,
+            self.reading_export,
+            self.reading_folder,
+        ):
+            recording_actions.addWidget(button)
+        layout.addLayout(recording_actions)
+        layout.addWidget(self.reading_status)
         layout.addWidget(self.operation_status)
         layout.addLayout(footer)
         self.setTabOrder(self.events, self.new_events_button)
@@ -134,8 +195,21 @@ class SupportCenterDialog(QDialog):
 
     def _show_status(self) -> None:
         self.operation_status.setPlainText(
-            "\n".join(filter(None, (self._export_status, self._launcher_status)))
+            "\n".join(
+                filter(
+                    None,
+                    (
+                        self._export_status,
+                        self._launcher_status,
+                        self._reading_start_error,
+                    ),
+                )
+            )
         )
+
+    def set_reading_start_error(self, message: str) -> None:
+        self._reading_start_error = message
+        self._show_status()
 
     def request_diagnostics(self) -> None:
         if not self.diagnostics_button.isEnabled():
@@ -179,7 +253,35 @@ class SupportCenterDialog(QDialog):
         self.timer.stop()
         super().hideEvent(event)
 
+    def refresh_reading_session(self) -> None:
+        report = (
+            self.reading_status_provider() if self.reading_status_provider else None
+        )
+        if report is None:
+            return
+        finished = report.get("status") == "finished"
+        self.reading_start.setEnabled(finished)
+        self.reading_media.setEnabled(finished)
+        self.reading_seconds.setEnabled(finished)
+        self.reading_stop.setEnabled(
+            not finished and report.get("status") == "recording"
+        )
+        self.reading_export.setEnabled(finished)
+        target = report.get("target")
+        identity = (
+            f"Window {target.get('window_id')}, PID {target.get('pid')}: {target.get('title')}. "
+            if isinstance(target, dict)
+            else ""
+        )
+        self.reading_status.setText(
+            identity
+            + f"Session: {report.get('status')}; media: {report.get('media_status')}; "
+            f"analysis: {report.get('analysis_status')}. "
+            f"{report.get('media_error') or report.get('error_type') or ''}"
+        )
+
     def refresh(self) -> None:
+        self.refresh_reading_session()
         entries = sorted(
             self.event_log.snapshot()
             + support.native_speech_log.snapshot()

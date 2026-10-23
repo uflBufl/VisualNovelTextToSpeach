@@ -3374,9 +3374,9 @@ class LiveDialogReaderTest(unittest.TestCase):
         reader._maybe_auto_advance()
         reader._run_auto_advance(3)
 
-    def test_typed_focus_refusal_reschedules_without_an_ambiguous_second_probe(self):
+    def test_typed_focus_refusal_reschedules_without_probing_after_callback(self):
         state_changed = Mock()
-        focus_probe = Mock(return_value=True)
+        focus_probe = Mock(side_effect=[True, True])
         reader = self.create_reader(
             auto_advance=Mock(return_value=AutoAdvanceAttempt(False, "focus-wait")),
             focus_probe=focus_probe,
@@ -3388,7 +3388,7 @@ class LiveDialogReaderTest(unittest.TestCase):
         with patch("vntts.live.Timer") as timer:
             reader._run_auto_advance(3)
 
-        focus_probe.assert_called_once_with()
+        self.assertEqual(focus_probe.call_args_list, [call(), call()])
         timer.assert_called_once()
         timer.return_value.start.assert_called_once_with()
         self.assertIsNone(reader.failed_auto_advance_generation)
@@ -3447,7 +3447,7 @@ class LiveDialogReaderTest(unittest.TestCase):
         state_changed = Mock()
         reader = self.create_reader(
             auto_advance=auto_advance,
-            focus_probe=Mock(side_effect=[False, True]),
+            focus_probe=Mock(side_effect=[False, True, True]),
             auto_advance_state_changed=state_changed,
         )
         reader.active_generation = 3
@@ -3694,6 +3694,29 @@ class LiveDialogReaderTest(unittest.TestCase):
             reader._prepare_if_current, chunk
         )
 
+    def test_pause_interruption_marker_does_not_override_skip_clear_or_replacement(
+        self,
+    ):
+        for action in ("skip", "clear", "replace", "stop"):
+            with self.subTest(action=action):
+                reader = self.create_reader(interrupt_speech=Mock(return_value=True))
+                chunk = SpeechChunk(1, "Alice", "Current line.", ordinal=0)
+                reader.active_generation = 1
+                reader.current_chunk = chunk
+                reader.prepared_chunk_ids.add(chunk.chunk_id)
+                reader.toggle_pause()
+                self.assertTrue(reader.was_playback_paused(chunk))
+                self.assertNotIn(chunk.chunk_id, reader.prepared_chunk_ids)
+                if action == "skip":
+                    reader.skip_current()
+                elif action == "clear":
+                    reader.clear_queue()
+                elif action == "replace":
+                    reader._set_generation(2)
+                else:
+                    reader.emergency_stop()
+                self.assertFalse(reader.was_playback_paused(chunk))
+
     def test_pausing_during_synthesis_resumes_without_duplicate_replay(self):
         speech_executor = Mock()
         speech_executor.submit.return_value = Future()
@@ -3856,6 +3879,40 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertTrue(pending.cancelled())
         interrupt_speech.assert_called_once_with()
         speech_executor.submit.assert_not_called()
+
+    def test_queue_cancellation_reports_cause_and_identity_before_interrupting(self):
+        events = []
+        interrupt = Mock(side_effect=lambda: events.append(("interrupt", None, {})))
+        reader = self.create_reader(
+            interrupt_speech=interrupt,
+            pipeline_event_handler=lambda stage, generation, at, **details: (
+                events.append((stage, generation, details))
+            ),
+        )
+        reader.active_generation = 4
+        reader.current_chunk = SpeechChunk(
+            4, "Alice", "Private dialogue.", run_id=reader.run_id, playback_id="play-4"
+        )
+        pending = Future()
+        reader.speech_futures[pending] = reader.current_chunk
+        pending.add_done_callback(lambda _: events.append(("cancel", None, {})))
+
+        self.assertTrue(reader.clear_queue())
+
+        self.assertEqual(
+            [stage for stage, _, _ in events],
+            ["queue-cancelled", "cancel", "interrupt"],
+        )
+        _, generation, details = events[0]
+        self.assertEqual(generation, 4)
+        self.assertEqual(details["reason"], "clear-queue")
+        self.assertEqual(details["run_id"], reader.run_id)
+        self.assertEqual(details["playback_id"], "play-4")
+        self.assertEqual(details["speech_future_count"], 1)
+        self.assertTrue(details["current_chunk_present"])
+        self.assertEqual(details["suppressed_generation"], 4)
+        self.assertNotIn("Private dialogue", repr(details))
+        reader.report_error.assert_not_called()
 
     def test_clear_interrupts_speech_preparation_that_is_already_running(self):
         interrupt_speech = Mock()

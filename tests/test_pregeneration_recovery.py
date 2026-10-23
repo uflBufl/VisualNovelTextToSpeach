@@ -782,6 +782,46 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
         generator.generate.assert_not_called()
         repair.assert_called_once()
 
+    def test_cancelled_saved_line_resumes_without_new_generation_or_failure_count(self):
+        with TemporaryDirectory() as directory:
+            generation_input, base, voice_plan = inputs(Path(directory))
+            current = replace(base, generated=0, failed=0)
+            completed = replace(base, generated=3, failed=0)
+            generator = Mock()
+            generator.inspect.return_value = current
+            generator.repair.return_value = completed
+            planner = Mock(
+                side_effect=(
+                    OfflineRecoveryPlan(
+                        "1" * 64,
+                        "2" * 64,
+                        1,
+                        (OfflineRecoveryBatch("safe_resume", ("a",)),),
+                        (),
+                        cancelled_queue_ids=("a",),
+                    ),
+                    OfflineRecoveryPlan("1" * 64, "2" * 64, 0, (), ()),
+                )
+            )
+            worker = OfflineRecoveryWorker(generator, planner=planner)
+            with (
+                patch(
+                    "vntts.pregeneration_recovery._ordered_generation_queue_ids",
+                    return_value=(("a",), {}),
+                ),
+                patch(
+                    "vntts.pregeneration_recovery._generation_queue_statuses",
+                    return_value={"a": "cancelled"},
+                ),
+            ):
+                result = worker.generate_and_recover(generation_input, voice_plan)
+        generator.generate.assert_not_called()
+        self.assertEqual(generator.repair.call_args.kwargs["action"], "safe_resume")
+        self.assertEqual(generator.repair.call_args.kwargs["queue_ids"], ("a",))
+        self.assertEqual(result.remaining_failed, 0)
+        self.assertEqual(result.recovered, 0)
+        self.assertIs(result.generation, completed)
+
     def test_terminal_generation_skips_failure_planning(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, first, voice_plan = inputs(Path(temporary_directory))

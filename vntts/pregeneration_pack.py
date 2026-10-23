@@ -49,6 +49,7 @@ from vntts.authoring.generation_state import (
     AUDIO_EVENT_OMISSION_REASON,
     AUDIO_EVENT_OMISSION_SCHEMA,
     AUDIO_EVENT_OMISSION_VERSION,
+    generation_item_status,
     load_generation_state_from_snapshot,
     load_stable_generation_queue,
 )
@@ -439,7 +440,7 @@ class OfflinePackPublisher:
             for result in results
             if result.get("status") in {"generated", "approved"}
         }
-        failed = sum(result.get("status") == "failed" for result in results)
+        failed = sum(generation_item_status(result) == "failed" for result in results)
         live = sum(result.get("status") == "live_fallback" for result in results)
         omitted = set(generation_input.audio_event_omission_queue_ids) | {
             queue_id
@@ -1007,7 +1008,7 @@ def _require_terminal_generation(
         raise OfflinePackError("Offline generation does not cover the selected queue")
     for queue_id in sorted(expected - omission_queue_ids):
         item = items[queue_id]
-        status = item.get("status")
+        status = generation_item_status(item)
         review = item.get("review_status")
         if (status, review) not in {
             ("approved", "approved"),

@@ -29,6 +29,7 @@ from vntts.dialog_capture import (
     dialog_completion_cue_visible,
     dialog_frames_equivalent,
     dialog_glyphs_visible,
+    dialog_render_frames_equivalent,
     fingerprint_dialog_frame,
     fingerprint_dialog_render_activity,
     get_screenshot_directory,
@@ -37,8 +38,10 @@ from vntts.generated_audio import GeneratedAudioFallbackBackend
 from vntts.live import IncrementalDialogTracker, LivePipelineMetrics
 from vntts.live_snapshot import read_live_snapshot
 from vntts.live_speech import play_typed_text
+from vntts.ocr_worker import cancel_pending_ocr, close_ocr_worker, open_ocr_worker
 from vntts.playback import PlaybackOutcome, PreparedPlayback
 from vntts.playback import TypedPlaybackBackend as _TypedPlaybackBackend
+from vntts.reading_diagnostics import record_diagnostic_event
 from vntts.runtime_config import (
     get_auto_advance_delay_seconds,
     get_tts_configuration,
@@ -247,11 +250,14 @@ class RuntimeLifecycleComponent:
                 self._shutdown_started.clear()
                 self.controller.shutdown_complete.clear()
             self.controller.shutdown_requested.clear()
+            open_ocr_worker()
 
     def start(self) -> bool:
         controller = self.controller
-        if controller.shutdown_requested.is_set():
-            return False
+        with self._shutdown_lock:
+            if controller.shutdown_requested.is_set():
+                return False
+            open_ocr_worker()
         if controller.is_ready:
             return True
         use_xtts = controller.settings.speech_backend == "coqui-xtts"
@@ -524,6 +530,7 @@ class RuntimeLifecycleComponent:
             ocr_uncertain=controller._admit_live_ocr_uncertainty,
             frame_fingerprint=fingerprint_dialog_frame,
             frame_equivalent=dialog_frames_equivalent,
+            frame_render_equivalent=dialog_render_frames_equivalent,
             frame_render_fingerprint=fingerprint_dialog_render_activity,
             frame_presence=dialog_glyphs_visible,
             frame_completion=dialog_completion_cue_visible,
@@ -614,6 +621,7 @@ class RuntimeLifecycleComponent:
             return None if was_live else False
         controller._set_backend_live_mode(False)
         reader.stop()
+        cancel_pending_ocr()
         controller.wait_for_reading()
         return was_live
 
@@ -746,6 +754,7 @@ class RuntimeLifecycleComponent:
         controller = self.controller
         with ExitStack() as cleanup:
             for release, description in (
+                (close_ocr_worker, "OCR worker shutdown"),
                 (stop_reader, "Reader shutdown"),
                 (
                     partial(controller._set_backend_live_mode, False),
@@ -896,7 +905,7 @@ class LiveSessionComponent:
             controller.status_handler("Reading current dialog")
         return bool(accepted)
 
-    def identify_scope(self) -> bool:
+    def identify_scope(self, *, cancellation: _Cancellation | None = None) -> bool:
         controller = self.controller
         if controller.shutdown_requested.is_set() is True:
             return False
@@ -905,59 +914,137 @@ class LiveSessionComponent:
         voice_router = controller.voice_router
         if voice_router is None:
             return False
+        target = controller.capture_target
+        settings = controller.settings
+        preloader = controller.chapter_voice_preloader
+        observation_serial = controller.observation_serial
+        bootstrap_id = uuid4().hex
+        controller.live_scope_identification_token = bootstrap_id
+        window = None
+        text = ""
+        match_result = None
         controller.live_scope_identification_failure = None
         controller.live_scope_identification_match_result = None
         controller.live_scope_identification_diagnostics = {}
-        character, text = read_live_snapshot(
-            get_screenshot_directory(controller.settings),
-            voice_router.registry,
-            controller.capture_target,
-            controller.settings.ocr_minimum_confidence,
-            controller._ocr_uncertain,
-            controller.uncertain_frame_recorder,
-            controller._publish_diagnostic,
-            controller._resolve_voice_label,
-            controller.settings.ocr_language,
-            controller.correction_dictionary,
-            controller._capture_region(),
-            controller._capture_ocr_regions(),
-            controller._resolve_story_ocr_result,
-        )
-        if is_empty(text):
-            controller.live_scope_identification_failure = "no-dialog-text"
-            return False
-        observed_character = character
-        character = controller._canonical_observed_character(
-            character or "Narrator", text
-        )
-        line, match_result = controller._resolve_initial_live_sequence_line(
-            character,
-            text,
-        )
-        controller.live_scope_identification_match_result = str(match_result)
-        latest = controller.get_latest_diagnostic()
-        controller.live_scope_identification_diagnostics = {
-            **controller.chapter_voice_preloader.last_resolution_diagnostics,
-            "live_sequence_mode": controller.settings.live_sequence_mode,
-            "plan_speech_line_count": (
-                sum(
-                    event.is_speech
-                    for event in controller.live_sequence_plan.events.values()
+
+        def finish(outcome: str, **details: object) -> bool:
+            if controller.live_scope_identification_token == bootstrap_id:
+                controller.live_scope_identification_failure = (
+                    None if outcome == "matched" else outcome
                 )
-                if controller.live_sequence_plan is not None
-                else 0
-            ),
-            "speaker_canonicalized": observed_character != character,
-            "ocr_confidence": round(latest.confidence, 2)
-            if latest is not None
-            else 0.0,
-            "correction_count": len(latest.corrections) if latest is not None else 0,
-        }
-        if line is None:
-            controller.live_scope_identification_failure = "story-line-no-match"
+            record_diagnostic_event(
+                "runtime",
+                "live-scope-bootstrap",
+                bootstrap_id=bootstrap_id,
+                outcome=outcome,
+                ocr_text_characters=len(text),
+                match_result=str(match_result) if match_result is not None else None,
+                **details,
+            )
             return False
-        controller.dialog_handler(line.speaker, line.text)
-        return True
+
+        def request_refusal() -> str | None:
+            if (
+                controller.live_scope_identification_token != bootstrap_id
+                or controller.shutdown_requested.is_set()
+                or (cancellation is not None and cancellation.is_set())
+                or controller.observation_serial != observation_serial
+                or controller.is_live_running
+            ):
+                return "cancelled"
+            if (
+                controller.capture_target is not target
+                or controller.settings is not settings
+                or controller.chapter_voice_preloader is not preloader
+            ):
+                return "target-changed"
+            if target is None:
+                return "capture-target-unavailable"
+            focused = controller._is_game_focused()
+            if window is not None and getattr(target, "last_window", None) != window:
+                return "target-changed"
+            return None if focused else "focus-lost"
+
+        try:
+            refusal = request_refusal()
+            if refusal is not None:
+                return finish("focus-wait" if refusal == "focus-lost" else refusal)
+            window = getattr(target, "last_window", None)
+
+            def while_current(callback: Callable[..., object]) -> Callable[..., object]:
+                def guarded(*arguments: object) -> object:
+                    if request_refusal() is None:
+                        return callback(*arguments)
+                    return None
+
+                return guarded
+
+            character, text = read_live_snapshot(
+                get_screenshot_directory(settings),
+                voice_router.registry,
+                target,
+                settings.ocr_minimum_confidence,
+                while_current(controller._ocr_uncertain),
+                controller.uncertain_frame_recorder,
+                while_current(controller._publish_diagnostic),
+                controller._resolve_voice_label,
+                settings.ocr_language,
+                controller.correction_dictionary,
+                controller._capture_region(),
+                controller._capture_ocr_regions(),
+                controller._resolve_story_ocr_result,
+            )
+            refusal = request_refusal()
+            if refusal is not None:
+                return finish(refusal)
+            if is_empty(text):
+                return finish("no-dialog-text")
+            with controller.story_cursor_lock:
+                refusal = request_refusal()
+                if refusal is not None:
+                    return finish(refusal)
+                previous_match = preloader.current_match
+                observed_character = character
+                character = controller._canonical_observed_character(
+                    character or "Narrator", text
+                )
+                line, match_result = controller._resolve_initial_live_sequence_line(
+                    character,
+                    text,
+                )
+                refusal = request_refusal()
+                if refusal is not None:
+                    preloader.current_match = previous_match
+                    return finish(refusal)
+                controller.live_scope_identification_match_result = str(match_result)
+                latest = controller.get_latest_diagnostic()
+                controller.live_scope_identification_diagnostics = {
+                    **controller.chapter_voice_preloader.last_resolution_diagnostics,
+                    "live_sequence_mode": controller.settings.live_sequence_mode,
+                    "plan_speech_line_count": (
+                        sum(
+                            event.is_speech
+                            for event in controller.live_sequence_plan.events.values()
+                        )
+                        if controller.live_sequence_plan is not None
+                        else 0
+                    ),
+                    "speaker_canonicalized": observed_character != character,
+                    "ocr_confidence": round(latest.confidence, 2)
+                    if latest is not None
+                    else 0.0,
+                    "correction_count": len(latest.corrections)
+                    if latest is not None
+                    else 0,
+                }
+                if line is None:
+                    return finish("story-line-no-match")
+                controller.dialog_handler(line.speaker, line.text)
+                finish("matched")
+                return True
+        except Exception as error:
+            finish("error", error_type=type(error).__name__)
+            raise
 
     def toggle(self) -> bool:
         controller = self.controller
@@ -999,6 +1086,8 @@ class LiveSessionComponent:
         if running:
             controller.next_live_narrator_fallback_names.clear()
             reader.max_speech_jobs = controller.live_speech_backpressure.reset()
+        if not running:
+            cancel_pending_ocr()
         controller._set_backend_live_mode(running)
         controller.status_handler(
             "Live reading started" if running else "Live reading stopping"
@@ -1015,6 +1104,7 @@ class LiveSessionComponent:
         if reader is None:
             return False
         stopped = reader.stop()
+        cancel_pending_ocr()
         controller.narrator_fallback_speakers.clear()
         controller.narrator_fallback_names.clear()
         controller.allow_unscoped_live_reading = False
@@ -1104,6 +1194,7 @@ class LiveSessionComponent:
         schedule = controller.schedule_dialog_read
         cancel_read = getattr(schedule, "cancel", None)
         cancelled_read = cancel_read() is True if callable(cancel_read) else False
+        cancel_pending_ocr()
         reader = controller.live_reader
         if reader is None:
             return cancelled_read

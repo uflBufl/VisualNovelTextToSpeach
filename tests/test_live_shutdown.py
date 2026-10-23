@@ -153,9 +153,10 @@ class LiveShutdownTest(unittest.TestCase):
     def test_shutdown_requested_between_start_checks_cannot_submit_workers(self):
         requested = Event()
         reader = create_reader(shutdown_requested=requested)
-        reader.clear_queue = Mock(side_effect=requested.set)
+        reader.clear_queue = Mock(side_effect=lambda *, reason: requested.set())
 
         self.assertFalse(reader.start())
+        reader.clear_queue.assert_called_once_with(reason="start-capture")
 
         reader.capture_executor.submit.assert_not_called()
         reader.ocr_executor.submit.assert_not_called()
