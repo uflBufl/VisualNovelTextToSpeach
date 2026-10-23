@@ -623,7 +623,7 @@ def _run_bulk_generation(
             narrator_reference=narrator_reference,
             allow_gated_model_access=arguments.allow_gated_model_access,
             terms_accepted=arguments.accept_xtts_terms,
-            persistent_audio_cache_max_entries=max(512, len(policy_queue.items) * 2),
+            persistent_audio_cache_max_entries=0,
             startup_cancellation=cancellation,
             startup_progress=startup_progress,
         )
@@ -674,13 +674,13 @@ def _run_bulk_generation(
                 failure_repair_policy=repair_policy.to_document(),
                 silence_failure_evidence=arguments.capture_silence_failure,
                 audio_event_spoken_projection_queue_ids=projection_ids,
+                audio_store_directory=(
+                    Path(cache_directory).parent / "audio-store"
+                    if arguments.cache_directory is not None
+                    else arguments.output.expanduser().resolve().parent / "audio-store"
+                ),
                 synthesis_cache_policy=(
-                    "refresh"
-                    if arguments.cache_directory is not None
-                    and arguments.regenerate_existing
-                    else "use"
-                    if arguments.cache_directory is not None
-                    else "bypass"
+                    "refresh" if arguments.regenerate_existing else "use"
                 ),
                 cancellation=cancellation,
                 approve_validated_audio=arguments.approve_validated_audio,

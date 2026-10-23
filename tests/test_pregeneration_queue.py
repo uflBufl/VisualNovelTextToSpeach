@@ -14,8 +14,13 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import load_story_index_document
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
+from tests.bulk_generation_fixtures import SyntheticRenderer
 from tests.story_fixtures import semantic_evidence_document, semantic_evidence_entry
 from vntts.authoring.audio_events import audio_event_plan_for_record
+from vntts.authoring.bulk_generation import run_bulk_generation
+from vntts.authoring.generation_state import load_generation_state
+from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
+from vntts.pregeneration_pack import OfflinePackPublisher
 from vntts.pregeneration_queue import (
     PregenerationInputStore,
     PregenerationQueueError,
@@ -35,6 +40,32 @@ from vntts.source_audio_semantics import (
 )
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import CharacterVoiceRegistry, remember_voice_binding
+
+
+class PocketRenderer(SyntheticRenderer):
+    name = "pocket-tts"
+    model_name = "pocket-tts"
+
+
+def generate_prepared(prepared, renderer, **options):
+    return run_bulk_generation(
+        prepared.queue,
+        prepared.output_directory,
+        renderer,
+        provider="pocket-tts",
+        model="pocket-tts",
+        generation_profile="default",
+        retries=0,
+        control_files={"voice_manifest": prepared.voice_manifest},
+        narrator_character="Narrator",
+        synthesis_character_overrides={
+            role: "Narrator" for role in prepared.narrator_fallback_roles
+        },
+        missing_voice_policy=MissingVoicePolicy(
+            NARRATOR_ROLES, prepared.narrator_fallback_roles
+        ),
+        **options,
+    )
 
 
 def write_content(root):
@@ -507,6 +538,187 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 for relative in voice["references"]:
                     probe_pcm16_mono_wav(result.directory / relative)
             self.assertNotIn("not-selected", result.story_index.read_text())
+
+    def test_voice_revision_reuses_completed_other_characters_without_cache(self):
+        for partial, cross_job in (
+            (False, False),
+            (True, False),
+            (False, True),
+            (True, True),
+        ):
+            with (
+                self.subTest(partial=partial, cross_job=cross_job),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                job, jobs, plan, manifest = self.fixture(root)
+                store = PregenerationInputStore(jobs)
+                original = store.materialize(job, plan)
+                generate_prepared(
+                    original,
+                    PocketRenderer(),
+                    include_characters=("Narrator", "Hotelier") if partial else None,
+                )
+                before = load_generation_state(
+                    original.output_directory / "generation-state.json", original.queue
+                )
+                old_files = {
+                    key: original.output_directory / value["path"]
+                    for key, value in before["items"].items()
+                }
+                for source in old_files.values():
+                    detached = source.with_suffix(".detached")
+                    detached.write_bytes(source.read_bytes())
+                    detached.replace(source)
+                centurion = CharacterVoiceRegistry.from_file(manifest).resolve(
+                    "Centurion"
+                )
+                revised = replace(
+                    plan,
+                    job_id="b" * 24 if cross_job else plan.job_id,
+                    groups=tuple(
+                        replace(
+                            group,
+                            source_id="character:centurion",
+                            source_character="Centurion",
+                            source_speaker="centurion-v1",
+                            reference_sha256s=tuple(
+                                sha256_file(path) for path in centurion.references
+                            ),
+                            control_sha256="f" * 64,
+                        )
+                        if group.character == "Rhiannon"
+                        else group
+                        for group in plan.groups
+                    ),
+                )
+                if cross_job:
+                    job = replace(job, job_id=revised.job_id)
+                current = store.materialize(job, revised)
+                state = load_generation_state(
+                    current.output_directory / "generation-state.json", current.queue
+                )
+                self.assertEqual(
+                    {value["line_id"] for value in state["items"].values()},
+                    {"hotelier", "unknown"},
+                )
+                for key, value in state["items"].items():
+                    target = current.output_directory / value["path"]
+                    self.assertTrue(target.samefile(old_files[key]))
+                    self.assertEqual(sha256_file(target), value["file_sha256"])
+                changes = OfflinePackPublisher().inspect_changes(job, current)
+                self.assertEqual((changes.reused, changes.new), (2, 2))
+                self.assertEqual(
+                    PregenerationInputStore(jobs).materialize(job, revised), current
+                )
+                renderer = PocketRenderer()
+                generate_prepared(current, renderer)
+                self.assertEqual(len(renderer.requests), 2)
+                self.assertEqual(
+                    {request.voice for request in renderer.requests}, {"Rhiannon"}
+                )
+
+    def test_restart_imports_missing_results_without_changing_existing_decisions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs, plan, _ = self.fixture(root)
+            store = PregenerationInputStore(jobs)
+            original = store.materialize(job, plan)
+            revised = replace(
+                plan,
+                groups=tuple(
+                    replace(group, control_sha256="e" * 64) for group in plan.groups
+                ),
+            )
+            current = store.materialize(job, revised)
+            generate_prepared(
+                current,
+                PocketRenderer(
+                    [RuntimeError("recorded failure"), RuntimeError("recorded failure")]
+                ),
+                include_characters=("Rhiannon",),
+            )
+            before = load_generation_state(
+                current.output_directory / "generation-state.json", current.queue
+            )
+            generate_prepared(
+                original, PocketRenderer(), include_characters=("Narrator", "Hotelier")
+            )
+            self.assertEqual(
+                PregenerationInputStore(jobs).materialize(job, revised), current
+            )
+            after = load_generation_state(
+                current.output_directory / "generation-state.json", current.queue
+            )
+            self.assertEqual(len(after["items"]), 4)
+            for queue_id, result in before["items"].items():
+                self.assertEqual(after["items"][queue_id], result)
+
+    def test_corrupt_completed_recording_is_not_reused_or_replaced(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs, plan, _ = self.fixture(root)
+            store = PregenerationInputStore(jobs)
+            original = store.materialize(job, plan)
+            generate_prepared(original, PocketRenderer())
+            state = load_generation_state(
+                original.output_directory / "generation-state.json", original.queue
+            )
+            source = (
+                original.output_directory / next(iter(state["items"].values()))["path"]
+            )
+            source.write_bytes(b"corrupt recording")
+            revised = replace(
+                plan,
+                groups=tuple(
+                    replace(group, control_sha256="e" * 64) for group in plan.groups
+                ),
+            )
+            with self.assertRaisesRegex(
+                PregenerationQueueError, "reuse saved offline audio"
+            ):
+                store.materialize(job, revised)
+            self.assertEqual(source.read_bytes(), b"corrupt recording")
+
+    def test_changed_synthesis_controls_do_not_reuse_completed_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs, plan, _ = self.fixture(root)
+            store = PregenerationInputStore(jobs)
+            original = store.materialize(job, plan)
+            generate_prepared(original, PocketRenderer())
+            revised = replace(
+                plan,
+                synthesis_controls_sha256="d" * 64,
+                groups=tuple(
+                    replace(group, control_sha256="e" * 64) for group in plan.groups
+                ),
+            )
+            current = store.materialize(job, revised)
+            self.assertFalse(current.output_directory.exists())
+
+    def test_unrelated_damaged_previous_job_does_not_block_preparation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs, plan, _ = self.fixture(root)
+            store = PregenerationInputStore(jobs)
+            original = store.materialize(job, plan)
+            generate_prepared(original, PocketRenderer())
+            original.voice_manifest.write_bytes(b"damaged unrelated manifest")
+            other_job = replace(
+                job, job_id="b" * 24, selected_line_ids=("not-selected",)
+            )
+            current = store.materialize(
+                other_job, replace(plan, job_id=other_job.job_id)
+            )
+            self.assertEqual(
+                [
+                    item.line_id
+                    for item in VoiceGenerationQueue.load(current.queue).items
+                ],
+                ["not-selected"],
+            )
+            self.assertFalse(current.output_directory.exists())
 
     def test_materialization_rejects_duplicate_selected_line_ids(self):
         with TemporaryDirectory() as temporary_directory:

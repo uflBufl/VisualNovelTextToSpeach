@@ -723,7 +723,8 @@ class MossTTSBackendTest(unittest.TestCase):
 
         self.assertEqual(model.generate_calls, [])
         self.assertEqual(output.streams[0].options["channels"], 2)
-        np.testing.assert_array_equal(output.streams[0].writes[0], expected)
+        expected_pcm16 = np.floor(expected * 32768) / 32768
+        np.testing.assert_array_equal(output.streams[0].writes[0], expected_pcm16)
 
     def test_complete_audio_cache_survives_backend_restart(self):
         first_backend, first_model, _output = self.create_backend()

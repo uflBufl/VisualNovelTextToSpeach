@@ -5163,7 +5163,7 @@ class OfflineAudioPreparationDialog(QDialog):
                     ),
                     (
                         "Additional WAV storage",
-                        f"roughly {max(1, (resources.remaining_disk_bytes + 999_999) // 1_000_000)} MB; final publication also needs space for a copy of the pack"
+                        f"roughly {max(1, (resources.remaining_disk_bytes + 999_999) // 1_000_000)} MB; saved recordings are shared with the final pack"
                         if resources.remaining_items
                         else "No new speech to generate; final publication may still need temporary space",
                     ),

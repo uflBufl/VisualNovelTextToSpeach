@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import os
 import shutil
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -42,6 +41,7 @@ from vntts_artifacts.voice_manifest import (
     write_voice_manifest,
 )
 
+from vntts.audio_store import SharedAudioStore, link_shared_audio
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_manifest import approved_manifest_entries
@@ -644,6 +644,12 @@ class OfflinePackPublisher:
                     generated_copy,
                     current_omissions,
                     cancel_event=cancel_event,
+                    audio_store_directory=(
+                        generation_input.directory.parent.parent
+                        if generation_input.directory.parent.name == job.job_id
+                        else generation_input.directory.parent
+                    )
+                    / "audio-store",
                 )
                 _raise_if_cancelled(cancel_event)
                 _write_route_manifest(
@@ -838,13 +844,6 @@ def _pack_staging_bytes(
     voices: tuple[VoiceManifestEntry, ...],
 ) -> int:
     copies: dict[str, Path] = {}
-    for record in approved_manifest_entries(
-        state, generation_result.output, validate_files=False
-    ):
-        relative = _safe_relative(record["audio"], "Generated WAV")
-        copies[f"audio/{record['audio_sha256']}.wav"] = generation_result.output / Path(
-            *relative.parts
-        )
     metadata = [generation_input.story_index, generation_input.voice_manifest]
     if generation_input.source_audio_semantic_evidence is not None:
         metadata.append(generation_input.source_audio_semantic_evidence)
@@ -871,13 +870,6 @@ def _pack_staging_bytes(
             base_voices,
             portable=True,
         )
-        if base.generated_audio_manifest is not None:
-            current_line_ids = {record.line_id for record in story.records}
-            for record in load_generated_audio_document(
-                base.generated_audio_manifest
-            ).records:
-                if record.line_id not in current_line_ids:
-                    copies[f"audio/{record.audio_sha256}.wav"] = record.audio
     return int(
         1_048_576
         + sum(path.stat().st_size for path in copies.values())
@@ -1400,24 +1392,32 @@ def _write_cumulative_routes(
     current_omissions: JsonRecords,
     *,
     cancel_event: Cancellation | None,
+    audio_store_directory: Path | None = None,
 ) -> tuple[JsonRecords, JsonRecords, JsonRecords]:
     current_line_ids = {record.line_id for record in current_story.records}
     records: JsonRecords = []
     live_fallbacks: JsonRecords = []
     omissions: JsonRecords = []
+    audio_store = SharedAudioStore(
+        audio_store_directory or generation_result.output.parent / "audio-store"
+    )
     if base is not None:
         if base.generated_audio_manifest is None:
             raise OfflinePackError("Active self-service pack has no audio routes")
         base_generated = load_generated_audio_document(base.generated_audio_manifest)
         for record in base_generated.records:
             _raise_if_cancelled(cancel_event)
+            if sha256_file(record.audio) != record.audio_sha256:
+                raise OfflinePackError("Existing recording changed before publication")
+            canonical = audio_store.put(record.audio_sha256, record.audio)
+            _link_verified_file(canonical, record.audio, record.audio_sha256)
             if record.line_id not in current_line_ids:
                 records.append(
                     _portable_generated_record(
                         record.to_record(),
                         record.audio,
                         generated_copy,
-                        reuse=True,
+                        audio_store=audio_store,
                     )
                 )
         live_fallbacks.extend(
@@ -1448,6 +1448,7 @@ def _write_cumulative_routes(
                 record,
                 generation_result.output / Path(*relative.parts),
                 generated_copy,
+                audio_store=audio_store,
             )
         )
     live_fallbacks.extend(_live_fallback_records(state))
@@ -1463,18 +1464,26 @@ def _portable_generated_record(
     source: Path,
     generated_copy: Path,
     *,
-    reuse: bool = False,
+    audio_store: SharedAudioStore | None = None,
 ) -> JsonObject:
     candidate = copy.deepcopy(record)
     portable = f"audio/{candidate['audio_sha256']}.wav"
     destination = generated_copy.parent / portable
-    if reuse:
-        digest = candidate.get("audio_sha256")
-        if not isinstance(digest, str):
-            raise OfflinePackError("Generated audio digest is invalid")
+    digest = candidate.get("audio_sha256")
+    if not isinstance(digest, str):
+        raise OfflinePackError("Generated audio digest is invalid")
+    try:
+        if sha256_file(source) != digest:
+            raise OfflinePackError("Generated recording changed before publication")
+        if audio_store is not None:
+            canonical = audio_store.put(digest, source)
+            _link_verified_file(canonical, source, digest)
+            source = canonical
         _link_verified_file(source, destination, digest)
-    else:
-        _copy_file(source, destination)
+    except (OSError, ValueError) as error:
+        raise OfflinePackError(
+            f"Unable to link generated recording: {error}"
+        ) from error
     candidate["audio"] = portable
     return candidate
 
@@ -1680,22 +1689,10 @@ def _copy_file(source: str | Path, destination: Path) -> str:
 def _link_verified_file(
     source: str | Path, destination: Path, expected_sha256: str
 ) -> None:
-    source = Path(source)
-    if not source.is_file() or source.is_symlink():
-        raise OfflinePackError(f"Offline pack source is unsafe: {source}")
-    source = source.resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.is_file():
-        if sha256_file(destination) == expected_sha256:
-            return
-        raise OfflinePackError(f"Offline pack destination conflicts: {destination}")
     try:
-        os.link(source, destination)
-    except OSError:
-        _copy_file(source, destination)
-        return
-    if sha256_file(destination) != expected_sha256:
-        raise OfflinePackError(f"Offline pack source changed: {source}")
+        link_shared_audio(Path(source), destination, expected_sha256=expected_sha256)
+    except (OSError, ValueError) as error:
+        raise OfflinePackError(f"Unable to link offline pack audio: {error}") from error
 
 
 def _safe_relative(value: object, label: str) -> PurePosixPath:

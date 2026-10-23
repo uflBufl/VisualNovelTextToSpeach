@@ -631,6 +631,7 @@ class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
         self.persistent_audio_cache = PersistentAudioCache(
             persistent_audio_cache_directory
             or get_local_data_directory() / "audio-cache" / self.name,
+            sample_rate=self.sample_rate,
             max_entries=(
                 max(64, self.audio_cache.max_entries * 8)
                 if persistent_audio_cache_max_entries is None
@@ -662,6 +663,10 @@ class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
         return SynthesisChunkStream(
             self._render_chunks(request, spoken_text, profile, cache_policy)
         )
+
+    def synthesis_key(self, request: SynthesisRequest) -> str:
+        spoken_text, _profile, _policy = self._validate_render_request(request)
+        return self._persistent_cache_key(request.voice, spoken_text)
 
     def prime(self, character: str) -> bool:
         """Load or create a speaker embedding before dialogue is complete."""
@@ -1177,6 +1182,7 @@ class PocketTTSVoiceRouterBackend:
         self.persistent_audio_cache = PersistentAudioCache(
             persistent_audio_cache_directory
             or get_local_data_directory() / "audio-cache" / self.name,
+            sample_rate=self.sample_rate,
             max_entries=(
                 max(64, self.audio_cache.max_entries * 8)
                 if persistent_audio_cache_max_entries is None
@@ -1220,7 +1226,9 @@ class PocketTTSVoiceRouterBackend:
         self.playback_stop.clear()
         return self._render_prepared(prepared, request)
 
-    def _prepare_request(self, request: SynthesisRequest) -> PocketTTSPreparedSpeech:
+    def _validate_render_request(
+        self, request: SynthesisRequest
+    ) -> tuple[str, str, SynthesisCachePolicy]:
         spoken_text = " ".join((request.text or "").split())
         if not spoken_text:
             raise TTSSynthesisError("Pocket TTS received empty text")
@@ -1239,6 +1247,15 @@ class PocketTTSVoiceRouterBackend:
             raise TTSConfigurationError(
                 f"Unknown synthesis cache policy {request.cache_policy!r}"
             ) from error
+        return spoken_text, profile, cache_policy
+
+    def synthesis_key(self, request: SynthesisRequest) -> str:
+        spoken_text, _profile, _policy = self._validate_render_request(request)
+        voice_key, source = self._resolve_voice_source(request.voice)
+        return self._persistent_cache_key(voice_key, spoken_text, source)
+
+    def _prepare_request(self, request: SynthesisRequest) -> PocketTTSPreparedSpeech:
+        spoken_text, profile, cache_policy = self._validate_render_request(request)
         voice_key, source = self._resolve_voice_source(request.voice)
         cache_key = voice_key, spoken_text
         persistent_key = (
@@ -1864,6 +1881,7 @@ class MossTTSVoiceRouterBackend:
         self.persistent_audio_cache = PersistentAudioCache(
             persistent_audio_cache_directory
             or get_local_data_directory() / "audio-cache" / self.name,
+            sample_rate=self.sample_rate,
             max_entries=(
                 max(64, self.audio_cache.max_entries * 8)
                 if persistent_audio_cache_max_entries is None
@@ -1953,7 +1971,9 @@ class MossTTSVoiceRouterBackend:
         self.playback_stop.clear()
         return self._render_prepared(prepared, request)
 
-    def _prepare_request(self, request: SynthesisRequest) -> MossTTSPreparedSpeech:
+    def _validate_render_request(
+        self, request: SynthesisRequest
+    ) -> tuple[str, str, dict[str, float], SynthesisCachePolicy]:
         spoken_text = normalize_short_trailing_ellipsis(
             " ".join((request.text or "").split())
         )
@@ -1968,6 +1988,24 @@ class MossTTSVoiceRouterBackend:
             raise TTSConfigurationError(
                 f"Unknown synthesis cache policy {request.cache_policy!r}"
             ) from error
+        return spoken_text, profile, generation_options, cache_policy
+
+    def synthesis_key(self, request: SynthesisRequest) -> str:
+        spoken_text, profile, options, _policy = self._validate_render_request(request)
+        voice_key, source = self._resolve_voice_source(request.voice)
+        return self._persistent_cache_key(
+            voice_key,
+            spoken_text,
+            source,
+            seed=request.seed,
+            generation_profile=profile,
+            generation_options=options,
+        )
+
+    def _prepare_request(self, request: SynthesisRequest) -> MossTTSPreparedSpeech:
+        spoken_text, profile, generation_options, cache_policy = (
+            self._validate_render_request(request)
+        )
         voice_key, source = self._resolve_voice_source(request.voice)
         max_tokens, max_audio_seconds = moss_generation_limits(spoken_text)
         cache_key = voice_key, spoken_text, profile, request.seed

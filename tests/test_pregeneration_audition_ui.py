@@ -563,7 +563,10 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             plan, group, _manifest = ambiguous_fixture(Path(directory))
             service = Mock(backend=Mock(runtime_status="GPU model loaded"))
             panel = VoiceAuditionPanel(
-                Mock(), preview_service=service, thread_pool=ManualThreadPool()
+                Mock(),
+                preview_service=service,
+                player=Mock(),
+                thread_pool=ManualThreadPool(),
             )
             self.addCleanup(panel.deleteLater)
             panel.start(plan, group_id=group.group_id)
@@ -905,7 +908,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             plan, _group = with_second_candidate(plan, group)
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
-                VoiceDecisionStore(root / "decisions.json"), thread_pool=pool
+                VoiceDecisionStore(root / "decisions.json"),
+                player=Mock(),
+                thread_pool=pool,
             )
             previous = panel.preview_service
             self.assertFalse(panel.runtime_timer.isActive())

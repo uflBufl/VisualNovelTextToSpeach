@@ -840,7 +840,7 @@ def worker_main(
                         cache = getattr(backend, cache_name, None)
                         if isinstance(cache, dict):
                             cache.pop("narrator", None)
-                if command_type == "render":
+                if command_type in {"render", "synthesis-key"}:
                     request = SynthesisRequest(
                         voice=_required_text(command, "voice"),
                         text=_required_text(command, "text"),
@@ -852,6 +852,19 @@ def worker_main(
                             _required_text(command, "cache_policy")
                         ),
                     )
+                    if command_type == "synthesis-key":
+                        identity = getattr(backend, "synthesis_key", None)
+                        with redirect_stdout(sys.stderr):
+                            value = identity(request) if callable(identity) else None
+                        _write_frame(
+                            protocol_out,
+                            {
+                                "type": "synthesis-key",
+                                "request_id": request_id,
+                                "value": value,
+                            },
+                        )
+                        continue
                     with redirect_stdout(sys.stderr):
                         rendered = backend.render(request)
                         for chunk in rendered:
@@ -1466,6 +1479,24 @@ class IsolatedSpeechBackend:
         if not isinstance(request, SynthesisRequest):
             raise TTSConfigurationError("Isolated backend received an invalid request")
         return SynthesisChunkStream(self._render_chunks(request))
+
+    def synthesis_key(self, request: SynthesisRequest) -> str | None:
+        if not isinstance(request, SynthesisRequest):
+            raise TTSConfigurationError("Isolated backend received an invalid request")
+        value = self._request_value(
+            "synthesis-key",
+            voice=request.voice,
+            text=request.text,
+            seed=request.seed,
+            generation_profile=request.generation_profile,
+            cache_policy=SynthesisCachePolicy(request.cache_policy).value,
+            cancellation=lambda: (
+                self._stop_requested.is_set() or request.cancellation_requested()
+            ),
+        )
+        if value is not None and (not isinstance(value, str) or not value):
+            raise TTSConfigurationError("Speech worker synthesis key is malformed")
+        return value
 
     def _render_chunks(
         self, request: SynthesisRequest

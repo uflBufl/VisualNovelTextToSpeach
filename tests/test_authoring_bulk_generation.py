@@ -83,12 +83,14 @@ class CacheAwareSyntheticRenderer:
     model_name = "pocket-tts"
 
     def __init__(self, cache_root):
-        self.cache = PersistentAudioCache(Path(cache_root) / "audio")
+        self.cache = PersistentAudioCache(
+            Path(cache_root) / "audio", sample_rate=16_000
+        )
         self.fresh_renders = 0
         self.stop_calls = 0
 
-    def render(self, request):
-        key = self.cache.key(
+    def synthesis_key(self, request):
+        return self.cache.key(
             backend=self.name,
             model=self.model_name,
             voice=request.voice,
@@ -98,6 +100,9 @@ class CacheAwareSyntheticRenderer:
                 "seed": request.seed,
             },
         )
+
+    def render(self, request):
+        key = self.synthesis_key(request)
         pcm = (
             self.cache.get(key)
             if request.cache_policy is SynthesisCachePolicy.USE
@@ -4461,6 +4466,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             renderers = []
 
             def create_renderer(_name, _registry, cache_root, **_options):
+                self.assertEqual(_options["persistent_audio_cache_max_entries"], 0)
                 renderer = CacheAwareSyntheticRenderer(cache_root)
                 renderers.append(renderer)
                 return renderer
@@ -4485,8 +4491,11 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                                     str(queue),
                                     "--output",
                                     str(root / output_name),
-                                    "--cache-directory",
-                                    str(cache),
+                                    *(
+                                        ["--cache-directory", str(cache)]
+                                        if output_name == "first-output"
+                                        else []
+                                    ),
                                     "--voice-manifest",
                                     str(voice_manifest),
                                     "--backend",
@@ -4508,6 +4517,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 root / "second-output" / "generation-state.json",
                 queue,
             )
+            first = next((root / "first-output/audio").rglob("*.wav"))
+            second = next((root / "second-output/audio").rglob("*.wav"))
+            self.assertTrue(first.samefile(second))
 
         self.assertEqual([renderer.fresh_renders for renderer in renderers], [1, 0])
         self.assertEqual(len(first_state["items"]), 1)
