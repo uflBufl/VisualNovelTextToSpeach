@@ -93,6 +93,9 @@ class SystemAudioOutput:
     def request_refresh(self) -> None:
         # The Qt/main thread must never wait for a blocking device write.
         self.pending.set()
+        from vntts.rust_audio import notify_audio_device_changed
+
+        notify_audio_device_changed()
 
     def _refresh(self) -> None:
         # Establish the first baseline before opening streams, avoiding a late

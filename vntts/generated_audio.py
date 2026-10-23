@@ -30,6 +30,7 @@ from vntts.audio_output import (
     PlaybackAudioOutput,
     match_output_sample_rate,
     playback_cancelled,
+    prepared_output_stream,
     resolve_audio_output,
     write_pcm_chunks,
 )
@@ -1408,7 +1409,8 @@ class AudioRoutePlaybackOwner:
                     )
                 stream_factory = getattr(self.router.audio_output, "OutputStream", None)
                 if callable(stream_factory):
-                    with stream_factory(
+                    with prepared_output_stream(
+                        self.router.audio_output,
                         samplerate=sample_rate,
                         channels=1,
                         dtype="float32",
@@ -1422,6 +1424,7 @@ class AudioRoutePlaybackOwner:
                                 self.generated_audio_stop, playback_guard
                             ),
                             first_write=first_write,
+                            stop_requested=self.generated_audio_stop,
                         )
                 else:
                     self.router.audio_output.play(

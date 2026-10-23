@@ -1,5 +1,40 @@
 # TODO
 
+## Rust audio experiment (separate branch)
+
+User scope: `feature/rust-audio-experiment`, local Cargo build only; no binary
+release, installers or CI changes. Prepared PCM uses the Rust owner; original game
+audio and live model streaming keep their existing paths for this experiment.
+
+- [ ] Qualify digital output from the actual Rust audio owner. The existing
+      ScreenCaptureKit recording of the Python application produces silent PCM
+      while Rust is audible, and the headless worker PID is absent from its
+      application list. Use a macOS14.2+ Core Audio process tap: translate the
+      live worker PID to its HAL process object, reject unknown object0 even with
+      success status, and verify the PID/executable roundtrip. Read-only HAL
+      discovery already finds the headless worker. Attach only that process to a
+      private unmuted tap/private aggregate, with bounded IOProc buffers and
+      reverse-order teardown. Qualify the recorder identity/Audio Capture consent
+      separately; an existing Screen Recording grant is insufficient evidence.
+      Require positive, nonzero captured PCM during an approved clip; never fall
+      back to the parent or global system audio. Correlate approved
+      source WAV PCM with recorded output and retain full-run video coverage.
+      A concurrent scope probe was followed by ScreenCaptureKit -3805 in the first
+      recording; keep scope probes separate from acceptance and investigate
+      recorder lifetime interference if it reproduces with serialized ownership.
+- [ ] Compare both owners in the real game with genuine concurrent heavy chapter
+      generation/publication, using the same approved WAVs, device, rate and
+      latency. Controlled GIL stress establishes feeder isolation, not the cause
+      of the historical app underruns. Do not claim audible gap removal or full
+      Mac R12 acceptance from callback counters alone. Include native Pause/Stop,
+      restart, worker crash and actual default-device-change checks; retain the
+      existing interrupt/requeue Pause behavior rather than implying a new seek.
+- [ ] Before extending Rust to live model streaming, trace every live/announcement
+      caller and define bounded PCM ingress/backpressure and cancellation. A
+      parent-proxied stream still depends on Python delivery; do not claim full
+      live GIL independence until the model-to-output transport qualifies it.
+      Keep this separate from prepared playback and do not optimize generators.
+
 ## Current scope and execution order
 
 Target: finish the Mac Reading follow-up by fixing every defect found in the prior

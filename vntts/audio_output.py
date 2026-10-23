@@ -1,10 +1,11 @@
 """Small shared helpers for lazy audio output and playback status."""
 
+import os
 from collections.abc import Callable, Mapping
 from threading import Event, Lock, current_thread
 from time import monotonic
 from types import ModuleType
-from typing import Protocol, TypeAlias, TypeGuard, overload
+from typing import Protocol, TypeAlias, TypeGuard, cast, overload
 from uuid import uuid4
 
 import numpy as np
@@ -117,6 +118,44 @@ def resolve_audio_output(
     ) == "sounddevice" and _supports_streaming_output(audio_output):
         return _LoggedAudioOutput(audio_output)
     return audio_output
+
+
+def prepared_output_stream(
+    audio_output: PlaybackAudioOutput,
+    *,
+    samplerate: int,
+    channels: int,
+    dtype: str,
+    latency: object,
+) -> _StreamingAudioContext:
+    """Select the experimental owner only for prepared system-output buffers."""
+    from vntts.system_audio import SystemAudioOutput
+
+    options = dict(
+        samplerate=samplerate, channels=channels, dtype=dtype, latency=latency
+    )
+    backend = os.environ.get("VNTTS_PREPARED_AUDIO_BACKEND", "python")
+    if backend not in {"python", "rust"}:
+        raise ValueError("VNTTS_PREPARED_AUDIO_BACKEND must be python or rust")
+    if (
+        backend == "rust"
+        and isinstance(audio_output, _LoggedAudioOutput)
+        and isinstance(audio_output.output, SystemAudioOutput)
+    ):
+        from vntts.rust_audio import RustPreparedStream
+
+        fields = {**audio_output._device_fields(), **options, "backend": "rust"}
+        return _LoggedOutputStream(
+            RustPreparedStream(
+                samplerate=samplerate, channels=channels, dtype=dtype, latency=latency
+            ),
+            uuid4().hex,
+            fields,
+            dict(audio_lifecycle_context.get() or {}),
+        )
+    return cast(AudioOutput, audio_output).OutputStream(
+        samplerate=samplerate, channels=channels, dtype=dtype, latency=latency
+    )
 
 
 class _LoggedOutputStream:
@@ -476,11 +515,17 @@ def write_pcm_chunks(
     cancelled: Callable[[], bool],
     *,
     first_write: Callable[[], None] | None = None,
+    stop_requested: Event | None = None,
 ) -> tuple[bool, bool]:
     """Write short blocks so only the owner thread ever stops the device."""
     samples = np.asarray(audio, dtype=np.float32)
     if samples.ndim == 1:
         samples = samples.reshape(-1, 1)
+    from vntts.rust_audio import RustPreparedStream
+
+    owner = stream.stream if isinstance(stream, _LoggedOutputStream) else stream
+    if isinstance(owner, RustPreparedStream):
+        return owner.play_buffer(samples, cancelled, first_write, stop_requested)
     block_frames = max(1, sample_rate // 20)
     underflowed = False
     wrote = False
@@ -583,7 +628,8 @@ class SynchronousPcmPlaybackMixin:
                     self._prepare_audio(prepared.payload),
                     self.sample_rate,
                 )
-                with audio_output.OutputStream(
+                with prepared_output_stream(
+                    audio_output,
                     samplerate=playback_sample_rate,
                     channels=1,
                     dtype="float32",
@@ -599,6 +645,7 @@ class SynchronousPcmPlaybackMixin:
                         playback_sample_rate,
                         cancelled,
                         first_write=first_write,
+                        stop_requested=stop_requested,
                     )
                 interrupted = not completed
             except Exception as error:
@@ -654,6 +701,7 @@ __all__ = [
     "SynchronousPcmPlaybackMixin",
     "match_output_sample_rate",
     "playback_cancelled",
+    "prepared_output_stream",
     "resolve_audio_output",
     "sanitize_playback_audio",
     "write_pcm_chunks",

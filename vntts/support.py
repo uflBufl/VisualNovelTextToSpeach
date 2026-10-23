@@ -65,6 +65,15 @@ audio_route_fields = (
 )
 
 audio_lifecycle_fields = (
+    "backend",
+    "worker_pid",
+    "worker_startup_ms",
+    "preload_ms",
+    "frames_played",
+    "callback_count",
+    "elapsed_ms",
+    "first_callback_received_ms",
+    "output_latency_seconds",
     "system_write_attempts",
     "system_write_failures",
     "device_reopens",

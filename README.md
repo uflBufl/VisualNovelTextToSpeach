@@ -847,3 +847,44 @@ Run the OCR notebooks from `exps/`:
 uv sync --no-dev --group notebook
 uv run --no-dev --group notebook jupyter lab
 ```
+
+### Experimental Rust prepared-audio output
+
+The `feature/rust-audio-experiment` branch can play complete prepared buffers in
+an independent Rust process. Build it yourself with Rust/Cargo and the platform
+linker installed:
+
+```sh
+cargo build --release --locked --manifest-path native/audio-worker/Cargo.toml
+VNTTS_PREPARED_AUDIO_BACKEND=rust uv run vntts-app
+```
+
+In Windows PowerShell, set `$env:VNTTS_PREPARED_AUDIO_BACKEND = 'rust'` before
+`uv run vntts-app`. Set the value to `python` or remove it to use the existing
+output. `VNTTS_AUDIO_WORKER` can select an explicitly built worker executable;
+`VNTTS_PORTAUDIO_LIBRARY` can select its PortAudio DLL/dylib/shared library.
+The worker uses the public PortAudio ABI; it does not build or download PortAudio.
+A requested Rust worker that is missing or fails reports an error without silently
+switching back to Python.
+
+This experiment affects prepared chapter recordings and fully prepared backend
+playback. Original game voices and live model streaming keep their existing paths.
+The full validated float32 buffer is transferred before Start; its device callback
+only copies PCM and reads atomic controls. Existing Reading Pause interrupts and
+requeues the dialogue; it does not acquire new seek/resume behavior. Native
+protocol Pause/Resume preserves the buffer position. Device changes invalidate the
+worker; a later explicit playback starts a fresh process.
+
+For a controlled comparison using one approved mono WAV:
+
+```sh
+uv run python -m scripts.compare_prepared_audio /absolute/approved.wav /absolute/new-receipt.json --repeats 2
+```
+
+The comparison plays the same PCM through both owners, then repeats with deliberate
+200ms Python GIL holds. It records native underflows, format/hash integrity,
+completion and startup/preload timings. This synthetic stress is separate from a
+real game/OCR/background-generation run. Python event receipt and blocking-write
+return are different onset observations; neither measures physical speaker onset.
+Rust process isolation cannot guarantee operating-system or device scheduling.
+No installers, binary downloads or CI build matrix are added for this experiment.
