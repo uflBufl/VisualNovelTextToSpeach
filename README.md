@@ -335,6 +335,24 @@ compatibility only; current routing consumes call-bound typed outcomes. See
 [typed live audio routing](docs/live-audio-routing.md) and
 [device-independent rendering](docs/synthesis-rendering.md).
 
+For an explicitly requested timing investigation, start the GUI with a new journal:
+
+```sh
+uv run vntts-app --timeline-journal /absolute/path/to/new-timeline.jsonl
+```
+
+This opt-in journal retains symbolic identities and numeric timing evidence before
+ordinary timeline eviction, without dialogue, pixels or free-text error messages.
+It has a 128-event writer queue and stops admitting events at 20,000 events or
+8 MiB. Disk writes run outside the recording caller; overflow, capacity limits,
+write failures and pending events remain visible in the support report's
+`generation-timelines.json` acquisition summary. The separate JSONL is not
+implicitly included in support archives. Existing files are never overwritten.
+Exit requests a bounded 250 ms flush. Its terminal marker describes the explicit
+acquisition cutoff, not full application shutdown, native timing accuracy or
+crash-safe file finalization; missing final markers and any reported losses must
+remain incomplete evidence. Normal launches do not enable this journal.
+
 Tune live reading with `VNTTS_LIVE_INTERVAL_MS`,
 `VNTTS_LIVE_STABILITY_FRAMES`, `VNTTS_LIVE_IDLE_FLUSH_MS`, and
 `VNTTS_LIVE_MIN_CHUNK_CHARACTERS`. Invalid values use their defaults.

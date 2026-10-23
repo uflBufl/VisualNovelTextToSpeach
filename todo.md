@@ -2,22 +2,16 @@
 
 ## Rust audio native acceptance gaps
 
-- [ ] Qualify digital output from the actual Rust audio owner. The existing
-      ScreenCaptureKit recording of the Python application produces silent PCM
-      while Rust is audible, and the headless worker PID is absent from its
-      application list. Use a macOS14.2+ Core Audio process tap: translate the
-      live worker PID to its HAL process object, reject unknown object0 even with
-      success status, and verify the PID/executable roundtrip. Read-only HAL
-      discovery already finds the headless worker. Attach only that process to a
-      private unmuted tap/private aggregate, with bounded IOProc buffers and
-      reverse-order teardown. Qualify the recorder identity/Audio Capture consent
-      separately; an existing Screen Recording grant is insufficient evidence.
-      Require positive, nonzero captured PCM during an approved clip; never fall
-      back to the parent or global system audio. Correlate approved
-      source WAV PCM with recorded output and retain full-run video coverage.
-      A concurrent scope probe was followed by ScreenCaptureKit -3805 in the first
-      recording; keep scope probes separate from acceptance and investigate
-      recorder lifetime interference if it reproduces with serialized ownership.
+- [ ] Qualify `scripts/mac_live_recording/process_tap.m` against the actual Rust
+      audio owner using the build/activation instructions in the adjacent README.
+      Confirm recorder identity and Audio Capture consent separately from Screen
+      Recording. Require positive PCM correlated with the exact approved source
+      WAV, matching worker PID/path/start time/HAL identity, no queue/timestamp gaps,
+      full capture interval and exact-window video. `captured_unqualified` is not
+      acceptance. Check native permission denial, worker exit/restart, device change
+      and reverse teardown; never fall back to the parent or global system audio.
+      Keep scope probes separate from acceptance; investigate ScreenCaptureKit
+      -3805 recorder lifetime interference only if serialized ownership reproduces it.
 - [ ] Validate the Rust owner in the real game with genuine concurrent heavy chapter
       generation/publication, using the same approved WAVs, device, rate and
       latency as the retained Python baseline evidence. Controlled GIL stress
@@ -64,7 +58,7 @@ Remaining execution order:
    changed-test selector first after code changes and complete relevant static
    checks before any native performance measurement.
 4. Prepare the native tools and evidence: qualify explicit-target MCP, calibration
-   visibility and control identity/lifecycle (T3/T3a/T4/T5/U1/U4), retain early
+   visibility and control identity/lifecycle (T3/T4/T5/U1/U4), retain early
    timing events and record instrumentation overhead (T1). Keep game window,
    process audio, original/generated artifacts, model/runtime identity and the
    approved-WAV baseline explicit. Native exact-window video may follow origin-only
@@ -122,12 +116,11 @@ callers and focused regressions together when changing these contracts.
       OCR worker cannot present healthy Reading indefinitely, failure/retry is
       actionable, Stop remains bounded,
       and recovery cannot create a second worker or replay a claimed occurrence.
-      Next code step: in `live.py`, reset per-run health, distinguish queued versus
-      running futures, and identify external callback stages/frame versions so a
-      stalled callback can be located. Add `test_live.py` regressions for a blocked
-      callback with capture still running, fresh Start health, bounded Stop/wait
-      and refusal of a second OCR worker. These diagnostics do not justify an
-      automatic recovery or a new timeout; native future/stacks still decide it.
+      Use queued/running health, callback stage and consumed/latest frame versions
+      to locate the actual native stall. A blocked comparison must leave health and
+      Stop responsive; revalidate frame/epoch/owner before admitting its late result.
+      Offline regressions do not establish the cause of the historical capture-only
+      stall or justify automatic recovery/new timeouts.
 - [ ] **R2 - Validate completed-text freshness on Mac.** Use completed left-edge
       `Ouch!`, absent names, changing brightness, animated cues and 1-2px auto-ROI
       translation/size changes with capture faster than OCR. Require prompt current
@@ -235,25 +228,6 @@ callers and focused regressions together when changing these contracts.
 
 ## P0 - Make capture setup trustworthy and operable
 
-- [ ] **T3a - Keep discovered MCP child widgets usable until the next action.**
-      A visible QLineEdit clear QToolButton returned by find_widget received an
-      observed ID, but clicking that exact ID immediately returned Widget not
-      found; no app restart or layout action occurred between calls. Reproduce
-      with a normal search field, inspect registry/Qt wrapper lifetime, and repair
-      the developer MCP owner without retaining deleted widgets or weakening
-      stale/hidden capture rejection. Also fix get_widget_info passing QByteArray
-      to QObject.property(), which requires a str and currently returns HTTP500.
-      Keep typing append semantics explicit and
-      provide ordinary keyboard replacement. Gate: discovery -> click works for
-      live anonymous child widgets; deleted/recreated children still fail closed.
-      Next repair in the tracked `scripts/pyside6-mcp/screenshot-safety.patch`:
-      assign session-qualified IDs on native Qt objects, retain weak wrappers and
-      reacquire valid live widgets by that private property after wrapper GC.
-      IDs must never be reused after native destruction; avoid raw-pointer wrapping
-      or strong references. Decode property names before QObject.property(). Add
-      focused upstream GC/delete/recreate/HTTP regressions and include them in the
-      installer test list; build/apply a fresh pinned checkout before activation.
-
 - [ ] **U1 - Validate unobscured setup capture on the native Mac.** Exercise
       wizard and tray calibration with Dashboard, compact controls and a pending
       diagnostics refresh over the game; inspect actual test/calibration pixels.
@@ -281,10 +255,9 @@ callers and focused regressions together when changing these contracts.
       only readiness, cancel/retry and same-input callback handoff. Reject missing/
       corrupt WAVs, foreign state/manifest, changed source evidence and callbacks
       from another input; completed counts alone are not playable coverage.
-      Native compact controls also kept saying VNTTS is starting with ready=false,
-      busy=false and the engine waiting for an explicit Load engine action in full
-      Reading. Trace that cold capability/reason through the shared UI owner;
-      expose the actual required action rather than an indefinite starting message.
+      On the native compact UI, confirm cold startup names Load reading engine or
+      Set up reading, active preparation reports loading, and retry errors preserve
+      Check readiness rather than reverting to an indefinite starting message.
 - [ ] **U7 - Complete model-asset evidence and native offline reuse.**
       Qualify normal GUI/preflight with network unavailable and no experiment-only
       environment: offline-first and Reading-first must reuse the same managed
@@ -326,9 +299,11 @@ callers and focused regressions together when changing these contracts.
       as a speed claim. Do not replace `model_warmth=unobserved` with an inference. Confirm append-only
       events, explicit retention gaps and common monotonic offsets survive export
       and restart, including OCR-free visual successors. The current 2000-event
-      budget evicted the early 14 -> 15 rejection evidence before export; preserve
-      early events in a bounded diagnostic acquisition journal during the next run
-      and expose whole-timeline eviction gaps honestly. Measure capture/support-log
+      budget evicted the early 14 -> 15 rejection evidence before export; use
+      `vntts-app --timeline-journal NEW_JSONL` during the next run. Verify its
+      acquisition identity, early events, cap/drop/pending counters and explicit
+      cutoff against exported retention gaps; neither cutoff-written nor nonzero
+      recorder PCM establishes complete native timing evidence. Measure capture/support-log
       overhead and Stop latency; ordinary logs must retain no pixels/dialogue.
 
 - [ ] **T3 - Finish native screenshot-safe MCP activation.**
@@ -473,8 +448,8 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 ## Repair current GitHub CI failures
 
-- [ ] Verify UI test ownership so discarded tray widgets are destroyed on the GUI thread, and fix the remaining controller-shutdown startup-assertion worker leak. Run the affected-test selector before additional checks and verify failure-path cleanup with bounded subprocess probes. Also reproduce native app exit0 after initial UI readiness with `async_ui.py:_Task.run` raising `RuntimeError: Signal source has been deleted` at `finished.emit`. Capture the quit reason and in-flight task/drain order; manual closure versus unexpected exit is unconfirmed. Keep this UI shutdown observation separate from Rust feeding, and qualify legitimate shutdown without emitting from a deleted signal owner.
-- [ ] Preserve the shard watchdog through interpreter shutdown and expose fixed shard/timeout labels in Windows failure metadata, including post-test worker hangs; validate both with bounded subprocess regressions.
+- [ ] Qualify native UI test ownership so discarded tray widgets are destroyed on the GUI thread; obtain a reproducible owner/lifetime sequence before changing it. If native app exit0 after initial UI readiness recurs unexpectedly, capture the quit reason and in-flight task/drain order; manual closure versus unexpected exit remains unconfirmed. Keep that exit investigation separate from the reproduced retired-signal completion and from Rust feeding.
+- [ ] Qualify the existing interpreter-shutdown watchdog and fixed shard/timeout failure labels on actual Windows CI, including post-test worker hangs. Bounded local subprocess tests do not establish Windows host behavior.
 - [ ] Verify all 13 non-audit GitHub jobs on the temporary branch `codex/ci-verification-7f4e78be`. Keep the deferred dependency-audit failure unchanged and delete the temporary remote branch after verification.
 
 ## Follow the system audio output during playback

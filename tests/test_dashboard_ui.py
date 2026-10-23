@@ -1258,7 +1258,7 @@ class ControlDashboardTest(unittest.TestCase):
         )
         message = controller.status.toPlainText()
         cases = (
-            (RuntimeControlState(), "Starting"),
+            (RuntimeControlState(), "Not ready"),
             (RuntimeControlState(ready=True), "Ready"),
             (RuntimeControlState(ready=True, starting=True), "Starting reading"),
             (
@@ -1278,7 +1278,7 @@ class ControlDashboardTest(unittest.TestCase):
                 RuntimeControlState(unavailable_reason="Speech model failed to load"),
                 "Unavailable",
             ),
-            (RuntimeControlState(), "Starting"),
+            (RuntimeControlState(), "Not ready"),
             (RuntimeControlState(ready=True), "Ready"),
         )
         for state, mode in cases:

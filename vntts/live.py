@@ -1045,20 +1045,45 @@ class LiveDialogReader:
         visible: bool,
         changed: bool,
         previous_frame: Frame | None,
+        owner: object | None,
     ) -> None:
-        if (
-            self.pending_auto_advance_generation == self.active_generation
-            and visible
-            and fingerprint != self.routed_frame_fingerprint
-        ):
+        with self.state_lock:
+            generation = self.active_generation
+            if (
+                self.pending_auto_advance_generation != generation
+                or not visible
+                or fingerprint == self.routed_frame_fingerprint
+            ):
+                return
             anchor = self.pending_transition_frame
-            if anchor is None or not self.frame_equivalent(anchor, frame):
-                self.pending_transition_seen = True
-                if changed and (
-                    previous_frame is None
-                    or not self.frame_equivalent(previous_frame, frame)
-                ):
-                    self.pending_transition_progress_at = monotonic()
+            route_epoch = self.frame_route_epoch
+            frame_version = self.frame_version
+        if anchor is not None and self.frame_equivalent(anchor, frame):
+            return
+        progressed = changed and (
+            previous_frame is None or not self.frame_equivalent(previous_frame, frame)
+        )
+        focused = self._is_focused()
+        current_owner = self.stable_frame_owner()
+        with self.state_lock:
+            if (
+                self.active_generation != generation
+                or self.pending_auto_advance_generation != generation
+                or route_epoch != self.frame_route_epoch
+                or frame_version != self.frame_version
+                or self.latest_frame is not frame
+                or self.pending_transition_frame is not anchor
+                or owner != current_owner
+                or not focused
+                or self.stop_event.is_set()
+                or self.paused
+                or self.emergency_stopped
+                or self.is_shutting_down
+            ):
+                return
+            self.pending_transition_seen = True
+            if progressed:
+                self.pending_transition_progress_at = monotonic()
 
     def _run_capture(self, stop_event: Event) -> None:
         policy = self.adaptive_policy_factory(
@@ -1109,13 +1134,6 @@ class LiveDialogReader:
                         self.latest_render_owner = render_owner
                         self.latest_render_changed_at = captured_at
                     self.frame_version += 1
-                    self._observe_transition_frame(
-                        frame,
-                        fingerprint,
-                        visible,
-                        fingerprint_changed or render_changed,
-                        previous_frame,
-                    )
                     metrics = self.pipeline_metrics
                     self.pipeline_metrics = replace(
                         metrics,
@@ -1142,6 +1160,15 @@ class LiveDialogReader:
                         # otherwise the render-quiet fallback can expire before
                         # capture ever sees the next visible prefix.
                         interval = min(interval, policy.fast_interval)
+                self._observe_transition_frame(
+                    frame,
+                    fingerprint,
+                    visible,
+                    fingerprint_changed or render_changed,
+                    previous_frame,
+                    render_owner,
+                )
+                with self.pause_condition:
                     self.pause_condition.notify_all()
             except Exception as error:
                 self.report_error(error)
@@ -1691,21 +1718,54 @@ class LiveDialogReader:
                 return None
             if self.routed_frame_fingerprint is None:
                 return None
-            if fingerprint == self.routed_frame_fingerprint or (
-                self.routed_frame is not None
-                and self.latest_frame is not None
-                and self.frame_equivalent(self.routed_frame, self.latest_frame)
-            ):
-                return False if expected_prefix else None
             route_epoch = self.frame_route_epoch
-            if (
-                fingerprint == self.candidate_frame_fingerprint
-                or (
-                    self.candidate_frame is not None
-                    and self.latest_frame is not None
-                    and self.frame_equivalent(self.candidate_frame, self.latest_frame)
+            frame_version = self.frame_version
+            latest_frame = self.latest_frame
+            routed_frame = self.routed_frame
+            candidate_frame = self.candidate_frame
+            same_routed = fingerprint == self.routed_frame_fingerprint
+            same_candidate = fingerprint == self.candidate_frame_fingerprint
+        # Image comparisons can block; keep capture, health and Stop independent.
+        same_routed = same_routed or (
+            routed_frame is not None
+            and latest_frame is not None
+            and self._ocr_callback(
+                "comparing-routed-frame",
+                self.frame_equivalent,
+                routed_frame,
+                latest_frame,
+            )
+        )
+        if not same_routed:
+            same_candidate = same_candidate or (
+                candidate_frame is not None
+                and latest_frame is not None
+                and self._ocr_callback(
+                    "comparing-candidate-frame",
+                    self.frame_equivalent,
+                    candidate_frame,
+                    latest_frame,
                 )
-            ) and owner == self.candidate_frame_owner:
+            )
+        current_owner = self._ocr_callback("validating-owner", self.stable_frame_owner)
+        focused = self._ocr_callback("validating-focus", self._is_focused)
+        with self.state_lock:
+            if (
+                route_epoch != self.frame_route_epoch
+                or frame_version != self.frame_version
+                or latest_frame is not self.latest_frame
+                or owner != current_owner
+                or not focused
+                or self.observation_uncertain
+                or self.stop_event.is_set()
+                or self.paused
+                or self.emergency_stopped
+                or self.is_shutting_down
+            ):
+                return False
+            if same_routed:
+                return False if expected_prefix else None
+            if same_candidate and owner == self.candidate_frame_owner:
                 self.candidate_frame_count += 1
             else:
                 self.candidate_frame = self.latest_frame

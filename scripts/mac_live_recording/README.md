@@ -94,3 +94,41 @@ in the temporary `recorder.swift`, compile those copies, and run the same fixtur
 recipe into a different new output directory. It should report incomplete change coverage;
 the normal build must pass the >60s gate. Re-run the component gate after future
 encoder, SDK, queue or buffer-lifetime changes.
+
+## Headless Rust worker audio
+
+The ScreenCaptureKit application filter above does not qualify a headless Rust
+child's output. Use the separate explicit-process helper alongside exact-window
+video. It never selects the parent or global system audio. Requires macOS 14.2+:
+
+```sh
+xcrun clang -std=c11 -fobjc-arc -Wall -Wextra -Werror -mmacosx-version-min=14.2 -framework Foundation -framework CoreAudio -framework AudioToolbox -Wl,-sectcreate,__TEXT,__info_plist,scripts/mac_live_recording/process_tap_info.plist scripts/mac_live_recording/process_tap.m -o /private/tmp/vntts-process-tap
+/private/tmp/vntts-process-tap --selfcheck
+/private/tmp/vntts-process-tap --inspect WORKER_PID /absolute/path/to/vntts-audio-worker
+```
+
+Selfcheck uses generated PCM only. Inspect reads the explicit PID's executable,
+process start time and HAL PID roundtrip; neither command starts a tap or asks for
+permission. Build at a stable path before qualifying permissions. Apple's
+[process tap documentation](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps)
+requires a separate Audio Capture grant and `NSAudioCaptureUsageDescription`,
+embedded by this compile command. Screen Recording consent does not qualify it.
+Only when recording is authorized:
+
+```sh
+/private/tmp/vntts-process-tap --capture WORKER_PID /absolute/path/to/vntts-audio-worker 65 /absolute/new-output --allow-audio-capture
+```
+
+The command can prompt for Audio Capture. A private unmuted tap preserves normal
+playback. The native callback copies into a fixed 64-slot PCM queue, with no file
+I/O, allocation or locks; the consumer writes `process.caf` and `audio.jsonl`.
+Overflow, malformed buffers, discontinuous timestamps, nonfinite PCM, changed
+PID/start time/executable/HAL identity, interrupted recording and failed cleanup
+fail closed. SIGINT/SIGTERM request cleanup; a duration+15s watchdog leaves an
+incomplete session on a native hang. Output directories must be new.
+
+`session.json` records recorder/target identity, format, host-clock timestamps,
+peak and errors. Zero PCM is failure; nonzero PCM is only `captured_unqualified`.
+It still requires independent source-WAV correlation, full interval/video
+coverage, and native permission/device/restart qualification. This tool does not
+change Reading completion timers or establish physical speaker onset.

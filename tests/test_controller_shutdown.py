@@ -1,5 +1,8 @@
 """Shutdown completion requires released owners, not just attempted cleanup."""
 
+import subprocess
+import sys
+import textwrap
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Thread
@@ -10,6 +13,43 @@ from vntts.settings import AppSettings
 
 
 class ControllerShutdownTest(unittest.TestCase):
+    def test_startup_assertion_failure_releases_real_worker_before_process_exit(self):
+        script = textwrap.dedent("""
+            import threading
+            import unittest
+            from tests.test_controller_shutdown import ControllerShutdownTest
+
+            case = ControllerShutdownTest(
+                "test_background_drain_failure_still_waits_for_other_real_worker"
+            )
+            def fail_startup(started, *args, **kwargs):
+                assert started is True, "fixture worker did not start"
+                assert any(
+                    thread.name.startswith("ThreadPoolExecutor") and thread.is_alive()
+                    for thread in threading.enumerate()
+                ), "failure was injected without a real worker"
+                raise AssertionError("injected startup assertion failure")
+            case.assertTrue = fail_startup
+            result = unittest.TestResult()
+            case.run(result)
+            assert not result.errors, result.errors
+            assert len(result.failures) == 1, result.failures
+            assert "injected startup assertion failure" in result.failures[0][1]
+            assert not any(
+                thread.name.startswith("ThreadPoolExecutor") and thread.is_alive()
+                for thread in threading.enumerate()
+            ), "fixture worker leaked after failed assertion"
+            print("startup assertion cleanup finished")
+        """)
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("startup assertion cleanup finished", completed.stdout)
+
     def test_executor_failures_preserve_primary_and_remaining_owners(self):
         for primary in (RuntimeError("capture drain"), KeyboardInterrupt("capture")):
             with self.subTest(primary=type(primary).__name__):

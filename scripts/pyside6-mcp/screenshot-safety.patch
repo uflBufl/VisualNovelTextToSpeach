@@ -375,7 +375,7 @@ index 99d7503..f5717c9 100644
      try:
          result = eval(code, ctx)  # noqa: S307
 diff --git a/pyside6_mcp/server.py b/pyside6_mcp/server.py
-index 601ad07..e054a80 100644
+index 601ad07..5abcb7d 100644
 --- a/pyside6_mcp/server.py
 +++ b/pyside6_mcp/server.py
 @@ -18,6 +18,9 @@ from typing import Annotated, IO
@@ -589,6 +589,17 @@ index 601ad07..e054a80 100644
      """
      return json.dumps(_post("/key", {"key": key}, pid=pid))
  
+@@ -818,8 +871,8 @@ def get_app_status(pid: PidParam = None) -> str:
+         return json.dumps({"error": str(exc)})
+ 
+     proc = session.proc
+-    proc_alive = proc is not None and proc.poll() is None
+-    exit_code = None if proc is None else proc.poll()
++    proc_alive = _app_alive(session)
++    exit_code = proc.poll() if proc is not None and proc.pid == session.pid else None
+ 
+     bridge_ok = False
+     timed_out = False
 @@ -862,6 +915,9 @@ def trigger_action(
      Trigger a QAction directly by objectName (`name`) or visible label (`text`),
      without clicking through menus. Useful to avoid opening modal menus and to
@@ -641,7 +652,7 @@ index 601ad07..e054a80 100644
 -        _kill_proc_tree(proc)
 -        result["returncode"] = proc.returncode
 -
-+        result["returncode"] = proc.poll()
++        result["returncode"] = proc.poll() if proc.pid == session.pid else None
 +    result["quit"]["bridge_stopped"] = True
      if session.log_file is not None:
          try:
@@ -1615,10 +1626,10 @@ index 0000000..f489a7c
 +    asyncio.run(check())
 diff --git a/tests/test_shutdown.py b/tests/test_shutdown.py
 new file mode 100644
-index 0000000..ed977ad
+index 0000000..538a4d3
 --- /dev/null
 +++ b/tests/test_shutdown.py
-@@ -0,0 +1,212 @@
+@@ -0,0 +1,245 @@
 +"""Quit acknowledgement is distinct from actual owned-process termination."""
 +import json
 +from types import SimpleNamespace
@@ -1831,6 +1842,39 @@ index 0000000..ed977ad
 +    with pytest.raises(OSError):
 +        server._windows_process_alive(123)
 +    kernel.CloseHandle.assert_called_once_with(1234)
++
++
++def test_status_follows_live_qt_pid_after_launcher_exits(session, monkeypatch):
++    monkeypatch.setattr(server, "_app_alive", Mock(return_value=True))
++    monkeypatch.setattr(server, "_read_log_tail_path", Mock(return_value=""))
++    response = httpx.Response(200, json={"ok": True})
++    monkeypatch.setattr(server.httpx, "get", Mock(return_value=response))
++    result = json.loads(getattr(server.get_app_status, "fn", server.get_app_status)(pid=123))
++    assert result["running"] is True
++    assert result["bridge_responsive"] is True
++    assert result["exit_code"] is None
++    server._app_alive.assert_called_once_with(session)
++
++
++def test_stop_does_not_attribute_launcher_returncode_to_qt_app(session, monkeypatch):
++    monkeypatch.setattr(server, "_app_alive", lambda _: False)
++    session.proc.poll.return_value = 17
++    result = json.loads(_stop())
++    assert result["ok"] is True
++    assert result["returncode"] is None
++
++
++def test_direct_qt_process_retains_actual_exit_code(session, monkeypatch):
++    session.proc.pid = session.pid
++    session.proc.poll.return_value = 7
++    monkeypatch.setattr(server, "_read_log_tail_path", Mock(return_value=""))
++    monkeypatch.setattr(server.httpx, "get", Mock(side_effect=httpx.ConnectError("exited")))
++    status = json.loads(getattr(server.get_app_status, "fn", server.get_app_status)(pid=123))
++    assert status["running"] is False
++    assert status["exit_code"] == 7
++    result = json.loads(_stop())
++    assert result["ok"] is True
++    assert result["returncode"] == 7
 diff --git a/uv.lock b/uv.lock
 index d40624c..ad41c75 100644
 --- a/uv.lock

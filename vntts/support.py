@@ -32,6 +32,7 @@ from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION, OCRReviewMetadata
 from vntts.onboarding import probe_audio_output, probe_tesseract
 from vntts.path_safety import open_regular_binary
 from vntts.settings import AppSettings
+from vntts.support_timeline_acquisition import TimelineAcquisition
 from vntts.versioned_json import read_versioned_json
 from vntts.voice_library import VoiceLibrary
 
@@ -365,6 +366,7 @@ class GenerationTimelineLog:
         self.evicted_timelines = 0
         self.evicted_events = 0
         self.lock = RLock()
+        self.acquisition: TimelineAcquisition | None = None
 
     def record(
         self,
@@ -432,6 +434,15 @@ class GenerationTimelineLog:
             }
             if stage == "stable-frame-gate":
                 _record_stable_frame_gate(existing, event)
+            if self.acquisition is not None:
+                self.acquisition.record(
+                    {
+                        **event,
+                        "generation": generation,
+                        "session_id": session_id,
+                        "run_id": run_id,
+                    }
+                )
             # Preserve repeats/retries; a later callback cannot rewrite evidence.
             timeline["events"][str(self.event_sequence)] = event
             while len(timeline["events"]) > 512:
@@ -448,6 +459,31 @@ class GenerationTimelineLog:
                 self.evicted_events += len(evicted["events"])
             self._persist_locked()
         return True
+
+    def start_acquisition(
+        self,
+        path: str | Path,
+        *,
+        maximum_events: int = 20_000,
+        maximum_bytes: int = 8 * 1024 * 1024,
+    ) -> SupportDocument:
+        """Explicit opt-in. Use a new path; stop before shutdown or another acquisition."""
+        with self.lock:
+            if self.acquisition is not None and self.acquisition.thread.is_alive():
+                raise RuntimeError("An acquisition is already running")
+            self.acquisition = TimelineAcquisition(
+                path,
+                maximum_events=maximum_events,
+                maximum_bytes=maximum_bytes,
+            )
+            return self.acquisition.status()
+
+    def stop_acquisition(self, timeout: float = 1.0) -> SupportDocument:
+        # Stop this selected owner without waiting for the timeline's disk persister.
+        acquisition = self.acquisition
+        return (
+            acquisition.stop(timeout) if acquisition is not None else {"enabled": False}
+        )
 
     def snapshot(self) -> list[SupportDocument]:
         with self.lock:
@@ -482,6 +518,11 @@ class GenerationTimelineLog:
                 "timelines": self.snapshot(),
                 "latency_summary": self.latency_summary(),
                 "retention": self.retention_summary(),
+                **(
+                    {"acquisition": self.acquisition.status()}
+                    if self.acquisition is not None
+                    else {}
+                ),
             }
 
     def latency_summary(self) -> SupportDocument:

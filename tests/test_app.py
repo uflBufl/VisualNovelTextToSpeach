@@ -823,8 +823,10 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertNotIn(message, reason_text)
             self.assertFalse(controls.live_button.isEnabled())
         self.assertIn("Set up reading", tray.dashboard.action_reason.text())
-        self.assertIn(
-            "Check readiness", tray.compact_controller.action_reason.toPlainText()
+        self.assertEqual(
+            tray.compact_controller.action_reason.toPlainText(),
+            "Reading unavailable: Select Full controls, then Reading and "
+            "Set up reading to start.",
         )
         self.assertNotIn(message, tray.live_action.toolTip())
         tray.shutdown()
@@ -6568,6 +6570,61 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertTrue(tray.dashboard.isVisible())
                 self.assertFalse(tray.compact_controller.isVisible())
                 self.assertEqual(tray.status_action.text(), "Saved configuration.")
+                tray.shutdown()
+
+    def test_cold_reading_state_names_explicit_setup_action_until_engine_loads(self):
+        for configured in (False, True):
+            with self.subTest(configured=configured):
+                controller = Mock(is_ready=False, is_live_running=False)
+                controller.runtime_control_snapshot.return_value = {}
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(onboarding_completed=configured),
+                    controller_factory=Mock(return_value=controller),
+                )
+                action = "Load reading engine" if configured else "Set up reading"
+                for _ in range(2):
+                    tray.set_status("Settings saved")
+                    tray._refresh_speech_runtime()
+                    state = tray._runtime_control_state()
+                    self.assertFalse(state.ready)
+                    self.assertFalse(tray._controller_busy)
+                    self.assertIn(action, state.unavailable_reason)
+                    self.assertIn("Full controls", state.unavailable_reason)
+                    self.assertIn("Reading", state.unavailable_reason)
+                    self.assertEqual(tray.compact_controller.mode.text(), "Unavailable")
+                    self.assertIn(
+                        action, tray.compact_controller.action_reason.toPlainText()
+                    )
+                    self.assertIn(action, tray.dashboard.action_reason.text())
+                    self.assertEqual(
+                        tray.live_action.toolTip(), state.unavailable_reason
+                    )
+                    self.assertFalse(tray.compact_controller.live_button.isEnabled())
+                controller.start.assert_not_called()
+
+                tray._begin_controller_lifecycle()
+                self.assertIn(
+                    "loading", tray._runtime_control_state().unavailable_reason
+                )
+                self.assertNotIn(
+                    action, tray.compact_controller.action_reason.toPlainText()
+                )
+                tray._finish_controller_lifecycle()
+                self.assertIn(action, tray._runtime_control_state().unavailable_reason)
+
+                tray.last_controller_error = "Speech model failed to load"
+                tray._apply_controller_action_state()
+                self.assertIn(
+                    "Check readiness", tray._runtime_control_state().unavailable_reason
+                )
+                self.assertNotIn(
+                    action, tray.compact_controller.action_reason.toPlainText()
+                )
+                tray.set_ready(True)
+                self.assertIsNone(tray._runtime_control_state().unavailable_reason)
+                self.assertEqual(tray.compact_controller.mode.text(), "Ready")
+                self.assertTrue(tray.compact_controller.live_button.isEnabled())
                 tray.shutdown()
 
     def test_controller_lifecycle_shows_main_window_loading_state(self):

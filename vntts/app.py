@@ -4888,6 +4888,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 or (
                     f"{self.last_controller_error} Select Check readiness to recover."
                     if self.last_controller_error
+                    else "Select Full controls, then Reading and Load reading engine "
+                    "to start."
+                    if not self._controller_ready and self.settings.onboarding_completed
+                    else "Select Full controls, then Reading and Set up reading to start."
+                    if not self._controller_ready
                     else None
                 )
             ),
@@ -5230,6 +5235,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         prog="vntts-app",
         description="Run the VNTTS desktop application.",
     )
+    parser.add_argument(
+        "--timeline-journal",
+        metavar="NEW_JSONL",
+        help="Opt in to a bounded identity/timing journal in a new file (no dialogue or pixels).",
+    )
     parser.add_argument("--package-self-test", action="store_true")
     parser.add_argument("--package-self-test-report")
     configure_release_smoke_arguments(parser)
@@ -5309,8 +5319,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     initialize_audio_device_monitor()
     tray_application = TrayApplication(application)
-    tray_application.start()
-    return application.exec()
+    with (
+        cleanup_on_exit(
+            lambda: tray_application.generation_timelines.stop_acquisition(
+                timeout=0.25
+            ),
+            description="Timeline acquisition stop",
+        ),
+        cleanup_on_exit(tray_application.shutdown, description="Application shutdown"),
+    ):
+        if arguments.timeline_journal is not None:
+            tray_application.generation_timelines.start_acquisition(
+                arguments.timeline_journal
+            )
+        tray_application.start()
+        return application.exec()
 
 
 if __name__ == "__main__":

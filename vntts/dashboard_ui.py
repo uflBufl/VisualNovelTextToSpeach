@@ -1461,7 +1461,7 @@ class CompactController(QWidget):
             if state.ready
             else "Unavailable"
             if state.unavailable_reason
-            else "Starting"
+            else "Not ready"
         )
         _apply_reading_capabilities(
             state,
@@ -1476,8 +1476,7 @@ class CompactController(QWidget):
         )
         reason = (
             state.unavailable_reason
-            or "Controls unavailable while VNTTS is starting. Select Full "
-            "controls and Check readiness if this does not clear."
+            or "VNTTS is not ready. Select Full controls, then Check readiness."
         )
         self.action_reason.setPlainText(f"Reading unavailable: {reason}")
         self.sequence_expected_button.setToolTip("" if state.ready else reason)

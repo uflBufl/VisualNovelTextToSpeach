@@ -5,6 +5,7 @@ from functools import partial
 from time import perf_counter
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from shiboken6 import isValid
 
 from vntts.support import record_background_operation
 
@@ -38,7 +39,15 @@ class _Task(QRunnable):
             (perf_counter() - started) * 1000,
             "failed" if failure is not None else "complete",
         )
-        self.signals.finished.emit(self.serial, result, failure)
+        # QApplication destruction retires native signals even while a queued
+        # callable still owns their Python wrapper. Its result has no receiver.
+        if not isValid(self.signals):
+            return
+        try:
+            self.signals.finished.emit(self.serial, result, failure)
+        except RuntimeError:
+            if isValid(self.signals):
+                raise
 
 
 def _operation_name(function: Callable[..., object]) -> str:

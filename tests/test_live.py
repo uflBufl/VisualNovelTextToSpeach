@@ -1885,6 +1885,214 @@ class LiveDialogReaderTest(unittest.TestCase):
                 reader.wait(timeout_seconds=1)
             reader.play_prepared.assert_not_called()
 
+    def test_blocked_stable_comparison_keeps_capture_health_and_stop_available(self):
+        for comparison in ("routed", "candidate"):
+            with self.subTest(comparison=comparison):
+                blocked, release, capture_continued = Event(), Event(), Event()
+
+                def equivalent(before, _after):
+                    if before == comparison:
+                        blocked.set()
+                        if not release.wait(timeout=2):
+                            raise AssertionError("comparison was not released")
+                    return False
+
+                def capture_state(*_):
+                    health = reader.worker_health_snapshot()
+                    if (
+                        blocked.is_set()
+                        and health["latest_frame_version"]
+                        > health["worker_frame_version"]
+                    ):
+                        capture_continued.set()
+
+                with (
+                    ThreadPoolExecutor(max_workers=1) as capture,
+                    ThreadPoolExecutor(max_workers=1) as ocr,
+                    ThreadPoolExecutor(max_workers=1) as controls,
+                ):
+                    reader = self.create_reader(
+                        capture_executor=capture,
+                        ocr_executor=ocr,
+                        capture_frame=lambda: "latest",
+                        frame_fingerprint=lambda frame: frame,
+                        frame_equivalent=equivalent,
+                        stable_frame_route=Mock(return_value=None),
+                        capture_state_changed=capture_state,
+                    )
+                    reader.latest_frame = "latest"
+                    reader.latest_frame_fingerprint = "latest"
+                    reader.latest_frame_visible = True
+                    reader.frame_version = 1
+                    reader.routed_frame = "routed"
+                    reader.routed_frame_fingerprint = "old-routed"
+                    reader.candidate_frame = "candidate"
+                    reader.candidate_frame_fingerprint = "old-candidate"
+                    reader.ocr_future = ocr.submit(reader._run_ocr, reader.stop_event)
+                    try:
+                        self.assertTrue(blocked.wait(timeout=1))
+                        reader.capture_future = capture.submit(
+                            reader._run_capture, reader.stop_event
+                        )
+                        health = controls.submit(reader.worker_health_snapshot).result(
+                            timeout=1
+                        )
+                        self.assertEqual(health["worker_state"], "running")
+                        self.assertEqual(
+                            health["worker_stage"], f"comparing-{comparison}-frame"
+                        )
+                        self.assertTrue(capture_continued.wait(timeout=1))
+                        self.assertTrue(controls.submit(reader.stop).result(timeout=1))
+                        with self.assertRaises(FutureTimeoutError):
+                            controls.submit(reader.wait, timeout_seconds=0.01).result(
+                                timeout=1
+                            )
+                    finally:
+                        release.set()
+                        reader.stop()
+                        reader.wait(timeout_seconds=1)
+                    reader.stable_frame_route.assert_not_called()
+                    reader.play_prepared.assert_not_called()
+
+    def test_stable_comparison_revalidates_frame_and_ownership_before_routing(self):
+        for barrier in (
+            "version",
+            "frame",
+            "epoch",
+            "owner",
+            "focus",
+            "stop",
+            "pause",
+            "uncertain",
+        ):
+            with self.subTest(barrier=barrier):
+                owner, focused = ["event"], [True]
+                route = Mock(return_value=("Alice", "Stale route."))
+                reader = self.create_reader(
+                    stable_frame_route=route,
+                    stable_frame_owner=lambda: owner[0],
+                    focus_probe=lambda: focused[0],
+                )
+                reader.latest_frame = "latest"
+                reader.routed_frame = "routed"
+                reader.routed_frame_fingerprint = "old"
+
+                def equivalent(*_):
+                    if barrier == "version":
+                        reader.frame_version += 1
+                    elif barrier == "frame":
+                        reader.latest_frame = object()
+                    elif barrier == "epoch":
+                        reader.frame_route_epoch += 1
+                    elif barrier == "owner":
+                        owner[0] = "other"
+                    elif barrier == "focus":
+                        focused[0] = False
+                    elif barrier == "stop":
+                        reader.stop_event.set()
+                    elif barrier == "pause":
+                        reader.paused = True
+                    else:
+                        reader.observation_uncertain = True
+                    return False
+
+                reader.frame_equivalent = equivalent
+                self.assertIs(reader._stable_frame_route_decision("new"), False)
+                route.assert_not_called()
+                self.assertEqual(reader.candidate_frame_count, 0)
+
+    def test_blocked_transition_comparison_keeps_health_and_stop_available(self):
+        blocked, release = Event(), Event()
+
+        def equivalent(*_):
+            blocked.set()
+            if not release.wait(timeout=2):
+                raise AssertionError("transition comparison was not released")
+            return False
+
+        with (
+            ThreadPoolExecutor(max_workers=1) as capture,
+            ThreadPoolExecutor(max_workers=1) as controls,
+        ):
+            reader = self.create_reader(
+                capture_executor=capture,
+                capture_frame=lambda: "latest",
+                frame_fingerprint=lambda frame: frame,
+                frame_equivalent=equivalent,
+            )
+            reader.pending_auto_advance_generation = reader.active_generation
+            reader.pending_transition_frame = "anchor"
+            reader.capture_future = capture.submit(
+                reader._run_capture, reader.stop_event
+            )
+            try:
+                self.assertTrue(blocked.wait(timeout=1))
+                controls.submit(reader.worker_health_snapshot).result(timeout=1)
+                self.assertEqual(reader.pipeline_metrics.captured_frames, 1)
+                self.assertTrue(controls.submit(reader.stop).result(timeout=1))
+                with self.assertRaises(FutureTimeoutError):
+                    controls.submit(reader.wait, timeout_seconds=0.01).result(timeout=1)
+            finally:
+                release.set()
+                reader.stop()
+                reader.wait(timeout_seconds=1)
+            self.assertFalse(reader.pending_transition_seen)
+            self.assertIsNone(reader.pending_transition_progress_at)
+            reader.play_prepared.assert_not_called()
+
+    def test_transition_comparison_revalidates_frame_and_ownership(self):
+        for barrier in (
+            "generation",
+            "pending",
+            "anchor",
+            "version",
+            "frame",
+            "epoch",
+            "owner",
+            "focus",
+            "stop",
+            "pause",
+        ):
+            with self.subTest(barrier=barrier):
+                owner, focused = ["event"], [True]
+                reader = self.create_reader(
+                    stable_frame_owner=lambda: owner[0],
+                    focus_probe=lambda: focused[0],
+                )
+                frame = object()
+                reader.latest_frame = frame
+                reader.pending_auto_advance_generation = reader.active_generation
+                reader.pending_transition_frame = object()
+
+                changes = {
+                    "generation": ("active_generation", 1),
+                    "pending": ("pending_auto_advance_generation", None),
+                    "anchor": ("pending_transition_frame", object()),
+                    "version": ("frame_version", 1),
+                    "frame": ("latest_frame", object()),
+                    "epoch": ("frame_route_epoch", 1),
+                    "pause": ("paused", True),
+                }
+
+                def equivalent(*_):
+                    if barrier == "owner":
+                        owner[0] = "other"
+                    elif barrier == "focus":
+                        focused[0] = False
+                    elif barrier == "stop":
+                        reader.stop_event.set()
+                    else:
+                        attribute, value = changes[barrier]
+                        setattr(reader, attribute, value)
+                    return False
+
+                reader.frame_equivalent = equivalent
+                reader._observe_transition_frame(
+                    frame, "new", True, True, None, "event"
+                )
+                self.assertFalse(reader.pending_transition_seen)
+                self.assertIsNone(reader.pending_transition_progress_at)
+
     def test_ocr_initialization_failure_stops_capture_and_reports_original_error(self):
         failure = RuntimeError("OCR tracker initialization failed")
         errors = []

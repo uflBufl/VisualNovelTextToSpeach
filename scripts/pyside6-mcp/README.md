@@ -10,6 +10,8 @@ text; `press_key` accepts named keys, a character or one portable Qt combination
 and rejects unsupported sequences without typing them. Each click dispatches once.
 Shutdown acknowledges the quit request before application cleanup and separately
 checks the real Qt process exit; a process that remains alive keeps its session.
+Status follows the Qt PID even after its launcher exits. Exit/return codes are
+`null` when only the separate launcher's wait status is available.
 Windows liveness uses a read-only process handle wait. Mutating requests are never
 automatically retried; a lost response reports that the action may have completed.
 Inspect current app state before deciding whether to repeat it. Safe GET requests
