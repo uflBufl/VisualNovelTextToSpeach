@@ -8,9 +8,11 @@ from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from PIL import Image
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QFont, QKeySequence  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -19,10 +21,13 @@ from PySide6.QtWidgets import (  # noqa: E402
     QLabel,
     QScrollArea,
     QSizePolicy,
+    QWidget,
 )
 
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.calibration import DialogRegionOverlay  # noqa: E402
+from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
+from vntts.diagnostics_ui import DiagnosticsDialog  # noqa: E402
 from vntts.game_pack import GamePackError  # noqa: E402
 from vntts.moss_cpp_installation import MossCppInstallRequired  # noqa: E402
 from vntts.ocr import DialogRegion  # noqa: E402
@@ -536,15 +541,21 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.deleteLater()
 
     def test_calibration_capture_failure_restores_context_and_allows_retry(self):
-        wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+        wizard = OnboardingWizard(
+            AppSettings(capture_mode="screen"), reading_setup=True
+        )
         page = wizard.calibration_page
-        page.pending_geometry = None
-        wizard.hide()
+        pool = ManualThreadPool()
+        page.capture_runner.thread_pool = pool
+        wizard.show()
         with patch(
-            "vntts.onboarding_ui.show_calibration_overlay",
+            "vntts.onboarding_ui.capture_calibration_background",
             side_effect=RuntimeError("Screen Recording permission denied"),
         ):
+            page.calibrate()
             page.open_overlay()
+            pool.run_next()
+            self.application.processEvents()
 
         self.assertTrue(wizard.isVisible())
         self.assertFalse(page.isComplete())
@@ -1490,6 +1501,12 @@ class OnboardingWizardTest(unittest.TestCase):
                 Path(temporary_directory) / "region.json",
                 platform="darwin",
             )
+            pool = ManualThreadPool()
+            wizard.calibration_page.capture_runner.thread_pool = pool
+            wizard.show()
+            other, hidden = QWidget(), QWidget()
+            other.show()
+            background = Image.new("RGB", (16, 16))
 
             def show_overlay(_geometry, **_kwargs):
                 overlay.show()
@@ -1499,11 +1516,19 @@ class OnboardingWizardTest(unittest.TestCase):
                 patch(
                     "vntts.onboarding_ui.show_calibration_overlay",
                     side_effect=show_overlay,
+                ) as show,
+                patch(
+                    "vntts.onboarding_ui.capture_calibration_background",
+                    return_value=background,
                 ),
             ):
                 wizard.calibration_page.calibrate()
                 self.assertFalse(wizard.isVisible())
+                self.assertFalse(other.isVisible())
                 wizard.calibration_page.open_overlay()
+                pool.run_next()
+                self.application.processEvents()
+                self.assertIs(show.call_args.kwargs["background"], background)
 
             self.assertTrue(overlay.isVisible())
             self.assertFalse(wizard.isVisible())
@@ -1512,6 +1537,11 @@ class OnboardingWizardTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertTrue(wizard.isVisible())
+            self.assertTrue(other.isVisible())
+            self.assertFalse(hidden.isVisible())
+            other.close()
+            other.deleteLater()
+            hidden.deleteLater()
             wizard.close()
             wizard.deleteLater()
 
@@ -1519,21 +1549,67 @@ class OnboardingWizardTest(unittest.TestCase):
         save_region = Mock()
         region = DialogRegion(0.1, 0.6, 0.8, 0.3)
         wizard = OnboardingWizard(
-            AppSettings(active_profile_id="active"),
+            AppSettings(active_profile_id="active", capture_mode="screen"),
             reading_setup=True,
             save_region=save_region,
             capture_region=region,
         )
-        wizard.calibration_page.pending_geometry = None
-        with patch("vntts.onboarding_ui.show_calibration_overlay") as show_overlay:
+        pool = ManualThreadPool()
+        wizard.calibration_page.capture_runner.thread_pool = pool
+        background = Image.new("RGB", (16, 16))
+        with (
+            patch("vntts.onboarding_ui.show_calibration_overlay") as show_overlay,
+            patch(
+                "vntts.onboarding_ui.capture_calibration_background",
+                return_value=background,
+            ),
+        ):
+            wizard.calibration_page.calibrate()
             wizard.calibration_page.open_overlay()
+            pool.run_next()
+            self.application.processEvents()
 
         show_overlay.assert_called_once_with(
-            None, save_region=save_region, capture_region=region
+            None, background=background, save_region=save_region, capture_region=region
         )
         save_region.assert_not_called()
         wizard.close()
         wizard.deleteLater()
+
+    def test_calibration_invalid_background_restores_survivors_without_opening_overlay(
+        self,
+    ):
+        wizard = OnboardingWizard(AppSettings(capture_mode="screen"))
+        other = QWidget()
+        wizard.show()
+        other.show()
+        page = wizard.calibration_page
+        pool = ManualThreadPool()
+        page.capture_runner.thread_pool = pool
+        try:
+            with (
+                patch(
+                    "vntts.onboarding_ui.capture_calibration_background",
+                    return_value=object(),
+                ),
+                patch("vntts.onboarding_ui.show_calibration_overlay") as overlay,
+                patch.object(other, "activateWindow") as activate,
+                patch.object(other, "raise_") as raise_window,
+            ):
+                page.calibrate()
+                page.open_overlay()
+                pool.run_next()
+                self.application.processEvents()
+                overlay.assert_not_called()
+                self.assertTrue(wizard.isVisible())
+                self.assertTrue(other.isVisible())
+                self.assertIn("no image returned", page.status.text())
+                activate.assert_not_called()
+                raise_window.assert_not_called()
+        finally:
+            for window in (wizard, other):
+                window.close()
+                window.deleteLater()
 
     def test_calibration_finish_cancels_duplicate_pending_overlay_launches(self):
         wizard = OnboardingWizard(AppSettings(capture_mode="screen"))
@@ -1555,6 +1631,118 @@ class OnboardingWizardTest(unittest.TestCase):
         finally:
             wizard.deleteLater()
 
+    def test_calibration_close_discards_pending_capture_and_restores_other_windows(
+        self,
+    ):
+        wizard = OnboardingWizard(AppSettings(capture_mode="screen"))
+        other, hidden = QWidget(), QWidget()
+        wizard.show()
+        other.show()
+        page = wizard.calibration_page
+        pool = ManualThreadPool()
+        page.capture_runner.thread_pool = pool
+        try:
+            with (
+                patch("vntts.onboarding_ui.capture_calibration_background") as capture,
+                patch("vntts.onboarding_ui.show_calibration_overlay") as show,
+                patch.object(wizard, "activateWindow") as activate,
+                patch.object(wizard, "raise_") as raise_window,
+            ):
+                page.calibrate()
+                page.open_overlay()
+                self.assertTrue(page.capture_runner.active)
+                wizard.done(QDialog.DialogCode.Rejected)
+                pool.run_next()
+                self.application.processEvents()
+                capture.assert_not_called()
+                show.assert_not_called()
+                activate.assert_not_called()
+                raise_window.assert_not_called()
+            self.assertFalse(wizard.isVisible())
+            self.assertTrue(other.isVisible())
+            self.assertFalse(hidden.isVisible())
+            self.assertIsNone(page.overlay)
+        finally:
+            for window in (wizard, other, hidden):
+                window.close()
+                window.deleteLater()
+
+    def test_calibration_owner_deletion_cancels_acquisition_and_restores_other_windows(
+        self,
+    ):
+        wizard = OnboardingWizard(AppSettings(capture_mode="screen"))
+        other = QWidget()
+        wizard.show()
+        other.show()
+        page = wizard.calibration_page
+        pool = ManualThreadPool()
+        page.capture_runner.thread_pool = pool
+        try:
+            with (
+                patch("vntts.onboarding_ui.capture_calibration_background") as capture,
+                patch("vntts.onboarding_ui.show_calibration_overlay") as show,
+                patch.object(other, "activateWindow") as activate,
+                patch.object(other, "raise_") as raise_window,
+            ):
+                page.calibrate()
+                page.open_overlay()
+                cancelled = page._capture_cancelled
+                wizard.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+                self.assertTrue(cancelled.is_set())
+                self.assertTrue(other.isVisible())
+                pool.run_next()
+                self.application.processEvents()
+                capture.assert_not_called()
+                show.assert_not_called()
+                activate.assert_not_called()
+                raise_window.assert_not_called()
+        finally:
+            other.close()
+            other.deleteLater()
+
+    def test_calibration_suspends_pending_diagnostics_until_overlay_closes(self):
+        wizard = OnboardingWizard(AppSettings(capture_mode="screen"))
+        dialog = DiagnosticsDialog(refresh_timeout_ms=60_000)
+        wizard.show()
+        dialog.show()
+        dialog.request_refresh()
+        generation = dialog.refresh_generation
+        dialog.conceal_for_capture()
+        pool = ManualThreadPool()
+        page = wizard.calibration_page
+        page.capture_runner.thread_pool = pool
+        overlay = Mock()
+        try:
+            with (
+                patch(
+                    "vntts.onboarding_ui.capture_calibration_background",
+                    return_value=Image.new("RGB", (16, 16)),
+                ),
+                patch(
+                    "vntts.onboarding_ui.show_calibration_overlay", return_value=overlay
+                ),
+                patch.object(dialog, "activateWindow") as activate,
+                patch.object(dialog, "raise_") as raise_window,
+            ):
+                page.calibrate()
+                dialog._refresh_timed_out(generation)
+                dialog.set_snapshot(DiagnosticSnapshot(None, text="Late snapshot"))
+                self.assertFalse(dialog.isVisible())
+                self.assertFalse(dialog.refresh_timer.isActive())
+                page.open_overlay()
+                pool.run_next()
+                self.application.processEvents()
+                self.assertFalse(dialog.isVisible())
+                overlay.closed.connect.call_args.args[0]()
+                self.assertTrue(dialog.isVisible())
+                activate.assert_not_called()
+                raise_window.assert_not_called()
+        finally:
+            for window in (wizard, dialog):
+                window.close()
+                window.deleteLater()
+
     def test_calibration_finish_closes_active_overlay_without_restoring_wizard(self):
         save_region = Mock()
         wizard = OnboardingWizard(
@@ -1562,15 +1750,23 @@ class OnboardingWizardTest(unittest.TestCase):
         )
         page = wizard.calibration_page
         overlay = Mock()
+        pool = ManualThreadPool()
+        page.capture_runner.thread_pool = pool
+        wizard.show()
         try:
             with (
                 patch(
                     "vntts.onboarding_ui.show_calibration_overlay", return_value=overlay
                 ),
-                patch.object(page, "restore_wizard") as restore,
+                patch(
+                    "vntts.onboarding_ui.capture_calibration_background",
+                    return_value=Image.new("RGB", (16, 16)),
+                ),
             ):
                 page.calibrate()
                 page.open_overlay()
+                pool.run_next()
+                self.application.processEvents()
                 close_overlay = overlay.closed.connect.call_args.args[0]
                 overlay.close.side_effect = close_overlay
 
@@ -1579,7 +1775,7 @@ class OnboardingWizardTest(unittest.TestCase):
                 overlay.close.assert_called_once_with()
                 overlay.deleteLater.assert_called_once_with()
                 self.assertIsNone(page.overlay)
-                restore.assert_not_called()
+                self.assertFalse(wizard.isVisible())
                 save_region.assert_not_called()
         finally:
             wizard.deleteLater()

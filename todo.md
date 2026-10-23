@@ -18,26 +18,64 @@ Refactor ownership/state contracts or change the UI where necessary. Do not fix
 these findings with launcher monkey patches, hardcoded story edges, wider global
 matching, weakened admission, extra key presses or larger timeouts.
 
-Execution dependencies:
+Remaining execution order:
 
-1. Activate/qualify the safe MCP bridge (T3) and unobscured setup/exact-region
-   controls on the native Mac (U1/U4).
-2. Capture bounded diagnostic evidence for the remaining unknown R1/R6/U2 causes
-   before selecting further repairs. Preserve bounded Stop, privacy-safe logs and
-   original -> prepared -> live route priority. Do not treat an independent worker
-   setup failure as proof of the historical OCR-stall cause.
-3. Start with matched, admitted source-backed chapter inputs and a validated
-   prepared segment (R4), then qualify game/application audio correlation and
-   provenance (T1/T2/T4). Complete remaining generation and final-pack publication
-   during M1; a structural-only index/plan is not playable prepared-voice coverage.
-4. Run two Mac scenarios: M0 repeats the live-fallback baseline; M1 reads prepared
-   per-character recordings while real heavy chapter generation, publication and
-   reader catch-up continue. M1 includes all prepared-playback correctness and
-   latency checks; a separate generation-idle prepared run is not required.
-   Preserve timing, gaps, continuation/OCR, Stop and provenance evidence. Windows
-   platform qualification remains deferred and must not gate this Mac suite.
+1. Finish the remaining native calibration interaction gates (U1/U4), retaining
+   the maximum multiline dialogue height, raised nameplate and continue cue.
+   The corrected14 ->15 early-admission gate passes; do not restore the clipped
+   one-line region or treat it as a matcher defect.
+2. Investigate independent owners in parallel: OCR-worker health/stage callbacks
+   and truthful retention gaps (R1/T1); prepared audio starvation at the real
+   native/Python boundary (R12); original-source elapsed/completion evidence (R6)
+   and the separate centered layout (R17). Inspect shared callers, current logs,
+   source/graph metadata and tests before choosing each repair. Keep setup errors,
+   missing measurements and demonstrated code defects distinct.
+3. Record each demonstrated repair's files, dependencies and regression gates here,
+   then implement it in the shared owner with its callers/UI/tests. Preserve
+   occurrence/source/WAV integrity, stale-run/focus/epoch/Stop guards and bounded
+   cancellation; no guessed edges, global threshold relaxation or arbitrary
+   timeout/buffer growth. Serialize changes to overlapping owners. Run the local
+   changed-test selector first after code changes and complete relevant static
+   checks before any native performance measurement.
+4. Prepare the native tools and evidence: qualify explicit-target MCP, calibration
+   visibility and control identity/lifecycle (T3/T3a/T4/T5/U1/U4), retain early
+   timing events and record instrumentation overhead (T1). Keep game window,
+   process audio, original/generated artifacts, model/runtime identity and the
+   approved-WAV baseline explicit. Native exact-window video may follow origin-only
+   moves of the same PID/window/size with explicit movement evidence; owner, target
+   closure and size changes must fail closed. Desktop-rectangle product capture
+   still revalidates its geometry. No desktop fallback; partial recordings cannot
+   pass a full-run gate.
+5. Qualify the existing implementations on Mac: completed-text freshness and safe
+   early successor start (R2/R3), published pack/Bob Narrator fallback (R4/R11),
+   explicit indexed recovery (R5), Read-once/transition/uncertainty ownership
+   (R7/R8/R9/U9), cold readiness/fallback startup and offline assets (U6/U7/U8).
+   Add a code repair only if its targeted check establishes a remaining defect.
+6. Run M0 live fallback and M1 prepared per-character playback with real pending
+   heavy generation, publication and catch-up, after the code gates. Measure
+   14 ->15,16 ->17, original speech completion, gaps, continuation and Stop against
+   independent exact-window video/process audio. Preserve approved WAV bytes;
+   cache hits alone do not qualify concurrent generation. No unit-test load runs
+   during the measurements; no separate generation-idle prepared run is required.
+7. Analyse source/output timing and gate outcomes, remove only completed verified
+   TODO items, and retain concrete remaining defects with reproduction and next
+   evidence/repair gates. Windows and unrelated authoring/package work stay in
+   their existing deferred sections and do not block this Mac follow-up.
 
 ## P0 - Repair Reading ownership, OCR and continuation
+
+- [ ] **R17 - Finish centered-source coverage verification.**
+      A complete native repeat shows44 ->centered46 ->bottom47 continuing without
+      an app key between44 and47;47 is admitted normally. The bottom ROI truthfully
+      did not recognize46. This episode does not justify an alternate crop as a
+      continuation repair. Confirm the original46 audio once against a trustworthy
+      exact source: current mixed-output NCC.534 is insufficient, as is47's.617.
+      Do not count a declared source duration or visible center text as observed
+      audio completion. If another centered occurrence actually requires reader
+      playback/input, trace installed type8/center markup through extraction/index
+      before selecting an explicit bounded layout; preserve stale-text/overlay,
+      occurrence and source guards rather than widening ordinary calibration.
+
 
 Reproduction baseline: Mac experiment on build `a4d27286`, Reverse:1999 English
 stage314001, original-first hybrid policy, only lines6/7 prepared, otherwise Pocket
@@ -58,6 +96,12 @@ callers and focused regressions together when changing these contracts.
       OCR worker cannot present healthy Reading indefinitely, failure/retry is
       actionable, Stop remains bounded,
       and recovery cannot create a second worker or replay a claimed occurrence.
+      Next code step: in `live.py`, reset per-run health, distinguish queued versus
+      running futures, and identify external callback stages/frame versions so a
+      stalled callback can be located. Add `test_live.py` regressions for a blocked
+      callback with capture still running, fresh Start health, bounded Stop/wait
+      and refusal of a second OCR worker. These diagnostics do not justify an
+      automatic recovery or a new timeout; native future/stacks still decide it.
 - [ ] **R2 - Validate completed-text freshness on Mac.** Use completed left-edge
       `Ouch!`, absent names, changing brightness, animated cues and 1-2px auto-ROI
       translation/size changes with capture faster than OCR. Require prompt current
@@ -75,19 +119,15 @@ callers and focused regressions together when changing these contracts.
       manual boundaries. Uncertain frames cannot authorize speech; ordinary
       non-sequence prefixes still need unique sufficient evidence.
 
-- [ ] **R4 - Finish chapter preparation during the concurrent Mac run.**
-      Resume the partially prepared stage314001 through the normal player job:
-      preserve validated existing WAVs and generate the remaining lines while
-      Reading is active. Use separate configured character voices and the standard
-      narrator fallback for unresolved roles, including Bob; retain original speaker
-      and line identities. Admit every new recording through the matching current
-      index, semantic source evidence, graph plan and progressive manifest. Keep
-      original -> prepared -> live route priority and explicit missing/failed states.
-      Publish the final portable pack only after the actual selected queue reaches
-      its required terminal states; an initial playable segment is not whole-chapter
-      completion. Gate: completed work survives resume unchanged, newly published
-      lines become playable atomically, coverage is truthful, and the final pack
-      passes normal admission. No separate generation-idle prepared run is required.
+- [ ] **R4 - Qualify the published chapter in Mac Reading.** Use the portable
+      pack admitted by the normal publisher/importer: original4, prepared90,
+      omitted1, missing0. Verify current index, semantic evidence, graph and
+      progressive manifest in the player; original -> prepared -> live priority
+      and Bob's standard Narrator fallback must preserve speaker/line identities.
+      Gate: resume and catch-up keep approved WAV bytes, omissions and original
+      coverage truthful while Reading continues. A cache-hit-only run does not
+      qualify genuine concurrent heavy generation; no separate generation-idle
+      prepared run is required.
 - [ ] **R5 - Validate explicit indexed-current recovery on Mac.** For an exact,
       unique indexed line outside the expected graph, use Read indexed current line
       from Reading, compact controls and keyboard/tray without advanced settings.
@@ -100,10 +140,30 @@ callers and focused regressions together when changing these contracts.
       Native reference 47 ends 148093.107, route selection 148093.559, completion timer
       fires 148094.402 and key 148094.765. Identify a trustworthy onset/elapsed basis
       before replacing the late full-duration+350ms wait in the shared route owner.
+      A new prepared/MOSS Mac run correlates original68's waveform at about.964:
+      its digital clip starts199678.777, route199679.773, timer199679.809,
+      clip ends199680.435, key199682.288. The full-duration timer restarts late.
+      Do not simply subtract time since the first visible glyph: original47's text
+      is visible by199521.9 but its voice starts199522.041, so that timestamp is
+      not a safe upper bound on audio onset. Establish an authoritative per-game
+      onset/completion observation or bounded onset contract first. Carry it frozen
+      with occurrence/run/epoch and capture identity through chunk/route ownership;
+      stale/future/unknown evidence must preserve conservative completion, and
+      explicit replay must not reuse an old live deadline. Inspect both full source
+      pass-through and partial-source lead waits in the shared route owner.
       Distinguish observed completion, conservative estimated remainder and unknown
       duration; retain partial-source lead and focus/visual guards. Gate: a known
       already-ended original does not restart its whole duration, active source
       speech is never cut off, and unknown timing cannot be declared measured.
+      Source inspection found no existing runtime onset/end authority: cue/render
+      quiet are text evidence; the index binds exact media duration, not playback
+      start. Plan the smallest source-end observer first, using explicit owning-
+      application digital audio plus checksum-bound source PCM. Confirm an actual
+      already-ended occurrence rather than extrapolating a future deadline from
+      onset; reject repeated/ambiguous clips, other-window mix, mute, discontinuity,
+      stale run/epoch/lease and missing exact source references. Observer-only native
+      comparison on47/68 must pass before it may shorten either full/partial/pending
+      source waits. Unknown evidence must retain the conservative existing route.
 - [ ] **R7 - Validate shared Read once lifecycle on Mac.** Natural finish,
       failure, Stop, cancel and recovery must clear Speaking/Stop in Reading,
       compact and tray controls. A displayed Stop and direct controller toggle must
@@ -119,29 +179,142 @@ callers and focused regressions together when changing these contracts.
       key after a timeout. Keep historical Windows stalls as separate deferred
       platform qualification.
 
+- [ ] **R9 - Qualify uncertainty recovery and control ownership on Mac.**
+      Verify line16 ->17 advances once after fresh uncertain OCR, without manual
+      Space or replay. Exercise uncertainty before/during/after speech, stale
+      run/owner/epoch/focus and Pause between visual admission and key dispatch.
+      Pause/Resume must continue once; Clear/Stop must stay suppressed after exact
+      OCR/focus return. Preserve occurrence and WAV/source identity; unowned legacy
+      speech must still cancel on uncertainty.
+- [ ] **R11 - Qualify retained-backend speaker announcements on Mac.**
+      Bob must use his standard Narrator recording while the configured name
+      announcement succeeds. Require one announcement and one unchanged dialogue,
+      bounded interruption and no orphan worker. A genuine announcement error
+      must still preserve dialogue playback.
+- [ ] **R12 - Locate actual-app output starvation before selecting its repair.**
+      Final600s Mac/MOSS capture still has six prepared PCM streams with underflow
+      (14/22/23/42/48/60); high-NCC source/output fragments show added digital drift
+      about62/21/168/58/71/48ms. Approved WAV bytes are unchanged. A fresh live
+      Pocket read also has a660ms write followed by underflow, so investigate the
+      shared output/runtime owner rather than prepared-voice synthesis alone.
+      Same-block guard, locks, conversion and refresh are negligible. The existing
+      native-write field times Python sounddevice.write, including CFFI, PortAudio
+      and Python-return scheduling; it does not isolate the C call. Historical
+      actual-app first-block stalls reached1017ms; aggregate native sampling finds
+      PortAudio wait and some GIL returns but cannot locate a specific stalled call.
+      A qualified bounded C-function-pointer standalone A/B uses the exact approved
+      line31 WAV,44100Hz mono float32/low latency/50ms blocks and actual MOSS load.
+      Both311-write trials have zero underflows. Measured maximum70.919ms includes
+      70.666ms inside Pa_WriteStream; post-C delay is at most.062ms. Its separate
+      interpreter/GIL cannot resolve the app defect. No product repair is justified
+      by that non-reproduction.
+      Next: obtain time-indexed native stacks for the actual app writer, correlate
+      the same stream/write/frame-offset timestamps and discriminate C wait from
+      post-C return. Check available native profiling tools before adding code;
+      use a bounded diagnostic run separate from clean acceptance. Installed
+      CommandLineTools lacks xctrace; sample has no chronology. User-run root
+      spindump now qualifies12s/5ms target-only chronological Mach-absolute stacks.
+      Do not use -automation: it refuses sampling while audio runs. The successful
+      actual-app profile has zero underruns; its63.896ms max block shows PortAudio
+      wait followed by two GIL-return samples while the capture thread runs JSON
+      encoding. Native stacks do not identify that Python caller. Consecutive
+      identical PortAudio samples span many50ms writes, not one long call. Next
+      capture must include an actual underflow/long-write interval before choosing
+      a causal repair. Before an isolation refactor, specify the actual audio
+      ownership boundary: capture/OCR/synthesis/playback already have separate
+      single-worker executors, while playback still shares the application's GIL.
+      Another ThreadPoolExecutor does not add isolation. Evaluate a persistent
+      PCM-only process against a native feeder using existing output/control
+      ownership. For prepared clips, hand off the full validated PCM before start
+      and let that owner pump the device; do not proxy each50ms parent write over
+      IPC. For live audio, define bounded PCM ingress/backpressure and whether
+      model-to-output data still depends on the parent GIL; never promise more
+      isolation than the transport provides. Preserve source/run/epoch identity,
+      Stop/abort/drain acknowledgement, pause position, device changes and bounded
+      shutdown/crash handling across every prepared/live/announcement caller.
+      Keep telemetry/model work outside the device feeding path. Qualify the
+      same-output byte/sample order and controls under deliberate UI/OCR/logging
+      load; process separation cannot guarantee OS/device scheduling deadlines or
+      establish the cause of the historical underflows. Keep original
+      WAV/order/rate/device fixed and record capture/log/profiler overhead. No
+      launcher/library monkey patch, synchronous per-block disk log, arbitrary
+      buffer/latency/QoS increase or WAV editing. Choose the shared writer/output
+      or resource-scheduling repair only from causal evidence. Cover sample order,
+      truthful underruns, bounded Stop/pause and device changes in affected tests;
+      then require a new source/output-correlated native run under the same load.
+
 ## P0 - Make capture setup trustworthy and operable
 
-- [ ] **U1 - Validate unobscured setup capture on the native Mac.** Compare the
-      actual test/calibration crops with setup overlapping the game. Confirm setup
+- [ ] **T3a - Keep discovered MCP child widgets usable until the next action.**
+      A visible QLineEdit clear QToolButton returned by find_widget received an
+      observed ID, but clicking that exact ID immediately returned Widget not
+      found; no app restart or layout action occurred between calls. Reproduce
+      with a normal search field, inspect registry/Qt wrapper lifetime, and repair
+      the developer MCP owner without retaining deleted widgets or weakening
+      stale/hidden capture rejection. Also fix get_widget_info passing QByteArray
+      to QObject.property(), which requires a str and currently returns HTTP500.
+      Keep typing append semantics explicit and
+      provide ordinary keyboard replacement. Gate: discovery -> click works for
+      live anonymous child widgets; deleted/recreated children still fail closed.
+      Next repair in the tracked `scripts/pyside6-mcp/screenshot-safety.patch`:
+      assign session-qualified IDs on native Qt objects, retain weak wrappers and
+      reacquire valid live widgets by that private property after wrapper GC.
+      IDs must never be reused after native destruction; avoid raw-pointer wrapping
+      or strong references. Decode property names before QObject.property(). Add
+      focused upstream GC/delete/recreate/HTTP regressions and include them in the
+      installer test list; build/apply a fresh pinned checkout before activation.
+
+- [ ] **U1 - Validate unobscured setup capture on the native Mac.** Exercise
+      wizard and tray calibration with Dashboard, compact controls and a pending
+      diagnostics refresh over the game; inspect actual test/calibration pixels.
+      Delete/close the wizard while capture is pending: surviving controls must
+      return without reopening the wizard or activating diagnostics. Confirm setup
       windows disappear only while pixels are acquired, return before OCR/playback,
       and Cancel remains usable during model preparation/playback. Exercise capture
       failure, cancellation, close and retry; restoration must not steal game focus,
       reopen a closed wizard or start continuous Reading. Inspect/copy the complete
       recognized text/speaker and retain the saved auto-advance opt-out. The setup
       test qualifies OCR/live preview; M1 qualifies the configured hybrid route.
-- [ ] **U2 - Investigate: calibrate dialogue, narrator and cue as separate evidence on Mac.**
-      The default bottom 32% crop misreads dialogue as a speaker (50.2%/44%); a tighter
-      crop reads full dialogue 95.6% but invents an unreadable narrator name. Diagnose
-      the stage314001:6 narrator scene through the existing adaptive-crop and
-      speaker-presence code. Add a checked-in minimal regression fixture or a
-      reproducible fixture builder; a local screenshot must not be required.
+- [ ] **U2 - Validate remaining held-out adaptive-crop cases on Mac.**
+      The corrected glyph/background fallback and generated-pixel regressions pass;
+      native Narrator6 and Cornerstone15 now have correct dialogue/name handling.
+      Retain maximum-height/nameplate-inclusive calibration and qualify additional
+      held-out scenes through the existing adaptive-crop/speaker-presence owner.
       Gate: narrator scenes, named speech, short/punctuation-only/1-4-line text,
       scenery behind absent names, faint/unanchored/clipped labels and full continue
       cues pass held-out Mac captures without lowering confidence or clipping
       text. Qualify local-background-check and fast RapidOCR latency tails before
       any backend switch; development controls alone do not establish general accuracy.
+- [ ] **U6 - Qualify durable readiness during cold generation startup on Mac.**
+      Saved admitted recordings must remain ready while the heavy backend starts;
+      Start reading must remain available without new synthesis. Verify original-
+      only readiness, cancel/retry and same-input callback handoff. Reject missing/
+      corrupt WAVs, foreign state/manifest, changed source evidence and callbacks
+      from another input; completed counts alone are not playable coverage.
+      Native compact controls also kept saying VNTTS is starting with ready=false,
+      busy=false and the engine waiting for an explicit Load engine action in full
+      Reading. Trace that cold capability/reason through the shared UI owner;
+      expose the actual required action rather than an indefinite starting message.
+- [ ] **U7 - Complete model-asset evidence and native offline reuse.**
+      Qualify normal GUI/preflight with network unavailable and no experiment-only
+      environment: offline-first and Reading-first must reuse the same managed
+      model/codec/cache. Preserve explicit cache overrides and Pocket bundle/token
+      isolation. Inspect resolved model/codec and download/load phase reporting;
+      add owner-level evidence if only generic loading status remains. Missing/
+      corrupt assets and bounded download cancellation/retry must stay actionable;
+      do not globally disable Xet.
+- [ ] **U8 - Qualify prompt prepared Reading with cold Pocket fallback on Mac.**
+      Start reading must capture/play admitted original/generated routes while
+      fallback model preparation continues. Later Bob announcement and genuine
+      live misses must use the same ready worker and report any actual wait.
+      Exercise Stop, Resume, reconfigure, failed-load retry and close during model
+      load/warmup; no stale publication, duplicate worker or orphan process.
+      Qualify compact opening without game-focus activation using owner-only focus
+      evidence. Continue genuine heavy character generation concurrently; native
+      MOSS generation readiness is separate from the Pocket fallback startup.
 - [ ] **U4 - Validate exact region controls on the native Mac.** Use keyboard/MCP
-      to set Left/Top/Width/Height, inspect multiline dialogue/name/cue coverage and
+      to set Left/Top/Width/Height, retain the maximum-height multiline/nameplate
+      envelope for native 14 ->15, inspect dialogue/cue coverage and
       review/save/cancel/retry at enlarged text. Confirm the nonmodal coordinate
       panel remains reachable, values match drag/keyboard movement, stale review
       callbacks cannot save another selection, and closing review cancels its OCR.
@@ -158,24 +331,16 @@ callers and focused regressions together when changing these contracts.
       first successful PCM-write return and software completion against independent
       recording; neither is physical DAC/acoustic onset. Original onset stays
       unobserved and its duration timer stays estimated. Split original/prepared/live
-      and cache states; collect actual cold/warm model evidence separately rather
-      than replacing `model_warmth=unobserved` with an inference. Confirm append-only
+      and cache states; measure cold model/codec startup, cached reuse and steady
+      synthesis separately, without unit-test load or comparing different texts
+      as a speed claim. Do not replace `model_warmth=unobserved` with an inference. Confirm append-only
       events, explicit retention gaps and common monotonic offsets survive export
-      and restart, including OCR-free visual successors. Measure capture/support-log
+      and restart, including OCR-free visual successors. The current 2000-event
+      budget evicted the early 14 -> 15 rejection evidence before export; preserve
+      early events in a bounded diagnostic acquisition journal during the next run
+      and expose whole-timeline eviction gaps honestly. Measure capture/support-log
       overhead and Stop latency; ordinary logs must retain no pixels/dialogue.
 
-- [ ] **T2 - Validate the native recorder with game and application audio on Mac.**
-      Use the tracked `scripts/mac_live_recording` recipe with explicit selected
-      game window/PID and VNTTS PID. Gate: decoded video includes scene/text changes
-      near the beginning, middle and end of a bounded run lasting at least 60s,
-      with monotonic timestamps
-      aligned to separate game/app audio, visible drop/queue accounting and bounded
-      Stop/cleanup. An idle scene must not be confused with a dead stream; a stalled
-      or failed stream must produce an explicit incomplete/failed result, including
-      native delegate errors, rather than Success from cleanup markers. Repeat
-      acceptance in the Mac replay suite. Digital recording is
-      not physical DAC/acoustic latency; do not claim 30fps precision without the
-      corresponding verified frames. Keep overhead and missing intervals visible.
 - [ ] **T3 - Finish native screenshot-safe MCP activation.**
       Reconnect the desktop chat's MCP host: its current connection fails importing
       `fastmcp.server.providers.prefab_payload`, while a fresh official stdio client
@@ -196,19 +361,17 @@ callers and focused regressions together when changing these contracts.
       Label window-ID namespaces: Qt WId/Cocoa view handles in MCP are not Quartz
       CGWindowIDs used by native recording; correlate owners without equating these
       numeric values. Product screenshot metadata does not qualify video or MCP.
-- [ ] **T5 - Make native MCP interaction outcomes reliable.** Reproduce a VNTTS
-      `stop_app` timeout where the owned process actually exits, using a minimal
-      Qt fixture and VNTTS separately; qualify quit acknowledgement versus process
-      termination before repairing the shared connector. A simple fixture already
-      quits successfully, so do not assume every shutdown is broken or raise timeouts.
-      Reproduce a QComboBox internal editor ID disappearing between widget-tree
-      inspection and typing while its parent combo remains usable; inspect transient
-      PySide wrapper lifetime versus Qt object lifetime before changing identity
-      ownership. Never keep closed windows alive or silently retarget stale IDs.
-      Return actionable tool errors for missing targets. Support documented key
-      chords or reject them explicitly: `Ctrl+A` must not become literal input.
-      Gate: deterministic lifecycle regressions, truthful bounded shutdown and
-      stable live-control IDs with closed/restarted targets still rejected.
+- [ ] **T5 - Finish native activation of truthful MCP action outcomes.**
+      Fresh pinned patch/build regressions now cover queued/dispatched/completed/
+      error, a true modal QDialog.exec acknowledgement, exactly-once POST, late
+      error correlation, key chords, widget lifetime/property access and real-PID
+      shutdown. Qualify the modal-action candidate on a native generated fixture,
+      then activate through the normal installer/restart path without interrupting
+      a game run or discarding generation. A202 acknowledgement is not completed
+      work; inspect current state and existing invocation-ID logs before another
+      action. Keep the desktop-host reconnect gate inT3 separate. For VNTTS close,
+      verify bounded real-process exit and report actual returncode; do not infer
+      graceful shutdown from quit acknowledgement or bridge disappearance.
 
 ## P0 - Repeat the Mac prepared-voice workflow
 
@@ -290,10 +453,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 ## Keep full regression shards within their watchdogs
 
 - [ ] Measure and repartition the broad `remainder` inventory in `scripts/run_ci_unittests.py`, including a separate bounded group for catalog renders, while preserving every discovered test and the existing watchdogs. In the macOS permissions UI cycle the 900-second aggregate timed out during catalog renders; excluding the catalog still completed 4,460 of 4,475 remainder tests before the deadline, without an assertion failure. Use exact test-ID union checks and investigate slow cases rather than raising limits or dropping coverage. Validate the normal full-suite entry point on supported CI platforms; locally split retries qualify the tests, not the current aggregate scheduling.
-
-## Restore the existing UI complexity gate
-
-- [ ] Refactor the oversized UI/catalog scopes reported by `uv run python scripts/check_ruff_complexity.py` on main: catalog screenshot preparation and asset stories, history constructor/keyboard test, diagnostics constructor/body, and profile constructor. Reconcile the baseline only after actual simplification; keep the current calibration behavior and catalog coverage. These failures reproduce on `197c8df1` before the calibration changes.
 
 ## Qualify native macOS permission recovery
 

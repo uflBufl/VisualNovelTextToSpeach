@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
+from vntts.dialog_capture import OCRUncertainError
 from vntts.live_tracking import IncrementalDialogTracker, SpeechChunk
 from vntts.live_tracking import TrackerProbe as TrackerProbe
 from vntts.live_tracking import TrackerResolver as TrackerResolver
@@ -298,6 +299,8 @@ class LiveDialogReader:
         playback_executor: _Executor,
         capture_frame: Callable[[], Frame],
         recognize_frame: Callable[[Frame], Observation],
+        ocr_uncertain: Callable[[OCRUncertainError, Callable[[], bool]], object]
+        | None = None,
         prepare_chunk: Callable[[SpeechChunk], object],
         play_prepared: Callable[[SpeechChunk, object], object],
         report_error: Callable[[Exception], object],
@@ -351,7 +354,7 @@ class LiveDialogReader:
         self.ocr_executor = ocr_executor
         self.playback_executor = playback_executor
         self.capture_frame = capture_frame
-        self.recognize_frame = recognize_frame
+        self._initialize_recognition(recognize_frame, ocr_uncertain)
         self.frame_fingerprint = frame_fingerprint or (lambda _frame: None)
         # None means the identity fingerprint is also sufficient for render
         # activity. Keep that as a sentinel so capture does not compute an
@@ -480,6 +483,14 @@ class LiveDialogReader:
         self.next_capture_interval = self.interval_seconds
         self.pipeline_metrics = LivePipelineMetrics()
 
+    def _initialize_recognition(
+        self,
+        recognize_frame: Callable[[Frame], Observation],
+        ocr_uncertain: Callable[[OCRUncertainError, Callable[[], bool]], object] | None,
+    ) -> None:
+        self.recognize_frame = recognize_frame
+        self.ocr_uncertain = ocr_uncertain or (lambda _error, _is_current: None)
+
     def _reset_pending_transition(self, frame: Frame | None) -> None:
         self.pending_transition_frame = frame
         self.pending_transition_progress_at: float | None = None
@@ -493,6 +504,7 @@ class LiveDialogReader:
         self.latest_render_changed_at: float | None = None
 
     def _reset_frame_observations(self) -> None:
+        self.observation_uncertain = False
         self.observation_frame: Frame | None = None
         self.latest_frame_captured_at: float | None = None
         self.latest_frame: Frame | None = None
@@ -623,6 +635,7 @@ class LiveDialogReader:
             self.processed_frame_version = 0
             self.next_capture_interval = self.interval_seconds
             self.pipeline_metrics = LivePipelineMetrics()
+            self._ocr_progress("queued")
             self._submit_capture_workers()
         return True
 
@@ -751,6 +764,7 @@ class LiveDialogReader:
                 self.pause_condition.notify_all()
             else:
                 self.paused = True
+                self.frame_route_epoch += 1
                 self._cancel_auto_advance_locked()
                 if self.current_chunk is not None:
                     current_chunk = self.current_chunk
@@ -846,41 +860,53 @@ class LiveDialogReader:
     def clear_queue(self) -> bool:
         with ExitStack() as cleanup:
             with self.pause_condition:
-                self.suppressed_generation = self.active_generation
-                futures = tuple(self.speech_futures)
-                had_paused_chunks = bool(self.paused_chunks)
-                had_deferred_chunk = self.deferred_chunk is not None
-                self.paused_chunks = []
-                self.deferred_chunk = None
-                has_current_speech = self.current_chunk is not None
-                self.pending_auto_advance_generation = None
-                self.auto_advance_attempts = 0
-                self.auto_advance_blocked_generation = None
-                self.auto_advance_block_reason = None
-                self.auto_advance_focus_wait_generation = None
-                self.auto_advance_visual_wait_generation = None
-                self.pause_condition.notify_all()
-                # Cancellation cannot stop running synthesis. Interrupt it after
-                # attempting every queued future, outside the reader lock.
-                if has_current_speech or futures:
-                    cleanup.enter_context(
-                        cleanup_on_exit(
-                            self._interrupt_speech, description="Speech interruption"
-                        )
-                    )
-                for future in reversed(futures):
-                    cleanup.enter_context(
-                        cleanup_on_exit(
-                            future.cancel, description="Queued speech cancellation"
-                        )
-                    )
-                self._cancel_auto_advance_locked()
+                return self._clear_queue_locked(cleanup)
+
+    def _clear_queue_locked(self, cleanup: ExitStack) -> bool:
+        self.frame_route_epoch += 1
+        self.suppressed_generation = self.active_generation
+        futures = tuple(self.speech_futures)
+        had_paused_chunks = bool(self.paused_chunks)
+        had_deferred_chunk = self.deferred_chunk is not None
+        self.paused_chunks = []
+        self.deferred_chunk = None
+        has_current_speech = self.current_chunk is not None
+        self.pending_auto_advance_generation = None
+        self.auto_advance_attempts = 0
+        self.auto_advance_blocked_generation = None
+        self.auto_advance_block_reason = None
+        self.auto_advance_focus_wait_generation = None
+        self.auto_advance_visual_wait_generation = None
+        self.pause_condition.notify_all()
+        # Cancellation cannot stop running synthesis. Interrupt it after
+        # attempting every queued future, outside the reader lock.
+        if has_current_speech or futures:
+            cleanup.enter_context(
+                cleanup_on_exit(
+                    self._interrupt_speech, description="Speech interruption"
+                )
+            )
+        for future in reversed(futures):
+            cleanup.enter_context(
+                cleanup_on_exit(future.cancel, description="Queued speech cancellation")
+            )
+        self._cancel_auto_advance_locked()
         return (
             has_current_speech
             or bool(futures)
             or had_paused_chunks
             or had_deferred_chunk
         )
+
+    def invalidate_observation(self) -> None:
+        """Withhold visual continuation until fresh OCR rebinds the current owner."""
+        with self.state_lock:
+            self.observation_uncertain = True
+            self.frame_route_epoch += 1
+            self.last_observation = None
+            self.last_accepted_observation = None
+            self._reset_stable_frame_candidate_locked()
+            self._cancel_auto_advance_locked()
 
     def shutdown(self) -> None:
         """Seal this reader permanently before attempting fallible cancellation."""
@@ -1124,6 +1150,9 @@ class LiveDialogReader:
             stop_event.wait(interval)
 
     def _notify_capture_state(self, focused: bool, interval: float) -> None:
+        if not focused:
+            with self.state_lock:
+                self.frame_route_epoch += 1
         try:
             self.capture_state_changed(focused, interval)
         except Exception as error:
@@ -1184,12 +1213,14 @@ class LiveDialogReader:
         complete: bool,
         render_fingerprint: object,
         frame: Frame | None = None,
+        run_id: str | None = None,
     ) -> bool:
         # Ownership/focus are barriers even when pixels happen to match.
         if (
-            self.ocr_purpose() != purpose
-            or recognition_owner != self.stable_frame_owner()
-            or not self._is_focused()
+            self._ocr_callback("validating-purpose", self.ocr_purpose) != purpose
+            or recognition_owner
+            != self._ocr_callback("validating-owner", self.stable_frame_owner)
+            or not self._ocr_callback("validating-focus", self._is_focused)
         ):
             return False
         with self.state_lock:
@@ -1199,6 +1230,7 @@ class LiveDialogReader:
                 or self.emergency_stopped
                 or self.is_shutting_down
                 or recognition_epoch != self.frame_route_epoch
+                or (run_id is not None and run_id != self.run_id)
                 or visible != self.latest_frame_visible
             ):
                 return False
@@ -1216,11 +1248,17 @@ class LiveDialogReader:
         if not changed:
             return True
         # Compare the entire name/text evidence; a new glyph must invalidate OCR.
-        if frame is None or latest is None or not self.frame_equivalent(frame, latest):
+        if (
+            frame is None
+            or latest is None
+            or not self._ocr_callback(
+                "validating-frame", self.frame_equivalent, frame, latest
+            )
+        ):
             return False
-        focused = self._is_focused()
-        purpose_current = self.ocr_purpose()
-        owner_current = self.stable_frame_owner()
+        focused = self._ocr_callback("validating-focus", self._is_focused)
+        purpose_current = self._ocr_callback("validating-purpose", self.ocr_purpose)
+        owner_current = self._ocr_callback("validating-owner", self.stable_frame_owner)
         with self.state_lock:
             return (
                 focused
@@ -1232,26 +1270,23 @@ class LiveDialogReader:
                 and not self.is_shutting_down
                 and latest is self.latest_frame
                 and recognition_epoch == self.frame_route_epoch
+                and (run_id is None or run_id == self.run_id)
                 and visible == self.latest_frame_visible
             )
 
     def worker_health_snapshot(self) -> dict[str, object]:
         with self.state_lock:
             future = self.ocr_future
-            state = (
-                "not-started"
-                if future is None
-                else "cancelled"
-                if future.cancelled()
-                else "finished"
-                if future.done()
-                else "running"
-            )
-            error = (
-                future.exception()
-                if future is not None and future.done() and not future.cancelled()
-                else None
-            )
+            error = None
+            if future is None:
+                state = "not-started"
+            elif not future.done():
+                state = "running" if future.running() else "queued"
+            elif future.cancelled():
+                state = "cancelled"
+            else:
+                error = future.exception()
+                state = "failed" if error is not None else "finished"
             return {
                 "worker_state": state,
                 "worker_stage": self.ocr_worker_stage,
@@ -1259,6 +1294,8 @@ class LiveDialogReader:
                 "worker_progress_age_ms": round(
                     (monotonic() - self.ocr_worker_progress_at) * 1000
                 ),
+                "worker_frame_version": self.processed_frame_version,
+                "latest_frame_version": self.frame_version,
             }
 
     def _ocr_progress(self, stage: str) -> None:
@@ -1266,9 +1303,23 @@ class LiveDialogReader:
             self.ocr_worker_stage = stage
             self.ocr_worker_progress_at = monotonic()
 
+    def _ocr_callback(
+        self,
+        stage: str,
+        callback: Callable[_P, _R],
+        *args: _P.args,
+        **kwargs: _P.kwargs,
+    ) -> _R:
+        self._ocr_progress(stage)
+        return callback(*args, **kwargs)
+
     def _run_ocr(self, stop_event: Event) -> None:
-        tracker = self.tracker_factory(**self.tracker_options)
-        policy = self.adaptive_policy_factory(
+        tracker = self._ocr_callback(
+            "initializing-tracker", self.tracker_factory, **self.tracker_options
+        )
+        policy = self._ocr_callback(
+            "initializing-policy",
+            self.adaptive_policy_factory,
             base_interval=self.interval_seconds,
             **self.adaptive_options,
         )
@@ -1299,11 +1350,17 @@ class LiveDialogReader:
                 recognition_version = self.frame_version
                 recognition_capture_at = self.latest_frame_captured_at
             try:
-                recheck_required = bool(self.frame_recheck_required())
-                focused = self._is_focused() if recheck_required else False
+                recheck_required = bool(
+                    self._ocr_callback("checking-recheck", self.frame_recheck_required)
+                )
+                focused = (
+                    self._ocr_callback("checking-focus", self._is_focused)
+                    if recheck_required
+                    else False
+                )
                 recheck_now = False
                 if recheck_required and visible and focused:
-                    now = self.stable_frame_clock()
+                    now = self._ocr_callback("reading-clock", self.stable_frame_clock)
                     recheck_now = bool(
                         last_frame_recheck_at is None
                         or now - last_frame_recheck_at
@@ -1311,13 +1368,17 @@ class LiveDialogReader:
                     )
                     if recheck_now:
                         last_frame_recheck_at = now
-                        self._report_pipeline_event(
+                        self._ocr_callback(
+                            "reporting-prefix-recheck",
+                            self._report_pipeline_event,
                             "canonical-prefix-visual-recheck",
                             self.active_generation,
                             fingerprint=self._privacy_safe_fingerprint(fingerprint),
                             visible=True,
                             focused=True,
-                            owner=self.stable_frame_owner(),
+                            owner=self._ocr_callback(
+                                "reading-owner", self.stable_frame_owner
+                            ),
                             recheck_interval_ms=_recheck_interval_milliseconds(
                                 self.frame_recheck_interval_seconds
                             ),
@@ -1346,6 +1407,7 @@ class LiveDialogReader:
                     and not awaiting_post_advance_dialog
                     and not recheck_now
                     and not render_changed
+                    and not self.observation_uncertain
                 ):
                     character, text = cached_observation
                     route_kind = "cached"
@@ -1363,14 +1425,18 @@ class LiveDialogReader:
                         complete,
                     )
                 if frame_route is False:
-                    if self.ocr_purpose() is None:
-                        self.frame_observed(
+                    if self._ocr_callback("reading-purpose", self.ocr_purpose) is None:
+                        self._ocr_callback(
+                            "observing-frame",
+                            self.frame_observed,
                             frame,
                             fingerprint,
                             "locked-visual-only",
                         )
                     character, text = cached_observation
-                    interval = policy.observe(character, text, focused=True)
+                    interval = self._ocr_callback(
+                        "updating-policy", policy.observe, character, text, focused=True
+                    )
                     with self.state_lock:
                         self.next_capture_interval = interval
                     continue
@@ -1387,36 +1453,40 @@ class LiveDialogReader:
                     or awaiting_post_advance_dialog
                     or recheck_now
                     or render_changed
+                    or self.observation_uncertain
                 ):
-                    purpose = self.ocr_purpose()
+                    purpose = self._ocr_callback("reading-purpose", self.ocr_purpose)
                     if purpose is None:
-                        self.frame_observed(
+                        self._ocr_callback(
+                            "observing-frame",
+                            self.frame_observed,
                             frame,
                             fingerprint,
                             "locked-visual-only",
                         )
                         character, text = cached_observation
-                        interval = policy.observe(character, text, focused=True)
+                        interval = self._ocr_callback(
+                            "updating-policy",
+                            policy.observe,
+                            character,
+                            text,
+                            focused=True,
+                        )
                         with self.state_lock:
                             self.next_capture_interval = interval
                         continue
-                    recognition_owner = self.stable_frame_owner()
-                    with self.state_lock:
-                        recognition_epoch = self.frame_route_epoch
-                    self._ocr_progress("recognizing")
-                    character, text = self.recognize_frame(frame)
-                    self._ocr_progress("validating-freshness")
-                    if not self._recognition_is_current(
+                    observation = self._recognize_current_frame(
+                        frame,
                         purpose,
-                        recognition_owner,
-                        recognition_epoch,
                         fingerprint,
                         visible,
                         complete,
                         render_fingerprint,
-                        frame,
-                    ):
+                        policy,
+                    )
+                    if observation is None:
                         continue
+                    character, text = observation
                     route_kind = "ocr"
                     cached_fingerprint = fingerprint
                     cached_render_fingerprint = render_fingerprint
@@ -1435,17 +1505,26 @@ class LiveDialogReader:
                     frame, recognition_version, recognition_capture_at, route_kind
                 )
                 self._ocr_progress("routing")
-                self._observe_pending_transition_text(character, text)
+                self._ocr_callback(
+                    "observing-transition",
+                    self._observe_pending_transition_text,
+                    character,
+                    text,
+                )
                 routed_observation = (
                     frame_route
                     if isinstance(
                         frame_route,
                         (SilentDialogRoute, CanonicalDialogRoute),
                     )
-                    else self._report_observation(character, text)
+                    else self._ocr_callback(
+                        "routing-observation", self._report_observation, character, text
+                    )
                 )
                 if routed_observation is None:
-                    interval = policy.observe(character, text, focused=True)
+                    interval = self._ocr_callback(
+                        "updating-policy", policy.observe, character, text, focused=True
+                    )
                     with self.state_lock:
                         self.next_capture_interval = interval
                     continue
@@ -1462,7 +1541,9 @@ class LiveDialogReader:
                 with self.state_lock:
                     frame_already_routed = fingerprint == self.routed_frame_fingerprint
                 if route_kind != "cached" and not frame_already_routed:
-                    self.frame_routed(
+                    self._ocr_callback(
+                        "publishing-route",
+                        self.frame_routed,
                         frame,
                         fingerprint,
                         route_kind,
@@ -1472,34 +1553,105 @@ class LiveDialogReader:
                 if self.stable_frame_route is not None:
                     self._accept_routed_frame(fingerprint)
                 if silent_route is not None:
-                    tracker.observe_silent(silent_route.event_id)
+                    self._ocr_callback(
+                        "tracking-silent", tracker.observe_silent, silent_route.event_id
+                    )
                     chunks = []
                 else:
-                    line_id = self.line_id_resolver(character, text)
+                    line_id = self._ocr_callback(
+                        "resolving-line", self.line_id_resolver, character, text
+                    )
                     if line_id is None:
                         expect_new_dialog = getattr(tracker, "expect_new_dialog", None)
                         if callable(expect_new_dialog) and awaiting_post_advance_dialog:
-                            expect_new_dialog()
+                            self._ocr_callback("tracking-transition", expect_new_dialog)
                         tracker_character = (
                             "Narrator" if character is None else character
                         )
-                        chunks = tracker.observe(tracker_character, text)
+                        chunks = self._ocr_callback(
+                            "tracking-dialogue",
+                            tracker.observe,
+                            tracker_character,
+                            text,
+                        )
                     else:
                         assert character is not None
-                        chunks = tracker.observe_canonical(character, text, line_id)
-                self._schedule_tracked_chunks(tracker, chunks)
-                interval = policy.observe(character, text, focused=True)
+                        chunks = self._ocr_callback(
+                            "tracking-canonical",
+                            tracker.observe_canonical,
+                            character,
+                            text,
+                            line_id,
+                        )
+                self._ocr_callback(
+                    "scheduling-speech", self._schedule_tracked_chunks, tracker, chunks
+                )
+                interval = self._ocr_callback(
+                    "updating-policy", policy.observe, character, text, focused=True
+                )
                 with self.state_lock:
                     self.next_capture_interval = interval
             except Exception as error:
-                self.report_error(error)
+                self._ocr_callback("reporting-error", self.report_error, error)
                 with self.state_lock:
                     self.next_capture_interval = self.interval_seconds
 
         self._ocr_progress("flushing")
         if not self.stop_event.is_set() and not self.is_shutting_down:
-            self._schedule_tracked_chunks(tracker, tracker.flush())
+            self._ocr_callback(
+                "scheduling-flush",
+                self._schedule_tracked_chunks,
+                tracker,
+                self._ocr_callback("flushing-tracker", tracker.flush),
+            )
         self._ocr_progress("finished")
+
+    def _recognize_current_frame(
+        self,
+        frame: Frame,
+        purpose: str,
+        fingerprint: FrameFingerprint,
+        visible: bool,
+        complete: bool,
+        render_fingerprint: FrameFingerprint,
+        policy: _CapturePolicy,
+    ) -> Observation | None:
+        recognition_owner = self._ocr_callback("reading-owner", self.stable_frame_owner)
+        with self.state_lock:
+            recognition_epoch = self.frame_route_epoch
+            recognition_run_id = self.run_id
+        self._ocr_progress("recognizing")
+        uncertainty = None
+        try:
+            character, text = self.recognize_frame(frame)
+        except OCRUncertainError as error:
+            uncertainty = error
+        self._ocr_progress("validating-freshness")
+        is_current = partial(
+            self._recognition_is_current,
+            purpose,
+            recognition_owner,
+            recognition_epoch,
+            fingerprint,
+            visible,
+            complete,
+            render_fingerprint,
+            frame,
+            recognition_run_id,
+        )
+        if not is_current():
+            return None
+        if uncertainty is not None:
+            self._ocr_callback(
+                "reporting-uncertainty", self.ocr_uncertain, uncertainty, is_current
+            )
+            interval = self._ocr_callback(
+                "updating-policy", policy.observe, None, "", focused=True
+            )
+            with self.state_lock:
+                self.next_capture_interval = interval
+            return None
+        return character, text
 
     def _stable_frame_route_decision(
         self,
@@ -1509,27 +1661,34 @@ class LiveDialogReader:
     ) -> StableFrameRoute:
         if self.stable_frame_route is None:
             return None
-        focused = self._is_focused()
+        focused = self._ocr_callback("checking-focus", self._is_focused)
         if not visible or not focused:
             with self.state_lock:
                 self._reset_stable_frame_candidate_locked()
-            self._report_pipeline_event(
+            self._ocr_callback(
+                "reporting-stable-gate",
+                self._report_pipeline_event,
                 "stable-frame-gate",
                 self.active_generation,
                 fingerprint=self._privacy_safe_fingerprint(fingerprint),
                 visible=bool(visible),
                 focused=focused,
-                owner=self.stable_frame_owner(),
+                owner=self._ocr_callback("reading-owner", self.stable_frame_owner),
                 completion_cue=bool(complete),
                 candidate_frames=0,
                 settled_ms=0,
                 ready=False,
             )
             return False
-        owner = self.stable_frame_owner()
-        expected_prefix = self.ocr_purpose() == "expected-successor-prefix"
-        now = self.stable_frame_clock()
+        owner = self._ocr_callback("reading-owner", self.stable_frame_owner)
+        expected_prefix = (
+            self._ocr_callback("reading-purpose", self.ocr_purpose)
+            == "expected-successor-prefix"
+        )
+        now = self._ocr_callback("reading-clock", self.stable_frame_clock)
         with self.state_lock:
+            if self.observation_uncertain:
+                return None
             if self.routed_frame_fingerprint is None:
                 return None
             if fingerprint == self.routed_frame_fingerprint or (
@@ -1562,7 +1721,9 @@ class LiveDialogReader:
                 candidate_frames >= 2
                 and settled_for >= self.stable_frame_minimum_seconds
             )
-        self._report_pipeline_event(
+        self._ocr_callback(
+            "reporting-stable-gate",
+            self._report_pipeline_event,
             "stable-frame-gate",
             self.active_generation,
             fingerprint=self._privacy_safe_fingerprint(fingerprint),
@@ -1574,7 +1735,9 @@ class LiveDialogReader:
             settled_ms=round(settled_for * 1000),
             ready=ready,
         )
-        route = self.stable_frame_route(
+        route = self._ocr_callback(
+            "routing-stable-frame",
+            self.stable_frame_route,
             fingerprint,
             ready,
             owner,
@@ -1622,6 +1785,7 @@ class LiveDialogReader:
         return round(quiet_seconds * 1000)
 
     def _accept_routed_frame_locked(self, fingerprint: FrameFingerprint) -> None:
+        self.observation_uncertain = False
         self.routed_frame = self.latest_frame
         self.routed_frame_fingerprint = fingerprint
         self.frame_route_epoch += 1
@@ -2092,6 +2256,7 @@ class LiveDialogReader:
                 or self.deferred_chunk is not None
                 or self.paused
                 or self.suppressed_generation == generation
+                or self.observation_uncertain
                 or self.stop_event.is_set()
             ):
                 return
@@ -2126,6 +2291,7 @@ class LiveDialogReader:
                 or self.deferred_chunk is not None
                 or self.paused
                 or self.suppressed_generation == generation
+                or self.observation_uncertain
                 or self.stop_event.is_set()
             ):
                 return
@@ -2209,46 +2375,7 @@ class LiveDialogReader:
             advanced = attempt
             refusal_reason = None
         if advanced is False:
-            if refusal_reason == "focus-wait" or (
-                refusal_reason is None and not self._is_focused()
-            ):
-                with self.state_lock:
-                    report_focus_wait = (
-                        self.auto_advance_focus_wait_generation != generation
-                    )
-                    self.auto_advance_focus_wait_generation = generation
-                if report_focus_wait:
-                    self._report_pipeline_event(
-                        "auto-advance-withheld",
-                        generation,
-                        reason="game-focus-lost-before-dispatch",
-                    )
-                    self._report_auto_advance_state("focus-wait", generation, 0)
-                self._maybe_auto_advance()
-            elif refusal_reason == "visual-wait":
-                with self.state_lock:
-                    report_visual_wait = (
-                        self.auto_advance_visual_wait_generation != generation
-                    )
-                    self.auto_advance_visual_wait_generation = generation
-                if report_visual_wait:
-                    self._report_pipeline_event(
-                        "auto-advance-withheld",
-                        generation,
-                        reason="canonical-full-text-not-confirmed",
-                    )
-                    self._report_auto_advance_state("visual-wait", generation, 0)
-                self._maybe_auto_advance()
-            else:
-                self._report_pipeline_event(
-                    "auto-advance-withheld",
-                    generation,
-                    reason=refusal_reason or "callback-blocked",
-                )
-                with self.state_lock:
-                    if generation == self.active_generation:
-                        self.failed_auto_advance_generation = generation
-                self._report_auto_advance_state("blocked", generation, 0)
+            self._handle_auto_advance_refusal(generation, refusal_reason)
             return
         dispatched = None
         with self.state_lock:
@@ -2288,6 +2415,53 @@ class LiveDialogReader:
             )
             self._report_auto_advance_state("dispatched", generation, attempt)
             timer.start()
+
+    def _handle_auto_advance_refusal(
+        self, generation: int, refusal_reason: str | None
+    ) -> None:
+        if refusal_reason == "reading-control-barrier":
+            # Resume rearms Pause; Clear and Stop retain their own barriers.
+            return
+        if refusal_reason == "focus-wait" or (
+            refusal_reason is None and not self._is_focused()
+        ):
+            with self.state_lock:
+                report_focus_wait = (
+                    self.auto_advance_focus_wait_generation != generation
+                )
+                self.auto_advance_focus_wait_generation = generation
+            if report_focus_wait:
+                self._report_pipeline_event(
+                    "auto-advance-withheld",
+                    generation,
+                    reason="game-focus-lost-before-dispatch",
+                )
+                self._report_auto_advance_state("focus-wait", generation, 0)
+            self._maybe_auto_advance()
+        elif refusal_reason == "visual-wait":
+            with self.state_lock:
+                report_visual_wait = (
+                    self.auto_advance_visual_wait_generation != generation
+                )
+                self.auto_advance_visual_wait_generation = generation
+            if report_visual_wait:
+                self._report_pipeline_event(
+                    "auto-advance-withheld",
+                    generation,
+                    reason="canonical-full-text-not-confirmed",
+                )
+                self._report_auto_advance_state("visual-wait", generation, 0)
+            self._maybe_auto_advance()
+        else:
+            self._report_pipeline_event(
+                "auto-advance-withheld",
+                generation,
+                reason=refusal_reason or "callback-blocked",
+            )
+            with self.state_lock:
+                if generation == self.active_generation:
+                    self.failed_auto_advance_generation = generation
+            self._report_auto_advance_state("blocked", generation, 0)
 
     def _auto_advance_confirmation_expired(
         self,

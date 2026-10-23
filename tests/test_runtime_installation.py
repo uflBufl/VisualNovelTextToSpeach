@@ -408,9 +408,10 @@ class RuntimeInstallationTest(unittest.TestCase):
         ):
             old = ensure_speech_runtime("moss-tts")
             worker = object.__new__(IsolatedSpeechBackend)
+            worker._initialize_worker_state()
+            worker.deferred_startup = False
             worker.name = "qwen-tts"
             worker.runtime_root = old[0]
-            worker._runtime_use = None
             with patch.object(IsolatedSpeechBackend, "_launch_worker"):
                 worker._start_worker()
             self.assertIsNotNone(worker._runtime_use)
@@ -427,9 +428,10 @@ class RuntimeInstallationTest(unittest.TestCase):
         from vntts.speech_worker import IsolatedSpeechBackend
 
         worker = object.__new__(IsolatedSpeechBackend)
+        worker._initialize_worker_state()
+        worker.deferred_startup = False
         worker.name = "qwen-tts"
         worker.runtime_root = Path("/runtime")
-        worker._runtime_use = None
         use = Mock()
         with (
             patch("sys.platform", "darwin"),

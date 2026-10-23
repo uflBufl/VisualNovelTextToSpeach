@@ -47,8 +47,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid
 
 from vntts.async_ui import LatestTaskRunner
+from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.ocr import (
     DialogRegion,
     OCRResult,
@@ -62,7 +64,64 @@ from vntts.window_capture import WindowGeometry
 
 ReviewerFactory = Callable[[Image.Image], QDialog]
 CALIBRATION_OCR_TIMEOUT_SECONDS = 10.0
+DIALOG_REGION_GUIDANCE = (
+    "Allow for the tallest dialogue box: extra lines can move the speaker name upwards. "
+    "Leave space above the current name."
+)
 _active_overlay: DialogRegionOverlay | None
+
+
+class CaptureWindowVisibility(QObject):
+    """Hide current Qt windows and restore only surviving, still-owned controls."""
+
+    def __init__(
+        self,
+        parent: QObject,
+        *,
+        may_restore: Callable[[QWidget], bool],
+    ) -> None:
+        super().__init__(parent)
+        self.may_restore = may_restore
+        windows = []
+        for window in QApplication.topLevelWidgets():
+            visible = window.isVisible()
+            if isinstance(window, DiagnosticsDialog):
+                visible = visible or window.concealed_for_capture
+                window.cancel_refresh()
+            if visible:
+                windows.append(window)
+        self.windows = tuple(windows)
+        self.closed: set[QObject] = set()
+        self.finished = Event()
+        for window in self.windows:
+            window.installEventFilter(self)
+            window.hide()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Close:
+            self.closed.add(watched)
+        return False
+
+    def restore(self) -> None:
+        if self.finished.is_set():
+            return
+        self.finished.set()
+        for window in self.windows:
+            if not isValid(window):
+                continue
+            window.removeEventFilter(self)
+            if window in self.closed or not self.may_restore(window):
+                continue
+            previous = window.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            try:
+                window.show()
+            finally:
+                if isValid(window):
+                    window.setAttribute(
+                        Qt.WidgetAttribute.WA_ShowWithoutActivating, previous
+                    )
+        self.deleteLater()
 
 
 def capture_calibration_background(
@@ -129,8 +188,9 @@ class CalibrationReviewDialog(QDialog):
             "Progress while recognizing the frozen calibration preview"
         )
         note = QLabel(
-            "Compare the image with the recognized name and dialogue; OCR can make mistakes. "
-            '"Draw again" should include the whole dialogue box, with room for taller text.'
+            "Compare the complete speaker name and dialogue in the image with the OCR result. "
+            + DIALOG_REGION_GUIDANCE
+            + ' Use "Draw again" if the area is too small.'
         )
         note.setWordWrap(True)
         buttons = self._create_buttons()
@@ -334,9 +394,9 @@ class DialogRegionOverlay(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAccessibleName("Dialogue region calibration overlay")
         self.setAccessibleDescription(
-            "Select the whole dialogue box, including the speaker name and continue indicator, "
-            "with room for every dialogue line. OCR finds the name and text automatically. "
-            "Press Enter for a suggested region, use arrows to move it, Shift plus "
+            "Select the whole dialogue box, including the speaker name and continue indicator. "
+            + DIALOG_REGION_GUIDANCE
+            + " Press Enter for a suggested region, use arrows to move it, Shift plus "
             "arrows to resize it, and Enter again to review. Escape cancels. "
             "F2 opens exact pixel coordinates."
         )
@@ -700,7 +760,8 @@ class DialogRegionOverlay(QWidget):
         selected = self.origin is not None and self.current is not None
         return (
             "Select the whole dialogue box, including the name and continue indicator. "
-            "Leave room for all dialogue lines. "
+            + DIALOG_REGION_GUIDANCE
+            + " "
             + (
                 "Enter reviews the area. "
                 if selected

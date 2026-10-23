@@ -65,6 +65,14 @@ audio_route_fields = (
 )
 
 audio_lifecycle_fields = (
+    "system_write_attempts",
+    "system_write_failures",
+    "device_reopens",
+    "max_output_lock_ms",
+    "max_stream_lock_ms",
+    "max_refresh_ms",
+    "max_conversion_ms",
+    "max_native_write_ms",
     "player_id",
     "attempt_id",
     "run_id",
@@ -86,6 +94,36 @@ audio_lifecycle_fields = (
     "channels",
     "dtype",
     "latency",
+    "written_frames",
+    "write_count",
+    "underflow_count",
+    "first_underflow_frame",
+    "max_guard_ms",
+    "max_write_ms",
+    "max_write_gap_ms",
+    *(
+        f"{prefix}_{field}"
+        for prefix in ("first_underflow", "max_write", "max_native_write")
+        for field in (
+            "write_index",
+            "input_frame_offset",
+            "input_frames",
+            "sample_rate",
+            "native_sample_rate",
+            "native_frames",
+            "started_monotonic",
+            "ended_monotonic",
+            "guard_ms",
+            "write_gap_ms",
+            "write_ms",
+            "attempt",
+            "output_lock_ms",
+            "refresh_ms",
+            "conversion_ms",
+            "stream_lock_ms",
+            "native_write_ms",
+        )
+    ),
 )
 
 live_scope_fields = (
@@ -154,6 +192,7 @@ sequence_timeline_stages = (
     "canonical-prefix-visual-recheck",
     "late-chunk-suppressed",
     "sequence-candidate-miss",
+    "sequence-prefix-gate",
     "sequence-shadow",
     "sequence-audio-manual",
     "sequence-audio-auto",
@@ -183,6 +222,8 @@ generation_timeline_detail_fields = (
     "worker_state",
     "worker_error_type",
     "worker_progress_age_ms",
+    "worker_frame_version",
+    "latest_frame_version",
     "frame_version",
     "started_monotonic",
     "completed_monotonic",
@@ -245,6 +286,9 @@ generation_timeline_detail_fields = (
     "expected_playback_ms",
     "allowed_line_count",
     "eligible_line_count",
+    "prefix_matches",
+    "speaker_matches",
+    "reservation_ready",
     "normalized_text_characters",
     "normalized_text_tokens",
     "normalized_text_sha256",
@@ -256,6 +300,11 @@ generation_timeline_detail_fields = (
     "best_candidate_line_id",
     "best_bounded_similarity",
     "best_bounded_coverage",
+)
+
+timeline_retention_bounds_note = (
+    "Retained sequence bounds may contain gaps; they do not describe a continuous "
+    "retained or lost interval."
 )
 
 
@@ -298,6 +347,9 @@ class GenerationTimelineLog:
         )
         self.clock_origin: float | None = None
         self.event_sequence = 0
+        self.timeline_instances = 0
+        self.evicted_timelines = 0
+        self.evicted_events = 0
         self.lock = RLock()
 
     def record(
@@ -330,6 +382,7 @@ class GenerationTimelineLog:
                 self.clock_origin = occurred_at
             self.event_sequence += 1
             identity = session_id, run_id, generation
+            self.timeline_instances += int(identity not in self.timelines)
             timeline = self.timelines.setdefault(
                 identity,
                 {
@@ -370,12 +423,15 @@ class GenerationTimelineLog:
             while len(timeline["events"]) > 512:
                 timeline["events"].popitem(last=False)
                 timeline["dropped_events"] += 1
+                self.evicted_events += 1
             self.timelines.move_to_end(identity)
             while (
                 len(self.timelines) > self.maximum_entries
                 or sum(len(t["events"]) for t in self.timelines.values()) > 2000
             ):
-                self.timelines.popitem(last=False)
+                _, evicted = self.timelines.popitem(last=False)
+                self.evicted_timelines += 1
+                self.evicted_events += len(evicted["events"])
             self._persist_locked()
         return True
 
@@ -384,6 +440,35 @@ class GenerationTimelineLog:
             return [
                 self._serialize_timeline(value) for value in self.timelines.values()
             ]
+
+    def retention_summary(self) -> SupportDocument:
+        with self.lock:
+            sequences = [
+                int(sequence)
+                for timeline in self.timelines.values()
+                for sequence in timeline["events"]
+            ]
+            return {
+                "recorded_events": self.event_sequence,
+                "retained_events": len(sequences),
+                "evicted_events": self.evicted_events,
+                "created_timeline_instances": self.timeline_instances,
+                "retained_timelines": len(self.timelines),
+                "evicted_timelines": self.evicted_timelines,
+                "first_retained_event_sequence": min(sequences, default=None),
+                "last_retained_event_sequence": max(sequences, default=None),
+                "clock_origin": self.clock_origin,
+                "bounds_note": timeline_retention_bounds_note,
+            }
+
+    def report(self) -> SupportDocument:
+        with self.lock:
+            return {
+                "version": 1,
+                "timelines": self.snapshot(),
+                "latency_summary": self.latency_summary(),
+                "retention": self.retention_summary(),
+            }
 
     def latency_summary(self) -> SupportDocument:
         """Aggregate privacy-safe live latency components across retained lines."""
@@ -497,14 +582,7 @@ class GenerationTimelineLog:
             from durable_file import atomic_write_json
 
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_json(
-                self.path,
-                {
-                    "version": 1,
-                    "timelines": self.snapshot(),
-                    "latency_summary": self.latency_summary(),
-                },
-            )
+            atomic_write_json(self.path, self.report())
         except OSError:
             pass
 
@@ -1312,7 +1390,11 @@ def preserve_previous_session(directory: str | Path) -> SupportDocument:
         sanitize_event(entry)
         for entry in _read_bounded_json_lines(directory / "performance.log", 512 * 1024)
     ]
-    timelines = _previous_generation_timelines(directory / "generation-timelines.json")
+    timeline_document = (
+        _read_previous_generation_timelines(directory / "generation-timelines.json")
+        or {}
+    )
+    timelines = _previous_generation_timelines(timeline_document)
     native = NativeSpeechLog(path=directory / "native-speech.log").report()
     audio = AudioLifecycleLog(
         path=directory / "audio-lifecycle.log", load_existing=True
@@ -1332,6 +1414,9 @@ def preserve_previous_session(directory: str | Path) -> SupportDocument:
         "runtime_events": runtime_events,
         "performance_events": performance_events,
         "generation_timelines": timelines,
+        "generation_timeline_retention": _sanitize_timeline_retention(
+            timeline_document.get("retention")
+        ),
         "native_speech": native,
         "audio_lifecycle": audio,
     }
@@ -1347,17 +1432,38 @@ def preserve_previous_session(directory: str | Path) -> SupportDocument:
     return snapshot
 
 
-def _previous_generation_timelines(path: Path) -> list[SupportDocument]:
-    document = _read_previous_generation_timelines(path)
-    if document is None:
-        return []
-    timelines = document["timelines"]
+def _previous_generation_timelines(document: SupportDocument) -> list[SupportDocument]:
+    timelines = document.get("timelines", [])
     assert isinstance(timelines, list)
     return [
         sanitized
         for timeline in timelines[-200:]
         if (sanitized := _sanitize_previous_timeline(timeline)) is not None
     ]
+
+
+def _sanitize_timeline_retention(value: object) -> SupportDocument:
+    if not isinstance(value, dict):
+        return {}
+    result: SupportDocument = {
+        key: number
+        for key in (
+            "recorded_events",
+            "retained_events",
+            "evicted_events",
+            "created_timeline_instances",
+            "retained_timelines",
+            "evicted_timelines",
+            "first_retained_event_sequence",
+            "last_retained_event_sequence",
+        )
+        if isinstance(number := value.get(key), int)
+        and not isinstance(number, bool)
+        and number >= 0
+    }
+    result["clock_origin"] = optional_finite_number(value.get("clock_origin"))
+    result["bounds_note"] = timeline_retention_bounds_note
+    return result
 
 
 def _read_previous_generation_timelines(path: Path) -> dict[str, object] | None:
@@ -2207,19 +2313,16 @@ class SupportBundleBuilder:
                 ),
             },
             "build.json": collect_build_identity(),
-            "generation-timelines.json": {
-                "version": 1,
-                "timelines": (
-                    self.generation_timelines.snapshot()
-                    if self.generation_timelines is not None
-                    else []
-                ),
-                "latency_summary": (
-                    self.generation_timelines.latency_summary()
-                    if self.generation_timelines is not None
-                    else {}
-                ),
-            },
+            "generation-timelines.json": (
+                self.generation_timelines.report()
+                if self.generation_timelines is not None
+                else {
+                    "version": 1,
+                    "timelines": [],
+                    "latency_summary": {},
+                    "retention": {},
+                }
+            ),
             "previous-session.json": self.previous_session,
             "audio-lifecycle.json": self.audio_lifecycle.report(),
             "ocr-metrics.json": collect_ocr_metrics(

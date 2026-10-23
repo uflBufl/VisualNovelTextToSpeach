@@ -6,7 +6,7 @@ from collections.abc import Callable
 from threading import Event, Lock
 from typing import TYPE_CHECKING, TypeVar
 
-from vntts.cleanup import attempt_cleanup
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.pregeneration_activation import (
     OfflinePackActivationCancelled,
     OfflinePackActivationResult,
@@ -40,8 +40,7 @@ class PlayerSessionOwner:
             self._cancellation = cancellation or Event()
             active = self._active
             generation = self._generation
-        if active:
-            self.controller.request_shutdown()
+        self._request_shutdown(active)
         return generation
 
     def is_current(self, generation: int | None) -> bool:
@@ -56,8 +55,7 @@ class PlayerSessionOwner:
         with self._state_lock:
             self._cancellation.set()
             active = self._active
-        if active:
-            self.controller.request_shutdown()
+        self._request_shutdown(active)
 
     def close(self) -> int:
         with self._state_lock:
@@ -66,11 +64,26 @@ class PlayerSessionOwner:
             self._generation += 1
             active = self._active
             generation = self._generation
-        self.controller.request_shutdown()
+        self._request_shutdown(active, closing=True)
         if not active:
             with self._operation_lock:
                 self.controller.shutdown()
         return generation
+
+    def _request_shutdown(self, active: bool, *, closing: bool = False) -> None:
+        backend = getattr(self.controller, "tts", None)
+        startup_pending = getattr(backend, "startup_pending", False) is True
+        if not (active or startup_pending or closing):
+            return
+        with cleanup_on_exit(
+            self.controller.request_shutdown,
+            description="Player session shutdown request",
+        ):
+            if active or startup_pending:
+                cancel_startup = getattr(backend, "cancel_startup", None)
+                if callable(cancel_startup):
+                    # A new start may clear the controller's shared stop event.
+                    cancel_startup()
 
     def run(
         self,

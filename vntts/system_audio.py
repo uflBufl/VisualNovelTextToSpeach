@@ -5,11 +5,12 @@ from __future__ import annotations
 import atexit
 from collections.abc import Callable
 from threading import Event, Lock, RLock, Thread, current_thread, main_thread
+from time import monotonic
 from typing import Any
 
 import numpy as np
 
-from vntts.audio_lifecycle import record_audio_lifecycle
+from vntts.audio_lifecycle import audio_lifecycle_context, record_audio_lifecycle
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 
 
@@ -159,6 +160,20 @@ class _SystemStream:
         self.started = False
         self.closed = False
         self.resampler: Any = None
+        self.write_context = dict(audio_lifecycle_context.get() or {})
+        self.write_metrics: dict[str, float | int] = {
+            "system_write_attempts": 0,
+            "system_write_failures": 0,
+            "device_reopens": 0,
+            "max_output_lock_ms": 0.0,
+            "max_stream_lock_ms": 0.0,
+            "max_refresh_ms": 0.0,
+            "max_conversion_ms": 0.0,
+            "max_native_write_ms": 0.0,
+        }
+        self.write_index = self.input_frames = 0
+        self.max_native_block_seconds = -1.0
+        self.write_blocks: dict[str, float | int] = {}
         self._open()
 
     def _open(self) -> None:
@@ -234,10 +249,13 @@ class _SystemStream:
             self.stop()
 
     def write(self, audio: object) -> Any:
+        self.write_index += 1
+        block: dict[str, float | int] = {"write_index": self.write_index}
         for attempt in range(2):
             try:
-                return self._write(audio)
+                return self._write(audio, block, attempt + 1)
             except Exception:
+                self.write_metrics["system_write_failures"] += 1
                 with self.output.lock:
                     if (
                         attempt
@@ -248,38 +266,123 @@ class _SystemStream:
                         raise
         raise AssertionError("Unreachable playback retry")
 
-    def _write(self, audio: object) -> Any:
+    def _record_write_phase(
+        self, field: str, started: float, phases: dict[str, float | int]
+    ) -> float:
+        ended = monotonic()
+        duration_ms = (ended - started) * 1000
+        self.write_metrics[field] = max(self.write_metrics[field], duration_ms)
+        phases[field.removeprefix("max_")] = round(duration_ms, 3)
+        return ended
+
+    def _record_native_block(
+        self,
+        block: dict[str, float | int],
+        phases: dict[str, float | int],
+        started: float,
+        ended: float,
+        native_frames: int,
+        native_sample_rate: int,
+        underflow: object,
+    ) -> None:
+        snapshot = {
+            **block,
+            **phases,
+            "native_frames": native_frames,
+            "native_sample_rate": native_sample_rate,
+            "started_monotonic": started,
+            "ended_monotonic": ended,
+        }
+        if ended - started > self.max_native_block_seconds:
+            self.max_native_block_seconds = ended - started
+            self.write_blocks.update(
+                {f"max_native_write_{key}": value for key, value in snapshot.items()}
+            )
+        if (
+            isinstance(underflow, (bool, np.bool_))
+            and underflow
+            and "first_underflow_write_index" not in self.write_blocks
+        ):
+            self.write_blocks.update(
+                {f"first_underflow_{key}": value for key, value in snapshot.items()}
+            )
+
+    def _convert_write_samples(
+        self, audio: object, block: dict[str, float | int]
+    ) -> Any:
+        samples = np.asarray(audio, dtype=np.float32)
+        if "input_frame_offset" not in block:
+            block.update(
+                input_frame_offset=self.input_frames,
+                input_frames=len(samples),
+                sample_rate=self.options["samplerate"],
+            )
+            self.input_frames += len(samples)
+        if self.options["channels"] != self.channels:
+            samples = samples.mean(axis=1, keepdims=True, dtype=np.float32)
+        if self.resampler is not None:
+            samples = self.resampler.resample_chunk(samples)
+            np.clip(samples, -0.95, 0.95, out=samples)
+        return samples
+
+    def _write(self, audio: object, block: dict[str, float | int], attempt: int) -> Any:
+        self.write_metrics["system_write_attempts"] += 1
+        phases: dict[str, float | int] = {"attempt": attempt}
+        started = monotonic()
         with self.output.lock:
-            self.output._refresh()
-            if self.native is None:
-                self._open()
-                assert self.native is not None
-                if self.started:
-                    try:
-                        native = self.native
-                        native.start()
-                    except BaseException as error:
-                        attempt_cleanup(
-                            self._release,
-                            description="Changed output startup cleanup",
-                            primary_error=error,
-                        )
-                        raise
-            samples = np.asarray(audio, dtype=np.float32)
-            if self.options["channels"] != self.channels:
-                samples = samples.mean(axis=1, keepdims=True, dtype=np.float32)
-            if self.resampler is not None:
-                samples = self.resampler.resample_chunk(samples)
-                np.clip(samples, -0.95, 0.95, out=samples)
+            self._record_write_phase("max_output_lock_ms", started, phases)
+            started = monotonic()
+            try:
+                self.output._refresh()
+                if self.native is None:
+                    self._open()
+                    self.write_metrics["device_reopens"] += 1
+                    assert self.native is not None
+                    if self.started:
+                        try:
+                            native = self.native
+                            native.start()
+                        except BaseException as error:
+                            attempt_cleanup(
+                                self._release,
+                                description="Changed output startup cleanup",
+                                primary_error=error,
+                            )
+                            raise
+            finally:
+                self._record_write_phase("max_refresh_ms", started, phases)
+            started = monotonic()
+            try:
+                samples = self._convert_write_samples(audio, block)
+            finally:
+                self._record_write_phase("max_conversion_ms", started, phases)
             if not len(samples):
                 return False
             native = self.native
+            native_sample_rate = self.sample_rate
+            started = monotonic()
             self.write_lock.acquire()
+            self._record_write_phase("max_stream_lock_ms", started, phases)
         # Cancellation must be able to abort a native write on another thread.
+        started = monotonic()
+        underflow: object = None
         try:
-            return native.write(samples)
+            underflow = native.write(samples)
+            return underflow
         finally:
-            self.write_lock.release()
+            ended = self._record_write_phase("max_native_write_ms", started, phases)
+            try:
+                self._record_native_block(
+                    block,
+                    phases,
+                    started,
+                    ended,
+                    len(samples),
+                    native_sample_rate,
+                    underflow,
+                )
+            finally:
+                self.write_lock.release()
 
     def abort(self) -> None:
         with self.output.lock:
@@ -333,6 +436,15 @@ class _SystemStream:
                         self.native = None
             self.closed = True
             self.output.streams.discard(self)
+        if self.write_metrics["system_write_attempts"]:
+            record_audio_lifecycle(
+                "system-write-summary",
+                **self.write_context,
+                **self.write_metrics,
+                **self.write_blocks,
+                outcome="closed",
+                reason="blocking-system-output",
+            )
 
 
 _system_output: SystemAudioOutput | None = None

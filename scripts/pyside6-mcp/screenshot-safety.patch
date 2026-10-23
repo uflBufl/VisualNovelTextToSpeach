@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index 6bfd858..9bbdce8 100644
+index 6bfd858..043f110 100644
 --- a/README.md
 +++ b/README.md
 @@ -179,7 +179,7 @@ Your assistant uses the `launch_app`, `screenshot`, `get_widget_tree`, `find_wid
@@ -11,6 +11,18 @@ index 6bfd858..9bbdce8 100644
  | `get_widget_tree(pid?)` | Full widget hierarchy with IDs |
  | `get_widget_info(widget_id, pid?)` | Detailed properties of one widget |
  | `get_app_state(pid?)` | Active window, focus, screen info |
+@@ -225,3 +225,11 @@ pyside6_mcp/
+ ## License
+ 
+ MIT
++
++Action responses distinguish `queued`/`dispatched` (HTTP 202) from `completed`
++and `error`. A modal `QDialog.exec()` can acknowledge dispatch while the action
++is still running. `completed` means `QAction.trigger()` returned, not that any
++background application work finished. Missing/disabled actions retain their
++errors; invocation exceptions are HTTP 500. An `invocation_id` correlates late
++errors in `get_logs`. Inspect the app and logs before repeating a queued or
++dispatched action; mutating requests are never automatically retried.
 diff --git a/pyproject.toml b/pyproject.toml
 index e8f0329..315e755 100644
 --- a/pyproject.toml
@@ -25,10 +37,10 @@ index e8f0329..315e755 100644
  ]
  
 diff --git a/pyside6_mcp/bridge.py b/pyside6_mcp/bridge.py
-index 99d7503..3440eba 100644
+index 99d7503..f5717c9 100644
 --- a/pyside6_mcp/bridge.py
 +++ b/pyside6_mcp/bridge.py
-@@ -11,7 +11,12 @@ import logging
+@@ -11,20 +11,27 @@ import logging
  import os
  import sys
  import threading
@@ -41,24 +53,108 @@ index 99d7503..3440eba 100644
  from http.server import BaseHTTPRequestHandler, HTTPServer
  from socketserver import ThreadingMixIn
  from urllib.parse import parse_qs, urlparse
-@@ -25,6 +30,7 @@ logger = logging.getLogger("pyside6_mcp.bridge")
+ 
+-from PySide6.QtCore import QBuffer, QEvent, QIODevice, QObject, QPoint, QPointF, Qt
+-from PySide6.QtGui import QWheelEvent
++from PySide6.QtCore import QBuffer, QEvent, QIODevice, QMetaObject, QObject, QPoint, QPointF, Qt
++from PySide6.QtGui import QKeySequence, QWheelEvent
+ from PySide6.QtWidgets import QApplication, QWidget
+ 
+ logger = logging.getLogger("pyside6_mcp.bridge")
+ 
  _log_records: list[dict] = []
  _widget_registry: dict[str, weakref.ref] = {}
- _widget_by_ptr: dict[int, str] = {}
+-_widget_by_ptr: dict[int, str] = {}
++_widget_property = "_pyside6_mcp_widget_id"
++_widget_serial = 0
 +_widget_session = uuid.uuid4().hex
  
  # ---------------------------------------------------------------------------
  # Readiness tracking (pure helpers + shared state)
-@@ -135,7 +141,7 @@ def _widget_id(w: QWidget) -> str:
-         wid = _widget_by_ptr[ptr]
-         if _widget_registry.get(wid, lambda: None)() is not None:
-             return wid
+@@ -125,25 +132,74 @@ def _call_main(func, timeout: float = 5.0):
+     return val
+ 
+ 
++def _dispatch_main(func, timeout: float = 5.0) -> tuple[dict, int]:
++    """Observe one queued invocation, including a nested modal event loop.
++
++    A nested-loop acknowledgement means dispatch began, not that func returned.
++    No persistent task registry is needed: callers inspect the app before retrying.
++    """
++    sync = threading.Event()
++    lock = threading.Lock()
++    invocation_id = uuid.uuid4().hex
++    outcome = ({"ok": True, "state": "queued", "invocation_id": invocation_id}, 202)
++
++    def run():
++        nonlocal outcome
++        with lock:
++            outcome = ({"ok": True, "state": "dispatched",
++                        "invocation_id": invocation_id}, 202)
++        # Ordinary calls finish before this event is processed. QDialog.exec()
++        # processes it in its nested loop while the original call is still active.
++        QApplication.instance().postEvent(
++            _proxy, _CallEvent(sync.set, threading.Event(), [])
++        )
++        try:
++            result = func()
++            state = "error" if "error" in result else "completed"
++            status = 200
++        except Exception as exc:
++            result, state, status = {"error": str(exc)}, "error", 500
++        if state == "error":
++            # Also surface failures that happen after an asynchronous response.
++            logger.error("Qt invocation %s failed: %s", invocation_id, result["error"])
++        with lock:
++            outcome = ({**result, "state": state, "invocation_id": invocation_id}, status)
++        sync.set()
++
++    QApplication.instance().postEvent(_proxy, _CallEvent(run, threading.Event(), []))
++    sync.wait(timeout)
++    with lock:
++        return outcome
++
++
+ # ---------------------------------------------------------------------------
+ # Widget registry
+ # ---------------------------------------------------------------------------
+ 
+ def _widget_id(w: QWidget) -> str:
+-    ptr = id(w)
+-    if ptr in _widget_by_ptr:
+-        wid = _widget_by_ptr[ptr]
+-        if _widget_registry.get(wid, lambda: None)() is not None:
+-            return wid
 -    wid = str(len(_widget_registry))
-+    wid = f"{_widget_session}:{len(_widget_registry)}"
++    global _widget_serial
++    wid = w.property(_widget_property)
++    if not isinstance(wid, str) or not wid.startswith(_widget_session + ":"):
++        wid = f"{_widget_session}:{_widget_serial}"
++        _widget_serial += 1
++        # Qt owns this identity even when an anonymous child's Python wrapper dies.
++        w.setProperty(_widget_property, wid)
      _widget_registry[wid] = weakref.ref(w)
-     _widget_by_ptr[ptr] = wid
+-    _widget_by_ptr[ptr] = wid
      return wid
-@@ -226,10 +232,18 @@ class _Handler(BaseHTTPRequestHandler):
+ 
+ 
+ def _resolve(wid: str) -> QWidget | None:
+     ref = _widget_registry.get(wid)
+-    return ref() if ref else None
++    w = ref() if ref else None
++    if w is not None and isValid(w):
++        return w
++    app = QApplication.instance()
++    if ref is not None and app is not None:
++        for w in app.allWidgets():
++            if isValid(w) and w.property(_widget_property) == wid:
++                _widget_registry[wid] = weakref.ref(w)
++                return w
++    return None
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -226,10 +282,18 @@ class _Handler(BaseHTTPRequestHandler):
          qs = parse_qs(p.query)
          path = p.path
          try:
@@ -80,7 +176,23 @@ index 99d7503..3440eba 100644
              elif path == "/widgets":
                  self._send({"widgets": _call_main(_qt_widget_tree)})
              elif path.startswith("/widget/"):
-@@ -291,36 +305,90 @@ class _ThreadedHTTP(ThreadingMixIn, HTTPServer):
+@@ -274,9 +338,13 @@ class _Handler(BaseHTTPRequestHandler):
+             elif path == "/eval":
+                 self._send(_call_main(lambda: _qt_eval(body)))
+             elif path == "/quit":
+-                self._send(_call_main(_qt_quit))
++                # Acknowledge before quit invokes potentially slow aboutToQuit cleanup.
++                self._send({"ok": True})
++                self.wfile.flush()
++                QMetaObject.invokeMethod(QApplication.instance(), "quit",
++                                         Qt.ConnectionType.QueuedConnection)
+             elif path == "/action":
+-                self._send(_call_main(lambda: _qt_trigger_action(body)))
++                self._send(*_dispatch_main(lambda: _qt_trigger_action(body)))
+             else:
+                 self._send({"error": "not found"}, 404)
+         except Exception as exc:
+@@ -291,36 +359,90 @@ class _ThreadedHTTP(ThreadingMixIn, HTTPServer):
  # Qt operations (always called via _call_main → runs in main thread)
  # ---------------------------------------------------------------------------
  
@@ -109,11 +221,6 @@ index 99d7503..3440eba 100644
 -            pixmap = target.grab()
 -        else:
 -            pixmap = app.primaryScreen().grabWindow(0)
--
--    buf = QBuffer()
--    buf.open(QIODevice.OpenMode.ReadWrite)
--    pixmap.save(buf, "PNG")
--    return base64.b64encode(bytes(buf.data())).decode()
 +def _capture_record(widget_id: str | None) -> dict:
 +    return {
 +        "correlation_id": uuid.uuid4().hex,
@@ -139,7 +246,11 @@ index 99d7503..3440eba 100644
 +    logger.info("screenshot_capture %s", json.dumps(capture))
 +    return {"error": message, "capture": capture}
 +
-+
+ 
+-    buf = QBuffer()
+-    buf.open(QIODevice.OpenMode.ReadWrite)
+-    pixmap.save(buf, "PNG")
+-    return base64.b64encode(bytes(buf.data())).decode()
 +def _target_details(target: QWidget, window: QWidget) -> dict:
 +    origin = target.mapToGlobal(QPoint(0, 0))
 +    return {
@@ -201,8 +312,70 @@ index 99d7503..3440eba 100644
  
  
  def _qt_widget_tree() -> list:
+@@ -333,9 +455,11 @@ def _qt_widget_info(wid: str) -> dict:
+     if not w:
+         return {"error": f"Widget {wid!r} not found"}
+     d = _widget_dict(w, max_depth=1)
++    # PySide's native lifetime token has no Python converter and is not user data.
+     d["dynamic_properties"] = {
+-        bytes(k).decode(): str(w.property(k))
+-        for k in w.dynamicPropertyNames()
++        name: str(w.property(name))
++        for key in w.dynamicPropertyNames()
++        if (name := bytes(key).decode()) not in {_widget_property, "_PySideInvalidatePtr"}
+     }
+     return d
+ 
+@@ -422,14 +546,23 @@ def _qt_press_key(body: dict) -> dict:
+     key_str = body.get("key", "").lower()
+     if key_str in _KEY_MAP:
+         QTest.keyClick(widget, _KEY_MAP[key_str])
++    elif len(body.get("key", "")) == 1:
++        QTest.keyClicks(widget, body["key"])
+     else:
+-        QTest.keyClicks(widget, body.get("key", ""))
++        sequence = QKeySequence.fromString(body.get("key", ""),
++                                           QKeySequence.SequenceFormat.PortableText)
++        if (sequence.count() != 1 or sequence[0].key() == Qt.Key.Key_unknown
++                or sequence[0].keyboardModifiers() == Qt.KeyboardModifier.NoModifier):
++            return {"error": "Use a named key, one character, or one portable key combination (Ctrl+A)."}
++        QTest.keyClick(widget, sequence[0].key(), sequence[0].keyboardModifiers())
+     return {"ok": True}
+ 
+ 
+ def _qt_scroll(body: dict) -> dict:
+     wid = body.get("widget_id")
+     w = _resolve(wid) if wid else None
++    if wid and w is None:
++        return {"error": f"Widget {wid!r} not found"}
+     if w is None:
+         app = QApplication.instance()
+         w = next((ww for ww in app.topLevelWidgets() if ww.isVisible()), None)
+@@ -583,21 +716,13 @@ def _qt_app_info() -> dict:
+     }
+ 
+ 
+-def _qt_quit() -> dict:
+-    app = QApplication.instance()
+-    if not app:
+-        return {"error": "No QApplication"}
+-    app.quit()
+-    return {"ok": True}
+-
+-
+ def _qt_eval(body: dict) -> dict:
+     code = body.get("code", "")
+     app = QApplication.instance()
+     ctx = {
+         "app": app,
+         "QApplication": QApplication,
+-        "widgets": {wid: ref() for wid, ref in _widget_registry.items() if ref()},
++        "widgets": {wid: w for wid in list(_widget_registry) if (w := _resolve(wid)) is not None},
+     }
+     try:
+         result = eval(code, ctx)  # noqa: S307
 diff --git a/pyside6_mcp/server.py b/pyside6_mcp/server.py
-index 601ad07..d63ad40 100644
+index 601ad07..e054a80 100644
 --- a/pyside6_mcp/server.py
 +++ b/pyside6_mcp/server.py
 @@ -18,6 +18,9 @@ from typing import Annotated, IO
@@ -224,7 +397,135 @@ index 601ad07..d63ad40 100644
          "from the tree for subsequent operations.\n"
          "If launch fails: get_app_output() for stderr; get_app_status() for process health."
      ),
-@@ -285,16 +288,36 @@ def _request_app_quit(port: int, timeout: float = 5.0) -> dict:
+@@ -120,7 +123,7 @@ _RETRY_BACKOFFS = (0.1, 0.3, 0.6)
+ def _request_with_retry(
+     method: str, path: str, *, pid: int | None = None, **kwargs
+ ) -> httpx.Response:
+-    """Issue a request on the pooled client, retrying transient connection errors."""
++    """Retry transient GET failures; a POST may already have changed the app."""
+     try:
+         session = _sessions.resolve(pid)
+     except SessionError as exc:
+@@ -136,7 +139,7 @@ def _request_with_retry(
+             raise
+         except Exception as exc:  # noqa: BLE001
+             last_exc = exc
+-            if not _should_retry(exc) or attempt == len(_RETRY_BACKOFFS):
++            if method.upper() != "GET" or not _should_retry(exc) or attempt == len(_RETRY_BACKOFFS):
+                 break
+             time.sleep(_RETRY_BACKOFFS[attempt])
+     assert last_exc is not None
+@@ -170,10 +173,14 @@ def _post(path: str, data: dict, pid: int | None = None) -> dict:
+     except (
+         httpx.ConnectError,
+         httpx.ConnectTimeout,
+-        httpx.ReadError,
+-        httpx.RemoteProtocolError,
+     ):
+         raise _bridge_unreachable_error()
++    except (httpx.ReadError, httpx.ReadTimeout, httpx.RemoteProtocolError,
++            httpx.WriteError, httpx.WriteTimeout) as exc:
++        raise RuntimeError(
++            "The action may have completed, but its bridge response was lost. "
++            "Inspect the app state before retrying."
++        ) from exc
+     except httpx.HTTPStatusError as exc:
+         raise _bridge_http_error(exc)
+ 
+@@ -244,39 +251,62 @@ def _kill_proc_tree(proc: subprocess.Popen, timeout: float = 5.0) -> None:
+             proc.wait(timeout=timeout)
+ 
+ 
+-def _bridge_gone(exc: Exception) -> bool:
+-    """True when the bridge is no longer accepting connections."""
+-    return isinstance(exc, (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout))
+-
+-
+ def _request_app_quit(port: int, timeout: float = 5.0) -> dict:
+-    """Ask the app to quit gracefully via the bridge, then wait for it to stop."""
+-    bridge_url = f"http://127.0.0.1:{port}"
++    """Request graceful quit; an acknowledgement does not prove process exit."""
+     try:
+-        r = httpx.post(f"{bridge_url}/quit", timeout=5)
+-        r.raise_for_status()
+-    except httpx.ConnectError:
+-        return {"bridge_reachable": False}
++        response = httpx.post(f"http://127.0.0.1:{port}/quit", timeout=timeout)
++        response.raise_for_status()
++        return {"bridge_reachable": True, "quit": response.json()}
+     except httpx.HTTPError as exc:
+-        if _bridge_gone(exc):
+-            return {"bridge_reachable": True, "bridge_stopped": True}
+-        return {"bridge_reachable": True, "quit_error": str(exc)}
+-
+-    deadline = time.monotonic() + timeout
+-    while time.monotonic() < deadline:
+-        try:
+-            httpx.get(f"{bridge_url}/app", timeout=0.5)
+-        except httpx.HTTPError as exc:
+-            if _bridge_gone(exc):
+-                return {
+-                    "bridge_reachable": True,
+-                    "bridge_stopped": True,
+-                    "quit": r.json(),
+-                }
+-            raise
+-        time.sleep(0.2)
+-
+-    return {"bridge_reachable": True, "bridge_stopped": False, "quit": r.json()}
++        return {"bridge_reachable": not isinstance(exc, httpx.ConnectError),
++                "quit_error": str(exc)}
++
++
++def _windows_process_alive(pid: int) -> bool:
++    import ctypes
++    from ctypes import wintypes
++
++    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
++    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
++    kernel.OpenProcess.restype = wintypes.HANDLE
++    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
++    kernel.WaitForSingleObject.restype = wintypes.DWORD
++    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
++    kernel.CloseHandle.restype = wintypes.BOOL
++    # SYNCHRONIZE permits a read-only, zero-time process wait; no signal is sent.
++    handle = kernel.OpenProcess(0x00100000, False, pid)
++    if not handle:
++        error = ctypes.get_last_error()
++        if error == 87:  # ERROR_INVALID_PARAMETER: PID no longer exists.
++            return False
++        if error == 5:  # ERROR_ACCESS_DENIED does not prove the process exited.
++            return True
++        raise ctypes.WinError(error)
++    try:
++        status = kernel.WaitForSingleObject(handle, 0)
++        error = ctypes.get_last_error()
++    finally:
++        closed = kernel.CloseHandle(handle)
++        close_error = ctypes.get_last_error()
++    if status not in (0, 0x102):  # WAIT_OBJECT_0 / WAIT_TIMEOUT
++        raise ctypes.WinError(error)
++    if not closed:
++        raise ctypes.WinError(close_error)
++    return status == 0x102
++
++
++def _app_alive(session) -> bool:
++    if session.proc is not None and session.proc.pid == session.pid:
++        return session.proc.poll() is None
++    if sys.platform == "win32":
++        return _windows_process_alive(session.pid)
++    try:
++        os.kill(session.pid, 0)
++    except ProcessLookupError:
++        return False
++    except PermissionError:
++        return True
++    return True
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -285,16 +315,36 @@ def _request_app_quit(port: int, timeout: float = 5.0) -> dict:
  
  
  @mcp.tool()
@@ -267,8 +568,105 @@ index 601ad07..d63ad40 100644
  
  
  @mcp.tool()
+@@ -403,7 +453,8 @@ def double_click(
+ @mcp.tool()
+ def type_text(text: str, widget_id: str | None = None, pid: PidParam = None) -> str:
+     """
+-    Type text into a widget (focuses it first) or the currently focused widget.
++    Append text at the cursor in a widget (focuses it first) or the focused widget.
++    To replace existing text, press_key("Ctrl+A") first.
+     For special characters use press_key instead.
+     """
+     if widget_id:
+@@ -423,7 +474,9 @@ def press_key(key: str, pid: PidParam = None) -> str:
+     Named keys: enter, return, escape, tab, backtab, backspace, delete,
+                 up, down, left, right, space, home, end, pageup, pagedown,
+                 f1–f6
+-    Single characters: pass the character directly, e.g. 'a', 'A', '1'
++    Single characters: pass the character directly, e.g. 'a', 'A', '1'.
++    One portable key combination is supported, e.g. 'Ctrl+A' or 'Ctrl+Shift+Left'.
++    Invalid or multiple combinations are rejected without typing.
+     """
+     return json.dumps(_post("/key", {"key": key}, pid=pid))
+ 
+@@ -862,6 +915,9 @@ def trigger_action(
+     Trigger a QAction directly by objectName (`name`) or visible label (`text`),
+     without clicking through menus. Useful to avoid opening modal menus and to
+     reach toolbar/menu actions reliably. Provide at least one of name/text.
++    The response state is queued, dispatched, completed or error. Only completed
++    means QAction.trigger() returned; a modal action may remain dispatched until
++    its dialog closes. Inspect the app/logs before retrying an incomplete action.
+     """
+     body: dict = {}
+     if name is not None:
+@@ -892,37 +948,45 @@ def stop_app(pid: PidParam = None) -> str:
+         return json.dumps({"error": str(exc)})
+ 
+     result: dict = {"ok": True, "pid": session.pid}
+-    quit_status = _request_app_quit(session.port)
+-    result["quit"] = quit_status
++    deadline = time.monotonic() + 5.0
++    result["quit"] = _request_app_quit(session.port)
++    proc = session.proc
++    while _app_alive(session) and time.monotonic() < deadline:
++        time.sleep(min(0.05, max(0, deadline - time.monotonic())))
++
++    if proc is not None and proc.poll() is None:
++        _kill_proc_tree(proc)
++    elif _app_alive(session) and proc is not None and sys.platform != "win32":
++        # An exited uv wrapper does not prove its Qt child exited. Never target
++        # a PID which has left the launcher's isolated process group.
++        for sig in (signal.SIGTERM, signal.SIGKILL):
++            try:
++                if os.getpgid(session.pid) != proc.pid or proc.pid == os.getpgrp():
++                    break
++                os.killpg(proc.pid, sig)
++            except ProcessLookupError:
++                break
++            force_deadline = time.monotonic() + 5.0
++            while _app_alive(session) and time.monotonic() < force_deadline:
++                time.sleep(0.05)
++            if not _app_alive(session):
++                break
++    if _app_alive(session):
++        return json.dumps({**result, "ok": False,
++                           "error": f"App pid={session.pid} has not exited; session retained"})
+ 
+     _sessions.remove(session.pid)
+     _drop_client(session.port)
+     _finished_logs[session.pid] = session.log_path
+-
+-    proc = session.proc
+     if proc is not None:
+-        _kill_proc_tree(proc)
+-        result["returncode"] = proc.returncode
+-
++        result["returncode"] = proc.poll()
++    result["quit"]["bridge_stopped"] = True
+     if session.log_file is not None:
+         try:
+             session.log_file.close()
+         except OSError:
+             pass
+         result["log_file"] = session.log_path
+-    elif not quit_status.get("bridge_stopped"):
+-        if not quit_status.get("bridge_reachable"):
+-            return json.dumps(
+-                {
+-                    "error": f"No app tracked with pid={session.pid} and bridge unreachable"
+-                }
+-            )
+-        return json.dumps(
+-            {
+-                "error": f"App pid={session.pid} did not stop after quit request",
+-                **result,
+-            }
+-        )
+ 
+     return json.dumps(result)
+ 
 diff --git a/skills/pyside6-mcp/SKILL.md b/skills/pyside6-mcp/SKILL.md
-index 924a2c5..bfb3d7d 100644
+index 924a2c5..a2918b5 100644
 --- a/skills/pyside6-mcp/SKILL.md
 +++ b/skills/pyside6-mcp/SKILL.md
 @@ -69,7 +69,7 @@ One MCP server can run many apps. `launch_app` returns `{pid}` of the **Qt app p
@@ -344,14 +742,201 @@ index 924a2c5..bfb3d7d 100644
  ```
  
  ---
-@@ -205,6 +209,6 @@ screenshot()
+@@ -204,7 +208,7 @@ screenshot()
+ - **Widget IDs reset on every restart** — always call `get_widget_tree()` again after `launch_app`
  - **Bridge must be running** — if tools return a connection error, call `launch_app` first
  - **Qt operations run on the main thread** — the bridge marshals automatically, but if the app is hung, tools will timeout after 5 s
- - **Modal dialogs block the main thread** — `QDialog.exec()` / `QMessageBox` run a nested event loop; tools that marshal to the main thread will time out. Use `trigger_action()` / `list_actions()` to drive menus without opening modals, and `get_app_status()` to confirm a modal block
+-- **Modal dialogs block the main thread** — `QDialog.exec()` / `QMessageBox` run a nested event loop; tools that marshal to the main thread will time out. Use `trigger_action()` / `list_actions()` to drive menus without opening modals, and `get_app_status()` to confirm a modal block
 -- **After UI-changing actions** — call `wait_for_idle()` before `screenshot()` so layout/paint has settled
++- **Modal action responses** — `trigger_action()` returns `queued`/`dispatched` (HTTP 202) if the invocation is still pending or running a nested `QDialog.exec()` loop. Only `completed` means `QAction.trigger()` returned. Inspect widgets and `get_logs` before retrying; late invocation errors carry the response `invocation_id` in the existing logs. Exceptions swallowed by Qt signal delivery remain application log/excepthook concerns.
 +- **After UI-changing actions** — call `wait_for_idle()` before `screenshot(widget_id="observed-window-id")` so layout/paint has settled
  - **`eval_python` runs real code in the app process** — use for inspection only, not production state changes
  - **`get_logs` vs `get_app_output`** — `get_logs` returns Python `logging` records via the bridge; `get_app_output` returns the raw stdout/stderr (`print()`, uncaught tracebacks). If the app crashes on startup, use `get_app_output` — it reads from a file and works even when the bridge never came up (only for apps started via `launch_app`)
+diff --git a/tests/test_actions.py b/tests/test_actions.py
+new file mode 100644
+index 0000000..12b2dc0
+--- /dev/null
++++ b/tests/test_actions.py
+@@ -0,0 +1,179 @@
++"""One-shot QAction invocation acknowledges nested modal loops truthfully."""
++import json
++import os
++import subprocess
++import sys
++import time
++from unittest.mock import Mock
++
++import httpx
++import pytest
++from PySide6.QtWidgets import QApplication
++
++from pyside6_mcp import bridge, server
++
++
++def test_queued_invocation_does_not_claim_dispatch_or_completion(monkeypatch):
++    app = QApplication.instance() or QApplication([])
++    events = []
++    effects = []
++    monkeypatch.setattr(app, "postEvent", lambda receiver, event: events.append(event))
++    result, status = bridge._dispatch_main(lambda: effects.append("once") or {"ok": True},
++                                          timeout=0)
++    assert status == 202
++    assert result["state"] == "queued"
++    assert result["ok"] is True
++    assert result["invocation_id"]
++    assert effects == []
++    # The original event is retained, not re-posted/retried when acknowledgement
++    # times out. Later processing executes the accepted invocation once.
++    assert len(events) == 1
++    events[0].func()
++    assert effects == ["once"]
++    assert len(events) == 2  # the second event only acknowledges the nested loop
++    events[1].func()
++    assert effects == ["once"]
++
++
++def test_trigger_action_preserves_incomplete_state_and_posts_once(monkeypatch):
++    response = {"ok": True, "state": "dispatched", "invocation_id": "fixture"}
++    post = Mock(return_value=response)
++    monkeypatch.setattr(server, "_post", post)
++    trigger = getattr(server.trigger_action, "fn", server.trigger_action)
++    assert json.loads(trigger(name="modal", pid=123)) == response
++    post.assert_called_once_with("/action", {"name": "modal"}, pid=123)
++
++
++@pytest.fixture
++def action_app(tmp_path, free_port):
++    fixture = tmp_path / "action_fixture.py"
++    calls = tmp_path / "calls"
++    finished = tmp_path / "finished"
++    fixture.write_text(
++        "from pathlib import Path\n"
++        "from PySide6.QtCore import QTimer\n"
++        "from PySide6.QtGui import QAction\n"
++        "from PySide6.QtWidgets import QApplication, QDialog, QWidget\n"
++        "from shiboken6 import delete\n"
++        "from pyside6_mcp.bridge import install_bridge\n"
++        "app = QApplication([])\n"
++        "window = QWidget(); window.show()\n"
++        "dialog = None\n"
++        f"calls = Path({str(calls)!r})\n"
++        "def record(name):\n"
++        "    calls.write_text((calls.read_text() if calls.exists() else '') + name + '\\n')\n"
++        "def modal(name='modal'):\n"
++        "    global dialog\n"
++        "    record(name)\n"
++        "    dialog = QDialog(window); dialog.setObjectName('activeModal')\n"
++        "    dialog.exec()\n"
++        f"    Path({str(finished)!r}).touch()\n"
++        "class FailingAction(QAction):\n"
++        "    def trigger(self):\n"
++        "        raise RuntimeError('genuine invocation failure')\n"
++        "class LateFailingAction(QAction):\n"
++        "    def trigger(self):\n"
++        "        super().trigger()\n"
++        "        raise RuntimeError('failure after modal return')\n"
++        "def add(name, callback=None, cls=QAction):\n"
++        "    action = cls(name, window); action.setObjectName(name)\n"
++        "    if callback is not None: action.triggered.connect(callback)\n"
++        "    window.addAction(action)\n"
++        "    return action\n"
++        "normal = add('normal', lambda: record('normal'))\n"
++        "modal_action = add('modal', lambda: modal())\n"
++        "late_failure = add('modalFailure', lambda: modal('modalFailure'), cls=LateFailingAction)\n"
++        "close = add('closeModal', lambda: dialog.accept())\n"
++        "failure = add('failure', cls=FailingAction)\n"
++        "disabled = add('disabled', lambda: record('disabled')); disabled.setEnabled(False)\n"
++        "stale = add('stale', lambda: record('stale')); delete(stale)\n"
++        f"install_bridge({free_port})\n"
++        "QTimer.singleShot(10000, app.quit)\n"
++        "app.exec()\n"
++    )
++    proc = subprocess.Popen([sys.executable, str(fixture)],
++                            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"})
++    base = f"http://127.0.0.1:{free_port}"
++    try:
++        deadline = time.monotonic() + 5
++        while True:
++            try:
++                if httpx.get(base + "/app", timeout=0.3).status_code == 200:
++                    break
++            except httpx.HTTPError:
++                if proc.poll() is not None or time.monotonic() >= deadline:
++                    raise
++                time.sleep(0.02)
++        yield base, calls, finished
++    finally:
++        if proc.poll() is None:
++            proc.terminate()
++            proc.wait(timeout=5)
++
++
++def test_modal_exec_http_ack_is_dispatched_while_dialog_stays_open(action_app):
++    base, calls, finished = action_app
++    response = httpx.post(base + "/action", json={"name": "modal"}, timeout=2)
++    assert response.status_code == 202, response.text
++    result = response.json()
++    assert result["state"] == "dispatched"
++    assert result["ok"] is True
++    assert "triggered" not in result  # trigger() has not returned
++    assert result["invocation_id"]
++    assert calls.read_text().splitlines() == ["modal"]
++    assert not finished.exists(), "ack must precede the modal action's return"
++    visible = httpx.post(base + "/find", json={"class": "QDialog", "visible": True},
++                         timeout=2).json()["widgets"]
++    assert any(widget["object_name"] == "activeModal" for widget in visible)
++    closed = httpx.post(base + "/action", json={"name": "closeModal"}, timeout=2)
++    assert closed.status_code == 200
++    assert closed.json()["state"] == "completed"
++    deadline = time.monotonic() + 2
++    while not finished.exists() and time.monotonic() < deadline:
++        time.sleep(0.01)
++    assert finished.exists()
++    assert calls.read_text().splitlines() == ["modal"]
++
++
++def test_normal_completion_and_genuine_action_errors_remain_observable(action_app):
++    base, calls, _ = action_app
++    response = httpx.post(base + "/action", json={"name": "normal"}, timeout=2)
++    assert response.status_code == 200
++    assert response.json()["state"] == "completed"
++    assert response.json()["triggered"] == "normal"
++    assert calls.read_text().splitlines() == ["normal"]
++    for name, detail in [("disabled", "disabled"), ("stale", "not found"),
++                         ("missing", "not found")]:
++        response = httpx.post(base + "/action", json={"name": name}, timeout=2)
++        assert response.status_code == 200  # retain validation error contract
++        assert response.json()["state"] == "error"
++        assert detail in response.json()["error"]
++    response = httpx.post(base + "/action", json={}, timeout=2)
++    assert response.json()["state"] == "error"
++    assert "Provide" in response.json()["error"]
++    response = httpx.post(base + "/action", json={"name": "failure"}, timeout=2)
++    assert response.status_code == 500
++    assert response.json()["state"] == "error"
++    assert response.json()["error"] == "genuine invocation failure"
++    logs = httpx.get(base + "/logs", timeout=2).json()["logs"]
++    assert any(response.json()["invocation_id"] in record["message"] for record in logs)
++    assert calls.read_text().splitlines() == ["normal"]
++
++
++def test_error_after_dispatch_is_correlated_in_existing_logs(action_app):
++    base, calls, finished = action_app
++    response = httpx.post(base + "/action", json={"name": "modalFailure"}, timeout=2)
++    assert response.status_code == 202
++    result = response.json()
++    assert result["state"] == "dispatched"
++    assert not finished.exists()
++    assert httpx.post(base + "/action", json={"name": "closeModal"}, timeout=2).status_code == 200
++    deadline = time.monotonic() + 2
++    while True:
++        logs = httpx.get(base + "/logs", timeout=2).json()["logs"]
++        if any(result["invocation_id"] in record["message"] and
++               "failure after modal return" in record["message"] for record in logs):
++            break
++        assert time.monotonic() < deadline, logs
++        time.sleep(0.01)
++    assert calls.read_text().splitlines() == ["modalFailure"]
 diff --git a/tests/test_integration_ready.py b/tests/test_integration_ready.py
 index 9f3d9d8..63aebef 100644
 --- a/tests/test_integration_ready.py
@@ -369,6 +954,245 @@ index 9f3d9d8..63aebef 100644
          raw = _b64.b64decode(img)
          assert raw[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
      finally:
+diff --git a/tests/test_interactions.py b/tests/test_interactions.py
+new file mode 100644
+index 0000000..03f2c63
+--- /dev/null
++++ b/tests/test_interactions.py
+@@ -0,0 +1,233 @@
++"""Qt ownership and input regressions for the developer bridge."""
++import gc
++from unittest.mock import Mock
++
++import pytest
++from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit
++from shiboken6 import delete, getCppPointer
++
++from pyside6_mcp import bridge, server
++
++
++@pytest.fixture
++def app():
++    app = QApplication.instance() or QApplication([])
++    yield app
++    for window in app.topLevelWidgets():
++        window.close()
++        delete(window)
++    gc.collect()
++
++
++@pytest.mark.parametrize("kind", ["clear", "combo"])
++def test_native_child_survives_wrapper_collection_and_remains_actionable(app, kind):
++    if kind == "clear":
++        parent = QLineEdit("previous")
++        parent.setClearButtonEnabled(True)
++        class_name = "QToolButton"
++    else:
++        parent = QComboBox()
++        parent.setEditable(True)
++        parent.setEditText("previous")
++        class_name = "QLineEdit"
++    parent.show()
++    app.processEvents()
++    found = bridge._qt_find({"class": class_name, "visible": True})["widgets"]
++    assert len(found) == 1
++    wid = found[0]["id"]
++    transient = bridge._resolve(wid)
++    pointer = getCppPointer(transient)[0]
++    ref = bridge._widget_registry[wid]
++    del transient
++    gc.collect()
++    assert ref() is None, "fixture must exercise a collected anonymous Qt wrapper"
++    recovered = bridge._resolve(wid)
++    assert getCppPointer(recovered)[0] == pointer
++    assert bridge._widget_id(recovered) == wid
++    if kind == "clear":
++        assert bridge._qt_click_widget(wid, {}) == {"ok": True}
++        assert parent.text() == ""
++    else:
++        assert bridge._qt_type(wid, {"text": " appended"}) == {"ok": True}
++        assert parent.currentText() == "previous appended"
++
++
++def test_destroyed_objects_and_registry_removal_never_reuse_ids(app, record_property):
++    original = QLineEdit()
++    original.show()
++    old_id = bridge._widget_id(original)
++    seen_pointers = {getCppPointer(original)[0]}
++    reused_addresses = 0
++    delete(original)
++    assert bridge._resolve(old_id) is None
++    bridge._widget_registry.pop(old_id)
++    replacements = []
++    for _ in range(20):
++        replacement = QLineEdit()
++        replacement.show()
++        new_id = bridge._widget_id(replacement)
++        pointer = getCppPointer(replacement)[0]
++        reused_addresses += pointer in seen_pointers
++        seen_pointers.add(pointer)
++        assert new_id != old_id
++        assert bridge._resolve(old_id) is None
++        replacements.append(new_id)
++        delete(replacement)
++    assert len(set(replacements)) == 20
++    record_property("reused_native_addresses", reused_addresses)
++
++
++def test_dynamic_property_names_are_decoded_before_lookup(app):
++    editor = QLineEdit()
++    editor.setProperty("example", "value")
++    info = bridge._qt_widget_info(bridge._widget_id(editor))
++    assert info["dynamic_properties"] == {"example": "value"}
++
++
++def test_named_key_and_portable_combo_replace_text_without_literal_chord(app):
++    editor = QLineEdit("previous")
++    editor.show()
++    editor.setFocus()
++    app.processEvents()
++    assert bridge._qt_press_key({"key": "Ctrl+A"}) == {"ok": True}
++    assert editor.selectedText() == "previous"
++    assert bridge._qt_type(bridge._widget_id(editor), {"text": "new"}) == {"ok": True}
++    assert editor.text() == "new"
++    assert bridge._qt_press_key({"key": "backspace"}) == {"ok": True}
++    assert editor.text() == "ne"
++    assert bridge._qt_press_key({"key": "A"}) == {"ok": True}
++    assert editor.text() == "neA"
++
++
++@pytest.mark.parametrize("key", ["Ctrl+Bogus", "Ctrl+A, Ctrl+B", "unsupported", ""])
++def test_invalid_key_combinations_do_not_type(app, key):
++    editor = QLineEdit("unchanged")
++    editor.show()
++    editor.setFocus()
++    app.processEvents()
++    assert "error" in bridge._qt_press_key({"key": key})
++    assert editor.text() == "unchanged"
++
++
++def test_explicit_missing_scroll_target_does_not_retarget(app):
++    editor = QLineEdit()
++    editor.show()
++    assert "error" in bridge._qt_scroll({"widget_id": "stale", "dy": 1})
++
++
++def test_click_dispatches_once_and_preserves_bridge_response(monkeypatch):
++    post = Mock(return_value={"error": "Widget 'stale' not found"})
++    monkeypatch.setattr(server, "_post", post)
++    click = getattr(server.click, "fn", server.click)
++    assert "not found" in click(widget_id="stale", pid=123)
++    post.assert_called_once_with("/widget/stale/click", {"button": "left"}, pid=123)
++    post.reset_mock()
++    double_click = getattr(server.double_click, "fn", server.double_click)
++    assert "not found" in double_click(widget_id="stale", pid=123)
++    assert post.call_count == 2
++
++
++def test_widget_info_http_handler_does_not_return_500_for_dynamic_properties(app, monkeypatch):
++    editor = QLineEdit()
++    editor.setProperty("example", "value")
++    wid = bridge._widget_id(editor)
++    handler = object.__new__(bridge._Handler)
++    handler.path = "/widget/" + wid
++    responses = []
++    handler._send = lambda data, status=200: responses.append((status, data))
++    monkeypatch.setattr(bridge, "_call_main", lambda fn: fn())
++    handler.do_GET()
++    assert responses[0][0] == 200
++    assert responses[0][1]["dynamic_properties"] == {"example": "value"}
++
++
++@pytest.mark.parametrize("error", [server.httpx.ReadError, server.httpx.RemoteProtocolError])
++@pytest.mark.parametrize("path", ["/widget/owned/click", "/action"])
++def test_mutating_post_is_not_repeated_after_effect_with_lost_response(monkeypatch, error, path):
++    effects = []
++
++    def request(method, path, **kwargs):
++        effects.append((method, path, kwargs))
++        raise error("response lost after action")
++
++    client = Mock(request=Mock(side_effect=request))
++    sessions = server.SessionRegistry()
++    sessions.add(pid=123, port=9876, proc=None, log_path="fixture.log")
++    monkeypatch.setattr(server, "_sessions", sessions)
++    monkeypatch.setattr(server, "_client_for", lambda port: client)
++    sleep = Mock()
++    monkeypatch.setattr(server.time, "sleep", sleep)
++    with pytest.raises(RuntimeError, match="may have completed"):
++        server._post(path, {"button": "left"}, pid=123)
++    assert effects == [("POST", path, {"json": {"button": "left"}})]
++    client.request.assert_called_once()
++    sleep.assert_not_called()
++
++
++@pytest.mark.parametrize("error", [server.httpx.ReadError, server.httpx.RemoteProtocolError])
++def test_safe_get_still_retries_transient_response_errors(monkeypatch, error):
++    response = server.httpx.Response(200, json={"ok": True},
++                                    request=server.httpx.Request("GET", "http://127.0.0.1/app"))
++    client = Mock(request=Mock(side_effect=[error("lost"), response]))
++    sessions = server.SessionRegistry()
++    sessions.add(pid=123, port=9876, proc=None, log_path="fixture.log")
++    monkeypatch.setattr(server, "_sessions", sessions)
++    monkeypatch.setattr(server, "_client_for", lambda port: client)
++    sleep = Mock()
++    monkeypatch.setattr(server.time, "sleep", sleep)
++    assert server._get("/app", pid=123) == {"ok": True}
++    assert client.request.call_count == 2
++    sleep.assert_called_once_with(server._RETRY_BACKOFFS[0])
++
++
++def test_native_qt_lifetime_property_is_excluded_from_widget_info_http(app, monkeypatch):
++    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
++    from PySide6.QtUiTools import QUiLoader
++    from PySide6.QtWidgets import QPlainTextEdit
++
++    ui = QByteArray(b'<ui version="4.0"><class>Form</class><widget class="QWidget" '
++                    b'name="Form"><widget class="QPlainTextEdit" name="nativeEditor">'
++                    b'<property name="plainText"><string>fixture text</string></property>'
++                    b'</widget></widget><resources/><connections/></ui>')
++    buffer = QBuffer()
++    buffer.setData(ui)
++    buffer.open(QIODevice.OpenModeFlag.ReadOnly)
++    window = QUiLoader().load(buffer)
++    editor = window.findChild(QPlainTextEdit, "nativeEditor")
++    window.show()
++    app.processEvents()
++    editor.setProperty("user_value", "readable")
++    names = [bytes(key).decode() for key in editor.dynamicPropertyNames()]
++    assert "_PySideInvalidatePtr" in names, "fixture must create a native Qt wrapper"
++    wid = bridge._widget_id(editor)
++    handler = object.__new__(bridge._Handler)
++    handler.path = "/widget/" + wid
++    responses = []
++    handler._send = lambda data, status=200: responses.append((status, data))
++    monkeypatch.setattr(bridge, "_call_main", lambda fn: fn())
++    handler.do_GET()
++    status, result = responses[0]
++    assert status == 200, result
++    assert result["class"] == "QPlainTextEdit"
++    assert result["text"] == "fixture text"
++    assert result["visible"] is True
++    assert result["geometry"]["w"] > 0
++    assert result["dynamic_properties"] == {"user_value": "readable"}
++
++
++def test_widget_info_preserves_unexpected_application_property_errors(app, monkeypatch):
++    class Editor(QLineEdit):
++        def property(self, name):
++            if name == "application_value":
++                raise RuntimeError("application property read failed")
++            return super().property(name)
++
++    editor = Editor()
++    editor.setProperty("application_value", "value")
++    handler = object.__new__(bridge._Handler)
++    handler.path = "/widget/" + bridge._widget_id(editor)
++    responses = []
++    handler._send = lambda data, status=200: responses.append((status, data))
++    monkeypatch.setattr(bridge, "_call_main", lambda fn: fn())
++    handler.do_GET()
++    assert responses == [(500, {"error": "application property read failed"})]
 diff --git a/tests/test_screenshot_capture.py b/tests/test_screenshot_capture.py
 new file mode 100644
 index 0000000..1d5dfd9
@@ -789,6 +1613,224 @@ index 0000000..f489a7c
 +            assert json.loads(result.content[0].text) == data
 +
 +    asyncio.run(check())
+diff --git a/tests/test_shutdown.py b/tests/test_shutdown.py
+new file mode 100644
+index 0000000..ed977ad
+--- /dev/null
++++ b/tests/test_shutdown.py
+@@ -0,0 +1,212 @@
++"""Quit acknowledgement is distinct from actual owned-process termination."""
++import json
++from types import SimpleNamespace
++from unittest.mock import Mock
++
++import httpx
++import pytest
++
++from pyside6_mcp import bridge, server
++from pyside6_mcp.session import SessionRegistry
++
++
++def _stop():
++    return getattr(server.stop_app, "fn", server.stop_app)(pid=123)
++
++
++@pytest.fixture
++def session(monkeypatch):
++    sessions = SessionRegistry()
++    proc = Mock(pid=456, returncode=0)
++    proc.poll.return_value = 0
++    session = sessions.add(pid=123, port=9876, proc=proc, log_path="fixture.log")
++    monkeypatch.setattr(server, "_sessions", sessions)
++    monkeypatch.setattr(server, "_drop_client", Mock())
++    monkeypatch.setattr(server, "_request_app_quit", Mock(return_value={"quit": {"ok": True}}))
++    monkeypatch.setattr(server, "_kill_proc_tree", Mock())
++    monkeypatch.setattr(server.time, "sleep", Mock())
++    return session
++
++
++def test_acknowledged_quit_waits_for_actual_app_exit(session, monkeypatch):
++    alive = Mock(side_effect=[True, False, False, False])
++    monkeypatch.setattr(server, "_app_alive", alive)
++    result = json.loads(_stop())
++    assert result["ok"] is True
++    assert alive.call_count >= 2
++    server.time.sleep.assert_called_once()
++    assert server._sessions.get(123) is None
++
++
++def test_lost_ack_with_exited_process_is_success(session, monkeypatch):
++    server._request_app_quit.return_value = {"quit_error": "response closed"}
++    monkeypatch.setattr(server, "_app_alive", lambda _: False)
++    result = json.loads(_stop())
++    assert result["ok"] is True
++    assert result["quit"]["quit_error"] == "response closed"
++    assert server._sessions.get(123) is None
++
++
++def test_exited_wrapper_does_not_prove_app_exit_or_signal_foreign_group(session, monkeypatch):
++    monkeypatch.setattr(server, "_app_alive", lambda _: True)
++    monkeypatch.setattr(server.time, "monotonic", Mock(side_effect=[0, 6]))
++    monkeypatch.setattr(server.os, "getpgid", lambda _: 789)
++    kill = Mock()
++    monkeypatch.setattr(server.os, "killpg", kill)
++    result = json.loads(_stop())
++    assert result["ok"] is False
++    assert "retained" in result["error"]
++    assert server._sessions.get(123) is session
++    kill.assert_not_called()
++    server._kill_proc_tree.assert_not_called()
++
++
++def test_unresponsive_owned_launcher_gets_existing_force_cleanup(session, monkeypatch):
++    session.proc.poll.return_value = None
++    monkeypatch.setattr(server, "_app_alive", Mock(side_effect=[True, False]))
++    monkeypatch.setattr(server.time, "monotonic", Mock(side_effect=[0, 6]))
++    result = json.loads(_stop())
++    assert result["ok"] is True
++    server._kill_proc_tree.assert_called_once_with(session.proc)
++
++
++def test_app_liveness_checks_real_qt_pid_instead_of_exited_wrapper(session, monkeypatch):
++    kill = Mock()
++    monkeypatch.setattr(server.os, "kill", kill)
++    assert server._app_alive(session) is True
++    kill.assert_called_once_with(123, 0)
++    kill.side_effect = ProcessLookupError
++    assert server._app_alive(session) is False
++
++
++def test_quit_transport_timeout_does_not_claim_process_stopped(monkeypatch):
++    monkeypatch.setattr(server.httpx, "post", Mock(side_effect=httpx.ReadTimeout("slow")))
++    result = server._request_app_quit(9876, timeout=2)
++    assert "quit_error" in result
++    assert "bridge_stopped" not in result
++    server.httpx.post.assert_called_once_with("http://127.0.0.1:9876/quit", timeout=2)
++
++
++def test_bridge_flushes_ack_before_queuing_quit(monkeypatch):
++    events = []
++    handler = object.__new__(bridge._Handler)
++    handler.path = "/quit"
++    handler._body = lambda: {}
++    handler._send = lambda data, status=200: events.append(("ack", data))
++    handler.wfile = SimpleNamespace(flush=lambda: events.append("flush"))
++    monkeypatch.setattr(bridge.QMetaObject, "invokeMethod", lambda *args: events.append("quit"))
++    handler.do_POST()
++    assert events == [("ack", {"ok": True}), "flush", "quit"]
++
++
++def test_http_ack_precedes_about_to_quit_cleanup(tmp_path, free_port):
++    import os
++    import subprocess
++    import sys
++    import time
++
++    fixture = tmp_path / "quit_fixture.py"
++    release = tmp_path / "release"
++    finished = tmp_path / "finished"
++    fixture.write_text(
++        "import time\n"
++        "from pathlib import Path\n"
++        "from PySide6.QtWidgets import QApplication, QWidget\n"
++        "from pyside6_mcp.bridge import install_bridge\n"
++        "app = QApplication([])\n"
++        "window = QWidget(); window.show()\n"
++        "def cleanup():\n"
++        "    deadline = time.monotonic() + 5\n"
++        f"    while not Path({str(release)!r}).exists() and time.monotonic() < deadline:\n"
++        "        time.sleep(0.01)\n"
++        f"    Path({str(finished)!r}).touch()\n"
++        "app.aboutToQuit.connect(cleanup)\n"
++        f"install_bridge({free_port})\n"
++        "app.exec()\n"
++    )
++    proc = subprocess.Popen([sys.executable, str(fixture)],
++                            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"})
++    base = f"http://127.0.0.1:{free_port}"
++    try:
++        deadline = time.monotonic() + 5
++        while True:
++            try:
++                if httpx.get(base + "/app", timeout=0.3).status_code == 200:
++                    break
++            except httpx.HTTPError:
++                if time.monotonic() >= deadline:
++                    raise
++                time.sleep(0.02)
++        response = httpx.post(base + "/quit", timeout=2)
++        assert response.json() == {"ok": True}
++        assert not finished.exists(), "quit acknowledgement must precede cleanup completion"
++        assert proc.poll() is None
++        release.touch()
++        assert proc.wait(timeout=5) == 0
++        assert finished.exists()
++    finally:
++        release.touch()
++        if proc.poll() is None:
++            proc.terminate()
++            proc.wait(timeout=5)
++
++
++@pytest.mark.parametrize("status,expected", [(0x102, True), (0, False)])
++def test_windows_liveness_uses_readonly_wait_and_closes_pointer_sized_handle(
++    session, monkeypatch, status, expected
++):
++    import ctypes
++    from ctypes import wintypes
++
++    handle = 0x100001234
++    kernel = SimpleNamespace(
++        OpenProcess=Mock(return_value=handle),
++        WaitForSingleObject=Mock(return_value=status),
++        CloseHandle=Mock(return_value=True),
++    )
++    monkeypatch.setattr(server.sys, "platform", "win32")
++    load = Mock(return_value=kernel)
++    monkeypatch.setattr(ctypes, "WinDLL", load, raising=False)
++    monkeypatch.setattr(ctypes, "get_last_error", lambda: 0, raising=False)
++    kill = Mock(side_effect=AssertionError("Windows liveness must never call os.kill"))
++    monkeypatch.setattr(server.os, "kill", kill)
++    assert server._app_alive(session) is expected
++    load.assert_called_once_with("kernel32", use_last_error=True)
++    kernel.OpenProcess.assert_called_once_with(0x00100000, False, 123)
++    assert kernel.OpenProcess.restype is wintypes.HANDLE
++    assert kernel.WaitForSingleObject.argtypes == [wintypes.HANDLE, wintypes.DWORD]
++    kernel.WaitForSingleObject.assert_called_once_with(handle, 0)
++    kernel.CloseHandle.assert_called_once_with(handle)
++    kill.assert_not_called()
++
++
++@pytest.mark.parametrize("error,expected", [(87, False), (5, True)])
++def test_windows_unopened_process_is_not_mistaken_for_exited_on_access_denied(
++    monkeypatch, error, expected
++):
++    import ctypes
++
++    kernel = SimpleNamespace(OpenProcess=Mock(return_value=None),
++                             WaitForSingleObject=Mock(), CloseHandle=Mock())
++    monkeypatch.setattr(ctypes, "WinDLL", Mock(return_value=kernel), raising=False)
++    monkeypatch.setattr(ctypes, "get_last_error", lambda: error, raising=False)
++    assert server._windows_process_alive(123) is expected
++    kernel.WaitForSingleObject.assert_not_called()
++    kernel.CloseHandle.assert_not_called()
++
++
++@pytest.mark.parametrize("status,closed", [(0xFFFFFFFF, True), (0x102, False)])
++def test_windows_query_or_cleanup_failure_is_actionable_and_closes_handle(
++    monkeypatch, status, closed
++):
++    import ctypes
++
++    kernel = SimpleNamespace(OpenProcess=Mock(return_value=1234),
++                             WaitForSingleObject=Mock(return_value=status),
++                             CloseHandle=Mock(return_value=closed))
++    monkeypatch.setattr(ctypes, "WinDLL", Mock(return_value=kernel), raising=False)
++    monkeypatch.setattr(ctypes, "get_last_error", lambda: 6, raising=False)
++    monkeypatch.setattr(ctypes, "WinError", lambda code: OSError(code, "query failed"), raising=False)
++    with pytest.raises(OSError):
++        server._windows_process_alive(123)
++    kernel.CloseHandle.assert_called_once_with(1234)
 diff --git a/uv.lock b/uv.lock
 index d40624c..ad41c75 100644
 --- a/uv.lock

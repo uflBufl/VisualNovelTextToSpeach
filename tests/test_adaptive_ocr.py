@@ -38,6 +38,23 @@ class AdaptiveOCRTest(unittest.TestCase):
             draw.text((12, divider + 5 + row * 25), text, fill=foreground, font_size=18)
         return image, divider
 
+    @classmethod
+    def wide_scenery_frame(
+        cls, name="", fill="white", font_size=18, inverted=False, boundary=False
+    ):
+        image, divider = cls.frame(name="", text="I")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((390, 0, 410, image.height), fill="#555555")
+        draw.rectangle((180, divider - 40, 219, divider - 35), fill="#555555")
+        # Clip one ink row at the name band's upper boundary, leaving real strokes.
+        y = (
+            55 - draw.textbbox((0, 0), name, font_size=font_size)[1]
+            if boundary
+            else divider - 25
+        )
+        draw.text((180, y), name, fill=fill, font_size=font_size)
+        return ImageOps.invert(image) if inverted else image
+
     def test_follows_one_to_four_lines_and_both_polarities_without_clipping(self):
         for lines in range(1, 5):
             for inverted in (False, True):
@@ -122,6 +139,86 @@ class AdaptiveOCRTest(unittest.TestCase):
         self.assertEqual((result.character, result.text), ("Narrator", "I"))
         self.assertIsNone(result.speaker_confidence)
         self.assertTrue(result.is_confident())
+
+    def test_wide_unanchored_scenery_does_not_supply_a_narrator_name(self):
+        for inverted in (False, True):
+            with self.subTest(inverted=inverted):
+                image = self.wide_scenery_frame(inverted=inverted)
+                frame = CapturedDialogFrame(image, 0)
+                regions = frame.ocr_regions
+                self.assertFalse(speaker_glyphs_visible(regions.speaker.crop(image)))
+                self.assertEqual(resolve_ocr_regions(image, regions), regions)
+                self.assertLessEqual(regions.dialogue.top * image.height, 125)
+                self.assertEqual(
+                    regions.dialogue._pixel_box(*image.size)[3], image.height
+                )
+                result = recognize_dialog_image_result(
+                    image,
+                    recognize_text=Mock(return_value="I"),
+                    recognize_data=Mock(
+                        side_effect=[
+                            {"text": ["scenery"], "conf": [27]},
+                            {"text": ["I"], "conf": [96]},
+                        ]
+                    ),
+                    profiles=(OCRPreprocessingProfile("one", 1, 170),),
+                    ocr_regions=regions,
+                )
+                self.assertEqual((result.character, result.text), ("Narrator", "I"))
+                self.assertIsNone(result.speaker_confidence)
+                self.assertEqual(result.confidence, 96)
+                self.assertTrue(result.is_confident())
+
+    def test_real_unanchored_names_beside_wide_scenery_remain_unreadable(self):
+        for name in ("X", "I", "J", "L", "T", "???", "6", "37"):
+            for font_size in (10, 18):
+                for fill in ("white", "#181818"):
+                    for inverted in (False, True):
+                        for boundary in (False, True):
+                            with self.subTest(
+                                name=name,
+                                font_size=font_size,
+                                fill=fill,
+                                inverted=inverted,
+                                boundary=boundary,
+                            ):
+                                image = self.wide_scenery_frame(
+                                    name, fill, font_size, inverted, boundary
+                                )
+                                regions = resolve_ocr_regions(image)
+                                self.assertTrue(
+                                    speaker_glyphs_visible(regions.speaker.crop(image))
+                                )
+                                self.assertEqual(
+                                    resolve_ocr_regions(image, regions), regions
+                                )
+                                result = recognize_dialog_image_result(
+                                    image,
+                                    recognize_text=Mock(return_value="I"),
+                                    recognize_data=Mock(
+                                        side_effect=[
+                                            {"text": [], "conf": []},
+                                            {"text": ["I"], "conf": [96]},
+                                        ]
+                                    ),
+                                    profiles=(OCRPreprocessingProfile("one", 1, 170),),
+                                    ocr_regions=regions,
+                                )
+                                self.assertFalse(result.is_confident())
+                                self.assertIsNotNone(result.speaker_confidence)
+                                self.assertIn("could not be read", result.speaker_note)
+
+    def test_wide_unanchored_scenery_does_not_change_an_anchored_name_crop(self):
+        image = self.wide_scenery_frame()
+        ImageDraw.Draw(image).text((18, 95), "Cornerstone", fill="white", font_size=18)
+        clean, _ = self.frame(name="Cornerstone", text="I")
+        for inverted in (False, True):
+            with self.subTest(inverted=inverted):
+                source = ImageOps.invert(image) if inverted else image
+                control = ImageOps.invert(clean) if inverted else clean
+                regions = resolve_ocr_regions(source)
+                self.assertEqual(regions.speaker, resolve_ocr_regions(control).speaker)
+                self.assertEqual(resolve_ocr_regions(source, regions), regions)
 
     def test_unanchored_short_or_uniformly_faint_names_remain_visible(self):
         for name in ("X", "I", "???", "6", "37"):

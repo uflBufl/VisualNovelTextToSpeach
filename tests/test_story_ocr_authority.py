@@ -13,7 +13,11 @@ from vntts.chapter_voice_preload import (
     ChapterVoicePreloader,
 )
 from vntts.controller import AppController
-from vntts.dialog_capture import CapturedDialogFrame, analyze_dialog_snapshot
+from vntts.dialog_capture import (
+    CapturedDialogFrame,
+    OCRUncertainError,
+    analyze_dialog_snapshot,
+)
 from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
     GeneratedAudioRoute,
@@ -152,13 +156,11 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                     "vntts.dialog_capture.recognize_dialog_image_result",
                     return_value=raw,
                 ):
-                    self.assertEqual(
+                    with self.assertRaises(OCRUncertainError):
                         controller._recognize_live_frame(
                             CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
-                        ),
-                        ("Narrator", ""),
-                    )
-                controller._ocr_uncertain.assert_called_once()
+                        )
+                controller._ocr_uncertain.assert_not_called()
 
     def test_cursor_candidates_keep_an_exact_match_inside_the_selected_path(self):
         text = "A repeated complete phrase."

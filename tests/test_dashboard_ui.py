@@ -1036,42 +1036,57 @@ class ControlDashboardTest(unittest.TestCase):
             (
                 "identifying current chapter",
                 RuntimeControlState(ready=True, starting=True),
-                (False, True),
+                (False, True, False),
             ),
             (
                 "loading with active speech",
                 RuntimeControlState(ready=False, speaking=True),
-                (False, True),
+                (False, True, True),
             ),
             (
                 "idle",
                 RuntimeControlState(ready=True),
-                (True, True),
+                (True, True, False),
             ),
             (
                 "live",
                 RuntimeControlState(ready=True, live=True),
-                (False, True),
+                (False, True, True),
             ),
             (
                 "speaking",
                 RuntimeControlState(ready=True, speaking=True),
-                (False, True),
+                (False, True, True),
             ),
             (
                 "paused",
                 RuntimeControlState(ready=True, paused=True),
-                (False, True),
+                (False, True, True),
+            ),
+            (
+                "paused while unavailable",
+                RuntimeControlState(ready=False, paused=True),
+                (False, True, True),
+            ),
+            (
+                "starting while paused",
+                RuntimeControlState(ready=False, paused=True, transition="starting"),
+                (False, True, False),
+            ),
+            (
+                "stopping while paused",
+                RuntimeControlState(ready=False, paused=True, transition="stopping"),
+                (False, False, False),
             ),
             (
                 "queued",
                 RuntimeControlState(ready=True, queued=True),
-                (False, True),
+                (False, True, True),
             ),
             (
                 "replayable",
                 RuntimeControlState(ready=True, replayable=True),
-                (True, True),
+                (True, True, False),
             ),
         )
         for name, state, expected in cases:
@@ -1083,6 +1098,7 @@ class ControlDashboardTest(unittest.TestCase):
                     for button in (
                         dashboard.read_button,
                         dashboard.live_button,
+                        dashboard.pause_button,
                     )
                 )
                 compact_state = tuple(
@@ -1090,6 +1106,7 @@ class ControlDashboardTest(unittest.TestCase):
                     for button in (
                         compact.read_button,
                         compact.live_button,
+                        compact.pause_button,
                     )
                 )
                 self.assertEqual(dashboard_state, expected)
@@ -1097,6 +1114,11 @@ class ControlDashboardTest(unittest.TestCase):
                 self.assertEqual(
                     dashboard.live_button.text(), compact.live_button.text()
                 )
+                for button in (dashboard.pause_button, compact.pause_button):
+                    self.assertEqual(button.text(), state.pause_label)
+                    self.assertEqual(button.accessibleName(), state.pause_label)
+                    self.assertTrue(button.accessibleDescription())
+                    self.assertTrue(button.toolTip())
         dashboard.deleteLater()
         compact.deleteLater()
 
@@ -1201,6 +1223,18 @@ class ControlDashboardTest(unittest.TestCase):
                 self.assertLessEqual(
                     compact.full_button.geometry().right(),
                     compact.contentsRect().right(),
+                )
+                self.assertTrue(compact.pause_button.isVisibleTo(compact))
+                self.assertLess(
+                    compact.live_button.geometry().right(),
+                    compact.pause_button.geometry().left(),
+                )
+                self.assertLess(
+                    compact.pause_button.geometry().right(),
+                    compact.read_button.geometry().left(),
+                )
+                self.assertIs(
+                    compact.live_button.nextInFocusChain(), compact.pause_button
                 )
 
                 dashboard._quitting = True
@@ -1385,6 +1419,7 @@ class ControlDashboardTest(unittest.TestCase):
                 self.assertGreater(controller.status.verticalScrollBar().maximum(), 0)
                 for button in (
                     controller.live_button,
+                    controller.pause_button,
                     controller.read_button,
                     controller.full_button,
                     controller.sequence_expected_button,

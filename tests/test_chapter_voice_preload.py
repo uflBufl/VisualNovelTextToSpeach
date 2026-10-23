@@ -651,6 +651,78 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         self.assertIsNone(line)
         self.assertEqual(result, "expected-no-match")
 
+    def test_bounded_short_reply_cannot_override_current_dialogue_evidence(self):
+        for previous, observed in (
+            (
+                "I'm afraid I won't be handling your make-up assignment. You'll have to ask those old gentlemen in the office when applications open.",
+                "I'm afraid I won't be handling your make-up assignment. You'll have to ask those old gentlernen in the office when applications open.",
+            ),
+            (
+                "You can ask me about the buildings after the lecture.",
+                "You can ask me about the buildings after the lecturc.",
+            ),
+            (
+                "You can ask me about the buildings after the lecture.",
+                "You can ask me about the buildings",
+            ),
+        ):
+            with self.subTest(observed=observed):
+                lines = tuple(
+                    ChapterDialogue(
+                        f"line-{i}",
+                        "1",
+                        i,
+                        speaker,
+                        text,
+                        hashlib.sha256(text.encode()).hexdigest(),
+                    )
+                    for i, (speaker, text) in enumerate(
+                        (
+                            ("Cornerstone", previous),
+                            (
+                                "Duvalle",
+                                "No, Professor. I was just curious about the future.",
+                            ),
+                            ("Cornerstone", "Me?"),
+                        ),
+                        1,
+                    )
+                )
+                preloader = ChapterVoicePreloader(lines)
+                line, _result = preloader.resolve_bounded_among(
+                    "Cornerstone", observed, (row.line_id for row in lines)
+                )
+                self.assertIs(line, lines[0])
+
+    def test_bounded_short_reply_requires_unambiguous_complete_words(self):
+        for observation, competitor, expected in (
+            ("Me?", "A completely different next reply.", "reply"),
+            ("Cornerstone Me?", "A completely different next reply.", "reply"),
+            ("Me?", "Me? Are you asking about the monument?", None),
+            ("Cornerstone Me?", "Me? Are you asking about the monument?", None),
+            ("The assignment is ready.", "An unrelated next reply.", None),
+            ("The gentlemen are here.", "An unrelated next reply.", None),
+        ):
+            with self.subTest(observation=observation, competitor=competitor):
+                lines = tuple(
+                    ChapterDialogue(
+                        key,
+                        "1",
+                        i,
+                        "Cornerstone",
+                        text,
+                        hashlib.sha256(text.encode()).hexdigest(),
+                    )
+                    for i, (key, text) in enumerate(
+                        (("reply", "Me?"), ("competitor", competitor)), 1
+                    )
+                )
+                preloader = ChapterVoicePreloader(lines)
+                line, _result = preloader.resolve_bounded_among(
+                    "Cornerstone", observation, (row.line_id for row in lines)
+                )
+                self.assertEqual(None if line is None else line.line_id, expected)
+
     def test_unique_prefix_resolves_full_indexed_dialogue(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "story.jsonl"

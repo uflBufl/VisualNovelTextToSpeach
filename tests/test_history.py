@@ -474,17 +474,40 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         dialog.search.setFocus()
         self.application.processEvents()
 
-        def tab_to(widget):
-            for _ in range(12):
-                if widget.hasFocus():
-                    return
-                QTest.keyClick(self.application.focusWidget(), Qt.Key.Key_Tab)
-            self.assertTrue(widget.hasFocus(), "Widget is unreachable using Tab")
-
-        tab_to(dialog.entries)
+        self.tab_to(dialog.entries)
         QTest.keyClick(dialog.entries, Qt.Key.Key_Up)
         self.assertEqual(dialog.current_entry().character, "Marcus")
-        tab_to(dialog.details)
+        self.tab_to(dialog.details)
+        self.assert_details_copy_and_scroll(dialog)
+        self.tab_to(dialog.replay_button)
+        QTest.keyClick(dialog.replay_button, Qt.Key.Key_Space)
+        self.wait_for(replay_started.is_set)
+        replay_handler.assert_called_once_with("Marcus", text)
+
+        self.tab_to(dialog.entries)
+        QTest.keyClick(dialog.entries, Qt.Key.Key_Down)
+        self.assertEqual(dialog.current_entry().character, "Lucy")
+        self.assertIn("Speaking as Marcus", dialog.status.toPlainText())
+        self.assertIn(text, dialog.status.toolTip())
+        self.tab_to(dialog.stop_button)
+        QTest.keyClick(dialog.stop_button, Qt.Key.Key_Space)
+        self.wait_for(stop_started.is_set)
+        QTest.keyClick(dialog, Qt.Key.Key_Escape)
+        self.assertTrue(dialog.isVisible())
+        self.assertIn("Stopping", dialog.status.toPlainText())
+        stop_release.set()
+        self.wait_for(lambda: not dialog.isVisible())
+        stop_handler.assert_called_once_with()
+        self.assertEqual(dialog.status.toPlainText(), "Speech stopped for Marcus.")
+
+    def tab_to(self, widget):
+        for _ in range(12):
+            if widget.hasFocus():
+                return
+            QTest.keyClick(self.application.focusWidget(), Qt.Key.Key_Tab)
+        self.assertTrue(widget.hasFocus(), "Widget is unreachable using Tab")
+
+    def assert_details_copy_and_scroll(self, dialog):
         QTest.keySequence(dialog.details, QKeySequence.StandardKey.SelectAll)
         QTest.keySequence(dialog.details, QKeySequence.StandardKey.Copy)
         self.assertEqual(
@@ -495,26 +518,6 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         )
         QTest.keyClick(dialog.details, Qt.Key.Key_PageDown)
         self.assertGreater(dialog.details.verticalScrollBar().value(), 0)
-        tab_to(dialog.replay_button)
-        QTest.keyClick(dialog.replay_button, Qt.Key.Key_Space)
-        self.wait_for(replay_started.is_set)
-        replay_handler.assert_called_once_with("Marcus", text)
-
-        tab_to(dialog.entries)
-        QTest.keyClick(dialog.entries, Qt.Key.Key_Down)
-        self.assertEqual(dialog.current_entry().character, "Lucy")
-        self.assertIn("Speaking as Marcus", dialog.status.toPlainText())
-        self.assertIn(text, dialog.status.toolTip())
-        tab_to(dialog.stop_button)
-        QTest.keyClick(dialog.stop_button, Qt.Key.Key_Space)
-        self.wait_for(stop_started.is_set)
-        QTest.keyClick(dialog, Qt.Key.Key_Escape)
-        self.assertTrue(dialog.isVisible())
-        self.assertIn("Stopping", dialog.status.toPlainText())
-        stop_release.set()
-        self.wait_for(lambda: not dialog.isVisible())
-        stop_handler.assert_called_once_with()
-        self.assertEqual(dialog.status.toPlainText(), "Speech stopped for Marcus.")
 
     def test_replay_failure_is_retryable_in_dialog(self):
         history = DialogueHistory()

@@ -4,6 +4,8 @@ import queue
 import subprocess
 import sys
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,6 +17,7 @@ import numpy as np
 
 from tests.speech_worker_fixtures import FakeProcess
 from tests.symlink_support import symlink_or_skip
+from vntts.model_assets import ModelAssetManager
 from vntts.speech_backend import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_worker import (
     _REQUIRED_MODULES,
@@ -176,6 +179,432 @@ class BackendFactoryTests(unittest.TestCase):
         native.assert_called_once_with(registry, model_name="model.gguf")
 
 
+class DeferredWorkerStartupTests(unittest.TestCase):
+    def backend(self, **options):
+        backend = IsolatedSpeechBackend(
+            "pocket-tts", CharacterVoiceRegistry(), defer_startup=True, **options
+        )
+        self.addCleanup(backend.shutdown)
+        return backend
+
+    @staticmethod
+    def ready(backend):
+        backend.process = FakeProcess(None)
+        backend.health = {"type": "health"}
+
+    def test_configuration_and_prepared_request_do_not_install_or_launch(self):
+        with patch("vntts.runtime_installation.ensure_speech_runtime") as install:
+            process_factory = MagicMock()
+            backend = self.backend(process_factory=process_factory)
+            prepared = backend.prepare_playback("Bob", "Prepared line")
+        self.assertIsNone(backend.process)
+        self.assertIsNotNone(backend.capabilities)
+        self.assertIsInstance(backend.registry, CharacterVoiceRegistry)
+        self.assertEqual(prepared.payload.voice, "Bob")
+        install.assert_not_called()
+        process_factory.assert_not_called()
+
+    def test_background_and_concurrent_demand_share_one_blocked_startup(self):
+        backend = self.backend()
+        entered, release = Event(), Event()
+
+        def start(**_options):
+            entered.set()
+            self.assertTrue(release.wait(3))
+            self.ready(backend)
+
+        with (
+            patch.object(backend, "_prepare_runtime"),
+            patch.object(backend, "_start_worker", side_effect=start) as launch,
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            future = backend.load_in_background()
+            try:
+                self.assertTrue(entered.wait(3))
+                demands = [executor.submit(backend._ensure_worker) for _ in range(2)]
+                self.assertIs(backend.load_in_background(), future)
+                self.assertTrue(all(not demand.done() for demand in demands))
+            finally:
+                release.set()
+            future.result(3)
+            for demand in demands:
+                self.assertIs(demand.result(3), backend.process)
+            launch.assert_called_once()
+
+    def test_timeout_wait_observes_same_failure_then_explicit_demand_retries(self):
+        backend = self.backend()
+        entered, release = Event(), Event()
+
+        def fail(**_options):
+            entered.set()
+            self.assertTrue(release.wait(3))
+            raise TTSConfigurationError("model is unavailable")
+
+        with (
+            patch.object(backend, "_prepare_runtime"),
+            patch.object(backend, "_start_worker", side_effect=fail),
+        ):
+            future = backend.load_in_background()
+            self.assertTrue(entered.wait(3))
+            original_result = future.result
+            first = True
+
+            def wait_then_fail(timeout=None):
+                nonlocal first
+                if first:
+                    first = False
+                    release.set()
+                    self.assertTrue(backend._startup.finished.wait(3))
+                    raise FutureTimeout()
+                return original_result(timeout)
+
+            with (
+                patch.object(future, "result", side_effect=wait_then_fail),
+                patch.object(
+                    backend, "_begin_startup", wraps=backend._begin_startup
+                ) as begin,
+            ):
+                with self.assertRaisesRegex(TTSConfigurationError, "unavailable"):
+                    backend._ensure_worker()
+                begin.assert_called_once()
+        with (
+            patch.object(backend, "_prepare_runtime"),
+            patch.object(
+                backend, "_start_worker", side_effect=lambda **_: self.ready(backend)
+            ) as retry,
+        ):
+            backend.load_in_background().result(3)
+            retry.assert_called_once()
+
+    def test_health_is_not_ready_until_initial_mode_is_flushed(self):
+        backend = self.backend()
+        entered, release = Event(), Event()
+        backend.runtime_root = Path("/synthetic-runtime")
+
+        def exchange(_process, command, **options):
+            self.assertEqual((command, options["active"]), ("set-live-mode", True))
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return True
+
+        with (
+            patch.object(backend, "_prepare_runtime"),
+            patch("vntts.runtime_ownership.claim_runtime", return_value=None),
+            patch.object(
+                backend, "_launch_worker", side_effect=lambda **_: self.ready(backend)
+            ),
+            patch.object(backend, "_exchange_value", side_effect=exchange),
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            backend.set_live_mode_active(True)
+            try:
+                self.assertTrue(entered.wait(3))
+                self.assertIsNotNone(backend.health)
+                demand = executor.submit(backend._ensure_worker)
+                self.assertFalse(backend._startup.future.done())
+                self.assertFalse(demand.done())
+            finally:
+                release.set()
+            self.assertIs(demand.result(3), backend.process)
+
+    def test_inactive_mode_is_flushed_before_prime_and_render(self):
+        for work in ("prime", "render"):
+            with self.subTest(work=work):
+                backend = self.backend()
+                self.ready(backend)
+                backend._live_mode_active = backend._worker_live_mode = True
+                backend.set_live_mode_active(False)
+                commands = []
+
+                def exchange(_process, command, **options):
+                    commands.append((command, options.get("active")))
+                    return True
+
+                def send(_process, document):
+                    commands.append((document["type"], None))
+                    raise RuntimeError("render dispatched")
+
+                with (
+                    patch.object(backend, "_exchange_value", side_effect=exchange),
+                    patch.object(backend, "_send", side_effect=send),
+                ):
+                    if work == "prime":
+                        backend.prime("Narrator")
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "render dispatched"):
+                            backend.render(
+                                SynthesisRequest("Narrator", "Line")
+                            ).collect()
+                self.assertEqual(commands, [("set-live-mode", False), (work, None)])
+
+    def test_stop_cancels_old_warmup_even_after_ready_and_resume(self):
+        entered, release = Event(), Event()
+
+        def progress(message):
+            if "is ready" in message:
+                entered.set()
+                self.assertTrue(release.wait(3))
+
+        backend = self.backend(startup_progress=progress)
+        with (
+            patch.object(backend, "_prepare_runtime"),
+            patch.object(
+                backend, "_start_worker", side_effect=lambda **_: self.ready(backend)
+            ),
+            patch.object(backend, "prime") as prime,
+        ):
+            future = backend.load_in_background(warm_up=True)
+            future.result(3)
+            try:
+                self.assertTrue(entered.wait(3))
+                startup = backend._startup
+                self.assertTrue(backend.stop())
+                backend._stop_requested.clear()
+                backend.set_live_mode_active(True)
+            finally:
+                release.set()
+            self.assertTrue(startup.finished.wait(3))
+            self.assertTrue(startup.cancelled.is_set())
+            prime.assert_not_called()
+
+    def test_shutdown_during_runtime_preparation_prevents_late_launch(self):
+        backend = self.backend()
+        entered, release = Event(), Event()
+
+        def prepare(_cancellation):
+            entered.set()
+            self.assertTrue(release.wait(3))
+
+        with (
+            patch.object(backend, "_prepare_runtime", side_effect=prepare),
+            patch.object(backend, "_start_worker") as launch,
+        ):
+            future = backend.load_in_background()
+            try:
+                self.assertTrue(entered.wait(3))
+                backend.shutdown()
+            finally:
+                release.set()
+            with self.assertRaisesRegex(TTSSynthesisError, "cancelled"):
+                future.result(3)
+            launch.assert_not_called()
+
+    def test_process_arriving_after_shutdown_is_terminated(self):
+        backend = self.backend()
+        backend.runtime_root = Path("/synthetic-runtime")
+        entered, release = Event(), Event()
+        process = FakeProcess(None)
+
+        def launch(**_options):
+            entered.set()
+            self.assertTrue(release.wait(3))
+            backend.process = process
+            backend.health = {"type": "health"}
+
+        with (
+            patch.object(backend, "_prepare_runtime"),
+            patch("vntts.runtime_ownership.claim_runtime", return_value=None),
+            patch.object(backend, "_launch_worker", side_effect=launch),
+        ):
+            future = backend.load_in_background()
+            try:
+                self.assertTrue(entered.wait(3))
+                backend.shutdown()
+            finally:
+                release.set()
+            with self.assertRaisesRegex(TTSSynthesisError, "cancelled"):
+                future.result(3)
+            self.assertIsNone(backend.process)
+            self.assertEqual(process.returncode, -15)
+
+    def test_retained_runtime_reuses_configured_and_loading_worker(self):
+        backend = self.backend()
+        factory = MagicMock(return_value=backend)
+        runtime = RetainedWorkerRuntime("pocket-tts", backend_factory=factory)
+        self.addCleanup(runtime.shutdown)
+        registry = backend.registry
+        runtime(registry, defer_startup=True)
+        runtime(registry, defer_startup=True)
+        entered, release = Event(), Event()
+
+        def prepare(_cancellation):
+            entered.set()
+            self.assertTrue(release.wait(3))
+
+        with (
+            patch.object(backend, "_prepare_runtime", side_effect=prepare),
+            patch.object(
+                backend, "_start_worker", side_effect=lambda **_: self.ready(backend)
+            ),
+        ):
+            future = backend.load_in_background()
+            try:
+                self.assertTrue(entered.wait(3))
+                runtime(registry, defer_startup=True)
+                factory.assert_called_once()
+            finally:
+                release.set()
+            future.result(3)
+
+    def test_startup_timeout_error_is_propagated_and_explicit_demand_retries(self):
+        backend = self.backend()
+        failure = TimeoutError("runtime installation timed out")
+        with (
+            patch.object(backend, "_prepare_runtime"),
+            patch.object(backend, "_start_worker", side_effect=failure) as launch,
+        ):
+            with self.assertRaises(TimeoutError) as raised:
+                backend._ensure_worker()
+            self.assertIs(raised.exception, failure)
+            launch.assert_called_once()
+        with (
+            patch.object(backend, "_prepare_runtime"),
+            patch.object(
+                backend, "_start_worker", side_effect=lambda **_: self.ready(backend)
+            ) as retry,
+        ):
+            self.assertIs(backend._ensure_worker(), backend.process)
+            retry.assert_called_once()
+
+    def test_thread_start_failure_finishes_owner_and_allows_explicit_retry(self):
+        backend = self.backend()
+        failure = RuntimeError("cannot start worker thread")
+        with patch("vntts.speech_worker.threading.Thread.start", side_effect=failure):
+            future = backend.load_in_background()
+        with self.assertRaises(RuntimeError) as raised:
+            future.result(0)
+        self.assertIs(raised.exception, failure)
+        self.assertTrue(backend._startup.finished.is_set())
+        self.assertFalse(backend.startup_pending)
+        with (
+            patch.object(backend, "_prepare_runtime"),
+            patch.object(
+                backend, "_start_worker", side_effect=lambda **_: self.ready(backend)
+            ) as launch,
+        ):
+            backend.load_in_background().result(3)
+            launch.assert_called_once()
+
+    def test_queued_successor_thread_failure_finishes_owner_and_allows_retry(self):
+        backend = self.backend()
+        entered, release = Event(), Event()
+        failure = RuntimeError("cannot start successor thread")
+
+        def prepare(_cancellation):
+            entered.set()
+            self.assertTrue(release.wait(3))
+
+        with (
+            patch.object(backend, "_prepare_runtime", side_effect=prepare),
+            patch.object(backend, "_start_worker") as launch,
+        ):
+            previous = backend.load_in_background()
+            try:
+                self.assertTrue(entered.wait(3))
+                backend.cancel_startup()
+                successor = backend.load_in_background()
+                owner = backend._startup
+                with patch(
+                    "vntts.speech_worker.threading.Thread.start", side_effect=failure
+                ):
+                    release.set()
+                    with self.assertRaises(RuntimeError) as raised:
+                        successor.result(3)
+                    self.assertIs(raised.exception, failure)
+                    self.assertTrue(owner.finished.wait(3))
+            finally:
+                release.set()
+            with self.assertRaisesRegex(TTSSynthesisError, "cancelled"):
+                previous.result(3)
+            self.assertFalse(backend.startup_pending)
+            launch.assert_not_called()
+        with (
+            patch.object(backend, "_prepare_runtime"),
+            patch.object(
+                backend, "_start_worker", side_effect=lambda **_: self.ready(backend)
+            ) as retry,
+        ):
+            backend.load_in_background().result(3)
+            retry.assert_called_once()
+
+    def test_new_intent_waits_for_cancelled_flight_before_retrying(self):
+        backend = self.backend()
+        entered, release = Event(), Event()
+        attempts = []
+
+        def prepare(cancellation):
+            attempts.append(cancellation)
+            if len(attempts) == 1:
+                entered.set()
+                self.assertTrue(release.wait(3))
+
+        with (
+            patch.object(backend, "_prepare_runtime", side_effect=prepare),
+            patch.object(
+                backend, "_start_worker", side_effect=lambda **_: self.ready(backend)
+            ) as launch,
+        ):
+            previous = backend.load_in_background()
+            try:
+                self.assertTrue(entered.wait(3))
+                backend.cancel_startup()
+                successor = backend.load_in_background()
+                self.assertIsNot(previous, successor)
+                self.assertEqual(len(attempts), 1)
+                self.assertFalse(successor.done())
+            finally:
+                release.set()
+            with self.assertRaisesRegex(TTSSynthesisError, "cancelled"):
+                previous.result(3)
+            successor.result(3)
+            self.assertEqual(len(attempts), 2)
+            self.assertTrue(attempts[0]())
+            self.assertFalse(attempts[1]())
+            launch.assert_called_once()
+
+    def test_retained_runtime_retires_cancelled_pending_owner(self):
+        first, replacement = self.backend(), self.backend()
+        factory = MagicMock(side_effect=(first, replacement))
+        runtime = RetainedWorkerRuntime("pocket-tts", backend_factory=factory)
+        self.addCleanup(runtime.shutdown)
+        registry = first.registry
+        runtime(registry, defer_startup=True)
+        entered, release = Event(), Event()
+
+        def prepare(_cancellation):
+            entered.set()
+            self.assertTrue(release.wait(3))
+
+        with (
+            patch.object(first, "_prepare_runtime", side_effect=prepare),
+            patch.object(first, "_start_worker") as launch,
+        ):
+            future = first.load_in_background()
+            try:
+                self.assertTrue(entered.wait(3))
+                first.cancel_startup()
+                runtime(registry, defer_startup=True)
+                self.assertIs(runtime._instance, replacement)
+                self.assertTrue(first._closed)
+            finally:
+                release.set()
+            with self.assertRaisesRegex(TTSSynthesisError, "cancelled"):
+                future.result(3)
+            launch.assert_not_called()
+
+    def test_deferred_qwen_factory_does_not_install_runtime_in_caller(self):
+        from vntts.speech_worker import create_qwen_worker_backend
+
+        with (
+            patch("vntts.runtime_installation.ensure_speech_runtime") as install,
+            patch("vntts.speech_worker._isolated_backend_constructor") as constructor,
+        ):
+            create_qwen_worker_backend(CharacterVoiceRegistry(), defer_startup=True)
+        install.assert_not_called()
+        self.assertTrue(create_qwen_worker_backend.supports_deferred_startup)
+        self.assertTrue(constructor.call_args.kwargs["defer_startup"])
+
+
 class SpeechWorkerTest(unittest.TestCase):
     def test_installed_only_startup_never_installs_missing_runtime(self):
         with (
@@ -222,6 +651,136 @@ class SpeechWorkerTest(unittest.TestCase):
             self.assertEqual(captured["env"]["HF_HUB_OFFLINE"], "1")
             self.assertEqual(captured["env"]["TRANSFORMERS_OFFLINE"], "1")
             self.assertNotIn("allow_download", backend.worker_options)
+
+    def test_worker_import_in_isolated_process_does_not_load_gui_or_models(self):
+        source = """
+import importlib.abc
+import sys
+
+sys.path.insert(0, sys.argv[1])
+forbidden = {
+    "vntts.model_assets", "vntts.settings", "pynput", "PySide6",
+    "torch", "mlx", "mlx_audio", "sounddevice",
+}
+
+class RejectHostDependencies(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if any(fullname == name or fullname.startswith(name + ".") for name in forbidden):
+            raise ImportError("Forbidden worker import: " + fullname)
+        return None
+
+sys.meta_path.insert(0, RejectHostDependencies())
+from vntts.speech_worker import probe_speech_runtime, worker_main
+assert callable(probe_speech_runtime) and callable(worker_main)
+print("worker-import-ready")
+"""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                source,
+                str(Path(__file__).resolve().parents[1]),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "worker-import-ready")
+
+    def test_parent_worker_launch_preserves_explicit_huggingface_cache_overrides(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            paths = root, root / "bin/python", root / "lib/site-packages"
+            overrides = {
+                "HF_HOME": str(root / "explicit-home"),
+                "HF_HUB_CACHE": str(root / "explicit-hub"),
+                "HUGGINGFACE_HUB_CACHE": str(root / "legacy-hub"),
+                "TRANSFORMERS_CACHE": str(root / "transformers"),
+            }
+            captured, statuses = {}, []
+
+            def process_factory(_command, **options):
+                captured.update(options["env"])
+                return FakeProcess(
+                    {
+                        "type": "health",
+                        "backend": "moss-tts",
+                        "interpreter": str(paths[1]),
+                        "prefix": str(root),
+                        "runtime_site": str(paths[2]),
+                        "sample_rate": 24000,
+                        "modules": {},
+                    }
+                )
+
+            with (
+                patch.dict(os.environ, overrides),
+                patch("vntts.speech_worker._runtime_paths", return_value=paths),
+            ):
+                backend = IsolatedSpeechBackend(
+                    "moss-tts",
+                    CharacterVoiceRegistry(),
+                    process_factory=process_factory,
+                    startup_progress=statuses.append,
+                )
+                backend.shutdown()
+                for name, value in overrides.items():
+                    self.assertEqual(captured[name], value)
+                    self.assertEqual(os.environ[name], value)
+            self.assertTrue(
+                any(overrides["HF_HUB_CACHE"] in status for status in statuses)
+            )
+
+    def test_offline_first_and_reading_first_use_the_same_worker_model_cache(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            paths = root, root / "bin/python", root / "lib/site-packages"
+            environments = []
+            statuses = []
+
+            def process_factory(_command, **options):
+                environments.append(options["env"])
+                return FakeProcess(
+                    {
+                        "type": "health",
+                        "backend": "moss-tts",
+                        "interpreter": str(paths[1]),
+                        "prefix": str(root),
+                        "runtime_site": str(paths[2]),
+                        "sample_rate": 24000,
+                        "modules": {},
+                    }
+                )
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch(
+                    "vntts.model_assets.get_local_data_directory",
+                    return_value=root / "appdata",
+                ),
+                patch("vntts.speech_worker._runtime_paths", return_value=paths),
+            ):
+                for reading_first in (False, True):
+                    if reading_first:
+                        ModelAssetManager().configure_huggingface_environment()
+                    backend = IsolatedSpeechBackend(
+                        "moss-tts",
+                        CharacterVoiceRegistry(),
+                        process_factory=process_factory,
+                        startup_progress=statuses.append,
+                    )
+                    backend.shutdown()
+                    if not reading_first:
+                        self.assertNotIn("HF_HOME", os.environ)
+            expected = str(root / "appdata/models/huggingface")
+            self.assertEqual([e["HF_HOME"] for e in environments], [expected, expected])
+            self.assertTrue(
+                any(str(Path(expected) / "hub") in status for status in statuses)
+            )
 
     def test_invalid_volume_never_installs_runtime_or_launches_process(self):
         for backend in (

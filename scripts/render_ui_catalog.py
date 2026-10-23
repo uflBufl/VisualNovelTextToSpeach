@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from PySide6.QtWidgets import QApplication, QWidget
 
     from vntts.app import SettingsDialog
+    from vntts.asset_ui import AssetManagerDialog
     from vntts.authoring.cohort_bundle import CohortBundleSample, CohortReviewBundle
     from vntts.authoring.cohort_bundle_ui import (
         CohortReviewBundleDialog,
@@ -1099,23 +1100,11 @@ def _prepare_settings_screenshot(
     app.processEvents()
 
 
-def _prepare_catalog_screenshot(
+def _prepare_offline_preparation_screenshot(
     widget: QWidget, story_id: str, app: QApplication
 ) -> None:
-    from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
     from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 
-    _prepare_ocr_review_screenshot(widget, story_id, app)
-    _prepare_settings_screenshot(widget, story_id, app)
-    _prepare_cohort_screenshot(widget, story_id, app)
-    if story_id.startswith("authoring-workbench."):
-        assert isinstance(widget, AuthoringWorkbenchDialog)
-        _prepare_authoring_screenshot(widget, story_id, app)
-    if story_id in {
-        "calibration.review-long-compact-scrolled",
-        "calibration.review-long-enlarged-scrolled",
-    }:
-        _scroll_calibration_review_to_end(widget, app)
     if story_id.startswith(
         "offline-preparation.voice-overview-compact-"
     ) and story_id.endswith("-actions"):
@@ -1136,16 +1125,6 @@ def _prepare_catalog_screenshot(
     if story_id == "offline-preparation.voice-overview-many-compact-more-actions":
         assert isinstance(widget, OfflineAudioPreparationDialog)
         widget.content_scroll.ensureWidgetVisible(widget.more_voice_actions)
-        app.processEvents()
-    if story_id in {
-        "diagnostics.technical",
-        "diagnostics.missing-images",
-        "diagnostics.compact-technical",
-    }:
-        from vntts.diagnostics_ui import DiagnosticsDialog
-
-        assert isinstance(widget, DiagnosticsDialog)
-        widget.body_scroll.ensureWidgetVisible(widget.speaker_processed_preview)
         app.processEvents()
     if story_id in {
         "offline-preparation.voice-overview-many-compact-table",
@@ -1175,6 +1154,13 @@ def _prepare_catalog_screenshot(
             widget.voice_routes.verticalScrollBar().maximum()
         )
         app.processEvents()
+
+
+def _prepare_voice_audition_screenshot(
+    widget: QWidget, story_id: str, app: QApplication
+) -> None:
+    from vntts.pregeneration_ui import OfflineAudioPreparationDialog
+
     if story_id in {
         "voice-audition.compact-preview",
         "voice-audition.compact-details",
@@ -1193,6 +1179,36 @@ def _prepare_catalog_screenshot(
         )
         widget.content_scroll.ensureWidgetVisible(target)
         app.processEvents()
+
+
+def _prepare_catalog_screenshot(
+    widget: QWidget, story_id: str, app: QApplication
+) -> None:
+    from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
+
+    _prepare_ocr_review_screenshot(widget, story_id, app)
+    _prepare_settings_screenshot(widget, story_id, app)
+    _prepare_cohort_screenshot(widget, story_id, app)
+    if story_id.startswith("authoring-workbench."):
+        assert isinstance(widget, AuthoringWorkbenchDialog)
+        _prepare_authoring_screenshot(widget, story_id, app)
+    if story_id in {
+        "calibration.review-long-compact-scrolled",
+        "calibration.review-long-enlarged-scrolled",
+    }:
+        _scroll_calibration_review_to_end(widget, app)
+    _prepare_offline_preparation_screenshot(widget, story_id, app)
+    if story_id in {
+        "diagnostics.technical",
+        "diagnostics.missing-images",
+        "diagnostics.compact-technical",
+    }:
+        from vntts.diagnostics_ui import DiagnosticsDialog
+
+        assert isinstance(widget, DiagnosticsDialog)
+        widget.body_scroll.ensureWidgetVisible(widget.speaker_processed_preview)
+        app.processEvents()
+    _prepare_voice_audition_screenshot(widget, story_id, app)
 
 
 def _close_catalog_widget(widget: QWidget) -> None:
@@ -2391,6 +2407,84 @@ def _onboarding_story(state: str) -> QWidget:
     return wizard
 
 
+def _asset_manager_voice_import(
+    dialog: AssetManagerDialog,
+    state: str,
+    voice_manager: Mock,
+    finish: Callable[[], None],
+) -> None:
+    voice_manager.import_voice.return_value = Path(
+        "/Users/Player/VNTTS/voices/manifest.json"
+    )
+    if state == "voice-import-failure":
+        voice_manager.import_voice.side_effect = OSError(
+            "Voice reference checksum failed: voices/Centurion/line-03.wav"
+        )
+    dialog._voice_import_draft = (
+        "Centurion",
+        ["/Users/Player/voices/Centurion/line-03.wav"],
+        [],
+    )
+    dialog._start_voice_import(
+        voice_manager.import_voice,
+        "Centurion",
+        ("/Users/Player/voices/Centurion/line-03.wav",),
+        aliases=(),
+        message="Imported 1 recording(s) for Centurion",
+        from_audio=True,
+    )
+    if state == "voice-import-close-pending":
+        from PySide6.QtGui import QCloseEvent
+
+        dialog.closeEvent(QCloseEvent())
+    elif state != "voice-importing":
+        finish()
+
+
+def _asset_manager_model_operation(dialog: AssetManagerDialog, state: str) -> None:
+    if state == "model-verified":
+        dialog.set_operation_running(True, "verify")
+        dialog._model_operation_finished(
+            Path("/Users/Player/Library/VNTTS/models/xtts_v2"), None
+        )
+    elif state == "model-verifying":
+        dialog.verify_model()
+    elif state == "model-download":
+        dialog.set_operation_running(True, "download")
+        dialog.update_progress(45, "Downloading selected speech model: 45%")
+    elif state == "model-cancel-pending":
+        dialog.download_model()
+        dialog.cancel_download()
+    elif state == "model-failure":
+        dialog.set_operation_running(True, "download")
+        dialog.model_finished(False, "Model download failed: Network unavailable")
+
+
+def _asset_manager_compact_state(dialog: AssetManagerDialog, state: str) -> None:
+    dialog.resize(700, 320)
+    font = dialog.font()
+    font.setPointSize(font.pointSize() + 4)
+    dialog.setFont(font)
+    if state in {"compact-voices-long-error", "compact-model-long-error"}:
+        long_voice_error = (
+            "Voice reference checksum failed for "
+            + "/".join(["voices", "The Northern Library and Traveling Company"] * 8)
+            + "/chapter-seven-character-reference.wav. Choose another manifest, "
+            "then verify every referenced file before saving."
+        )
+        if state == "compact-voices-long-error":
+            dialog._manifest_validation_finished(None, ValueError(long_voice_error))
+        else:
+            dialog.set_operation_running(True, "verify")
+            dialog.model_finished(
+                False,
+                "Verification failed: Model checksum failed: "
+                "tts_models/multilingual/multi-dataset/xtts_v2/"
+                + "model-layer/" * 7
+                + "model.pth",
+            )
+
+
 def _render_stories(
     catalog: UICatalog, output: Path, selected_surface: str | None
 ) -> dict[str, str]:
@@ -2895,75 +2989,22 @@ def _render_stories(
             "voice-import-success",
             "voice-import-close-pending",
         }:
-            voice_manager.import_voice.return_value = Path(
-                "/Users/Player/VNTTS/voices/manifest.json"
-            )
-            if state == "voice-import-failure":
-                voice_manager.import_voice.side_effect = OSError(
-                    "Voice reference checksum failed: voices/Centurion/line-03.wav"
-                )
-            dialog._voice_import_draft = (
-                "Centurion",
-                ["/Users/Player/voices/Centurion/line-03.wav"],
-                [],
-            )
-            dialog._start_voice_import(
-                voice_manager.import_voice,
-                "Centurion",
-                ("/Users/Player/voices/Centurion/line-03.wav",),
-                aliases=(),
-                message="Imported 1 recording(s) for Centurion",
-                from_audio=True,
-            )
-            if state == "voice-import-close-pending":
-                from PySide6.QtGui import QCloseEvent
-
-                dialog.closeEvent(QCloseEvent())
-            elif state != "voice-importing":
-                pool.finish_next()
-        elif state == "model-verified":
-            dialog.set_operation_running(True, "verify")
-            dialog._model_operation_finished(
-                Path("/Users/Player/Library/VNTTS/models/xtts_v2"), None
-            )
-        elif state == "model-verifying":
-            dialog.verify_model()
-        elif state == "model-download":
-            dialog.set_operation_running(True, "download")
-            dialog.update_progress(45, "Downloading selected speech model: 45%")
-        elif state == "model-cancel-pending":
-            dialog.download_model()
-            dialog.cancel_download()
-        elif state == "model-failure":
-            dialog.set_operation_running(True, "download")
-            dialog.model_finished(False, "Model download failed: Network unavailable")
-        elif state in {"compact-voices-long-error", "compact-model-long-error"}:
-            dialog.resize(700, 320)
-            font = dialog.font()
-            font.setPointSize(font.pointSize() + 4)
-            dialog.setFont(font)
-            long_voice_error = (
-                "Voice reference checksum failed for "
-                + "/".join(["voices", "The Northern Library and Traveling Company"] * 8)
-                + "/chapter-seven-character-reference.wav. Choose another manifest, "
-                "then verify every referenced file before saving."
-            )
-            if state == "compact-voices-long-error":
-                dialog._manifest_validation_finished(None, ValueError(long_voice_error))
-            else:
-                dialog.set_operation_running(True, "verify")
-                dialog.model_finished(
-                    False,
-                    "Verification failed: Model checksum failed: "
-                    "tts_models/multilingual/multi-dataset/xtts_v2/"
-                    + "model-layer/" * 7
-                    + "model.pth",
-                )
-        elif state in {"compact-voices", "compact-model"}:
-            dialog.resize(700, 320)
-            font = dialog.font()
-            font.setPointSize(font.pointSize() + 4)
-            dialog.setFont(font)
+            _asset_manager_voice_import(dialog, state, voice_manager, pool.finish_next)
+        elif state in {
+            "model-verified",
+            "model-verifying",
+            "model-download",
+            "model-cancel-pending",
+            "model-failure",
+        }:
+            _asset_manager_model_operation(dialog, state)
+        elif state in {
+            "compact-voices-long-error",
+            "compact-model-long-error",
+            "compact-voices",
+            "compact-model",
+        }:
+            _asset_manager_compact_state(dialog, state)
         return dialog
 
     def game_profiles(state: str) -> GameProfilesDialog:

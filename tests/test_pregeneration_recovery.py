@@ -1,6 +1,7 @@
 import os
 import stat
 import unittest
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,6 +17,7 @@ from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationResult,
+    OfflineGenerationWorker,
 )
 from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_recovery import (
@@ -384,6 +386,93 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
 
 
 class OfflineRecoveryWorkerTest(unittest.TestCase):
+    def test_real_generation_scope_covers_per_line_recovery_and_priority(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, result, voice_plan = inputs(Path(temporary_directory))
+            generator = OfflineGenerationWorker(
+                backend_factory=Mock(), retain_isolated_backend=True
+            )
+            worker = OfflineRecoveryWorker(generator)
+            scopes, events = [], []
+
+            def generate(*_args, **options):
+                scopes.append(generator._backend_session)
+                events.append(("generate", options["queue_ids"][0]))
+                return result
+
+            def recover(_input, _plan, current, _cancel=None, *, queue_id=None):
+                scopes.append(generator._backend_session)
+                events.append(("recover", queue_id))
+                if queue_id == "a":
+                    worker.prioritize_line("priority", "hash")
+                return OfflineRecoveryResult(current, 0, 0, 0, ())
+
+            with (
+                patch.object(generator, "inspect", side_effect=OfflineGenerationError),
+                patch.object(generator, "generate", side_effect=generate),
+                patch.object(worker, "recover", side_effect=recover),
+                patch(
+                    "vntts.pregeneration_recovery._ordered_generation_queue_ids",
+                    return_value=(("a", "b", "c"), {("priority", "hash"): "c"}),
+                ),
+            ):
+                worker.generate_and_recover(generation_input, voice_plan)
+            self.assertIsNotNone(scopes[0])
+            self.assertTrue(all(scope is scopes[0] for scope in scopes))
+            self.assertTrue(scopes[0].closed)
+            self.assertIsNone(generator._backend_session)
+            self.assertEqual(
+                events,
+                [
+                    ("generate", "a"),
+                    ("recover", "a"),
+                    ("generate", "c"),
+                    ("recover", "c"),
+                    ("generate", "b"),
+                    ("recover", "b"),
+                ],
+            )
+
+    def test_generation_scope_closes_when_recovery_raises(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, _result, voice_plan = inputs(Path(temporary_directory))
+            generator = OfflineGenerationWorker(
+                backend_factory=Mock(), retain_isolated_backend=True
+            )
+            worker = OfflineRecoveryWorker(generator)
+            failure = OfflineRecoveryError("recovery failed")
+            scopes = []
+
+            def fail(*_args):
+                scopes.append(generator._backend_session)
+                raise failure
+
+            with patch.object(worker, "_generate_and_recover", side_effect=fail):
+                with self.assertRaises(OfflineRecoveryError) as caught:
+                    worker.generate_and_recover(generation_input, voice_plan)
+            self.assertIs(caught.exception, failure)
+            self.assertTrue(scopes[0].closed)
+            self.assertIsNone(generator._backend_session)
+
+    def test_custom_generation_session_closes_around_failure(self):
+        events = []
+
+        class Generator:
+            @contextmanager
+            def generation_session(self, _input, _plan):
+                events.append("begin")
+                try:
+                    yield
+                finally:
+                    events.append("end")
+
+        worker = OfflineRecoveryWorker(Generator())
+        failure = OfflineRecoveryError("failed")
+        with patch.object(worker, "_generate_and_recover", side_effect=failure):
+            with self.assertRaises(OfflineRecoveryError):
+                worker.generate_and_recover(None, None)
+        self.assertEqual(events, ["begin", "end"])
+
     def test_scoped_recovery_finishes_one_dialogue_without_touching_the_next(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, first, voice_plan = inputs(Path(temporary_directory))

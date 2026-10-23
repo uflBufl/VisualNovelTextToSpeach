@@ -1,4 +1,5 @@
 import unittest
+from concurrent.futures import Future
 from threading import Event, Thread
 from unittest.mock import Mock
 
@@ -6,7 +7,134 @@ from vntts.player_session import PlayerSessionOwner
 from vntts.settings import AppSettings
 
 
+class _BackgroundWarmupBackend:
+    def __init__(self, events):
+        self.events = events
+        self.startup_pending = False
+        self.ready = Future()
+        self.cancelled = Event()
+
+    def cancel_startup(self):
+        self.events.append("cancel-startup")
+        self.cancelled.set()
+        return True
+
+    def finish_warmup(self):
+        if self.cancelled.is_set():
+            return False
+        self.events.append("warmup")
+        return True
+
+
 class PlayerSessionOwnerTest(unittest.TestCase):
+    def test_completed_start_operation_cancels_remaining_background_warmup(
+        self,
+    ) -> None:
+        for action in ("begin", "cancel", "close"):
+            with self.subTest(action=action):
+                events = []
+                shutdown_requested = Event()
+
+                backend = _BackgroundWarmupBackend(events)
+
+                class Lease:
+                    def __getattr__(self, name):
+                        return getattr(backend, name)
+
+                controller = Mock(tts=Lease())
+
+                def prepare_startup():
+                    events.append("prepare")
+                    shutdown_requested.clear()
+
+                def start():
+                    backend.startup_pending = True
+                    if not backend.ready.done():
+                        backend.ready.set_result(True)
+                    return True
+
+                def request_shutdown():
+                    events.append("request-shutdown")
+                    self.assertTrue(backend.cancelled.is_set())
+                    shutdown_requested.set()
+
+                controller.prepare_startup.side_effect = prepare_startup
+                controller.start.side_effect = start
+                controller.request_shutdown.side_effect = request_shutdown
+                owner = PlayerSessionOwner(controller)
+                generation = owner.begin()
+                self.assertTrue(owner.start(generation))
+                self.assertTrue(backend.ready.done())
+                self.assertTrue(backend.startup_pending)
+                events.clear()
+
+                result = getattr(owner, action)()
+
+                self.assertEqual(events, ["cancel-startup", "request-shutdown"])
+                self.assertTrue(shutdown_requested.is_set())
+                if action == "begin":
+                    # Reconfiguration can clear the shared shutdown event;
+                    # cancellation of the previous flight must remain set.
+                    self.assertEqual(
+                        owner.configure(result, AppSettings(), Event(), restart=True),
+                        (True, True),
+                    )
+                    self.assertFalse(shutdown_requested.is_set())
+                elif action == "cancel":
+                    self.assertFalse(owner.start(generation))
+                else:
+                    controller.shutdown.assert_called_once()
+                    self.assertFalse(owner.is_current(generation))
+                    with self.assertRaisesRegex(RuntimeError, "session is closed"):
+                        owner.begin()
+                self.assertFalse(backend.finish_warmup())
+                self.assertNotIn("warmup", events)
+
+    def test_active_operation_cancels_startup_before_requesting_shutdown(self) -> None:
+        events = []
+        backend = Mock(startup_pending=False)
+        backend.cancel_startup.side_effect = lambda: events.append("cancel-startup")
+        controller = Mock(tts=backend)
+        controller.request_shutdown.side_effect = lambda: events.append("shutdown")
+        owner = PlayerSessionOwner(controller)
+        generation = owner.begin()
+
+        def operation(_cancellation):
+            owner.cancel()
+            self.assertEqual(events, ["cancel-startup", "shutdown"])
+            return True
+
+        self.assertTrue(owner.run(generation, operation, False))
+
+    def test_idle_eager_and_unspecified_mock_startup_do_not_request_shutdown(
+        self,
+    ) -> None:
+        for backend in (object(), Mock(), Mock(startup_pending=False)):
+            with self.subTest(backend=backend):
+                controller = Mock(tts=backend)
+                owner = PlayerSessionOwner(controller)
+                owner.begin()
+                owner.cancel()
+                controller.request_shutdown.assert_not_called()
+                owner.close()
+                controller.request_shutdown.assert_called_once()
+                controller.shutdown.assert_called_once()
+                if isinstance(backend, Mock):
+                    backend.cancel_startup.assert_not_called()
+
+    def test_startup_cancellation_failure_still_requests_shutdown(self) -> None:
+        failure = RuntimeError("cancel failed")
+        backend = Mock(startup_pending=True)
+        backend.cancel_startup.side_effect = failure
+        controller = Mock(tts=backend)
+        owner = PlayerSessionOwner(controller)
+
+        with self.assertRaises(RuntimeError) as raised:
+            owner.cancel()
+
+        self.assertIs(raised.exception, failure)
+        controller.request_shutdown.assert_called_once()
+
     def test_replacement_waits_for_superseded_start(self) -> None:
         entered = Event()
         release = Event()

@@ -9,16 +9,21 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import suppress
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
-from threading import Lock
-from typing import Protocol
+from threading import Lock, get_ident
+from typing import Protocol, cast
 
 from vntts_artifacts.story_index import StoryIndexError
 
+from vntts.authoring.bulk_generation import (
+    _assert_control_files_unchanged,
+    _GenerationControl,
+    snapshot_generation_control_files,
+)
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
 from vntts.authoring.generation_state import load_generation_state
@@ -29,8 +34,10 @@ from vntts.chapter_voice_preload import (
 )
 from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import sha256_file
+from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.generation_stall import GenerationStallWatchdog
 from vntts.json_types import decode_json
+from vntts.moss_cpp_backend import moss_cpp_requested
 from vntts.path_safety import read_regular_text
 from vntts.pregeneration_contract import (
     OfflineGenerationCancelled as OfflineGenerationCancelled,
@@ -48,7 +55,10 @@ from vntts.pregeneration_setup import (
     load_verified_story_index_document,
 )
 from vntts.pregeneration_voices import VoicePlan
+from vntts.speech_backend_runtime import shutdown_speech_backend
+from vntts.speech_worker import RetainedWorkerRuntime, _RetainedBackend
 from vntts.subprocess_utils import last_output_line, terminate_running_process
+from vntts.voices import CharacterVoiceRegistry
 
 
 class _Cancellation(Protocol):
@@ -70,6 +80,94 @@ class OfflineGenerationProgress:
         return self.generated + self.failed + self.other_terminal
 
 
+class _GenerationBackendSession:
+    """Retain an isolated model only for one serial generation/recovery run."""
+
+    def __init__(
+        self,
+        generation_input: PregenerationInput,
+        voice_plan: VoicePlan,
+        factory: Callable[..., object],
+    ) -> None:
+        self.generation_input = generation_input
+        self.voice_plan = voice_plan
+        self.owner_thread = get_ident()
+        self.closed = False
+        self.cache_root = _synthesis_cache_directory(generation_input).resolve()
+        self.original_factory = factory
+        self.controls: list[_GenerationControl] | None = None
+        self.runtime = RetainedWorkerRuntime(
+            "moss-tts", backend_factory=self._create_backend
+        )
+
+    def validate(
+        self, generation_input: PregenerationInput, voice_plan: VoicePlan
+    ) -> None:
+        if (
+            self.closed
+            or get_ident() != self.owner_thread
+            or generation_input != self.generation_input
+            or voice_plan != self.voice_plan
+        ):
+            raise OfflineGenerationError("Offline generation session identity changed")
+
+    def shutdown(self) -> None:
+        self.closed = True
+        self.runtime.shutdown()
+
+    def _create_backend(
+        self, registry: CharacterVoiceRegistry, **options: object
+    ) -> _RetainedBackend:
+        return cast(
+            _RetainedBackend,
+            self.original_factory("moss-tts", registry, self.cache_root, **options),
+        )
+
+    def _admit_controls(
+        self, registry: CharacterVoiceRegistry, narrator_reference: object
+    ) -> None:
+        references = {
+            Path(path).resolve()
+            for voice in registry.unique_voices()
+            for path in voice.references
+        }
+        if isinstance(narrator_reference, (str, Path)):
+            references.add(Path(narrator_reference).expanduser().resolve())
+        paths: dict[str, str | Path | tuple[str | Path, str]] = {
+            "voice_manifest": (
+                self.generation_input.voice_manifest,
+                self.generation_input.voice_manifest_sha256,
+            ),
+            **{
+                f"voice_reference:{index:04d}": path
+                for index, path in enumerate(sorted(references))
+            },
+        }
+        if self.controls is None:
+            self.controls = snapshot_generation_control_files(paths)
+            return
+        if {Path(path).resolve() for path in references} | {
+            self.generation_input.voice_manifest.resolve()
+        } != {Path(control["path"]) for control in self.controls}:
+            raise OfflineGenerationError("Offline generation control inventory changed")
+        _assert_control_files_unchanged(self.controls)
+
+    def factory(
+        self,
+        name: str,
+        registry: CharacterVoiceRegistry,
+        cache_root: str | Path,
+        **options: object,
+    ) -> object:
+        self.validate(self.generation_input, self.voice_plan)
+        if Path(cache_root).resolve() != self.cache_root:
+            raise OfflineGenerationError("Offline generation cache identity changed")
+        if name != "moss-tts" or moss_cpp_requested(options.get("model_name")):
+            return self.original_factory(name, registry, cache_root, **options)
+        self._admit_controls(registry, options.get("narrator_reference"))
+        return self.runtime(registry, **options)
+
+
 class OfflineGenerationWorker:
     def __init__(
         self,
@@ -77,7 +175,11 @@ class OfflineGenerationWorker:
         command: Sequence[str] | None = None,
         popen_factory: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
         backend_factory: Callable[..., object] | None = None,
+        retain_isolated_backend: bool = False,
     ) -> None:
+        if not isinstance(retain_isolated_backend, bool):
+            raise TypeError("retain_isolated_backend must be boolean")
+        self.retain_isolated_backend = retain_isolated_backend
         self._configured_command = tuple(command) if command else None
         self.popen_factory = popen_factory
         self.backend_factory = backend_factory
@@ -88,6 +190,49 @@ class OfflineGenerationWorker:
         self._memory_progress_enabled = backend_factory is not None
         self._live_progress: tuple[str, OfflineGenerationProgress] | None = None
         self._disk_checked_inputs: set[str] = set()
+        self._backend_session: _GenerationBackendSession | None = None
+        self._backend_session_lock = Lock()
+
+    @contextmanager
+    def generation_session(
+        self, generation_input: PregenerationInput, voice_plan: VoicePlan
+    ) -> Iterator[None]:
+        """Keep MLX startup outside the per-line durable recovery boundary."""
+        if (
+            not self.retain_isolated_backend
+            or self.backend_factory is None
+            or voice_plan.synthesis_backend != "moss-tts"
+        ):
+            yield
+            return
+        if not self._backend_session_lock.acquire(blocking=False):
+            raise OfflineGenerationError("Offline generation session is already active")
+        primary_error: BaseException | None = None
+        session = None
+        try:
+            session = _GenerationBackendSession(
+                generation_input, voice_plan, self.backend_factory
+            )
+            self._backend_session = session
+            yield
+        except BaseException as error:
+            primary_error = error
+            raise
+        finally:
+            self._backend_session = None
+            try:
+                if session is not None:
+                    shutdown_speech_backend(session, primary_error=primary_error)
+            finally:
+                self._backend_session_lock.release()
+
+    def _check_generation_session(
+        self, generation_input: PregenerationInput, voice_plan: VoicePlan
+    ) -> None:
+        if self._backend_session is not None:
+            self._backend_session.validate(generation_input, voice_plan)
+        elif self._backend_session_lock.locked():
+            raise OfflineGenerationError("Offline generation session is closing")
 
     def command(self) -> tuple[str, ...]:
         if self._configured_command:
@@ -104,6 +249,7 @@ class OfflineGenerationWorker:
         *,
         queue_ids: object = None,
     ) -> OfflineGenerationResult:
+        self._check_generation_session(generation_input, voice_plan)
         if queue_ids is None:
             with suppress(OfflineGenerationError):
                 current = self.inspect(generation_input)
@@ -167,6 +313,7 @@ class OfflineGenerationWorker:
         cancel_event: _Cancellation | None = None,
     ) -> OfflineGenerationResult:
         """Apply one exact, typed repair batch to the resumable output."""
+        self._check_generation_session(generation_input, voice_plan)
         if not isinstance(generation_result, OfflineGenerationResult):
             raise OfflineGenerationError("Offline generation result is invalid")
         output = _generation_output(generation_input)
@@ -212,26 +359,42 @@ class OfflineGenerationWorker:
     ) -> OfflineGenerationProgress:
         """Inspect in-memory OpenMOSS progress or a subprocess's durable state."""
         with self._progress_lock:
-            if self._memory_progress_enabled:
-                if (
-                    self._live_progress is not None
-                    and self._live_progress[0] == generation_input.identity
-                ):
-                    return self._live_progress[1]
-                return OfflineGenerationProgress(
-                    available=False, runtime_status=self._startup_status
-                )
+            memory_progress = self._memory_progress_enabled
+            startup_status = self._startup_status if memory_progress else None
+            if (
+                memory_progress
+                and self._live_progress is not None
+                and self._live_progress[0] == generation_input.identity
+            ):
+                return self._live_progress[1]
         output = _generation_output(generation_input)
         state_path = output / "generation-state.json"
         if not state_path.is_file():
-            return OfflineGenerationProgress(available=False)
+            return OfflineGenerationProgress(
+                available=False, runtime_status=startup_status
+            )
         try:
             state = decode_json(read_regular_text(state_path, encoding="utf-8"))
         except (json.JSONDecodeError, OSError, UnicodeError) as error:
             raise OfflineGenerationError(
                 f"Unable to inspect offline generation progress: {error}"
             ) from error
-        return self._progress_from_state(state, generation_input)
+        progress = self._progress_from_state(state, generation_input)
+        if not memory_progress:
+            return progress
+        progress = replace(
+            progress,
+            runtime_status=startup_status,
+            active_phase=None,
+            ready_line_ids=_durable_ready_line_ids(generation_input, progress),
+        )
+        with self._progress_lock:
+            if (
+                self._live_progress is not None
+                and self._live_progress[0] == generation_input.identity
+            ):
+                return self._live_progress[1]
+        return progress
 
     def _progress_from_state(
         self, state: object, generation_input: PregenerationInput
@@ -353,8 +516,13 @@ class OfflineGenerationWorker:
     ) -> OfflineGenerationResult:
         if cancel_event is not None and cancel_event.is_set():
             raise OfflineGenerationCancelled("Offline speech generation was cancelled")
+        backend_factory = (
+            self._backend_session.factory
+            if self._backend_session is not None
+            else self.backend_factory
+        )
         parsed: argparse.Namespace | None
-        if self.backend_factory is not None and "--backend" in arguments:
+        if backend_factory is not None and "--backend" in arguments:
             from vntts.authoring.cli_generation import (
                 create_generation_parser,
                 run_generation,
@@ -385,7 +553,7 @@ class OfflineGenerationWorker:
                 try:
                     run_generation(
                         parsed,
-                        backend_factory=self.backend_factory,
+                        backend_factory=backend_factory,
                         cancellation=cancel_event,
                         startup_progress=self._set_startup_status,
                         progress_callback=record_progress,
@@ -572,6 +740,41 @@ def _ready_line_ids(
         if isinstance(line_id, str) and line_id:
             ready_line_ids.add(line_id)
     return tuple(sorted(ready_line_ids))
+
+
+def _durable_ready_line_ids(
+    generation_input: PregenerationInput, progress: OfflineGenerationProgress
+) -> tuple[str, ...]:
+    """Keep processed counts separate from admitted playback during cold startup."""
+    ready = set(
+        _static_ready_line_ids(
+            generation_input.story_index, generation_input.story_index_sha256
+        )
+    )
+    manifest = runtime_progress_manifest_path(generation_input)
+    if not manifest.is_file():
+        return tuple(sorted(ready))
+    try:
+        library = GeneratedAudioLibrary.load_optional(manifest)
+        if (
+            library is None
+            or library.index.metadata.get("source_queue_sha256")
+            != generation_input.queue_sha256
+        ):
+            return tuple(sorted(ready))
+        story = load_verified_story_index_document(
+            generation_input.story_index, generation_input.story_index_sha256
+        )
+        candidates = set(progress.ready_line_ids)
+        for record in story.records:
+            if (
+                record.line_id in candidates
+                and library.find(record.line_id, record.text_sha256) is not None
+            ):
+                ready.add(record.line_id)
+    except OSError, StoryIndexError, TypeError, ValueError:
+        return tuple(sorted(ready))
+    return tuple(sorted(ready))
 
 
 def validate_offline_generation_result(

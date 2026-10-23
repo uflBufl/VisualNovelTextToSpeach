@@ -450,7 +450,12 @@ class ChapterVoicePreloader:
                 for candidate in valid
             ),
         }
-        line, match_result = self.resolve_exact_among(character, text, allowed)
+        contenders = tuple(
+            line_id
+            for line_id in allowed
+            if not _bounded_match_competes(text, self.by_line_id.get(line_id), valid)
+        )
+        line, match_result = self.resolve_exact_among(character, text, contenders)
         if line is not None or not allowed:
             self.last_resolution_diagnostics["match_result"] = match_result
             if line is None:
@@ -460,7 +465,7 @@ class ChapterVoicePreloader:
             return line, match_result
         ranked: list[tuple[float, str, ChapterDialogue, str]] = []
         best_evidence: tuple[dict[str, float], str] | None = None
-        for line_id in allowed:
+        for line_id in contenders:
             candidate = self.by_line_id.get(line_id)
             if candidate is None or not candidate.text_sha256:
                 continue
@@ -481,13 +486,7 @@ class ChapterVoicePreloader:
             if match is not None:
                 score, method = match
                 if method == "expected-bounded-ocr-suffix":
-                    normalized = _normalize(candidate.text)
-                    if any(
-                        other_id != line_id
-                        and (other := self.by_line_id.get(other_id)) is not None
-                        and _normalize(other.text).startswith(f"{normalized} ")
-                        for other_id in allowed
-                    ):
+                    if _bounded_match_competes(text, candidate, valid, suffix=True):
                         continue
                 ranked.append((score, line_id, candidate, method))
         self.last_resolution_diagnostics["bounded_candidate_count"] = len(ranked)
@@ -798,6 +797,41 @@ def _bounded_text_match(
     return best
 
 
+def _bounded_match_competes(
+    observed_text: object,
+    candidate: ChapterDialogue | None,
+    candidates: Sequence[ChapterDialogue],
+    *,
+    suffix: bool = False,
+) -> bool:
+    if candidate is None:
+        return False
+    canonical = _normalize(candidate.text)
+    if not suffix and len(canonical) > 12:
+        return False
+    speaker = _normalize(candidate.speaker)
+    observed = f" {_normalize(observed_text)} ".replace(f" {speaker} ", " ", 1).strip()
+    if not suffix and not (
+        f" {canonical} " in f" {observed} " or canonical.startswith(observed)
+    ):
+        return False
+    for other in candidates:
+        other_text = _normalize(other.text)
+        if other.line_id == candidate.line_id or len(other_text) <= len(canonical):
+            continue
+        if suffix:
+            if other_text.startswith(f"{canonical} "):
+                return True
+        elif observed and (
+            other_text.startswith(observed)
+            or _bounded_text_match(observed, other.text) is not None
+        ):
+            # A matching old line or growing longer line owns this observation;
+            # a short reply inside it cannot authorize a lookahead occurrence.
+            return True
+    return False
+
+
 def _speaker_bounded_text_match(
     observed_character: object,
     observed_text: object,
@@ -824,7 +858,9 @@ def _speaker_bounded_text_match(
         candidate = " ".join(tokens[dropped:])
         if not candidate:
             continue
-        if canonical in candidate and (len(canonical) >= 7 or specific_speaker):
+        if f" {canonical} " in f" {candidate} " and (
+            len(canonical) >= 7 or specific_speaker
+        ):
             match = (1.2, "expected-bounded-speaker-text")
         else:
             prefix_length = len(commonprefix((candidate, canonical)))

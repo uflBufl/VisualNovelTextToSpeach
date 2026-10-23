@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, OrderedDict
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass
 from threading import Event, Lock
 from typing import Protocol
@@ -353,6 +354,24 @@ class OfflineRecoveryWorker:
         cancel_event: Event | None = None,
     ) -> OfflineRecoveryResult:
         """Finish safe recovery for each dialogue before starting the next one."""
+        # Look up the concrete class capability: loose Mock generators must not
+        # manufacture a session method and silently change recovery behavior.
+        session = getattr(type(self.generator), "generation_session", None)
+        with (
+            session(self.generator, generation_input, voice_plan)
+            if callable(session)
+            else nullcontext()
+        ):
+            return self._generate_and_recover(
+                generation_input, voice_plan, cancel_event
+            )
+
+    def _generate_and_recover(
+        self,
+        generation_input: PregenerationInput,
+        voice_plan: VoicePlan,
+        cancel_event: Event | None,
+    ) -> OfflineRecoveryResult:
         queue_ids, line_queue_ids = _ordered_generation_queue_ids(
             generation_input, voice_plan
         )

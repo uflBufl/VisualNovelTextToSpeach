@@ -88,7 +88,9 @@ from vntts.pregeneration_setup import (
     GameContent,
     PregenerationJob,
     PregenerationJobStore,
+    PregenerationSetupError,
     load_verified_story_index_document,
+    story_game_id,
 )
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidence,
@@ -374,6 +376,30 @@ def _story_audio_route(
     return "missing"
 
 
+def _load_publication_sources(
+    generation_input: PregenerationInput, generation_result: OfflineGenerationResult
+) -> tuple[StoryIndexDocument, JsonObject, str]:
+    try:
+        _verify_prepared_inputs(generation_input)
+        story = load_verified_story_index_document(
+            generation_input.story_index, generation_input.story_index_sha256
+        )
+        state_document, state_sha256, state_payload = load_json_object_snapshot(
+            generation_result.state,
+            "generation state",
+            error_type=BulkGenerationError,
+        )
+        del state_payload
+    except (
+        BulkGenerationError,
+        OSError,
+        StoryIndexError,
+        ValueError,
+    ) as error:
+        raise OfflinePackError(f"Unable to inspect prepared audio: {error}") from error
+    return story, state_document, state_sha256
+
+
 class OfflinePackPublisher:
     def __init__(self, *, base_pack: str | Path | None = None) -> None:
         self.base_pack = Path(base_pack).expanduser().resolve() if base_pack else None
@@ -486,27 +512,12 @@ class OfflinePackPublisher:
     ) -> OfflinePackResult:
         _validate_inputs(job, generation_input, generation_result, cancel_event)
         phase_started, cpu_started = perf_counter(), process_time()
-        try:
-            _verify_prepared_inputs(generation_input)
-            story = load_verified_story_index_document(
-                generation_input.story_index, generation_input.story_index_sha256
-            )
-            state_document, state_sha256, state_payload = load_json_object_snapshot(
-                generation_result.state,
-                "generation state",
-                error_type=BulkGenerationError,
-            )
-            del state_payload
-        except (
-            BulkGenerationError,
-            OSError,
-            StoryIndexError,
-            ValueError,
-        ) as error:
-            raise OfflinePackError(
-                f"Unable to inspect prepared audio: {error}"
-            ) from error
+        story, state_document, state_sha256 = _load_publication_sources(
+            generation_input, generation_result
+        )
         base, source_story = _load_incremental_base(self.base_pack, job, story)
+        game_id = _publication_game_id(job, story)
+        game_version = job.game_version or "local"
         base_identity = (
             None
             if base is None
@@ -520,6 +531,8 @@ class OfflinePackPublisher:
             state_sha256,
             base_identity,
             sequence_sha256,
+            game_id=game_id,
+            game_version=game_version,
         )
         destination = (
             generation_input.directory.parent / "game-packs" / (f"pack-{identity[:24]}")
@@ -527,7 +540,9 @@ class OfflinePackPublisher:
         _record_publication_phase("identity", phase_started, cpu_started)
         if destination.is_dir():
             phase_started, cpu_started = perf_counter(), process_time()
-            result = _load_existing(destination, identity)
+            result = _load_existing(
+                destination, identity, game_id=game_id, game_version=game_version
+            )
             _record_publication_phase(
                 "reuse", phase_started, cpu_started, cache_state="disk"
             )
@@ -613,6 +628,7 @@ class OfflinePackPublisher:
                     published_story,
                     sequence_copy,
                     current_payload=sequence_payload,
+                    game_id=game_id,
                 )
                 _record_publication_phase(
                     "story-and-voices", phase_started, cpu_started
@@ -671,8 +687,8 @@ class OfflinePackPublisher:
                     components["live_sequence_plan"] = staged_sequence
                 pack_metadata = {
                     "game": {
-                        "id": published_story.game or job.game,
-                        "version": job.game_version or "local",
+                        "id": game_id,
+                        "version": game_version,
                     },
                     "producers": [{"name": "vntts-self-service", "version": "1"}],
                     "created_at": datetime.now(timezone.utc).isoformat(),
@@ -722,11 +738,18 @@ class OfflinePackPublisher:
                     rename_directory_no_replace(staging, destination)
                 except AtomicPublicationError:
                     if destination.is_dir():
-                        return _load_existing(destination, identity)
+                        return _load_existing(
+                            destination,
+                            identity,
+                            game_id=game_id,
+                            game_version=game_version,
+                        )
                     raise
                 _record_publication_phase("atomic-publish", phase_started, cpu_started)
                 phase_started, cpu_started = perf_counter(), process_time()
-                result = _load_existing(destination, identity)
+                result = _load_existing(
+                    destination, identity, game_id=game_id, game_version=game_version
+                )
                 if result.approved != len(
                     generated_records
                 ) or result.live_fallbacks != len(live_fallbacks):
@@ -1014,9 +1037,14 @@ def _identity(
     state_sha256: str,
     base_pack_identity: str | None = None,
     live_sequence_sha256: str | None = None,
+    *,
+    game_id: str,
+    game_version: str,
 ) -> str:
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "game_id": game_id,
+        "game_version": game_version,
         "generation_input_identity": generation_input.identity,
         "queue_sha256": generation_input.queue_sha256,
         "state_sha256": state_sha256,
@@ -1050,13 +1078,14 @@ def _stage_live_sequence(
     destination: Path,
     *,
     current_payload: bytes | None = None,
+    game_id: str | None = None,
 ) -> Path | None:
     """Bind only a complete, linear sequence to the exact staged story bytes."""
     if current_path is None:
         return None
     try:
         current_document, current_plan = _safe_sequence_document(
-            current_path, current_story, payload=current_payload
+            current_path, current_story, payload=current_payload, game_id=game_id
         )
         documents = [current_document]
         plans = [current_plan]
@@ -1064,7 +1093,7 @@ def _stage_live_sequence(
             if base.live_sequence_plan is None:
                 return None
             base_document, base_plan = _safe_sequence_document(
-                base.live_sequence_plan, base.story_index
+                base.live_sequence_plan, base.story_index, game_id=game_id
             )
             if base_plan.source_extract_sha256 != current_plan.source_extract_sha256:
                 return None
@@ -1087,14 +1116,18 @@ def _stage_live_sequence(
         document["chapters"] = chapters
         destination.parent.mkdir(parents=True, exist_ok=True)
         write_live_sequence_plan(destination, document, staged_story)
-        _safe_sequence_document(destination, staged_story)
+        _safe_sequence_document(destination, staged_story, game_id=game_id)
         return destination
     except OSError, ValueError, LiveSequencePlanError:
         return None
 
 
 def _safe_sequence_document(
-    path: Path, story_index: Path, *, payload: bytes | None = None
+    path: Path,
+    story_index: Path,
+    *,
+    payload: bytes | None = None,
+    game_id: str | None = None,
 ) -> tuple[JsonObject, LiveSequencePlan]:
     if payload is None:
         payload = read_regular_bytes(path)
@@ -1104,8 +1137,8 @@ def _safe_sequence_document(
     plan = load_live_sequence_snapshot(
         path, story_index, payload, read_regular_bytes(story_index)
     )
-    if plan.game_id != "reverse1999":
-        raise LiveSequencePlanError("Live sequence is not for Reverse: 1999")
+    if game_id is not None and plan.game_id != game_id:
+        raise OfflinePackError("Live sequence plan belongs to a different game")
     for event in plan.events.values():
         if event.control == "manual" or (
             event.control != "terminal" and len(event.successors) != 1
@@ -1128,8 +1161,8 @@ def _load_incremental_base(
             extension.get("identity")
         ):
             return None, None
-        if imported.pack.game_id != (
-            selected_story.game or job.game
+        if imported.pack.game_id != _publication_game_id(
+            job, selected_story
         ) or imported.pack.game_version != (job.game_version or "local"):
             return None, None
         source_path = Path(job.catalog_story_index).expanduser().resolve()
@@ -1153,6 +1186,11 @@ def _load_incremental_base(
         or base_story.language != source.language
     ):
         return None, None
+    if (
+        _publication_game_id(job, source) != imported.pack.game_id
+        or _publication_game_id(job, base_story) != imported.pack.game_id
+    ):
+        return None, None
     source_by_id = {record.line_id: record for record in source.records}
     if any(
         record.line_id not in source_by_id
@@ -1173,6 +1211,18 @@ def _load_incremental_base(
             "and prepare again. Your existing pack remains unchanged."
         )
     return imported, source
+
+
+def _publication_game_id(job: PregenerationJob, story: StoryIndexDocument) -> str:
+    try:
+        source_id = story_game_id(story, provider_id=job.provider_id)
+    except PregenerationSetupError as error:
+        raise OfflinePackError(str(error)) from error
+    if job.game_id is not None and source_id is not None and job.game_id != source_id:
+        raise OfflinePackError(
+            "Saved canonical game identity conflicts with story content"
+        )
+    return source_id or job.game_id or story.game or job.game
 
 
 def _write_cumulative_story(
@@ -1658,11 +1708,17 @@ def _load_existing(
     identity: str,
     *,
     imported: GamePackImport | None = None,
+    game_id: str | None = None,
+    game_version: str | None = None,
 ) -> OfflinePackResult:
     imported = imported or import_game_pack(destination / "game-pack.json")
     extension = imported.pack.extensions.get("vntts.self-service")
     if not isinstance(extension, dict) or extension.get("identity") != identity:
         raise OfflinePackError("Existing offline pack identity changed")
+    if (game_id is not None and imported.pack.game_id != game_id) or (
+        game_version is not None and imported.pack.game_version != game_version
+    ):
+        raise OfflinePackError("Existing offline pack game identity changed")
     story_lines = len(
         load_verified_story_index_document(
             imported.story_index, imported.pack.story_index.sha256

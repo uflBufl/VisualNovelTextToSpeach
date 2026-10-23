@@ -48,3 +48,12 @@ class Pyside6McpInstallTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     installer.prepare_source(Path(root) / "source")
             self.assertEqual(run.call_count, 3)
+
+    def test_build_gate_covers_live_widget_identity_input_actions_and_shutdown(self):
+        self.assertTrue(
+            {
+                "tests/test_interactions.py",
+                "tests/test_actions.py",
+                "tests/test_shutdown.py",
+            }.issubset(installer.TESTS)
+        )

@@ -74,6 +74,7 @@ from vntts.auto_advance_policy import (
     guard_auto_advance_settings,
 )
 from vntts.calibration import (
+    CaptureWindowVisibility,
     DialogRegionOverlay,
     capture_calibration_background,
     show_calibration_overlay,
@@ -97,7 +98,7 @@ from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.dialog_capture import format_runtime_error
 from vntts.durable_settings import DurableSettingsMixin
 from vntts.game_narrator_ui import GameNarratorDialog
-from vntts.game_pack import apply_game_pack
+from vntts.game_pack import GamePackError, apply_game_pack, import_game_pack
 from vntts.generated_audio import AudioRouteTrace
 from vntts.history_ui import DialogueHistoryDialog
 from vntts.hotkey_ui import HotkeyRecorder, hotkey_recording_errors
@@ -194,6 +195,31 @@ default_xtts_model = "tts_models/multilingual/multi-dataset/xtts_v2"
 ValidationError = tuple[int, QWidget, str]
 
 
+@dataclass(frozen=True)
+class _ReadingPackAdmission:
+    identity: tuple[str | None, ...]
+    files: tuple[Path, ...]
+    stamps: tuple[tuple[int, ...], ...] | None
+    playable: bool
+
+    @staticmethod
+    def file_stamps(files: tuple[Path, ...]) -> tuple[tuple[int, ...], ...] | None:
+        try:
+            return tuple(
+                (
+                    stat.st_dev,
+                    stat.st_ino,
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    stat.st_ctime_ns,
+                )
+                for path in files
+                for stat in (path.stat(follow_symlinks=False),)
+            )
+        except OSError:
+            return None
+
+
 @dataclass
 class _OnboardingCaptureRequest:
     generation: int
@@ -201,7 +227,7 @@ class _OnboardingCaptureRequest:
     ready: Event = dataclass_field(default_factory=Event)
     finished: Event = dataclass_field(default_factory=Event)
     restored: Event = dataclass_field(default_factory=Event)
-    windows: tuple[QWidget, ...] = ()
+    visibility: CaptureWindowVisibility | None = None
     wizard: QWidget | None = None
 
 
@@ -2016,6 +2042,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._narrator_return_to_stories = False
         self._resume_live_after_narrator = False
         self._preparation_activation_settings: AppSettings | None = None
+        self._reading_pack_admission: _ReadingPackAdmission | None = None
         self.unknown_speaker_prompt: QMessageBox | None = None
         self.unknown_speaker_choose_button: QPushButton | None = None
         self.unknown_speaker_continue_button: QPushButton | None = None
@@ -2025,8 +2052,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.unknown_speaker_mapping_in_progress: str | None = None
         self.resume_live_after_unknown_mapping = False
         self.onboarding_cancel_event = Event()
-        self.restore_compact_after_calibration = False
-        self.restore_diagnostics_after_calibration = False
+        self._calibration_visibility: CaptureWindowVisibility | None = None
         self._calibration_capture_pending = False
         self._notification_recovery: str | None = None
         self._background_notification_shown = False
@@ -2044,6 +2070,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.show_dashboard_action = QAction("Full controls", self)
         self.show_compact_action = QAction("Compact controls", self)
         self.live_action = QAction("Start reading", self)
+        self.pause_action = QAction("Pause speech", self)
         self.sequence_resync_action = QAction("Set story position / resync...", self)
         self.sequence_expected_action = QAction("Use expected next line", self)
         self.auto_advance_action = QAction("Auto advance dialogue", self)
@@ -2074,6 +2101,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _build_main_menu(self) -> None:
         self.read_action.setEnabled(False)
         self.live_action.setEnabled(False)
+        self.pause_action.setEnabled(False)
         self.sequence_resync_action.setEnabled(False)
         self.sequence_expected_action.setEnabled(False)
         sequence_controls_visible = bool(
@@ -2091,6 +2119,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.menu.addSeparator()
         self.menu.addAction(self.read_action)
         self.menu.addAction(self.live_action)
+        self.menu.addAction(self.pause_action)
         self.playback_menu = self.menu.addMenu("Reading")
         self.playback_menu.addAction(self.sequence_resync_action)
         self.playback_menu.addAction(self.sequence_expected_action)
@@ -2129,6 +2158,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.show_dashboard_action.triggered.connect(self.show_dashboard)
         self.show_compact_action.triggered.connect(self.show_compact_controls)
         self.live_action.triggered.connect(self._toggle_presented_reading)
+        self.pause_action.triggered.connect(self.toggle_speech_pause)
         self.sequence_resync_action.triggered.connect(self.choose_sequence_position)
         self.sequence_expected_action.triggered.connect(
             self.choose_expected_sequence_event
@@ -2197,6 +2227,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.main_section_changed.connect(self._save_main_section)
         self.dashboard.read_requested.connect(self.read_once)
         self.dashboard.live_requested.connect(self._toggle_presented_reading)
+        self.dashboard.pause_requested.connect(self.toggle_speech_pause)
         self.dashboard.auto_advance_requested.connect(self.toggle_auto_advance)
         self.dashboard.reading_setup_requested.connect(self.prepare_reading)
         self.dashboard.sequence_resync_requested.connect(self.choose_sequence_position)
@@ -2215,6 +2246,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.hidden_to_background.connect(self.notify_background_mode)
         self.compact_controller.read_requested.connect(self.read_once)
         self.compact_controller.live_requested.connect(self._toggle_presented_reading)
+        self.compact_controller.pause_requested.connect(self.toggle_speech_pause)
         self.compact_controller.sequence_expected_requested.connect(
             self.choose_expected_sequence_event
         )
@@ -2410,6 +2442,92 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         candidate = factory()
         return candidate if isinstance(candidate, AppSettings) else None
 
+    @staticmethod
+    def _reading_pack_identity(settings: AppSettings) -> tuple[str | None, ...]:
+        return (
+            settings.game_pack,
+            settings.story_index,
+            settings.voice_manifest,
+            settings.generated_audio_manifest,
+            settings.live_sequence_plan,
+        )
+
+    def _active_pack_reading_available(self) -> bool:
+        identity = self._reading_pack_identity(self.settings)
+        if not self.settings.game_pack or self._startup_game_pack_errors:
+            return False
+        cached = self._reading_pack_admission
+        if (
+            cached is not None
+            and cached.identity == identity
+            and (cached.stamps == _ReadingPackAdmission.file_stamps(cached.files))
+        ):
+            return cached.playable
+        files = (
+            cached.files
+            if cached is not None and cached.identity == identity
+            else tuple(Path(path) for path in identity if path)
+        )
+        playable = False
+        try:
+            imported = import_game_pack(self.settings.game_pack)
+            projected = imported.apply_to(
+                self.settings, preserve_external_sequence=True
+            )
+            playable = bool(imported.pack.generated_wavs) and (
+                self._reading_pack_identity(projected) == identity
+            )
+            bindings = (
+                imported.pack.story_index,
+                imported.pack.voice_manifest,
+                *imported.pack.voice_wavs,
+                *imported.pack.generated_wavs,
+                *(
+                    (imported.pack.generated_audio,)
+                    if imported.pack.generated_audio
+                    else ()
+                ),
+                *(
+                    (imported.pack.live_sequence_plan,)
+                    if imported.pack.live_sequence_plan
+                    else ()
+                ),
+            )
+            files = tuple(
+                dict.fromkeys(
+                    (
+                        Path(self.settings.game_pack),
+                        *(binding.path for binding in bindings),
+                        *(
+                            (imported.source_audio_semantic_evidence,)
+                            if imported.source_audio_semantic_evidence is not None
+                            else ()
+                        ),
+                    )
+                )
+            )
+        except OSError, ValueError, GamePackError:
+            pass
+        self._reading_pack_admission = _ReadingPackAdmission(
+            identity, files, _ReadingPackAdmission.file_stamps(files), playable
+        )
+        return playable
+
+    def _reading_source_choice(
+        self, *, prefer_preparation: bool = False
+    ) -> tuple[AppSettings | None, bool]:
+        active_pack = self._active_pack_reading_available()
+        if active_pack and not prefer_preparation:
+            return None, True
+        candidate = self._preparation_runtime_settings()
+        return candidate, active_pack or candidate is not None
+
+    def _preparation_blocks_reading(self, *, loaded: bool) -> bool:
+        candidate, available = self._reading_source_choice()
+        return not available or (
+            loaded and candidate is not None and not self._preparation_playback_active()
+        )
+
     def _preparation_playback_active(self) -> bool:
         candidate = self._preparation_runtime_settings()
         controller_settings = getattr(self.controller, "settings", None)
@@ -2428,15 +2546,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         with QSignalBlocker(self.dashboard.sections):
             self.dashboard.show_reading()
 
-    def prepare_reading(self, *, start_live: bool = False) -> None:
+    def prepare_reading(
+        self, *, start_live: bool = False, prefer_preparation: bool = False
+    ) -> None:
         if self._controller_busy or self._shutting_down:
             return
         if self.narrator_dialog is not None:
             self.dashboard.show_voices()
             return
-        runtime_settings = self._preparation_runtime_settings()
+        runtime_settings, source_available = self._reading_source_choice(
+            prefer_preparation=prefer_preparation
+        )
         if self.pregeneration_dialog is not None and (
-            self.pregeneration_dialog.has_pending_work() and runtime_settings is None
+            self.pregeneration_dialog.has_pending_work() and not source_available
         ):
             self.set_status(
                 "Preparation is still working on its first dialogue. Start reading "
@@ -2576,6 +2698,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self._request_stop_reading()
             return False
         return self.toggle_live()
+
+    def toggle_speech_pause(self) -> None:
+        if (
+            QApplication.activeModalWidget() is not None
+            or not self._presented_runtime_state.can_pause
+            or not self._runtime_control_state().can_pause
+        ):
+            return
+        self.set_speech_paused(self.controller.toggle_speech_pause())
 
     def toggle_live(self) -> bool:
         if self._shutting_down:
@@ -2925,21 +3056,30 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.diagnostics_dialog.set_calibration_pending(False)
             return
         self._calibration_capture_pending = True
-        self.restore_compact_after_calibration = self.compact_controller.isVisible()
-        if self.diagnostics_dialog is not None and self.diagnostics_dialog.isVisible():
-            self.restore_diagnostics_after_calibration = True
-            self.diagnostics_dialog.close()
-        self.dashboard.hide()
-        self.compact_controller.hide()
-        if self.readiness_dialog is not None:
-            self.readiness_dialog.hide()
+        self._cancel_diagnostics_refresh()
+        self._calibration_visibility = CaptureWindowVisibility(
+            self, may_restore=lambda _window: not self._shutting_down
+        )
         self.set_status("Capturing game window for calibration...")
-        QTimer.singleShot(200, self, self._start_calibration_capture)
+        visibility = self._calibration_visibility
+        QTimer.singleShot(
+            200, self, lambda: self._start_calibration_capture(visibility)
+        )
 
-    def _start_calibration_capture(self) -> None:
-        if self._shutting_down or not self._calibration_capture_pending:
+    def _start_calibration_capture(self, visibility: CaptureWindowVisibility) -> None:
+        if (
+            self._shutting_down
+            or not self._calibration_capture_pending
+            or self._calibration_visibility is not visibility
+        ):
             return
-        self.calibration_capture_runner.start(self._capture_calibration_background)
+        self.calibration_capture_runner.start(
+            lambda: (
+                self._capture_calibration_background()
+                if not visibility.finished.is_set()
+                else None
+            )
+        )
 
     def _capture_calibration_background(
         self,
@@ -2996,6 +3136,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.calibration_capture_runner.cancel()
         if self.calibration_overlay is not None:
             self.calibration_overlay.close()
+        if self._calibration_visibility is not None:
+            self._calibration_visibility.restore()
+            self._calibration_visibility = None
 
     def _save_calibration_region(self, region: DialogRegion) -> None:
         profile_id = self.settings.active_profile_id
@@ -3006,17 +3149,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             save_dialog_region(region, get_dialog_region_file())
 
     def restore_control_window(self) -> None:
-        if self.restore_compact_after_calibration:
-            self.show_compact_controls()
-        else:
-            self.show_dashboard()
-        self.restore_compact_after_calibration = False
-        if self.restore_diagnostics_after_calibration:
-            self.restore_diagnostics_after_calibration = False
-            self.open_diagnostics()
-            dialog = self.diagnostics_dialog
-            if dialog is not None:
-                dialog.request_refresh()
+        visibility = self._calibration_visibility
+        self._calibration_visibility = None
+        if visibility is None:
+            return
+        visibility.restore()
+        dialog = self.diagnostics_dialog
+        if dialog is not None and isValid(dialog) and dialog.isVisible():
+            dialog.request_refresh()
 
     def open_diagnostics(self) -> None:
         if self.diagnostics_dialog is None:
@@ -3372,15 +3512,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             request.ready.set()
             return
         request.wizard = self.onboarding_wizard
-        request.windows = tuple(
-            window
-            for window in self.application.topLevelWidgets()
-            if window.isVisible()
+        request.visibility = CaptureWindowVisibility(
+            self,
+            may_restore=lambda window: (
+                not self._shutting_down
+                and (window is not request.wizard or window is self.onboarding_wizard)
+            ),
         )
         self._onboarding_capture_request = request
-        for window in request.windows:
-            window.hide()
-        if request.windows:
+        if request.visibility.windows:
             QTimer.singleShot(200, self, request.ready.set)
         else:
             request.ready.set()
@@ -3392,21 +3532,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if self._onboarding_capture_request is not request:
                 return
             self._onboarding_capture_request = None
-            if self._shutting_down:
-                return
-            for window in request.windows:
-                if not isValid(window):
-                    continue
-                if window is request.wizard and window is not self.onboarding_wizard:
-                    continue
-                previous = window.testAttribute(
-                    Qt.WidgetAttribute.WA_ShowWithoutActivating
-                )
-                window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-                window.show()
-                window.setAttribute(
-                    Qt.WidgetAttribute.WA_ShowWithoutActivating, previous
-                )
+            if request.visibility is not None:
+                request.visibility.restore()
         finally:
             request.restored.set()
 
@@ -3501,7 +3628,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.settings,
             audition_service=audition_session,
             generator=OfflineGenerationWorker(
-                backend_factory=self.moss_runtime.benchmark_backend
+                backend_factory=self.moss_runtime.benchmark_backend,
+                retain_isolated_backend=True,
             ),
             game_narrator_chooser=self._open_preparation_narrator,
             automatic_activation=True,
@@ -3547,7 +3675,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if not self.controller.is_live_running:
                 self.toggle_live()
             return
-        self.prepare_reading(start_live=True)
+        self.prepare_reading(start_live=True, prefer_preparation=True)
 
     def _remember_preparation_context(self) -> None:
         self._preparation_activation_settings = self.settings
@@ -4717,7 +4845,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.pregeneration_dialog is not None
             and self.pregeneration_dialog.has_pending_work()
         )
-        if preparing and not self._preparation_playback_active():
+        if preparing and self._preparation_blocks_reading(loaded=True):
             enabled = False
             unavailable_reason = (
                 "Story preparation has not finished its first playable dialogue yet."
@@ -4775,11 +4903,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         controls = (
             (self.read_action, state.can_read, "read"),
             (self.live_action, state.can_toggle_live, "live"),
+            (self.pause_action, state.can_pause, "pause"),
         )
         for action, enabled, control in controls:
             action.setEnabled(enabled)
             action.setToolTip("" if enabled else state.reason_for(control))
         self.read_action.setText(state.read_label)
+        self.pause_action.setText(state.pause_label)
+        if state.can_pause:
+            self.pause_action.setToolTip(state.pause_description)
         if state.can_read:
             self.read_action.setToolTip(state.read_tooltip)
         self.live_action.setText(
@@ -4810,12 +4942,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _apply_preparation_reading_state(
         self, preparing: bool, choosing_voice: bool
     ) -> None:
-        runtime_settings = self._preparation_runtime_settings()
+        preparation_blocks = self._preparation_blocks_reading(loaded=False)
         self.dashboard.prepare_reading_button.setEnabled(
             not (
                 self._controller_busy
                 or self._shutting_down
-                or (preparing and runtime_settings is None)
+                or (preparing and preparation_blocks)
                 or choosing_voice
             )
         )

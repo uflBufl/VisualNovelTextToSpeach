@@ -28,7 +28,12 @@ final class Scene: NSView {
         window.orderFrontRegardless()
         print("{\"pid\":\(ProcessInfo.processInfo.processIdentifier),\"window_id\":\(window.windowNumber)}")
         fflush(stdout)
-        let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in scene.needsDisplay = true; scene.display() }
+        let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+            let elapsed = ProcessInfo.processInfo.systemUptime - scene.start
+            let origin = elapsed >= 15 && elapsed < 35 ? NSPoint(x: 140, y: 100) : NSPoint(x: 60, y: 60)
+            if window.frame.origin != origin { window.setFrameOrigin(origin) }
+            scene.needsDisplay = true; scene.display()
+        }
         let stop = Timer.scheduledTimer(withTimeInterval: 90, repeats: false) { _ in app.terminate(nil) }
         withExtendedLifetime((window, timer, stop)) { app.run() }
     }

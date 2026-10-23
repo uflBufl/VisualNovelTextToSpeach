@@ -70,6 +70,74 @@ from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.versioned_json import write_versioned_json
 
 
+def game_fixture(
+    root,
+    *,
+    game_id=None,
+    provider_id="reverse1999",
+    chapter="1",
+    names=("generated", "fallback"),
+):
+    job, prepared, generated, items = fixture(root, names=names)
+    story = load_story_index_document(prepared.story_index)
+    metadata = story.metadata | {"game": "Reverse: 1999"}
+    if game_id is not None:
+        metadata["game_id"] = game_id
+    write_story_index_document(
+        prepared.story_index,
+        metadata,
+        [record.to_record() | {"chapter": chapter} for record in story.records],
+    )
+    checksum = sha256_file(prepared.story_index)
+    return (
+        replace(
+            job,
+            provider_id=provider_id,
+            game="Reverse: 1999",
+            story_index_sha256=checksum,
+        ),
+        replace(prepared, story_index_sha256=checksum),
+        generated,
+        items,
+    )
+
+
+def linear_plan(story_path, game_id):
+    story = load_story_index_document(story_path)
+    chapters = []
+    for chapter in dict.fromkeys(record.chapter for record in story.records):
+        records = [record for record in story.records if record.chapter == chapter]
+        events = [
+            {
+                "event_id": f"{chapter}:{index}",
+                "sequence": index,
+                "kind": "speech",
+                "control": "terminal" if index == len(records) else "automatic",
+                "successors": []
+                if index == len(records)
+                else [f"{chapter}:{index + 1}"],
+                "line_id": record.line_id,
+            }
+            for index, record in enumerate(records, 1)
+        ]
+        chapters.append(
+            {"chapter": chapter, "entry_event_ids": [f"{chapter}:1"], "events": events}
+        )
+    return write_live_sequence_plan(
+        story_path.with_name("live-sequence.json"),
+        {
+            "schema": "vntts.live-sequence-plan",
+            "schema_version": 1,
+            "game_id": game_id,
+            "producer": {"name": "test", "version": "1"},
+            "story_index_sha256": sha256_file(story_path),
+            "source_extract_sha256": "a" * 64,
+            "chapters": chapters,
+        },
+        story_path,
+    ).path
+
+
 class SavedStoryPackSelectionTest(unittest.TestCase):
     def test_one_shot_selection_filters_every_saved_job(self):
         matching = SimpleNamespace(selected_line_ids=("selected",))
@@ -91,6 +159,147 @@ class SavedStoryPackSelectionTest(unittest.TestCase):
 
 
 class OfflinePackPublisherTest(unittest.TestCase):
+    def test_legacy_adapter_and_explicit_imported_identity_publish_and_import(self):
+        for provider, explicit_id, expected in (
+            ("reverse1999", None, "reverse1999"),
+            ("local-story-index", "custom-game", "custom-game"),
+        ):
+            with self.subTest(provider=provider), TemporaryDirectory() as directory:
+                root = Path(directory)
+                job, prepared, generated, _ = game_fixture(
+                    root, provider_id=provider, game_id=explicit_id
+                )
+                plan = linear_plan(prepared.story_index, expected)
+                before = tree_hashes(generated.output)
+                published = OfflinePackPublisher().publish(
+                    job, prepared, generated, live_sequence_plan=plan
+                )
+                imported = import_game_pack(published.manifest)
+                self.assertEqual(imported.pack.game_id, expected)
+                self.assertEqual(
+                    load_story_index_document(imported.story_index).game,
+                    "Reverse: 1999",
+                )
+                self.assertIsNotNone(imported.live_sequence_plan)
+                self.assertEqual(
+                    load_live_sequence_plan(
+                        imported.live_sequence_plan, imported.story_index
+                    ).game_id,
+                    expected,
+                )
+                self.assertEqual(tree_hashes(generated.output), before)
+                self.assertEqual(
+                    OfflinePackPublisher().publish(
+                        job, prepared, generated, live_sequence_plan=plan
+                    ),
+                    published,
+                )
+
+    def test_foreign_graph_is_rejected_without_inference_from_the_display_title(self):
+        for explicit_id in (None, "foreign-game"):
+            with (
+                self.subTest(explicit_id=explicit_id),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                job, prepared, generated, _ = game_fixture(
+                    root, provider_id="local-story-index", game_id=explicit_id
+                )
+                plan = linear_plan(prepared.story_index, "reverse1999")
+                before = tree_hashes(root)
+                with self.assertRaisesRegex(OfflinePackError, "different game"):
+                    OfflinePackPublisher().publish(
+                        job, prepared, generated, live_sequence_plan=plan
+                    )
+                self.assertEqual(tree_hashes(root), before)
+
+    def test_publication_cache_identity_includes_the_game_id_and_version(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, prepared, generated, _ = fixture(root)
+            before = tree_hashes(generated.output)
+            first = OfflinePackPublisher().publish(job, prepared, generated)
+            different_game = OfflinePackPublisher().publish(
+                replace(job, game_id="explicit-import-id"), prepared, generated
+            )
+            different_version = OfflinePackPublisher().publish(
+                replace(job, game_version="2.0"), prepared, generated
+            )
+            self.assertEqual(
+                len(
+                    {
+                        first.identity,
+                        different_game.identity,
+                        different_version.identity,
+                    }
+                ),
+                3,
+            )
+            self.assertEqual(different_game.imported.pack.game_id, "explicit-import-id")
+            self.assertEqual(different_version.imported.pack.game_version, "2.0")
+            self.assertEqual(tree_hashes(generated.output), before)
+
+    def test_reused_destination_rejects_changed_pack_game_metadata(self):
+        for field in ("id", "version"):
+            with self.subTest(field=field), TemporaryDirectory() as directory:
+                job, prepared, generated, _ = fixture(Path(directory))
+                published = OfflinePackPublisher().publish(job, prepared, generated)
+                document = json.loads(published.manifest.read_bytes())
+                document["game"][field] = "foreign"
+                atomic_write_json(published.manifest, document)
+                with self.assertRaisesRegex(OfflinePackError, "game identity changed"):
+                    OfflinePackPublisher().publish(job, prepared, generated)
+
+    def test_canonical_identity_survives_incremental_successor_reuse(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_job, base_input, base_result, _ = game_fixture(root / "base")
+            base_plan = linear_plan(base_input.story_index, "reverse1999")
+            base = OfflinePackPublisher().publish(
+                base_job, base_input, base_result, live_sequence_plan=base_plan
+            )
+            base_hashes = tree_hashes(base.directory)
+            job, prepared, generated, _ = game_fixture(
+                root / "current", chapter="2", names=("next", "last")
+            )
+            current_plan = linear_plan(prepared.story_index, "reverse1999")
+            base_story = load_story_index_document(base_input.story_index)
+            current_story = load_story_index_document(prepared.story_index)
+            source = root / "source.jsonl"
+            write_story_index_document(
+                source,
+                current_story.metadata,
+                [
+                    record.to_record()
+                    for record in (*base_story.records, *current_story.records)
+                ],
+            )
+            job = replace(
+                job, story_index=str(source), story_index_sha256=sha256_file(source)
+            )
+            successor = OfflinePackPublisher(base_pack=base.manifest).publish(
+                job, prepared, generated, live_sequence_plan=current_plan
+            )
+            self.assertEqual(successor.imported.pack.game_id, "reverse1999")
+            self.assertEqual(successor.story_lines, 4)
+            self.assertEqual(successor.approved, 2)
+            self.assertEqual(
+                len(
+                    load_live_sequence_plan(
+                        successor.imported.live_sequence_plan,
+                        successor.imported.story_index,
+                    ).chapters
+                ),
+                2,
+            )
+            self.assertEqual(tree_hashes(base.directory), base_hashes)
+            base_wav = next(iter(base.imported.pack.generated_wavs))
+            reused = successor.directory / base_wav.path.relative_to(
+                base.directory.resolve()
+            )
+            self.assertEqual(sha256_file(reused), base_wav.sha256)
+            self.assertTrue(reused.samefile(base_wav.path))
+
     def test_story_batch_reuses_each_pack_parse_but_new_batch_imports_again(self):
         with TemporaryDirectory() as directory:
             job, inputs, result, _items = fixture(Path(directory) / "source")

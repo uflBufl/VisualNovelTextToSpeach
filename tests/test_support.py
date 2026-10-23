@@ -262,6 +262,90 @@ class PregenerationSupportSummaryTest(unittest.TestCase):
 
 
 class GenerationTimelineLogTest(unittest.TestCase):
+    def test_retention_counts_trim_and_whole_timeline_evictions_once(self):
+        log = GenerationTimelineLog(maximum_entries=1)
+        for sequence in range(1, 515):
+            log.record("capture", 1, float(sequence))
+        summary = log.retention_summary()
+        self.assertEqual(summary["recorded_events"], 514)
+        self.assertEqual(summary["retained_events"], 512)
+        self.assertEqual(summary["evicted_events"], 2)
+        self.assertEqual(summary["first_retained_event_sequence"], 3)
+        self.assertEqual(log.snapshot()[0]["dropped_events"], 2)
+
+        log.record("capture", 2, 515.0)
+        log.record("capture", 1, 516.0)
+        summary = log.retention_summary()
+
+        self.assertEqual(summary["recorded_events"], 516)
+        self.assertEqual(summary["retained_events"], 1)
+        self.assertEqual(summary["evicted_events"], 515)
+        self.assertEqual(summary["created_timeline_instances"], 3)
+        self.assertEqual(summary["retained_timelines"], 1)
+        self.assertEqual(summary["evicted_timelines"], 2)
+        self.assertEqual(summary["first_retained_event_sequence"], 516)
+        self.assertEqual(summary["last_retained_event_sequence"], 516)
+        self.assertEqual(log.snapshot()[0]["dropped_events"], 0)
+
+    def test_event_budget_eviction_can_leave_gaps_inside_retained_bounds(self):
+        log = GenerationTimelineLog()
+        for generation in range(1, 6):
+            for _ in range(400):
+                log.record("capture", generation, 1.0)
+        log.record("capture", 1, 2.0)
+
+        summary = log.retention_summary()
+        self.assertEqual(summary["recorded_events"], 2001)
+        self.assertEqual(summary["retained_events"], 1601)
+        self.assertEqual(summary["evicted_events"], 400)
+        self.assertEqual(summary["evicted_timelines"], 1)
+        self.assertEqual(summary["first_retained_event_sequence"], 1)
+        self.assertEqual(summary["last_retained_event_sequence"], 2001)
+        self.assertIn("may contain gaps", summary["bounds_note"])
+        self.assertEqual({t["generation"] for t in log.snapshot()}, {1, 3, 4, 5})
+
+    def test_retention_and_worker_health_survive_persistence_bundle_and_restart(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            log = GenerationTimelineLog(
+                maximum_entries=1, path=directory / "generation-timelines.json"
+            )
+            log.record("capture", 1, 10.0, text="PRIVATE dialogue")
+            log.record(
+                "capture",
+                2,
+                11.0,
+                worker_state="running",
+                worker_stage="reading-purpose",
+                worker_frame_version=7,
+                latest_frame_version=12,
+                worker_progress_age_ms=1000,
+            )
+            persisted = json.loads(log.path.read_text(encoding="utf-8"))
+            previous = preserve_previous_session(directory)
+            output = SupportBundleBuilder(
+                AppSettings(ocr_diagnostics_directory=str(directory)),
+                RuntimeSupportLog(),
+                dependency_probe=lambda: {},
+                generation_timelines=log,
+                previous_session=previous,
+            ).build(directory / "support.zip")
+            with zipfile.ZipFile(output) as archive:
+                exported = json.loads(archive.read("generation-timelines.json"))
+                prior_export = json.loads(archive.read("previous-session.json"))
+
+        self.assertEqual(persisted, log.report())
+        self.assertEqual(exported, persisted)
+        self.assertEqual(
+            previous["generation_timeline_retention"], log.retention_summary()
+        )
+        self.assertEqual(prior_export, previous)
+        event = previous["generation_timelines"][0]["events"][0]
+        self.assertEqual(event["worker_stage"], "reading-purpose")
+        self.assertEqual(event["worker_frame_version"], 7)
+        self.assertEqual(event["latest_frame_version"], 12)
+        self.assertNotIn("PRIVATE", repr(exported) + repr(previous))
+
     def test_unrepresentable_latency_does_not_abort_publication(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "timelines.json"
@@ -701,6 +785,30 @@ class GenerationTimelineLogTest(unittest.TestCase):
         self.assertEqual(events[1]["event_id"], "event-1")
         self.assertNotIn("private_text", str(events))
 
+    def test_prefix_gate_preserves_flags_without_retaining_recognized_text(self):
+        timelines = GenerationTimelineLog()
+        timelines.record(
+            "sequence-prefix-gate",
+            1,
+            1.0,
+            reason="prefix-text-mismatch",
+            event_id="event-14",
+            target_event_id="event-15",
+            occurrence_id=2,
+            normalized_text_characters=20,
+            prefix_matches=False,
+            speaker_matches=True,
+            reservation_ready=False,
+            text="PRIVATE recognized dialogue",
+        )
+        event = timelines.snapshot()[0]["events"][0]
+        self.assertEqual(event["reason"], "prefix-text-mismatch")
+        self.assertEqual(event["normalized_text_characters"], 20)
+        self.assertIs(event["prefix_matches"], False)
+        self.assertIs(event["speaker_matches"], True)
+        self.assertIs(event["reservation_ready"], False)
+        self.assertNotIn("PRIVATE", str(event))
+
     def test_accepts_every_declared_sequence_control_stage(self):
         timelines = GenerationTimelineLog()
 
@@ -711,6 +819,53 @@ class GenerationTimelineLogTest(unittest.TestCase):
             {event["stage"] for event in timelines.snapshot()[0]["events"]},
             set(sequence_timeline_stages),
         )
+
+
+class AudioWriteSummaryTest(unittest.TestCase):
+    def test_system_phase_metrics_survive_sanitization_without_audio_or_text(self):
+        log = AudioLifecycleLog()
+        log.record(
+            "system-write-summary",
+            system_write_attempts=2,
+            system_write_failures=1,
+            device_reopens=0,
+            max_output_lock_ms=2.25,
+            max_stream_lock_ms=5.5,
+            max_refresh_ms=3.125,
+            max_conversion_ms=4.75,
+            max_native_write_ms=6.625,
+            pcm="PRIVATE",
+            text="PRIVATE",
+        )
+        event = log.report()["events"][0]
+        self.assertEqual(event["system_write_attempts"], 2)
+        self.assertEqual(event["system_write_failures"], 1)
+        self.assertEqual(event["max_output_lock_ms"], 2.25)
+        self.assertEqual(event["max_native_write_ms"], 6.625)
+        self.assertNotIn("PRIVATE", str(event))
+
+    def test_block_association_scalars_survive_without_private_payload(self):
+        fields = {
+            "first_underflow_write_index": 2,
+            "first_underflow_input_frame_offset": 2400,
+            "first_underflow_started_monotonic": 18.25,
+            "first_underflow_guard_ms": 2.0,
+            "first_underflow_write_gap_ms": 3.0,
+            "max_native_write_write_index": 3,
+            "max_native_write_input_frames": 1200,
+            "max_native_write_native_frames": 1103,
+            "max_native_write_native_sample_rate": 44_100,
+            "max_native_write_ended_monotonic": 19.5,
+            "max_native_write_refresh_ms": 4.0,
+            "max_native_write_conversion_ms": 5.0,
+        }
+        log = AudioLifecycleLog()
+        log.record(
+            "system-write-summary", **fields, samples="PRIVATE", transcript="PRIVATE"
+        )
+        event = log.report()["events"][0]
+        self.assertEqual({field: event[field] for field in fields}, fields)
+        self.assertNotIn("PRIVATE", str(event))
 
 
 class RuntimeSupportLogTest(unittest.TestCase):
@@ -906,7 +1061,39 @@ class RuntimeSupportLogTest(unittest.TestCase):
         self.assertIsNone(
             snapshot["generation_timelines"][0]["events"][0]["elapsed_ms"]
         )
+        self.assertEqual(snapshot["generation_timeline_retention"], {})
         json.dumps(snapshot, allow_nan=False)
+
+    def test_previous_timeline_retention_accepts_only_safe_numeric_fields(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "generation-timelines.json").write_text(
+                json.dumps(
+                    {
+                        "timelines": [{"generation": 1, "events": []}],
+                        "retention": {
+                            "recorded_events": 100,
+                            "evicted_events": -1,
+                            "retained_events": True,
+                            "clock_origin": float("nan"),
+                            "bounds_note": "PRIVATE dialogue",
+                            "path": "/PRIVATE/file",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            summary = preserve_previous_session(directory)[
+                "generation_timeline_retention"
+            ]
+
+        self.assertEqual(summary["recorded_events"], 100)
+        self.assertNotIn("evicted_events", summary)
+        self.assertNotIn("retained_events", summary)
+        self.assertIsNone(summary["clock_origin"])
+        self.assertIn("may contain gaps", summary["bounds_note"])
+        self.assertNotIn("PRIVATE", repr(summary))
+        json.dumps(summary, allow_nan=False)
 
     def test_log_is_bounded_and_returns_a_copy(self):
         log = RuntimeSupportLog(

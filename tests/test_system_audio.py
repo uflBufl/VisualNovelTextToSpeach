@@ -1,12 +1,14 @@
 import builtins
 import unittest
-from threading import Event, Thread
+from threading import Event, RLock, Thread
 from unittest.mock import Mock, patch
 
 import numpy as np
 import soxr
 from sounddevice import PortAudioError
 
+from vntts.audio_lifecycle import audio_lifecycle_context
+from vntts.audio_output import resolve_audio_output, write_pcm_chunks
 from vntts.system_audio import (
     AudioDeviceChangedError,
     SystemAudioOutput,
@@ -72,6 +74,27 @@ class DeviceModule:
         self.events.append("initialize")
         if self.initialize_failure:
             raise self.initialize_failure
+
+
+class _DelayedLock:
+    def __init__(self, clock, delay):
+        self.lock = RLock()
+        self.clock = clock
+        self.delay = delay
+
+    def acquire(self):
+        self.lock.acquire()
+        self.clock[0] += self.delay
+
+    def release(self):
+        self.lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args):
+        self.release()
 
 
 class SystemAudioTest(unittest.TestCase):
@@ -334,6 +357,201 @@ class SystemAudioTest(unittest.TestCase):
         )
         self.addCleanup(stream.close)
         return stream
+
+    def test_write_phases_emit_one_summary_after_close_without_changing_pcm(self):
+        clock = [0.0]
+
+        module, output = self.create_output()
+        token = audio_lifecycle_context.set({"generation": 7, "run_id": "owned-run"})
+        try:
+            stream = self.open_stream(output)
+        finally:
+            audio_lifecycle_context.reset(token)
+        stream.start()
+        output.lock = _DelayedLock(clock, 0.002)
+        stream.write_lock = _DelayedLock(clock, 0.005)
+        original_asarray = np.asarray
+        received = []
+
+        def advance(seconds):
+            clock[0] += seconds
+
+        def convert(*args, **kwargs):
+            advance(0.004)
+            return original_asarray(*args, **kwargs)
+
+        def write(samples):
+            advance(0.006)
+            received.append(samples.copy())
+            if len(received) == 2:
+                raise OSError("output failed")
+            return False
+
+        samples = np.arange(8, dtype=np.float32).reshape(4, 2) / 10
+        module.native_streams[0].write.side_effect = write
+        with (
+            patch("vntts.system_audio.monotonic", side_effect=lambda: clock[0]),
+            patch.object(output, "_refresh", side_effect=lambda: advance(0.003)),
+            patch("vntts.system_audio.np.asarray", side_effect=convert),
+            patch("vntts.system_audio.record_audio_lifecycle") as record,
+        ):
+            self.assertFalse(stream.write(samples))
+            with self.assertRaisesRegex(OSError, "output failed"):
+                stream.write(samples)
+            record.assert_not_called()
+            stream.close()
+            stream.close()
+        record.assert_called_once()
+        self.assertEqual(record.call_args.args, ("system-write-summary",))
+        summary = record.call_args.kwargs
+        self.assertEqual(summary["generation"], 7)
+        self.assertEqual(summary["run_id"], "owned-run")
+        self.assertEqual(summary["system_write_attempts"], 2)
+        self.assertEqual(summary["system_write_failures"], 1)
+        for field, expected in (
+            ("max_output_lock_ms", 2),
+            ("max_stream_lock_ms", 5),
+            ("max_refresh_ms", 3),
+            ("max_conversion_ms", 4),
+            ("max_native_write_ms", 6),
+        ):
+            self.assertAlmostEqual(summary[field], expected)
+        for actual in received:
+            np.testing.assert_array_equal(actual, samples)
+
+    def test_underflow_and_max_native_write_keep_distinct_pcm_block_associations(self):
+        module, output = self.create_output()
+        with patch("vntts.system_audio.get_system_audio_output", return_value=output):
+            logged = resolve_audio_output(None)
+        stream = logged.OutputStream(
+            samplerate=48_000, channels=2, dtype="float32", latency=0.1
+        )
+        self.addCleanup(stream.close)
+        stream.stream.start()
+        clock, received, records = [0.0], [], []
+        output.lock = _DelayedLock(clock, 0.002)
+        stream.stream.write_lock = _DelayedLock(clock, 0.005)
+        original_asarray = np.asarray
+
+        def advance(seconds):
+            clock[0] += seconds
+
+        def convert(*args, **kwargs):
+            advance(0.004)
+            return original_asarray(*args, **kwargs)
+
+        def write(samples):
+            received.append(samples.copy())
+            advance((0.01, 0.02, 0.07)[len(received) - 1])
+            return len(received) == 2
+
+        def guard():
+            advance(0.001)
+            return False
+
+        def record(operation, **details):
+            records.append((operation, details))
+
+        samples = np.arange(12_000, dtype=np.float32).reshape(6000, 2) / 20_000
+        module.native_streams[0].write.side_effect = write
+        with (
+            patch("vntts.audio_output.monotonic", side_effect=lambda: clock[0]),
+            patch("vntts.system_audio.monotonic", side_effect=lambda: clock[0]),
+            patch.object(output, "_refresh", side_effect=lambda: advance(0.003)),
+            patch("vntts.system_audio.np.asarray", side_effect=convert),
+            patch("vntts.audio_output.record_audio_lifecycle", side_effect=record),
+            patch("vntts.system_audio.record_audio_lifecycle", side_effect=record),
+        ):
+            self.assertEqual(
+                write_pcm_chunks(stream, samples, 48_000, guard), (True, True)
+            )
+            stream.close()
+        summaries = {
+            operation: details
+            for operation, details in records
+            if operation.endswith("write-summary")
+        }
+        pcm, system = summaries["pcm-write-summary"], summaries["system-write-summary"]
+        self.assertEqual(pcm["stream_id"], system["stream_id"])
+        for summary in (pcm, system):
+            self.assertEqual(summary["first_underflow_write_index"], 2)
+            self.assertEqual(summary["first_underflow_input_frame_offset"], 2400)
+            self.assertEqual(summary["first_underflow_input_frames"], 2400)
+        self.assertEqual(pcm["max_write_write_index"], 3)
+        self.assertEqual(system["max_native_write_write_index"], 3)
+        self.assertEqual(system["max_native_write_input_frame_offset"], 4800)
+        self.assertEqual(system["max_native_write_native_frames"], 1200)
+        self.assertEqual(system["max_native_write_native_sample_rate"], 48_000)
+        for phase, duration in (
+            ("output_lock", 2),
+            ("refresh", 3),
+            ("conversion", 4),
+            ("stream_lock", 5),
+            ("native_write", 20),
+        ):
+            self.assertAlmostEqual(system[f"first_underflow_{phase}_ms"], duration)
+        self.assertAlmostEqual(system["max_native_write_native_write_ms"], 70)
+        self.assertLess(
+            system["first_underflow_ended_monotonic"],
+            system["max_native_write_started_monotonic"],
+        )
+        self.assertEqual(pcm["first_underflow_guard_ms"], 1)
+        np.testing.assert_array_equal(np.concatenate(received), samples)
+
+    def test_zero_resample_block_keeps_input_offset_for_following_native_underflow(
+        self,
+    ):
+        module, output = self.create_output()
+        stream = self.open_stream(output)
+        stream.start()
+        stream.resampler = Mock()
+        stream.resampler.resample_chunk.side_effect = [
+            np.empty((0, 2), np.float32),
+            np.ones((3, 2), np.float32),
+        ]
+        module.native_streams[0].write.return_value = True
+        samples = np.ones((4, 2), np.float32)
+        with patch("vntts.system_audio.record_audio_lifecycle") as record:
+            self.assertFalse(stream.write(samples))
+            module.native_streams[0].write.assert_not_called()
+            self.assertTrue(stream.write(samples))
+            stream.close()
+        summary = record.call_args.kwargs
+        self.assertEqual(summary["first_underflow_write_index"], 2)
+        self.assertEqual(summary["first_underflow_input_frame_offset"], 4)
+        self.assertEqual(summary["first_underflow_input_frames"], 4)
+        self.assertEqual(summary["first_underflow_native_frames"], 3)
+
+    def test_reopened_retry_preserves_logical_write_and_input_identity(self):
+        module, output = self.create_output()
+        stream = self.open_stream(output)
+        stream.start()
+        initial_native = stream.native
+        original_open = module.OutputStream
+
+        def reopen(**options):
+            native = original_open(**options)
+            native.write.return_value = True
+            return native
+
+        def lose_device(_samples):
+            initial_native.close()
+            stream.native = None
+            raise OSError("device changed during write")
+
+        module.OutputStream = reopen
+        initial_native.write.side_effect = lose_device
+        with patch("vntts.system_audio.record_audio_lifecycle") as record:
+            self.assertTrue(stream.write(np.ones((4, 2), np.float32)))
+            stream.close()
+        summary = record.call_args.kwargs
+        self.assertEqual(summary["system_write_attempts"], 2)
+        self.assertEqual(summary["system_write_failures"], 1)
+        self.assertEqual(summary["first_underflow_write_index"], 1)
+        self.assertEqual(summary["first_underflow_input_frame_offset"], 0)
+        self.assertEqual(summary["first_underflow_input_frames"], 4)
+        self.assertEqual(summary["first_underflow_attempt"], 2)
+        self.assertEqual(stream.input_frames, 4)
 
     def test_switch_closes_all_native_streams_before_refresh_and_reopens_on_write(self):
         module, output = self.create_output()

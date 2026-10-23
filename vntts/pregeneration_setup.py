@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     from vntts.pregeneration_queue import PregenerationInput
 
 job_schema_version = 1
-story_catalog_schema_version = 7
+story_catalog_schema_version = 8
 story_catalog_minimum_bytes = 8 * 1024 * 1024
 # ponytail: assumes 12 text chars/sec and PCM16 mono 24 kHz; upgrade with measured
 # durations and the selected backend's output format if storage estimates matter.
@@ -94,6 +94,7 @@ class GameContent:
     selections: tuple[StorySelection, ...]
     source_story_index: Path | None = None
     source_story_index_sha256: str | None = None
+    game_id: str | None = None
 
     @property
     def catalog_story_index(self) -> Path:
@@ -155,6 +156,7 @@ class PregenerationJob:
     estimate: PreparationEstimate
     source_story_index: str | None = None
     source_story_index_sha256: str | None = None
+    game_id: str | None = None
 
     @property
     def catalog_story_index(self) -> str:
@@ -190,6 +192,9 @@ class PregenerationJob:
                 status=_required_text(document, "status"),
                 provider_id=_required_text(document, "provider_id"),
                 game=_required_text(document, "game"),
+                game_id=_required_text(document, "game_id")
+                if "game_id" in document
+                else None,
                 game_version=_optional_text(document.get("game_version")),
                 story_index=_required_text(document, "story_index"),
                 story_index_sha256=_sha256_text(document, "story_index_sha256"),
@@ -241,7 +246,48 @@ class PregenerationJob:
         if self.source_story_index is not None:
             document["source_story_index"] = self.source_story_index
             document["source_story_index_sha256"] = self.source_story_index_sha256
+        if self.game_id is not None:
+            document["game_id"] = self.game_id
         return document
+
+
+def _adapter_game_id(game: str | None, provider_id: str | None) -> str | None:
+    # Only the installed-game adapter owns this mapping; generic providers do not.
+    if provider_id == "reverse1999" and game == "Reverse: 1999":
+        return "reverse1999"
+    return None
+
+
+def story_game_id(
+    document: StoryIndexDocument, *, provider_id: str | None = None
+) -> str | None:
+    """Resolve explicit producer metadata or a supported installed-game adapter."""
+    value = document.metadata.get("game_id")
+    if "game_id" in document.metadata:
+        if not isinstance(value, str) or not value.strip() or value != value.strip():
+            raise PregenerationSetupError("Story canonical game identity is invalid")
+    adapter_id = _adapter_game_id(document.game, provider_id)
+    if value is not None and adapter_id is not None and value != adapter_id:
+        raise PregenerationSetupError(
+            "Story canonical game identity conflicts with its adapter"
+        )
+    return value if isinstance(value, str) else adapter_id
+
+
+def _with_game_id(content: GameContent, game_id: str | None) -> GameContent:
+    if game_id is None:
+        return content
+    if (
+        not isinstance(game_id, str)
+        or not game_id.strip()
+        or game_id != game_id.strip()
+    ):
+        raise PregenerationSetupError("Canonical game identity is invalid")
+    if content.game_id is not None and content.game_id != game_id:
+        raise PregenerationSetupError(
+            "Canonical game identity conflicts with story content"
+        )
+    return replace(content, game_id=game_id)
 
 
 def inspect_story_index(
@@ -249,6 +295,7 @@ def inspect_story_index(
     *,
     provider_id: str = "local-story-index",
     source_audio_evidence_payload: bytes | None = None,
+    game_id: str | None = None,
 ) -> GameContent:
     started = perf_counter()
     cpu_started = process_time()
@@ -294,6 +341,7 @@ def inspect_story_index(
             content = GameContent(
                 provider_id=provider_id,
                 game=document.game or "Visual novel",
+                game_id=story_game_id(document),
                 game_version=version.strip()
                 if isinstance(version, str) and version.strip()
                 else None,
@@ -326,7 +374,8 @@ def inspect_story_index(
         "complete",
         **details,
     )
-    return content
+    content = _with_game_id(content, _adapter_game_id(content.game, provider_id))
+    return _with_game_id(content, game_id)
 
 
 def _story_catalog_path(checksum: str) -> Path:
@@ -358,6 +407,7 @@ def _load_story_catalog(
                 "source_audio_semantic_evidence_sha256",
                 "game",
                 "game_version",
+                "game_id",
                 "selections",
             }
             or document["source_story_index_sha256"] != checksum
@@ -373,6 +423,9 @@ def _load_story_catalog(
         return GameContent(
             provider_id=provider_id,
             game=_required_text(document, "game"),
+            game_id=_required_text(document, "game_id")
+            if document["game_id"] is not None
+            else None,
             game_version=_optional_text(document.get("game_version")),
             story_index=path,
             story_index_sha256=checksum,
@@ -393,6 +446,7 @@ def _save_story_catalog(content: GameContent, evidence_sha256: str) -> None:
                 "source_story_index_sha256": content.story_index_sha256,
                 "source_audio_semantic_evidence_sha256": evidence_sha256,
                 "game": content.game,
+                "game_id": content.game_id,
                 "game_version": content.game_version,
                 "selections": [asdict(value) for value in content.selections],
             },
@@ -569,16 +623,34 @@ def discover_game_content(
         try:
             provider_id = "reverse1999" if path in trusted_game_paths else provider_id
             if _has_selection_origin(path):
-                discovered.append(inspect_story_index(path, provider_id=provider_id))
-                continue
-            discovered.append(
-                _cached_story_index(
+                content = inspect_story_index(path, provider_id=provider_id)
+            else:
+                content = _cached_story_index(
                     str(path),
                     provider_id,
                     sha256_file(path),
                     hashlib.sha256(_source_audio_evidence_payload(path)).hexdigest(),
                 )
-            )
+            if (
+                isinstance(settings, AppSettings)
+                and settings.game_pack
+                and settings.story_index
+                and path == Path(settings.story_index).expanduser().resolve()
+            ):
+                from vntts.game_pack import GamePackError, import_game_pack
+
+                try:
+                    imported = import_game_pack(settings.game_pack)
+                except (GamePackError, OSError, ValueError) as error:
+                    raise PregenerationSetupError(
+                        f"Configured game pack is invalid: {error}"
+                    ) from error
+                if (
+                    imported.story_index == path
+                    and imported.pack.story_index.sha256 == content.story_index_sha256
+                ):
+                    content = _with_game_id(content, imported.pack.game_id)
+            discovered.append(content)
         except (OSError, PregenerationSetupError) as error:
             errors.append(str(error))
     discovered.sort(key=lambda content: len(content.selections), reverse=True)
@@ -763,10 +835,24 @@ class PregenerationJobStore:
                     "Saved preparation identity conflicts with the selected story"
                 )
             if (
+                job.game_id is not None
+                and content.game_id is not None
+                and job.game_id != content.game_id
+            ):
+                raise PregenerationSetupError(
+                    "Saved canonical game identity conflicts with the selected story"
+                )
+            if (
                 job.provider_id != content.provider_id
                 and content.provider_id == "reverse1999"
-            ):
-                job = replace(job, provider_id=content.provider_id)
+            ) or (job.game_id is None and content.game_id is not None):
+                job = replace(
+                    job,
+                    provider_id=content.provider_id
+                    if content.provider_id == "reverse1999"
+                    else job.provider_id,
+                    game_id=content.game_id or job.game_id,
+                )
                 write_versioned_json(path, job_schema_version, job.to_document())
             return job
         timestamp = self.clock().astimezone(timezone.utc).isoformat()
@@ -777,6 +863,7 @@ class PregenerationJobStore:
             status="planned",
             provider_id=content.provider_id,
             game=content.game,
+            game_id=content.game_id,
             game_version=content.game_version,
             story_index=str(content.story_index),
             story_index_sha256=content.story_index_sha256,
@@ -810,7 +897,9 @@ class PregenerationJobStore:
                 job.selected_story_ids,
                 self.root / "story-snapshots" / snapshot_identity,
             )
-            content = inspect_story_index(snapshot, provider_id=job.provider_id)
+            content = inspect_story_index(
+                snapshot, provider_id=job.provider_id, game_id=job.game_id
+            )
         except (OSError, StoryIndexError, ValueError) as error:
             raise PregenerationSetupError(
                 f"Unable to prepare selected story snapshot: {error}"

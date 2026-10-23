@@ -4,8 +4,10 @@ This is the tracked replacement for the ignored live-session `capture_helper.swi
 Requires macOS 15+ SDK, Swift, and existing Screen Recording permission. All capture
 commands require an explicit PID and window ID. Missing permission fails at preflight;
 there is no prompt, window search heuristic, or desktop fallback. Window removal,
-owner/bounds changes, stream errors, missing video/audio, and encoder/finalization
-errors fail the command. `session.json` remains
+owner/size changes, stream errors, missing video/audio, and encoder/finalization
+errors fail the command. Origin-only moves keep the same exact-window filter;
+metadata records their count, first/last change and number of omitted intermediate
+changes. No wider capture is selected when a window moves. `session.json` remains
 `in_progress` after a crash/watchdog and cannot be counted as success.
 
 Compile from the repository root (the fixture has its own entry point):
@@ -24,6 +26,7 @@ frames and verifies three scene colors and original PTS.
 
 The explicitly authorized native component gate opens a nonactivating generated
 window, prints its exact PID/window ID, captures **only that window** for 65 seconds,
+moves that same window twice without changing its size,
 and cleans it up on success, failure, or timeout. The fixture independently exits
 at 90 seconds. It does not activate the app, become key, change Spaces, play audio,
 or load game assets. Run this only when creating this visible fixture window and

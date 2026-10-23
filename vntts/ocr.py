@@ -348,7 +348,9 @@ def _nameplate_bounds(
     anchors = [g for g in glyphs if g[1].start <= max(12, (right - left) * 0.06)]
     if not anchors:
         if (
-            not glyphs
+            not any(
+                g[1].stop - g[1].start <= (g[0].stop - g[0].start) * 3 for g in glyphs
+            )
             and int(pixels.max()) - int(pixels.min()) >= 32
             and not _isolated_speaker_strokes(pixels)
         ):
@@ -383,6 +385,22 @@ def _nameplate_bounds(
     )
 
 
+def _speaker_stroke_background(patch: np.ndarray, y: slice, x: slice) -> np.ndarray:
+    rows = np.concatenate((patch[: y.start], patch[y.stop :]), axis=0)
+    columns = np.concatenate((patch[:, : x.start], patch[:, x.stop :]), axis=1)
+    if not rows.size or not columns.size:
+        rows = columns = corners = patch
+    else:
+        corners = np.concatenate((rows[:, : x.start], rows[:, x.stop :]), axis=1)
+    # A clipped stroke must not supply its own estimated background.
+    background: np.ndarray = (
+        np.median(columns, axis=1)[:, None]
+        + np.median(rows, axis=0)[None, :]
+        - np.median(corners)
+    )
+    return background
+
+
 def _isolated_speaker_strokes(pixels: np.ndarray) -> bool:
     """Retain faint ink over smooth local background despite distant scenery."""
     height, width = pixels.shape
@@ -406,10 +424,10 @@ def _isolated_speaker_strokes(pixels: np.ndarray) -> bool:
             ]
             # Row/column medians tolerate ramps and stripes without treating
             # faint letters as part of the surrounding scene's brightness.
-            background = (
-                np.median(patch, axis=1)[:, None]
-                + np.median(patch, axis=0)[None, :]
-                - np.median(patch)
+            background = _speaker_stroke_background(
+                patch,
+                slice(y.start - top, y.stop - top),
+                slice(x.start - left, x.stop - left),
             )
             if np.mean(np.abs(patch - background) <= 2) < 0.8:
                 continue
@@ -419,7 +437,11 @@ def _isolated_speaker_strokes(pixels: np.ndarray) -> bool:
                     y.start - top : y.stop - top, x.start - left : x.stop - left
                 ]
             )
-            ink = (-residual if dark else residual)[components[bounds] == index]
+            ink = (
+                np.abs(residual)
+                if y.start == 0 or y.stop == height
+                else (-residual if dark else residual)[components[bounds] == index]
+            )
             if ink.max() >= 16:
                 return True
     return False

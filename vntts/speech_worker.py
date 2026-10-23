@@ -15,7 +15,10 @@ import threading
 import uuid
 from collections import deque
 from collections.abc import Callable, Generator, Mapping, Sequence
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import redirect_stdout
+from dataclasses import dataclass, field
 from io import BytesIO
 from itertools import chain
 from pathlib import Path
@@ -931,6 +934,13 @@ def _worker_timeout_seconds(value: float, name: str) -> float:
     return seconds
 
 
+@dataclass
+class _WorkerStartup:
+    future: Future[None] = field(default_factory=Future)
+    cancelled: threading.Event = field(default_factory=threading.Event)
+    finished: threading.Event = field(default_factory=threading.Event)
+
+
 class IsolatedSpeechBackend:
     """Parent-side audio owner for a model loaded in its locked interpreter."""
 
@@ -953,6 +963,7 @@ class IsolatedSpeechBackend:
         generation_profile: str | None = None,
         allow_gated_model_access: bool = False,
         allow_download: bool = True,
+        defer_startup: bool = False,
         **worker_options: object,
     ) -> None:
         self.name = backend
@@ -994,22 +1005,23 @@ class IsolatedSpeechBackend:
         validate_volume(volume)
         if not isinstance(allow_download, bool):
             raise TTSConfigurationError("Speech worker allow_download must be boolean")
-        from vntts.runtime_installation import ensure_speech_runtime
-
-        if not allow_download:
-            runtime_directory = resolve_speech_runtime_paths(
-                backend, runtime_directory
-            )[0]
-        self.runtime_root, self.interpreter, self.runtime_site = ensure_speech_runtime(
-            backend,
-            runtime_directory=runtime_directory,
-            cancellation=startup_cancellation,
-            progress=startup_progress,
-        )
+        if not isinstance(defer_startup, bool):
+            raise TTSConfigurationError("Speech worker defer_startup must be boolean")
+        self.deferred_startup = defer_startup
+        self._runtime_directory = runtime_directory
+        self._runtime_prepared = False
         self.project_root = Path(__file__).resolve().parents[1]
         self.bundle_root = get_bundle_root()
         self.worker_source_root = None if self.bundle_root else self.project_root
         self.worker_working_directory = self.bundle_root or self.project_root
+        self._initialize_worker_state()
+        self.set_volume(volume)
+        self.set_speed(1.0)
+        if not defer_startup:
+            self._prepare_runtime(startup_cancellation)
+            self._start_worker()
+
+    def _initialize_worker_state(self) -> None:
         self.process: WorkerProcess | None = None
         self.health: FrameDocument | None = None
         self._messages: queue.Queue[WorkerMessage] = queue.Queue()
@@ -1026,10 +1038,135 @@ class IsolatedSpeechBackend:
         self.last_generation_limited = False
         self.last_audio_source: str | None = None
         self._closed = False
+        self._startup_lock = threading.Lock()
+        self._startup: _WorkerStartup | None = None
+        self._live_mode_active: bool | None = None
+        self._worker_live_mode: bool | None = None
         self._runtime_use: RuntimeUse | None = None
-        self.set_volume(volume)
-        self.set_speed(1.0)
-        self._start_worker()
+
+    def _prepare_runtime(self, cancellation: Cancellation) -> None:
+        if self._runtime_prepared:
+            return
+        from vntts.runtime_installation import ensure_speech_runtime
+
+        directory = self._runtime_directory
+        if not self.allow_download:
+            directory = resolve_speech_runtime_paths(self.name, directory)[0]
+        if self.name == "qwen-tts" and sys.platform != "win32" and directory is None:
+            directory = ensure_speech_runtime(
+                "moss-tts", cancellation=cancellation, progress=self.startup_progress
+            )[0]
+        self.runtime_root, self.interpreter, self.runtime_site = ensure_speech_runtime(
+            self.name,
+            runtime_directory=directory,
+            cancellation=cancellation,
+            progress=self.startup_progress,
+        )
+        self._runtime_prepared = True
+
+    def load_in_background(
+        self, *, warm_up: bool = False, progress: WarmupProgress | None = None
+    ) -> Future[None]:
+        return self._begin_startup(warm_up=warm_up, progress=progress).future
+
+    def _begin_startup(
+        self, *, warm_up: bool = False, progress: WarmupProgress | None = None
+    ) -> _WorkerStartup:
+        with self._startup_lock:
+            if self._closed or self._startup_cancelled():
+                raise TTSSynthesisError(
+                    f"{self.name} isolated worker startup was cancelled"
+                )
+            startup = self._startup
+            if (
+                startup is not None
+                and not startup.future.done()
+                and not startup.cancelled.is_set()
+            ):
+                return startup
+            previous = startup
+            pending_previous = previous is not None and not previous.future.done()
+            if (
+                not pending_previous
+                and self.health is not None
+                and self.process is not None
+                and self.process.poll() is None
+            ):
+                if startup is None:
+                    startup = self._startup = _WorkerStartup()
+                    startup.future.set_result(None)
+                    startup.finished.set()
+                return startup
+            startup = self._startup = _WorkerStartup()
+
+            def launch(_previous: Future[None] | None = None) -> None:
+                try:
+                    threading.Thread(
+                        target=self._load_background,
+                        args=(startup, warm_up, progress),
+                        name=f"vntts-{self.name}-startup",
+                        daemon=True,
+                    ).start()
+                except BaseException as error:
+                    startup.future.set_exception(error)
+                    startup.finished.set()
+
+            if pending_previous:
+                assert previous is not None
+                previous.future.add_done_callback(launch)
+            else:
+                launch()
+            return startup
+
+    def _load_background(
+        self, startup: _WorkerStartup, warm_up: bool, progress: WarmupProgress | None
+    ) -> None:
+        def cancelled() -> bool:
+            return (
+                self._closed or startup.cancelled.is_set() or self._startup_cancelled()
+            )
+
+        try:
+            if cancelled():
+                raise TTSSynthesisError(
+                    f"{self.name} isolated worker startup was cancelled"
+                )
+            self._prepare_runtime(cancelled)
+            if cancelled():
+                raise TTSSynthesisError(
+                    f"{self.name} isolated worker startup was cancelled"
+                )
+            self._start_worker(cancellation=cancelled)
+        except BaseException as error:
+            startup.future.set_exception(error)
+            if not cancelled() and self.startup_progress is not None:
+                self.startup_progress(
+                    f"Fallback speech model failed to load: {error}; retry on demand"
+                )
+        else:
+            startup.future.set_result(None)
+            if not cancelled() and self.startup_progress is not None:
+                self.startup_progress(
+                    "Fallback speech model is ready; warming voices in the background"
+                    if warm_up
+                    else "Fallback speech model is ready"
+                )
+            if warm_up:
+                self._warm_background_voices(progress, cancelled)
+        finally:
+            startup.finished.set()
+
+    def _warm_background_voices(
+        self, progress: WarmupProgress | None, cancelled: Callable[[], bool]
+    ) -> None:
+        try:
+            self.warm_up(progress=progress, cancellation=cancelled)
+        except Exception as error:
+            if not cancelled() and self.startup_progress is not None:
+                self.startup_progress(f"Voice warm-up was incomplete: {error}")
+
+    def load(self) -> None:
+        self._ensure_worker()
 
     def _start_worker(self, *, cancellation: Callable[[], bool] | None = None) -> None:
         from vntts.runtime_ownership import claim_runtime
@@ -1042,6 +1179,13 @@ class IsolatedSpeechBackend:
                 self._runtime_use = claim_runtime("moss-tts", self.runtime_root)
         try:
             self._launch_worker(cancellation=cancellation)
+            if self.deferred_startup:
+                if self._closed or (cancellation is not None and cancellation()):
+                    raise TTSSynthesisError(
+                        f"{self.name} isolated worker startup was cancelled"
+                    )
+                assert self.process is not None
+                self._synchronize_live_mode(self.process, cancellation=cancellation)
         except BaseException as error:
             attempt_cleanup(
                 lambda: self._terminate_process(self.process),
@@ -1059,10 +1203,22 @@ class IsolatedSpeechBackend:
                     self._runtime_use = None
             raise
 
+    def _report_loading_assets(self, environment: Mapping[str, str]) -> None:
+        if self.startup_progress is not None:
+            cache = (
+                environment.get("HF_HUB_CACHE")
+                or environment.get("HUGGINGFACE_HUB_CACHE")
+                or str(Path(environment["HF_HOME"]) / "hub")
+            )
+            self.startup_progress(f"Loading speech model assets (cache: {cache})...")
+
     def _launch_worker(self, *, cancellation: Callable[[], bool] | None = None) -> None:
         if self._closed:
             raise TTSSynthesisError(f"{self.name} isolated worker is shut down")
+        from vntts.model_assets import ModelAssetManager
+
         self.health = None
+        self._worker_live_mode = None
         command = [
             str(self.interpreter),
             "-I",
@@ -1072,7 +1228,7 @@ class IsolatedSpeechBackend:
             _BOOTSTRAP,
             "" if self.worker_source_root is None else str(self.worker_source_root),
         ]
-        environment = dict(os.environ)
+        environment = ModelAssetManager().huggingface_environment()
         environment["PYTHONNOUSERSITE"] = "1"
         if self.name == "pocket-tts" and self.bundle_root is not None:
             for name in (
@@ -1085,6 +1241,7 @@ class IsolatedSpeechBackend:
                 environment["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
                 environment.pop("HF_TOKEN", None)
                 environment.pop("HUGGING_FACE_HUB_TOKEN", None)
+        self._report_loading_assets(environment)
         if self._runtime_use is not None:
             self._runtime_use.begin_launch()
         process = self._create_worker_process(command, environment)
@@ -1272,6 +1429,32 @@ class IsolatedSpeechBackend:
     def _ensure_worker(
         self, *, cancellation: Callable[[], bool] | None = None
     ) -> WorkerProcess:
+        if self.deferred_startup:
+            if (
+                self._closed
+                or self._startup_cancelled()
+                or (cancellation is not None and cancellation())
+            ):
+                raise TTSSynthesisError(
+                    f"{self.name} isolated worker startup was cancelled"
+                )
+            startup = self._begin_startup()
+            while True:
+                if (
+                    self._closed
+                    or self._startup_cancelled()
+                    or (cancellation is not None and cancellation())
+                ):
+                    raise TTSSynthesisError(
+                        f"{self.name} isolated worker startup was cancelled"
+                    )
+                try:
+                    startup.future.result(timeout=0.05)
+                except FutureTimeout:
+                    if not startup.future.done():
+                        continue
+                    startup.future.result()
+                break
         if self.process is None or self.process.poll() is not None:
             self._start_worker(cancellation=cancellation)
         if self.process is None:
@@ -1291,6 +1474,12 @@ class IsolatedSpeechBackend:
                 cancellation=lambda: (
                     self._stop_requested.is_set() or request.cancellation_requested()
                 )
+            )
+            self._synchronize_live_mode(
+                process,
+                cancellation=lambda: (
+                    self._stop_requested.is_set() or request.cancellation_requested()
+                ),
             )
             request_id = uuid.uuid4().hex
             self._send(
@@ -1534,11 +1723,19 @@ class IsolatedSpeechBackend:
                 rendered.close()
                 self._active_stream = None
 
-    def prime(self, character: str) -> bool:
-        return bool(self._request_value("prime", voice=character))
+    def prime(
+        self, character: str, *, cancellation: Callable[[], bool] | None = None
+    ) -> bool:
+        return bool(
+            self._request_value("prime", voice=character, cancellation=cancellation)
+        )
 
     def warm_up(
-        self, *, progress: WarmupProgress | None = None, text: str = "Voice ready."
+        self,
+        *,
+        progress: WarmupProgress | None = None,
+        text: str = "Voice ready.",
+        cancellation: Callable[[], bool] | None = None,
     ) -> int:
         del text
         progress = progress or (lambda _current, _total, _character: None)
@@ -1547,55 +1744,101 @@ class IsolatedSpeechBackend:
         )
         characters = ["Narrator", *(value.character for value in voices)]
         for current, character in enumerate(characters, start=1):
+            if cancellation is not None and cancellation():
+                break
             progress(current, len(characters), character)
-            self.prime(character)
+            if cancellation is None:
+                self.prime(character)
+            else:
+                self.prime(character, cancellation=cancellation)
         return len(characters)
 
-    def _request_value(self, command_type: str, **values: object) -> object:
+    def _request_value(
+        self,
+        command_type: str,
+        *,
+        cancellation: Callable[[], bool] | None = None,
+        **values: object,
+    ) -> object:
         with self._request_lock:
+            if cancellation is not None and cancellation():
+                raise TTSSynthesisError(
+                    f"{self.name} isolated worker request was cancelled"
+                )
             self._stop_requested.clear()
-            process = self._ensure_worker()
-            request_id = uuid.uuid4().hex
-            self._send(
-                process,
-                {
-                    "type": command_type,
-                    "request_id": request_id,
-                    "registry": _serialize_registry(self.registry),
-                    "narrator_reference": (
-                        str(self.narrator_reference)
-                        if isinstance(self.narrator_reference, Path)
-                        else self.narrator_reference
-                    ),
-                    **values,
-                },
+            process = self._ensure_worker(cancellation=cancellation)
+            if command_type != "set-live-mode":
+                self._synchronize_live_mode(process, cancellation=cancellation)
+            return self._exchange_value(
+                process, command_type, cancellation=cancellation, **values
             )
-            deadline = monotonic() + self.request_timeout
-            while True:
-                if self._closed or self._stop_requested.is_set():
-                    self._terminate_process(process)
-                    raise TTSSynthesisError(
-                        f"{self.name} isolated worker request was cancelled"
-                    )
-                remaining = deadline - monotonic()
-                if remaining <= 0:
-                    self._terminate_process(process)
-                    raise TTSSynthesisError(
-                        f"{self.name} isolated worker did not answer {command_type!r} "
-                        f"within {self.request_timeout:g} seconds"
-                    )
-                try:
-                    document, _payload = self._next_frame(
-                        process,
-                        timeout=min(0.1, remaining),
-                    )
-                except queue.Empty:
-                    continue
-                if document.get("request_id") != request_id:
-                    continue
-                if document.get("type") == "error":
-                    raise TTSSynthesisError(_required_text(document, "error"))
-                return document.get("value")
+
+    def _synchronize_live_mode(
+        self, process: WorkerProcess, *, cancellation: Callable[[], bool] | None = None
+    ) -> None:
+        while (
+            self._live_mode_active is not None
+            and self._worker_live_mode != self._live_mode_active
+        ):
+            active = self._live_mode_active
+            self._exchange_value(
+                process, "set-live-mode", active=active, cancellation=cancellation
+            )
+            self._worker_live_mode = active
+
+    def _exchange_value(
+        self,
+        process: WorkerProcess,
+        command_type: str,
+        *,
+        cancellation: Callable[[], bool] | None = None,
+        **values: object,
+    ) -> object:
+        request_id = uuid.uuid4().hex
+        self._send(
+            process,
+            {
+                "type": command_type,
+                "request_id": request_id,
+                "registry": _serialize_registry(self.registry),
+                "narrator_reference": (
+                    str(self.narrator_reference)
+                    if isinstance(self.narrator_reference, Path)
+                    else self.narrator_reference
+                ),
+                **values,
+            },
+        )
+        deadline = monotonic() + self.request_timeout
+        while True:
+            if self._closed or (
+                cancellation()
+                if cancellation is not None
+                else self._stop_requested.is_set()
+            ):
+                self._terminate_process(process)
+                raise TTSSynthesisError(
+                    f"{self.name} isolated worker request was cancelled"
+                )
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                self._terminate_process(process)
+                raise TTSSynthesisError(
+                    f"{self.name} isolated worker did not answer {command_type!r} "
+                    f"within {self.request_timeout:g} seconds"
+                )
+            try:
+                document, _payload = self._next_frame(
+                    process,
+                    timeout=min(0.1, remaining),
+                )
+            except queue.Empty:
+                continue
+            if document.get("request_id") != request_id:
+                continue
+            if document.get("type") == "error":
+                raise TTSSynthesisError(_required_text(document, "error"))
+            return document.get("value")
 
     def set_volume(self, volume: object) -> None:
         self.volume = validate_volume(volume)
@@ -1614,9 +1857,33 @@ class IsolatedSpeechBackend:
         return changed
 
     def set_live_mode_active(self, active: bool) -> bool:
+        self._live_mode_active = bool(active)
+        if self.deferred_startup:
+            if not active:
+                self.cancel_startup()
+                return False
+            self.load_in_background()
+            return True
         if not active and (self.process is None or self.process.poll() is not None):
             return False
-        return bool(self._request_value("set-live-mode", active=bool(active)))
+        result = bool(self._request_value("set-live-mode", active=bool(active)))
+        self._worker_live_mode = bool(active)
+        return result
+
+    @property
+    def startup_pending(self) -> bool:
+        return self._startup is not None and not self._startup.finished.is_set()
+
+    @property
+    def startup_cancelled(self) -> bool:
+        return self._startup is not None and self._startup.cancelled.is_set()
+
+    def cancel_startup(self) -> bool:
+        startup = self._startup
+        if startup is None:
+            return False
+        startup.cancelled.set()
+        return not startup.finished.is_set()
 
     def set_narrator_voice(
         self, voice: CharacterVoice | None, fallback: str | Path | None = None
@@ -1635,8 +1902,13 @@ class IsolatedSpeechBackend:
         self._terminate_process(self.process)
 
     def stop(self) -> bool:
-        was_active = self._active_stream is not None or self._request_lock.locked()
+        was_active = (
+            self._active_stream is not None
+            or self._request_lock.locked()
+            or self.startup_pending
+        )
         self._stop_requested.set()
+        self.cancel_startup()
         if self._request_lock.locked():
             self._terminate_process(self.process)
         return was_active
@@ -1644,6 +1916,8 @@ class IsolatedSpeechBackend:
     def shutdown(self) -> None:
         self._closed = True
         self._stop_requested.set()
+        if self._startup is not None:
+            self._startup.cancelled.set()
         process = self.process
         if process is None:
             if self._runtime_use is not None:
@@ -1720,6 +1994,7 @@ class RetainedWorkerRuntime:
 
     supports_startup_cancellation = True
     supports_startup_progress = True
+    supports_deferred_startup = True
 
     def __init__(
         self,
@@ -1759,7 +2034,16 @@ class RetainedWorkerRuntime:
             instance = self._instance
             process = None if instance is None else instance.process
             dead = instance is not None and (
-                process is None or process.poll() is not None
+                (
+                    process is None
+                    and getattr(instance, "deferred_startup", False) is not True
+                )
+                or (process is not None and process.poll() is not None)
+                or getattr(instance, "_closed", False) is True
+                or (
+                    getattr(instance, "startup_pending", False) is True
+                    and getattr(instance, "startup_cancelled", False) is True
+                )
             )
             if instance is not None and (identity != self._identity or dead):
                 instance.shutdown()
@@ -1795,7 +2079,13 @@ class RetainedWorkerRuntime:
         stable_options = {
             key: _worker_option_identity(value)
             for key, value in options.items()
-            if key not in {"startup_cancellation", "startup_progress", "volume"}
+            if key
+            not in {
+                "startup_cancellation",
+                "startup_progress",
+                "volume",
+                "defer_startup",
+            }
         }
         return json.dumps(
             [_serialize_registry(registry), stable_options],
@@ -1848,7 +2138,7 @@ def create_qwen_worker_backend(
     if not _is_startup_progress(progress):
         raise TTSConfigurationError("Speech worker startup progress is invalid")
     validate_volume(options.get("volume", 1.0))
-    if "runtime_directory" not in options:
+    if "runtime_directory" not in options and options.get("defer_startup") is not True:
         from vntts.runtime_installation import ensure_speech_runtime
 
         options["runtime_directory"] = ensure_speech_runtime(
@@ -1874,3 +2164,11 @@ for _factory in (
 ):
     setattr(_factory, "supports_startup_cancellation", True)
     setattr(_factory, "supports_startup_progress", True)
+
+for _factory in (
+    create_pocket_worker_backend,
+    create_chatterbox_worker_backend,
+    create_qwen_worker_backend,
+    create_moss_delay_worker_backend,
+):
+    setattr(_factory, "supports_deferred_startup", True)

@@ -41,7 +41,7 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 148
+      "maximum": 139
     },
     {
       "code": "C901",
@@ -307,7 +307,7 @@
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_auto_advance",
       "count": 1,
-      "maximum": 21
+      "maximum": 16
     },
     {
       "code": "C901",
@@ -475,7 +475,7 @@
       "path": "vntts/pregeneration_pack.py",
       "scope": "OfflinePackPublisher.publish",
       "count": 1,
-      "maximum": 14
+      "maximum": 13
     },
     {
       "code": "C901",
@@ -804,7 +804,7 @@
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_auto_advance",
       "count": 1,
-      "maximum": 22
+      "maximum": 16
     },
     {
       "code": "PLR0912",
@@ -888,7 +888,7 @@
       "path": "vntts/pregeneration_pack.py",
       "scope": "OfflinePackPublisher.publish",
       "count": 1,
-      "maximum": 14
+      "maximum": 13
     },
     {
       "code": "PLR0912",
@@ -979,7 +979,7 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 667
+      "maximum": 632
     },
     {
       "code": "PLR0915",
@@ -1242,13 +1242,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/diagnostics_ui.py",
-      "scope": "DiagnosticsDialog.__init__",
-      "count": 1,
-      "maximum": 102
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/generated_audio.py",
       "scope": "GeneratedAudioFallbackBackend.prepare_route",
       "count": 1,
@@ -1263,13 +1256,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/history_ui.py",
-      "scope": "DialogueHistoryDialog.__init__",
-      "count": 1,
-      "maximum": 69
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/live.py",
       "scope": "LiveDialogReader.__init__",
       "count": 1,
@@ -1280,14 +1266,14 @@
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_auto_advance",
       "count": 1,
-      "maximum": 84
+      "maximum": 63
     },
     {
       "code": "PLR0915",
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_ocr",
       "count": 1,
-      "maximum": 138
+      "maximum": 134
     },
     {
       "code": "PLR0915",
@@ -1357,7 +1343,7 @@
       "path": "vntts/pregeneration_pack.py",
       "scope": "OfflinePackPublisher.publish",
       "count": 1,
-      "maximum": 90
+      "maximum": 86
     },
     {
       "code": "PLR0915",
@@ -1435,13 +1421,6 @@
       "scope": "DiagnosticsPage.__init__",
       "count": 1,
       "maximum": 64
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/profiles_ui.py",
-      "scope": "GameProfilesDialog.__init__",
-      "count": 1,
-      "maximum": 57
     },
     {
       "code": "C901",

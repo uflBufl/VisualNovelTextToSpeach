@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from dataclasses import replace
@@ -20,7 +21,10 @@ from vntts_artifacts import write_story_index_document  # noqa: E402
 from vntts_artifacts.story_index import load_story_index_document  # noqa: E402
 
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
-from tests.story_fixtures import write_story_index  # noqa: E402
+from tests.story_fixtures import (  # noqa: E402
+    write_story_index,
+    write_synthetic_game_pack,
+)
 from tests.symlink_support import symlink_or_skip  # noqa: E402
 from vntts.game_content_importer import (  # noqa: E402
     GameContentImportCancelled,
@@ -119,6 +123,138 @@ def story_filter_content(content):
 
 
 class PregenerationSetupTest(unittest.TestCase):
+    def test_canonical_identity_roundtrips_through_jobs_and_selected_content(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_story_index(root / "content")
+            story = load_story_index_document(source)
+            write_story_index_document(
+                source,
+                story.metadata | {"game_id": "custom-import"},
+                [record.to_record() for record in story.records],
+            )
+            content = inspect_story_index(source)
+            self.assertEqual(content.provider_id, "local-story-index")
+            self.assertEqual(content.game_id, "custom-import")
+            store = PregenerationJobStore(root / "jobs")
+            job = store.create_or_resume(content, ("main-1",))
+            self.assertEqual(store.load(job.job_id).game_id, "custom-import")
+            selected = store.selected_content(job)
+            self.assertEqual(selected.game_id, "custom-import")
+            self.assertEqual(
+                store.create_or_resume(selected, ("main-1",)).game_id, "custom-import"
+            )
+            with self.assertRaisesRegex(
+                PregenerationSetupError, "canonical game identity conflicts"
+            ):
+                store.create_or_resume(replace(content, game_id="foreign"), ("main-1",))
+
+    def test_legacy_adapter_job_resumes_without_changing_its_source_identity(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_story_index(root / "content")
+            content = inspect_story_index(source, provider_id="reverse1999")
+            store = PregenerationJobStore(root / "jobs")
+            job = store.create_or_resume(content, ("main-1",))
+            document = json.loads(store.path_for(job.job_id).read_bytes())
+            document.pop("game_id")
+            store.path_for(job.job_id).write_text(
+                json.dumps(document), encoding="utf-8"
+            )
+            legacy = store.load(job.job_id)
+            self.assertIsNone(legacy.game_id)
+            before = source.read_bytes()
+            resumed = store.create_or_resume(content, ("main-1",))
+            self.assertEqual(resumed.game_id, "reverse1999")
+            self.assertEqual(resumed.job_id, legacy.job_id)
+            self.assertEqual(resumed.story_index_sha256, legacy.story_index_sha256)
+            self.assertEqual(source.read_bytes(), before)
+            self.assertEqual(store.selected_content(legacy).game_id, "reverse1999")
+
+    def test_catalog_cache_keeps_adapter_provenance_out_of_generic_imports(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_story_index(root / "content")
+            with (
+                patch("vntts.pregeneration_setup.story_catalog_minimum_bytes", 0),
+                patch(
+                    "vntts.pregeneration_setup._story_catalog_path",
+                    return_value=root / "catalog.json",
+                ),
+            ):
+                adapter = inspect_story_index(source, provider_id="reverse1999")
+                _cached_story_index_document.cache_clear()
+                with patch(
+                    "vntts.pregeneration_setup._cached_story_index_document",
+                    side_effect=AssertionError("cached catalog was parsed"),
+                ):
+                    generic = inspect_story_index(source)
+            self.assertEqual(adapter.game_id, "reverse1999")
+            self.assertIsNone(generic.game_id)
+            self.assertEqual(generic.game, "Reverse: 1999")
+
+    def test_explicit_identity_survives_the_catalog_cache_and_conflicts_with_adapter(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_story_index(root / "content")
+            story = load_story_index_document(source)
+            write_story_index_document(
+                source,
+                story.metadata | {"game_id": "foreign-game"},
+                [record.to_record() for record in story.records],
+            )
+            with (
+                patch("vntts.pregeneration_setup.story_catalog_minimum_bytes", 0),
+                patch(
+                    "vntts.pregeneration_setup._story_catalog_path",
+                    return_value=root / "catalog.json",
+                ),
+            ):
+                first = inspect_story_index(source)
+                _cached_story_index_document.cache_clear()
+                second = inspect_story_index(source)
+                self.assertEqual(first.game_id, "foreign-game")
+                self.assertEqual(second.game_id, "foreign-game")
+                with self.assertRaisesRegex(
+                    PregenerationSetupError, "identity conflicts"
+                ):
+                    inspect_story_index(source, provider_id="reverse1999")
+
+    def test_discovery_preserves_the_configured_source_pack_identity(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, *_ = write_synthetic_game_pack(root / "pack")
+            source = manifest.parent / "story-index.jsonl"
+            with patch(
+                "vntts.pregeneration_setup.get_local_data_directory",
+                return_value=root / "appdata",
+            ):
+                discovery = discover_game_content(
+                    AppSettings(story_index=str(source), game_pack=str(manifest)),
+                    environment={"R1999_EXTRACTOR_DATA": str(root / "unused")},
+                )
+            self.assertEqual(discovery.errors, ())
+            self.assertEqual(len(discovery.content), 1)
+            self.assertEqual(discovery.content[0].game_id, "synthetic-game")
+            self.assertEqual(discovery.content[0].game, "Synthetic Game")
+
+    def test_invalid_canonical_metadata_is_rejected(self):
+        for identity in (None, "", " padded ", 42):
+            with self.subTest(identity=identity), TemporaryDirectory() as directory:
+                source = write_story_index(Path(directory))
+                story = load_story_index_document(source)
+                write_story_index_document(
+                    source,
+                    story.metadata | {"game_id": identity},
+                    [record.to_record() for record in story.records],
+                )
+                with self.assertRaisesRegex(
+                    PregenerationSetupError, "identity is invalid"
+                ):
+                    inspect_story_index(source)
+
     def test_outdated_index_detector_ignores_invalid_encoding(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "story-index.jsonl"

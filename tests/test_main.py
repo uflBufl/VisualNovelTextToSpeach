@@ -7,7 +7,7 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event, Lock, Thread
+from threading import Event, Lock, RLock, Thread
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 from uuid import UUID
@@ -1467,6 +1467,204 @@ class MainTest(unittest.TestCase):
         )
         controller.shutdown()
 
+    @staticmethod
+    def _prepared_reading_fixture(root, scenario):
+        import hashlib
+        import wave
+
+        from vntts_artifacts.generated_audio import write_generated_audio_manifest
+
+        audio = root / "line.wav"
+        with wave.open(str(audio), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(24_000)
+            output.writeframes(b"\x00\x00\x00\x20\x00\xe0\x00\x00")
+        manifest = root / "generated.json"
+        write_generated_audio_manifest(
+            manifest,
+            {},
+            [
+                {
+                    "line_id": "game:1",
+                    "text_sha256": text_sha256("Hello."),
+                    "audio": "line.wav",
+                    "audio_format": "wav-pcm16-mono",
+                    "audio_sha256": hashlib.sha256(audio.read_bytes()).hexdigest(),
+                    "sample_rate": 24_000,
+                    "sample_count": 4,
+                }
+            ],
+        )
+        if scenario == "corrupt":
+            audio.write_bytes(b"corrupt")
+        line = ChapterDialogue(
+            "game:1", "1", 1, "Narrator", "Hello.", text_sha256("Hello.")
+        )
+        if scenario == "original":
+            line = replace(
+                line,
+                source_audio_status="available",
+                source_audio_authoritative=True,
+                source_audio_completeness="full",
+                source_audio_duration_seconds=0.001,
+                source_audio_id="cue-1",
+            )
+        return manifest, line
+
+    @staticmethod
+    def _blocked_startup_factory(entered, release, instances):
+        from vntts.speech_worker import IsolatedSpeechBackend
+
+        class BlockedBackend(IsolatedSpeechBackend):
+            def _prepare_runtime(self, _cancellation):
+                pass
+
+            def _start_worker(self, *, cancellation=None):
+                entered.set()
+                if not release.wait(3):
+                    raise AssertionError("Test failed to release model startup")
+                if (
+                    self._closed
+                    or self._startup_cancelled()
+                    or (cancellation is not None and cancellation())
+                ):
+                    raise TTSSynthesisError("Test model startup cancelled")
+
+        def create(registry, **options):
+            backend = BlockedBackend("pocket-tts", registry, **options)
+            instances.append(backend)
+            return backend
+
+        return create
+
+    def _finish_blocked_startup(self, controller, runtime, caller, release, instances):
+        controller.request_shutdown()
+        release.set()
+        caller.join(3)
+        controller.shutdown()
+        runtime.shutdown()
+        for instance in instances:
+            startup = instance._startup
+            if startup is not None:
+                self.assertTrue(startup.finished.wait(3))
+        self.assertFalse(caller.is_alive())
+
+    def test_prepared_reading_starts_while_the_retained_fallback_model_is_loading(self):
+        from tests.audio_output_fixtures import FakeAudioOutput
+        from vntts.generated_audio import GeneratedAudioLibrary
+        from vntts.speech_worker import RetainedWorkerRuntime
+
+        for scenario in (
+            "generated",
+            "original",
+            "missing",
+            "corrupt",
+            "override",
+            "speed",
+            "live-only",
+        ):
+            with self.subTest(scenario=scenario), TemporaryDirectory() as directory:
+                root = Path(directory)
+                manifest, line = self._prepared_reading_fixture(root, scenario)
+                entered, release, finished = Event(), Event(), Event()
+                statuses, results, errors, instances = [], [], [], []
+
+                create = self._blocked_startup_factory(entered, release, instances)
+
+                runtime = RetainedWorkerRuntime("pocket-tts", backend_factory=create)
+                device = FakeAudioOutput()
+                library_factory = (
+                    Mock(return_value=None)
+                    if scenario == "missing"
+                    else GeneratedAudioLibrary.load_optional
+                )
+                controller = AppController(
+                    AppSettings(
+                        speech_backend="pocket-tts",
+                        story_index="bound-story.jsonl",
+                        generated_audio_manifest=str(manifest),
+                        audio_source_policy="live-tts-only"
+                        if scenario == "live-only"
+                        else "prefer-game-audio"
+                        if scenario == "original"
+                        else "prefer-generated",
+                        force_live_narrator=scenario == "override",
+                        speech_rate_percent=150 if scenario == "speed" else 100,
+                        warm_up_voices=True,
+                    ),
+                    tts_factory=Mock(),
+                    pocket_backend_factory=runtime,
+                    chapter_voice_preloader=ChapterVoicePreloader((line,)),
+                    model_asset_manager_factory=Mock(),
+                    generated_audio_library_factory=library_factory,
+                    generated_audio_backend_factory=lambda *args, **options: (
+                        GeneratedAudioFallbackBackend(
+                            *args, audio_output=device, **options
+                        )
+                    ),
+                    status_handler=statuses.append,
+                    error_handler=errors.append,
+                )
+
+                controller.voice_registry_initializer = Mock(
+                    return_value=CharacterVoiceRegistry()
+                )
+
+                def start():
+                    try:
+                        results.append(controller.start())
+                    finally:
+                        finished.set()
+
+                with (
+                    patch("vntts.controller.ThreadPoolExecutor", return_value=Mock()),
+                    patch("vntts.controller.LiveDialogReader", return_value=Mock()),
+                    patch(
+                        "vntts.controller.create_dialog_read_scheduler",
+                        return_value=Mock(),
+                    ),
+                ):
+                    caller = Thread(target=start)
+                    caller.start()
+                    try:
+                        self.assertTrue(entered.wait(1))
+                        if scenario in {"generated", "original"}:
+                            self.assertTrue(finished.wait(1))
+                            self.assertEqual(results, [True])
+                            self.assertEqual(errors, [])
+                            self.assertIsNotNone(controller.live_reader)
+                            self.assertIsNone(instances[0].process)
+                            self.assertFalse(release.is_set())
+                            backend = controller.speech_backend
+                            backend.set_live_mode_active(True)
+                            route = backend.prepare_route(
+                                "Narrator", "Hello.", line_id="game:1"
+                            )
+                            self.assertIsInstance(
+                                route,
+                                SourceAudioRoute
+                                if scenario == "original"
+                                else GeneratedAudioRoute,
+                            )
+                            outcome = backend.play_route(
+                                route, playback_guard=lambda: True
+                            )
+                            self.assertEqual(outcome.status, PlaybackStatus.COMPLETED)
+                            self.assertTrue(
+                                any(
+                                    "Prepared audio is ready" in status
+                                    for status in statuses
+                                )
+                            )
+                        else:
+                            self.assertFalse(finished.is_set())
+                            self.assertIsNone(controller.live_reader)
+                    finally:
+                        self._finish_blocked_startup(
+                            controller, runtime, caller, release, instances
+                        )
+
     def test_controller_loads_only_pocket_tts_when_selected(self):
         backend = Mock()
         backend.registry = Mock()
@@ -2775,13 +2973,8 @@ class MainTest(unittest.TestCase):
         )
         backend.reserve_generated_line_for_early_playback = Mock(return_value=True)
         controller.speech_backend = backend
-        controller.live_reader = Mock(
-            active_generation=1,
-            failed_auto_advance_generation=None,
-            paused=False,
-            emergency_stopped=False,
-        )
-        controller.live_reader.stop_event.is_set.return_value = False
+        reader = self._sequence_reader(controller)
+        reader.active_generation = 1
         cursor = controller.story_cursor
         cursor.anchor_event("event-1")
         cursor.begin_playback()
@@ -2793,12 +2986,268 @@ class MainTest(unittest.TestCase):
             OCRResult("Narrator", lines[0].text, 0, "test", 2), 60
         )
         self.assertEqual(controller.sequence_prefix_dispatch_lease, lease)
-        controller.live_reader.clear_queue.assert_not_called()
+        self.assertIsNone(reader.suppressed_generation)
+        self.assertFalse(reader.observation_uncertain)
         self.assertEqual(cursor.current_event_id, "event-1")
         self.assertIsInstance(
             controller._dialog_observed("Rhiannon", "N"), CanonicalDialogRoute
         )
         self.assertEqual(cursor.current_event_id, "event-2")
+
+    def _sequence_reader(self, controller, **overrides):
+        options = dict(
+            capture_executor=Mock(),
+            ocr_executor=Mock(),
+            speech_executor=Mock(),
+            playback_executor=Mock(),
+            capture_frame=Mock(),
+            recognize_frame=Mock(),
+            ocr_uncertain=controller._admit_live_ocr_uncertainty,
+            prepare_chunk=Mock(),
+            play_prepared=Mock(),
+            report_error=Mock(),
+            focus_probe=lambda: True,
+            ocr_purpose=controller._live_ocr_purpose,
+            dialog_observed=controller._dialog_observed,
+            stable_frame_route=controller._stable_live_frame_route,
+            stable_frame_owner=controller._stable_live_frame_owner,
+            line_id_resolver=controller._live_sequence_line_id,
+            auto_advance=controller._sequence_auto_advance_dialog,
+            require_visible_auto_advance=True,
+        )
+        options.update(overrides)
+        controller.live_reader = LiveDialogReader(**options)
+        return controller.live_reader
+
+    def test_sequence_dispatch_rechecks_controls_after_the_reader_visual_gate(self):
+        for barrier in ("uncertain", "clear", "pause", "stop", "shutdown"):
+            with self.subTest(barrier=barrier):
+                controller, _lines, _pipeline = self._sequence_controller()
+                reader = self._sequence_reader(controller)
+                reader.active_generation = 1
+                cursor = controller.story_cursor
+                cursor.anchor_event("event-1")
+                cursor.begin_playback()
+                cursor.finish_playback()
+                lease = SequenceEventLease("event-1", cursor.occurrence_id)
+                controller.sequence_event_terminal_routes[lease] = "generated"
+                controller._auto_advance_dialog = Mock(return_value=True)
+
+                def focus_with_intervening_control():
+                    if barrier == "uncertain":
+                        reader.invalidate_observation()
+                    elif barrier == "clear":
+                        reader.clear_queue()
+                    elif barrier == "pause":
+                        reader.paused = True
+                    elif barrier == "stop":
+                        reader.stop_event.set()
+                    else:
+                        reader.shutdown_requested.set()
+                    return True
+
+                controller._is_game_focused = focus_with_intervening_control
+                attempt = controller._sequence_auto_advance_dialog()
+                self.assertFalse(attempt.dispatched)
+                self.assertEqual(
+                    attempt.reason,
+                    "visual-wait"
+                    if barrier == "uncertain"
+                    else "reading-control-barrier",
+                )
+                controller._auto_advance_dialog.assert_not_called()
+                self.assertNotIn(lease, controller.sequence_advance_leases)
+                self.assertEqual(cursor.state, StoryCursorState.LOCKED)
+
+    def test_uncertain_canonical_occurrence_rechecks_then_advances_without_replay(self):
+        from tests.test_live import ManualTimerScheduler
+
+        controller, lines, _pipeline = self._sequence_controller()
+        line = lines[0]
+        tracker = IncrementalDialogTracker()
+        chunk = tracker.observe_canonical(line.speaker, line.text, line.line_id)[0]
+        reader = self._sequence_reader(controller, tracker_factory=lambda **_: tracker)
+        reader.active_generation = chunk.generation
+        reader.dialog_ready_generation = chunk.generation
+        reader.latest_frame = object()
+        reader.latest_frame_fingerprint = "current"
+        reader.latest_frame_visible = True
+        reader.frame_version = 1
+        reader.bind_current_frame_route()
+        cursor = controller.story_cursor
+        cursor.anchor_event("event-1")
+        cursor.begin_playback()
+        cursor.finish_playback()
+        lease = SequenceEventLease("event-1", cursor.occurrence_id)
+        controller.sequence_event_terminal_routes[lease] = "generated"
+        controller._is_game_focused = Mock(return_value=True)
+        controller._auto_advance_dialog = Mock(return_value=True)
+        stopped_worker = Event()
+
+        def recognize(_frame):
+            stopped_worker.set()
+            return line.speaker, line.text
+
+        reader.recognize_frame = recognize
+        scheduler = ManualTimerScheduler()
+        with patch("vntts.live.Timer", side_effect=scheduler.create):
+            reader._maybe_auto_advance()
+            self.assertIsNotNone(reader.auto_advance_timer)
+            controller._ocr_uncertain(OCRResult("Narrator", "noise", 0, "test", 1), 60)
+            self.assertIsNone(reader.suppressed_generation)
+            self.assertTrue(reader.observation_uncertain)
+            self.assertIsNone(reader.auto_advance_timer)
+            self.assertEqual(
+                controller._live_ocr_purpose(), "current-canonical-recheck"
+            )
+            reader._run_ocr(stopped_worker)
+            self.assertFalse(reader.observation_uncertain)
+            self.assertEqual(reader.active_generation, chunk.generation)
+            self.assertIsNotNone(reader.auto_advance_timer)
+            reader.auto_advance_timer.fire()
+            reader._run_auto_advance(chunk.generation)
+
+        reader.speech_executor.submit.assert_not_called()
+        controller._auto_advance_dialog.assert_called_once_with(focus_verified=True)
+        self.assertIn(lease, controller.sequence_advance_leases)
+        self.assertEqual(cursor.state, StoryCursorState.WAITING_TRANSITION)
+        reader.report_error.assert_not_called()
+
+    def test_uncertain_canonical_occurrence_keeps_active_speech_and_user_suppression(
+        self,
+    ):
+        for control in ("playing", "clear", "stop"):
+            with self.subTest(control=control):
+                controller, lines, _pipeline = self._sequence_controller()
+                reader = self._sequence_reader(controller, interrupt_speech=Mock())
+                reader.active_generation = 4
+                cursor = controller.story_cursor
+                cursor.anchor_event("event-1")
+                cursor.begin_playback()
+                reader.current_chunk = SpeechChunk(
+                    4, lines[0].speaker, lines[0].text, line_id=lines[0].line_id
+                )
+                if control == "clear":
+                    controller.clear_speech_queue()
+                elif control == "stop":
+                    controller.emergency_stop()
+                calls = reader.interrupt_speech.call_count
+                controller._ocr_uncertain(
+                    OCRResult("Narrator", "noise", 0, "test", 1), 60
+                )
+                self.assertEqual(reader.interrupt_speech.call_count, calls)
+                self.assertEqual(
+                    reader.suppressed_generation, None if control == "playing" else 4
+                )
+                reader.bind_current_frame_route()
+                reader.dialog_ready_generation = 4
+                with patch("vntts.live.Timer"):
+                    reader._maybe_auto_advance()
+                self.assertIsNone(reader.auto_advance_timer)
+
+    def test_uncertainty_admission_serializes_pause_resume_with_state_mutation(self):
+        for canonical in (False, True):
+            with self.subTest(canonical=canonical):
+                controller, _lines, _pipeline = self._sequence_controller()
+                reader = self._sequence_reader(controller)
+                if canonical:
+                    controller.story_cursor.anchor_event("event-1")
+                reader.active_generation = 1
+                epoch = reader.frame_route_epoch
+                requested, attempted = Event(), Event()
+                order = []
+
+                def control():
+                    requested.wait(3)
+                    acquired = reader.state_lock.acquire(blocking=False)
+                    attempted.set()
+                    if not acquired:
+                        reader.state_lock.acquire()
+                    try:
+                        order.append("control")
+                        reader.toggle_pause()
+                        reader.toggle_pause()
+                    finally:
+                        reader.state_lock.release()
+
+                def is_current():
+                    current = reader.frame_route_epoch_is_current(epoch)
+                    order.append("validated")
+                    requested.set()
+                    self.assertTrue(attempted.wait(3))
+                    return current
+
+                mutation_name = (
+                    "invalidate_observation" if canonical else "_clear_queue_locked"
+                )
+                mutation = getattr(reader, mutation_name)
+
+                def mutate(*args):
+                    order.append("mutation")
+                    return mutation(*args)
+
+                caller = Thread(target=control)
+                caller.start()
+                try:
+                    with patch.object(reader, mutation_name, side_effect=mutate):
+                        controller._ocr_uncertain(
+                            OCRResult("Narrator", "noise", 0, "test", 1),
+                            60,
+                            observation_is_current=is_current,
+                        )
+                finally:
+                    requested.set()
+                    caller.join(3)
+                self.assertFalse(caller.is_alive())
+                self.assertEqual(order, ["validated", "mutation", "control"])
+                self.assertEqual(reader.observation_uncertain, canonical)
+                self.assertEqual(reader.suppressed_generation, None if canonical else 1)
+
+    def test_uncertainty_queue_cleanup_runs_after_story_and_reader_locks(self):
+        controller, _lines, _pipeline = self._sequence_controller()
+        reader = self._sequence_reader(controller)
+        reader.active_generation = 1
+        pending = Future()
+        reader.speech_futures[pending] = SpeechChunk(1, "Narrator", "Line")
+        cleanups = []
+
+        def probe_locks():
+            acquired = []
+            for lock in (controller.story_cursor_lock, reader.state_lock):
+                available = lock.acquire(blocking=False)
+                acquired.append(available)
+                if available:
+                    lock.release()
+            return acquired
+
+        def cleanup(kind):
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                self.assertEqual(executor.submit(probe_locks).result(3), [True, True])
+            cleanups.append(kind)
+
+        pending.add_done_callback(lambda _future: cleanup("future"))
+        reader.interrupt_speech = lambda: cleanup("interrupt")
+        controller._ocr_uncertain(
+            OCRResult("Narrator", "noise", 0, "test", 1),
+            60,
+            observation_is_current=lambda: True,
+        )
+        self.assertTrue(pending.cancelled())
+        self.assertEqual(cleanups, ["future", "interrupt"])
+        self.assertEqual(reader.suppressed_generation, 1)
+
+    def test_stale_uncertainty_cannot_invalidate_current_occurrence(self):
+        controller, _lines, _pipeline = self._sequence_controller()
+        reader = self._sequence_reader(controller)
+        controller.story_cursor.anchor_event("event-1")
+        before = controller.observation_serial
+        controller._admit_live_ocr_uncertainty(
+            OCRUncertainError(OCRResult("Narrator", "noise", 0, "test", 1), 60),
+            lambda: False,
+        )
+        self.assertEqual(controller.observation_serial, before)
+        self.assertFalse(reader.observation_uncertain)
+        self.assertIsNone(reader.suppressed_generation)
 
     def test_indexed_out_of_order_recovery_is_explicit_once_and_manual(self):
         controller, lines, _pipeline = self._sequence_controller()
@@ -2942,6 +3391,62 @@ class MainTest(unittest.TestCase):
             lines[1].speaker, lines[1].text
         )
         self.assertIsNone(controller._live_ocr_purpose())
+
+    def test_short_lookahead_cannot_skip_intervening_speaker_after_old_frame(self):
+        texts = (
+            (
+                "Cornerstone",
+                "I'm afraid I won't be handling your make-up assignment. You'll have to ask those old gentlemen in the office when applications open.",
+            ),
+            (
+                "Duvalle",
+                "No, Professor. I was just curious: What do you think the buildings of the future will look like?",
+            ),
+            ("Cornerstone", "Me?"),
+        )
+        lines = tuple(
+            ChapterDialogue(f"line-{i}", "1", i, speaker, text, text_sha256(text))
+            for i, (speaker, text) in enumerate(texts, 1)
+        )
+        plan = stub_live_sequence_plan(*lines)
+        for i in (1, 2):
+            plan.events[f"event-{i}"] = replace(
+                plan.events[f"event-{i}"],
+                control="automatic",
+                successors=(f"event-{i + 1}",),
+            )
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=ChapterVoicePreloader(lines),
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+        controller.live_reader = Mock(is_running=True, active_generation=1)
+        controller.dialog_handler = Mock()
+        cursor = controller.story_cursor
+        cursor.anchor_event("event-1")
+        cursor.begin_playback()
+        cursor.finish_playback()
+
+        old_text = lines[0].text.replace("gentlemen", "gentlernen")
+        self.assertEqual(controller._dialog_observed("Cornerstone", old_text), texts[0])
+        self.assertEqual(cursor.current_event_id, "event-1")
+        controller.dialog_handler.reset_mock()
+        self.assertFalse(controller._dialog_observed("Cornerstone", "No, Professor"))
+        self.assertEqual(cursor.current_event_id, "event-1")
+        controller.dialog_handler.assert_not_called()
+
+        self.assertEqual(controller._dialog_observed(*texts[1]), texts[1])
+        self.assertEqual(cursor.current_event_id, "event-2")
+        controller.dialog_handler.assert_called_once_with(*texts[1])
+        cursor.begin_playback()
+        cursor.finish_playback()
+        self.assertEqual(controller._dialog_observed(*texts[2]), texts[2])
+        self.assertEqual(cursor.current_event_id, "event-3")
 
     def test_successor_prefetch_rejects_same_event_new_occurrence_before_or_during_work(
         self,
@@ -3198,6 +3703,15 @@ class MainTest(unittest.TestCase):
         )
         self.assertIsNone(controller._begin_sequence_playback(chunk))
 
+    @staticmethod
+    def _complete_sequence_event(controller, event_id):
+        controller.story_cursor.anchor_event(event_id)
+        controller.story_cursor.begin_playback()
+        controller.story_cursor.finish_playback()
+        controller.sequence_event_terminal_routes[
+            SequenceEventLease(event_id, controller.story_cursor.occurrence_id)
+        ] = "test"
+
     def test_sequence_audio_auto_dispatch_is_cursor_and_focus_guarded(self):
         rows = [
             {
@@ -3279,16 +3793,12 @@ class MainTest(unittest.TestCase):
         generated_backend.has_generated_line = Mock(return_value=True)
         controller.speech_backend = generated_backend
         controller.live_reader = Mock(active_generation=7)
+        controller.live_reader.state_lock = RLock()
         controller.capture_target = Mock()
         controller.capture_target.is_focused.return_value = True
         controller._offer_unknown_speaker_mapping = Mock(return_value=False)
         controller._auto_advance_dialog = Mock(return_value=True)
-        controller.story_cursor.anchor_event("event-1")
-        controller.story_cursor.begin_playback()
-        controller.story_cursor.finish_playback()
-        controller.sequence_event_terminal_routes[
-            SequenceEventLease("event-1", controller.story_cursor.occurrence_id)
-        ] = "test"
+        self._complete_sequence_event(controller, "event-1")
 
         callback = controller._live_auto_advance_callback()
 
@@ -3342,12 +3852,7 @@ class MainTest(unittest.TestCase):
         )
 
         controller.story_cursor.reset()
-        controller.story_cursor.anchor_event("event-1")
-        controller.story_cursor.begin_playback()
-        controller.story_cursor.finish_playback()
-        controller.sequence_event_terminal_routes[
-            SequenceEventLease("event-1", controller.story_cursor.occurrence_id)
-        ] = "test"
+        self._complete_sequence_event(controller, "event-1")
         controller.capture_target = Mock()
         controller.capture_target.is_focused.return_value = False
         controller._auto_advance_dialog.reset_mock()
@@ -3616,6 +4121,7 @@ class MainTest(unittest.TestCase):
             live_sequence_plan_factory=Mock(return_value=plan),
         )
         controller.live_reader = Mock(active_generation=7)
+        controller.live_reader.state_lock = RLock()
         controller.capture_target = Mock()
         controller.capture_target.is_focused.return_value = True
         controller._offer_unknown_speaker_mapping = Mock(return_value=False)
@@ -4221,6 +4727,7 @@ class MainTest(unittest.TestCase):
                 controller.sequence_event_terminal_routes[lease] = "generated"
                 controller._is_game_focused = Mock(return_value=True)
                 controller._auto_advance_dialog = Mock(return_value=True)
+                controller.live_reader.state_lock = RLock()
                 self.assertTrue(controller._sequence_auto_advance_dialog())
                 self.assertEqual(controller.sequence_prefix_dispatch_lease, lease)
                 if condition == "manual":
@@ -4268,6 +4775,104 @@ class MainTest(unittest.TestCase):
                 else:
                     self.assertFalse(routed)
                     self.assertEqual(cursor.current_event_id, "event-1")
+
+    def test_sequence_prefix_gate_reports_missing_generated_entry_without_raw_ocr(self):
+        controller, _lines, pipeline = self._sequence_controller()
+        backend = GeneratedAudioFallbackBackend(
+            Mock(), Mock(), controller.chapter_voice_preloader, audio_output=Mock()
+        )
+        backend.library.index.find.return_value = None
+        controller.speech_backend = backend
+        controller.live_reader = Mock(
+            active_generation=1,
+            failed_auto_advance_generation=None,
+            paused=False,
+            emergency_stopped=False,
+        )
+        controller.live_reader.stop_event.is_set.return_value = False
+        cursor = controller.story_cursor
+        cursor.anchor_event("event-1")
+        cursor.begin_playback()
+        cursor.finish_playback()
+        cursor.dispatch_advance()
+        controller.sequence_prefix_dispatch_lease = SequenceEventLease(
+            "event-1", cursor.occurrence_id
+        )
+        controller._live_ocr_purpose()
+        controller._live_ocr_purpose()
+        gates = [
+            call.kwargs
+            for call in pipeline.call_args_list
+            if call.args[0] == "sequence-prefix-gate"
+        ]
+        self.assertEqual(len(gates), 1)
+        self.assertEqual(gates[0]["reason"], "generated-entry-unavailable")
+        self.assertEqual(gates[0]["target_event_id"], "event-2")
+        self.assertEqual(gates[0]["occurrence_id"], cursor.occurrence_id)
+        self.assertFalse({"text", "character", "speaker"} & gates[0].keys())
+
+    def test_sequence_prefix_gate_distinguishes_text_speaker_and_reservation_failures(
+        self,
+    ):
+        for rejected in ("text", "speaker", "reservation"):
+            with self.subTest(rejected=rejected):
+                controller, _lines, pipeline = self._sequence_controller()
+                backend = GeneratedAudioFallbackBackend(
+                    Mock(),
+                    Mock(),
+                    controller.chapter_voice_preloader,
+                    audio_output=Mock(),
+                )
+                backend.reserve_generated_line_for_early_playback = Mock(
+                    return_value=rejected != "reservation"
+                )
+                controller.speech_backend = backend
+                controller.live_reader = Mock(
+                    active_generation=1,
+                    failed_auto_advance_generation=None,
+                    paused=False,
+                    emergency_stopped=False,
+                )
+                controller.live_reader.stop_event.is_set.return_value = False
+                cursor = controller.story_cursor
+                cursor.anchor_event("event-1")
+                cursor.begin_playback()
+                cursor.finish_playback()
+                cursor.dispatch_advance()
+                controller.sequence_prefix_dispatch_lease = SequenceEventLease(
+                    "event-1", cursor.occurrence_id
+                )
+                controller._dialog_observed(
+                    "Wrong name" if rejected == "speaker" else "Rhiannon",
+                    "Wrong text" if rejected == "text" else "N",
+                )
+                gate = next(
+                    call.kwargs
+                    for call in pipeline.call_args_list
+                    if call.args[0] == "sequence-prefix-gate"
+                )
+                self.assertEqual(
+                    gate["reason"],
+                    {
+                        "text": "prefix-text-mismatch",
+                        "speaker": "prefix-speaker-mismatch",
+                        "reservation": "generated-reservation-failed",
+                    }[rejected],
+                )
+                self.assertFalse(gate["reservation_ready"])
+                self.assertEqual(cursor.current_event_id, "event-1")
+                controller._live_ocr_purpose()
+                controller._dialog_observed(
+                    "Wrong name" if rejected == "speaker" else "Rhiannon",
+                    "Wrong text" if rejected == "text" else "N",
+                )
+                self.assertEqual(
+                    sum(
+                        call.args[0] == "sequence-prefix-gate"
+                        for call in pipeline.call_args_list
+                    ),
+                    1,
+                )
 
     def test_sequence_audio_manual_failed_playback_keeps_current_event_closed(self):
         preloader = ChapterVoicePreloader.from_document(
@@ -6571,7 +7176,8 @@ class MainTest(unittest.TestCase):
             tts_factory=Mock(),
             dialog_handler=lambda character, text: dialogs.append((character, text)),
         )
-        controller.live_reader = Mock()
+        reader = self._sequence_reader(controller)
+        reader.active_generation = 3
 
         controller._ocr_uncertain(
             OCRResult("Marcus", "Possibly incorrect", 42.4, "balanced", 3),
@@ -6580,7 +7186,7 @@ class MainTest(unittest.TestCase):
 
         self.assertEqual(dialogs[-1][0], "OCR uncertain")
         self.assertIn("42% (requires 60%)", dialogs[-1][1])
-        controller.live_reader.clear_queue.assert_called_once_with()
+        self.assertEqual(reader.suppressed_generation, 3)
 
     def test_focus_loss_pauses_capture_without_suppressing_live_speech(self):
         statuses = []
@@ -6899,6 +7505,142 @@ class MainTest(unittest.TestCase):
             timeline_events[1][3]["voice_reference_id"],
             "voice:rhiannon-v2:reference-1",
         )
+
+    def _retained_playback_lease(self, kind, backend, registry, root):
+        backend.capabilities = SpeechBackendCapabilities(True, False, True)
+        if kind == "worker":
+            from vntts.speech_worker import RetainedWorkerRuntime
+
+            runtime = RetainedWorkerRuntime(
+                "pocket-tts", backend_factory=lambda *_args, **_kwargs: backend
+            )
+            return runtime(registry)
+        from vntts.moss_runtime import RetainedMossRuntime
+
+        backend.registry = registry
+        backend.narrator_reference = None
+        backend.startup_cancellation = None
+        backend.startup_progress = None
+        backend.runtime_status = "ready"
+        for name in (
+            "render",
+            "load",
+            "stop",
+            "shutdown",
+            "set_volume",
+            "set_generation_profile",
+        ):
+            setattr(backend, name, Mock())
+        runtime = RetainedMossRuntime(
+            root, backend_factory=lambda *_args, **_kwargs: backend
+        )
+        self.addCleanup(runtime.shutdown)
+        with patch("vntts.moss_runtime.moss_cpp_requested", return_value=True):
+            return runtime.backend_for(registry, model_name="test-native")
+
+    def test_retained_leases_preserve_typed_dialogue_announcements_and_cancellation(
+        self,
+    ):
+        for kind in ("worker", "native"):
+            for wrapped in (False, True):
+                with (
+                    self.subTest(kind=kind, wrapped=wrapped),
+                    TemporaryDirectory() as root,
+                ):
+                    registry = CharacterVoiceRegistry(
+                        [CharacterVoice("Rhiannon", "rhiannon-v2")]
+                    )
+                    backend = RecordingAnnouncementBackend()
+                    lease = self._retained_playback_lease(kind, backend, registry, root)
+                    controller = AppController(
+                        AppSettings(
+                            audio_source_policy="live-tts-only",
+                            speaker_announcement_mode="all-speakers",
+                        ),
+                        status_handler=Mock(),
+                        error_handler=Mock(),
+                    )
+                    controller.voice_router = Mock(registry=registry)
+                    controller.live_reader = Mock(
+                        active_generation=1, max_speech_jobs=2
+                    )
+                    controller.live_reader.wait_until_playable.return_value = True
+                    if wrapped:
+                        wrapper = GeneratedAudioFallbackBackend(
+                            lease,
+                            None,
+                            controller.chapter_voice_preloader,
+                            audio_source_policy="live-tts-only",
+                            audio_output=Mock(),
+                        )
+                        wrapper.prepare_route = Mock(wraps=wrapper.prepare_route)
+                        wrapper.play_route = Mock(wraps=wrapper.play_route)
+                        controller.speech_backend = wrapper
+                    else:
+                        controller.speech_backend = lease
+                    chunk = SpeechChunk(
+                        1, "Rhiannon", "A line.", ordinal=1, line_id="line-id"
+                    )
+                    prepared = controller._prepare_live_chunk(chunk)
+                    self.assertIsInstance(prepared, PreparedLiveChunkRoutes)
+                    self.assertTrue(controller._play_live_chunk(chunk, prepared))
+                    self.assertEqual(
+                        backend.prepare_calls,
+                        [("Rhiannon", "A line."), ("Narrator", "Rhiannon.")],
+                    )
+                    self.assertEqual(
+                        backend.play_calls,
+                        [("Narrator", "Rhiannon."), ("Rhiannon", "A line.")],
+                    )
+                    if wrapped:
+                        wrapper.prepare_route.assert_called_once_with(
+                            "Rhiannon", "A line.", line_id="line-id"
+                        )
+                        self.assertEqual(wrapper.play_route.call_count, 2)
+                    controller.error_handler.assert_not_called()
+                    controller.live_reader.wait_until_playable.return_value = False
+                    cancelled = controller._dispatch_live_playback(
+                        controller.live_reader, chunk, prepared.dialogue
+                    )
+                    self.assertEqual(cancelled.status, PlaybackStatus.INTERRUPTED)
+                    controller.live_reader.wait_until_playable.assert_called_with(chunk)
+
+    def test_retained_leases_reject_untyped_preparation_and_playback(self):
+        for kind in ("worker", "native"):
+            with self.subTest(kind=kind), TemporaryDirectory() as root:
+                registry = CharacterVoiceRegistry()
+                backend = RecordingAnnouncementBackend()
+                controller = AppController(
+                    AppSettings(speaker_announcement_mode="all-speakers"),
+                    status_handler=Mock(),
+                    error_handler=Mock(),
+                )
+                controller.speech_backend = self._retained_playback_lease(
+                    kind, backend, registry, root
+                )
+                controller.live_reader = Mock()
+                controller.live_reader.wait_until_playable.return_value = True
+                chunk = SpeechChunk(1, "Rhiannon", "A line.", ordinal=1)
+                dialogue = backend.prepare_playback(chunk.character, chunk.text)
+                announcement, label = controller._prepare_speaker_announcement(
+                    chunk, dialogue
+                )
+                backend.outcomes = [True]
+                with self.assertRaisesRegex(TypeError, "untyped playback"):
+                    controller._dispatch_live_playback(
+                        controller.live_reader, chunk, dialogue
+                    )
+                backend.outcomes = [True]
+                with self.assertRaisesRegex(TypeError, "untyped announcement"):
+                    controller._play_speaker_announcement(chunk, announcement, label)
+                backend.prepare_playback = Mock(return_value=object())
+                with self.assertRaisesRegex(TypeError, "untyped speaker announcement"):
+                    controller._prepare_speaker_announcement(chunk, dialogue)
+                controller.settings = controller.settings.updated(
+                    speaker_announcement_mode="off"
+                )
+                with self.assertRaisesRegex(TypeError, "untyped prepared"):
+                    controller._prepare_live_chunk(chunk)
 
     def test_speaker_change_announcement_is_separate_live_audio_and_not_repeated(self):
         statuses = []

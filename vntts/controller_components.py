@@ -280,7 +280,7 @@ class RuntimeLifecycleComponent:
             return False
 
         if not controller.settings.warm_up_voices:
-            controller.status_handler("Speech model loaded; voice warm-up skipped")
+            controller.status_handler("Reading is ready; voice warm-up skipped")
         controller.status_handler(
             f"Screenshots will be stored in {screenshot_directory}"
         )
@@ -359,6 +359,7 @@ class RuntimeLifecycleComponent:
                         "alba",
                     )
                     backend_options["narrator_reference"] = narrator_reference
+            self._configure_deferred_startup(backend_factory, backend_options)
             if getattr(backend_factory, "supports_startup_cancellation", False) is True:
                 backend_options["startup_cancellation"] = controller.shutdown_requested
             if getattr(backend_factory, "supports_startup_progress", False) is True:
@@ -379,6 +380,17 @@ class RuntimeLifecycleComponent:
         except Exception as error:
             controller.error_handler(TTSInitializationError(str(error)))
             return False
+
+    def _configure_deferred_startup(
+        self, backend_factory: object, backend_options: dict[str, object]
+    ) -> None:
+        controller = self.controller
+        if (
+            getattr(backend_factory, "supports_deferred_startup", False) is True
+            and controller.settings.audio_source_policy != "live-tts-only"
+            and controller.settings.story_index
+        ):
+            backend_options["defer_startup"] = True
 
     @staticmethod
     def _filter_pocket_voices(
@@ -420,6 +432,12 @@ class RuntimeLifecycleComponent:
             controller.voice_router = controller.tts
             controller.speech_backend = controller.tts
         controller._configure_generated_audio_backend()
+        if self._start_prepared_audio_fallback():
+            return True
+        return self._warm_voice_router()
+
+    def _warm_voice_router(self) -> bool:
+        controller = self.controller
         if controller.settings.warm_up_voices:
             warmup_router = controller.voice_router
             if warmup_router is None:
@@ -435,6 +453,35 @@ class RuntimeLifecycleComponent:
             else:
                 controller.status_handler(f"Speech model and {warmed} voices ready")
         return True
+
+    def _start_prepared_audio_fallback(self) -> bool:
+        controller = self.controller
+        backend = controller.tts
+        if getattr(backend, "deferred_startup", False) is True:
+            load = getattr(backend, "load", None)
+            load_in_background = getattr(backend, "load_in_background", None)
+            if not callable(load) or not callable(load_in_background):
+                raise TypeError("Deferred speech backend has no startup owner")
+            routed = controller.speech_backend
+            if isinstance(routed, GeneratedAudioFallbackBackend) and any(
+                not controller._has_manual_voice_override(line.speaker)
+                and (
+                    routed.will_use_source_audio_in_live_mode(line.speaker, line.text)
+                    or routed.has_generated_line(line)
+                )
+                for line in controller.chapter_voice_preloader.dialogue
+            ):
+                controller.status_handler(
+                    "Prepared audio is ready; loading the fallback speech model in the background..."
+                )
+                load_in_background(
+                    warm_up=controller.settings.warm_up_voices,
+                    progress=controller._warmup_progress,
+                )
+                return True
+            # A configured manifest is not proof of admitted playable recordings.
+            load()
+        return False
 
     def _construct_live_runtime(self) -> Path:
         controller = self.controller
@@ -474,6 +521,7 @@ class RuntimeLifecycleComponent:
             playback_executor=controller.playback_executor,
             capture_frame=controller._capture_live_frame,
             recognize_frame=controller._recognize_live_frame,
+            ocr_uncertain=controller._admit_live_ocr_uncertainty,
             frame_fingerprint=fingerprint_dialog_frame,
             frame_equivalent=dialog_frames_equivalent,
             frame_render_fingerprint=fingerprint_dialog_render_activity,

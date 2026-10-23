@@ -1,6 +1,70 @@
 import AVFoundation
 import Foundation
 import CoreVideo
+import CoreGraphics
+
+func targetGuardSelfcheck() throws {
+    let frame = CGRect(x: 10, y: 20, width: 640, height: 400)
+    let windowID: CGWindowID = 123
+    let pid: pid_t = 456
+    let row: [String: Any] = [
+        kCGWindowNumber as String: windowID,
+        kCGWindowOwnerPID as String: pid,
+        kCGWindowBounds as String: frame.dictionaryRepresentation,
+        kCGWindowName as String: "unrelated-title-must-never-be-retained"
+    ]
+    var checks = 0
+    func check(_ lookup: Any?, _ reason: String) throws {
+        let result = checkSelectedWindow(lookup, windowID: windowID, pid: pid, frame: frame)
+        guard result.reason == reason, result.accepted == (reason == "unchanged" || reason == "bounds-origin-changed") else {
+            throw CaptureError("Target selfcheck expected \(reason), received \(result.reason)")
+        }
+        let encoded = try JSONSerialization.data(withJSONObject: result.evidence, options: [.sortedKeys])
+        guard let evidence = String(data: encoded, encoding: .utf8), !evidence.contains("unrelated-title") else {
+            throw CaptureError("Target selfcheck retained unrelated metadata")
+        }
+        checks += 1
+    }
+    func changed(_ key: String, _ value: Any?) -> [String: Any] {
+        var result = row
+        result[key] = value
+        return result
+    }
+    try check([row], "unchanged")
+    try check(nil, "lookup-unavailable")
+    try check("not a lookup", "lookup-malformed")
+    try check([], "lookup-empty")
+    try check(["not a row"], "lookup-entry-malformed")
+    try check([row, row], "lookup-entry-count-mismatch")
+    try check([changed(kCGWindowNumber as String, nil)], "window-id-missing")
+    try check([changed(kCGWindowNumber as String, 124)], "window-id-mismatch")
+    try check([changed(kCGWindowOwnerPID as String, nil)], "owner-pid-missing")
+    try check([changed(kCGWindowOwnerPID as String, 457)], "owner-pid-mismatch")
+    let invalidIdentities: [Any] = [true, 0, -1, 1.5, Double.infinity, Double(UInt32.max) + 1, "123"]
+    for invalid in invalidIdentities {
+        try check([changed(kCGWindowNumber as String, invalid)], "window-id-malformed")
+        try check([changed(kCGWindowOwnerPID as String, invalid)], "owner-pid-malformed")
+    }
+    try check([changed(kCGWindowBounds as String, nil)], "bounds-missing")
+    try check([changed(kCGWindowBounds as String, "not bounds")], "bounds-malformed")
+    let malformedBounds: [[String: Any]] = [[:], ["X": "bad", "Y": 20, "Width": 640, "Height": 400], ["X": true, "Y": 20, "Width": 640, "Height": 400], ["X": Double.infinity, "Y": 20, "Width": 640, "Height": 400]]
+    for malformed in malformedBounds {
+        try check([changed(kCGWindowBounds as String, malformed)], "bounds-malformed")
+    }
+    try check([changed(kCGWindowBounds as String, CGRect(x: 10, y: 20, width: 0, height: 400).dictionaryRepresentation)], "bounds-malformed")
+    try check([changed(kCGWindowBounds as String, ["X": 10, "Y": 20, "Width": -640, "Height": 400])], "bounds-malformed")
+    try check([changed(kCGWindowBounds as String, frame.offsetBy(dx: 1, dy: 0).dictionaryRepresentation)], "bounds-origin-changed")
+    try check([changed(kCGWindowBounds as String, frame.offsetBy(dx: -2000, dy: 1000).dictionaryRepresentation)], "bounds-origin-changed")
+    try check([changed(kCGWindowBounds as String, CGRect(x: 10, y: 20, width: 641, height: 400).dictionaryRepresentation)], "bounds-size-changed")
+    try check([changed(kCGWindowBounds as String, CGRect(x: 11, y: 20, width: 641, height: 400).dictionaryRepresentation)], "bounds-origin-and-size-changed")
+    let mismatch = checkSelectedWindow([changed(kCGWindowOwnerPID as String, 457)], windowID: windowID, pid: pid, frame: frame)
+    let original = mismatch.evidence["original_target"] as! [String: Any]
+    let observed = mismatch.evidence["observed_target"] as! [String: Any]
+    guard (original["pid"] as? NSNumber)?.int32Value == pid,
+          (observed["pid"] as? NSNumber)?.int32Value == 457,
+          observed["bounds"] is [String: Double] else { throw CaptureError("Target selfcheck lost original/observed identity") }
+    print("target guard selfcheck passed: \(checks) fail-closed predicate checks; no window lookup or capture")
+}
 
 func writerSelfcheck(root: URL) async throws {
     guard root.path.hasPrefix("/"), mkdir(root.path, 0o700) == 0 else { throw CaptureError("Selfcheck output must be a new absolute directory") }

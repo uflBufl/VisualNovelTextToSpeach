@@ -215,11 +215,31 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertFalse(dialog.isVisible())
         self.assertTrue(dialog.concealed_for_capture)
 
-        dialog.restore_after_capture()
+        attributes = []
+        original_show = dialog.show
+
+        def show():
+            attributes.append(
+                dialog.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            )
+            original_show()
+
+        with (
+            patch.object(dialog, "show", side_effect=show),
+            patch.object(dialog, "activateWindow") as activate,
+            patch.object(dialog, "raise_") as raise_window,
+        ):
+            dialog.restore_after_capture()
+            activate.assert_not_called()
+            raise_window.assert_not_called()
         self.application.processEvents()
 
         self.assertTrue(dialog.isVisible())
         self.assertFalse(dialog.concealed_for_capture)
+        self.assertEqual(attributes, [True])
+        self.assertFalse(
+            dialog.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        )
         dialog.close()
         dialog.deleteLater()
 
@@ -336,6 +356,29 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertFalse(dialog.refresh_timer.isActive())
         self.assertFalse(dialog.refresh_in_flight)
         self.assertGreater(dialog.refresh_generation, generation)
+
+    def test_cancel_refresh_does_not_reopen_or_activate_concealed_controls(self):
+        dialog = DiagnosticsDialog(refresh_timeout_ms=60_000)
+        dialog.show()
+        dialog.request_refresh()
+        generation = dialog.refresh_generation
+        dialog.conceal_for_capture()
+        with (
+            patch.object(dialog, "activateWindow") as activate,
+            patch.object(dialog, "raise_") as raise_window,
+        ):
+            dialog.cancel_refresh()
+            dialog._refresh_timed_out(generation)
+            dialog.set_snapshot(DiagnosticSnapshot(None, text="Late capture"))
+            activate.assert_not_called()
+            raise_window.assert_not_called()
+        self.assertFalse(dialog.isVisible())
+        self.assertFalse(dialog.refresh_timer.isActive())
+        self.assertFalse(dialog.refresh_in_flight)
+        self.assertFalse(dialog.concealed_for_capture)
+        self.assertTrue(dialog.refresh_button.isEnabled())
+        dialog.close()
+        dialog.deleteLater()
 
     def test_late_snapshot_does_not_reopen_closed_concealed_dialog(self):
         dialog = DiagnosticsDialog()

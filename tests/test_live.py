@@ -1,6 +1,7 @@
 import sys
 import unittest
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import replace
 from queue import Queue
 from threading import Event, Lock, Thread
@@ -269,6 +270,34 @@ class AutoAdvanceFakeFrameHarness:
         self.speech_executor.run_next()
         self.playback_executor.run_next()
 
+    def change_recognition_context(self, barrier, purpose):
+        reader = self.reader
+        mutations = {
+            "growth": lambda: setattr(
+                reader, "latest_frame_fingerprint", "more-glyphs"
+            ),
+            "owner": lambda: setattr(self, "frame_owner", "other"),
+            "epoch": lambda: setattr(
+                reader, "frame_route_epoch", reader.frame_route_epoch + 1
+            ),
+            "run": lambda: setattr(reader, "run_id", "different-run"),
+            "hidden": lambda: setattr(reader, "latest_frame_visible", False),
+            "focus": lambda: setattr(self, "focused", False),
+            "focus-cycle": lambda: (
+                reader._notify_capture_state(False, 0.1),
+                reader._notify_capture_state(True, 0.1),
+            ),
+            "purpose": lambda: purpose.__setitem__(0, "legacy"),
+            "pause": reader.toggle_pause,
+            "pause-cycle": lambda: (reader.toggle_pause(), reader.toggle_pause()),
+            "clear": reader.clear_queue,
+            "stop": reader.stop_event.set,
+            "shutdown": reader.shutdown_requested.set,
+        }
+        mutation = mutations.get(barrier)
+        if mutation is not None:
+            mutation()
+
     def _recognize(self, frame):
         self.recognized_frames.append(frame)
         return frame["character"], frame["text"]
@@ -283,6 +312,57 @@ class AutoAdvanceFakeFrameHarness:
 
 
 class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
+    def test_uncertain_ocr_controls_require_current_run_owner_epoch_and_focus(self):
+        from vntts.dialog_capture import OCRUncertainError
+        from vntts.ocr import OCRResult
+
+        for barrier in (
+            "current",
+            "growth",
+            "owner",
+            "epoch",
+            "run",
+            "hidden",
+            "focus",
+            "focus-cycle",
+            "purpose",
+            "pause",
+            "pause-cycle",
+            "clear",
+            "stop",
+            "shutdown",
+        ):
+            with self.subTest(barrier=barrier):
+                purpose = ["expected-successor-prefix"]
+                admitted = Mock()
+                harness = AutoAdvanceFakeFrameHarness(ocr_purpose=lambda: purpose[0])
+                reader = harness.reader
+                reader.ocr_uncertain = admitted
+                reader.stop_event = Event()
+                reader.latest_frame = object()
+                reader.latest_frame_fingerprint = "prefix"
+                reader.latest_frame_visible = True
+                reader.frame_version = 1
+                uncertainty = OCRUncertainError(
+                    OCRResult("Narrator", "noise", 0, "test", 1), 60
+                )
+
+                def recognize(_frame):
+                    harness.change_recognition_context(barrier, purpose)
+                    harness.stop_event.set()
+                    raise uncertainty
+
+                reader.recognize_frame = recognize
+                with patch.object(reader, "_schedule_tracked_chunks"):
+                    reader._run_ocr(harness.stop_event)
+                if barrier in {"current", "growth"}:
+                    admitted.assert_called_once()
+                    self.assertIs(admitted.call_args.args[0], uncertainty)
+                    self.assertTrue(admitted.call_args.args[1]())
+                else:
+                    admitted.assert_not_called()
+                self.assertEqual(harness.errors, [])
+
     def test_owned_prefix_does_not_reinterpret_the_unchanged_previous_frame(self):
         harness = AutoAdvanceFakeFrameHarness(
             stable_frame_route=lambda *_args: None,
@@ -1693,6 +1773,118 @@ class LiveDialogReaderTest(unittest.TestCase):
         options.update(overrides)
         return LiveDialogReader(**options)
 
+    def test_worker_health_distinguishes_future_states_and_consumed_frame(self):
+        reader = self.create_reader()
+        self.assertEqual(reader.worker_health_snapshot()["worker_state"], "not-started")
+        reader.processed_frame_version = 7
+        reader.frame_version = 12
+        with patch("vntts.live.monotonic", return_value=10.0):
+            reader._ocr_progress("recognizing")
+        for expected in ("queued", "running", "finished", "failed", "cancelled"):
+            with self.subTest(state=expected):
+                future = Future()
+                if expected == "running":
+                    future.set_running_or_notify_cancel()
+                elif expected == "finished":
+                    future.set_result(None)
+                elif expected == "failed":
+                    future.set_exception(ValueError("PRIVATE callback input"))
+                elif expected == "cancelled":
+                    future.cancel()
+                reader.ocr_future = future
+                with patch("vntts.live.monotonic", return_value=11.0):
+                    health = reader.worker_health_snapshot()
+                self.assertEqual(health["worker_state"], expected)
+                self.assertEqual(health["worker_stage"], "recognizing")
+                self.assertEqual(health["worker_progress_age_ms"], 1000)
+                self.assertEqual(health["worker_frame_version"], 7)
+                self.assertEqual(health["latest_frame_version"], 12)
+                self.assertEqual(
+                    health["worker_error_type"],
+                    "ValueError" if expected == "failed" else None,
+                )
+                self.assertNotIn("PRIVATE", repr(health))
+
+    def test_restart_resets_health_before_queued_workers_can_begin(self):
+        reader = self.create_reader(
+            capture_executor=QueuedExecutor(), ocr_executor=QueuedExecutor()
+        )
+        reader.capture_future = Future()
+        reader.capture_future.set_result(None)
+        reader.ocr_future = Future()
+        reader.ocr_future.set_result(None)
+        reader._ocr_progress("finished")
+        reader.frame_version = reader.processed_frame_version = 42
+        previous_run = reader.run_id
+
+        with patch("vntts.live.monotonic", return_value=20.0):
+            self.assertTrue(reader.start())
+            health = reader.worker_health_snapshot()
+
+        self.assertNotEqual(reader.run_id, previous_run)
+        self.assertEqual(health["worker_state"], "queued")
+        self.assertEqual(health["worker_stage"], "queued")
+        self.assertEqual(health["worker_progress_age_ms"], 0)
+        self.assertEqual(health["worker_frame_version"], 0)
+        self.assertEqual(health["latest_frame_version"], 0)
+        self.assertTrue(reader.stop())
+
+    def test_capture_exposes_blocked_ocr_callback_without_starting_another_worker(self):
+        blocked = Event()
+        release = Event()
+        capture_continued = Event()
+
+        def purpose():
+            blocked.set()
+            if not release.wait(timeout=2):
+                raise AssertionError("OCR callback was not released")
+            return "legacy"
+
+        def capture_state(*_):
+            health = reader.worker_health_snapshot()
+            if (
+                blocked.is_set()
+                and health["latest_frame_version"] > health["worker_frame_version"]
+            ):
+                capture_continued.set()
+
+        with (
+            ThreadPoolExecutor(max_workers=1) as capture,
+            ThreadPoolExecutor(max_workers=1) as ocr,
+        ):
+            capture_executor = Mock(wraps=capture)
+            ocr_executor = Mock(wraps=ocr)
+            reader = self.create_reader(
+                capture_executor=capture_executor,
+                ocr_executor=ocr_executor,
+                ocr_purpose=purpose,
+                capture_state_changed=capture_state,
+            )
+            try:
+                self.assertTrue(reader.start())
+                self.assertTrue(blocked.wait(timeout=1))
+                self.assertTrue(capture_continued.wait(timeout=1))
+                health = reader.worker_health_snapshot()
+                self.assertEqual(health["worker_state"], "running")
+                self.assertEqual(health["worker_stage"], "reading-purpose")
+                self.assertGreater(
+                    health["latest_frame_version"], health["worker_frame_version"]
+                )
+                self.assertTrue(reader.stop())
+                with self.assertRaises(FutureTimeoutError):
+                    reader.wait(timeout_seconds=0.01)
+                with patch.object(
+                    reader, "wait", side_effect=FutureTimeoutError("still draining")
+                ):
+                    self.assertFalse(reader.start())
+                self.assertEqual(ocr_executor.submit.call_count, 1)
+                self.assertEqual(capture_executor.submit.call_count, 1)
+            finally:
+                reader.stop()
+                release.set()
+                reader.wait(timeout_seconds=1)
+            reader.play_prepared.assert_not_called()
+
     def test_ocr_initialization_failure_stops_capture_and_reports_original_error(self):
         failure = RuntimeError("OCR tracker initialization failed")
         errors = []
@@ -2887,6 +3079,92 @@ class LiveDialogReaderTest(unittest.TestCase):
 
         self.assertFalse(worker.is_alive())
         timer.assert_not_called()
+
+    def test_control_barrier_after_visual_gate_preserves_pause_resume_and_clear_stop(
+        self,
+    ):
+        for control in ("pause", "clear", "stop"):
+            with self.subTest(control=control):
+                scheduler = ManualTimerScheduler()
+                dispatched_keys = []
+                callback_calls = []
+                state_changed = Mock()
+
+                def auto_advance():
+                    callback_calls.append(control)
+                    # The controller rechecks controls after the reader admits
+                    # the visible frame, immediately before dispatching a key.
+                    if len(callback_calls) == 1:
+                        if control == "pause":
+                            reader.toggle_pause()
+                        elif control == "clear":
+                            reader.clear_queue()
+                        else:
+                            self.assertTrue(reader.stop())
+                        return AutoAdvanceAttempt(False, "reading-control-barrier")
+                    dispatched_keys.append("space")
+                    return AutoAdvanceAttempt(True, "dispatched")
+
+                reader = self.create_reader(
+                    auto_advance=auto_advance,
+                    require_visible_auto_advance=True,
+                    auto_advance_state_changed=state_changed,
+                )
+                reader.active_generation = 3
+                reader.dialog_ready_generation = 3
+                reader.latest_frame_visible = True
+                reader.latest_frame_fingerprint = "current"
+                reader.routed_frame_fingerprint = "current"
+                reader.capture_future = Future()
+
+                with patch("vntts.live.Timer", side_effect=scheduler.create):
+                    reader._maybe_auto_advance()
+                    scheduler.fire_next("_run_auto_advance")
+
+                    self.assertEqual(callback_calls, [control])
+                    self.assertEqual(dispatched_keys, [])
+                    self.assertIsNone(reader.failed_auto_advance_generation)
+                    self.assertIsNone(reader.pending_auto_advance_generation)
+                    self.assertEqual(scheduler.pending("_run_auto_advance"), [])
+                    state_changed.assert_not_called()
+
+                    if control == "pause":
+                        self.assertFalse(reader.toggle_pause())
+                        scheduler.fire_next("_run_auto_advance")
+                        reader._maybe_auto_advance()
+
+                        self.assertEqual(callback_calls, [control, control])
+                        self.assertEqual(dispatched_keys, ["space"])
+                        self.assertEqual(reader.pending_auto_advance_generation, 3)
+                        self.assertEqual(scheduler.pending("_run_auto_advance"), [])
+                        self.assertEqual(
+                            len(
+                                scheduler.pending("_auto_advance_confirmation_expired")
+                            ),
+                            1,
+                        )
+                    else:
+                        # Fresh same-owner OCR and Pause/Resume cannot undo a
+                        # user's Clear or Stop for this occurrence.
+                        self._recheck_stopped_occurrence(reader)
+
+                        self.assertEqual(callback_calls, [control])
+                        self.assertEqual(dispatched_keys, [])
+                        self.assertEqual(scheduler.pending("_run_auto_advance"), [])
+                        self.assertIsNone(reader.pending_auto_advance_generation)
+                        if control == "clear":
+                            self.assertEqual(reader.suppressed_generation, 3)
+                        else:
+                            self.assertTrue(reader.stop_event.is_set())
+
+    def _recheck_stopped_occurrence(self, reader):
+        self.assertTrue(reader.bind_current_frame_route())
+        reader._set_generation(3)
+        reader.dialog_ready_generation = 3
+        self.assertTrue(reader.toggle_pause())
+        self.assertFalse(reader.toggle_pause())
+        reader._maybe_auto_advance()
+        reader._run_auto_advance(3)
 
     def test_typed_focus_refusal_reschedules_without_an_ambiguous_second_probe(self):
         state_changed = Mock()

@@ -9,11 +9,16 @@ from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from unittest.mock import Mock, patch
 
+import numpy as np
+from vntts_artifacts.audio import PCM16_MONO_WAV_FORMAT, write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.generated_audio import write_generated_audio_manifest
+from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.story_index import write_story_index_document
 
 from tests.story_fixtures import write_story_index
 from vntts import path_safety
+from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
@@ -25,6 +30,7 @@ from vntts.pregeneration_generation import (
 from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_setup import load_verified_story_index_document
 from vntts.pregeneration_voices import VoicePlan
+from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class FinishedProcess:
@@ -105,6 +111,291 @@ def generation_inputs(root, *, backend="pocket-tts", model=None):
         groups=(),
     )
     return generation_input, plan
+
+
+def cold_progress_inputs(root):
+    inputs, _plan = generation_inputs(root)
+    text = "Previously prepared dialogue."
+    write_story_index_document(
+        inputs.story_index,
+        {"game": "Synthetic", "language": "en"},
+        [
+            {
+                "record_type": "line",
+                "line_id": "saved",
+                "chapter": "1",
+                "sequence": 1,
+                "speaker": "Ada",
+                "text": text,
+                "kind": "dialogue",
+                "source_audio_status": "absent",
+                "speakable": True,
+            }
+        ],
+    )
+    inputs = replace(inputs, story_index_sha256=sha256_file(inputs.story_index))
+    output = inputs.output_directory
+    output.mkdir()
+    audio = output / "line.wav"
+    write_pcm16_wav(audio, np.linspace(-0.1, 0.1, 120, dtype=np.float32), 24_000)
+    write_generated_audio_manifest(
+        output / "live-progress-manifest.json",
+        {"source_queue_sha256": inputs.queue_sha256, "vntts.runtime.progress": True},
+        [
+            {
+                "line_id": "saved",
+                "text_sha256": text_sha256(text),
+                "audio": "line.wav",
+                "audio_format": PCM16_MONO_WAV_FORMAT,
+                "audio_sha256": sha256_file(audio),
+                "sample_rate": 24_000,
+                "sample_count": 120,
+            }
+        ],
+    )
+    state = {
+        "queue_sha256": inputs.queue_sha256,
+        "items": {"saved": {"status": "approved", "line_id": "saved"}},
+        "active": None,
+    }
+    (output / "generation-state.json").write_text(json.dumps(state), encoding="utf-8")
+    return inputs, audio, state
+
+
+class SessionBackend:
+    def __init__(self, registry, **options):
+        self.registry = registry
+        self.narrator_reference = options.get("narrator_reference")
+        self.startup_cancellation = options.get("startup_cancellation")
+        self.startup_progress = options.get("startup_progress")
+        self.process = RunningProcess()
+        self.shutdown_calls = 0
+
+    def shutdown(self):
+        self.shutdown_calls += 1
+        self.process.terminate()
+
+
+class OfflineGenerationSessionTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary_directory = TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.root = Path(self.temporary_directory.name)
+        self.generation_input, self.plan = generation_inputs(
+            self.root, backend="moss-tts", model="model-id"
+        )
+        self.generation_input = replace(
+            self.generation_input,
+            voice_manifest_sha256=sha256_file(self.generation_input.voice_manifest),
+        )
+        self.registry = CharacterVoiceRegistry()
+        self.backends = []
+        self.factory_calls = []
+        self.worker = OfflineGenerationWorker(
+            backend_factory=self.create_backend, retain_isolated_backend=True
+        )
+        self.cpp = self.enterContext(
+            patch(
+                "vntts.pregeneration_generation.moss_cpp_requested", return_value=False
+            )
+        )
+
+    def create_backend(self, name, registry, cache_root, **options):
+        self.factory_calls.append((name, cache_root, options))
+        backend = SessionBackend(registry, **options)
+        self.backends.append(backend)
+        return backend
+
+    def lease(self, **options):
+        return self.worker._backend_session.factory(
+            "moss-tts", self.registry, self.root / "synthesis-cache", **options
+        )
+
+    def test_per_line_generate_and_repair_share_worker_until_session_exit(self):
+        output = self.root / f"generation-output-{self.generation_input.identity[:16]}"
+        result = OfflineGenerationResult(
+            output, output / "generation-state.json", output / "manifest.json", 3, 0, 0
+        )
+        calls = []
+
+        def run(parsed, **options):
+            calls.append(tuple(parsed.queue_ids))
+            backend = options["backend_factory"](
+                parsed.backend,
+                self.registry,
+                parsed.cache_directory,
+                model_name=parsed.model,
+                startup_cancellation=options["cancellation"],
+                startup_progress=options["startup_progress"],
+            )
+            backend.shutdown()
+            self.assertEqual(self.backends[0].shutdown_calls, 0)
+
+        with (
+            patch("vntts.authoring.cli_generation.run_generation", side_effect=run),
+            patch("vntts.pregeneration_generation._load_result", return_value=result),
+            patch("vntts.pregeneration_generation._ensure_remaining_disk_space"),
+            self.worker.generation_session(self.generation_input, self.plan),
+        ):
+            self.worker.generate(self.generation_input, self.plan, queue_ids=("a",))
+            self.worker.repair(
+                self.generation_input,
+                self.plan,
+                result,
+                action="safe_resume",
+                queue_ids=("a",),
+            )
+            self.worker.generate(self.generation_input, self.plan, queue_ids=("b",))
+            self.assertEqual(len(self.backends), 1)
+        self.assertEqual(calls, [("a",), ("a",), ("b",)])
+        self.assertEqual(self.backends[0].shutdown_calls, 1)
+        self.assertEqual(
+            self.factory_calls[0][1], (self.root / "synthesis-cache").resolve()
+        )
+        self.assertIsNone(self.worker._backend_session)
+
+    def test_session_reuses_with_fresh_cancel_and_progress_then_closes_each_job(self):
+        first_cancel, second_cancel = Event(), Event()
+        first_progress, second_progress = Mock(), Mock()
+        with self.worker.generation_session(self.generation_input, self.plan):
+            first = self.lease(
+                startup_cancellation=first_cancel, startup_progress=first_progress
+            )
+            second = self.lease(
+                startup_cancellation=second_cancel, startup_progress=second_progress
+            )
+            self.assertIs(first._backend, second._backend)
+            self.assertIs(second.startup_cancellation, second_cancel)
+            self.assertIs(second.startup_progress, second_progress)
+        with self.worker.generation_session(self.generation_input, self.plan):
+            self.lease()
+        self.assertEqual(len(self.backends), 2)
+        self.assertEqual([b.shutdown_calls for b in self.backends], [1, 1])
+
+    def test_session_replaces_model_registry_and_dead_worker(self):
+        with self.worker.generation_session(self.generation_input, self.plan):
+            self.lease(model_name="first")
+            self.lease(model_name="second")
+            self.backends[-1].process.returncode = 1
+            self.lease(model_name="second")
+            self.registry = CharacterVoiceRegistry(
+                [CharacterVoice("Narrator", "changed-voice")]
+            )
+            self.lease(model_name="second")
+        self.assertEqual(len(self.backends), 4)
+        self.assertEqual([b.shutdown_calls for b in self.backends], [1, 1, 1, 1])
+
+    def test_session_rejects_changed_input_plan_cache_and_concurrent_access(self):
+        errors = []
+        with self.worker.generation_session(self.generation_input, self.plan):
+            with self.assertRaisesRegex(OfflineGenerationError, "identity"):
+                self.worker.generate(
+                    replace(self.generation_input, identity="f" * 64), self.plan
+                )
+            with self.assertRaisesRegex(OfflineGenerationError, "identity"):
+                self.worker.generate(
+                    self.generation_input, replace(self.plan, synthesis_model="changed")
+                )
+            with self.assertRaisesRegex(OfflineGenerationError, "cache identity"):
+                self.worker._backend_session.factory(
+                    "moss-tts", self.registry, self.root / "other"
+                )
+            with self.assertRaisesRegex(OfflineGenerationError, "already active"):
+                with self.worker.generation_session(self.generation_input, self.plan):
+                    self.fail("nested session entered")
+
+            def concurrent():
+                try:
+                    self.worker.generate(
+                        self.generation_input, self.plan, queue_ids=("a",)
+                    )
+                except OfflineGenerationError as error:
+                    errors.append(str(error))
+
+            thread = Thread(target=concurrent)
+            thread.start()
+            thread.join(2)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, ["Offline generation session identity changed"])
+        self.assertEqual(self.backends, [])
+
+    def test_cancel_and_primary_failure_close_once_without_replacing_error(self):
+        for failure in (
+            OfflineGenerationCancelled("cancelled"),
+            RuntimeError("render failed"),
+        ):
+            with self.subTest(failure=type(failure)):
+                with self.assertRaises(type(failure)) as caught:
+                    with self.worker.generation_session(
+                        self.generation_input, self.plan
+                    ):
+                        backend = self.lease()._backend
+                        original_shutdown = backend.shutdown
+
+                        def broken_shutdown():
+                            original_shutdown()
+                            raise OSError("cleanup failed")
+
+                        backend.shutdown = broken_shutdown
+                        raise failure
+                self.assertIs(caught.exception, failure)
+                self.assertEqual(backend.shutdown_calls, 1)
+                self.assertIsNone(self.worker._backend_session)
+
+    def test_closed_session_factory_cannot_resurrect_worker(self):
+        with self.worker.generation_session(self.generation_input, self.plan):
+            self.lease()
+            factory = self.worker._backend_session.factory
+        with self.assertRaisesRegex(OfflineGenerationError, "session identity"):
+            factory("moss-tts", self.registry, self.root / "synthesis-cache")
+        self.assertEqual(len(self.backends), 1)
+
+    def test_same_path_reference_mutation_rejects_before_reused_lease(self):
+        reference = self.root / "reference.wav"
+        reference.write_bytes(b"admitted reference")
+        self.registry = CharacterVoiceRegistry(
+            [CharacterVoice("Narrator", "voice", references=(reference,))]
+        )
+        with self.worker.generation_session(self.generation_input, self.plan):
+            self.lease().shutdown()
+            reference.write_bytes(b"changed reference")
+            with self.assertRaisesRegex(BulkGenerationError, "changed during the run"):
+                self.lease()
+            self.assertEqual(len(self.backends), 1)
+        with self.worker.generation_session(self.generation_input, self.plan):
+            self.lease()
+        self.assertEqual(len(self.backends), 2)
+        self.assertEqual([b.shutdown_calls for b in self.backends], [1, 1])
+
+    def test_changed_reference_inventory_is_not_admitted_into_retained_job(self):
+        with self.worker.generation_session(self.generation_input, self.plan):
+            self.lease()
+            self.registry = CharacterVoiceRegistry(
+                [
+                    CharacterVoice(
+                        "Narrator", "voice", references=(self.root / "other.wav",)
+                    )
+                ]
+            )
+            with self.assertRaisesRegex(OfflineGenerationError, "control inventory"):
+                self.lease()
+        self.assertEqual(len(self.backends), 1)
+
+    def test_default_custom_factory_keeps_per_call_backend_ownership(self):
+        custom = Mock(return_value=object())
+        worker = OfflineGenerationWorker(backend_factory=custom)
+        with worker.generation_session(self.generation_input, self.plan):
+            self.assertIsNone(worker._backend_session)
+            self.assertIs(worker.backend_factory, custom)
+        custom.assert_not_called()
+
+    def test_native_backend_keeps_existing_factory_and_per_call_shutdown(self):
+        self.cpp.return_value = True
+        with self.worker.generation_session(self.generation_input, self.plan):
+            self.lease(model_name="native.gguf").shutdown()
+            self.lease(model_name="native.gguf").shutdown()
+        self.assertEqual(len(self.backends), 2)
+        self.assertEqual([b.shutdown_calls for b in self.backends], [1, 1])
 
 
 class OfflineGenerationWorkerTest(unittest.TestCase):
@@ -373,6 +664,110 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
 
         self.assertFalse(progress.available)
         self.assertEqual(progress.runtime_status, "Downloading OpenMOSS: 12%")
+
+    def test_cold_startup_preserves_admitted_recordings_and_startup_status(self):
+        with TemporaryDirectory() as directory:
+            inputs, _audio, _state = cold_progress_inputs(Path(directory))
+            worker = OfflineGenerationWorker(backend_factory=Mock())
+            worker._set_startup_status("Loading model...")
+            progress = worker.inspect_progress(inputs)
+
+        self.assertTrue(progress.available)
+        self.assertEqual(progress.generated, 1)
+        self.assertEqual(progress.ready_line_ids, ("saved",))
+        self.assertEqual(progress.runtime_status, "Loading model...")
+        self.assertIsNone(progress.active_phase)
+
+    def test_cold_progress_does_not_admit_missing_corrupt_or_foreign_audio(self):
+        for failure in (
+            "missing",
+            "corrupt",
+            "foreign-manifest",
+            "malformed-manifest",
+            "changed-story",
+        ):
+            with self.subTest(failure=failure), TemporaryDirectory() as directory:
+                inputs, audio, _state = cold_progress_inputs(Path(directory))
+                manifest = inputs.output_directory / "live-progress-manifest.json"
+                if failure == "missing":
+                    audio.unlink()
+                elif failure == "corrupt":
+                    audio.write_bytes(b"modified WAV")
+                elif failure == "foreign-manifest":
+                    value = json.loads(manifest.read_text())
+                    value["source_queue_sha256"] = "f" * 64
+                    manifest.write_text(json.dumps(value))
+                elif failure == "malformed-manifest":
+                    manifest.write_text("not JSON")
+                else:
+                    inputs.story_index.write_text("changed story")
+                progress = OfflineGenerationWorker(
+                    backend_factory=Mock()
+                ).inspect_progress(inputs)
+                self.assertEqual(progress.generated, 1)
+                self.assertEqual(progress.ready_line_ids, ())
+
+    def test_cold_progress_rejects_foreign_or_malformed_state(self):
+        for failure in ("foreign", "malformed"):
+            with self.subTest(failure=failure), TemporaryDirectory() as directory:
+                inputs, _audio, state = cold_progress_inputs(Path(directory))
+                state["queue_sha256"] = "f" * 64
+                path = inputs.output_directory / "generation-state.json"
+                path.write_text(
+                    "broken JSON" if failure == "malformed" else json.dumps(state)
+                )
+                with self.assertRaises(OfflineGenerationError):
+                    OfflineGenerationWorker(backend_factory=Mock()).inspect_progress(
+                        inputs
+                    )
+
+    def test_cold_progress_keeps_authoritative_originals_without_generated_manifest(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs, _plan = generation_inputs(root)
+            story = write_story_index(root / "source")
+            inputs = replace(
+                inputs, story_index=story, story_index_sha256=sha256_file(story)
+            )
+            output = inputs.output_directory
+            output.mkdir()
+            (output / "generation-state.json").write_text(
+                json.dumps(
+                    {
+                        "queue_sha256": inputs.queue_sha256,
+                        "items": {},
+                        "active": None,
+                    }
+                )
+            )
+            progress = OfflineGenerationWorker(backend_factory=Mock()).inspect_progress(
+                inputs
+            )
+
+        self.assertEqual(progress.generated, 0)
+        self.assertEqual(progress.ready_line_ids, ("reverse1999:1",))
+
+    def test_live_callback_overtakes_cold_inspection_without_stale_counts(self):
+        with TemporaryDirectory() as directory:
+            inputs, _audio, state = cold_progress_inputs(Path(directory))
+            worker = OfflineGenerationWorker(backend_factory=Mock())
+            state["items"]["second"] = {"status": "approved", "line_id": "second"}
+
+            def callback(_inputs, _progress):
+                worker._record_progress(state, inputs)
+                return ("saved",)
+
+            with patch(
+                "vntts.pregeneration_generation._durable_ready_line_ids",
+                side_effect=callback,
+            ):
+                progress = worker.inspect_progress(inputs)
+            self.assertEqual(progress.generated, 2)
+            self.assertEqual(progress.ready_line_ids, ("saved", "second"))
+            foreign = replace(inputs, identity="f" * 64)
+            self.assertFalse(worker.inspect_progress(foreign).available)
 
     def test_progress_reads_partial_durable_state_before_manifest_publication(self):
         with TemporaryDirectory() as temporary_directory:

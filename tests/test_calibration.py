@@ -10,7 +10,15 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image  # noqa: E402
-from PySide6.QtCore import QPoint, QRect, Qt, QThreadPool, QTimer  # noqa: E402
+from PySide6.QtCore import (  # noqa: E402
+    QCoreApplication,
+    QEvent,
+    QPoint,
+    QRect,
+    Qt,
+    QThreadPool,
+    QTimer,
+)
 from PySide6.QtGui import QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -18,15 +26,19 @@ from PySide6.QtWidgets import (  # noqa: E402
     QDialog,
     QScrollArea,
     QTextEdit,
+    QWidget,
 )
 from pytesseract import pytesseract as pytesseract_runtime  # noqa: E402
 
 from tests.qt_task_fixtures import release_and_wait_for_pool  # noqa: E402
 from vntts.calibration import (  # noqa: E402
     CalibrationReviewDialog,
+    CaptureWindowVisibility,
     DialogRegionOverlay,
     show_calibration_overlay,
 )
+from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
+from vntts.diagnostics_ui import DiagnosticsDialog  # noqa: E402
 from vntts.ocr import DialogRegion, OCRResult  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
 
@@ -54,6 +66,94 @@ class DialogRegionOverlayTest(unittest.TestCase):
                 return
             QTest.qWait(5)
         self.fail("Timed out waiting for calibration OCR")
+
+    def test_capture_visibility_restores_only_surviving_owned_windows_without_activation(
+        self,
+    ):
+        owner, visible, hidden, closed, destroyed, stale = (QWidget() for _ in range(6))
+        for window in (visible, closed, destroyed, stale):
+            window.show()
+        restored_attributes = []
+        show = visible.show
+
+        def observe_show():
+            restored_attributes.append(
+                visible.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            )
+            show()
+
+        try:
+            visibility = CaptureWindowVisibility(
+                owner, may_restore=lambda window: window is not stale
+            )
+            self.assertFalse(visible.isVisible())
+            closed.close()
+            destroyed.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            with (
+                patch.object(visible, "show", side_effect=observe_show),
+                patch.object(visible, "activateWindow") as activate,
+                patch.object(visible, "raise_") as raise_window,
+            ):
+                visibility.restore()
+                visibility.restore()
+            self.assertTrue(visible.isVisible())
+            self.assertFalse(hidden.isVisible())
+            self.assertFalse(closed.isVisible())
+            self.assertFalse(stale.isVisible())
+            self.assertEqual(restored_attributes, [True])
+            self.assertFalse(
+                visible.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            )
+            activate.assert_not_called()
+            raise_window.assert_not_called()
+        finally:
+            for window in (owner, visible, hidden, closed, stale):
+                window.close()
+                window.deleteLater()
+
+    def test_capture_visibility_respects_shutdown_after_pixels_are_acquired(self):
+        owner, visible = QWidget(), QWidget()
+        visible.show()
+        active = True
+        visibility = CaptureWindowVisibility(owner, may_restore=lambda _window: active)
+        active = False
+        visibility.restore()
+        self.assertFalse(visible.isVisible())
+        owner.deleteLater()
+        visible.deleteLater()
+
+    def test_capture_visibility_preserves_concealed_diagnostics_without_late_reopening(
+        self,
+    ):
+        owner = QWidget()
+        dialog = DiagnosticsDialog(refresh_timeout_ms=60_000)
+        dialog.show()
+        dialog.request_refresh()
+        generation = dialog.refresh_generation
+        dialog.conceal_for_capture()
+        try:
+            with (
+                patch.object(dialog, "activateWindow") as activate,
+                patch.object(dialog, "raise_") as raise_window,
+            ):
+                visibility = CaptureWindowVisibility(
+                    owner, may_restore=lambda _window: True
+                )
+                self.assertIn(dialog, visibility.windows)
+                self.assertFalse(dialog.refresh_in_flight)
+                self.assertFalse(dialog.refresh_timer.isActive())
+                dialog._refresh_timed_out(generation)
+                dialog.set_snapshot(DiagnosticSnapshot(None, text="Late capture"))
+                self.assertFalse(dialog.isVisible())
+                visibility.restore()
+                self.assertTrue(dialog.isVisible())
+                activate.assert_not_called()
+                raise_window.assert_not_called()
+        finally:
+            dialog.close()
+            dialog.deleteLater()
+            owner.deleteLater()
 
     def test_exact_bounds_editor_clamps_and_reviews_frozen_pixels(self):
         saved = []

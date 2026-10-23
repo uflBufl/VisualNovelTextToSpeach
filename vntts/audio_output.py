@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Mapping
 from threading import Event, Lock, current_thread
+from time import monotonic
 from types import ModuleType
 from typing import Protocol, TypeAlias, TypeGuard, overload
 from uuid import uuid4
@@ -249,12 +250,16 @@ class _LoggedAudioOutput:
         }
         context = dict(audio_lifecycle_context.get() or {})
         try:
-            stream = self.output.OutputStream(
-                samplerate=samplerate,
-                channels=channels,
-                dtype=dtype,
-                latency=latency,
-            )
+            token = audio_lifecycle_context.set({**context, "stream_id": stream_id})
+            try:
+                stream = self.output.OutputStream(
+                    samplerate=samplerate,
+                    channels=channels,
+                    dtype=dtype,
+                    latency=latency,
+                )
+            finally:
+                audio_lifecycle_context.reset(token)
         except Exception:
             record_audio_lifecycle(
                 "open",
@@ -395,6 +400,75 @@ def playback_cancelled(
     return stop_requested.is_set() or not playable
 
 
+class _PcmWriteDiagnostics:
+    """Keep bounded block associations beside the existing stream aggregates."""
+
+    def __init__(self) -> None:
+        self.written_frames = self.write_count = self.underflow_count = 0
+        self.first_underflow_frame: int | None = None
+        self.max_guard_ms = self.max_write_ms = self.max_write_gap_ms = 0.0
+        self.guard_ms = self.gap_ms = 0.0
+        self.last_write_end: float | None = None
+        self.blocks: dict[str, float | int] = {}
+
+    def before_write(self, started: float) -> None:
+        self.gap_ms = (
+            0.0
+            if self.last_write_end is None
+            else (started - self.last_write_end) * 1000
+        )
+        self.max_write_gap_ms = max(self.max_write_gap_ms, self.gap_ms)
+
+    def record_write(
+        self,
+        offset: int,
+        frames: int,
+        sample_rate: int,
+        started: float,
+        ended: float,
+        underflow: bool,
+    ) -> None:
+        self.last_write_end = ended
+        self.write_count += 1
+        self.written_frames += frames
+        write_ms = (ended - started) * 1000
+        block = {
+            "write_index": self.write_count,
+            "input_frame_offset": offset,
+            "input_frames": frames,
+            "sample_rate": sample_rate,
+            "started_monotonic": started,
+            "ended_monotonic": ended,
+            "guard_ms": round(self.guard_ms, 3),
+            "write_gap_ms": round(self.gap_ms, 3),
+            "write_ms": round(write_ms, 3),
+        }
+        if "max_write_write_index" not in self.blocks or write_ms > self.max_write_ms:
+            self.blocks.update(
+                {f"max_write_{key}": value for key, value in block.items()}
+            )
+        self.max_write_ms = max(self.max_write_ms, write_ms)
+        if underflow:
+            self.underflow_count += 1
+            if self.first_underflow_frame is None:
+                self.first_underflow_frame = offset
+                self.blocks.update(
+                    {f"first_underflow_{key}": value for key, value in block.items()}
+                )
+
+    def summary(self) -> dict[str, object]:
+        return {
+            "written_frames": self.written_frames,
+            "write_count": self.write_count,
+            "underflow_count": self.underflow_count,
+            "first_underflow_frame": self.first_underflow_frame,
+            "max_guard_ms": round(self.max_guard_ms, 3),
+            "max_write_ms": round(self.max_write_ms, 3),
+            "max_write_gap_ms": round(self.max_write_gap_ms, 3),
+            **self.blocks,
+        }
+
+
 def write_pcm_chunks(
     stream: StreamingAudioStream,
     audio: AudioData,
@@ -410,16 +484,44 @@ def write_pcm_chunks(
     block_frames = max(1, sample_rate // 20)
     underflowed = False
     wrote = False
-    for offset in range(0, len(samples), block_frames):
-        if cancelled():
-            return False, underflowed
-        underflowed = (
-            bool(stream.write(samples[offset : offset + block_frames])) or underflowed
+    diagnostics = _PcmWriteDiagnostics()
+    outcome = "failed"
+
+    def is_cancelled() -> bool:
+        started = monotonic()
+        result = cancelled()
+        diagnostics.guard_ms = (monotonic() - started) * 1000
+        diagnostics.max_guard_ms = max(diagnostics.max_guard_ms, diagnostics.guard_ms)
+        return result
+
+    try:
+        for offset in range(0, len(samples), block_frames):
+            if is_cancelled():
+                outcome = "interrupted"
+                return False, underflowed
+            started = monotonic()
+            diagnostics.before_write(started)
+            block = samples[offset : offset + block_frames]
+            underrun = bool(stream.write(block))
+            diagnostics.record_write(
+                offset, len(block), sample_rate, started, monotonic(), underrun
+            )
+            underflowed = underrun or underflowed
+            if not wrote and first_write is not None:
+                first_write()
+            wrote = True
+        completed = wrote and not is_cancelled()
+        outcome = "complete" if completed else "interrupted"
+        return completed, underflowed
+    finally:
+        record_audio_lifecycle(
+            "pcm-write-summary",
+            outcome=outcome,
+            reason="blocking-pcm-loop",
+            sample_rate=sample_rate,
+            stream_id=getattr(stream, "stream_id", None),
+            **diagnostics.summary(),
         )
-        if not wrote and first_write is not None:
-            first_write()
-        wrote = True
-    return wrote and not cancelled(), underflowed
 
 
 class SynchronousPcmPlaybackMixin:

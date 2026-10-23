@@ -195,6 +195,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             return
         }
         if args == ["--selfcheck"] {
+            try targetGuardSelfcheck()
             let before = monotonicSeconds()
             let host = CMClockGetTime(CMClockGetHostTimeClock()).seconds
             let after = monotonicSeconds()

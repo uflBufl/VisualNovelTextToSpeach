@@ -7,7 +7,8 @@ from pathlib import Path
 from threading import Event
 from typing import Protocol
 
-from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl, Signal
+from PIL import Image
+from PySide6.QtCore import QEvent, QObject, QSignalBlocker, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
@@ -37,6 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QWizardPage,
 )
+from shiboken6 import isValid
 
 from vntts.asset_ui import AssetManagerDialog
 from vntts.async_ui import LatestTaskRunner
@@ -45,7 +47,10 @@ from vntts.auto_advance_policy import (
     guard_auto_advance_settings,
 )
 from vntts.calibration import (
+    DIALOG_REGION_GUIDANCE,
+    CaptureWindowVisibility,
     DialogRegionOverlay,
+    capture_calibration_background,
     show_calibration_overlay,
 )
 from vntts.game_narrator_ui import GameNarratorDialog
@@ -1274,15 +1279,19 @@ class CalibrationPage(QWizardPage):
         self.overlay: DialogRegionOverlay | None = None
         self.pending_geometry: WindowGeometry | None = None
         self._calibration_cancelled = False
+        self._capture_cancelled = Event()
+        self._capture_visibility: CaptureWindowVisibility | None = None
+        self.capture_runner = LatestTaskRunner(self)
+        self.capture_runner.finished.connect(self._capture_finished)
         self.capture_timer = QTimer(self)
         self.capture_timer.setSingleShot(True)
         self.capture_timer.timeout.connect(self.open_overlay)
         self.setTitle("Calibrate the dialogue area")
         self.instructions = QLabel(
-            "Open a scene with dialogue, click Calibrate, then select one area "
-            "containing the speaker name, full dialogue text and continue indicator. "
-            "Leave room for multiline dialogue. "
-            "Keyboard: press Enter for a "
+            "Open a fully displayed multiline dialogue, click Calibrate, then select "
+            "the whole dialogue area, including the speaker name and continue indicator. "
+            + DIALOG_REGION_GUIDANCE
+            + " Keyboard: press Enter for a "
             "suggested region, use arrows to move it, Shift plus arrows to "
             "resize it, and Enter again to review. Press Escape to cancel."
         )
@@ -1306,7 +1315,11 @@ class CalibrationPage(QWizardPage):
         self.completeChanged.emit()
 
     def calibrate(self) -> None:
-        if self.capture_timer.isActive() or self.overlay is not None:
+        if (
+            self.capture_timer.isActive()
+            or self.capture_runner.active
+            or self.overlay is not None
+        ):
             return
         settings = self.flow.draft_settings
         geometry = None
@@ -1320,16 +1333,64 @@ class CalibrationPage(QWizardPage):
                 return
         self.pending_geometry = geometry
         self._calibration_cancelled = False
-        self.flow.hide()
+        self._capture_cancelled = Event()
+        self.flow.installEventFilter(self)
+        self._capture_visibility = CaptureWindowVisibility(
+            self,
+            may_restore=lambda window: (
+                window is not self.flow
+                or (isValid(self.flow) and not self._calibration_cancelled)
+            ),
+        )
         self.capture_timer.start(200)
 
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            watched is getattr(self, "flow", None)
+            and event.type() == QEvent.Type.DeferredDelete
+        ):
+            self.cancel_calibration()
+        return super().eventFilter(watched, event)
+
+    def event(self, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.DeferredDelete:
+            self.cancel_calibration()
+        return super().event(event)
+
     def open_overlay(self) -> None:
-        if self._calibration_cancelled or self.overlay is not None:
+        if (
+            self._calibration_cancelled
+            or self.capture_runner.active
+            or self.overlay is not None
+        ):
             return
         self.capture_timer.stop()
+        self.capture_runner.start(
+            self._capture_background, self.pending_geometry, self._capture_cancelled
+        )
+
+    @staticmethod
+    def _capture_background(
+        geometry: WindowGeometry | None, cancelled: Event
+    ) -> Image.Image:
+        if cancelled.is_set():
+            raise RuntimeError("Calibration capture cancelled")
+        return capture_calibration_background(geometry)
+
+    def _capture_finished(self, background: object, error: Exception | None) -> None:
+        if self._calibration_cancelled:
+            return
+        if error is not None or not isinstance(background, Image.Image):
+            self.restore_wizard()
+            self.status.setText(
+                f"The game could not be captured: {error or 'no image returned'}. Check capture permission "
+                "and keep the game visible, then try again."
+            )
+            return
         try:
             overlay = show_calibration_overlay(
                 self.pending_geometry,
+                background=background,
                 save_region=self.save_region,
                 capture_region=self.capture_region,
             )
@@ -1358,8 +1419,11 @@ class CalibrationPage(QWizardPage):
     def cancel_calibration(self) -> None:
         self.capture_timer.stop()
         self._calibration_cancelled = True
+        self._capture_cancelled.set()
+        self.capture_runner.cancel()
         if self.overlay is not None:
             self.overlay.close()
+        self.restore_wizard()
 
     def finish_calibration(self, region: DialogRegion) -> None:
         if region != self.capture_region:
@@ -1370,9 +1434,10 @@ class CalibrationPage(QWizardPage):
         self.completeChanged.emit()
 
     def restore_wizard(self) -> None:
-        self.flow.show()
-        self.flow.raise_()
-        self.flow.activateWindow()
+        visibility = self._capture_visibility
+        self._capture_visibility = None
+        if visibility is not None:
+            visibility.restore()
 
     def isComplete(self) -> bool:
         return self.calibrated

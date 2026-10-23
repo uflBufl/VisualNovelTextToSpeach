@@ -44,6 +44,12 @@ class DiagnosticsDialog(QDialog):
         self.refresh_timer.setSingleShot(True)
         self.refresh_timer.timeout.connect(self._current_refresh_timed_out)
 
+        self._create_preview_controls()
+        self._create_text_fields()
+        self._create_warning_controls()
+        self._create_layout()
+
+    def _create_preview_controls(self) -> None:
         self.preview = self._image_preview(
             "Waiting for a captured dialogue region...", min_height=120
         )
@@ -79,6 +85,7 @@ class DiagnosticsDialog(QDialog):
         )
         self.calibrate_button.clicked.connect(self.calibration_requested.emit)
 
+    def _create_text_fields(self) -> None:
         self.speaker = QLabel("-")
         self.speaker_confidence = QLabel("-")
         self.text = QLabel()
@@ -120,6 +127,7 @@ class DiagnosticsDialog(QDialog):
             lambda: QTimer.singleShot(0, self, self._scale_preview)
         )
 
+    def _create_warning_controls(self) -> None:
         self.warning = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
         self.warning.setAccessibleName("Diagnostics warning")
         palette = self.warning.palette()
@@ -136,6 +144,7 @@ class DiagnosticsDialog(QDialog):
         self.warning_action.hide()
         self.warning_remediation: str | None = None
 
+    def _create_layout(self) -> None:
         self.refresh_button = QPushButton("Refresh now")
         self.refresh_button.setAccessibleName("Refresh live diagnostics")
         self.refresh_button.clicked.connect(self.request_refresh)
@@ -192,6 +201,21 @@ class DiagnosticsDialog(QDialog):
         capture_header.addStretch()
         capture_header.addWidget(self.calibrate_button)
         capture_header.addWidget(self.enlarge_button)
+        self._create_technical_details()
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(12, 12, 12, 12)
+        body_layout.setSpacing(10)
+        body_layout.addLayout(capture_header)
+        body_layout.addWidget(self.preview)
+        body_layout.addLayout(summary)
+        body_layout.addWidget(self.speaker_note)
+        body_layout.addWidget(self.technical_toggle)
+        body_layout.addWidget(self.technical_panel)
+        body_layout.addStretch()
+        return body
+
+    def _create_technical_details(self) -> None:
         processed_header = QHBoxLayout()
         processed_header.addWidget(QLabel("Dialogue OCR image"))
         processed_header.addStretch()
@@ -226,18 +250,6 @@ class DiagnosticsDialog(QDialog):
         technical.addWidget(self.processed_preview)
         technical.addLayout(ocr_confidence)
         technical.addLayout(technical_details)
-        body = QWidget()
-        body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(12, 12, 12, 12)
-        body_layout.setSpacing(10)
-        body_layout.addLayout(capture_header)
-        body_layout.addWidget(self.preview)
-        body_layout.addLayout(summary)
-        body_layout.addWidget(self.speaker_note)
-        body_layout.addWidget(self.technical_toggle)
-        body_layout.addWidget(self.technical_panel)
-        body_layout.addStretch()
-        return body
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched is self.warning and event.type() == QEvent.Type.FontChange:
@@ -324,6 +336,13 @@ class DiagnosticsDialog(QDialog):
         self.refresh_status.setText(message)
         self.restore_after_capture()
 
+    def cancel_refresh(self) -> None:
+        """Cancel a pending acquisition without reopening concealed controls."""
+        self.concealed_for_capture = False
+        if not self.refresh_in_flight:
+            return
+        self._finish_refresh("Refresh cancelled.")
+
     def closeEvent(self, event: QCloseEvent) -> None:
         # Route hidden-window close and Escape through the same completion path.
         self.reject()
@@ -347,10 +366,13 @@ class DiagnosticsDialog(QDialog):
     def restore_after_capture(self) -> None:
         if not self.concealed_for_capture:
             return
-        self.show()
         self.concealed_for_capture = False
-        self.raise_()
-        self.activateWindow()
+        previous = self.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        try:
+            self.show()
+        finally:
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, previous)
 
     def set_snapshot(self, snapshot: DiagnosticSnapshot) -> None:
         source_pixmap = (

@@ -47,6 +47,15 @@ class GameProfilesDialog(QDialog):
         else:
             self.resize(500, 200)
 
+        management = self._create_profile_controls()
+        self._create_summary()
+        buttons = self._create_footer()
+        self._create_layout(management, buttons)
+        make_text_copyable(self)
+        self.summary.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.refresh_profiles(settings.active_profile_id)
+
+    def _create_profile_controls(self) -> QWidget:
         self.profiles = QComboBox()
         self.profiles.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
@@ -86,6 +95,9 @@ class GameProfilesDialog(QDialog):
         management.setLayout(management_layout)
         management_layout.setContentsMargins(0, 0, 0, 0)
 
+        return management
+
+    def _create_summary(self) -> None:
         self.active_status = QLabel()
         self.active_status.setAccessibleName("Active game profile")
         self.active_status.setWordWrap(True)
@@ -112,6 +124,7 @@ class GameProfilesDialog(QDialog):
         heading.addStretch()
         heading.addWidget(self.copy_settings)
 
+    def _create_footer(self) -> QDialogButtonBox:
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         self.use_button = buttons.addButton(
             "Use selected profile",
@@ -134,6 +147,9 @@ class GameProfilesDialog(QDialog):
         ):
             button.setAutoDefault(False)
 
+        return buttons
+
+    def _create_layout(self, management: QWidget, buttons: QDialogButtonBox) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
@@ -143,9 +159,6 @@ class GameProfilesDialog(QDialog):
         layout.addWidget(management)
         layout.addWidget(self.persistence_note)
         layout.addWidget(buttons)
-        make_text_copyable(self)
-        self.summary.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.refresh_profiles(settings.active_profile_id)
 
     def refresh_profiles(self, selected_id: str | None = None) -> None:
         was_empty = self.profiles.count() == 0

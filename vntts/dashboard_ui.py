@@ -103,6 +103,26 @@ class RuntimeControlState:
     def can_toggle_live(self) -> bool:
         return (self.ready or self.active) and self.transition != "stopping"
 
+    @property
+    def can_pause(self) -> bool:
+        return (
+            not self.starting
+            and self.transition is None
+            and (self.paused or self.live or self.speaking or self.queued)
+        )
+
+    @property
+    def pause_label(self) -> str:
+        return "Resume speech" if self.paused else "Pause speech"
+
+    @property
+    def pause_description(self) -> str:
+        return (
+            "Resume VNTTS speech and automatic dialogue continuation."
+            if self.paused
+            else "Pause VNTTS speech and automatic dialogue continuation until resumed."
+        )
+
     def reason_for(self, control: str) -> str:
         if self.transition == "stopping":
             return (
@@ -116,6 +136,7 @@ class RuntimeControlState:
             )
         reasons = {
             "read": "Stop reading and speech before reading the visible dialogue once.",
+            "pause": "Start reading or speech before pausing.",
         }
         return reasons.get(control, "Control is unavailable in the current state.")
 
@@ -125,11 +146,20 @@ def _apply_reading_capabilities(
     *,
     read_button: QPushButton,
     live_button: QPushButton,
+    pause_button: QPushButton,
 ) -> None:
     read_button.setText(state.read_label)
     read_button.setAccessibleName(state.read_label)
     read_button.setAccessibleDescription(state.read_tooltip)
     read_button.setEnabled(state.can_read)
+    pause_button.setText(state.pause_label)
+    pause_button.setAccessibleName(state.pause_label)
+    pause_button.setEnabled(state.can_pause)
+    pause_reason = (
+        state.pause_description if state.can_pause else state.reason_for("pause")
+    )
+    pause_button.setToolTip(pause_reason)
+    pause_button.setAccessibleDescription(pause_reason)
     live_button.setEnabled(state.can_toggle_live)
     _set_live_button_presentation(live_button, state.active)
     live_button.setToolTip("" if state.can_toggle_live else state.reason_for("live"))
@@ -167,6 +197,7 @@ class ControlDashboard(QMainWindow):
     reading_setup_requested = Signal()
     read_requested = Signal()
     live_requested = Signal()
+    pause_requested = Signal()
     auto_advance_requested = Signal(bool)
     sequence_resync_requested = Signal()
     sequence_expected_requested = Signal()
@@ -328,6 +359,7 @@ class ControlDashboard(QMainWindow):
     def _build_action_buttons(self) -> QHBoxLayout:
         self.read_button = QPushButton("Read current dialogue")
         self.live_button = QPushButton("Start reading")
+        self.pause_button = QPushButton("Pause speech")
         self.sequence_resync_button = QPushButton("Set story position / resync")
         self.sequence_expected_button = QPushButton("Use expected next line")
         self.auto_advance_check = QCheckBox()
@@ -346,6 +378,7 @@ class ControlDashboard(QMainWindow):
         )
         self.read_button.clicked.connect(self.read_requested.emit)
         self.live_button.clicked.connect(self.live_requested.emit)
+        self.pause_button.clicked.connect(self.pause_requested.emit)
         self.sequence_resync_button.clicked.connect(self.sequence_resync_requested.emit)
         self.sequence_expected_button.clicked.connect(
             self.sequence_expected_requested.emit
@@ -353,6 +386,7 @@ class ControlDashboard(QMainWindow):
 
         reading_actions = QHBoxLayout()
         reading_actions.addWidget(self.live_button)
+        reading_actions.addWidget(self.pause_button)
         reading_actions.addWidget(self.read_button)
         self.prepare_reading_button = QPushButton("Set up reading")
         self.prepare_reading_button.clicked.connect(
@@ -1092,6 +1126,7 @@ class ControlDashboard(QMainWindow):
             state,
             read_button=self.read_button,
             live_button=self.live_button,
+            pause_button=self.pause_button,
         )
         self.prepare_reading_button.setDefault(not state.ready and not state.active)
         self.live_button.setDefault(state.ready or state.active)
@@ -1181,6 +1216,7 @@ class CompactController(QWidget):
 
     read_requested = Signal()
     live_requested = Signal()
+    pause_requested = Signal()
     full_requested = Signal()
     sequence_expected_requested = Signal()
 
@@ -1264,6 +1300,7 @@ class CompactController(QWidget):
 
     def _build_buttons(self) -> None:
         self.live_button = QPushButton("Start reading")
+        self.pause_button = QPushButton("Pause speech")
         self.read_button = QPushButton("Read once")
         self.sequence_expected_button = QPushButton("Use expected next line")
         self.sequence_expected_button.setVisible(False)
@@ -1275,6 +1312,7 @@ class CompactController(QWidget):
         for button in (
             self.read_button,
             self.live_button,
+            self.pause_button,
             self.sequence_expected_button,
             self.full_button,
         ):
@@ -1284,6 +1322,7 @@ class CompactController(QWidget):
             )
         self.read_button.clicked.connect(self.read_requested.emit)
         self.live_button.clicked.connect(self.live_requested.emit)
+        self.pause_button.clicked.connect(self.pause_requested.emit)
         self.sequence_expected_button.clicked.connect(
             self.sequence_expected_requested.emit
         )
@@ -1302,6 +1341,7 @@ class CompactController(QWidget):
         primary_controls = QHBoxLayout()
         primary_controls.setSpacing(6)
         primary_controls.addWidget(self.live_button)
+        primary_controls.addWidget(self.pause_button)
         primary_controls.addWidget(self.read_button)
         primary_controls.addStretch(1)
         primary_controls.addWidget(self.full_button)
@@ -1311,7 +1351,8 @@ class CompactController(QWidget):
         layout.addWidget(self.sequence_recovery)
         layout.addLayout(primary_controls)
         layout.addWidget(self.sequence_expected_button, 0, Qt.AlignmentFlag.AlignLeft)
-        self.setTabOrder(self.live_button, self.read_button)
+        self.setTabOrder(self.live_button, self.pause_button)
+        self.setTabOrder(self.pause_button, self.read_button)
         self.setTabOrder(self.read_button, self.full_button)
         self.setTabOrder(self.full_button, self.sequence_expected_button)
         self.setTabOrder(self.sequence_expected_button, self.status)
@@ -1426,6 +1467,7 @@ class CompactController(QWidget):
             state,
             read_button=self.read_button,
             live_button=self.live_button,
+            pause_button=self.pause_button,
         )
         self.sequence_expected_button.setEnabled(
             state.ready

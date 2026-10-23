@@ -3,6 +3,24 @@
 This opt-in tool fixes the owning `com55/pyside6-mcp` implementation at
 `6d3a4f25e1f98378204f1340f477f9dda8c89dfe` (version 0.1.0). The patch includes
 source and offscreen regressions; it does not add a VNTTS runtime dependency.
+Live control IDs follow the native Qt object across temporary Python wrappers;
+destroyed widgets and restarted applications cannot reuse an earlier ID.
+`type_text` appends at the cursor. Use `press_key("Ctrl+A")` before typing to replace
+text; `press_key` accepts named keys, a character or one portable Qt combination,
+and rejects unsupported sequences without typing them. Each click dispatches once.
+Shutdown acknowledges the quit request before application cleanup and separately
+checks the real Qt process exit; a process that remains alive keeps its session.
+Windows liveness uses a read-only process handle wait. Mutating requests are never
+automatically retried; a lost response reports that the action may have completed.
+Inspect current app state before deciding whether to repeat it. Safe GET requests
+retain transient-error retries.
+Action responses distinguish accepted `queued` and `dispatched` (HTTP 202) from
+`completed` and `error`. A modal action acknowledges dispatch from its nested Qt
+loop while the original `QAction.trigger()` remains active. `completed` describes
+that invocation returning, not background application work. Inspect app state
+before repeating an incomplete action; late invocation errors are correlated by
+`invocation_id` in the existing logs. Qt signal-handler exceptions that Qt itself
+swallows remain application log/excepthook concerns.
 
 From VNTTS, with Git, uv and Python 3.11+ installed:
 

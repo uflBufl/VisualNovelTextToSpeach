@@ -17,6 +17,9 @@ TESTS = (
     "tests/test_screenshot_capture.py",
     "tests/test_screenshot_server.py",
     "tests/test_server_pure.py",
+    "tests/test_interactions.py",
+    "tests/test_actions.py",
+    "tests/test_shutdown.py",
     "tests/test_integration_ready.py::test_screenshot_returns_png_base64",
 )
 

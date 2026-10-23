@@ -118,10 +118,17 @@ class ModelAssetManager:
         os.environ["TTS_HOME"] = str(self.storage_root)
         return self.storage_root
 
+    def huggingface_environment(
+        self, environment: Mapping[str, str] | None = None
+    ) -> dict[str, str]:
+        result = dict(os.environ if environment is None else environment)
+        result.setdefault("HF_HOME", str(self.storage_root / "huggingface"))
+        return result
+
     def configure_huggingface_environment(self) -> Path:
-        cache_root = self.storage_root / "huggingface"
-        os.environ["HF_HOME"] = str(cache_root)
-        return cache_root
+        environment = self.huggingface_environment()
+        os.environ["HF_HOME"] = environment["HF_HOME"]
+        return Path(environment["HF_HOME"])
 
     def model_path(self, model_name: str) -> Path:
         return self.coqui_cache_root / _model_directory_name(model_name)

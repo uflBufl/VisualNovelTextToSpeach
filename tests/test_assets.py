@@ -433,6 +433,28 @@ class ModelAssetManagerTest(unittest.TestCase):
                 )
                 self.assertEqual(os.environ["HF_HOME"], str(cache_root))
 
+    def test_worker_cache_environment_is_private_without_mutating_the_parent(self):
+        with TemporaryDirectory() as directory:
+            manager = ModelAssetManager(storage_root=directory)
+            parent = {"PATH": "original"}
+            environment = manager.huggingface_environment(parent)
+            self.assertEqual(
+                environment["HF_HOME"], str(manager.storage_root / "huggingface")
+            )
+            self.assertEqual(parent, {"PATH": "original"})
+
+    def test_cache_overrides_survive_live_and_worker_configuration(self):
+        with TemporaryDirectory() as directory:
+            manager = ModelAssetManager(storage_root=directory)
+            overrides = {"HF_HOME": "/explicit/home", "HF_HUB_CACHE": "/explicit/hub"}
+            with patch.dict(os.environ, overrides, clear=True):
+                before = manager.huggingface_environment()
+                self.assertEqual(
+                    manager.configure_huggingface_environment(), Path("/explicit/home")
+                )
+                self.assertEqual(manager.huggingface_environment(), before)
+                self.assertEqual(before["HF_HUB_CACHE"], "/explicit/hub")
+
     def create_asset(self):
         return ModelAsset(
             name="tts_models/test/dataset/model",

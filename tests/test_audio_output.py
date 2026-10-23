@@ -1,5 +1,5 @@
 import unittest
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -10,6 +10,7 @@ from vntts.audio_output import (
     match_output_sample_rate,
     resolve_audio_output,
     sanitize_playback_audio,
+    write_pcm_chunks,
 )
 from vntts.support import configure_audio_lifecycle_log
 
@@ -284,3 +285,81 @@ class AudioOutputLifecycleTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PcmWriteDiagnosticsTest(unittest.TestCase):
+    def test_summary_is_emitted_once_after_unchanged_pcm_writes(self):
+        samples = np.arange(120, dtype=np.float32)
+        writes = []
+        now = [0.0]
+
+        def guard():
+            now[0] += 0.002
+            return False
+
+        def write(block):
+            writes.append(block.copy())
+            now[0] += 0.05
+            return len(writes) == 2
+
+        with (
+            patch("vntts.audio_output.monotonic", side_effect=lambda: now[0]),
+            patch("vntts.audio_output.record_audio_lifecycle") as log,
+        ):
+            completed, underflowed = write_pcm_chunks(
+                SimpleNamespace(write=write), samples, 1000, guard
+            )
+            log.assert_called_once()
+            summary = log.call_args.kwargs
+        self.assertTrue(completed)
+        self.assertTrue(underflowed)
+        np.testing.assert_array_equal(np.concatenate(writes).reshape(-1), samples)
+        self.assertEqual(summary["written_frames"], 120)
+        self.assertEqual(summary["write_count"], 3)
+        self.assertEqual(summary["underflow_count"], 1)
+        self.assertEqual(summary["first_underflow_frame"], 50)
+        self.assertEqual(summary["max_guard_ms"], 2)
+        self.assertEqual(summary["max_write_ms"], 50)
+        self.assertEqual(summary["max_write_gap_ms"], 2)
+        self.assertEqual(summary["first_underflow_write_index"], 2)
+        self.assertEqual(summary["first_underflow_input_frame_offset"], 50)
+        self.assertEqual(summary["first_underflow_input_frames"], 50)
+        self.assertEqual(summary["first_underflow_guard_ms"], 2)
+        self.assertEqual(summary["first_underflow_write_gap_ms"], 2)
+        self.assertAlmostEqual(summary["first_underflow_started_monotonic"], 0.054)
+        self.assertAlmostEqual(summary["first_underflow_ended_monotonic"], 0.104)
+
+    def test_cancellation_and_failure_retain_partial_write_diagnostics(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                writes = []
+
+                def write(block):
+                    if writes and failed:
+                        raise OSError("device failed")
+                    writes.append(block.copy())
+                    return False
+
+                with patch("vntts.audio_output.record_audio_lifecycle") as log:
+                    if failed:
+                        with self.assertRaises(OSError):
+                            write_pcm_chunks(
+                                SimpleNamespace(write=write),
+                                np.zeros(120),
+                                1000,
+                                lambda: False,
+                            )
+                    else:
+                        result = write_pcm_chunks(
+                            SimpleNamespace(write=write),
+                            np.zeros(120),
+                            1000,
+                            lambda: bool(writes),
+                        )
+                        self.assertEqual(result, (False, False))
+                log.assert_called_once()
+                self.assertEqual(log.call_args.kwargs["written_frames"], 50)
+                self.assertEqual(
+                    log.call_args.kwargs["outcome"],
+                    "failed" if failed else "interrupted",
+                )

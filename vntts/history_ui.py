@@ -52,6 +52,12 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         self.setWindowTitle("Dialogue history")
         self.resize(820, 480)
 
+        self._create_entry_widgets()
+        self._create_speech_controls()
+        self._create_layout()
+        self.refresh()
+
+    def _create_entry_widgets(self) -> None:
         self.search = QLineEdit()
         self.search.setPlaceholderText("Speaker or dialogue text")
         self.search.setClearButtonEnabled(True)
@@ -79,6 +85,8 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         self.details.setAccessibleName("Selected dialogue details")
         self.details_label = QLabel("Selected &line")
         self.details_label.setBuddy(self.details)
+
+    def _create_speech_controls(self) -> None:
         self.replay_button = QPushButton("Speak with current voice")
         self.replay_button.setEnabled(False)
         self.replay_button.setToolTip(
@@ -102,6 +110,8 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         self.replay_button.clicked.connect(self.replay_selected)
         self.stop_button.clicked.connect(self.stop_replay)
         self.export_button.clicked.connect(self.export_history)
+
+    def _create_layout(self) -> None:
         actions = QHBoxLayout()
         actions.addWidget(self.replay_button)
         actions.addWidget(self.stop_button)
@@ -131,8 +141,6 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         layout.addWidget(self.search)
         layout.addLayout(content)
         layout.addLayout(footer)
-
-        self.refresh()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched is self.status and event.type() == QEvent.Type.FontChange:

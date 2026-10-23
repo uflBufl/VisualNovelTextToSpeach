@@ -35,6 +35,7 @@ from shiboken6 import isValid  # noqa: E402
 
 from tests.pregeneration_fixtures import ambiguous_fixture  # noqa: E402
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
+from tests.story_fixtures import write_synthetic_game_pack  # noqa: E402
 from vntts.app import (  # noqa: E402
     SettingsDialog,
     TrayApplication,
@@ -49,6 +50,7 @@ from vntts.cli import CLIReportResult  # noqa: E402
 from vntts.controller import AppController, LiveSequenceStatus  # noqa: E402
 from vntts.dashboard_ui import RuntimeControlState
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
+from vntts.game_pack import apply_game_pack, import_game_pack  # noqa: E402
 from vntts.generated_audio import AudioRouteTrace  # noqa: E402
 from vntts.ocr import (  # noqa: E402
     DialogRegion,
@@ -595,35 +597,48 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application._controller_ready = True
         cases = (
-            ("idle", False, {}, (True, True)),
-            ("live", True, {}, (False, True)),
+            ("idle", False, {}, (True, True, False)),
+            ("live", True, {}, (False, True, True)),
             (
                 "speaking",
                 False,
                 {"speaking": True},
-                (False, True),
+                (False, True, True),
             ),
             (
                 "paused",
                 False,
                 {"paused": True},
-                (False, True),
+                (False, True, True),
+            ),
+            (
+                "unavailable-paused",
+                False,
+                {"paused": True},
+                (False, True, True),
+            ),
+            (
+                "starting",
+                False,
+                {"starting": True, "queued": True},
+                (False, True, False),
             ),
             (
                 "queued",
                 False,
                 {"queued": True},
-                (False, True),
+                (False, True, True),
             ),
             (
                 "replayable",
                 False,
                 {"replayable": True},
-                (True, True),
+                (True, True, False),
             ),
         )
         for name, live, snapshot, expected in cases:
             with self.subTest(state=name):
+                tray_application._controller_ready = name != "unavailable-paused"
                 controller.is_live_running = live
                 controller.live_reader.runtime_control_snapshot.return_value = snapshot
                 tray_application._apply_controller_action_state()
@@ -632,6 +647,7 @@ class TrayApplicationTest(unittest.TestCase):
                     for action in (
                         tray_application.read_action,
                         tray_application.live_action,
+                        tray_application.pause_action,
                     )
                 )
                 dashboard_state = tuple(
@@ -639,6 +655,7 @@ class TrayApplicationTest(unittest.TestCase):
                     for button in (
                         tray_application.dashboard.read_button,
                         tray_application.dashboard.live_button,
+                        tray_application.dashboard.pause_button,
                     )
                 )
                 compact_state = tuple(
@@ -646,6 +663,7 @@ class TrayApplicationTest(unittest.TestCase):
                     for button in (
                         tray_application.compact_controller.read_button,
                         tray_application.compact_controller.live_button,
+                        tray_application.compact_controller.pause_button,
                     )
                 )
                 self.assertEqual(tray_state, expected)
@@ -658,6 +676,8 @@ class TrayApplicationTest(unittest.TestCase):
                         "live": "Reading",
                         "speaking": "Speaking",
                         "paused": "Paused",
+                        "unavailable-paused": "Paused",
+                        "starting": "Starting reading",
                         "queued": "Speaking",
                         "replayable": "Ready",
                     }[name],
@@ -665,10 +685,105 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertEqual(
                     tray_application.live_action.text(),
                     "Stop reading"
-                    if name in {"live", "speaking", "paused", "queued"}
+                    if name
+                    in {
+                        "live",
+                        "speaking",
+                        "paused",
+                        "unavailable-paused",
+                        "queued",
+                        "starting",
+                    }
                     else "Start reading",
                 )
         tray_application.shutdown()
+
+    def test_pause_resume_transports_dispatch_once_and_leave_stop_distinct(self):
+        snapshot = {"paused": False}
+        controller = Mock(is_live_running=True)
+        controller.runtime_control_snapshot.side_effect = lambda: dict(snapshot)
+
+        def toggle_pause():
+            snapshot["paused"] = not snapshot["paused"]
+            return snapshot["paused"]
+
+        controller.toggle_speech_pause.side_effect = toggle_pause
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray._controller_ready = True
+        tray._apply_controller_action_state()
+        triggers = (
+            tray.dashboard.pause_button.click,
+            tray.compact_controller.pause_button.click,
+            tray.pause_action.trigger,
+        )
+        for trigger in triggers:
+            for paused in (True, False):
+                with self.subTest(transport=trigger, paused=paused):
+                    calls = controller.toggle_speech_pause.call_count
+                    trigger()
+                    self.assertEqual(
+                        controller.toggle_speech_pause.call_count, calls + 1
+                    )
+                    self.assertEqual(snapshot["paused"], paused)
+                    label = "Resume speech" if paused else "Pause speech"
+                    self.assertEqual(tray.dashboard.pause_button.text(), label)
+                    self.assertEqual(tray.compact_controller.pause_button.text(), label)
+                    self.assertEqual(tray.pause_action.text(), label)
+        snapshot["paused"] = True
+        tray._controller_ready = False
+        tray._apply_controller_action_state()
+        tray.pause_action.trigger()
+        self.assertFalse(snapshot["paused"])
+        with patch.object(tray, "_request_stop_reading") as stop:
+            calls = controller.toggle_speech_pause.call_count
+            tray.dashboard.live_button.click()
+            stop.assert_called_once_with()
+            self.assertEqual(controller.toggle_speech_pause.call_count, calls)
+        tray.shutdown()
+
+    def test_pause_rechecks_owner_and_rejects_stopping_modal_and_late_stopped_state(
+        self,
+    ):
+        snapshot = {"paused": False, "speaking": True}
+        controller = Mock(is_live_running=False)
+        controller.runtime_control_snapshot.side_effect = lambda: dict(snapshot)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray._controller_ready = True
+        tray._apply_controller_action_state()
+        with patch("vntts.app.QApplication.activeModalWidget", return_value=object()):
+            tray.pause_action.trigger()
+        controller.toggle_speech_pause.assert_not_called()
+        tray._apply_runtime_control_state(
+            RuntimeControlState(ready=True, speaking=True, transition="stopping")
+        )
+        tray.toggle_speech_pause()
+        controller.toggle_speech_pause.assert_not_called()
+        tray._apply_controller_action_state()
+        snapshot.update(starting=True, queued=True)
+        tray.toggle_speech_pause()
+        controller.toggle_speech_pause.assert_not_called()
+        snapshot.clear()
+        snapshot.update(paused=False, speaking=False, queued=False)
+        tray.dashboard.pause_button.click()
+        controller.toggle_speech_pause.assert_not_called()
+        tray.set_speech_paused(True)
+        for control in (
+            tray.pause_action,
+            tray.dashboard.pause_button,
+            tray.compact_controller.pause_button,
+        ):
+            self.assertFalse(control.isEnabled())
+            self.assertEqual(control.text(), "Pause speech")
+        controller.toggle_live.assert_not_called()
+        tray.shutdown()
 
     def test_status_refresh_preserves_voice_picker_action_lock(self):
         tray_application = TrayApplication(
@@ -1301,6 +1416,130 @@ class TrayApplicationTest(unittest.TestCase):
             start_reading.assert_called_once()
         controller.start.assert_not_called()
         tray.shutdown()
+
+    def _prepared_pack_reading_tray(self, root, *, loaded=False, damage=None):
+        pack, *_unused, wav = write_synthetic_game_pack(
+            root, include_generated=damage != "empty"
+        )
+        settings = apply_game_pack(
+            AppSettings(
+                onboarding_completed=True, audio_source_policy="prefer-generated"
+            ),
+            pack,
+        )
+        if damage == "missing":
+            wav.unlink()
+        elif damage == "corrupt":
+            wav.write_bytes(b"corrupt audio")
+        elif damage == "mismatch":
+            settings = settings.updated(story_index="different-story.jsonl")
+        controller = Mock(
+            is_ready=loaded,
+            is_live_running=False,
+            is_one_shot_read_running=False,
+            settings=settings,
+        )
+        controller.runtime_control_snapshot.return_value = {}
+        tray = TrayApplication(
+            self.application, settings, controller_factory=Mock(return_value=controller)
+        )
+        tray._controller_ready = loaded
+        preparation = Mock()
+        preparation.has_pending_work.return_value = True
+        preparation.runtime_playback_settings.return_value = None
+        tray.pregeneration_dialog = preparation
+        return tray, controller, preparation, wav
+
+    def test_active_pack_remains_readable_during_new_empty_preparation_before_and_after_load(
+        self,
+    ):
+        for loaded in (False, True):
+            with self.subTest(loaded=loaded), TemporaryDirectory() as directory:
+                tray, controller, preparation, _wav = self._prepared_pack_reading_tray(
+                    Path(directory), loaded=loaded
+                )
+                saved = tray.settings
+                tray._apply_controller_action_state()
+                self.assertTrue(tray.dashboard.prepare_reading_button.isEnabled())
+                self.assertEqual(tray._runtime_control_state().ready, loaded)
+                with patch.object(tray.initial_start_runner, "start") as start:
+                    tray.prepare_reading()
+                start.assert_called_once()
+                controller.apply_settings.assert_not_called()
+                self.assertEqual(controller.settings, saved)
+                self.assertEqual(
+                    tray.settings, saved.updated(last_main_section="reading")
+                )
+                preparation._cancel_or_reject.assert_not_called()
+                tray.pregeneration_dialog = None
+                tray.shutdown()
+
+    def test_active_pack_is_selected_until_explicit_progressive_handoff(self):
+        with TemporaryDirectory() as directory:
+            tray, controller, preparation, _wav = self._prepared_pack_reading_tray(
+                Path(directory), loaded=True
+            )
+            saved = tray.settings
+            progress = saved.updated(
+                game_pack=None,
+                story_index="new-story.jsonl",
+                generated_audio_manifest="new-progress.json",
+                live_sequence_plan=None,
+            )
+            preparation.runtime_playback_settings.return_value = progress
+            self.assertEqual(tray._reading_source_choice(), (None, True))
+            with patch.object(tray.initial_start_runner, "start"):
+                tray.prepare_reading()
+            controller.apply_settings.assert_not_called()
+            tray._finish_controller_lifecycle()
+            controller.apply_settings.return_value = True
+            with patch.object(tray, "toggle_live") as start:
+                tray._read_prepared_story()
+            controller.apply_settings.assert_called_once_with(
+                progress, cancellation=ANY
+            )
+            start.assert_called_once()
+            self.assertEqual(tray.settings, saved.updated(last_main_section="reading"))
+            tray.pregeneration_dialog = None
+            tray.shutdown()
+
+    def test_invalid_or_empty_active_pack_does_not_bypass_first_prepared_audio(self):
+        for damage in ("missing", "corrupt", "empty", "mismatch"):
+            with self.subTest(damage=damage), TemporaryDirectory() as directory:
+                tray, _controller, _preparation, _wav = (
+                    self._prepared_pack_reading_tray(Path(directory), damage=damage)
+                )
+                tray._apply_controller_action_state()
+                self.assertFalse(tray.dashboard.prepare_reading_button.isEnabled())
+                self.assertFalse(tray._runtime_control_state().ready)
+                with patch.object(tray.initial_start_runner, "start") as start:
+                    tray.prepare_reading()
+                start.assert_not_called()
+                tray.pregeneration_dialog = None
+                tray.shutdown()
+
+    def test_active_pack_admission_is_reused_and_bound_wav_change_requires_validation(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            tray, _controller, _preparation, wav = self._prepared_pack_reading_tray(
+                Path(directory), loaded=True
+            )
+            tray._reading_pack_admission = None
+            original = wav.read_bytes()
+            with patch("vntts.app.import_game_pack", wraps=import_game_pack) as admit:
+                for _ in range(3):
+                    self.assertTrue(tray._runtime_control_state().ready)
+                    tray._apply_preparation_reading_state(True, False)
+                admit.assert_called_once()
+                wav.write_bytes(b"corrupt audio")
+                self.assertFalse(tray._runtime_control_state().ready)
+                self.assertEqual(admit.call_count, 2)
+                wav.write_bytes(original)
+                self.assertTrue(tray._runtime_control_state().ready)
+                self.assertEqual(admit.call_count, 3)
+            tray.pregeneration_dialog = None
+            tray.shutdown()
 
     def test_ready_dialogue_starts_with_runtime_progress_settings(self):
         saved = AppSettings(onboarding_completed=True)
@@ -6513,11 +6752,119 @@ class TrayApplicationTest(unittest.TestCase):
                 restore.assert_called_once_with()
 
                 tray.calibrate()
-                schedule_capture.assert_called_once_with(
-                    200, tray, tray._start_calibration_capture
-                )
+                schedule_capture.assert_called_once()
+                self.assertEqual(schedule_capture.call_args.args[:2], (200, tray))
         finally:
             tray.shutdown()
+
+    def test_calibration_captures_without_any_visible_controls_and_restores_ownership(
+        self,
+    ):
+        for fails in (False, True):
+            with self.subTest(fails=fails):
+                controller = Mock(is_live_running=False)
+                controller.get_capture_geometry.return_value = None
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=controller),
+                )
+                pool = ManualThreadPool()
+                tray.calibration_capture_runner.thread_pool = pool
+                visible, hidden, closed = QWidget(), QWidget(), QWidget()
+                tray.dashboard.show()
+                visible.show()
+                closed.show()
+                overlay = Mock()
+                background = object()
+
+                def capture(_geometry):
+                    self.assertFalse(tray.dashboard.isVisible())
+                    self.assertFalse(visible.isVisible())
+                    self.assertFalse(closed.isVisible())
+                    if fails:
+                        raise RuntimeError("capture failed")
+                    return background
+
+                try:
+                    with (
+                        patch("vntts.app.QTimer.singleShot") as schedule,
+                        patch(
+                            "vntts.app.capture_calibration_background",
+                            side_effect=capture,
+                        ),
+                        patch(
+                            "vntts.app.show_calibration_overlay", return_value=overlay
+                        ) as show,
+                        patch.object(tray, "show_error") as error,
+                        patch.object(visible, "activateWindow") as activate,
+                        patch.object(visible, "raise_") as raise_window,
+                    ):
+                        tray.calibrate()
+                        self.assertEqual(schedule.call_args.args[:2], (200, tray))
+                        schedule.call_args.args[-1]()
+                        closed.close()
+                        pool.run_next()
+                        self.application.processEvents()
+                        if fails:
+                            error.assert_called_once()
+                            show.assert_not_called()
+                        else:
+                            self.assertIs(
+                                show.call_args.kwargs["background"], background
+                            )
+                            overlay.closed.connect.call_args.args[0]()
+                        activate.assert_not_called()
+                        raise_window.assert_not_called()
+                    self.assertTrue(tray.dashboard.isVisible())
+                    self.assertTrue(visible.isVisible())
+                    self.assertFalse(hidden.isVisible())
+                    self.assertFalse(closed.isVisible())
+                finally:
+                    tray.shutdown()
+                    for window in (visible, hidden, closed):
+                        window.close()
+                        window.deleteLater()
+
+    def test_calibration_ignores_stale_settle_callbacks_and_pending_shutdown_results(
+        self,
+    ):
+        controller = Mock(is_live_running=False)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        pool = ManualThreadPool()
+        tray.calibration_capture_runner.thread_pool = pool
+        visible = QWidget()
+        visible.show()
+        try:
+            with (
+                patch("vntts.app.QTimer.singleShot") as schedule,
+                patch("vntts.app.capture_calibration_background") as capture,
+                patch("vntts.app.show_calibration_overlay") as show,
+            ):
+                tray.calibrate()
+                stale = schedule.call_args.args[-1]
+                tray._cancel_calibration()
+                self.assertTrue(visible.isVisible())
+                tray.calibrate()
+                current = schedule.call_args.args[-1]
+                stale()
+                self.assertEqual(pool.tasks, [])
+                current()
+                self.assertTrue(tray.calibration_capture_runner.active)
+                tray.shutdown()
+                pool.run_next()
+                self.application.processEvents()
+                capture.assert_not_called()
+                show.assert_not_called()
+                self.assertFalse(visible.isVisible())
+        finally:
+            tray.shutdown()
+            visible.close()
+            visible.deleteLater()
 
     def test_shutdown_closes_calibration_overlay_without_restoring_controls(self):
         tray = TrayApplication(
