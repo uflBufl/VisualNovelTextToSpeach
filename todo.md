@@ -518,7 +518,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 ## Repair current GitHub CI failures
 
-- [ ] Verify UI test ownership so discarded tray widgets are destroyed on the GUI thread, and fix the remaining controller-shutdown startup-assertion worker leak. Run the affected-test selector before additional checks and verify failure-path cleanup with bounded subprocess probes.
+- [ ] Verify UI test ownership so discarded tray widgets are destroyed on the GUI thread, and fix the remaining controller-shutdown startup-assertion worker leak. Run the affected-test selector before additional checks and verify failure-path cleanup with bounded subprocess probes. Also reproduce native app exit0 after initial UI readiness with `async_ui.py:_Task.run` raising `RuntimeError: Signal source has been deleted` at `finished.emit`. Capture the quit reason and in-flight task/drain order; manual closure versus unexpected exit is unconfirmed. Keep this UI shutdown observation separate from Rust feeding, and qualify legitimate shutdown without emitting from a deleted signal owner.
 - [ ] Preserve the shard watchdog through interpreter shutdown and expose fixed shard/timeout labels in Windows failure metadata, including post-test worker hangs; validate both with bounded subprocess regressions.
 - [ ] Verify all 13 non-audit GitHub jobs on the temporary branch `codex/ci-verification-7f4e78be`. Keep the deferred dependency-audit failure unchanged and delete the temporary remote branch after verification.
 
