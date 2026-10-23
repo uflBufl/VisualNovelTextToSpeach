@@ -386,7 +386,10 @@ def _second_process(root):
         if stories.selected_story_ids() != ("selected-story",):
             raise AssertionError("Restart lost the saved story selection")
         forbidden_importer.import_installed.assert_not_called()
-        with patch.object(tray, "start_hotkeys"):
+        with (
+            patch.object(tray, "start_hotkeys"),
+            patch("vntts.app.check_audio_runtime"),
+        ):
             tray.prepare_reading()
             _wait_until(
                 application,

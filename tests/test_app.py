@@ -100,6 +100,9 @@ class TrayApplicationTest(unittest.TestCase):
         cls.application = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self.audio_runtime_check = self.enterContext(
+            patch("vntts.app.check_audio_runtime")
+        )
         settings_directory = TemporaryDirectory()
         self.addCleanup(settings_directory.cleanup)
         environment = patch.dict(
@@ -130,6 +133,77 @@ class TrayApplicationTest(unittest.TestCase):
         self.addCleanup(self._delete_qt_objects)
         self.addCleanup(self._drain_qt_workers)
         self.addCleanup(self._shutdown_trays)
+
+    def test_missing_audio_blocks_reading_before_preparation_and_allows_retry(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(onboarding_completed=True),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        self.audio_runtime_check.side_effect = RuntimeError("Run cargo build")
+        with (
+            patch.object(
+                tray,
+                "_runtime_control_state",
+                return_value=RuntimeControlState(ready=True),
+            ),
+            patch.object(tray, "_reading_source_choice") as prepare,
+            patch.object(
+                tray, "_start_live_with_available_scope", return_value=True
+            ) as start,
+            patch.object(tray, "show_error") as show_error,
+            patch.object(tray, "set_status") as status,
+            patch.object(tray.voice_auditions, "suspend") as suspend,
+        ):
+            tray.prepare_reading()
+            tray.read_once()
+            self.assertFalse(tray.toggle_live())
+            prepare.assert_not_called()
+            start.assert_not_called()
+            suspend.assert_not_called()
+            tray.controller.read_once.assert_not_called()
+            self.assertEqual(show_error.call_count, 3)
+            self.assertIn("cargo build", show_error.call_args.args[0])
+            self.audio_runtime_check.side_effect = None
+            self.assertTrue(tray.toggle_live())
+            start.assert_called_once()
+            self.assertIsNone(tray._audio_runtime_error)
+            self.assertIn("available", status.call_args.args[0])
+
+    def test_stop_remains_available_when_audio_installation_is_broken(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        self.audio_runtime_check.side_effect = RuntimeError("missing worker")
+        with (
+            patch.object(
+                tray,
+                "_runtime_control_state",
+                return_value=RuntimeControlState(live=True),
+            ),
+            patch.object(tray, "_request_stop_reading") as stop,
+        ):
+            self.assertFalse(tray.toggle_live())
+        stop.assert_called_once()
+        self.audio_runtime_check.assert_not_called()
+
+    def test_startup_reports_missing_worker_without_loading_reading(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(onboarding_completed=True),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        self.audio_runtime_check.side_effect = RuntimeError("Run cargo build")
+        with (
+            patch.object(tray, "open_pregeneration"),
+            patch.object(tray, "show_error") as show_error,
+            patch.object(tray.initial_start_runner, "start") as start,
+        ):
+            tray._load_initial_library()
+        self.assertIn("cargo build", show_error.call_args.args[0])
+        start.assert_not_called()
 
     def _shutdown_trays(self):
         with ExitStack() as cleanup:

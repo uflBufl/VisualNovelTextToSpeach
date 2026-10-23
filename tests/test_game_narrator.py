@@ -34,7 +34,10 @@ from tests.voice_manifest_fixtures import (  # noqa: E402
     write_player_candidate_manifest,
 )
 from vntts.app import TrayApplication  # noqa: E402
-from vntts.authoring.pcm_playback import PersistentPcmPlayer  # noqa: E402
+from vntts.authoring.pcm_playback import (  # noqa: E402
+    PcmPlaybackError,
+    PersistentPcmPlayer,
+)
 from vntts.game_content_importer import Reverse1999GameImporter  # noqa: E402
 from vntts.game_narrator import (  # noqa: E402
     bind_voice_library_selection,
@@ -66,6 +69,32 @@ class GameNarratorTest(unittest.TestCase):
         path = root / "preview.wav"
         path.write_bytes(clean_wav_bytes())
         return SimpleNamespace(path=path, audio_sha256=sha256_file(path), reused=reused)
+
+    def test_unavailable_audio_blocks_preview_preparation_and_allows_retry(self):
+        self.select_preset("preset:alba")
+        pool, previews, player = ManualThreadPool(), Mock(), Mock()
+        player.check_available.side_effect = PcmPlaybackError("Run cargo build")
+        dialog = GameNarratorDialog(
+            AppSettings(),
+            importer=Mock(),
+            preview_service=previews,
+            thread_pool=pool,
+            player=player,
+        )
+        try:
+            for operation in ("audio", "preview"):
+                dialog._candidate_action(operation)
+                self.assertIn("cargo build", dialog.status.text())
+                self.assertFalse(dialog.runner.active)
+            previews.generate.assert_not_called()
+            player.play_bytes.assert_not_called()
+            player.check_available.side_effect = None
+            dialog.preview_button.click()
+            self.assertTrue(dialog.runner.active)
+        finally:
+            dialog.reject()
+            while pool.tasks:
+                self.run_task(pool)
 
     def test_preview_navigation_keeps_request_snapshot_and_ignores_late_result(self):
         self.select_preset("preset:alba")

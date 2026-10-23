@@ -15,6 +15,7 @@ from vntts.runtime_preparation import (
     ProgressCallback,
     check_runtime_cancelled,
 )
+from vntts.rust_audio import AudioRuntimeUnavailable
 from vntts.settings import AppSettings
 from vntts.speech_worker import resolve_speech_runtime_paths
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
@@ -202,6 +203,10 @@ class OnboardingDiagnostics:
     def _check_audio(self) -> DiagnosticResult:
         try:
             device = self.audio_probe()
+        except AudioRuntimeUnavailable as error:
+            return DiagnosticResult(
+                "Audio output", "error", str(error), "external-audio-runtime"
+            )
         except Exception as error:
             return DiagnosticResult(
                 "Audio output", "error", str(error), "external-audio"

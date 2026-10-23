@@ -32,10 +32,30 @@ _workers: WeakSet[RustAudioWorker] = WeakSet()
 _workers_lock = Lock()
 
 
+AUDIO_WORKER_BUILD_COMMAND = (
+    "cargo build --release --locked --manifest-path native/audio-worker/Cargo.toml"
+)
+
+
+class AudioRuntimeUnavailable(RuntimeError):
+    """Audio installation is incomplete; browsing and preparation remain available."""
+
+
+def check_audio_runtime() -> None:
+    """Check installation before expensive work, without starting native services."""
+    worker_executable()
+    portaudio_library()
+
+
 def portaudio_library() -> str:
     """Resolve the installed public library, never sounddevice's CFFI internals."""
     explicit = os.environ.get("VNTTS_PORTAUDIO_LIBRARY")
     if explicit:
+        if not Path(explicit).is_file():
+            raise AudioRuntimeUnavailable(
+                "PortAudio library is missing. Check VNTTS_PORTAUDIO_LIBRARY "
+                "or reinstall the audio dependencies described in README."
+            )
         return explicit
     found = ctypes.util.find_library("portaudio")
     if found:
@@ -51,7 +71,11 @@ def portaudio_library() -> str:
             candidates = list((Path(location) / "portaudio-binaries").rglob(name))
             if len(candidates) == 1:
                 return str(candidates[0])
-    raise RuntimeError("PortAudio not found; set VNTTS_PORTAUDIO_LIBRARY explicitly")
+    raise AudioRuntimeUnavailable(
+        "PortAudio not found. Install libportaudio2 on Debian/Ubuntu, or restore "
+        "the sounddevice package on Windows/macOS (uv sync --no-dev). "
+        "VNTTS_PORTAUDIO_LIBRARY can select the installed library."
+    )
 
 
 def worker_executable() -> Path:
@@ -68,9 +92,16 @@ def worker_executable() -> Path:
         )
     )
     if not path.is_file():
-        raise RuntimeError(
-            "Rust audio worker is missing. Run cargo build --release --locked "
-            "--manifest-path native/audio-worker/Cargo.toml, or set VNTTS_AUDIO_WORKER"
+        raise AudioRuntimeUnavailable(
+            "Rust audio worker is missing. From the project directory run: "
+            f"{AUDIO_WORKER_BUILD_COMMAND}. Or set VNTTS_AUDIO_WORKER to a built worker. "
+            "VNTTS starts the worker automatically; do not launch it separately."
+        )
+    if sys.platform != "win32" and not os.access(path, os.X_OK):
+        raise AudioRuntimeUnavailable(
+            "Rust audio worker is not executable. Restore its executable permission "
+            f"or rebuild from the project directory: {AUDIO_WORKER_BUILD_COMMAND}. "
+            "Check VNTTS_AUDIO_WORKER if it selects a custom worker."
         )
     return path
 
@@ -117,7 +148,13 @@ class RustAudioWorker:
         )
         self.reader.start()
         try:
-            ready = self.receive(10)
+            try:
+                ready = self.receive(10)
+            except queue.Empty as error:
+                raise RuntimeError(
+                    "Rust audio worker startup timed out. Retry playback; if it persists, "
+                    f"rebuild from the project directory: {AUDIO_WORKER_BUILD_COMMAND}"
+                ) from error
             if ready.get("event") != "ready" or ready.get("protocol") != 2:
                 raise RuntimeError(
                     "Rust audio worker protocol mismatch; rebuild native/audio-worker with Cargo"

@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 from vntts_artifacts.voice_manifest import normalize_character_name
 
 from vntts.async_ui import LatestTaskRunner
+from vntts.authoring.pcm_playback import PcmPlaybackError
 from vntts.document_identity import sha256_file
 from vntts.path_safety import read_regular_bytes
 from vntts.pregeneration_audition import (
@@ -642,6 +643,8 @@ class VoiceAuditionPanel(QGroupBox):
             return
         if self.original_runner.active:
             self._stop_player()
+        if not self._check_playback_available():
+            return
         candidate, _choice, _narrator = self._current_entry()
         preview = self._ready_preview(candidate)
         if preview is not None:
@@ -1157,7 +1160,7 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self.a_use.setEnabled(True)
         self._set_playing_source("preview")
-        self._set_status("Playing the generated preview.")
+        self._set_status("Starting the generated preview...")
 
     def _cancel_preview_request(self) -> None:
         if self._preview_request is not None:
@@ -1508,6 +1511,8 @@ class VoiceAuditionPanel(QGroupBox):
             or self.decision_runner.active
         ):
             return
+        if not self._check_playback_available():
+            return
         candidate, _choice, _narrator = self._current_entry()
         from vntts.support import record_game_import
 
@@ -1681,25 +1686,46 @@ class VoiceAuditionPanel(QGroupBox):
             self.preview_service.close()
         self.cancelled.emit()
 
+    def _check_playback_available(self) -> bool:
+        try:
+            check_available = getattr(self._ensure_player(), "check_available", None)
+            if callable(check_available):
+                check_available()
+        except PcmPlaybackError as error:
+            self._playback_failed(str(error))
+            return False
+        return True
+
+    def _playback_failed(self, message: str) -> None:
+        self._accepted_choice = None
+        self.a_use.setEnabled(False)
+        self._set_playing_source(None)
+        self._set_status(f"Unable to play voice sample: {message}")
+
     def _ensure_player(self) -> _PreviewPlayer:
         if self.player is None:
             player = QMediaPlayer(self)
-            player.errorOccurred.connect(
-                lambda _code, message: self._set_status(
-                    f"Unable to play voice sample: {message}"
-                )
-            )
             self.player = player
             self._connect_player()
         return self.player
 
     def _connect_player(self) -> None:
+        error_signal = getattr(self.player, "errorOccurred", None)
+        connect_error = getattr(error_signal, "connect", None)
+        if callable(connect_error):
+            connect_error(lambda _code, message: self._playback_failed(message))
         signal = getattr(self.player, "playbackStateChanged", None)
         connect = getattr(signal, "connect", None)
         if callable(connect):
             connect(self._playback_state_changed)
 
     def _playback_state_changed(self, state: object) -> None:
+        if getattr(state, "name", "") == "PlayingState":
+            self._set_status(
+                "Playing the generated preview."
+                if self._playing_source == "preview"
+                else "Playing the original reference."
+            )
         if getattr(state, "name", "") == "StoppedState":
             if self._playing_source is not None:
                 self._set_status("Playback finished. Use this voice if suitable.")

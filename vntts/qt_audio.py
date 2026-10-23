@@ -6,7 +6,7 @@ from time import monotonic
 from typing import Protocol
 from uuid import uuid4
 
-from PySide6.QtCore import QEvent, QObject, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QMetaObject, QObject, QTimer, QUrl, Signal
 from PySide6.QtMultimedia import QMediaPlayer as _QtMediaPlayer
 
 from vntts.authoring.pcm_playback import (
@@ -15,6 +15,7 @@ from vntts.authoring.pcm_playback import (
     PersistentPcmPlayer,
     PlaybackSnapshot,
 )
+from vntts.cleanup import attempt_cleanup
 
 PLAYBACK_START_TIMEOUT_SECONDS = 5.0
 
@@ -54,6 +55,7 @@ class QtPcmPlayer(QObject):
         super().__init__(parent)
         self._player_factory = player_factory
         self._player: _PcmPlayer | None = None
+        self._player_cleanup: QMetaObject.Connection | None = None
         self._source: Path | None = None
         self._clip: PcmClip | None = None
         self._token: int | None = None
@@ -88,6 +90,15 @@ class QtPcmPlayer(QObject):
         self._source = Path(source.toLocalFile()) if not source.isEmpty() else None
         self._clip = None
 
+    def check_available(self) -> None:
+        if self._player_factory is PersistentPcmPlayer:
+            from vntts.rust_audio import check_audio_runtime
+
+            try:
+                check_audio_runtime()
+            except Exception as error:
+                raise PcmPlaybackError(str(error)) from error
+
     def play(self) -> None:
         self._begin_attempt()
         try:
@@ -97,7 +108,7 @@ class QtPcmPlayer(QObject):
                     raise PcmPlaybackError("Playback source is empty")
                 self._clip = player.load(self._source)
             self._start(player, self._clip)
-        except PcmPlaybackError as error:
+        except Exception as error:
             self._fail(str(error))
 
     def play_bytes(self, payload: bytes, source: str) -> PcmClip | None:
@@ -108,7 +119,7 @@ class QtPcmPlayer(QObject):
             self._clip = player.load_bytes(payload, name=source)
             self._start(player, self._clip)
             return self._clip
-        except PcmPlaybackError as error:
+        except Exception as error:
             self._fail(str(error))
             return None
 
@@ -123,13 +134,30 @@ class QtPcmPlayer(QObject):
         self._started = False
         self._started_at = None
         self._timer.stop()
+        stop_error = None
+        already_failed = outcome == "failed"
         try:
             if self._player is not None:
                 self._player.stop()
+        except Exception as error:
+            stop_error = error
+            if not already_failed:
+                outcome, reason = "failed", str(error)
+            player, self._player = self._player, None
+            assert player is not None
+            if self._player_cleanup is not None:
+                QObject.disconnect(self._player_cleanup)
+                self._player_cleanup = None
+            attempt_cleanup(
+                player.close, description="PCM player cleanup", primary_error=error
+            )
         finally:
             self._finish_attempt(outcome, reason=reason)
         if active and emit_state:
             self.playbackStateChanged.emit(self.PlaybackState.StoppedState)
+        if stop_error is not None and not already_failed:
+            self._error = str(stop_error)
+            self.errorOccurred.emit(self.Error.ResourceError, self._error)
 
     def _begin_attempt(self) -> None:
         if "attempt_id" in self._lifecycle:
@@ -167,7 +195,7 @@ class QtPcmPlayer(QObject):
 
             # A QObject's own bound slot is disconnected during its destruction.
             # Retain the PCM callback owner until the native stream is closed.
-            self.destroyed.connect(close_pcm)
+            self._player_cleanup = self.destroyed.connect(close_pcm)
             self._player = pcm
         return self._player
 
@@ -183,7 +211,11 @@ class QtPcmPlayer(QObject):
         if self._token is None:
             return
         assert self._player is not None
-        snapshot = self._player.snapshot()
+        try:
+            snapshot = self._player.snapshot()
+        except Exception as error:
+            self._fail(str(error))
+            return
         assert self._started_at is not None
         if snapshot.token != self._token:
             self._fail("Audio playback was interrupted unexpectedly; replay the sample")

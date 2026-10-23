@@ -1,5 +1,7 @@
 import hashlib
 import os
+import queue
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -16,7 +18,13 @@ from vntts.audio_output import (
     resolve_audio_output,
     write_pcm_chunks,
 )
-from vntts.rust_audio import RustAudioWorker, worker_executable
+from vntts.rust_audio import (
+    AudioRuntimeUnavailable,
+    RustAudioWorker,
+    check_audio_runtime,
+    portaudio_library,
+    worker_executable,
+)
 from vntts.rust_output import RustAudioModule
 from vntts.system_audio import SystemAudioOutput
 
@@ -61,6 +69,64 @@ for line in sys.stdin.buffer:
         emit(event="finished", id=clip_id, outcome="interrupted", frames_played=1, underflow_count=0, callback_count=1,
              sample_rate=clip["sample_rate"], channels=clip["channels"])
 """
+
+
+class AudioRuntimeAvailabilityTest(unittest.TestCase):
+    def test_missing_worker_is_actionable_and_can_be_installed_then_retried(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker = Path(directory) / "worker"
+            with (
+                patch.dict(os.environ, {"VNTTS_AUDIO_WORKER": str(worker)}),
+                patch("vntts.rust_audio.portaudio_library", return_value="library"),
+                patch("vntts.rust_audio.subprocess.Popen") as launch,
+            ):
+                with self.assertRaisesRegex(
+                    AudioRuntimeUnavailable, "cargo build --release"
+                ):
+                    check_audio_runtime()
+                worker.write_text("fixture")
+                worker.chmod(0o700)
+                check_audio_runtime()
+                launch.assert_not_called()
+
+    def test_startup_timeout_has_message_and_terminates_child(self):
+        processes = []
+        launch = subprocess.Popen
+
+        def tracked_launch(*args, **kwargs):
+            process = launch(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        with (
+            patch("vntts.rust_audio.subprocess.Popen", side_effect=tracked_launch),
+            patch.object(RustAudioWorker, "receive", side_effect=queue.Empty),
+            self.assertRaisesRegex(RuntimeError, "startup timed out.*cargo build"),
+        ):
+            RustAudioWorker([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.assertEqual(len(processes), 1)
+        self.assertIsNotNone(processes[0].poll())
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX executable permissions")
+    def test_non_executable_worker_reports_permission_problem(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker = Path(directory) / "worker"
+            worker.write_text("fixture")
+            worker.chmod(0o600)
+            with patch.dict(os.environ, {"VNTTS_AUDIO_WORKER": str(worker)}):
+                with self.assertRaisesRegex(AudioRuntimeUnavailable, "not executable"):
+                    check_audio_runtime()
+
+    def test_explicit_missing_portaudio_reports_override_instead_of_falling_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(
+                os.environ,
+                {"VNTTS_PORTAUDIO_LIBRARY": str(Path(directory) / "missing")},
+            ):
+                with self.assertRaisesRegex(
+                    AudioRuntimeUnavailable, "VNTTS_PORTAUDIO_LIBRARY"
+                ):
+                    portaudio_library()
 
 
 class RustAudioProtocolTest(unittest.TestCase):

@@ -88,9 +88,14 @@ class PersistentPcmPlayer:
         if controller is None:
             from vntts.system_audio import get_system_audio_output
 
-            # Establish the monitor baseline before starting the dedicated worker.
-            get_system_audio_output().query_devices(kind="output")
-            controller = RustClipController()
+            try:
+                # Establish the monitor baseline before starting the dedicated worker.
+                get_system_audio_output().query_devices(kind="output")
+                controller = RustClipController()
+            except Exception as error:
+                raise PcmPlaybackError(
+                    f"Unable to initialize audio playback: {error}"
+                ) from error
         self.controller = controller
         self._latency = latency
         try:

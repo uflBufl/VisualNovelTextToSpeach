@@ -155,6 +155,7 @@ from vntts.release_smoke_test import (
 )
 from vntts.runtime_config import get_hotkey, get_live_hotkey
 from vntts.runtime_paths import configure_bundled_dependencies
+from vntts.rust_audio import check_audio_runtime
 from vntts.settings import (
     AppSettings,
     get_local_data_directory,
@@ -1852,6 +1853,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._connect_actions()
         self._connect_application_signals()
         self._connect_dashboard()
+        self._audio_runtime_error: str | None = None
         self._start_runtime_timer()
 
     def _initialize_runtime(
@@ -2460,6 +2462,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.open_pregeneration()
             finally:
                 self.dashboard.sections.setCurrentIndex(section)
+        self._audio_runtime_available()
+
+    def _audio_runtime_available(self) -> bool:
+        try:
+            check_audio_runtime()
+        except (OSError, RuntimeError) as error:
+            self._audio_runtime_error = f"Audio playback unavailable: {error}"
+            self.show_error(self._audio_runtime_error)
+            return False
+        if self._audio_runtime_error is not None:
+            self._audio_runtime_error = None
+            self.set_status("Audio playback is available. Retry playback to continue.")
+        return True
 
     def _preparation_runtime_settings(self) -> AppSettings | None:
         dialog = self.pregeneration_dialog
@@ -2580,6 +2595,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         if self.narrator_dialog is not None:
             self.dashboard.show_voices()
+            return
+        if not self._audio_runtime_available():
             return
         runtime_settings, source_available = self._reading_source_choice(
             prefer_preparation=prefer_preparation
@@ -2711,6 +2728,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             or not self._runtime_control_state().can_read
         ):
             return
+        if not self._audio_runtime_available():
+            return
         self.voice_auditions.suspend()
         if self._runtime_control_state().indexed_current:
             self.controller.read_indexed_current_dialogue()
@@ -2748,6 +2767,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return False
         if QApplication.activeModalWidget() is not None:
             self.set_status("Close the dialog before reading")
+            return False
+        if not self._audio_runtime_available():
             return False
         return self._start_live_with_available_scope()
 

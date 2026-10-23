@@ -48,6 +48,7 @@ from vntts.pregeneration_voices import (  # noqa: E402
     VoiceCandidate,
     VoiceDecisionStore,
 )
+from vntts.qt_audio import QtPcmPlayer  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
 from vntts.voices import default_voice_choice_id  # noqa: E402
@@ -1041,6 +1042,8 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.a_play.click()
             self.assertEqual(panel.a_play.text(), "Play preview")
             panel.a_play.click()
+            self.assertIn("Starting", panel.status.toPlainText())
+            panel._playback_state_changed(QtPcmPlayer.PlaybackState.PlayingState)
             self.assertIn("Playing", panel.status.toPlainText())
             panel.voice_reference.setCurrentIndex(1)
             panel.a_play.click()
@@ -1124,6 +1127,72 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             decisions.remember_many.assert_called_once_with(
                 ((group, group.candidates[0].source_id),)
             )
+
+    def test_unavailable_audio_runtime_blocks_preview_and_original_before_preparation(
+        self,
+    ):
+        for original in (False, True):
+            with self.subTest(original=original), TemporaryDirectory() as directory:
+                root = Path(directory)
+                plan, group, _manifest = ambiguous_fixture(root)
+                service = Mock(spec=VoiceAuditionPreviewService)
+                pool = ManualThreadPool()
+                panel = VoiceAuditionPanel(
+                    Mock(), preview_service=service, thread_pool=pool
+                )
+                self.addCleanup(panel.deleteLater)
+                self.addCleanup(panel.shutdown)
+                panel.start(plan, group_id=group.group_id)
+                message = (
+                    "Rust audio worker is missing; run cargo build --release --locked"
+                )
+                with patch(
+                    "vntts.rust_audio.check_audio_runtime",
+                    side_effect=RuntimeError(message),
+                ):
+                    (panel.a_original if original else panel.a_play).click()
+                self.assertFalse(panel.active)
+                self.assertIn(message, panel.status.toPlainText())
+                self.assertFalse(panel.a_use.isEnabled())
+                service.generate.assert_not_called()
+                service.reference_audio.assert_not_called()
+                self.assertIsInstance(panel.player, QtPcmPlayer)
+                panel.player = Mock()
+                (panel.a_original if original else panel.a_play).click()
+                self.assertTrue(panel.active)
+                self.assertTrue(pool.tasks)
+
+    def test_worker_start_failure_clears_preview_and_original_playback_state(self):
+        for original in (False, True):
+            with self.subTest(original=original), TemporaryDirectory() as directory:
+                root = Path(directory)
+                plan, group, _manifest = ambiguous_fixture(root)
+                service = Mock(spec=VoiceAuditionPreviewService)
+                service.generate.return_value = generated_preview(root)
+                service.reference_audio.side_effect = (
+                    VoiceAuditionPreviewService().reference_audio
+                )
+                pool = ManualThreadPool()
+                player = QtPcmPlayer(
+                    player_factory=Mock(
+                        side_effect=RuntimeError("worker protocol mismatch")
+                    )
+                )
+                panel = VoiceAuditionPanel(
+                    Mock(), preview_service=service, thread_pool=pool, player=player
+                )
+                self.addCleanup(player.deleteLater)
+                self.addCleanup(panel.deleteLater)
+                self.addCleanup(panel.shutdown)
+                panel.start(plan, group_id=group.group_id)
+                (panel.a_original if original else panel.a_play).click()
+                self.finish_task(pool.tasks.pop())
+                self.assertFalse(panel.active)
+                self.assertIsNone(panel._playing_source)
+                self.assertFalse(panel.a_use.isEnabled())
+                self.assertIn("worker protocol mismatch", panel.status.toPlainText())
+                self.assertEqual(panel.a_play.text(), "Play preview")
+                self.assertNotIn("Stop", panel.a_original.text())
 
     def test_failed_preview_can_recover_through_original_or_preview_retry(self):
         with TemporaryDirectory() as directory:

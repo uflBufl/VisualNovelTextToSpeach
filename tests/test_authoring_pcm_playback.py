@@ -309,6 +309,16 @@ class PersistentPcmPlayerTest(unittest.TestCase):
                 player.play(PcmClip(samples, 24_000))
         self.assertEqual(audio.load_count, 0)
 
+    def test_default_monitor_runtime_failure_is_a_playback_error(self):
+        with patch(
+            "vntts.system_audio.get_system_audio_output",
+            side_effect=RuntimeError("Rust audio worker is missing; run cargo build"),
+        ):
+            with self.assertRaisesRegex(
+                PcmPlaybackError, "Rust audio worker is missing"
+            ):
+                PersistentPcmPlayer()
+
     def test_default_baselines_monitor_before_creating_dedicated_controller(self):
         order = []
         audio = FakeClipController()

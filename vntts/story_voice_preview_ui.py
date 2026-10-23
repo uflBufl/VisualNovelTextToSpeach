@@ -9,6 +9,7 @@ from PySide6.QtCore import QEvent, QMetaObject, QObject, QThreadPool, Signal
 from PySide6.QtMultimedia import QMediaPlayer
 
 from vntts.async_ui import LatestTaskRunner
+from vntts.authoring.pcm_playback import PcmPlaybackError
 from vntts.path_safety import read_regular_bytes
 from vntts.pregeneration_audition import VoiceAuditionCancelled, VoiceAuditionError
 from vntts.pregeneration_audition_ui import (
@@ -51,6 +52,7 @@ class StoryVoicePreview(QObject):
         assert self.player is not None
         self.player.errorOccurred.connect(lambda _code, message: self._failed(message))
         self.player.mediaStatusChanged.connect(self._media_changed)
+        self.player.playbackStateChanged.connect(self._playback_changed)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.Hide:
@@ -129,6 +131,12 @@ class StoryVoicePreview(QObject):
         self.activeChanged.emit(True)
         self.statusChanged.emit("Preparing selected voice preview...")
         try:
+            if self.player is None:
+                self.player = QtPcmPlayer(self)
+                self._connect_player()
+            check_available = getattr(self.player, "check_available", None)
+            if callable(check_available):
+                check_available()
             peek = getattr(self.session, "peek", None)
             ready = (
                 peek(plan, group, source, text=text)
@@ -142,7 +150,7 @@ class StoryVoicePreview(QObject):
                 ready = getattr(self.preparation_session, "peek")(
                     plan, group, source, text=text
                 )
-        except (OSError, ValueError, VoiceAuditionError) as error:
+        except (OSError, ValueError, VoiceAuditionError, PcmPlaybackError) as error:
             self._finished(None, error)
             return
         if ready is not None:
@@ -176,9 +184,13 @@ class StoryVoicePreview(QObject):
                 self._failed("Unable to start voice preview playback.")
                 return
             if self.active:
-                self.statusChanged.emit("Playing selected voice preview.")
+                self.statusChanged.emit("Starting selected voice preview...")
         except (OSError, ValueError) as failure:
             self._failed(f"Unable to play voice preview: {failure}")
+
+    def _playback_changed(self, state: object) -> None:
+        if self.active and state == QMediaPlayer.PlaybackState.PlayingState:
+            self.statusChanged.emit("Playing selected voice preview.")
 
     def _media_changed(self, status: object) -> None:
         if self.active and status == QMediaPlayer.MediaStatus.EndOfMedia:

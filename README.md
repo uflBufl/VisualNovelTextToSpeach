@@ -52,6 +52,7 @@ If controls remain unavailable, use **Check readiness** for the required fix.
 
 - Python 3.14 or newer
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- [Rust and Cargo](https://doc.rust-lang.org/book/ch01-01-installation.html) to build the required audio worker when running from source
 - [Tesseract](https://tesseract-ocr.github.io/tessdoc/Installation.html) with its shared library and the configured language data
 - [eSpeak-NG](https://github.com/espeak-ng/espeak-ng/blob/master/docs/guide.md)
 - A working audio output device
@@ -72,17 +73,21 @@ launching the command-line tool for every frame.
 Install the external tools on macOS with:
 
 ```sh
+xcode-select --install  # compiler/linker for the Rust audio worker
 brew install tesseract espeak-ng
 ```
 
 On Debian or Ubuntu:
 
 ```sh
-sudo apt install tesseract-ocr espeak-ng libportaudio2
+sudo apt install build-essential tesseract-ocr espeak-ng libportaudio2
 ```
 
 On Windows, follow the linked Tesseract and eSpeak-NG installation guides and
-ensure Tesseract is in `PATH`. PortAudio is bundled with `sounddevice` on
+ensure Tesseract is in `PATH`. For source builds, install Rust through rustup
+and the [Windows MSVC build prerequisites](https://rust-lang.github.io/rustup/installation/windows-msvc.html)
+(Visual Studio Build Tools with C++ tools and a Windows SDK).
+PortAudio is bundled with `sounddevice` on
 macOS and Windows; other Linux distributions may need an equivalent PortAudio
 package. See the [`sounddevice` installation guide](https://python-sounddevice.readthedocs.io/en/0.5.3/installation.html).
 A [CUDA](https://developer.nvidia.com/cuda-downloads)-compatible GPU is
@@ -113,10 +118,25 @@ on macOS. Linux support is limited to X11.
 
 ### Run from source
 
+From the project directory, install Python dependencies **and build the audio worker**:
+
 ```sh
 uv sync --no-dev
+cargo build --release --locked --manifest-path native/audio-worker/Cargo.toml
 uv run vntts-app
 ```
+
+`uv sync` does not build the Rust worker. Without it, voice previews and reading
+cannot play audio. Build it on the machine where you run VNTTS, and repeat the
+Cargo command after updating the worker or its protocol. VNTTS starts and stops
+the worker automatically; you do not need to launch a separate audio process.
+If you use a custom Cargo target directory, set `VNTTS_AUDIO_WORKER` to the built
+`vntts-audio-worker` executable (`vntts-audio-worker.exe` on Windows).
+
+If audio is unavailable, the application reports the installation problem at
+startup and when playback is requested. **Check readiness -> Audio output** shows
+the full error and instructions. Fix the installation and retry playback; for an
+output-device error, check your selected device instead.
 
 The compact controls and non-modal reading warnings are excluded from screen
 capture by default so VNTTS cannot OCR its own interface. To make those floating

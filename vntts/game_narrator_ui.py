@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 from vntts_artifacts.voice_manifest import VoiceManifestError, write_voice_manifest
 
 from vntts.async_ui import LatestTaskRunner
+from vntts.authoring.pcm_playback import PcmPlaybackError
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import sha256_file
 from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
@@ -1783,6 +1784,14 @@ class GameNarratorDialog(QDialog):
         self._candidate_action("preview")
 
     def _candidate_action(self, operation: str) -> None:
+        if operation in {"audio", "preview"}:
+            try:
+                check_available = getattr(self.player, "check_available", None)
+                if callable(check_available):
+                    check_available()
+            except PcmPlaybackError as error:
+                self.status.setText(f"Audio playback unavailable: {error}")
+                return
         reference_transcript = self.exact_transcript.text().strip()
         if operation != "audio" and (
             not self._engine_available()

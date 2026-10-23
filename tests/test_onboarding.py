@@ -44,6 +44,19 @@ def granted_permissions():
 
 
 class OnboardingDiagnosticsTest(unittest.TestCase):
+    def test_missing_audio_runtime_has_installation_remediation_and_can_recover(self):
+        from vntts.rust_audio import AudioRuntimeUnavailable
+
+        probe = Mock(side_effect=AudioRuntimeUnavailable("Run cargo build"))
+        diagnostics = OnboardingDiagnostics(audio_probe=probe)
+        result = diagnostics._check_audio()
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.remediation, "external-audio-runtime")
+        self.assertIn("cargo build", result.message)
+        probe.side_effect = None
+        probe.return_value = {"name": "Speakers"}
+        self.assertEqual(diagnostics._check_audio().status, "ok")
+
     def test_cancelled_setup_skips_subsequent_preparation_and_probes(self):
         for token_kind in ("event", "callable"):
             for phase in ("before", "prepared", "progress"):

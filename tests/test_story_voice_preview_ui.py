@@ -5,7 +5,7 @@ from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -13,12 +13,14 @@ import shiboken6  # noqa: E402
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from tests.native_clip_fixtures import FakeClipController  # noqa: E402
 from tests.pregeneration_fixtures import (  # noqa: E402
     ambiguous_fixture,
     clean_wav_bytes,
 )
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import write_story_index  # noqa: E402
+from vntts.authoring.pcm_playback import PersistentPcmPlayer  # noqa: E402
 from vntts.pregeneration_audition import (  # noqa: E402
     COMPARISON_PREVIEW_TEXT,
     VoiceAuditionError,
@@ -30,6 +32,7 @@ from vntts.pregeneration_setup import (  # noqa: E402
 )
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
 from vntts.pregeneration_voices import VoiceCandidate, VoiceDecisionStore  # noqa: E402
+from vntts.qt_audio import QtPcmPlayer  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.story_voice_preview_ui import StoryVoicePreview  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
@@ -104,6 +107,49 @@ class StoryVoicePreviewTest(unittest.TestCase):
         while self.pool.tasks:
             self.pool.run_next()
             self.application.processEvents()
+
+    def test_unavailable_runtime_fails_before_generation_and_retry_can_start(self):
+        preview = self.dialog.summary_voice_preview
+        preview.player = None
+        self.select(self.group)
+        message = "Rust audio worker is missing. Run cargo build --release --locked"
+        with patch(
+            "vntts.rust_audio.check_audio_runtime", side_effect=RuntimeError(message)
+        ):
+            self.dialog.play_selected_voice.click()
+        self.assertFalse(preview.active)
+        self.assertEqual(self.pool.tasks, [])
+        self.service.generate.assert_not_called()
+        self.assertIn(message, self.dialog.voice_confirmation_status.text())
+        self.assertEqual(self.dialog.play_selected_voice.text(), "Play selected voice")
+
+        controller = FakeClipController()
+        pcm = PersistentPcmPlayer(controller)
+        preview.player._player_factory = lambda: pcm
+        self.dialog.play_selected_voice.click()
+        self.run_tasks()
+        self.assertTrue(preview.active)
+        self.assertIn("Starting", self.dialog.voice_confirmation_status.text())
+        controller.pump(1)
+        preview.player._poll()
+        self.assertIn("Playing", self.dialog.voice_confirmation_status.text())
+
+    def test_worker_crash_during_start_clears_summary_busy_state(self):
+        preview = self.dialog.summary_voice_preview
+        preview.player = QtPcmPlayer(
+            preview,
+            player_factory=Mock(
+                side_effect=RuntimeError("Rust audio worker protocol mismatch")
+            ),
+        )
+        preview._connect_player()
+        self.select(self.group)
+        self.dialog.play_selected_voice.click()
+        self.run_tasks()
+        self.assertFalse(preview.active)
+        self.assertIn("protocol mismatch", self.dialog.voice_confirmation_status.text())
+        self.assertNotIn("Preparing", self.dialog.voice_confirmation_status.text())
+        self.assertEqual(self.dialog.play_selected_voice.text(), "Play selected voice")
 
     def test_selected_voice_plays_without_leaving_summary_or_saving_choice(self):
         self.select(self.group)

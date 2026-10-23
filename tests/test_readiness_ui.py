@@ -23,6 +23,22 @@ class ReadinessDialogTest(unittest.TestCase):
                 widget.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
+    def test_missing_worker_shows_build_guidance_instead_of_device_guidance(self):
+        pool = ManualThreadPool()
+        diagnostics = Mock()
+        diagnostics.run.return_value = (
+            DiagnosticResult(
+                "Audio output", "error", "Run cargo build", "external-audio-runtime"
+            ),
+        )
+        dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
+        pool.run_next()
+        self.application.processEvents()
+        dialog.table.selectRow(0)
+        self.assertIn("cargo build", dialog.remediation_reason.text())
+        self.assertIn("automatically", dialog.remediation_reason.text())
+        self.assertNotIn("Connect", dialog.remediation_reason.text())
+
     def test_failed_assertion_releases_the_readiness_window(self):
         case = ReadinessDialogTest(
             "test_loading_state_names_readiness_and_has_no_stale_details"

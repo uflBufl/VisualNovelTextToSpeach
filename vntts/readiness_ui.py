@@ -348,6 +348,12 @@ class ReadinessDialog(QDialog):
             self.remediation_button.setDefault(result.status == "error")
             self.remediation_button.show()
             return
+        if result.remediation == "external-audio-runtime":
+            self.remediation_reason.setText(
+                f"{result.message} After fixing the installation, run checks again. "
+                "VNTTS starts its audio worker automatically."
+            )
+            return
         if result.remediation == "external-audio":
             self.remediation_reason.setText(
                 "Connect an audio output device and select it in system sound "
