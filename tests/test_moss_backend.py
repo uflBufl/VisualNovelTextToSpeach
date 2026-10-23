@@ -789,7 +789,7 @@ class MossTTSBackendTest(unittest.TestCase):
         ):
             backend.prepare("Narrator", "Once upon a time.")
 
-    def test_stop_does_not_touch_stream_owned_by_playback_thread(self):
+    def test_stop_aborts_admitted_pcm_without_waiting_for_the_producer(self):
         backend, _model, output = self.create_backend()
         backend.playback_active = True
         stream = output.OutputStream()
@@ -797,9 +797,9 @@ class MossTTSBackendTest(unittest.TestCase):
 
         self.assertTrue(backend.stop())
 
-        self.assertFalse(stream.aborted)
+        self.assertTrue(stream.aborted)
 
-    def test_stop_waits_for_the_owner_to_close_a_blocked_stream(self):
+    def test_stop_unblocks_the_owner_of_a_blocked_stream(self):
         output = BlockingAudioOutput()
         backend, _model, _output = self.create_backend(audio_output=output)
         prepared = backend.prepare_playback("Narrator", "Stop this stream.")
@@ -809,8 +809,7 @@ class MossTTSBackendTest(unittest.TestCase):
         self.assertTrue(output.write_started.wait(timeout=1))
 
         self.assertTrue(backend.stop())
-        self.assertFalse(output.streams[0].aborted)
-        output.release_write.set()
+        self.assertTrue(output.streams[0].aborted)
         thread.join(timeout=1)
 
         self.assertFalse(thread.is_alive())

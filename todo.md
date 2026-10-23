@@ -1,10 +1,6 @@
 # TODO
 
-## Rust audio experiment (separate branch)
-
-User scope: `feature/rust-audio-experiment`, local Cargo build only; no binary
-release, installers or CI changes. Prepared PCM uses the Rust owner; original game
-audio and live model streaming keep their existing paths for this experiment.
+## Rust audio native acceptance gaps
 
 - [ ] Qualify digital output from the actual Rust audio owner. The existing
       ScreenCaptureKit recording of the Python application produces silent PCM
@@ -22,19 +18,14 @@ audio and live model streaming keep their existing paths for this experiment.
       A concurrent scope probe was followed by ScreenCaptureKit -3805 in the first
       recording; keep scope probes separate from acceptance and investigate
       recorder lifetime interference if it reproduces with serialized ownership.
-- [ ] Compare both owners in the real game with genuine concurrent heavy chapter
+- [ ] Validate the Rust owner in the real game with genuine concurrent heavy chapter
       generation/publication, using the same approved WAVs, device, rate and
-      latency. Controlled GIL stress establishes feeder isolation, not the cause
+      latency as the retained Python baseline evidence. Controlled GIL stress
+      establishes feeder isolation, not the cause
       of the historical app underruns. Do not claim audible gap removal or full
       Mac R12 acceptance from callback counters alone. Include native Pause/Stop,
       restart, worker crash and actual default-device-change checks; retain the
       existing interrupt/requeue Pause behavior rather than implying a new seek.
-- [ ] Before extending Rust to live model streaming, trace every live/announcement
-      caller and define bounded PCM ingress/backpressure and cancellation. A
-      parent-proxied stream still depends on Python delivery; do not claim full
-      live GIL independence until the model-to-output transport qualifies it.
-      Keep this separate from prepared playback and do not optimize generators.
-
 ## Current scope and execution order
 
 Target: finish the Mac Reading follow-up by fixing every defect found in the prior
@@ -226,57 +217,21 @@ callers and focused regressions together when changing these contracts.
       announcement succeeds. Require one announcement and one unchanged dialogue,
       bounded interruption and no orphan worker. A genuine announcement error
       must still preserve dialogue playback.
-- [ ] **R12 - Locate actual-app output starvation before selecting its repair.**
-      Final600s Mac/MOSS capture still has six prepared PCM streams with underflow
-      (14/22/23/42/48/60); high-NCC source/output fragments show added digital drift
-      about62/21/168/58/71/48ms. Approved WAV bytes are unchanged. A fresh live
-      Pocket read also has a660ms write followed by underflow, so investigate the
-      shared output/runtime owner rather than prepared-voice synthesis alone.
-      Same-block guard, locks, conversion and refresh are negligible. The existing
-      native-write field times Python sounddevice.write, including CFFI, PortAudio
-      and Python-return scheduling; it does not isolate the C call. Historical
-      actual-app first-block stalls reached1017ms; aggregate native sampling finds
-      PortAudio wait and some GIL returns but cannot locate a specific stalled call.
-      A qualified bounded C-function-pointer standalone A/B uses the exact approved
-      line31 WAV,44100Hz mono float32/low latency/50ms blocks and actual MOSS load.
-      Both311-write trials have zero underflows. Measured maximum70.919ms includes
-      70.666ms inside Pa_WriteStream; post-C delay is at most.062ms. Its separate
-      interpreter/GIL cannot resolve the app defect. No product repair is justified
-      by that non-reproduction.
-      Next: obtain time-indexed native stacks for the actual app writer, correlate
-      the same stream/write/frame-offset timestamps and discriminate C wait from
-      post-C return. Check available native profiling tools before adding code;
-      use a bounded diagnostic run separate from clean acceptance. Installed
-      CommandLineTools lacks xctrace; sample has no chronology. User-run root
-      spindump now qualifies12s/5ms target-only chronological Mach-absolute stacks.
-      Do not use -automation: it refuses sampling while audio runs. The successful
-      actual-app profile has zero underruns; its63.896ms max block shows PortAudio
-      wait followed by two GIL-return samples while the capture thread runs JSON
-      encoding. Native stacks do not identify that Python caller. Consecutive
-      identical PortAudio samples span many50ms writes, not one long call. Next
-      capture must include an actual underflow/long-write interval before choosing
-      a causal repair. Before an isolation refactor, specify the actual audio
-      ownership boundary: capture/OCR/synthesis/playback already have separate
-      single-worker executors, while playback still shares the application's GIL.
-      Another ThreadPoolExecutor does not add isolation. Evaluate a persistent
-      PCM-only process against a native feeder using existing output/control
-      ownership. For prepared clips, hand off the full validated PCM before start
-      and let that owner pump the device; do not proxy each50ms parent write over
-      IPC. For live audio, define bounded PCM ingress/backpressure and whether
-      model-to-output data still depends on the parent GIL; never promise more
-      isolation than the transport provides. Preserve source/run/epoch identity,
-      Stop/abort/drain acknowledgement, pause position, device changes and bounded
-      shutdown/crash handling across every prepared/live/announcement caller.
-      Keep telemetry/model work outside the device feeding path. Qualify the
-      same-output byte/sample order and controls under deliberate UI/OCR/logging
-      load; process separation cannot guarantee OS/device scheduling deadlines or
-      establish the cause of the historical underflows. Keep original
-      WAV/order/rate/device fixed and record capture/log/profiler overhead. No
-      launcher/library monkey patch, synchronous per-block disk log, arbitrary
-      buffer/latency/QoS increase or WAV editing. Choose the shared writer/output
-      or resource-scheduling repair only from causal evidence. Cover sample order,
-      truthful underruns, bounded Stop/pause and device changes in affected tests;
-      then require a new source/output-correlated native run under the same load.
+- [ ] **R12 - Qualify Rust output under the actual Mac Reading load.**
+      Repeat prepared and live reading with OCR, logging and genuine heavy chapter
+      generation/publication active. Use the qualified Rust-process capture above
+      to correlate source/output PCM and identify added gaps; callback counters
+      alone cannot prove audible continuity. Preserve WAV/order/rate/device and
+      record capture/profiler overhead. Distinguish native device underflow from
+      live producer starvation: model IPC still passes through Python before the
+      bounded Rust ring. Compare against the retained historical six-underflow
+      Mac/MOSS capture and live Pocket failure, without attributing those old
+      failures to GIL contention solely from synthetic stress. If gaps remain,
+      correlate the same occurrence, native counter and time-indexed stack before
+      selecting another repair. Keep profiling separate from clean acceptance;
+      user-run spindump must omit -automation while audio runs. Verify real device
+      changes, worker crash/restart, Stop, and existing interrupt/requeue Pause.
+      No launcher/library monkey patch, arbitrary latency/QoS increase or WAV editing.
 
 ## P0 - Make capture setup trustworthy and operable
 

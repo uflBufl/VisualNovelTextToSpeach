@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
-from tests.audio_output_fixtures import FakeAudioModule  # noqa: E402
+from tests.native_clip_fixtures import FakeClipController  # noqa: E402
 from tests.pregeneration_fixtures import (  # noqa: E402
     FakeBackend,
     clean_wav_bytes,
@@ -709,7 +709,7 @@ class GameNarratorTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             manifest = self.narrator_manifest(Path(directory))
             pool = ManualThreadPool()
-            pcm = PersistentPcmPlayer(FakeAudioModule())
+            pcm = PersistentPcmPlayer(FakeClipController())
             player = QtPcmPlayer(player_factory=lambda: pcm)
             dialog = GameNarratorDialog(
                 AppSettings(speech_backend="moss-tts"),

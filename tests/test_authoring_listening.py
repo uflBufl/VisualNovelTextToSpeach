@@ -16,13 +16,13 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
 import vntts.authoring.listening as listening_module
-from tests.audio_output_fixtures import FakeAudioModule
 from tests.authoring_fixtures import tree_hashes
 from tests.listening_fixtures import (
     FakePlayback,
     write_listening_fixture,
     write_model_reports,
 )
+from tests.native_clip_fixtures import FakeClipController
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.listening import (
@@ -1974,22 +1974,22 @@ class AuthoringListeningDialogTest(unittest.TestCase):
                 session = create_listening_session_from_reports(
                     write_model_reports(root, item_count=1), root / "session"
                 )
-                audio = FakeAudioModule(sample_rate=16_000, channels=1)
+                audio = FakeClipController(sample_rate=16_000, channels=1)
                 player = PersistentPcmPlayer(audio)
                 dialog = ModelListeningDialog(
                     session, auto_play=False, playback_factory=lambda: player
                 )
                 try:
                     dialog.play("a")
-                    audio.stream.pump(160)
-                    audio.stream.time += audio.latency
+                    audio.pump(160)
+                    audio.time += audio.latency
                     dialog.poll_playback()
-                    audio.stream.pump(160, underflow=underflow)
+                    audio.pump(160, underflow=underflow)
                     dialog.toggle_playback()
                     self.assertEqual(dialog.playback_control_state, "stopped")
                     dialog.toggle_playback()
-                    audio.stream.pump(800)
-                    audio.stream.time += audio.latency
+                    audio.pump(800)
+                    audio.time += audio.latency
                     dialog.poll_playback()
 
                     self.assertEqual("a" in dialog.completed_sides, not underflow)
@@ -1997,13 +1997,13 @@ class AuthoringListeningDialogTest(unittest.TestCase):
                     if underflow:
                         self.assertIn("interrupted", dialog.status.text())
                     dialog.play("a")
-                    audio.stream.pump(800)
-                    audio.stream.time += audio.latency
+                    audio.pump(800)
+                    audio.time += audio.latency
                     dialog.poll_playback()
                     self.assertIn("a", dialog.completed_sides)
                     dialog.play("b")
-                    audio.stream.pump(800)
-                    audio.stream.time += audio.latency
+                    audio.pump(800)
+                    audio.time += audio.latency
                     dialog.poll_playback()
                     self.assertTrue(dialog.prefer_a.isEnabled())
                     self.assertEqual(

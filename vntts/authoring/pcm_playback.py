@@ -1,4 +1,4 @@
-"""Persistent PCM playback for authoring interfaces."""
+"""PCM preparation and native clip playback for authoring interfaces."""
 
 from __future__ import annotations
 
@@ -6,8 +6,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from math import gcd
 from pathlib import Path
-from threading import Lock
-from typing import NotRequired, Protocol, TypedDict
+from typing import Any, Protocol
 
 import numpy as np
 import soundfile as sf
@@ -16,38 +15,42 @@ from scipy.signal import resample_poly
 
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.path_safety import open_regular_binary
-from vntts.system_audio import AudioDeviceChangedError
+from vntts.rust_clip_player import ClipStatus, RustClipController
 
 
 class PcmPlaybackError(RuntimeError):
     pass
 
 
-class _AudioStream(Protocol):
+class _ClipController(Protocol):
     @property
-    def time(self) -> float: ...
+    def device_changed(self) -> bool: ...
+
+    def query_device(self) -> dict[str, Any]: ...
+
+    def load(
+        self,
+        samples: NDArray[np.float32],
+        sample_rate: int,
+        channels: int,
+        latency: float,
+    ) -> None: ...
 
     def start(self) -> None: ...
 
-    def abort(self) -> None: ...
+    def pause(self) -> None: ...
+
+    def resume(self) -> bool: ...
+
+    def seek(self, position_frames: int) -> bool: ...
+
+    def status(self) -> ClipStatus: ...
+
+    def stop(self) -> None: ...
+
+    def reset(self) -> None: ...
 
     def close(self) -> None: ...
-
-
-class _OutputDevice(TypedDict):
-    default_samplerate: float
-    max_output_channels: int
-    name: NotRequired[str]
-
-
-class _AudioModule(Protocol):
-    def query_devices(self, *, kind: str) -> _OutputDevice: ...
-
-    def OutputStream(self, **options: object) -> _AudioStream: ...
-
-
-class _CallbackTimeInfo(Protocol):
-    outputBufferDacTime: float
 
 
 @dataclass(frozen=True)
@@ -77,44 +80,44 @@ class PlaybackSnapshot:
 
 
 class PersistentPcmPlayer:
-    """Keep a warm device stream and rebuild it when the system output changes."""
+    """Keep a native worker warm and rebuild clips when the output changes."""
 
     def __init__(
-        self, audio_module: _AudioModule | None = None, *, latency: float = 0.1
+        self, controller: _ClipController | None = None, *, latency: float = 0.1
     ) -> None:
-        if (
-            audio_module is None
-            or getattr(audio_module, "__name__", None) == "sounddevice"
-        ):
+        if controller is None:
             from vntts.system_audio import get_system_audio_output
 
-            audio_module = get_system_audio_output()
-        assert audio_module is not None
-        self.audio_module: _AudioModule = audio_module
+            # Establish the monitor baseline before starting the dedicated worker.
+            get_system_audio_output().query_devices(kind="output")
+            controller = RustClipController()
+        self.controller = controller
         self._latency = latency
-        self._query_device()
-        self._lock = Lock()
+        try:
+            self._query_device()
+        except BaseException as error:
+            attempt_cleanup(
+                controller.close,
+                description="Native player cleanup",
+                primary_error=error,
+            )
+            raise
         self._token = 0
         self._clip: PcmClip | None = None
         self._samples: NDArray[np.float32] = np.empty(
             (0, self.channels), dtype=np.float32
         )
-        self._position = 0
-        self._audible_origin = 0
-        self._first_dac_time: float | None = None
-        self._end_dac_time: float | None = None
-        self._playing = False
-        self._started = False
-        self._completed = False
+        self._position = self._submitted_position = self._onset_position = 0
+        self._playing = self._paused = self._started = self._completed = False
         self._underflowed = False
         self._error: str | None = None
         self._closed = False
-        self.stream: _AudioStream | None = None
-        self._open_stream()
+        self._loaded = self._native_started = False
+        self._needs_device = False
 
     def _query_device(self) -> None:
         try:
-            device = self.audio_module.query_devices(kind="output")
+            device = self.controller.query_device()
             self.sample_rate = round(float(device["default_samplerate"]))
             max_channels = int(device["max_output_channels"])
             self.device_name = str(device.get("name", ""))
@@ -126,66 +129,38 @@ class PersistentPcmPlayer:
             raise PcmPlaybackError("The default output device has no usable PCM format")
         self.channels = min(2, max_channels)
 
-    def _open_stream(self) -> None:
-        stream: _AudioStream | None = None
-        try:
-            stream = self.audio_module.OutputStream(
-                samplerate=self.sample_rate,
-                channels=self.channels,
-                dtype="float32",
-                latency=self._latency,
-                blocksize=0,
-                callback=self._callback,
-                prime_output_buffers_using_stream_callback=True,
-            )
-            stream.start()
-        except Exception as error:
-            with self._lock:
-                self._playing = False
-            if stream is not None:
-                attempt_cleanup(
-                    stream.close,
-                    description="Output stream cleanup",
-                    primary_error=error,
-                )
-            raise PcmPlaybackError(
-                f"Unable to open the output stream: {error}"
-            ) from error
-        assert stream is not None
-        self.stream = stream
-
-    def _ensure_stream(self, *, restart_playback: bool = True) -> None:
+    def _ensure_output(self, *, restart_playback: bool = True) -> None:
         if self._closed:
             raise PcmPlaybackError("The PCM player is closed")
-        stream = self.stream
-        if stream is not None and not getattr(stream, "device_changed", False):
+        if not self._needs_device and not self.controller.device_changed:
             return
-        with self._lock:
-            restart = restart_playback and (
-                self._playing
-                or (self._end_dac_time is not None and not self._completed)
-            )
-            completed = self._completed
-            position = self._logical_position(self._position)
-            self._playing = False
-        if stream is not None:
-            # Native teardown can wait for the callback, which takes our lock.
-            with cleanup_on_exit(stream.close, description="Output stream cleanup"):
-                stream.abort()
-        self.stream = None
+        restart = restart_playback and self._playing and not self._completed
+        completed = self._completed
+        if self._loaded:
+            try:
+                self._read_status()
+            except Exception:
+                # Device teardown can invalidate its clock before status is read.
+                pass
+        position = self._logical_position(self._position)
+        self._playing = False
+        self._loaded = self._native_started = False
+        self._needs_device = True
+        self.controller.reset()
         self._query_device()
-        samples = (
+        self._needs_device = False
+        self._samples = (
             self._convert_samples(self._clip.samples, self._clip.sample_rate)
             if self._clip is not None
             else np.empty((0, self.channels), dtype=np.float32)
         )
-        with self._lock:
-            self._samples = samples
-            self._position = 0 if restart else self._native_position(position)
-            self._reset_timeline(new_token=False)
-            self._completed = completed
-            self._playing = restart and bool(len(samples))
-        self._open_stream()
+        self._position = 0 if restart else self._native_position(position)
+        self._started = False
+        self._completed = completed
+        if restart:
+            self._load_native()
+            self.controller.start()
+            self._native_started = self._playing = True
 
     def _logical_position(self, position: int) -> int:
         if self._clip is None:
@@ -202,6 +177,36 @@ class PersistentPcmPlayer:
             len(self._samples),
             round(position * self.sample_rate / self._clip.sample_rate),
         )
+
+    def _load_native(self) -> None:
+        self.controller.load(
+            self._samples, self.sample_rate, self.channels, self._latency
+        )
+        self._loaded = True
+        self._native_started = False
+        self._submitted_position = self._onset_position = self._position
+        if self._position:
+            self.controller.seek(self._position)
+
+    def _read_status(self) -> None:
+        if not self._loaded:
+            return
+        state = self.controller.status()
+        self._position = state["audible_position_frames"]
+        self._submitted_position = state["position_frames"]
+        self._started = (
+            state["started"] and self._submitted_position > self._onset_position
+        )
+        self._paused = state["paused"]
+        # A submitted final buffer is still playing until its native DAC drain.
+        self._playing = (
+            self._native_started and not state["paused"] and not state["finished"]
+        )
+        self._completed = state["finished"]
+        self._underflowed |= bool(state["underflow_count"])
+        self._error = self._error or state["error"]
+        if self._completed:
+            self._loaded = False
 
     def load(self, path: str | Path) -> PcmClip:
         path = Path(path)
@@ -255,142 +260,116 @@ class PersistentPcmPlayer:
     def play(self, clip: PcmClip, *, position_frames: int = 0) -> int:
         if not isinstance(clip, PcmClip) or clip.sample_rate <= 0:
             raise PcmPlaybackError("Playback received an incompatible PCM clip")
-        self._ensure_stream(restart_playback=False)
+        self._ensure_output(restart_playback=False)
         samples = self._prepare(clip.samples, clip.sample_rate, "PCM clip").samples
-        position = max(0, min(clip.frames, int(position_frames)))
-        with self._lock:
-            self._clip = clip
-            self._samples = samples
-            self._position = self._native_position(position)
-            self._playing = position < clip.frames
-            self._underflowed = False
-            self._error = None
-            return self._reset_timeline()
+        self._clip = clip
+        self._samples = samples
+        self._position = self._native_position(
+            max(0, min(clip.frames, int(position_frames)))
+        )
+        self._playing = self._paused = self._started = self._completed = False
+        self._underflowed = False
+        self._error = None
+        self._token += 1
+        try:
+            self._load_native()
+            if self._position < len(samples):
+                self.controller.start()
+                self._native_started = self._playing = True
+        except Exception as error:
+            self._needs_device = True
+            self._error = str(error)
+            raise PcmPlaybackError(
+                f"Unable to start native playback: {error}"
+            ) from error
+        return self._token
 
     def pause(self) -> None:
-        with self._lock:
-            self._playing = False
-            self._first_dac_time = None
-            self._audible_origin = self._position
-            self._end_dac_time = None
+        self._read_status()
+        if self._loaded and self._native_started and not self._paused:
+            self.controller.pause()
+            self._read_status()
+        self._playing = False
+        self._paused = True
 
     def resume(self) -> int:
-        self._ensure_stream()
-        with self._lock:
-            if self._position >= len(self._samples):
-                self._position = 0
-            self._playing = bool(len(self._samples))
-            return self._reset_timeline()
+        self._ensure_output()
+        self._read_status()
+        if self._position >= len(self._samples):
+            self._position = 0
+        self._token += 1
+        self._started = self._completed = False
+        self._onset_position = self._submitted_position
+        if self._clip is not None:
+            if not self._loaded:
+                self._load_native()
+            if self._native_started and self._paused:
+                if not self.controller.resume():
+                    self._position = 0
+                    self._load_native()
+            if not self._native_started:
+                self.controller.start()
+            self._native_started = self._playing = True
+            self._paused = False
+        return self._token
 
     def seek(self, position_frames: int) -> int:
-        with self._lock:
-            self._position = self._native_position(max(0, int(position_frames)))
-            return self._reset_timeline()
+        self._ensure_output()
+        self._read_status()
+        self._position = self._native_position(max(0, int(position_frames)))
+        self._onset_position = self._position
+        if self._clip is not None:
+            if self._loaded and not self.controller.seek(self._position):
+                self._loaded = self._playing = False
+            if not self._loaded:
+                self._load_native()
+        self._token += 1
+        self._started = self._completed = False
+        return self._token
 
     def stop(self) -> None:
-        with self._lock:
+        try:
+            self.controller.stop()
+        finally:
             self._clip = None
             self._samples = np.empty((0, self.channels), dtype=np.float32)
             self._position = 0
-            self._playing = False
+            self._playing = self._paused = self._started = self._completed = False
+            self._loaded = self._native_started = False
             self._underflowed = False
             self._error = None
-            self._reset_timeline()
-
-    def _reset_timeline(self, *, new_token: bool = True) -> int:
-        # Called under the lock; only a new play or stop clears attempt failures.
-        if new_token:
             self._token += 1
-        self._audible_origin = self._position
-        self._first_dac_time = None
-        self._end_dac_time = None
-        self._started = False
-        self._completed = False
-        return self._token
 
     def snapshot(self) -> PlaybackSnapshot:
         try:
-            if self.stream is None:
-                raise PcmPlaybackError("Audio output is unavailable; replay the sample")
-            self._ensure_stream()
-            assert self.stream is not None
+            self._ensure_output()
             try:
-                stream_time = float(self.stream.time)
-            except AudioDeviceChangedError:
-                self._ensure_stream()
-                assert self.stream is not None
-                stream_time = float(self.stream.time)
+                self._read_status()
+            except Exception:
+                if not self.controller.device_changed:
+                    raise
+                self._ensure_output()
+                self._read_status()
         except Exception as error:
-            stream_time = 0.0
-            with self._lock:
-                self._error = self._error or str(error)
-        with self._lock:
-            total = self._clip.frames if self._clip is not None else 0
-            position = self._position
-            if self._first_dac_time is not None:
-                audible = self._audible_origin + round(
-                    max(0.0, stream_time - self._first_dac_time) * self.sample_rate
-                )
-                position = min(position, audible)
-            finished = self._completed or (
-                self._end_dac_time is not None and stream_time >= self._end_dac_time
-            )
-            if finished:
-                self._completed = True
-                position = len(self._samples)
-            return PlaybackSnapshot(
-                token=self._token,
-                position_frames=self._logical_position(position),
-                total_frames=total,
-                started=self._started,
-                playing=self._playing,
-                finished=finished,
-                underflowed=self._underflowed,
-                error=self._error,
-            )
+            self._playing = False
+            self._needs_device = True
+            self._error = self._error or str(error)
+        return PlaybackSnapshot(
+            token=self._token,
+            position_frames=self._logical_position(self._position),
+            total_frames=self._clip.frames if self._clip is not None else 0,
+            started=self._started,
+            playing=self._playing,
+            finished=self._completed,
+            underflowed=self._underflowed,
+            error=self._error,
+        )
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        if self.stream is None:
-            self.stop()
-            return
-        with (
-            cleanup_on_exit(self.stream.close, description="Output stream cleanup"),
-            cleanup_on_exit(self.stream.abort, description="Output stream abort"),
+        with cleanup_on_exit(
+            self.controller.close, description="Native player cleanup"
         ):
             self.stop()
-
-    def _callback(
-        self,
-        outdata: NDArray[np.float32],
-        frames: int,
-        time_info: _CallbackTimeInfo,
-        status: object,
-    ) -> None:
-        outdata.fill(0)
-        try:
-            with self._lock:
-                if not self._playing:
-                    return
-                if getattr(status, "output_underflow", False):
-                    self._underflowed = True
-                end = min(self._position + frames, len(self._samples))
-                count = end - self._position
-                if count:
-                    outdata[:count] = self._samples[self._position : end]
-                    if self._first_dac_time is None:
-                        self._first_dac_time = float(time_info.outputBufferDacTime)
-                        self._audible_origin = self._position
-                    self._position = end
-                    self._started = True
-                if self._position >= len(self._samples):
-                    self._playing = False
-                    self._end_dac_time = float(time_info.outputBufferDacTime) + (
-                        count / self.sample_rate
-                    )
-        except Exception as error:
-            with self._lock:
-                self._playing = False
-                self._error = self._error or str(error)

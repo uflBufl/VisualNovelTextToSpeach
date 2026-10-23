@@ -1,4 +1,4 @@
-"""Qt signals around the persistent sounddevice authoring player."""
+"""Qt signals around the persistent Rust authoring player."""
 
 from collections.abc import Callable
 from pathlib import Path

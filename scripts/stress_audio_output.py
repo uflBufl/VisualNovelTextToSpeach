@@ -1,11 +1,10 @@
-"""Compare prepared output owners on identical PCM; never modifies the source WAV."""
+"""Stress Rust prepared playback with deliberate GIL holds on an approved WAV."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-import os
 import sys
 from pathlib import Path
 from threading import Event, Thread
@@ -28,7 +27,6 @@ from vntts.support import configure_audio_lifecycle_log
 def run_trial(
     samples: np.ndarray,
     sample_rate: int,
-    backend: str,
     gil_hold_ms: int,
 ) -> dict[str, Any]:
     log = configure_audio_lifecycle_log()
@@ -58,7 +56,6 @@ def run_trial(
         playing.set()
 
     thread = None
-    os.environ["VNTTS_PREPARED_AUDIO_BACKEND"] = backend
     try:
         if gil_hold_ms:
             sys.setswitchinterval(gil_hold_ms / 1000 + 0.05)
@@ -92,7 +89,7 @@ def run_trial(
         in {"pcm-write-summary", "system-write-summary", "rust-pcm-summary"}
     ]
     return {
-        "backend": backend,
+        "backend": "rust",
         "gil_hold_ms": gil_hold_ms,
         "completed": completed,
         "underflowed": underflowed,
@@ -125,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     source_hash = hashlib.sha256(options.wav.read_bytes()).hexdigest()
     samples, sample_rate = sf.read(options.wav, dtype="float32", always_2d=True)
     if samples.shape[1] != 1 or not len(samples) or not np.isfinite(samples).all():
-        parser.error("comparison requires a nonempty finite mono WAV")
+        parser.error("stress playback requires a nonempty finite mono WAV")
     library = portaudio_library()
     library_path = Path(library)
     receipt: dict[str, Any] = {
@@ -142,27 +139,25 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for load in dict.fromkeys((0, options.gil_hold_ms)):
             for repeat in range(options.repeats):
-                order = ("python", "rust") if repeat % 2 == 0 else ("rust", "python")
-                for backend in order:
-                    trial = run_trial(samples, sample_rate, backend, load)
-                    trial["repeat"] = repeat
-                    receipt["trials"].append(trial)
-                    options.output.write_text(json.dumps(receipt, indent=2) + "\n")
-                    print(
-                        json.dumps(
-                            {
-                                k: trial[k]
-                                for k in (
-                                    "backend",
-                                    "gil_hold_ms",
-                                    "completed",
-                                    "underflowed",
-                                    "wall_ms",
-                                )
-                            }
-                        ),
-                        flush=True,
-                    )
+                trial = run_trial(samples, sample_rate, load)
+                trial["repeat"] = repeat
+                receipt["trials"].append(trial)
+                options.output.write_text(json.dumps(receipt, indent=2) + "\n")
+                print(
+                    json.dumps(
+                        {
+                            k: trial[k]
+                            for k in (
+                                "backend",
+                                "gil_hold_ms",
+                                "completed",
+                                "underflowed",
+                                "wall_ms",
+                            )
+                        }
+                    ),
+                    flush=True,
+                )
         receipt["source_unchanged"] = (
             hashlib.sha256(options.wav.read_bytes()).hexdigest() == source_hash
         )
@@ -187,11 +182,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     finally:
         options.output.write_text(json.dumps(receipt, indent=2) + "\n")
-        # The experiment explicitly owns this helper; no retained playback process.
-        from vntts.rust_audio import _worker
+        from vntts.system_audio import get_system_audio_output
 
-        if _worker is not None:
-            _worker.close()
+        get_system_audio_output().module._terminate()
 
 
 if __name__ == "__main__":

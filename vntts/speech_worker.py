@@ -34,6 +34,7 @@ from vntts.audio_output import (
     playback_cancelled,
     resolve_audio_output,
     sanitize_playback_audio,
+    stream_underflowed,
 )
 from vntts.cleanup import attempt_cleanup
 from vntts.json_types import is_json_object
@@ -1672,6 +1673,7 @@ class IsolatedSpeechBackend:
                                 timing_provenance="measured",
                                 reason="first-pcm-write-returned",
                             )
+                underflowed = underflowed or stream_underflowed(stream)
                 if interrupted:
                     return outcome_for_prepared(
                         prepared,
@@ -1908,6 +1910,9 @@ class IsolatedSpeechBackend:
             or self.startup_pending
         )
         self._stop_requested.set()
+        stream = self._active_stream
+        if stream is not None:
+            stream.abort()
         self.cancel_startup()
         if self._request_lock.locked():
             self._terminate_process(self.process)

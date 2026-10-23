@@ -1,6 +1,5 @@
 """Small shared helpers for lazy audio output and playback status."""
 
-import os
 from collections.abc import Callable, Mapping
 from threading import Event, Lock, current_thread
 from time import monotonic
@@ -102,7 +101,7 @@ def resolve_audio_output(
 def resolve_audio_output(
     audio_output: PlaybackAudioOutput | None,
 ) -> PlaybackAudioOutput:
-    """Return an injected output module or lazily import sounddevice."""
+    """Return an injected output or the Rust-owned system output."""
     if audio_output is None:
         from vntts.system_audio import get_system_audio_output
 
@@ -128,31 +127,7 @@ def prepared_output_stream(
     dtype: str,
     latency: object,
 ) -> _StreamingAudioContext:
-    """Select the experimental owner only for prepared system-output buffers."""
-    from vntts.system_audio import SystemAudioOutput
-
-    options = dict(
-        samplerate=samplerate, channels=channels, dtype=dtype, latency=latency
-    )
-    backend = os.environ.get("VNTTS_PREPARED_AUDIO_BACKEND", "python")
-    if backend not in {"python", "rust"}:
-        raise ValueError("VNTTS_PREPARED_AUDIO_BACKEND must be python or rust")
-    if (
-        backend == "rust"
-        and isinstance(audio_output, _LoggedAudioOutput)
-        and isinstance(audio_output.output, SystemAudioOutput)
-    ):
-        from vntts.rust_audio import RustPreparedStream
-
-        fields = {**audio_output._device_fields(), **options, "backend": "rust"}
-        return _LoggedOutputStream(
-            RustPreparedStream(
-                samplerate=samplerate, channels=channels, dtype=dtype, latency=latency
-            ),
-            uuid4().hex,
-            fields,
-            dict(audio_lifecycle_context.get() or {}),
-        )
+    """Open prepared audio on the same Rust owner as streaming output."""
     return cast(AudioOutput, audio_output).OutputStream(
         samplerate=samplerate, channels=channels, dtype=dtype, latency=latency
     )
@@ -439,6 +414,11 @@ def playback_cancelled(
     return stop_requested.is_set() or not playable
 
 
+def stream_underflowed(stream: object) -> bool:
+    value = getattr(stream, "underflowed", False)
+    return isinstance(value, (bool, np.bool_)) and bool(value)
+
+
 class _PcmWriteDiagnostics:
     """Keep bounded block associations beside the existing stream aggregates."""
 
@@ -517,14 +497,17 @@ def write_pcm_chunks(
     first_write: Callable[[], None] | None = None,
     stop_requested: Event | None = None,
 ) -> tuple[bool, bool]:
-    """Write short blocks so only the owner thread ever stops the device."""
+    """Admit prepared buffers to Rust; preserve injected output compatibility."""
     samples = np.asarray(audio, dtype=np.float32)
     if samples.ndim == 1:
         samples = samples.reshape(-1, 1)
-    from vntts.rust_audio import RustPreparedStream
+    from vntts.rust_output import RustOutputStream
+    from vntts.system_audio import _SystemStream
 
     owner = stream.stream if isinstance(stream, _LoggedOutputStream) else stream
-    if isinstance(owner, RustPreparedStream):
+    if isinstance(owner, RustOutputStream) or (
+        isinstance(owner, _SystemStream) and isinstance(owner.native, RustOutputStream)
+    ):
         return owner.play_buffer(samples, cancelled, first_write, stop_requested)
     block_frames = max(1, sample_rate // 20)
     underflowed = False

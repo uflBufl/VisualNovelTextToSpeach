@@ -321,7 +321,7 @@ class SystemAudioTest(unittest.TestCase):
             return original_import(name, *args, **kwargs)
 
         with (
-            patch.dict("sys.modules", {"sounddevice": module}),
+            patch("vntts.rust_output.RustAudioModule", return_value=module),
             patch.object(system_audio, "_system_output", None),
             patch("builtins.__import__", side_effect=import_without_qt),
             patch.object(system_audio, "Thread") as thread,
@@ -338,7 +338,7 @@ class SystemAudioTest(unittest.TestCase):
         from vntts import system_audio
 
         with (
-            patch.dict("sys.modules", {"sounddevice": DeviceModule()}),
+            patch("vntts.rust_output.RustAudioModule", return_value=DeviceModule()),
             patch.object(system_audio, "_system_output", None),
             patch.object(system_audio, "Thread") as thread,
             patch.object(system_audio.atexit, "register"),

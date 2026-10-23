@@ -1194,7 +1194,7 @@ class PocketTTSBackendTest(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(prepared)))
         self.assertLessEqual(float(np.max(np.abs(prepared))), 0.95)
 
-    def test_stop_cancels_generation_without_touching_owner_stream(self):
+    def test_stop_cancels_generation_and_aborts_admitted_pcm(self):
         backend, _model, audio_output = self.create_backend()
         backend.playback_active = True
         backend.active_generation_cancel = Event()
@@ -1204,7 +1204,7 @@ class PocketTTSBackendTest(unittest.TestCase):
         self.assertTrue(backend.stop())
 
         self.assertTrue(backend.active_generation_cancel.is_set())
-        self.assertFalse(stream.aborted)
+        self.assertTrue(stream.aborted)
 
     def test_cancelled_stream_is_drained_without_writing_later_chunks(self):
         backend, _model, audio_output = self.create_backend()

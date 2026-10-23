@@ -323,9 +323,9 @@ def probe_tesseract() -> object:
 
 
 def probe_audio_output() -> object:
-    import sounddevice
+    from vntts.system_audio import get_system_audio_output
 
-    device = sounddevice.query_devices(kind="output")
+    device = get_system_audio_output().query_devices(kind="output")
     if not device:
         raise RuntimeError("No default audio output device is available")
     if isinstance(device, dict):

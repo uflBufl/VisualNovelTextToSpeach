@@ -1,8 +1,7 @@
-"""Experimental full-buffer playback through a locally built Rust process."""
+"""Control protocol for the locally built Rust audio owner."""
 
 from __future__ import annotations
 
-import atexit
 import ctypes.util
 import importlib.util
 import json
@@ -17,6 +16,7 @@ from pathlib import Path
 from threading import Event, Lock, RLock, Thread, current_thread
 from time import monotonic
 from typing import Any
+from weakref import WeakSet
 
 import numpy as np
 
@@ -24,6 +24,8 @@ from vntts.audio_lifecycle import record_audio_lifecycle
 
 MAX_PCM_BYTES = 128 * 1024 * 1024
 MAX_EVENT_BYTES = 65536
+_workers: WeakSet[RustAudioWorker] = WeakSet()
+_workers_lock = Lock()
 
 
 def portaudio_library() -> str:
@@ -75,11 +77,13 @@ class RustAudioWorker:
     def __init__(self, command: list[str] | None = None) -> None:
         self.lock = RLock()
         self.send_lock = Lock()
+        self.state_lock = RLock()
+        self.close_lock = Lock()
         self.events: queue.Queue[dict[str, Any] | BaseException] = queue.Queue(64)
         self.device_changed = Event()
         self.closed = Event()
         self.next_id = 0
-        self.active_id: int | None = None
+        self._active_id: int | None = None
         self.stderr = tempfile.TemporaryFile()
         started = monotonic()
         try:
@@ -100,10 +104,14 @@ class RustAudioWorker:
         self.reader.start()
         try:
             ready = self.receive(10)
-            if ready.get("event") != "ready" or ready.get("protocol") != 1:
-                raise RuntimeError("Rust audio worker protocol mismatch")
+            if ready.get("event") != "ready" or ready.get("protocol") != 2:
+                raise RuntimeError(
+                    "Rust audio worker protocol mismatch; rebuild native/audio-worker with Cargo"
+                )
             self.startup_ms = (monotonic() - started) * 1000
             self.ready = ready
+            with _workers_lock:
+                _workers.add(self)
         except BaseException:
             self.close()
             raise
@@ -143,8 +151,28 @@ class RustAudioWorker:
             raise RuntimeError(str(value)) from value
         return value
 
-    def send(self, message: dict[str, Any], payload: bytes = b"") -> None:
+    @property
+    def active_id(self) -> int | None:
+        with self.state_lock:
+            return self._active_id
+
+    @active_id.setter
+    def active_id(self, value: int | None) -> None:
+        with self.state_lock:
+            if value is not None and self.closed.is_set():
+                raise RuntimeError("Rust audio worker is closed")
+            self._active_id = value
+
+    def send(
+        self,
+        message: dict[str, Any],
+        payload: bytes = b"",
+        *,
+        only_active: int | None = None,
+    ) -> None:
         with self.send_lock:
+            if only_active is not None and self.active_id != only_active:
+                return
             if self.closed.is_set():
                 raise RuntimeError("Rust audio worker is closed")
             assert self.process.stdin is not None
@@ -183,7 +211,36 @@ class RustAudioWorker:
         if failure:
             raise RuntimeError("Rust PCM upload failed") from failure[0]
 
+    def cancel_active(self) -> None:
+        """Stop outside the playback/ingress locks, with a bounded watchdog."""
+        clip_id = self.active_id
+        if clip_id is None or self.closed.is_set():
+            return
+
+        def cancel() -> None:
+            try:
+                self.send({"op": "stop", "id": clip_id}, only_active=clip_id)
+            except Exception:
+                self.close()
+
+        Thread(target=cancel, name="vntts-rust-cancel", daemon=True).start()
+
+        def watchdog() -> None:
+            deadline = monotonic() + 3
+            while self.active_id == clip_id and not self.closed.wait(0.02):
+                if monotonic() >= deadline:
+                    with self.state_lock:
+                        if self.active_id == clip_id:
+                            self.close()
+                    return
+
+        Thread(target=watchdog, name="vntts-rust-cancel-watch", daemon=True).start()
+
     def close(self) -> None:
+        with self.close_lock:
+            self._close()
+
+    def _close(self) -> None:
         if self.closed.is_set():
             return
         self.closed.set()
@@ -323,12 +380,16 @@ class _ClipPlayback:
             ):
                 self.stop_sent.set()
                 try:
-                    self.worker.send({"op": "stop", "id": self.clip_id})
+                    self.worker.send(
+                        {"op": "stop", "id": self.clip_id}, only_active=self.clip_id
+                    )
                 except Exception:
                     self.worker.close()
                     return
                 if not self.finished.wait(3):
-                    self.worker.close()
+                    with self.worker.state_lock:
+                        if self.worker.active_id == self.clip_id:
+                            self.worker.close()
                 return
 
     def _wait_for_completion(self) -> tuple[bool, bool]:
@@ -411,76 +472,9 @@ class _ClipPlayback:
         return complete and not self.stop_sent.is_set(), event["underflow_count"] > 0
 
 
-_worker: RustAudioWorker | None = None
-_worker_lock = Lock()
-
-
-def get_rust_audio_worker() -> RustAudioWorker:
-    global _worker
-    with _worker_lock:
-        if _worker is not None and (
-            _worker.closed.is_set() or _worker.device_changed.is_set()
-        ):
-            _worker.close()
-            _worker = None
-        if _worker is None:
-            _worker = RustAudioWorker()
-            atexit.register(_worker.close)
-        return _worker
-
-
 def notify_audio_device_changed() -> None:
-    if _worker is not None:
-        _worker.device_changed.set()
-
-
-class RustPreparedStream:
-    def __init__(
-        self, *, samplerate: int, channels: int, dtype: str, latency: object
-    ) -> None:
-        if dtype != "float32":
-            raise ValueError("Rust prepared output accepts float32 only")
-        self.sample_rate = samplerate
-        self.channels = channels
-        self.latency = latency
-        self.worker: RustAudioWorker | None = None
-
-    def __enter__(self) -> RustPreparedStream:
-        self.worker = get_rust_audio_worker()
-        return self
-
-    def __exit__(self, exc_type: object, *_args: object) -> None:
-        if exc_type is not None and self.worker is not None:
-            self.worker.close()
-
-    def play_buffer(
-        self,
-        samples: np.ndarray,
-        cancelled: Any,
-        first_write: Any,
-        stop_requested: Event | None,
-    ) -> tuple[bool, bool]:
-        if self.worker is None:
-            raise RuntimeError("Rust prepared stream was not entered")
-        return self.worker.play_buffer(
-            samples,
-            self.sample_rate,
-            self.channels,
-            self.latency,
-            cancelled,
-            first_write,
-            stop_requested,
-        )
-
-    def write(self, _audio: object) -> object:
-        raise RuntimeError("Rust prepared playback requires a full admitted buffer")
-
-    def abort(self) -> None:
-        if self.worker is not None:
-            self.worker.close()
-
-    def stop(self) -> None:
-        self.abort()
-
-    def close(self) -> None:
-        self.abort()
+    with _workers_lock:
+        workers = tuple(_workers)
+    for worker in workers:
+        worker.device_changed.set()
+        worker.cancel_active()

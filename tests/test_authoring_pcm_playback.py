@@ -3,25 +3,21 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import ModuleType
-from unittest.mock import Mock, PropertyMock, patch
+from threading import Event
+from unittest.mock import Mock, patch
 
 import numpy as np
 import soundfile as sf
 
-from tests.audio_output_fixtures import FakeAudioModule, FakeOutputStream
+from tests.native_clip_fixtures import FakeClipController
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
-from vntts.authoring.pcm_playback import (
-    PcmClip,
-    PcmPlaybackError,
-    PersistentPcmPlayer,
-)
-from vntts.system_audio import AudioDeviceChangedError
+from vntts.authoring.pcm_playback import PcmClip, PcmPlaybackError, PersistentPcmPlayer
+from vntts.rust_clip_player import RustClipController
 
 
 class PersistentPcmPlayerTest(unittest.TestCase):
     def create_player(self):
-        audio = FakeAudioModule()
+        audio = FakeClipController()
         player = PersistentPcmPlayer(audio)
         self.addCleanup(player.close)
         return audio, player
@@ -80,230 +76,191 @@ class PersistentPcmPlayerTest(unittest.TestCase):
         self.assertEqual(clip.sample_rate, 48_000)
         self.assertEqual(clip.samples.shape, (4_800, 2))
 
-    def test_first_frames_and_reverse_switch_use_the_same_warm_stream(self):
+    def test_new_clip_starts_at_its_first_frame_in_the_same_native_worker(self):
         audio, player = self.create_player()
-        first = PcmClip(
-            np.array([[0.1, -0.1], [0.2, -0.2], [0.3, -0.3]], np.float32),
-            player.sample_rate,
-        )
-        second = PcmClip(
-            np.array([[0.7, 0.6], [0.5, 0.4], [0.3, 0.2]], np.float32),
-            player.sample_rate,
-        )
-
+        first = PcmClip(np.arange(20, dtype=np.float32).reshape(10, 2) / 20, 48_000)
+        second = PcmClip(-first.samples, first.sample_rate)
         player.play(first)
-        np.testing.assert_array_equal(audio.stream.pump(2), first.samples[:2])
+        np.testing.assert_array_equal(audio.pump(2), first.samples[:2])
         player.play(second)
-        np.testing.assert_array_equal(audio.stream.pump(2), second.samples[:2])
+        np.testing.assert_array_equal(audio.pump(2), second.samples[:2])
+        self.assertEqual(audio.load_count, 2)
+        self.assertEqual(audio.reset_count, 0)
 
-        self.assertTrue(audio.stream.started)
-
-    def test_completion_waits_for_dac_and_stale_end_cannot_finish_new_clip(self):
+    def test_completion_waits_for_native_dac_and_old_end_cannot_finish_new_clip(self):
         audio, player = self.create_player()
         clip = PcmClip(np.ones((480, 2), np.float32), player.sample_rate)
         old_token = player.play(clip)
-        audio.stream.pump(480)
+        audio.pump(480)
         self.assertFalse(player.snapshot().finished)
-
         new_token = player.play(clip)
-        audio.stream.time += audio.latency + 1
+        audio.time += audio.latency + 1
         snapshot = player.snapshot()
-
-        self.assertNotEqual(old_token, new_token)
+        self.assertGreater(new_token, old_token)
         self.assertEqual(snapshot.token, new_token)
-        self.assertFalse(snapshot.finished)
+        self.assertFalse(snapshot.finished or snapshot.started)
+        audio.pump(480)
+        audio.time += audio.latency
+        self.assertTrue(player.snapshot().finished)
 
-    def test_pause_seek_resume_and_underflow_are_explicit(self):
+    def test_pause_seek_resume_and_unpolled_underflow_are_explicit(self):
         audio, player = self.create_player()
         samples = np.arange(20, dtype=np.float32).reshape(10, 2) / 20
         clip = PcmClip(samples, player.sample_rate)
-        player.play(clip)
-        np.testing.assert_array_equal(audio.stream.pump(3), samples[:3])
-
+        token = player.play(clip)
+        np.testing.assert_array_equal(audio.pump(3, underflow=True), samples[:3])
         player.pause()
-        np.testing.assert_array_equal(audio.stream.pump(2), np.zeros((2, 2)))
-        player.seek(6)
-        player.resume()
-        np.testing.assert_array_equal(audio.stream.pump(4), samples[6:])
+        self.assertEqual(player.snapshot().token, token)
+        self.assertTrue(player.snapshot().underflowed)
+        np.testing.assert_array_equal(audio.pump(2), np.zeros((2, 2)))
+        seek_token = player.seek(6)
+        resume_token = player.resume()
+        self.assertGreater(resume_token, seek_token)
+        audio.state["started"] = True
+        self.assertFalse(player.snapshot().started)
+        np.testing.assert_array_equal(audio.pump(4), samples[6:])
         self.assertTrue(player.snapshot().started)
 
-        player.play(clip)
-        audio.stream.pump(2, underflow=True)
-        self.assertTrue(player.snapshot().underflowed)
-
-    def test_attempt_failures_survive_pause_seek_and_resume_until_new_play(self):
-        for failure in ("underflow", "clock", "callback"):
+    def test_attempt_failures_survive_controls_until_new_play_or_stop(self):
+        for failure in ("underflow", "native-error", "status"):
             with self.subTest(failure=failure):
                 audio, player = self.create_player()
                 clip = PcmClip(np.ones((480, 2), np.float32), player.sample_rate)
                 token = player.play(clip)
-                if failure == "underflow":
-                    audio.stream.pump(48, underflow=True)
-                elif failure == "clock":
+                audio.pump(48, underflow=failure == "underflow")
+                if failure == "native-error":
+                    audio.state["error"] = "native output failed"
+                if failure == "status":
                     with patch.object(
-                        FakeOutputStream,
-                        "time",
-                        create=True,
-                        new_callable=PropertyMock,
-                        side_effect=RuntimeError("device clock failed"),
+                        audio, "status", side_effect=RuntimeError("device clock failed")
                     ):
                         player.snapshot()
-                else:
-                    audio.stream.callback(
-                        np.empty((48, 2), np.float32),
-                        48,
-                        Mock(outputBufferDacTime="invalid DAC time"),
-                        None,
-                    )
                 failed = player.snapshot()
                 self.assertTrue(failed.underflowed or failed.error)
-
                 player.pause()
                 self.assertEqual(player.snapshot().token, token)
                 seek_token = player.seek(48)
                 resume_token = player.resume()
                 self.assertLess(token, seek_token)
                 self.assertLess(seek_token, resume_token)
-                self.assertFalse(player.snapshot().started)
-                audio.stream.pump(432)
-                audio.stream.time += audio.latency + 0.001
+                audio.pump(432)
+                audio.time += audio.latency + 0.001
                 completed = player.snapshot()
-                self.assertEqual(completed.token, resume_token)
                 self.assertTrue(completed.finished)
                 self.assertEqual(completed.position_frames, clip.frames)
                 self.assertEqual(completed.underflowed, failed.underflowed)
                 self.assertEqual(completed.error, failed.error)
-
                 player.play(clip)
                 self.assertFalse(player.snapshot().underflowed)
                 self.assertIsNone(player.snapshot().error)
-                audio.stream.pump(480)
-                audio.stream.time += audio.latency + 0.001
-                self.assertTrue(player.snapshot().finished)
-
-                player.play(clip)
-                audio.stream.pump(48, underflow=True)
+                audio.pump(48, underflow=True)
                 player.stop()
                 stopped = player.snapshot()
-                self.assertFalse(stopped.underflowed)
+                self.assertFalse(
+                    stopped.underflowed
+                    or stopped.started
+                    or stopped.playing
+                    or stopped.finished
+                )
                 self.assertIsNone(stopped.error)
                 self.assertEqual(stopped.position_frames, 0)
-                self.assertFalse(stopped.started or stopped.playing or stopped.finished)
 
-    def test_close_aborts_and_closes_stream(self):
-        audio = FakeAudioModule()
-        player = PersistentPcmPlayer(audio)
+    def test_producer_starvation_is_not_reported_as_device_underflow(self):
+        audio, player = self.create_player()
+        player.play(PcmClip(np.ones((480, 2), np.float32), player.sample_rate))
+        audio.state["producer_starvation_count"] = 2
+        self.assertFalse(player.snapshot().underflowed)
+        self.assertEqual(audio.status()["producer_starvation_count"], 2)
 
-        player.close()
-
-        self.assertTrue(audio.stream.aborted)
-        self.assertTrue(audio.stream.closed)
+    def test_completed_clip_can_seek_and_replay_after_native_buffer_was_released(self):
+        audio, player = self.create_player()
+        clip = PcmClip(np.ones((480, 2), np.float32), player.sample_rate)
+        player.play(clip)
+        audio.pump(480)
+        audio.time += audio.latency
+        self.assertTrue(player.snapshot().finished)
+        player.seek(240)
+        self.assertEqual(audio.load_count, 2)
+        self.assertEqual(player.snapshot().position_frames, 240)
+        self.assertFalse(player.snapshot().playing)
+        player.resume()
+        np.testing.assert_array_equal(audio.pump(240), clip.samples[240:])
+        audio.time += audio.latency
+        self.assertTrue(player.snapshot().finished)
+        player.resume()
+        self.assertEqual(audio.load_count, 3)
+        np.testing.assert_array_equal(audio.pump(48), clip.samples[:48])
 
     def test_device_change_replays_onset_with_same_token_and_attempt_failure(self):
         audio, player = self.create_player()
-        samples = np.arange(480 * 2, dtype=np.float32).reshape(480, 2) / 1000
-        clip = PcmClip(samples, player.sample_rate)
+        clip = PcmClip(np.arange(960, dtype=np.float32).reshape(480, 2) / 1000, 48_000)
         token = player.play(clip)
-        old_stream = audio.stream
-        old_stream.pump(48, underflow=True)
-        with patch.object(
-            FakeOutputStream,
-            "time",
-            create=True,
-            new_callable=PropertyMock,
-            side_effect=RuntimeError("clock failed"),
-        ):
-            player.snapshot()
-        old_stream.device_changed = True
-
+        audio.pump(48, underflow=True)
+        player.snapshot()
+        audio.device_changed = True
         snapshot = player.snapshot()
-
-        self.assertIsNot(audio.stream, old_stream)
-        self.assertTrue(old_stream.aborted and old_stream.closed)
+        self.assertEqual(audio.reset_count, 1)
         self.assertEqual(snapshot.token, token)
         self.assertEqual(snapshot.position_frames, 0)
         self.assertFalse(snapshot.started or snapshot.finished)
         self.assertTrue(snapshot.playing and snapshot.underflowed)
-        self.assertEqual(snapshot.error, "clock failed")
-        np.testing.assert_array_equal(audio.stream.pump(48), samples[:48])
-        player.play(clip)
-        self.assertFalse(player.snapshot().underflowed)
-        self.assertIsNone(player.snapshot().error)
+        np.testing.assert_array_equal(audio.pump(48), clip.samples[:48])
 
-    def test_play_rejects_invalid_logical_pcm(self):
-        _audio, player = self.create_player()
-        for samples in (
-            np.empty((0, 2), np.float32),
-            np.ones((48,), np.float32),
-            np.ones((48, 3), np.float32),
-            np.full((48, 2), np.nan, np.float32),
-        ):
-            with self.subTest(shape=samples.shape):
-                with self.assertRaises(PcmPlaybackError):
-                    player.play(PcmClip(samples, 24_000))
-
-    def test_change_between_device_check_and_clock_read_replays_without_error(self):
+    def test_device_change_replays_after_registry_already_cancelled_native_clip(self):
         audio, player = self.create_player()
         clip = PcmClip(np.ones((480, 2), np.float32), player.sample_rate)
         token = player.play(clip)
-        old_stream = audio.stream
-        old_stream.pump(48)
+        audio.pump(48, underflow=True)
+        audio.stop()
+        audio.device_changed = True
+        snapshot = player.snapshot()
+        self.assertEqual(snapshot.token, token)
+        self.assertTrue(snapshot.playing)
+        self.assertFalse(snapshot.finished)
+        self.assertTrue(snapshot.underflowed)
+        self.assertEqual(audio.load_count, 2)
+        np.testing.assert_array_equal(audio.pump(48), clip.samples[:48])
 
-        def changed_clock(stream):
-            if stream is old_stream:
-                old_stream.device_changed = True
-                raise AudioDeviceChangedError("Changed while reading time")
-            return stream._clock
+    def test_change_between_check_and_status_replays_without_spurious_error(self):
+        audio, player = self.create_player()
+        clip = PcmClip(np.ones((480, 2), np.float32), player.sample_rate)
+        token = player.play(clip)
+        audio.pump(48)
+        original = audio.status
 
-        with patch.object(
-            FakeOutputStream,
-            "time",
-            property(
-                changed_clock,
-                lambda stream, value: setattr(stream, "_clock", value),
-            ),
-            create=True,
-        ):
+        def changed_status():
+            if not audio.reset_count:
+                audio.device_changed = True
+                raise RuntimeError("Changed while reading status")
+            return original()
+
+        with patch.object(audio, "status", side_effect=changed_status):
             snapshot = player.snapshot()
         self.assertEqual(snapshot.token, token)
         self.assertEqual(snapshot.position_frames, 0)
         self.assertIsNone(snapshot.error)
 
-    def test_injected_sounddevice_module_uses_shared_output(self):
-        audio = FakeAudioModule()
-        with patch(
-            "vntts.system_audio.get_system_audio_output", return_value=audio
-        ) as shared:
-            player = PersistentPcmPlayer(ModuleType("sounddevice"))
-        self.addCleanup(player.close)
-        shared.assert_called_once_with()
-        self.assertIs(player.audio_module, audio)
-
-    def test_device_change_converts_cached_clip_and_keeps_logical_frame_units(self):
+    def test_device_change_converts_cached_clip_and_preserves_logical_frames(self):
         audio, player = self.create_player()
         clip = PcmClip(np.ones((480, 2), np.float32), player.sample_rate)
         token = player.play(clip)
-        audio.stream.pump(48)
-        audio.stream.device_changed = True
+        audio.pump(48)
+        audio.device_changed = True
         audio.device = {"default_samplerate": 24_000, "max_output_channels": 1}
-
         snapshot = player.snapshot()
-
         self.assertEqual(player.sample_rate, 24_000)
-        self.assertEqual(audio.stream.channels, 1)
+        self.assertEqual(audio.channels, 1)
         self.assertEqual(snapshot.total_frames, clip.frames)
         self.assertEqual(snapshot.token, token)
-        audio.stream.pump(120)
-        audio.stream.time += audio.latency
+        audio.pump(120)
+        audio.time += audio.latency
         self.assertEqual(player.snapshot().position_frames, 240)
         player.pause()
         player.seek(288)
         player.resume()
-        audio.stream.pump(96)
-        audio.stream.time += audio.latency + 0.001
-        completed = player.snapshot()
-        self.assertTrue(completed.finished)
-        self.assertEqual(completed.position_frames, clip.frames)
+        audio.pump(96)
+        audio.time += audio.latency + 0.001
+        self.assertTrue(player.snapshot().finished)
         player.play(clip, position_frames=240)
         self.assertEqual(player.snapshot().position_frames, 240)
         self.assertEqual(player.snapshot().total_frames, clip.frames)
@@ -312,109 +269,281 @@ class PersistentPcmPlayerTest(unittest.TestCase):
         audio, player = self.create_player()
         clip = PcmClip(np.ones((480, 2), np.float32), player.sample_rate)
         player.play(clip)
-        audio.stream.device_changed = True
+        audio.device_changed = True
         with patch.object(
-            audio, "query_devices", side_effect=RuntimeError("No output device")
+            audio, "query_device", side_effect=RuntimeError("No output device")
         ):
             failed = player.snapshot()
         self.assertIn("No output device", failed.error)
         self.assertFalse(failed.playing or failed.finished)
-        self.assertIsNone(player.stream)
-
         player.play(clip)
-
         self.assertIsNone(player.snapshot().error)
-        np.testing.assert_array_equal(audio.stream.pump(48), clip.samples[:48])
+        np.testing.assert_array_equal(audio.pump(48), clip.samples[:48])
 
-    def test_device_change_after_queued_end_replays_but_completed_clip_stays_stopped(
-        self,
-    ):
+    def test_device_change_after_queued_end_replays_only_uncompleted_clip(self):
         for completed in (False, True):
             with self.subTest(completed=completed):
                 audio, player = self.create_player()
                 clip = PcmClip(np.ones((480, 2), np.float32), player.sample_rate)
                 token = player.play(clip)
-                audio.stream.pump(480)
+                audio.pump(480)
                 if completed:
-                    audio.stream.time += audio.latency + 0.001
+                    audio.time += audio.latency + 0.001
                     self.assertTrue(player.snapshot().finished)
-                audio.stream.device_changed = True
-
+                audio.device_changed = True
                 snapshot = player.snapshot()
-
                 self.assertEqual(snapshot.token, token)
                 self.assertEqual(snapshot.finished, completed)
                 self.assertEqual(snapshot.playing, not completed)
                 self.assertEqual(snapshot.position_frames, 480 if completed else 0)
 
-    def test_close_attempts_each_release_once_and_preserves_first_failure(self):
-        for failed_phase in ("stop", "abort", "close"):
-            with self.subTest(failed_phase=failed_phase):
-                audio = FakeAudioModule()
-                player = PersistentPcmPlayer(audio)
-                primary = RuntimeError(f"{failed_phase} failed")
-                failures = {failed_phase: primary}
-                if failed_phase == "stop":
-                    failures["abort"] = KeyboardInterrupt("abort cleanup failed")
-                if failed_phase != "close":
-                    failures["close"] = SystemExit("close cleanup failed")
-                released = []
-
-                def release(phase):
-                    released.append(phase)
-                    if phase in failures:
-                        raise failures[phase]
-
-                with (
-                    patch.object(player, "stop", side_effect=lambda: release("stop")),
-                    patch.object(
-                        audio.stream, "abort", side_effect=lambda: release("abort")
-                    ),
-                    patch.object(
-                        audio.stream, "close", side_effect=lambda: release("close")
-                    ),
-                ):
-                    with self.assertRaises(RuntimeError) as caught:
-                        player.close()
-                    player.close()
-                self.assertIs(caught.exception, primary)
-                self.assertEqual(released, ["stop", "abort", "close"])
-                expected_notes = []
-                if failed_phase == "stop":
-                    expected_notes.append(
-                        "Output stream abort failed: abort cleanup failed"
-                    )
-                if failed_phase != "close":
-                    expected_notes.append(
-                        "Output stream cleanup failed: close cleanup failed"
-                    )
-                self.assertEqual(getattr(primary, "__notes__", []), expected_notes)
-
-    def test_startup_failure_survives_a_stream_cleanup_failure(self):
-        for cleanup_error in (
-            None,
-            RuntimeError("device refused cleanup"),
-            SystemExit("device refused cleanup"),
+    def test_play_rejects_invalid_pcm_before_loading_native_buffer(self):
+        audio, player = self.create_player()
+        for samples in (
+            np.empty((0, 2), np.float32),
+            np.ones((48,), np.float32),
+            np.ones((48, 3), np.float32),
+            np.full((48, 2), np.nan, np.float32),
         ):
-            with self.subTest(cleanup_error=cleanup_error):
-                audio = FakeAudioModule()
-                startup_error = RuntimeError("device refused startup")
-                with (
-                    patch.object(FakeOutputStream, "start", side_effect=startup_error),
-                    patch.object(
-                        FakeOutputStream, "close", side_effect=cleanup_error
-                    ) as close,
-                    self.assertRaisesRegex(
-                        PcmPlaybackError,
-                        "Unable to open the output stream: device refused startup",
-                    ) as caught,
-                ):
-                    PersistentPcmPlayer(audio)
+            with self.subTest(shape=samples.shape), self.assertRaises(PcmPlaybackError):
+                player.play(PcmClip(samples, 24_000))
+        self.assertEqual(audio.load_count, 0)
 
-                close.assert_called_once_with()
-                self.assertIs(caught.exception.__cause__, startup_error)
-                if cleanup_error is not None:
-                    self.assertIn("device refused cleanup", startup_error.__notes__[0])
+    def test_default_baselines_monitor_before_creating_dedicated_controller(self):
+        order = []
+        audio = FakeClipController()
+        shared = Mock()
+        shared.query_devices.side_effect = lambda **kwargs: order.append("baseline")
+
+        def create_controller():
+            order.append("controller")
+            return audio
+
+        with (
+            patch("vntts.system_audio.get_system_audio_output", return_value=shared),
+            patch(
+                "vntts.authoring.pcm_playback.RustClipController",
+                side_effect=create_controller,
+            ),
+        ):
+            player = PersistentPcmPlayer()
+        self.addCleanup(player.close)
+        self.assertEqual(order, ["baseline", "controller"])
+
+    def test_close_attempts_native_close_and_preserves_stop_failure(self):
+        audio, player = self.create_player()
+        primary = RuntimeError("stop failed")
+        with (
+            patch.object(audio, "stop", side_effect=primary) as stop,
+            patch.object(
+                audio, "close", side_effect=SystemExit("cleanup failed")
+            ) as close,
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                player.close()
+            player.close()
+        self.assertIs(caught.exception, primary)
+        stop.assert_called_once_with()
+        close.assert_called_once_with()
+        self.assertIn("cleanup failed", primary.__notes__[0])
+
+    def test_query_failure_closes_controller_and_preserves_primary_failure(self):
+        audio = FakeClipController()
+        with (
+            patch.object(audio, "query_device", side_effect=RuntimeError("no device")),
+            patch.object(
+                audio, "close", side_effect=SystemExit("cleanup failed")
+            ) as close,
+        ):
+            with self.assertRaisesRegex(PcmPlaybackError, "no device") as caught:
+                PersistentPcmPlayer(audio)
+        close.assert_called_once_with()
+        self.assertIn("cleanup failed", caught.exception.__notes__[0])
+
+
+class RustClipControllerTest(unittest.TestCase):
+    def worker(self):
+        worker = Mock()
+        worker.device_changed = Event()
+        return worker
+
+    def finished_event(self, *, sample_rate=24000, channels=1):
+        return {
+            "event": "finished",
+            "id": 1,
+            "outcome": "complete",
+            "frames_played": 2,
+            "position_frames": 2,
+            "audible_position_frames": 2,
+            "total_frames": 2,
+            "sample_rate": sample_rate,
+            "channels": channels,
+            "started": True,
+            "playing": False,
+            "paused": False,
+            "finished": True,
+            "underflow_count": 0,
+            "producer_starvation_count": 0,
+            "callback_count": 1,
+            "elapsed_ms": 1.0,
+            "actual_sample_rate": sample_rate,
+            "output_latency_seconds": 0.01,
+            "error": None,
+        }
+
+    def test_protocol_preserves_pcm_and_ignores_interleaved_native_events(self):
+        worker = self.worker()
+        worker.receive.side_effect = [
+            {"event": "device", "default_samplerate": 48000, "max_output_channels": 2},
+            {"event": "loaded", "id": 1},
+            {"event": "started", "id": 1},
+            {"event": "first_callback", "id": 1},
+            self.finished_event(sample_rate=48000, channels=2),
+            {
+                "event": "status",
+                "id": 1,
+                "position_frames": 2,
+                "audible_position_frames": 2,
+                "total_frames": 2,
+                "sample_rate": 48000,
+                "channels": 2,
+                "started": True,
+                "playing": False,
+                "paused": False,
+                "finished": True,
+                "underflow_count": 0,
+                "producer_starvation_count": 0,
+                "error": None,
+            },
+            {"event": "loaded", "id": 2},
+        ]
+        controller = RustClipController(lambda: worker)
+        self.addCleanup(controller.close)
+        controller.query_device()
+        samples = np.array([[0.1, -0.1], [0.2, -0.2]], np.float32)
+        controller.load(samples, 48000, 2, 0.1)
+        np.testing.assert_array_equal(
+            np.frombuffer(worker._send_bounded.call_args.args[1], "<f4").reshape(2, 2),
+            samples,
+        )
+        self.assertEqual(worker.active_id, 1)
+        controller.start()
+        self.assertTrue(controller.status()["finished"])
+        self.assertIsNone(worker.active_id)
+        controller.load(samples, 48000, 2, 0.1)
+        self.assertEqual(worker._send_bounded.call_args.args[0]["id"], 2)
+        self.assertEqual(
+            [call.args[0]["op"] for call in worker.send.call_args_list],
+            ["query_device", "start", "status"],
+        )
+
+    def test_finished_summary_is_validated_once_with_distinct_native_counters(self):
+        worker = self.worker()
+        worker.process.pid = 123
+        finished = self.finished_event()
+        finished["underflow_count"] = 1
+        finished["producer_starvation_count"] = 3
+        worker.receive.side_effect = [
+            {"event": "loaded", "id": 1},
+            finished,
+            finished,
+            {"event": "device", "default_samplerate": 48000},
+        ]
+        controller = RustClipController(lambda: worker)
+        self.addCleanup(controller.close)
+        controller.load(np.zeros((2, 1), np.float32), 24000, 1, 0.1)
+        with patch("vntts.rust_clip_player.record_audio_lifecycle") as record:
+            controller.stop()
+            controller.query_device()
+        record.assert_called_once()
+        self.assertEqual(record.call_args.args, ("rust-pcm-summary",))
+        self.assertEqual(record.call_args.kwargs["underflow_count"], 1)
+        self.assertEqual(record.call_args.kwargs["producer_starvation_count"], 3)
+        self.assertEqual(record.call_args.kwargs["worker_pid"], 123)
+
+    def test_invalid_finished_counters_fail_closed_without_success_summary(self):
+        worker = self.worker()
+        finished = self.finished_event()
+        finished["producer_starvation_count"] = -1
+        worker.receive.side_effect = [{"event": "loaded", "id": 1}, finished]
+        controller = RustClipController(lambda: worker)
+        controller.load(np.zeros((2, 1), np.float32), 24000, 1, 0.1)
+        with patch("vntts.rust_clip_player.record_audio_lifecycle") as record:
+            with self.assertRaisesRegex(RuntimeError, "producer_starvation_count"):
+                controller.stop()
+        record.assert_not_called()
+        worker.close.assert_called_once_with()
+
+    def test_stale_event_fails_closed(self):
+        worker = self.worker()
+        worker.receive.side_effect = [{"event": "loaded", "id": 2}]
+        controller = RustClipController(lambda: worker)
+        with self.assertRaisesRegex(RuntimeError, "another clip"):
+            controller.load(np.zeros((2, 1), np.float32), 24000, 1, 0.1)
+        worker.close.assert_called_once_with()
+
+    def test_terminal_racing_control_consumes_ack_before_the_next_command(self):
+        worker = self.worker()
+        worker.receive.side_effect = [
+            {"event": "loaded", "id": 1},
+            self.finished_event(),
+            {"event": "resumed", "id": 1, "finished": True},
+            {"event": "device", "default_samplerate": 48000},
+        ]
+        controller = RustClipController(lambda: worker)
+        self.addCleanup(controller.close)
+        controller.load(np.zeros((2, 1), np.float32), 24000, 1, 0.1)
+        self.assertFalse(controller.resume())
+        self.assertEqual(controller.query_device()["default_samplerate"], 48000)
+
+    def test_invalid_native_status_fails_closed(self):
+        for field, value in (
+            ("audible_position_frames", 3),
+            ("total_frames", 3),
+            ("started", "yes"),
+            ("sample_rate", 48000),
+            ("error", 1),
+        ):
+            with self.subTest(field=field):
+                worker = self.worker()
+                status = {
+                    "event": "status",
+                    "id": 1,
+                    "position_frames": 2,
+                    "audible_position_frames": 1,
+                    "total_frames": 2,
+                    "sample_rate": 24000,
+                    "channels": 1,
+                    "started": True,
+                    "playing": True,
+                    "paused": False,
+                    "finished": False,
+                    "underflow_count": 0,
+                    "producer_starvation_count": 0,
+                    "error": None,
+                }
+                status[field] = value
+                worker.receive.side_effect = [{"event": "loaded", "id": 1}, status]
+                controller = RustClipController(lambda: worker)
+                controller.load(np.zeros((2, 1), np.float32), 24000, 1, 0.1)
+                with self.assertRaises(RuntimeError):
+                    controller.status()
+                worker.close.assert_called_once_with()
+
+    def test_stop_consumes_already_finished_event_without_waiting_for_second_finish(
+        self,
+    ):
+        worker = self.worker()
+        worker.receive.side_effect = [
+            {"event": "loaded", "id": 1},
+            self.finished_event(),
+        ]
+        controller = RustClipController(lambda: worker)
+        self.addCleanup(controller.close)
+        controller.load(np.zeros((2, 1), np.float32), 24000, 1, 0.1)
+        controller.stop()
+        controller.stop()
+        self.assertEqual(worker.send.call_count, 1)
 
 
 if __name__ == "__main__":

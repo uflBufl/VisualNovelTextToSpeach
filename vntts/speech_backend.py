@@ -22,6 +22,7 @@ from vntts.audio_output import (
     SynchronousPcmPlaybackMixin,
     resolve_audio_output,
     sanitize_playback_audio,
+    stream_underflowed,
 )
 from vntts.numeric_values import optional_finite_number
 from vntts.playback import (
@@ -1490,6 +1491,7 @@ class PocketTTSVoiceRouterBackend:
                         playback_guard,
                         started=started,
                     )
+                underflowed = underflowed or stream_underflowed(stream)
                 result = rendered.result
                 completed = completed and result.completion is not (
                     SynthesisCompletion.CANCELLED
@@ -1609,6 +1611,10 @@ class PocketTTSVoiceRouterBackend:
     def stop(self) -> bool:
         was_playing = self.playback_active
         self.playback_stop.set()
+        with self.active_stream_lock:
+            stream = self.active_stream
+        if stream is not None:
+            stream.abort()
         generation_cancel = self.active_generation_cancel
         if generation_cancel is not None:
             generation_cancel.set()
@@ -2478,7 +2484,7 @@ class MossTTSVoiceRouterBackend:
                         continue
                     if item is playback_finished:
                         playback_result["completed"] = wrote_audio
-                        return
+                        break
                     if not isinstance(item, SynthesisChunk):
                         continue
                     if not wrote_audio:
@@ -2490,6 +2496,9 @@ class MossTTSVoiceRouterBackend:
                         or playback_result["underflowed"]
                     )
                     wrote_audio = True
+            playback_result["underflowed"] = (
+                stream_underflowed(stream) or playback_result["underflowed"]
+            )
         except Exception as error:
             playback_result["error"] = error
             self.playback_stop.set()
@@ -2559,6 +2568,10 @@ class MossTTSVoiceRouterBackend:
         was_playing = self.playback_active
         self.playback_cancel_requested.set()
         self.playback_stop.set()
+        with self.active_stream_lock:
+            stream = self.active_stream
+        if stream is not None:
+            stream.abort()
         self._close_active_generation()
         return was_playing
 

@@ -1,4 +1,4 @@
-"""One owner for system-default sounddevice output and device-list refreshes."""
+"""System-output conversion and refresh facade over the Rust device owner."""
 
 from __future__ import annotations
 
@@ -176,6 +176,7 @@ class _SystemStream:
         }
         self.write_index = self.input_frames = 0
         self.max_native_block_seconds = -1.0
+        self.final_underflowed = False
         self.write_blocks: dict[str, float | int] = {}
         self._open()
 
@@ -249,7 +250,10 @@ class _SystemStream:
 
     def __exit__(self, *_args: object) -> None:
         with cleanup_on_exit(self.close, description="Output stream cleanup"):
-            self.stop()
+            if _args and _args[0] is not None:
+                self.abort()
+            else:
+                self.stop()
 
     def write(self, audio: object) -> Any:
         self.write_index += 1
@@ -395,23 +399,58 @@ class _SystemStream:
                 self.resampler.clear()
             self.started = False
 
+    @property
+    def underflowed(self) -> bool:
+        value = getattr(self.native, "underflowed", False)
+        return self.final_underflowed or (isinstance(value, bool) and value)
+
+    def play_buffer(
+        self,
+        samples: np.ndarray,
+        cancelled: Callable[[], bool],
+        first_write: Callable[[], None] | None,
+        stop_requested: Event | None,
+    ) -> tuple[bool, bool]:
+        from vntts.rust_output import RustOutputStream
+
+        with self.output.lock:
+            self.output._refresh()
+            native = self.native
+            if not isinstance(native, RustOutputStream):
+                raise RuntimeError("Prepared output no longer owns a Rust device")
+            converted = self._convert_write_samples(samples, {})
+            if self.resampler is not None:
+                tail = self.resampler.resample_chunk(
+                    np.empty((0, self.channels), np.float32), last=True
+                )
+                self.resampler.clear()
+                converted = np.concatenate((converted, tail), axis=0)
+                np.clip(converted, -0.95, 0.95, out=converted)
+        with self.write_lock:
+            return native.play_buffer(converted, cancelled, first_write, stop_requested)
+
     def stop(self) -> None:
         with self.output.lock:
-            if self.native is not None:
-                if self.started and self.resampler is not None:
-                    with self.write_lock:
-                        tail = self.resampler.resample_chunk(
-                            np.empty((0, self.channels), np.float32), last=True
-                        )
-                        self.resampler.clear()
-                        if len(tail):
-                            np.clip(tail, -0.95, 0.95, out=tail)
-                            if self.native.write(tail):
-                                raise RuntimeError(
-                                    "Audio output underflowed while draining converted PCM"
-                                )
-                self.native.stop()
+            native = self.native
+            tail = None
+            if native is not None and self.started and self.resampler is not None:
+                tail = self.resampler.resample_chunk(
+                    np.empty((0, self.channels), np.float32), last=True
+                )
+                self.resampler.clear()
             self.started = False
+        # Drain without the refresh lock so cancellation can still abort it.
+        if native is not None:
+            with self.write_lock:
+                if tail is not None and len(tail):
+                    np.clip(tail, -0.95, 0.95, out=tail)
+                    if native.write(tail):
+                        raise RuntimeError(
+                            "Audio output underflowed while draining converted PCM"
+                        )
+                native.stop()
+                value = getattr(native, "underflowed", False)
+                self.final_underflowed = isinstance(value, bool) and value
 
     def _release(self) -> None:
         if self.native is None:
@@ -459,9 +498,9 @@ def get_system_audio_output() -> SystemAudioOutput:
     global _system_output
     with _system_lock:
         if _system_output is None:
-            import sounddevice
+            from vntts.rust_output import RustAudioModule
 
-            output = SystemAudioOutput(sounddevice)
+            output = SystemAudioOutput(RustAudioModule())
             # Earlier read-only probes may have initialized a stale device list.
             output.request_refresh()
             from vntts.system_audio_devices import create_default_output_probe

@@ -17,6 +17,7 @@ from vntts.audio_output import (
     write_pcm_chunks,
 )
 from vntts.rust_audio import RustAudioWorker, worker_executable
+from vntts.rust_output import RustAudioModule
 from vntts.system_audio import SystemAudioOutput
 
 # A real pipe peer exercises framing, child death and Stop independently of PortAudio.
@@ -25,7 +26,7 @@ import hashlib, json, sys, time
 mode, expected, marker = sys.argv[1:]
 def emit(**value):
     print(json.dumps(value), flush=True)
-emit(event="ready", protocol=1)
+emit(event="ready", protocol=2)
 if mode == "blocked-upload":
     time.sleep(30)
     sys.exit()
@@ -231,8 +232,9 @@ class RustAudioProtocolTest(unittest.TestCase):
 
 class RustPreparedSelectionTest(unittest.TestCase):
     def test_rust_selection_reaches_full_buffer_owner_without_python_stream(self):
-        native_module = Mock()
-        native_module.query_devices.return_value = {"default_samplerate": 24000}
+        native_module = RustAudioModule()
+        native_module.check_output_settings = Mock()
+        native_module.query_devices = Mock(return_value={"default_samplerate": 24000})
         output = resolve_audio_output(SystemAudioOutput(native_module))
         # Actual default outputs are logged; an explicitly injected owner stays injected.
         from vntts.audio_output import _LoggedAudioOutput
@@ -243,8 +245,8 @@ class RustPreparedSelectionTest(unittest.TestCase):
         stop = threading.Event()
         pcm = np.zeros(100, dtype=np.float32)
         with (
-            patch.dict(os.environ, {"VNTTS_PREPARED_AUDIO_BACKEND": "rust"}),
-            patch("vntts.rust_audio.get_rust_audio_worker", return_value=worker),
+            patch.object(native_module, "acquire", return_value=worker),
+            patch.object(native_module, "release"),
             patch("vntts.audio_output.record_audio_lifecycle"),
         ):
             with prepared_output_stream(
@@ -254,7 +256,6 @@ class RustPreparedSelectionTest(unittest.TestCase):
                     stream, pcm, 24000, lambda: False, stop_requested=stop
                 )
         self.assertEqual(result, (True, False))
-        native_module.OutputStream.assert_not_called()
         self.assertIs(worker.play_buffer.call_args.args[-1], stop)
         np.testing.assert_array_equal(
             worker.play_buffer.call_args.args[0], pcm[:, None]
@@ -267,11 +268,10 @@ class RustPreparedSelectionTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "cargo build"):
                 worker_executable()
 
-    def test_live_streams_keep_existing_output_factory(self):
+    def test_injected_streams_keep_their_output_factory(self):
         native = Mock()
         output = SystemAudioOutput(native)
-        with patch.dict(os.environ, {"VNTTS_PREPARED_AUDIO_BACKEND": "rust"}):
-            output.OutputStream(
-                samplerate=24000, channels=1, dtype="float32", latency="low"
-            )
+        output.OutputStream(
+            samplerate=24000, channels=1, dtype="float32", latency="low"
+        )
         native.OutputStream.assert_called_once()
