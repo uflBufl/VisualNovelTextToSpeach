@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.review_context_ui import (
     ReviewDecisionContext,
@@ -191,9 +192,14 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
         self.progress.setAccessibleName("Terminal conflict review progress")
         self.decision_context = ReviewDecisionContext()
         self.context_toggle = QToolButton()
+        set_action_icon(self.context_toggle, "circle-help")
+        self.context_toggle.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
         self.context_toggle.setText("Review context")
         self.context_toggle.setCheckable(True)
         self.context_toggle.setAccessibleName("Show conflict review context")
+        self.context_toggle.setToolTip(self.context_toggle.accessibleName())
         self.context_toggle.setAccessibleDescription(
             "Reveal comparison rules and decision provenance"
         )
@@ -225,8 +231,10 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
         playback = QVBoxLayout()
         play_pair = QHBoxLayout()
         for index in range(2):
-            button = QPushButton(f"Play {chr(65 + index)}")
+            button = QPushButton(chr(65 + index))
+            set_action_icon(button, "play")
             button.setAccessibleName(f"Play terminal conflict candidate {index + 1}")
+            button.setToolTip(button.accessibleName())
             button.setAccessibleDescription(
                 "Play this checksum-distinct blind candidate through to the end"
             )
@@ -238,8 +246,10 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
         for button in self.play_buttons:
             play_pair.addWidget(button, 1)
         playback.addLayout(play_pair)
-        self.stop = QPushButton("Stop audio")
+        self.stop = QPushButton("Stop")
+        set_action_icon(self.stop, "square")
         self.stop.setAccessibleName("Stop terminal conflict audio")
+        self.stop.setToolTip(self.stop.accessibleName())
         self.stop.setAccessibleDescription("Stop blind candidate playback")
         self.stop.setShortcut(QKeySequence("Ctrl+Space"))
         self.stop.clicked.connect(self._stop)
@@ -251,7 +261,9 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
         choose_pair = QHBoxLayout()
         for index in range(2):
             button = QPushButton(f"Choose {chr(65 + index)}")
+            set_action_icon(button, "check")
             button.setAccessibleName(f"Choose terminal conflict candidate {index + 1}")
+            button.setToolTip(button.accessibleName())
             button.setAccessibleDescription(
                 "Keep this candidate as the terminal authority after both are heard"
             )
@@ -264,7 +276,9 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
             choose_pair.addWidget(button, 1)
         decisions.addLayout(choose_pair)
         self.neither = QPushButton("Neither is acceptable")
+        set_action_icon(self.neither, "x")
         self.neither.setAccessibleName("Reject both terminal conflict candidates")
+        self.neither.setToolTip(self.neither.accessibleName())
         self.neither.setAccessibleDescription(
             "Require repair instead of keeping either terminal candidate"
         )
@@ -276,7 +290,9 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
         self.close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
+        set_action_icon(self.close_button, "x")
         self.close_button.setAccessibleName("Close terminal conflict review")
+        self.close_button.setToolTip(self.close_button.accessibleName())
         self.close_button.setAccessibleDescription(
             "Close this review without resolving the current conflict"
         )
@@ -443,6 +459,7 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
         for index, button in enumerate(self.choose_buttons):
             button.setText(f"Choose {chr(65 + index)}")
             button.setAccessibleName(f"Choose terminal conflict candidate {index + 1}")
+            button.setToolTip(button.accessibleName())
         self.identity.setText(
             f"Conflict for {current['speaker']} | Voice: {current['voice_character']}"
         )
@@ -640,6 +657,7 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
                 button.setAccessibleName(
                     f"Keep historically {authority} terminal candidate {index + 1}"
                 )
+                button.setToolTip(button.accessibleName())
                 consequence = (
                     "enters the approved manifest"
                     if authority == "approved"

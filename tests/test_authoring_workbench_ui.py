@@ -370,7 +370,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog.reset_layout.text(), "Reset layout")
             self.assertEqual(dialog.approve.text(), "Approve")
             self.assertEqual(dialog.reject_button.text(), "Reject")
-            self.assertEqual(dialog.review_play.text(), "Play recording")
+            self.assertEqual(dialog.review_play.text(), "Recording")
             for label, control in zip(
                 dialog.review_filter_labels,
                 (
@@ -1156,7 +1156,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 dialog.review_table.editTriggers(),
                 QAbstractItemView.EditTrigger.NoEditTriggers,
             )
-            self.assertEqual(dialog.review_play.text(), "Play recording")
+            self.assertEqual(dialog.review_play.text(), "Recording")
             self.assertEqual(dialog.approve.text(), "Approve")
             self.assertEqual(dialog.reject_button.text(), "Reject")
             self.assertIn("Ctrl+R", dialog.review_play.accessibleDescription())

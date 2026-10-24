@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.listening import (
     ListeningReport,
@@ -207,9 +208,14 @@ class ModelListeningDialog(CloseGuardedDialog):
         )
         self.decision_context = self.create_instruction_context()
         self.context_toggle = QToolButton()
+        set_action_icon(self.context_toggle, "circle-help")
+        self.context_toggle.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
         self.context_toggle.setText("Detailed instructions")
         self.context_toggle.setCheckable(True)
         self.context_toggle.setAccessibleName("Show blind listening instructions")
+        self.context_toggle.setToolTip(self.context_toggle.accessibleName())
         self.context_toggle.setAccessibleDescription(
             "Reveal comparison rules and technical provenance without unblinding A/B"
         )
@@ -238,15 +244,21 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.current_trial_card.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
         )
-        self.play_a = QPushButton("Play A")
-        self.play_b = QPushButton("Play B")
+        self.play_a = QPushButton("A")
+        set_action_icon(self.play_a, "play")
+        self.play_b = QPushButton("B")
+        set_action_icon(self.play_b, "play")
         self.stop = QPushButton("Pause")
+        set_action_icon(self.stop, "pause")
         self.play_a.setShortcut(QKeySequence("Ctrl+1"))
         self.play_b.setShortcut(QKeySequence("Ctrl+2"))
         self.stop.setShortcut(QKeySequence("Ctrl+Space"))
         self.play_a.setAccessibleName("Play anonymous sample A")
+        self.play_a.setToolTip(self.play_a.accessibleName())
         self.play_b.setAccessibleName("Play anonymous sample B")
+        self.play_b.setToolTip(self.play_b.accessibleName())
         self.stop.setAccessibleName("Control active anonymous sample")
+        self.stop.setToolTip(self.stop.accessibleName())
         self.play_a.setAccessibleDescription("Play anonymous sample A")
         self.play_b.setAccessibleDescription("Play anonymous sample B")
         self.stop.setAccessibleDescription(
@@ -270,13 +282,17 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.playback_controls = playback
 
         self.skip_back = QPushButton("-5s")
+        set_action_icon(self.skip_back, "skip-back")
         self.skip_back.setAccessibleName("Skip anonymous sample back five seconds")
+        self.skip_back.setToolTip(self.skip_back.accessibleName())
         self.seek = SeekSlider(Qt.Orientation.Horizontal)
         self.seek.setAccessibleName("Anonymous sample playback position")
         self.skip_forward = QPushButton("+5s")
+        set_action_icon(self.skip_forward, "skip-forward")
         self.skip_forward.setAccessibleName(
             "Skip anonymous sample forward five seconds"
         )
+        self.skip_forward.setToolTip(self.skip_forward.accessibleName())
         self.time = QLabel("0:00 / 0:00")
         self.time.setAccessibleName("Anonymous sample playback time")
         self.time.setMinimumWidth(90)
@@ -293,17 +309,25 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.seek_controls = seek_controls
 
         self.prefer_a = QPushButton("A is better")
+        set_action_icon(self.prefer_a, "check")
         self.tie = QPushButton("Both acceptable")
+        set_action_icon(self.tie, "check")
         self.neither = QPushButton("Neither acceptable")
+        set_action_icon(self.neither, "x")
         self.prefer_b = QPushButton("B is better")
+        set_action_icon(self.prefer_b, "check")
         self.prefer_a.setAccessibleName("Anonymous sample A is better")
+        self.prefer_a.setToolTip(self.prefer_a.accessibleName())
         self.tie.setAccessibleName("Both anonymous samples are acceptable")
+        self.tie.setToolTip(self.tie.accessibleName())
         self.prefer_a.setShortcut(QKeySequence("Ctrl+Shift+A"))
         self.tie.setShortcut(QKeySequence("Ctrl+Shift+T"))
         self.neither.setAccessibleName("Neither sample is acceptable")
+        self.neither.setToolTip(self.neither.accessibleName())
         self.neither.setShortcut(QKeySequence("Ctrl+Shift+N"))
         self.prefer_b.setShortcut(QKeySequence("Ctrl+Shift+B"))
         self.prefer_b.setAccessibleName("Anonymous sample B is better")
+        self.prefer_b.setToolTip(self.prefer_b.accessibleName())
         self.apply_side_button_style(self.prefer_a, "a")
         self.tie.setStyleSheet(
             "QPushButton { background-color: #52525b; color: white;"
@@ -341,16 +365,19 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.status.setAccessibleName("Blind listening operation status")
         self.goal_card = self.create_goal_card()
         self.open_report = QPushButton("Open report")
+        set_action_icon(self.open_report, "file-text")
         self.open_report.setSizePolicy(
             QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
         )
         self.open_report.setAccessibleName("Open completed blind listening report")
+        self.open_report.setToolTip(self.open_report.accessibleName())
         self.open_report.setAccessibleDescription(
             "Open the saved aggregate report in the default application"
         )
         self.open_report.clicked.connect(self._open_report)
         self.open_report.hide()
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        set_action_icon(buttons.button(QDialogButtonBox.StandardButton.Close), "x")
         buttons.rejected.connect(self.close)
 
         self.review_scroll = self.create_review_scroll(playback, seek_controls)
@@ -423,6 +450,7 @@ class ModelListeningDialog(CloseGuardedDialog):
             label.hide()
         context.technical_toggle.setText("Session details")
         context.technical_toggle.setAccessibleName("Show listening session details")
+        context.technical_toggle.setToolTip(context.technical_toggle.accessibleName())
         self.goal_guidance = QLabel(wordWrap=True, textFormat=Qt.TextFormat.PlainText)
         self.goal_guidance.setAccessibleName("Blind listening evaluation instructions")
         self.goal_guidance.setTextInteractionFlags(
@@ -583,8 +611,8 @@ class ModelListeningDialog(CloseGuardedDialog):
     ) -> None:
         self.playback_control_state = state
         label = side.upper() if side else None
-        self.play_a.setText("Play A")
-        self.play_b.setText("Play B")
+        self.play_a.setText("A")
+        self.play_b.setText("B")
         self.apply_side_button_style(self.play_a, "a")
         self.apply_side_button_style(self.play_b, "b")
         labels = {
@@ -600,6 +628,12 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.stop.setText(
             {"stopped": "Resume", "finished": "Replay"}.get(state, "Pause")
         )
+        set_action_icon(
+            self.stop,
+            {"stopped": "play", "finished": "refresh-cw"}.get(state, "pause"),
+        )
+        self.stop.setAccessibleName(f"{self.stop.text()} active anonymous sample")
+        self.stop.setToolTip(self.stop.accessibleName())
         self.stop.setEnabled(state not in {"ready", "complete"})
         if side is not None and state in {"loading", "playing"}:
             button = self.play_a if side == "a" else self.play_b

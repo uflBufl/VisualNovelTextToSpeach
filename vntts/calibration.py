@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
 )
 from shiboken6 import isValid
 
+from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.ocr import (
@@ -230,6 +231,7 @@ class CalibrationReviewDialog(QDialog):
             scroll.setAccessibleName("Full-size capture scroll area")
             scroll.setWidget(image)
             buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+            set_action_icon(buttons.button(QDialogButtonBox.StandardButton.Close), "x")
             buttons.rejected.connect(dialog.reject)
             layout = QVBoxLayout(dialog)
             layout.setContentsMargins(16, 16, 16, 16)
@@ -240,6 +242,7 @@ class CalibrationReviewDialog(QDialog):
 
     def _create_buttons(self) -> QDialogButtonBox:
         self.enlarge_button = QPushButton("Enlarge capture")
+        set_action_icon(self.enlarge_button, "expand")
         self.enlarge_button.setAutoDefault(False)
         self.enlarge_button.setAccessibleDescription(
             "View the captured image at full size with scrolling"
@@ -251,8 +254,11 @@ class CalibrationReviewDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel
         )
         self.save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        set_action_icon(self.save_button, "save")
         self.retry_button = buttons.button(QDialogButtonBox.StandardButton.Retry)
+        set_action_icon(self.retry_button, "pencil")
         self.cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        set_action_icon(self.cancel_button, "x")
         self.save_button.setText("Save region")
         self.save_button.setEnabled(False)
         self.save_button.setAccessibleName("Save calibrated dialogue region")
@@ -423,13 +429,16 @@ class DialogRegionOverlay(QWidget):
             self.bounds_inputs[name] = control
             layout.addRow(f"{name} (pixels)", control)
         review = QPushButton("Review region")
+        set_action_icon(review, "scan")
         review.clicked.connect(self._review_bounds)
         review.setShortcut(QKeySequence("Ctrl+Return"))
         layout.addRow(review)
         reset = QPushButton("Reset region")
+        set_action_icon(reset, "refresh-cw")
         reset.clicked.connect(self._reset_selection)
         layout.addRow(reset)
         cancel = QPushButton("Cancel calibration")
+        set_action_icon(cancel, "x")
         cancel.clicked.connect(self.close)
         cancel.setShortcut(QKeySequence("Esc"))
         layout.addRow(cancel)

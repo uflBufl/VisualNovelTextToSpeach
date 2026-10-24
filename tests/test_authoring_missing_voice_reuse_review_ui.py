@@ -367,7 +367,9 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             dialog.play_buttons[generated["label"]].click()
             self.finish_current_audio(dialog)
             self.assertTrue(dialog.decision_buttons[generated["label"]].isEnabled())
-            self.assertIn("Replay", dialog.play_buttons[generated["label"]].text())
+            self.assertIn(
+                "Replay", dialog.play_buttons[generated["label"]].accessibleName()
+            )
 
             dialog.decision_buttons[generated["label"]].click()
             self.assertTrue(started.wait(1))

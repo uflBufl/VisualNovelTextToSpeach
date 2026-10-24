@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
 from vntts.authoring.legacy_reason_review import (
     LegacyReasonReview,
     LegacyReasonReviewError,
@@ -115,9 +116,15 @@ class LegacyReasonReviewDialog(QDialog):
         self.text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.text.setFrameShape(QLabel.Shape.StyledPanel)
         self.text.setMargin(8)
-        self.play = QPushButton("Play recording")
+        self.play = QPushButton("Recording")
+        set_action_icon(self.play, "play")
+        self.play.setAccessibleName("Play recording")
+        self.play.setToolTip(self.play.accessibleName())
         self.play.clicked.connect(self.play_current)
         self.stop = QPushButton("Stop")
+        set_action_icon(self.stop, "square")
+        self.stop.setAccessibleName("Stop")
+        self.stop.setToolTip(self.stop.accessibleName())
         self.stop.clicked.connect(self.stop_current)
         self.status = QLabel()
         self.status.setWordWrap(True)
@@ -148,10 +155,19 @@ class LegacyReasonReviewDialog(QDialog):
             self.reason_controls[reason] = control
 
         self.previous = QPushButton("Previous")
+        set_action_icon(self.previous, "chevron-left")
+        self.previous.setAccessibleName("Previous")
+        self.previous.setToolTip(self.previous.accessibleName())
         self.previous.clicked.connect(lambda: self._move(-1))
         self.next = QPushButton("Next")
+        set_action_icon(self.next, "chevron-right")
+        self.next.setAccessibleName("Next")
+        self.next.setToolTip(self.next.accessibleName())
         self.next.clicked.connect(lambda: self._move(1))
         self.finish = QPushButton("Publish assessments")
+        set_action_icon(self.finish, "check")
+        self.finish.setAccessibleName("Publish assessments")
+        self.finish.setToolTip(self.finish.accessibleName())
         self.finish.clicked.connect(self.publish)
         actions = QHBoxLayout()
         actions.addWidget(self.previous)

@@ -285,7 +285,9 @@ class GameProfilesDialog(QDialog):
             "Remove profile",
             QMessageBox.ButtonRole.DestructiveRole,
         )
+        set_action_icon(remove_button, "trash-2")
         cancel_button = prompt.addButton(QMessageBox.StandardButton.Cancel)
+        set_action_icon(cancel_button, "x")
         prompt.setDefaultButton(cancel_button)
         prompt.setEscapeButton(cancel_button)
         prompt.exec()

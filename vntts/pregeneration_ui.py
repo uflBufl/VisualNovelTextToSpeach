@@ -590,12 +590,14 @@ class OfflineAudioPreparationDialog(QDialog):
         import_options_layout.addWidget(self.import_button)
         import_options_layout.addWidget(self.game_folder_button)
         self.advanced_import = QPushButton("Advanced import...")
+        set_action_icon(self.advanced_import, "folder-open")
         self.advanced_import.setCheckable(True)
         self.advanced_import.toggled.connect(self.browse_button.setVisible)
         import_options_layout.addWidget(self.advanced_import)
         import_options_layout.addWidget(self.browse_button)
         self.browse_button.hide()
         self.import_options_toggle = QPushButton("Add or import content...")
+        set_action_icon(self.import_options_toggle, "plus")
         self.import_options_toggle.setCheckable(True)
         self.import_options_toggle.toggled.connect(self._update_import_options)
         source_row.addWidget(self.import_options_toggle)
@@ -634,6 +636,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.stories.itemExpanded.connect(self._story_group_expansion_changed)
         self.stories.itemCollapsed.connect(self._story_group_expansion_changed)
         self.check_story_audio = QPushButton("Check story audio")
+        set_action_icon(self.check_story_audio, "audio-lines")
         self.check_story_audio.setEnabled(False)
         self.check_story_audio.clicked.connect(self._check_story_audio)
         self.story_audio_status = QLabel("Highlight a story to check its saved audio.")
@@ -665,10 +668,12 @@ class OfflineAudioPreparationDialog(QDialog):
         story_filters.addWidget(self.story_search, 1)
         story_filters.addWidget(self.story_filter)
         self.expand_stories_button = QPushButton("Expand all")
+        set_action_icon(self.expand_stories_button, "expand")
         self.expand_stories_button.setToolTip("Show every story and stage")
         self.expand_stories_button.clicked.connect(self.stories.expandAll)
         story_filters.addWidget(self.expand_stories_button)
         self.collapse_stories_button = QPushButton("Collapse all")
+        set_action_icon(self.collapse_stories_button, "shrink")
         self.collapse_stories_button.setToolTip("Show only story types")
         self.collapse_stories_button.clicked.connect(self.stories.collapseAll)
         story_filters.addWidget(self.collapse_stories_button)
@@ -679,8 +684,10 @@ class OfflineAudioPreparationDialog(QDialog):
     def _build_story_selection_actions(self) -> QHBoxLayout:
         selection_actions = QHBoxLayout()
         self.select_all_button = QPushButton("Select all")
+        set_action_icon(self.select_all_button, "check")
         self.select_all_button.clicked.connect(lambda: self._set_all_checked(True))
         self.select_none_button = QPushButton("Select none")
+        set_action_icon(self.select_none_button, "x")
         self.select_none_button.clicked.connect(lambda: self._set_all_checked(False))
         self.change_voices = QCheckBox(
             "Choose character voices again for selected stories"
@@ -841,12 +848,14 @@ class OfflineAudioPreparationDialog(QDialog):
         progress_layout.addWidget(self.progress_story_readiness)
         progress_layout.addWidget(self.progress_coverage)
         self.progress_change_selection = QPushButton("Change stories or voices...")
+        set_action_icon(self.progress_change_selection, "pencil")
         self.progress_change_selection.clicked.connect(self._return_to_story_selection)
         self.progress_change_selection.hide()
         progress_layout.addWidget(
             self.progress_change_selection, alignment=Qt.AlignmentFlag.AlignLeft
         )
         self.progress_details_toggle = QPushButton("Show generation details")
+        set_action_icon(self.progress_details_toggle, "list")
         self.progress_details_toggle.setCheckable(True)
         self.progress_details_toggle.setAccessibleDescription(
             "Show device, locked voice and model configuration, and source details"
@@ -889,6 +898,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.confirmed_narrator.setWordWrap(True)
         self.confirmed_narrator.setAccessibleName("Narrator for prepared audio")
         self.edit_confirmed_narrator = QPushButton("Change narrator...")
+        set_action_icon(self.edit_confirmed_narrator, "settings")
         self.play_summary_narrator = QPushButton("Narrator")
         set_action_icon(self.play_summary_narrator, "play")
         self.play_summary_narrator.setAccessibleName("Play narrator preview")
@@ -979,6 +989,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_routes_empty.setAccessibleName("Character voice list status")
         self.voice_routes_empty.hide()
         self.inspect_character_voice = QPushButton("Listen or change voice...")
+        set_action_icon(self.inspect_character_voice, "settings")
         self.inspect_character_voice.setAccessibleDescription(
             "Listen to a role's game references and choose its voice."
         )
@@ -997,8 +1008,10 @@ class OfflineAudioPreparationDialog(QDialog):
             lambda _item, _previous: self._stop_summary_preview()
         )
         self.link_identity = QPushButton("Link same person...")
+        set_action_icon(self.link_identity, "link")
         self.link_identity.clicked.connect(self._link_selected_person)
         self.unlink_identity = QPushButton("Unlink name")
+        set_action_icon(self.unlink_identity, "unlink")
         self.unlink_identity.clicked.connect(self._unlink_selected_person)
         self.identity_suggestion = QLabel()
         self.identity_suggestion.setTextFormat(Qt.TextFormat.PlainText)
@@ -1145,7 +1158,9 @@ class OfflineAudioPreparationDialog(QDialog):
         assert cancel_button is not None
         assert continue_button is not None
         self.cancel_button = cancel_button
+        set_action_icon(self.cancel_button, "x")
         self.continue_button = continue_button
+        set_action_icon(self.continue_button, "chevron-right")
         self.continue_button.setDefault(True)
         self.continue_button.setAccessibleDescription(
             "Save this selection and continue or resume offline audio preparation"
@@ -1680,6 +1695,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.step.setText("Step 1 of 4 - Choose stories")
         self.continue_button.show()
         self.continue_button.setText("Continue")
+        set_action_icon(self.continue_button, "chevron-right")
         self.cancel_button.setText("Cancel")
         self._set_import_controls(True)
         self._selection_changed()
@@ -1735,6 +1751,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.step.setText("Step 1 of 4 - Choose stories")
         self.continue_button.show()
         self.continue_button.setText("Continue")
+        set_action_icon(self.continue_button, "chevron-right")
         self.cancel_button.setText("Cancel")
         self._refresh_narrator_status()
         self._selection_changed()
@@ -1908,6 +1925,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.selection_panel.show()
             self._set_import_controls(True)
             self.continue_button.setText("Retry voice matching")
+            set_action_icon(self.continue_button, "refresh-cw")
             self._set_selection_status(f"Unable to show character voices: {error}")
             return
         self._awaiting_voice_confirmation = True
@@ -1957,6 +1975,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.narrator_choice.blockSignals(False)
         self._render_voice_routes(plan)
         self.continue_button.setText("Generate with these voices")
+        set_action_icon(self.continue_button, "wand-sparkles")
         self.continue_button.setAccessibleDescription(
             "Generate the selected stories with the voices shown"
         )
@@ -2343,6 +2362,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.continue_button.setText(
             "Apply voice changes" if changed else "Generate with these voices"
         )
+        set_action_icon(self.continue_button, "check" if changed else "wand-sparkles")
         self.continue_button.setEnabled(ready)
         self._update_voice_route_actions()
         self.voice_confirmation_status.setText(
@@ -3005,6 +3025,7 @@ class OfflineAudioPreparationDialog(QDialog):
         if self._generation_configuration is not None and not self.has_pending_work():
             self.selection_panel.hide()
             self.continue_button.setText("Continue preparation")
+            set_action_icon(self.continue_button, "wand-sparkles")
             self.progress_change_selection.show()
         QTimer.singleShot(0, self, self._emit_task_progress)
 
@@ -3323,6 +3344,7 @@ class OfflineAudioPreparationDialog(QDialog):
             coverage_rows.append(("Omissions", f"{omissions} explicit"))
         set_labeled_text(self.progress_coverage, coverage_rows)
         self.continue_button.setText("Use prepared audio")
+        set_action_icon(self.continue_button, "check")
         self.continue_button.setAccessibleDescription(
             "Close this preparation and activate the saved offline audio pack"
         )
@@ -4322,6 +4344,10 @@ class OfflineAudioPreparationDialog(QDialog):
         if self._pack_result is None and not self._awaiting_voice_confirmation:
             self.continue_button.setText(
                 self._selection_action_label(selected, can_read, saved_manifest)
+            )
+            set_action_icon(
+                self.continue_button,
+                "play" if can_read else "check" if saved_manifest else "wand-sparkles",
             )
         if self._show_selection_blocker(content, selected, can_read, saved_manifest):
             return

@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
+
 
 def review_form_layout(parent: QWidget | None = None) -> QFormLayout:
     """Keep paired controls side by side only while their full labels fit."""
@@ -75,10 +77,15 @@ class ReviewDecisionContext(QGroupBox):
         self.effect = self._summary_label("Decision consequence")
 
         self.technical_toggle = QToolButton()
+        set_action_icon(self.technical_toggle, "file-text")
+        self.technical_toggle.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
         self.technical_toggle.setText("Decision provenance")
         self.technical_toggle.setCheckable(True)
         self.technical_toggle.setChecked(False)
         self.technical_toggle.setAccessibleName("Show decision provenance")
+        self.technical_toggle.setToolTip(self.technical_toggle.accessibleName())
         self.technical = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
         self.technical.setWordWrapMode(
             QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere

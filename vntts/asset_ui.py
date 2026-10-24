@@ -93,6 +93,8 @@ def build_voice_replacement_prompt(
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
     )
     dialog.button(QMessageBox.StandardButton.Yes).setText("Replace voice")
+    set_action_icon(dialog.button(QMessageBox.StandardButton.Yes), "refresh-cw")
+    set_action_icon(dialog.button(QMessageBox.StandardButton.Cancel), "x")
     dialog.setDefaultButton(QMessageBox.StandardButton.Cancel)
     dialog.setEscapeButton(QMessageBox.StandardButton.Cancel)
     return dialog

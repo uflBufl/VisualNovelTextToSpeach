@@ -62,6 +62,7 @@ from PySide6.QtWidgets import (
 )
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
+from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.cohort_bundle import (
     CohortReviewBundle,
@@ -151,6 +152,7 @@ class DisclosureSection(QWidget):
         self.header.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.header.setArrowType(Qt.ArrowType.RightArrow)
         self.header.setAccessibleName(f"{title} disclosure")
+        self.header.setToolTip(self.header.accessibleName())
         self.header.setAccessibleDescription(
             f"Expand or collapse the {str(title).lower()} section"
         )
@@ -619,10 +621,14 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         self.reference_label = QLabel("No voice reference selected")
         self.reference_label.setWordWrap(True)
         self.reference_label.setAccessibleName("Selected voice reference")
-        self.reference_previous = QPushButton("Previous reference")
-        self.reference_play = QPushButton("Play reference")
-        self.reference_stop = QPushButton("Stop reference")
-        self.reference_next = QPushButton("Next reference")
+        self.reference_previous = QPushButton("Previous")
+        set_action_icon(self.reference_previous, "chevron-left")
+        self.reference_play = QPushButton("Reference")
+        set_action_icon(self.reference_play, "play")
+        self.reference_stop = QPushButton("Stop")
+        set_action_icon(self.reference_stop, "square")
+        self.reference_next = QPushButton("Next")
+        set_action_icon(self.reference_next, "chevron-right")
         self._accessible_button(
             self.reference_previous,
             "Previous voice reference",
@@ -756,7 +762,8 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         self.review_action_reason = AnnouncementLabel("Select an awaiting-review line")
         self.review_action_reason.setAccessibleName("Review action availability reason")
         self.review_action_reason.setWordWrap(True)
-        self.specialist_review = QPushButton("Open specialist cohort reviewer")
+        self.specialist_review = QPushButton("Cohort review")
+        set_action_icon(self.specialist_review, "list")
         self.specialist_review_status = AnnouncementLabel(
             "Cohort decisions belong in the dedicated specialist reviewer."
         )
@@ -792,17 +799,29 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
 
     def _build_action_controls(self) -> tuple[QGridLayout, QHBoxLayout]:
         self.previous_pending = QPushButton("Previous pending")
+        set_action_icon(self.previous_pending, "chevron-left")
         self.next_pending = QPushButton("Next pending")
+        set_action_icon(self.next_pending, "chevron-right")
         self.approve = QPushButton("Approve")
+        set_action_icon(self.approve, "check")
         self.reject_button = QPushButton("Reject")
-        self.review_play = QPushButton("Play recording")
-        self.review_stop = QPushButton("Stop selected audio")
+        set_action_icon(self.reject_button, "x")
+        self.review_play = QPushButton("Recording")
+        set_action_icon(self.review_play, "play")
+        self.review_stop = QPushButton("Stop")
+        set_action_icon(self.review_stop, "square")
         self.reload_authority = QPushButton("Reload workspace")
+        set_action_icon(self.reload_authority, "refresh-cw")
         self.retry_failed = QPushButton("Retry failed")
+        set_action_icon(self.retry_failed, "refresh-cw")
         self.generate = QPushButton("Generate")
+        set_action_icon(self.generate, "wand-sparkles")
         self.stop_generation = QPushButton("Stop")
-        self.open_output = QPushButton("Open output folder")
+        set_action_icon(self.stop_generation, "square")
+        self.open_output = QPushButton("Output folder")
+        set_action_icon(self.open_output, "folder-open")
         self.reset_layout = QPushButton("Reset layout")
+        set_action_icon(self.reset_layout, "refresh-cw")
         for button, name, description in (
             (
                 self.previous_pending,
@@ -910,6 +929,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         self.process_log.setReadOnly(True)
         self.process_log.setAccessibleName("Generation process log")
         self.copy_diagnostics = QPushButton("Copy diagnostics")
+        set_action_icon(self.copy_diagnostics, "copy")
         self._accessible_button(
             self.copy_diagnostics,
             "Copy generation diagnostics",
@@ -982,7 +1002,8 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         self.generation_summary = QLabel()
         self.generation_summary.setAccessibleName("Generation selection summary")
         self.generation_summary.setWordWrap(True)
-        self.choose_collections = QPushButton("Choose collections...")
+        self.choose_collections = QPushButton("Collections...")
+        set_action_icon(self.choose_collections, "list")
         self._accessible_button(
             self.choose_collections,
             "Inspect generation collections and attempt",
@@ -1162,6 +1183,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
     @staticmethod
     def _accessible_button(button: QPushButton, name: str, description: str) -> None:
         button.setAccessibleName(name)
+        button.setToolTip(button.accessibleName())
         button.setAccessibleDescription(description)
 
     def _restore_collection_selection(self) -> None:

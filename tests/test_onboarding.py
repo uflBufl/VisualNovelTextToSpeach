@@ -439,16 +439,19 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.voices_requested.connect(lambda: requested.append("voices"))
         wizard.settings_requested.connect(lambda: requested.append("settings"))
         diagnostics = wizard.diagnostics_page
-        for name, target, label in (
-            ("Capture source", None, "Choose game window"),
-            ("Hotkeys", "settings", "Open Settings"),
-            ("Character voices", "voices", "Open Voices"),
+        for name, target, label, icon in (
+            ("Capture source", None, "Choose game window", "scan"),
+            ("Hotkeys", "settings", "Open Settings", "settings"),
+            ("Character voices", "voices", "Open Voices", "audio-lines"),
         ):
             diagnostics._checks_finished(
                 (DiagnosticResult(name, "error", "Needs attention", "settings"),),
                 None,
             )
             self.assertEqual(diagnostics.remediation_button.text(), label)
+            self.assertEqual(
+                diagnostics.remediation_button.property("vnttsActionIcon"), icon
+            )
             diagnostics.remediation_button.click()
             if target:
                 self.assertEqual(requested[-1], target)
@@ -1043,10 +1046,16 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertFalse(page.pocket_gated_model.isChecked())
         self.assertFalse(page.terms.isVisibleTo(wizard))
         self.assertEqual(page.manage_assets_button.text(), "Import character voices...")
+        self.assertEqual(
+            page.manage_assets_button.property("vnttsActionIcon"), "folder-open"
+        )
         page.speech_backend.setCurrentIndex(page.speech_backend.findData("coqui-xtts"))
         self.assertEqual(
             page.manage_assets_button.text(),
             "Download model or import voices...",
+        )
+        self.assertEqual(
+            page.manage_assets_button.property("vnttsActionIcon"), "download"
         )
         page.speech_backend.setCurrentIndex(page.speech_backend.findData("pocket-tts"))
 
@@ -1280,6 +1289,9 @@ class OnboardingWizardTest(unittest.TestCase):
 
         self.assertEqual(page.results.currentRow(), 1)
         self.assertEqual(page.remediation_button.text(), "Open setup options")
+        self.assertEqual(
+            page.remediation_button.property("vnttsActionIcon"), "settings"
+        )
         page.remediation_button.click()
         self.assertEqual(wizard.current_page_index, 1)
         self.assertTrue(wizard.configuration_page.advanced_toggle.isChecked())
@@ -1408,6 +1420,9 @@ class OnboardingWizardTest(unittest.TestCase):
         )
 
         self.assertEqual(page.remediation_button.text(), "Show installation help")
+        self.assertEqual(
+            page.remediation_button.property("vnttsActionIcon"), "circle-help"
+        )
         page.remediation_button.click()
 
         self.assertIn("Requirements section", page.remediation_reason.text())

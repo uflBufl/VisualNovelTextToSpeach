@@ -376,6 +376,10 @@ class OCRCorrectionsDialog(QDialog):
         )
         dialog.button(QMessageBox.StandardButton.Discard).setText("Discard changes")
         dialog.button(QMessageBox.StandardButton.Cancel).setText("Keep editing")
+        set_action_icon(dialog.button(QMessageBox.StandardButton.Discard), "trash-2")
+        set_action_icon(
+            dialog.button(QMessageBox.StandardButton.Cancel), "chevron-left"
+        )
         dialog.setDefaultButton(QMessageBox.StandardButton.Cancel)
         return dialog
 

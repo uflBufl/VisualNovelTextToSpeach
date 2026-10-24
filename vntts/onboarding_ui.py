@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 )
 from shiboken6 import isValid
 
+from vntts.action_icons import set_action_icon
 from vntts.asset_ui import AssetManagerDialog
 from vntts.async_ui import LatestTaskRunner
 from vntts.auto_advance_policy import (
@@ -163,6 +164,7 @@ class ConfigurationPage(QWizardPage):
             self.game_window.addItem(settings.game_window_title)
             self.game_window.setCurrentText(settings.game_window_title)
         self.refresh_button = QPushButton("Refresh...")
+        set_action_icon(self.refresh_button, "refresh-cw")
         self.refresh_button.setAccessibleName("Refresh game windows")
         self.refresh_button.setAccessibleDescription(
             "Reload the list of capturable game windows"
@@ -186,6 +188,7 @@ class ConfigurationPage(QWizardPage):
             "Optional verified pack that configures story, voices and generated audio"
         )
         self.game_pack_button = QPushButton("Browse...")
+        set_action_icon(self.game_pack_button, "folder-open")
         self.game_pack_button.setAccessibleName("Browse for game pack")
         self.game_pack_button.setAccessibleDescription(
             "Choose an optional verified VNTTS game-pack JSON file"
@@ -248,6 +251,7 @@ class ConfigurationPage(QWizardPage):
             "Audio reference used for the narrator voice"
         )
         self.narrator_reference_button = QPushButton("Browse...")
+        set_action_icon(self.narrator_reference_button, "folder-open")
         self.narrator_reference_button.setAccessibleName(
             "Browse for narrator reference"
         )
@@ -273,6 +277,7 @@ class ConfigurationPage(QWizardPage):
             "Character voice manifest JSON file"
         )
         self.browse_manifest_button = QPushButton("Browse...")
+        set_action_icon(self.browse_manifest_button, "folder-open")
         self.browse_manifest_button.setAccessibleName("Browse for voice manifest")
         self.browse_manifest_button.setAccessibleDescription(
             "Choose a character voice manifest JSON file"
@@ -309,12 +314,14 @@ class ConfigurationPage(QWizardPage):
         self.pocket_terms_label.setWordWrap(True)
         self.pocket_terms_label.setOpenExternalLinks(True)
         self.manage_assets_button = QPushButton("Download model or import voices...")
+        set_action_icon(self.manage_assets_button, "download")
         self.manage_assets_button.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
         self.manage_assets_button.clicked.connect(self.manage_assets)
         self.macos_permissions_button = QPushButton("Check macOS permissions...")
+        set_action_icon(self.macos_permissions_button, "key-round")
         self.macos_permissions_button.setVisible(sys.platform == "darwin")
         self.macos_permissions_button.clicked.connect(self.open_macos_permissions)
         self.validation_summary = QLabel()
@@ -346,6 +353,7 @@ class ConfigurationPage(QWizardPage):
         self.speech_summary.setAccessibleName("Setup narrator and speech engine")
         recommended_form.addRow(self.speech_summary)
         self.choose_narrator_button = QPushButton("Choose game voice...")
+        set_action_icon(self.choose_narrator_button, "audio-lines")
         self.choose_narrator_button.setAccessibleName("Choose narrator voice")
         self.choose_narrator_button.setAccessibleDescription(
             "Open the game voice picker to listen and choose a narrator"
@@ -415,6 +423,7 @@ class ConfigurationPage(QWizardPage):
         self.advanced_content = QWidget()
         self.advanced_content.setLayout(advanced_form)
         self.advanced_toggle = QPushButton("Show advanced options")
+        set_action_icon(self.advanced_toggle, "settings")
         self.advanced_toggle.setCheckable(True)
         self.advanced_toggle.setAccessibleDescription(
             "Show or hide speech engine, language, voice and keyboard settings"
@@ -686,6 +695,9 @@ class ConfigurationPage(QWizardPage):
             if uses_xtts
             else "Import character voices..."
         )
+        set_action_icon(
+            self.manage_assets_button, "download" if uses_xtts else "folder-open"
+        )
         self.update_terms_control()
 
     def _connect_validation_updates(self) -> None:
@@ -951,6 +963,7 @@ class DiagnosticsPage(QWizardPage):
         self.remediation_reason.setWordWrap(True)
         self.remediation_reason.setAccessibleName("Selected setup issue guidance")
         self.remediation_button = QPushButton("Fix selected issue")
+        set_action_icon(self.remediation_button, "wand-sparkles")
         self.remediation_button.setEnabled(False)
         self.remediation_button.hide()
         self.remediation_button.setAccessibleDescription(
@@ -965,13 +978,16 @@ class DiagnosticsPage(QWizardPage):
         remediation.addLayout(remediation_action)
         actions = QHBoxLayout()
         self.retry_button = QPushButton("Run checks again")
+        set_action_icon(self.retry_button, "refresh-cw")
         self.retry_button.clicked.connect(self.start_checks)
         self.retry_button.hide()
         self.cancel_button = QPushButton("Cancel checks")
+        set_action_icon(self.cancel_button, "x")
         self.cancel_button.clicked.connect(self.cancel_checks)
         self.cancel_button.setEnabled(False)
         self.cancel_button.hide()
         self.install_moss_button = QPushButton("Install OpenMOSS")
+        set_action_icon(self.install_moss_button, "download")
         self.install_moss_button.setAccessibleDescription(
             "Download and install the displayed OpenMOSS runtime and model files"
         )
@@ -1180,6 +1196,7 @@ class DiagnosticsPage(QWizardPage):
             self.remediation_button.setEnabled(False)
             self.remediation_button.hide()
             self.remediation_button.setText("Fix selected issue")
+            set_action_icon(self.remediation_button, "wand-sparkles")
             return
         if result.remediation == "external-ocr":
             self.remediation_reason.setText(
@@ -1187,6 +1204,7 @@ class DiagnosticsPage(QWizardPage):
                 "language data, restart VNTTS, then run checks again."
             )
             self.remediation_button.setText("Tesseract install guide")
+            set_action_icon(self.remediation_button, "circle-help")
             self.remediation_button.show()
             self.remediation_button.setEnabled(True)
             return
@@ -1215,6 +1233,20 @@ class DiagnosticsPage(QWizardPage):
             if remediation is not None
             else "Show installation help"
         )
+        icon = {
+            "settings": "settings",
+            "voices": "audio-lines",
+            "permissions": "key-round",
+        }.get(remediation, "circle-help")
+        if self.flow.reading_setup and remediation in {"settings", "voices"}:
+            icon = (
+                "settings"
+                if result.name == "Hotkeys"
+                else "scan"
+                if result.name == "Capture source"
+                else "audio-lines"
+            )
+        set_action_icon(self.remediation_button, icon)
         self.remediation_button.setEnabled(True)
         self.remediation_button.show()
 
@@ -1297,6 +1329,7 @@ class CalibrationPage(QWizardPage):
         )
         self.instructions.setWordWrap(True)
         self.button = QPushButton("Calibrate...")
+        set_action_icon(self.button, "scan")
         self.button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.button.clicked.connect(self.calibrate)
         self.status = QLabel("Calibration has not been completed.")
@@ -1462,9 +1495,11 @@ class EndToEndTestPage(QWizardPage):
         )
         instructions.setWordWrap(True)
         self.button = QPushButton("Run OCR-to-speech test")
+        set_action_icon(self.button, "play")
         self.button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.button.clicked.connect(self.run_test)
         self.cancel_button = QPushButton("Cancel test")
+        set_action_icon(self.cancel_button, "x")
         self.cancel_button.setEnabled(False)
         self.cancel_button.hide()
         self.cancel_button.clicked.connect(self.request_cancel)
@@ -1729,14 +1764,18 @@ class OnboardingWizard(QDialog):
         self.page_subtitle = QLabel()
         self.page_subtitle.setWordWrap(True)
         self.back_button = QPushButton("Back")
+        set_action_icon(self.back_button, "chevron-left")
         self.next_button = QPushButton("Next")
+        set_action_icon(self.next_button, "chevron-right")
         self.finish_button = QPushButton(
             "Save setup" if reading_setup else "Finish setup"
         )
+        set_action_icon(self.finish_button, "save" if reading_setup else "check")
         self.finish_button.setAccessibleDescription(
             "Save setup and return to the dashboard without starting playback"
         )
         self.cancel_button = QPushButton("Cancel")
+        set_action_icon(self.cancel_button, "x")
         self.back_button.clicked.connect(self.previous_page)
         self.next_button.clicked.connect(self.next_page)
         self.finish_button.clicked.connect(self.accept)

@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QDialog,
     QLabel,
     QMessageBox,
+    QPushButton,
     QSizePolicy,
     QWidget,
 )
@@ -730,6 +731,24 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.macos_permissions_action.text(),
             "macOS permissions...",
         )
+        for menu in (
+            tray_application.menu,
+            tray_application.playback_menu,
+            tray_application.setup_menu,
+            tray_application.support_menu,
+        ):
+            for action in menu.actions():
+                if (
+                    action
+                    not in (
+                        tray_application.status_action,
+                        tray_application.dialog_action,
+                        tray_application.auto_advance_reason_action,
+                    )
+                    and not action.isSeparator()
+                ):
+                    self.assertFalse(action.icon().isNull(), action.text())
+                    self.assertTrue(action.isIconVisibleInMenu(), action.text())
         tray_destroyed = []
         tray_application.tray.destroyed.connect(lambda: tray_destroyed.append(True))
         self.assertFalse(tray_application.read_action.isEnabled())
@@ -844,6 +863,20 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertEqual(tray_state, expected)
                 self.assertEqual(dashboard_state, expected)
                 self.assertEqual(compact_state, expected)
+                for action, button in (
+                    (
+                        tray_application.live_action,
+                        tray_application.dashboard.live_button,
+                    ),
+                    (
+                        tray_application.pause_action,
+                        tray_application.dashboard.pause_button,
+                    ),
+                ):
+                    self.assertEqual(
+                        action.icon().pixmap(24).toImage(),
+                        button.icon().pixmap(24).toImage(),
+                    )
                 self.assertEqual(
                     tray_application.compact_controller.mode.text(),
                     {
@@ -2741,9 +2774,9 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.dashboard.show_reading()
         with patch("vntts.app.QMessageBox") as message_box:
             continue_button, stories_button, cancel_button = (
-                object(),
-                object(),
-                object(),
+                QPushButton(tray_application.dashboard),
+                QPushButton(tray_application.dashboard),
+                QPushButton(tray_application.dashboard),
             )
             prompt = message_box.return_value
             prompt.addButton.side_effect = (
@@ -2786,9 +2819,9 @@ class TrayApplicationTest(unittest.TestCase):
         )
         with patch("vntts.app.QMessageBox") as message_box:
             continue_button, stories_button, cancel_button = (
-                object(),
-                object(),
-                object(),
+                QPushButton(tray_application.dashboard),
+                QPushButton(tray_application.dashboard),
+                QPushButton(tray_application.dashboard),
             )
             prompt = message_box.return_value
             prompt.addButton.side_effect = (
@@ -2849,7 +2882,7 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray.live_scope_runner = Mock(active=False)
         with patch("vntts.app.QMessageBox") as message_box:
-            retry, stories, stop = object(), object(), object()
+            retry, stories, stop = (QPushButton(tray.dashboard) for _ in range(3))
             prompt = message_box.return_value
             prompt.addButton.side_effect = (retry, stories, stop)
             prompt.clickedButton.return_value = retry
@@ -2872,7 +2905,9 @@ class TrayApplicationTest(unittest.TestCase):
         for interrupt in (tray._begin_controller_lifecycle, tray.emergency_stop):
             with self.subTest(interrupt=interrupt.__name__):
                 with patch("vntts.app.QMessageBox") as message_box:
-                    read, stories, stop = object(), object(), object()
+                    read, stories, stop = (
+                        QPushButton(tray.dashboard) for _ in range(3)
+                    )
                     prompt = message_box.return_value
                     prompt.addButton.side_effect = (read, stories, stop)
                     prompt.clickedButton.return_value = read
@@ -2903,7 +2938,9 @@ class TrayApplicationTest(unittest.TestCase):
             controller_factory=Mock(return_value=controller),
         )
         with patch("vntts.app.QMessageBox") as message_box:
-            read, stories, stop = object(), object(), object()
+            read, stories, stop = (
+                QPushButton(tray_application.dashboard) for _ in range(3)
+            )
             prompt = message_box.return_value
             prompt.addButton.side_effect = (read, stories, stop)
             prompt.clickedButton.return_value = stop

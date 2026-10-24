@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.failure_reference_audit import (
@@ -321,19 +322,26 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
         self.technical_details.toggled.connect(self.cases.setVisible)
         self.cases.setVisible(False)
 
-        self.play = QPushButton("Play reference")
+        self.play = QPushButton("Reference")
+        set_action_icon(self.play, "play")
         self.stop = QPushButton("Stop")
+        set_action_icon(self.stop, "square")
         self.play.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.stop.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.play.setAccessibleName("Play selected source candidate")
+        self.play.setToolTip(self.play.accessibleName())
         self.play.setAccessibleDescription(
             "Play the selected checksum-bound source candidate through to the end"
         )
         self.stop.setAccessibleName("Stop source candidate playback")
+        self.stop.setToolTip(self.stop.accessibleName())
         self.stop.setAccessibleDescription("Stop source or generated preview playback")
         self.generate_preview = QPushButton("Generate sample")
-        self.replay_preview = QPushButton("Replay preview")
+        set_action_icon(self.generate_preview, "wand-sparkles")
+        self.replay_preview = QPushButton("Generated")
+        set_action_icon(self.replay_preview, "play")
         self.cancel_preview = QPushButton("Cancel generation")
+        set_action_icon(self.cancel_preview, "square")
         for button in (
             self.generate_preview,
             self.replay_preview,
@@ -341,8 +349,11 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
         ):
             button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.generate_preview.setAccessibleName("Generate optional voice sample")
+        self.generate_preview.setToolTip(self.generate_preview.accessibleName())
         self.replay_preview.setAccessibleName("Replay optional generated sample")
+        self.replay_preview.setToolTip(self.replay_preview.accessibleName())
         self.cancel_preview.setAccessibleName("Cancel optional sample generation")
+        self.cancel_preview.setToolTip(self.cancel_preview.accessibleName())
         self.generate_preview.setAccessibleDescription(
             "Render the selected affected phrase with this reference without saving "
             "authoring state or making a reference decision"
@@ -354,9 +365,13 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
             "Cancel only the active optional reference-preview render"
         )
         self.choose = QPushButton("Use selected candidate")
+        set_action_icon(self.choose, "check")
         self.neither = QPushButton("No suitable reference")
+        set_action_icon(self.neither, "x")
         self.choose.setAccessibleName("Use selected source reference")
+        self.choose.setToolTip(self.choose.accessibleName())
         self.neither.setAccessibleName("Reject all source reference candidates")
+        self.neither.setToolTip(self.neither.accessibleName())
         self.choose.setAccessibleDescription(
             "Select this source recording for later explicit voice binding"
         )
@@ -364,13 +379,17 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
             "Record that the available source recordings are unsuitable; this does "
             "not reject the character"
         )
-        self.previous = QPushButton("Previous group")
-        self.next = QPushButton("Next group")
+        self.previous = QPushButton("Previous")
+        set_action_icon(self.previous, "chevron-left")
+        self.next = QPushButton("Next")
+        set_action_icon(self.next, "chevron-right")
         for button in (self.choose, self.neither, self.previous, self.next):
             button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.previous.setAccessibleName("Previous failed-reference group")
+        self.previous.setToolTip(self.previous.accessibleName())
         self.previous.setAccessibleDescription("Select the previous reference group")
         self.next.setAccessibleName("Next failed-reference group")
+        self.next.setToolTip(self.next.accessibleName())
         self.next.setAccessibleDescription("Select the next reference group")
         self.action_reason = QLabel()
         self.action_reason.setAccessibleName("Reference decision availability")
@@ -389,10 +408,15 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
         playback.addRow(self.candidate_label, self.candidate_choice)
         playback.addRow(self.play, self.stop)
         self.preview_toggle = QToolButton()
+        set_action_icon(self.preview_toggle, "settings")
+        self.preview_toggle.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
         self.preview_toggle.setText("Preview options")
         self.preview_toggle.setCheckable(True)
         self.preview_toggle.setChecked(False)
         self.preview_toggle.setAccessibleName("Show optional generated preview")
+        self.preview_toggle.setToolTip(self.preview_toggle.accessibleName())
         self.preview_toggle.setAccessibleDescription(
             "Reveal non-authoritative generated preview controls"
         )
@@ -417,7 +441,9 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
         self.close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
+        set_action_icon(self.close_button, "x")
         self.close_button.setAccessibleName("Close failed-reference audit")
+        self.close_button.setToolTip(self.close_button.accessibleName())
         self.close_button.setAccessibleDescription(
             "Close this audit without making another reference decision"
         )

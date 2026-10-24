@@ -515,6 +515,10 @@ class OCRReviewDialog(CloseGuardedDialog):
         )
         dialog.button(QMessageBox.StandardButton.Yes).setText("Dismiss line")
         dialog.button(QMessageBox.StandardButton.Cancel).setText("Keep reviewing")
+        set_action_icon(dialog.button(QMessageBox.StandardButton.Yes), "x")
+        set_action_icon(
+            dialog.button(QMessageBox.StandardButton.Cancel), "chevron-left"
+        )
         dialog.setDefaultButton(QMessageBox.StandardButton.Cancel)
         return dialog
 

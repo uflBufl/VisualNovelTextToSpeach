@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.missing_voice_reuse_review import (
     AUTOMATIC_UNRESOLVED_ORIGIN,
@@ -452,7 +453,8 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
         self.cohort_heading.setWordWrap(True)
         self.cohort_heading.setAccessibleName("Current missing voice family")
 
-        self.previous = QPushButton("Previous sample")
+        self.previous = QPushButton("Previous")
+        set_action_icon(self.previous, "chevron-left")
         self.previous.setSizePolicy(
             QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
         )
@@ -468,13 +470,16 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
         )
         self.sample_label = QLabel("Sample")
         self.sample_label.setBuddy(self.sample_selector)
-        self.next = QPushButton("Next sample")
+        self.next = QPushButton("Next")
+        set_action_icon(self.next, "chevron-right")
         self.next.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.previous.setAccessibleName("Previous exact review sample")
+        self.previous.setToolTip(self.previous.accessibleName())
         self.previous.setAccessibleDescription(
             "Select the previous sample in the current family"
         )
         self.next.setAccessibleName("Next exact review sample")
+        self.next.setToolTip(self.next.accessibleName())
         self.next.setAccessibleDescription(
             "Select the next sample in the current family"
         )
@@ -513,10 +518,12 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
         self.arm_statuses: dict[str, QLabel] = {}
         for column, candidate in enumerate(self.bundle["candidates"]):
             label = candidate["label"]
-            button = QPushButton(f"Play {label}")
+            button = QPushButton(label)
+            set_action_icon(button, "play")
             button.setMinimumWidth(180)
             button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             button.setAccessibleName(f"Play opaque candidate {label}")
+            button.setToolTip(button.accessibleName())
             button.setAccessibleDescription(
                 "Play this checksum-bound candidate to completion before deciding"
             )
@@ -550,8 +557,10 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
             "QLabel { background-color: #3f3f46; color: white; "
             "font-weight: 700; border-radius: 5px; padding: 4px; }"
         )
-        self.stop = QPushButton("Stop audio")
+        self.stop = QPushButton("Stop")
+        set_action_icon(self.stop, "square")
         self.stop.setAccessibleName("Stop missing voice review audio")
+        self.stop.setToolTip(self.stop.accessibleName())
         self.stop.setAccessibleDescription("Stop the current candidate playback")
         self.stop.setShortcut(QKeySequence("Ctrl+Space"))
         self.stop.clicked.connect(self._stop)
@@ -573,11 +582,13 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
                 if self.failed_control_mode
                 else f"Choose {label} for this family"
             )
+            set_action_icon(button, "check")
             button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             button.clicked.connect(
                 lambda _checked=False, value=label: self._save_decision(value)
             )
             button.setAccessibleName(f"Choose opaque candidate {label}")
+            button.setToolTip(button.accessibleName())
             button.setAccessibleDescription(
                 f"Save candidate {label} as the {self._decision_name} decision"
             )
@@ -590,6 +601,7 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
             if self.failed_control_mode
             else "Neither voice is acceptable"
         )
+        set_action_icon(self.neither, "x")
         self.neither.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.neither.setShortcut(QKeySequence("Alt+N"))
         self.neither.setAccessibleName(
@@ -597,6 +609,7 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
             if self.failed_control_mode
             else "Reject all missing voice candidates"
         )
+        self.neither.setToolTip(self.neither.accessibleName())
         self.neither.clicked.connect(lambda: self._save_decision("neither"))
         self.neither.setAccessibleDescription(
             "Keep this review unresolved instead of selecting a candidate"
@@ -616,7 +629,9 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
         close_buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close_buttons.rejected.connect(self.close)
         self.close_button = close_buttons.button(QDialogButtonBox.StandardButton.Close)
+        set_action_icon(self.close_button, "x")
         self.close_button.setAccessibleName("Close missing voice review")
+        self.close_button.setToolTip(self.close_button.accessibleName())
         self.close_button.setAccessibleDescription(
             "Close this review without making another decision"
         )
@@ -855,7 +870,11 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
             button = self.play_buttons[label]
             if arm["status"] == "generated":
                 was_heard = (sample["queue_id"], label) in heard
-                button.setText(f"{'Replay' if was_heard else 'Play'} {label}")
+                button.setText(label)
+                button.setAccessibleName(
+                    f"{'Replay' if was_heard else 'Play'} opaque candidate {label}"
+                )
+                button.setToolTip(button.accessibleName())
                 button.setEnabled(True)
                 quality = arm["quality"] or {}
                 duration = quality.get("duration_seconds")
@@ -871,6 +890,8 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
                 )
             else:
                 button.setText(f"{label} unavailable")
+                button.setAccessibleName(f"Opaque candidate {label} unavailable")
+                button.setToolTip(button.accessibleName())
                 button.setEnabled(False)
                 self.arm_statuses[label].setText(
                     f"FAILED | {_failure_label(arm['failure_kind'])} | "

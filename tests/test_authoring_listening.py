@@ -1796,7 +1796,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertTrue(dialog.now_playing.isHidden())
             dialog.play("a")
             self.assertEqual(dialog.now_playing.text(), "Loading A...")
-            self.assertEqual(dialog.play_a.text(), "Play A")
+            self.assertEqual(dialog.play_a.text(), "A")
             self.assertTrue(dialog.status.isHidden())
             dialog.playback.finish()
             dialog.poll_playback()
@@ -1828,6 +1828,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             dialog.toggle_playback()
             self.assertEqual(len(dialog.playback.play_calls), 3)
             self.assertEqual(dialog.stop.text(), "Pause")
+            self.assertEqual(dialog.stop.property("vnttsActionIcon"), "pause")
             dialog.deleteLater()
 
     def test_close_cancels_queued_auto_playback(self):
@@ -1895,6 +1896,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertNotIn("b", dialog.completed_sides)
             self.assertIn("interrupted", dialog.status.text())
             self.assertEqual(dialog.stop.text(), "Replay")
+            self.assertEqual(dialog.stop.property("vnttsActionIcon"), "refresh-cw")
             dialog.toggle_playback()
             self.assertTrue(dialog.status.isHidden())
             dialog.playback.finish()
@@ -1987,6 +1989,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
                     audio.pump(160, underflow=underflow)
                     dialog.toggle_playback()
                     self.assertEqual(dialog.playback_control_state, "stopped")
+                    self.assertEqual(dialog.stop.property("vnttsActionIcon"), "play")
                     dialog.toggle_playback()
                     audio.pump(800)
                     audio.time += audio.latency

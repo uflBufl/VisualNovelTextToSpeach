@@ -2061,6 +2061,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertFalse(dialog.has_pending_work())
             dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
             self.assertEqual(dialog.continue_button.text(), "Prepare selected story")
+            self.assertEqual(
+                dialog.continue_button.property("vnttsActionIcon"), "wand-sparkles"
+            )
             dialog.continue_button.click()
             self.assertEqual(dialog.job().selected_story_ids, ("main-1",))
 
@@ -2239,6 +2242,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 "Voice data could not be read", dialog.selection_status.text()
             )
             self.assertEqual(dialog.continue_button.text(), "Retry voice matching")
+            self.assertEqual(
+                dialog.continue_button.property("vnttsActionIcon"), "refresh-cw"
+            )
             self.assertTrue(dialog.continue_button.isVisibleTo(dialog))
             self.assertTrue(dialog.continue_button.isEnabled())
             self.assertFalse(dialog.progress_panel.isVisibleTo(dialog))
@@ -2402,6 +2408,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 self.run_next_task(pool)
             self.assertEqual(dialog.stories.item(0).text(1), "Ready")
             self.assertEqual(dialog.continue_button.text(), "Start reading")
+            self.assertEqual(dialog.continue_button.property("vnttsActionIcon"), "play")
             self.assertTrue(dialog.continue_button.isEnabled())
             self.assertFalse(dialog.play_ready_button.isVisibleTo(dialog))
             opened = Mock()
@@ -2487,6 +2494,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 self.run_next_task(pool)
             self.assertEqual(set(dialog._story_audio_checks), {key})
             self.assertEqual(dialog.continue_button.text(), "Start reading")
+            self.assertEqual(dialog.continue_button.property("vnttsActionIcon"), "play")
             dialog.stories.item(1).setCheckState(0, Qt.CheckState.Unchecked)
             dialog.stories.item(1).setCheckState(0, Qt.CheckState.Checked)
             self.assertEqual(pool.tasks, [])
@@ -2514,6 +2522,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._story_audio_checks[key] = (ready, ready, None)
             dialog._selection_changed()
             self.assertEqual(dialog.continue_button.text(), "Start reading")
+            self.assertEqual(dialog.continue_button.property("vnttsActionIcon"), "play")
             dialog.check_story_audio.click()
             self.assertNotEqual(dialog.continue_button.text(), "Start reading")
             self.assertTrue(dialog.continue_button.isEnabled())
@@ -2686,6 +2695,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.addCleanup(dialog.deleteLater)
             self.assertIn("Not checked", dialog.stories.item(0).text(1))
             self.assertEqual(dialog.continue_button.text(), "Continue preparation")
+            self.assertEqual(
+                dialog.continue_button.property("vnttsActionIcon"), "wand-sparkles"
+            )
             self.assertTrue(dialog.continue_button.isEnabled())
             dialog.stories.setCurrentRow(0)
             ready = StoryAudioCoverage(
@@ -2725,6 +2737,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 "Checked the active Reading pack", dialog.story_audio_status.text()
             )
             self.assertEqual(dialog.continue_button.text(), "Start reading")
+            self.assertEqual(dialog.continue_button.property("vnttsActionIcon"), "play")
             with (
                 patch.object(
                     dialog,
@@ -2760,6 +2773,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("Needs attention", dialog.stories.item(0).text(1))
             self.assertIn("Saved audio damaged", dialog.story_audio_status.text())
             self.assertEqual(dialog.continue_button.text(), "Continue preparation")
+            self.assertEqual(
+                dialog.continue_button.property("vnttsActionIcon"), "wand-sparkles"
+            )
             dialog.refresh()
             self.assertEqual(dialog.stories.item(0).text(1), "Not checked")
 
@@ -2803,6 +2819,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("Not checked", dialog.stories.item(0).text(1))
             self.assertIn("No character references", updates[-1])
             self.assertEqual(dialog.continue_button.text(), "Continue preparation")
+            self.assertEqual(
+                dialog.continue_button.property("vnttsActionIcon"), "wand-sparkles"
+            )
             dialog.voice_runner.cancel()
 
     def test_active_chapter_reports_playable_prefix_from_current_line(self):
@@ -2955,6 +2974,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertTrue(dialog.copy_resume_error.isVisibleTo(dialog))
             self.assertTrue(dialog.progress_change_selection.isVisibleTo(dialog))
             self.assertEqual(dialog.continue_button.text(), "Continue preparation")
+            self.assertEqual(
+                dialog.continue_button.property("vnttsActionIcon"), "wand-sparkles"
+            )
             saved_job = dialog.job().job_id
             dialog.progress_change_selection.click()
             self.assertTrue(dialog.selection_panel.isVisibleTo(dialog))
@@ -3012,6 +3034,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._refresh_story_statuses()
             dialog._selection_changed()
             self.assertEqual(dialog.continue_button.text(), "Start reading")
+            self.assertEqual(dialog.continue_button.property("vnttsActionIcon"), "play")
             self.assertTrue(dialog.prepare_again.isVisibleTo(dialog))
             self.assertIn("recorded voice and model", plain_label_text(dialog.summary))
             self.assertEqual(
@@ -3817,6 +3840,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertNotIn("Cancel stops", dialog.progress_cancel_consequence.text())
             self.assertEqual(dialog.cancel_button.text(), "Close")
             self.assertEqual(dialog.continue_button.text(), "Continue preparation")
+            self.assertEqual(
+                dialog.continue_button.property("vnttsActionIcon"), "wand-sparkles"
+            )
             self.assertTrue(dialog.continue_button.isEnabled())
             self.assertTrue(dialog.play_ready_button.isEnabled())
             dialog.close()

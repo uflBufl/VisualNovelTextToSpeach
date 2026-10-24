@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.review_context_ui import (
     ReviewDecisionContext,
@@ -225,8 +226,10 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.reference_details = QLabel()
         self.reference_details.setWordWrap(True)
         self.reference_details.setAccessibleName("Original source reference details")
-        self.play_reference = QPushButton("Play original")
+        self.play_reference = QPushButton("Original")
+        set_action_icon(self.play_reference, "play")
         self.play_reference.setAccessibleName("Play original source reference")
+        self.play_reference.setToolTip(self.play_reference.accessibleName())
         self.play_reference.setAccessibleDescription(
             "Play the checksum-verified original until its end"
         )
@@ -250,15 +253,19 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
             | Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
         self.generated_details.setAccessibleName("Selected generated sample details")
-        self.play_generated = QPushButton("Play generated")
+        self.play_generated = QPushButton("Generated")
+        set_action_icon(self.play_generated, "play")
         self.play_generated.setAccessibleName("Play selected generated sample")
+        self.play_generated.setToolTip(self.play_generated.accessibleName())
         self.play_generated.setAccessibleDescription(
             "Play the selected checksum-verified generated sample until its end"
         )
         self.play_generated.setShortcut(QKeySequence("Ctrl+G"))
         self.play_generated.clicked.connect(self._play_generated)
-        self.stop = QPushButton("Stop audio")
+        self.stop = QPushButton("Stop")
+        set_action_icon(self.stop, "square")
         self.stop.setAccessibleName("Stop source reference review audio")
+        self.stop.setToolTip(self.stop.accessibleName())
         self.stop.setAccessibleDescription("Stop current reference review playback")
         self.stop.setShortcut(QKeySequence("Ctrl+Space"))
         self.stop.clicked.connect(self._stop)
@@ -272,9 +279,14 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.failures.setWordWrap(True)
         self.failures.setAccessibleName("Excluded generation diagnostics")
         self.technical_toggle = QToolButton()
+        set_action_icon(self.technical_toggle, "file-text")
+        self.technical_toggle.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
         self.technical_toggle.setCheckable(True)
         self.technical_toggle.setChecked(False)
         self.technical_toggle.setAccessibleName("Show excluded technical diagnostics")
+        self.technical_toggle.setToolTip(self.technical_toggle.accessibleName())
         self.technical_toggle.setAccessibleDescription(
             "Reveal technical details for excluded generation results"
         )
@@ -287,11 +299,17 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.status.setWordWrap(True)
         self.status.setAccessibleName("Source reference review status")
         self.accept_button = QPushButton("Accept reference")
+        set_action_icon(self.accept_button, "check")
         self.reject_reference = QPushButton("Reject reference")
+        set_action_icon(self.reject_reference, "x")
         self.needs_sample = QPushButton("Need another sample")
+        set_action_icon(self.needs_sample, "plus")
         self.accept_button.setAccessibleName("Accept exact source reference")
+        self.accept_button.setToolTip(self.accept_button.accessibleName())
         self.reject_reference.setAccessibleName("Reject exact source reference")
+        self.reject_reference.setToolTip(self.reject_reference.accessibleName())
         self.needs_sample.setAccessibleName("Request another source reference sample")
+        self.needs_sample.setToolTip(self.needs_sample.accessibleName())
         self.accept_button.setShortcut(QKeySequence("Ctrl+Return"))
         self.reject_reference.setShortcut(QKeySequence("Ctrl+Backspace"))
         self.needs_sample.setShortcut(QKeySequence("Ctrl+N"))
@@ -313,7 +331,9 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
         self.close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
+        set_action_icon(self.close_button, "x")
         self.close_button.setAccessibleName("Close source-reference review")
+        self.close_button.setToolTip(self.close_button.accessibleName())
         self.close_button.setAccessibleDescription(
             "Close this review without making another source-reference decision"
         )

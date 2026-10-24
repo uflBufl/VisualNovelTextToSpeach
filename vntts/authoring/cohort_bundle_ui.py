@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.cohort_bundle import (
     CohortBundleCohort,
@@ -734,23 +735,36 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         self.table.doubleClicked.connect(lambda _index: self.play_selected())
 
     def _build_action_widgets(self) -> None:
-        self.previous = QPushButton("Previous sample")
-        self.replay = QPushButton("Play selected sample")
-        self.stop = QPushButton("Stop sample")
-        self.next = QPushButton("Next sample")
+        self.previous = QPushButton("Previous")
+        set_action_icon(self.previous, "chevron-left")
+        self.replay = QPushButton("Recording")
+        set_action_icon(self.replay, "play")
+        self.stop = QPushButton("Stop")
+        set_action_icon(self.stop, "square")
+        self.next = QPushButton("Next")
+        set_action_icon(self.next, "chevron-right")
         self.mark_bad = QPushButton("Sample sounds bad")
+        set_action_icon(self.mark_bad, "x")
         self.need_another = QPushButton("More samples")
+        set_action_icon(self.need_another, "plus")
         self.leave_undecided = QPushButton("Leave undecided")
+        set_action_icon(self.leave_undecided, "log-out")
         self.repair_marked = QPushButton("Repair marked samples")
+        set_action_icon(self.repair_marked, "wand-sparkles")
         self.repair_marked.setObjectName("repairMarkedWavs")
         self.accept_button = QPushButton("Accept cohort")
+        set_action_icon(self.accept_button, "check")
         self.accept_button.setObjectName("acceptCohort")
         self.reject_button = QPushButton("Reject cohort")
+        set_action_icon(self.reject_button, "x")
         self.reject_button.setObjectName("rejectCohort")
         self.retry_load = QPushButton("Retry bundle load")
+        set_action_icon(self.retry_load, "refresh-cw")
         self.retry_load.hide()
         self.retry_progress = QPushButton("Retry saving progress")
+        set_action_icon(self.retry_progress, "save")
         self.retry_progress.setAccessibleName("Retry saving listening progress")
+        self.retry_progress.setToolTip(self.retry_progress.accessibleName())
         self.retry_progress.clicked.connect(self._checkpoint_observations)
         self.retry_progress.hide()
         for button, name, description in (
@@ -800,6 +814,7 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             ),
         ):
             button.setAccessibleName(name)
+            button.setToolTip(button.accessibleName())
             button.setAccessibleDescription(description)
         self.previous.clicked.connect(lambda: self._move(-1))
         self.replay.clicked.connect(self.play_selected)
@@ -846,9 +861,14 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         defect_group.setAccessibleName("Selected sample speech defect reasons")
         defect_group.setLayout(defect_layout)
         self.defect_toggle = QToolButton()
+        set_action_icon(self.defect_toggle, "list")
+        self.defect_toggle.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
         self.defect_toggle.setText("Choose defect reason...")
         self.defect_toggle.setCheckable(True)
         self.defect_toggle.setAccessibleName("Show specific defect reasons")
+        self.defect_toggle.setToolTip(self.defect_toggle.accessibleName())
         self.defect_toggle.toggled.connect(defect_group.setVisible)
         defect_group.hide()
         self.decision_help = QLabel()
@@ -2156,11 +2176,13 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         item_count = state.item_count
         self.previous.setEnabled(ready and len(samples) > 1)
         self.replay.setEnabled(ready and not self._playback_prepare_active)
-        self.replay.setText(
-            "Replay selected sample"
+        self.replay.setText("Recording")
+        self.replay.setAccessibleName(
+            "Replay selected cohort sample"
             if sample is not None and sample.item.queue_id in heard
-            else "Play selected sample"
+            else "Play selected cohort sample"
         )
+        self.replay.setToolTip(self.replay.accessibleName())
         self.stop.setEnabled(
             self._playback_target is not None or self._playback_prepare_active
         )
@@ -2176,6 +2198,14 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             if ready and sample is not None and sample.item.queue_id in bad
             else "Mark bad (reason unclear)"
         )
+        set_action_icon(
+            self.mark_bad,
+            "refresh-cw"
+            if ready and sample is not None and sample.item.queue_id in bad
+            else "x",
+        )
+        self.mark_bad.setAccessibleName(self.mark_bad.text())
+        self.mark_bad.setToolTip(self.mark_bad.accessibleName())
         self.accept_button.setEnabled(authority_ready and all_heard and not bad)
         self.reject_button.setEnabled(authority_ready and bool(heard))
         self.need_another.setEnabled(
@@ -2192,6 +2222,7 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         )
         self.repair_marked.setText("Repair marked samples")
         self.leave_undecided.setText("Close" if not state.cohort else "Leave undecided")
+        set_action_icon(self.leave_undecided, "x" if not state.cohort else "log-out")
         self.retry_progress.setVisible(self._observation_error is not None)
         self.retry_progress.setEnabled(
             not self._observation_active
