@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.qt_images import pixmap_from_pil
 from vntts.ui_text import copy_text_button, make_text_copyable
@@ -63,16 +64,19 @@ class DiagnosticsDialog(QDialog):
         )
         self.speaker_preview = self.speaker_processed_preview
         self.enlarge_button = QPushButton("Enlarge")
+        set_action_icon(self.enlarge_button, "expand")
         self.enlarge_button.setAccessibleName("Enlarge captured dialogue region")
         self.enlarge_button.setEnabled(False)
         self.enlarge_button.clicked.connect(self.enlarge_capture)
         self.enlarge_processed_button = QPushButton("Enlarge")
+        set_action_icon(self.enlarge_processed_button, "expand")
         self.enlarge_processed_button.setAccessibleName(
             "Enlarge processed dialogue OCR image"
         )
         self.enlarge_processed_button.setEnabled(False)
         self.enlarge_processed_button.clicked.connect(self.enlarge_processed_image)
         self.enlarge_speaker_button = QPushButton("Enlarge")
+        set_action_icon(self.enlarge_speaker_button, "expand")
         self.enlarge_speaker_button.setAccessibleName(
             "Enlarge processed speaker OCR image"
         )
@@ -80,6 +84,7 @@ class DiagnosticsDialog(QDialog):
         self.enlarge_speaker_button.clicked.connect(self.enlarge_speaker_image)
         self.enlarge_speaker_processed_button = self.enlarge_speaker_button
         self.calibrate_button = QPushButton("Change capture area...")
+        set_action_icon(self.calibrate_button, "scan")
         self.calibrate_button.setAccessibleName(
             "Change the capture area containing speaker and dialogue"
         )
@@ -139,6 +144,7 @@ class DiagnosticsDialog(QDialog):
         self.warning.installEventFilter(self)
         self.warning.hide()
         self.warning_action = QPushButton()
+        set_action_icon(self.warning_action, "settings")
         self.warning_action.setAccessibleName("Resolve diagnostics warning")
         self.warning_action.clicked.connect(self._request_remediation)
         self.warning_action.hide()
@@ -146,6 +152,7 @@ class DiagnosticsDialog(QDialog):
 
     def _create_layout(self) -> None:
         self.refresh_button = QPushButton("Refresh now")
+        set_action_icon(self.refresh_button, "refresh-cw")
         self.refresh_button.setAccessibleName("Refresh live diagnostics")
         self.refresh_button.clicked.connect(self.request_refresh)
         self.refresh_status = QLabel(
@@ -167,6 +174,7 @@ class DiagnosticsDialog(QDialog):
         warning_actions.addWidget(self.warning_action)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        set_action_icon(buttons.button(QDialogButtonBox.StandardButton.Close), "x")
         buttons.rejected.connect(self.close)
         self.body_scroll = QScrollArea()
         self.body_scroll.setWidgetResizable(True)
@@ -527,6 +535,7 @@ class DiagnosticsDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidget(image)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        set_action_icon(buttons.button(QDialogButtonBox.StandardButton.Close), "x")
         buttons.rejected.connect(dialog.close)
         layout = QVBoxLayout(dialog)
         layout.addWidget(scroll)
