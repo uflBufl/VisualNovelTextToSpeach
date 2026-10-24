@@ -276,6 +276,19 @@ class GameNarratorTest(unittest.TestCase):
         self.assertEqual(dialog.role_summary.text(), "Saved: Rhiannon")
         self.assertEqual(dialog.saved_assignment_summary(), "Narrator: Rhiannon")
 
+    def test_imported_voice_catalog_failure_is_logged(self):
+        dialog = self.editor()
+        with (
+            patch(
+                "vntts.game_narrator_ui.CharacterVoiceRegistry.from_file",
+                side_effect=OSError("catalog unreadable"),
+            ),
+            self.assertLogs("vntts.game_narrator_ui", level="ERROR") as logged,
+        ):
+            dialog.set_voice_context(character="Narrator")
+
+        self.assertIn("Unable to load imported voice catalog", logged.output[0])
+
     def test_saved_reference_missing_from_catalog_opens_without_a_new_donor(self):
         for role in ("Narrator", "Aderyn"):
             bind_voice_library_selection(

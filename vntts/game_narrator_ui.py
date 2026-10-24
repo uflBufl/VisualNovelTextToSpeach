@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from functools import partial
@@ -75,6 +76,7 @@ from vntts.voices import (
 
 Binder = Callable[..., AppSettings]
 CurrentVoice = tuple[VoicePlan, str, tuple[tuple[str, VoiceBinding | None], ...]]
+logger = logging.getLogger(__name__)
 
 
 def _display_role_name(role: str) -> str:
@@ -449,6 +451,7 @@ class GameNarratorDialog(QDialog):
                 else CharacterVoiceRegistry()
             )
         except (OSError, ValueError) as error:
+            logger.exception("Unable to load imported voice catalog")
             self._set_status(f"Unable to load imported voices: {error}")
             self._catalog_registry = CharacterVoiceRegistry()
         with QSignalBlocker(self.catalog_choice):
@@ -1115,6 +1118,7 @@ class GameNarratorDialog(QDialog):
                     else "This engine is not included in this package. Choose an available engine in Settings."
                 )
         except (OSError, ValueError) as error:
+            logger.exception("Unable to prepare selected voice source preview")
             self.voice_panel.hide()
             self._set_status(str(error))
 

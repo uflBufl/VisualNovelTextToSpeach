@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -25,6 +26,8 @@ from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.profiles import GameProfile, GameProfileStore
 from vntts.settings import AppSettings
 from vntts.ui_text import copy_text_button, make_text_copyable, set_labeled_text
+
+logger = logging.getLogger(__name__)
 
 
 class GameProfilesDialog(QDialog):
@@ -209,6 +212,8 @@ class GameProfilesDialog(QDialog):
                 ocr_regions=ocr_regions,
             )
         except (OSError, ValueError) as error:
+            if isinstance(error, OSError):
+                logger.exception("Unable to create game profile")
             QMessageBox.warning(self, "Unable to create profile", str(error))
             return
         self.refresh_profiles(profile.id)
@@ -230,10 +235,15 @@ class GameProfilesDialog(QDialog):
             if self.correction_store is not None:
                 self.correction_store.copy_profile(profile.id, duplicate.id)
         except (OSError, ValueError) as error:
+            if isinstance(error, OSError):
+                logger.exception("Unable to duplicate game profile")
             if duplicate is not None:
                 try:
                     self.store.remove(duplicate.id)
                 except OSError as rollback_error:
+                    logger.exception(
+                        "Unable to remove incomplete game profile duplicate"
+                    )
                     error = OSError(
                         f"{error}; duplicate cleanup failed: {rollback_error}"
                     )
@@ -256,6 +266,8 @@ class GameProfilesDialog(QDialog):
         try:
             renamed = self.store.rename(profile.id, name)
         except (OSError, ValueError) as error:
+            if isinstance(error, OSError):
+                logger.exception("Unable to rename game profile")
             QMessageBox.warning(self, "Unable to rename profile", str(error))
             return
         self.refresh_profiles(renamed.id)
@@ -296,15 +308,20 @@ class GameProfilesDialog(QDialog):
         try:
             self.store.remove(profile.id)
         except OSError as error:
+            logger.exception("Unable to remove game profile")
             QMessageBox.warning(self, "Unable to remove profile", str(error))
             return
         if self.correction_store is not None:
             try:
                 self.correction_store.remove_profile(profile.id)
             except OSError as error:
+                logger.exception("Unable to remove profile-scoped OCR corrections")
                 try:
                     self.store.restore(profile)
                 except OSError as rollback_error:
+                    logger.exception(
+                        "Unable to restore game profile after failed removal"
+                    )
                     QMessageBox.warning(
                         self,
                         "Profile removal incomplete",

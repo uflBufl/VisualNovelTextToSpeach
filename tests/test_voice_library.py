@@ -892,6 +892,7 @@ class VoiceLibraryTest(unittest.TestCase):
                     raise cleanup_error
 
                 with (
+                    patch("vntts.cleanup.logging.getLogger"),
                     patch(
                         "vntts.voice_library.os.close", side_effect=fail_close
                     ) as close,

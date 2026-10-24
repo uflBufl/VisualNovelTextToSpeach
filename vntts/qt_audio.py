@@ -1,5 +1,7 @@
 """Qt signals around the persistent Rust authoring player."""
 
+import logging
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from time import monotonic
@@ -140,6 +142,7 @@ class QtPcmPlayer(QObject):
             if self._player is not None:
                 self._player.stop()
         except Exception as error:
+            logging.getLogger(__name__).exception("Unable to stop PCM playback")
             stop_error = error
             if not already_failed:
                 outcome, reason = "failed", str(error)
@@ -247,6 +250,9 @@ class QtPcmPlayer(QObject):
         self.playbackStateChanged.emit(self.PlaybackState.StoppedState)
 
     def _fail(self, message: str) -> None:
+        logging.getLogger(__name__).error(
+            "PCM playback failed: %s", message, exc_info=sys.exception()
+        )
         self._stop("failed", reason=message)
         self._error = message
         self.errorOccurred.emit(self.Error.ResourceError, message)

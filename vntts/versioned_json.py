@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Mapping
 from hashlib import sha256
 from pathlib import Path
@@ -83,21 +84,23 @@ def load_versioned_json(
 ) -> Document:
     """Load and decode a document, returning a fresh fallback on any damage."""
     path = Path(path)
-    if not path.is_file():
-        return fallback()
     warn = (lambda _message: None) if warn is None else warn
     try:
-        payload, revision = read_versioned_json_snapshot(
-            path,
-            schema_version=schema_version,
-            document_name=document_name,
-            allow_older=allow_older,
-            allow_unversioned=allow_unversioned,
-        )
-        document = decode(payload)
-        if on_revision is not None:
-            on_revision(revision)
-        return document
+        try:
+            payload, revision = read_versioned_json_snapshot(
+                path,
+                schema_version=schema_version,
+                document_name=document_name,
+                allow_older=allow_older,
+                allow_unversioned=allow_unversioned,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            document = decode(payload)
+            if on_revision is not None:
+                on_revision(revision)
+            return document
     except (
         AttributeError,
         OSError,
@@ -105,8 +108,11 @@ def load_versioned_json(
         TypeError,
         ValueError,
     ) as error:
+        logging.getLogger(__name__).exception(
+            "Unable to load %s from %s; using defaults", document_name, path
+        )
         warn(f"Unable to load {document_name} from {path}: {error}")
-        return fallback()
+    return fallback()
 
 
 def write_versioned_json(

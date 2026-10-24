@@ -401,11 +401,15 @@ class StoryVoicePreviewTest(unittest.TestCase):
         self.dialog.play_selected_voice.click()
         self.preview.path.write_bytes(b"changed")
 
-        self.run_tasks()
+        with self.assertLogs("vntts.story_voice_preview_ui", level="ERROR") as logged:
+            self.run_tasks()
 
         self.player.play_bytes.assert_not_called()
         self.assertIn(
             "changed after validation", self.dialog.voice_confirmation_status.text()
+        )
+        self.assertIn(
+            "Unable to validate or start selected voice preview", logged.output[0]
         )
 
     def test_missing_narrator_explains_fallback_instead_of_using_candidate(self):

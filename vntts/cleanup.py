@@ -1,5 +1,6 @@
 """Cleanup precedence shared by resource owners and rollback operations."""
 
+import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -18,6 +19,7 @@ def attempt_cleanup(
     except BaseException as cleanup_error:
         if primary_error is None:
             raise
+        logging.getLogger(__name__).exception("%s failed", description)
         primary_error.add_note(f"{description} failed: {cleanup_error}")
         if cleanup_error is not primary_error:
             for note in getattr(cleanup_error, "__notes__", ()):

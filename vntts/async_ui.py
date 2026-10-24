@@ -1,5 +1,6 @@
 """Latest-result-wins Qt workers for blocking UI tasks."""
 
+import logging
 from collections.abc import Callable
 from functools import partial
 from time import perf_counter
@@ -34,6 +35,13 @@ class _Task(QRunnable):
             result = self.function()
         except Exception as error:
             failure = error
+            cancelled = type(error).__name__.endswith(("Cancelled", "CancelledError"))
+            logging.getLogger(__name__).log(
+                logging.INFO if cancelled else logging.ERROR,
+                "Background task %s ended with an exception",
+                _operation_name(self.function),
+                exc_info=True,
+            )
         record_background_operation(
             _operation_name(self.function),
             (perf_counter() - started) * 1000,
@@ -96,6 +104,9 @@ class LatestTaskRunner(QObject):
         try:
             self.thread_pool.start(_Task(serial, task_function, self._signals))
         except Exception as error:
+            logging.getLogger(__name__).exception(
+                "Unable to start background task %s", _operation_name(task_function)
+            )
             self._task_finished(serial, None, error)
         return serial
 

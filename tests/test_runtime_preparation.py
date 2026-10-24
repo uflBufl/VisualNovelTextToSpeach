@@ -7,7 +7,7 @@ from threading import Event
 from unittest.mock import Mock, patch
 
 from vntts.runtime_ownership import RuntimeUse, read_record
-from vntts.runtime_preparation import run_runtime_command
+from vntts.runtime_preparation import RuntimePreparationCancelled, run_runtime_command
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 
 
@@ -25,10 +25,15 @@ class RuntimePreparationTest(unittest.TestCase):
         with (
             patch("vntts.runtime_preparation.subprocess.Popen", return_value=process),
             patch("vntts.subprocess_utils.terminate_process") as terminate,
-            self.assertRaisesRegex(TTSSynthesisError, "cancelled"),
+            self.assertRaisesRegex(TTSSynthesisError, "cancelled") as caught,
         ):
             run_runtime_command(["uv"], cancellation=cancellation)
         terminate.assert_called_once_with(process)
+        self.assertIsInstance(caught.exception, RuntimePreparationCancelled)
+        self.assertEqual(
+            str(caught.exception),
+            "Speech runtime preparation cancelled. Retry when ready.",
+        )
 
     def test_subprocess_stderr_is_only_included_when_requested(self):
         process = Mock(returncode=0)

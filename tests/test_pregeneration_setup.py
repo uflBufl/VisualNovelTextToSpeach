@@ -1547,6 +1547,93 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.close()
             dialog.deleteLater()
 
+    def test_installed_stories_survive_unavailable_preparation_after_reopening(self):
+        for damaged in (False, True):
+            with self.subTest(damaged=damaged), TemporaryDirectory() as directory:
+                root = Path(directory)
+                app_data = root / "app-data"
+                path = write_story_index(
+                    app_data / "game-content" / "reverse1999" / "reverse1999"
+                ).resolve()
+                content = inspect_story_index(path)
+                jobs_root = app_data / "pregeneration" / "jobs"
+                saved = (
+                    jobs_root / "preparation.sqlite3"
+                    if damaged
+                    else jobs_root / "old-job" / "job.json"
+                )
+                saved.parent.mkdir(parents=True)
+                saved.write_bytes(b"not a usable preparation catalog")
+                original = saved.read_bytes()
+                with (
+                    patch(
+                        "vntts.pregeneration_setup.get_local_data_directory",
+                        return_value=app_data,
+                    ),
+                    patch.dict(
+                        os.environ, {"R1999_EXTRACTOR_DATA": str(root / "unused")}
+                    ),
+                    patch("vntts.pregeneration_ui.record_game_import") as record,
+                ):
+                    for reopened in (False, True):
+                        pool = ManualThreadPool()
+                        store = PregenerationJobStore(jobs_root)
+                        dialog = OfflineAudioPreparationDialog(
+                            AppSettings(), job_store=store, thread_pool=pool
+                        )
+                        self.addCleanup(dialog.deleteLater)
+                        dialog.show()
+                        self.application.processEvents()
+                        self.run_next_task(pool)
+                        self.assertEqual(dialog.current_content().story_index, path)
+                        self.assertEqual(
+                            dialog.stories.count(), len(content.selections)
+                        )
+                        self.assertIn(
+                            "Unable to restore", dialog.selection_status.text()
+                        )
+                        self.assertEqual(dialog.selected_story_ids(), ())
+                        self.assertFalse(dialog.continue_button.isEnabled())
+                        self.assertFalse(dialog.prepare_again.isEnabled())
+                        self.assertTrue(
+                            all(
+                                dialog.stories.item(row).text(1) == "Needs attention"
+                                for row in range(dialog.stories.count())
+                            )
+                        )
+                        dialog.stories.setCurrentItem(dialog.stories.item(0))
+                        self.assertFalse(dialog.check_story_audio.isEnabled())
+                        self.assertIn(
+                            str(dialog._preparation_catalog_error),
+                            dialog.story_audio_status.text(),
+                        )
+                        record.assert_any_call(
+                            "preparation-catalog",
+                            outcome="failed",
+                            reason=str(dialog._preparation_catalog_error),
+                        )
+                        with patch.object(store, "create_or_resume") as create:
+                            dialog._continue_requested()
+                            dialog._prepare_again_requested()
+                            dialog._check_story_audio()
+                        create.assert_not_called()
+                        self.assertFalse(dialog.coverage_runner.active)
+                        if not reopened:
+                            dialog._import_finished(content, None)
+                            self.assertEqual(
+                                dialog.stories.count(), len(content.selections)
+                            )
+                            self.assertIn(
+                                "Unable to restore", dialog.selection_status.text()
+                            )
+                            dialog.refresh()
+                            self.run_next_task(pool)
+                            self.assertEqual(dialog.current_content().story_index, path)
+                        dialog.close()
+                        self.assertEqual(saved.read_bytes(), original)
+                        if not damaged:
+                            self.assertFalse(store.catalog.path.exists())
+
     def test_changed_installed_game_imports_automatically_and_replaces_source(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2315,6 +2402,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.addCleanup(dialog.deleteLater)
             self.assertEqual(dialog.selected_story_ids(), ())
+            self.assertEqual(dialog.stories.count(), len(content.selections))
             self.assertIn("Unable to restore", dialog.selection_status.text())
             self.assertIn("explicit legacy migration", dialog.selection_status.text())
             self.assertFalse(dialog.continue_button.isEnabled())

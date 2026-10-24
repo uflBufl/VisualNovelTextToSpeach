@@ -297,6 +297,7 @@ class SupportCenterDialog(QDialog):
         self.refresh_reading_session()
         entries = sorted(
             self.event_log.snapshot()
+            + support.application_error_log.snapshot()
             + support.native_speech_log.snapshot()
             + support.game_import_log.snapshot(),
             key=lambda entry: str(entry.get("recorded_at", "")),

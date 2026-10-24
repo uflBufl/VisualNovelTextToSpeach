@@ -908,10 +908,12 @@ class GameProfilesDialogTest(unittest.TestCase):
                 patch.object(dialog, "_ask_name", return_value="Copy"),
                 patch.object(QMessageBox, "warning") as warning,
             ):
-                dialog.duplicate_profile()
+                with self.assertLogs("vntts.profiles_ui", level="ERROR") as logged:
+                    dialog.duplicate_profile()
 
             self.assertEqual([profile.id for profile in store.profiles], [original.id])
             self.assertIn("disk full", warning.call_args.args[-1])
+            self.assertIn("Unable to duplicate game profile", logged.output[0])
 
     def test_remove_profile_escape_keeps_profile_and_corrections(self):
         with TemporaryDirectory() as temporary_directory:

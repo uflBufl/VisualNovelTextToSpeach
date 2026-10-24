@@ -7,6 +7,22 @@ from vntts.cleanup import attempt_cleanup, cleanup_on_exit, temporary_directory
 
 
 class CleanupTest(unittest.TestCase):
+    def test_secondary_cleanup_failure_is_logged_without_replacing_primary(self):
+        primary = ValueError("operation failed")
+        cleanup_error = OSError("release failed")
+        with self.assertLogs("vntts.cleanup", level="ERROR") as logged:
+            result = attempt_cleanup(
+                Mock(side_effect=cleanup_error),
+                description="Importer process cleanup",
+                primary_error=primary,
+            )
+        self.assertFalse(result)
+        self.assertIs(logged.records[0].exc_info[1], cleanup_error)
+        self.assertIn("Importer process cleanup", logged.output[0])
+        self.assertEqual(
+            primary.__notes__, ["Importer process cleanup failed: release failed"]
+        )
+
     def test_explicit_primary_error_keeps_identity_and_cleanup_runs_once(self):
         for error_type in (OSError, KeyboardInterrupt, SystemExit):
             with self.subTest(error_type=error_type):

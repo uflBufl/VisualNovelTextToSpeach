@@ -1,5 +1,6 @@
 """Cancellable playback of a planned voice without leaving the story summary."""
 
+import logging
 from collections.abc import Sequence
 from hashlib import sha256
 from threading import Event
@@ -19,6 +20,8 @@ from vntts.pregeneration_audition_ui import (
 )
 from vntts.pregeneration_voices import VoiceGroup, VoicePlan
 from vntts.qt_audio import QtPcmPlayer
+
+logger = logging.getLogger(__name__)
 
 
 class StoryVoicePreview(QObject):
@@ -151,6 +154,8 @@ class StoryVoicePreview(QObject):
                     plan, group, source, text=text
                 )
         except (OSError, ValueError, VoiceAuditionError, PcmPlaybackError) as error:
+            if not isinstance(error, VoiceAuditionCancelled):
+                logger.exception("Unable to prepare selected voice preview")
             self._finished(None, error)
             return
         if ready is not None:
@@ -186,6 +191,7 @@ class StoryVoicePreview(QObject):
             if self.active:
                 self.statusChanged.emit("Starting selected voice preview...")
         except (OSError, ValueError) as failure:
+            logger.exception("Unable to validate or start selected voice preview")
             self._failed(f"Unable to play voice preview: {failure}")
 
     def _playback_changed(self, state: object) -> None:

@@ -18,6 +18,10 @@ if TYPE_CHECKING:
 ProgressCallback: TypeAlias = Callable[[str], None]
 
 
+class RuntimePreparationCancelled(TTSSynthesisError):
+    """The user cancelled speech runtime preparation."""
+
+
 @runtime_checkable
 class CancellationToken(Protocol):
     def is_set(self) -> bool: ...
@@ -34,7 +38,7 @@ def check_runtime_cancelled(cancellation: Cancellation) -> None:
             else cancellation()
         )
         if cancelled:
-            raise TTSSynthesisError(
+            raise RuntimePreparationCancelled(
                 "Speech runtime preparation cancelled. Retry when ready."
             )
 

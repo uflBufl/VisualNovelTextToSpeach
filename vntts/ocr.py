@@ -45,6 +45,10 @@ OcrCombinedRecognizer = Callable[
 _OcrValue = TypeVar("_OcrValue")
 
 
+class OCRPreviewCancelled(RuntimeError):
+    """The user cancelled a pending or active OCR preview."""
+
+
 def _call_ocr(
     recognizer: Callable[..., _OcrValue],
     image: Image.Image,
@@ -71,7 +75,7 @@ def _ocr_budget(
 
     def remaining() -> float | None:
         if cancelled is not None and cancelled():
-            raise RuntimeError("OCR preview cancelled")
+            raise OCRPreviewCancelled("OCR preview cancelled")
         if deadline is None:
             return None
         seconds = deadline - monotonic()

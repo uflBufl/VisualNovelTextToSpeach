@@ -1,5 +1,6 @@
 """Guided player UI for selecting content to prepare for offline speech."""
 
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -128,7 +129,7 @@ from vntts.speech_presentation import (
     speech_configuration_rows,
 )
 from vntts.story_voice_preview_ui import StoryVoicePreview
-from vntts.support import record_background_operation
+from vntts.support import record_background_operation, record_game_import
 from vntts.ui_text import (
     copy_text_button,
     make_text_copyable,
@@ -297,12 +298,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.automatic_activation = automatic_activation
         self.job_store = job_store or PregenerationJobStore()
         self._background_discovery = discovery is None
-        self.discovery = discovery or (
-            lambda: discover_game_content(
-                settings,
-                extra_paths=self.job_store.source_story_indexes(),
-            )
-        )
+        self.discovery = discovery
         self.voice_decisions = voice_decisions or VoiceDecisionStore(
             get_local_data_directory() / "pregeneration" / "voice-decisions.json",
             voice_library=self.voice_library,
@@ -1442,6 +1438,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self._summary_preview_target = target
             self.summary_voice_preview.play(plan, group, source, text)
         except (OSError, ValueError) as error:
+            logging.getLogger(__name__).exception("Unable to preview story voice")
             self._summary_preview_target = None
             self.voice_confirmation_status.setText(
                 f"Unable to preview this voice: {error}"
@@ -1643,6 +1640,7 @@ class OfflineAudioPreparationDialog(QDialog):
         try:
             self.voice_library.link_person(target, role)
         except (OSError, VoiceLibraryError) as error:
+            logging.getLogger(__name__).exception("Unable to link character names")
             self.voice_confirmation_status.setText(f"Unable to link names: {error}")
             return
         self._replan_voice_choices()
@@ -1671,6 +1669,7 @@ class OfflineAudioPreparationDialog(QDialog):
             if not self.voice_library.unlink_person(role):
                 return
         except (OSError, VoiceLibraryError) as error:
+            logging.getLogger(__name__).exception("Unable to unlink character name")
             self.voice_confirmation_status.setText(f"Unable to unlink name: {error}")
             return
         self._replan_voice_choices()
@@ -2420,6 +2419,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 "original reference."
             )
         except Exception as error:
+            logging.getLogger(__name__).exception("Unable to play original game voice")
             self.voice_confirmation_status.setText(
                 f"Unable to play the original game voice: {error}"
             )
@@ -2494,7 +2494,24 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _discover_content(self) -> ContentDiscovery:
         try:
-            discovery = self.discovery()
+            if self.discovery is not None:
+                discovery = self.discovery()
+            else:
+                errors: tuple[str, ...] = ()
+                try:
+                    extra_paths = self.job_store.source_story_indexes()
+                except (OSError, ValueError, PregenerationSetupError) as error:
+                    extra_paths = ()
+                    errors = (str(error),)
+                    record_game_import(
+                        "preparation-catalog", outcome="failed", reason=str(error)
+                    )
+                discovery = discover_game_content(
+                    self.settings, extra_paths=extra_paths
+                )
+                discovery = ContentDiscovery(
+                    discovery.content, discovery.errors + errors
+                )
         except (OSError, PregenerationSetupError) as error:
             discovery = ContentDiscovery((), (str(error),))
         if not isinstance(discovery, ContentDiscovery):
@@ -3030,6 +3047,12 @@ class OfflineAudioPreparationDialog(QDialog):
         QTimer.singleShot(0, self, self._emit_task_progress)
 
     def _set_resume_error(self, prefix: str, error: Exception | str) -> None:
+        logging.getLogger(__name__).error(
+            "%s: %s",
+            prefix,
+            error,
+            exc_info=error if isinstance(error, Exception) else None,
+        )
         self._resume_error_details = f"{prefix}: {error}"
         self._set_phase_detail(self._resume_error_details)
         self._set_selection_status(self._resume_error_details)
@@ -3377,10 +3400,17 @@ class OfflineAudioPreparationDialog(QDialog):
         self.story_audio_status.setToolTip("")
         item = self.stories.current_story_item()
         self.check_story_audio.setEnabled(
-            item is not None and not self.coverage_runner.active
+            item is not None
+            and self._preparation_catalog_error is None
+            and not self.coverage_runner.active
         )
         self.story_audio_status.setVisible(item is not None)
         if item is not None:
+            if self._preparation_catalog_error is not None:
+                self.story_audio_status.setText(
+                    f"Saved audio status unavailable: {self._preparation_catalog_error}"
+                )
+                return
             self.story_audio_status.setText(
                 f"Story details: {item.toolTip(0)} "
                 f"({item.data(0, Qt.ItemDataRole.UserRole + 5)} lines)\n"
@@ -3483,6 +3513,8 @@ class OfflineAudioPreparationDialog(QDialog):
         return ""
 
     def _check_story_audio(self) -> None:
+        if self._preparation_catalog_error is not None:
+            return
         item = self.stories.current_story_item()
         content = self.current_content()
         if item is None or content is None:
@@ -3560,6 +3592,9 @@ class OfflineAudioPreparationDialog(QDialog):
                 assert _is_story_audio_result(result)
                 saved, active, speakers = result
             else:
+                logging.getLogger(__name__).error(
+                    "Story audio check failed for %s", key[1], exc_info=error
+                )
                 saved, active, speakers = None, None, ()
             self._story_playback_speakers[key] = speakers
             self._story_audio_checks[key] = (saved, active, error)
@@ -3906,6 +3941,8 @@ class OfflineAudioPreparationDialog(QDialog):
         saved_status: str | None,
         checked: StoryAudioCheck | None,
     ) -> tuple[str, str, StoryAudioCoverage | None]:
+        if self._preparation_catalog_error is not None:
+            return "attention", str(self._preparation_catalog_error), None
         status = "unchecked" if saved_status else "not_started"
         detail = (
             "saved preparation found; audio has not been checked yet"
@@ -4027,6 +4064,9 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self._preparation_catalog_error = None
         if content is not None:
+            resumed = None
+            saved = None
+            story_statuses = {}
             try:
                 resumed = self.job_store.latest_for_content(content)
                 story_statuses = self.job_store.story_statuses(content)
@@ -4037,18 +4077,19 @@ class OfflineAudioPreparationDialog(QDialog):
                 )
             except (OSError, ValueError, PregenerationSetupError) as error:
                 self._preparation_catalog_error = error
-                self._story_job_statuses = {}
-                self.stories.blockSignals(False)
-                self._story_audio_changed()
-                self._selection_changed()
-                return
+                record_game_import(
+                    "preparation-catalog", outcome="failed", reason=str(error)
+                )
             if saved is not None:
                 self._story_selection_drafts[content.story_index_sha256] = set(saved)
             selected_ids = self._story_selection_drafts.get(
                 content.story_index_sha256,
                 set(resumed.selected_story_ids) if resumed else set(),
             )
-            self._story_selection_drafts[content.story_index_sha256] = set(selected_ids)
+            if self._preparation_catalog_error is None:
+                self._story_selection_drafts[content.story_index_sha256] = set(
+                    selected_ids
+                )
             self._story_job_statuses = story_statuses
             for selection in ordered_selections:
                 group = self._story_groups.get(selection.kind)
@@ -5436,6 +5477,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.stories.setEnabled(enabled)
         self.check_story_audio.setEnabled(
             enabled
+            and self._preparation_catalog_error is None
             and self.stories.current_story_item() is not None
             and not self.coverage_runner.active
         )

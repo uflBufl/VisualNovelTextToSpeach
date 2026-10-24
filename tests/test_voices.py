@@ -221,6 +221,7 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
                     raise cleanup_error
 
                 with (
+                    patch("vntts.cleanup.logging.getLogger"),
                     patch("vntts.voices.os.close", side_effect=fail_close) as close,
                     patch(
                         "vntts.voices.os.fstat",

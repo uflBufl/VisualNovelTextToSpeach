@@ -3,7 +3,7 @@ import unittest
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 
 from durable_file import atomic_write_bytes, atomic_write_json
 
@@ -18,6 +18,54 @@ from vntts.versioned_json import (
 
 
 class VersionedJsonTest(unittest.TestCase):
+    def test_missing_document_fallback_failure_propagates_once_without_damage_log(self):
+        failure = ValueError("fallback factory failed")
+        fallback = Mock(side_effect=failure)
+        with TemporaryDirectory() as directory:
+            with (
+                self.assertNoLogs("vntts.versioned_json"),
+                self.assertRaises(ValueError) as caught,
+            ):
+                load_versioned_json(
+                    Path(directory) / "absent.json",
+                    schema_version=1,
+                    document_name="settings",
+                    decode=dict,
+                    fallback=fallback,
+                )
+        self.assertIs(caught.exception, failure)
+        fallback.assert_called_once_with()
+
+    def test_fallback_logs_document_damage_and_read_errors_but_not_missing_files(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+
+            def load():
+                return load_versioned_json(
+                    path,
+                    schema_version=1,
+                    document_name="settings",
+                    decode=dict,
+                    fallback=dict,
+                )
+
+            with self.assertNoLogs("vntts.versioned_json"):
+                self.assertEqual(load(), {})
+            path.write_text("invalid JSON", encoding="utf-8")
+            with self.assertLogs("vntts.versioned_json", level="ERROR") as logged:
+                self.assertEqual(load(), {})
+            self.assertIn(str(path), logged.output[0])
+            self.assertIsInstance(logged.records[0].exc_info[1], ValueError)
+            failure = PermissionError("access denied")
+            with (
+                patch.object(
+                    versioned_json, "read_versioned_json_snapshot", side_effect=failure
+                ),
+                self.assertLogs("vntts.versioned_json", level="ERROR") as logged,
+            ):
+                self.assertEqual(load(), {})
+            self.assertIs(logged.records[0].exc_info[1], failure)
+
     def test_writers_preserve_the_existing_json_bytes(self):
         documents = (
             {"value": "Zażółć 🐈", "nested": {"b": 2, "a": [None, True, 1.25]}},

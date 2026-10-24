@@ -8449,7 +8449,12 @@ class TrayApplicationTest(unittest.TestCase):
                     profile_store=GameProfileStore(Path(directory) / "profiles.json"),
                 )
                 self.addCleanup(tray.shutdown)
-                read_snapshot.assert_called_once()
+                settings_reads = [
+                    call
+                    for call in read_snapshot.call_args_list
+                    if Path(call.args[0]) == path
+                ]
+                self.assertEqual(len(settings_reads), 1)
                 self.assertEqual(tray.settings.game_window_title, "Temporary game")
                 self.assertEqual(
                     tray._last_saved_settings.game_window_title, "Intervening game"

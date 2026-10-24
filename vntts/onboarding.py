@@ -1,3 +1,4 @@
+import logging
 import platform
 import sys
 from collections.abc import Callable, Mapping
@@ -144,6 +145,9 @@ class OnboardingDiagnostics:
         if accessibility is False and needs_accessibility:
             missing.append("Accessibility for auto advance")
         if missing:
+            logging.getLogger(__name__).error(
+                "Readiness permissions missing: %s", ", ".join(missing)
+            )
             return DiagnosticResult(
                 "macOS permissions",
                 "error",
@@ -153,6 +157,9 @@ class OnboardingDiagnostics:
                 "permissions",
             )
         if screen_capture is None or (needs_accessibility and accessibility is None):
+            logging.getLogger(__name__).warning(
+                "Readiness could not determine required macOS permissions"
+            )
             return DiagnosticResult(
                 "macOS permissions",
                 "warning",
@@ -173,11 +180,15 @@ class OnboardingDiagnostics:
                 }
             )
         except HotkeyValidationError as error:
+            logging.getLogger(__name__).exception("Readiness hotkey validation failed")
             return DiagnosticResult("Hotkeys", "error", str(error), "settings")
         return DiagnosticResult("Hotkeys", "ok", "Read and live hotkeys are valid")
 
     def _check_capture_source(self, settings: AppSettings) -> DiagnosticResult:
         if settings.capture_mode == "window" and not settings.game_window_title:
+            logging.getLogger(__name__).error(
+                "Readiness capture source unavailable: no game window selected"
+            )
             return DiagnosticResult(
                 "Capture source",
                 "error",
@@ -195,6 +206,9 @@ class OnboardingDiagnostics:
         try:
             version = self.tesseract_probe()
         except Exception as error:
+            logging.getLogger(__name__).exception(
+                "Readiness Tesseract OCR probe failed"
+            )
             return DiagnosticResult(
                 "Tesseract OCR", "error", str(error), "external-ocr"
             )
@@ -204,10 +218,12 @@ class OnboardingDiagnostics:
         try:
             device = self.audio_probe()
         except AudioRuntimeUnavailable as error:
+            logging.getLogger(__name__).exception("Readiness audio runtime unavailable")
             return DiagnosticResult(
                 "Audio output", "error", str(error), "external-audio-runtime"
             )
         except Exception as error:
+            logging.getLogger(__name__).exception("Readiness audio output probe failed")
             return DiagnosticResult(
                 "Audio output", "error", str(error), "external-audio"
             )
@@ -222,6 +238,9 @@ class OnboardingDiagnostics:
             try:
                 executable, model, _sidecar = moss_cpp_paths(settings.tts_model)
             except Exception as error:
+                logging.getLogger(__name__).exception(
+                    "Readiness MOSS C++ runtime probe failed for %s", settings.tts_model
+                )
                 return DiagnosticResult(
                     "MOSS C++ runtime", "error", str(error), "settings"
                 )
@@ -231,6 +250,10 @@ class OnboardingDiagnostics:
                 f"Found {executable.name} and {model.name}; render test still required",
             )
         if not packaged_speech_backend_available(settings.speech_backend):
+            logging.getLogger(__name__).error(
+                "Readiness speech backend unavailable in package: %s",
+                settings.speech_backend,
+            )
             return DiagnosticResult(
                 "Speech runtime",
                 "error",
@@ -251,17 +274,27 @@ class OnboardingDiagnostics:
                     _isolated_runtime_backend(settings.speech_backend)
                 )
             except Exception as error:
+                logging.getLogger(__name__).exception(
+                    "Readiness speech runtime probe failed for %s",
+                    settings.speech_backend,
+                )
                 return DiagnosticResult(name, "error", str(error), "settings")
             return DiagnosticResult(name, "ok", f"Installed at {runtime}")
 
         model_name = settings.tts_model
         if not model_name:
+            logging.getLogger(__name__).error(
+                "Readiness speech model is not configured"
+            )
             return DiagnosticResult(
                 "Speech model", "error", "No model configured", "settings"
             )
         try:
             model_path = self.model_path_resolver(model_name)
         except Exception as error:
+            logging.getLogger(__name__).exception(
+                "Readiness speech model probe failed for %s", model_name
+            )
             return DiagnosticResult("Speech model", "error", str(error), "settings")
         if Path(model_path).is_dir():
             return DiagnosticResult("Speech model", "ok", f"Cached at {model_path}")
@@ -283,6 +316,9 @@ class OnboardingDiagnostics:
                 settings.speech_backend == "coqui-xtts"
                 and not settings.narrator_speaker
             ):
+                logging.getLogger(__name__).error(
+                    "Readiness XTTS narrator voice or voice pack is not configured"
+                )
                 return DiagnosticResult(
                     "Character voices",
                     "error",
@@ -298,6 +334,9 @@ class OnboardingDiagnostics:
         try:
             registry = CharacterVoiceRegistry.from_file(settings.voice_manifest)
         except VoiceManifestError as error:
+            logging.getLogger(__name__).exception(
+                "Readiness voice manifest probe failed for %s", settings.voice_manifest
+            )
             return DiagnosticResult("Character voices", "error", str(error), "settings")
 
         voices = registry.unique_voices()
@@ -308,6 +347,11 @@ class OnboardingDiagnostics:
             if not reference.is_file()
         ]
         if missing:
+            logging.getLogger(__name__).error(
+                "Readiness voice reference was not found: %s (manifest %s)",
+                missing[0],
+                settings.voice_manifest,
+            )
             return DiagnosticResult(
                 "Character voices",
                 "error",

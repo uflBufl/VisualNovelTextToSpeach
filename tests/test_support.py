@@ -1903,6 +1903,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
                     "active-content.json",
                     "pregeneration.json",
                     "runtime-events.json",
+                    "application-errors.json",
                     "game-import.json",
                     "performance.json",
                     "native-speech.json",

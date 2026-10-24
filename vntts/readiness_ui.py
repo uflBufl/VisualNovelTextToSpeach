@@ -1,3 +1,5 @@
+import logging
+
 from PySide6.QtCore import Qt, QThreadPool, QUrl, Signal
 from PySide6.QtGui import (
     QCloseEvent,
@@ -233,6 +235,9 @@ class ReadinessDialog(QDialog):
             self._results = ()
             self.table.setRowCount(0)
             reason = error if error is not None else "Readiness results are malformed"
+            logging.getLogger(__name__).error(
+                "Readiness checks failed: %s", reason, exc_info=error
+            )
             self.summary.setText(f"Checks failed: {reason}")
             self._update_remediation()
             return

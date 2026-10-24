@@ -1,5 +1,6 @@
 """Application controller and live-reading orchestration."""
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, ExitStack, nullcontext
@@ -958,6 +959,10 @@ class AppController:
                 self.settings.live_speaker_corpus
             )
         except (OSError, TypeError, ValueError) as error:
+            logging.getLogger(__name__).exception(
+                "Unable to load live speaker corpus %s",
+                self.settings.live_speaker_corpus,
+            )
             self.live_speaker_corpus_error = str(error)
 
     def _revalidate_live_speaker_corpus(self) -> bool:
@@ -968,6 +973,10 @@ class AppController:
         try:
             self.live_speaker_corpus.revalidate()
         except (OSError, TypeError, ValueError) as error:
+            logging.getLogger(__name__).exception(
+                "Unable to revalidate live speaker corpus %s",
+                self.settings.live_speaker_corpus,
+            )
             self.live_speaker_corpus_error = str(error)
             return False
         self.live_speaker_corpus_error = None
@@ -1553,6 +1562,11 @@ class AppController:
                     "Live sequence cursor factory returned an invalid cursor"
                 )
         except Exception as error:
+            logging.getLogger(__name__).exception(
+                "Unable to load live sequence plan %s with story index %s",
+                self.settings.live_sequence_plan,
+                self.settings.story_index,
+            )
             self.status_handler(f"Sequence-first rollout disabled: {error}")
             self._publish_live_sequence_status()
             return False

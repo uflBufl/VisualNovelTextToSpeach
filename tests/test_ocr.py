@@ -13,9 +13,11 @@ from pytesseract import pytesseract as pytesseract_runtime
 from vntts.ocr import (
     DialogRegion,
     OCRPreprocessingProfile,
+    OCRPreviewCancelled,
     OCRRegions,
     OCRResult,
     UncertainFrameRecorder,
+    _ocr_budget,
     calculate_ocr_confidence,
     clean_dialog_lines,
     clean_dialog_lines_from_data,
@@ -35,6 +37,13 @@ from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class OCRPreprocessingTest(unittest.TestCase):
+    def test_cancelled_budget_has_a_typed_runtime_error_without_changing_message(self):
+        remaining = _ocr_budget(None, lambda: True)
+        with self.assertRaises(RuntimeError) as caught:
+            remaining()
+        self.assertIsInstance(caught.exception, OCRPreviewCancelled)
+        self.assertEqual(str(caught.exception), "OCR preview cancelled")
+
     @staticmethod
     def _short_dialogue(text="Hmm?", *, light_background=False):
         background, scenery, foreground = (

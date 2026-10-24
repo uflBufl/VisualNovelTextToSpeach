@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
@@ -303,6 +304,7 @@ def inspect_story_index(
     cpu_started = process_time()
     path = Path(path).expanduser().resolve()
     if not path.is_file():
+        logging.getLogger(__name__).error("Story content was not found: %s", path)
         raise PregenerationSetupError(f"Story content was not found: {path}")
     try:
         size = path.stat().st_size
@@ -360,7 +362,14 @@ def inspect_story_index(
             )
             if persistent_cache:
                 _save_story_catalog(content, evidence_sha256)
-    except (OSError, StoryIndexError, ValueError) as error:
+        content = _with_game_id(content, _adapter_game_id(content.game, provider_id))
+        content = _with_game_id(content, game_id)
+    except (OSError, StoryIndexError, ValueError, PregenerationSetupError) as error:
+        logging.getLogger(__name__).exception(
+            "Unable to inspect story index %s (provider %s)", path, provider_id
+        )
+        if isinstance(error, PregenerationSetupError):
+            raise
         raise PregenerationSetupError(f"Story content is invalid: {error}") from error
     from vntts.support import record_background_operation
 
@@ -376,8 +385,7 @@ def inspect_story_index(
         "complete",
         **details,
     )
-    content = _with_game_id(content, _adapter_game_id(content.game, provider_id))
-    return _with_game_id(content, game_id)
+    return content
 
 
 def _story_catalog_path(checksum: str) -> Path:
@@ -442,6 +450,12 @@ def _load_story_catalog(
         )
         return content
     except OSError, KeyError, TypeError, ValueError:
+        logging.getLogger(__name__).warning(
+            "Unable to load derived story catalog %s for %s; rebuilding",
+            catalog,
+            path,
+            exc_info=True,
+        )
         return None
 
 
@@ -482,7 +496,11 @@ def _save_story_catalog(content: GameContent, evidence_sha256: str) -> None:
             },
         )
     except OSError, ValueError:
-        pass
+        logging.getLogger(__name__).warning(
+            "Unable to save derived story catalog for %s",
+            content.story_index,
+            exc_info=True,
+        )
 
 
 def _cached_story_selection(document: object) -> StorySelection:
@@ -646,10 +664,19 @@ def discover_game_content(
     seen: set[Path] = set()
     for raw_path, provider_id in candidates:
         path = Path(raw_path).expanduser().resolve()
-        if path in seen or not path.is_file():
+        if path in seen:
+            continue
+        if not path.is_file():
+            if provider_id == "configured-story-index":
+                logging.getLogger(__name__).error(
+                    "Configured story content was not found: %s", path
+                )
             continue
         seen.add(path)
         if _is_outdated_reverse1999_index(path):
+            logging.getLogger(__name__).warning(
+                "Ignoring outdated Reverse: 1999 story index %s", path
+            )
             errors.append(
                 "Outdated Reverse: 1999 story content was ignored. Import the "
                 "installed game again to rebuild its story catalog."
@@ -676,17 +703,35 @@ def discover_game_content(
 
                 try:
                     imported = import_game_pack(settings.game_pack)
-                except (GamePackError, OSError, ValueError) as error:
+                    if (
+                        imported.story_index == path
+                        and imported.pack.story_index.sha256
+                        == content.story_index_sha256
+                    ):
+                        content = _with_game_id(content, imported.pack.game_id)
+                except (
+                    GamePackError,
+                    OSError,
+                    ValueError,
+                    PregenerationSetupError,
+                ) as error:
+                    logging.getLogger(__name__).exception(
+                        "Unable to admit configured game pack %s for story index %s",
+                        settings.game_pack,
+                        path,
+                    )
+                    if isinstance(error, PregenerationSetupError):
+                        raise
                     raise PregenerationSetupError(
                         f"Configured game pack is invalid: {error}"
                     ) from error
-                if (
-                    imported.story_index == path
-                    and imported.pack.story_index.sha256 == content.story_index_sha256
-                ):
-                    content = _with_game_id(content, imported.pack.game_id)
             discovered.append(content)
-        except (OSError, PregenerationSetupError) as error:
+        except (OSError, ValueError) as error:
+            logging.getLogger(__name__).exception(
+                "Unable to discover story content %s (provider %s)", path, provider_id
+            )
+            errors.append(str(error))
+        except PregenerationSetupError as error:
             errors.append(str(error))
     discovered.sort(key=lambda content: len(content.selections), reverse=True)
     return ContentDiscovery(tuple(discovered), tuple(errors))
@@ -798,6 +843,11 @@ class PregenerationJobStore:
         try:
             return operation(*args, **kwargs)
         except PreparationCatalogError as error:
+            logging.getLogger(__name__).exception(
+                "Preparation catalog operation %s failed at %s",
+                getattr(operation, "__name__", "unknown"),
+                self.catalog.path,
+            )
             raise PregenerationSetupError(str(error)) from error
 
     def selection_for_content(self, content: GameContent) -> tuple[str, ...] | None:

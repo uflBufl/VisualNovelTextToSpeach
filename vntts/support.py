@@ -2,6 +2,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import logging
 import marshal
 import math
 import platform
@@ -9,9 +10,12 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import traceback
 import zipfile
 from collections import Counter, OrderedDict, deque
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, fields
 from datetime import datetime, timezone
@@ -19,7 +23,8 @@ from functools import lru_cache
 from pathlib import Path
 from statistics import mean
 from threading import RLock
-from typing import TYPE_CHECKING, Callable, Mapping, TypedDict
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Callable, Mapping, TypedDict
 from uuid import UUID
 
 from vntts_artifacts.atomic_io import atomic_output_path
@@ -195,7 +200,20 @@ live_scope_fields = (
     "active_live_fallback_count",
 )
 
-runtime_event_fields = (*audio_route_fields, *live_scope_fields)
+application_error_fields = (
+    "logger",
+    "operation",
+    "exception_type",
+    "traceback",
+    "thread_name",
+    "source_file",
+    "source_line",
+)
+runtime_event_fields = (
+    *audio_route_fields,
+    *live_scope_fields,
+    *application_error_fields,
+)
 
 generation_timeline_stages = (
     "capture",
@@ -791,6 +809,7 @@ class RuntimeSupportLog:
         self.lock = RLock()
         self.path = Path(path).expanduser() if path is not None else None
         self.detail_fields = tuple(detail_fields)
+        self.persistence_error: str | None = None
 
     def add(self, level: object, message: object, **details: object) -> None:
         with self.lock:
@@ -806,8 +825,8 @@ class RuntimeSupportLog:
             if self.path is not None:
                 try:
                     self._persist_locked()
-                except OSError:
-                    pass
+                except OSError as error:
+                    self.persistence_error = _redact_game_import_text(error)
 
     def _bounded_message(self, message: object) -> str:
         value = str(message)
@@ -848,7 +867,10 @@ class RuntimeSupportLog:
 
 
 def _read_bounded_json_lines(
-    path: Path | None, maximum_bytes: int
+    path: Path | None,
+    maximum_bytes: int,
+    *,
+    on_error: Callable[[OSError], None] | None = None,
 ) -> tuple[SupportDocument, ...]:
     if path is None:
         return ()
@@ -858,7 +880,11 @@ def _read_bounded_json_lines(
             offset = max(0, source.tell() - maximum_bytes)
             source.seek(offset)
             payload = source.read(maximum_bytes)
-    except OSError:
+    except FileNotFoundError:
+        return ()
+    except OSError as error:
+        if on_error is not None:
+            on_error(error)
         return ()
     if offset:
         payload = payload.split(b"\n", 1)[-1]
@@ -871,6 +897,134 @@ def _read_bounded_json_lines(
         if isinstance(entry, dict):
             entries.append(entry)
     return tuple(entries)
+
+
+application_error_log = RuntimeSupportLog(detail_fields=application_error_fields)
+_application_error_handler: logging.Handler | None = None
+
+
+class _ApplicationErrorHandler(logging.Handler):
+    def __init__(self, event_log: RuntimeSupportLog) -> None:
+        super().__init__(logging.WARNING)
+        self.event_log = event_log
+        self._emitting = threading.local()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if getattr(self._emitting, "active", False):
+            return
+        self._emitting.active = True
+        try:
+            details: dict[str, object] = {
+                "logger": record.name,
+                "operation": record.funcName,
+                "thread_name": record.threadName,
+                "source_file": record.pathname,
+                "source_line": record.lineno,
+            }
+            if record.exc_info and record.exc_info[0] is not None:
+                details["exception_type"] = record.exc_info[0].__name__
+                trace = "".join(traceback.format_exception(*record.exc_info))
+                if len(trace) > 12_000:
+                    trace = trace[:6000] + "\n... <truncated> ...\n" + trace[-5500:]
+                details["traceback"] = _redact_game_import_text(trace)
+            self.event_log.add(
+                record.levelname.lower(),
+                _redact_game_import_text(record.getMessage()),
+                **details,
+            )
+        except Exception as error:
+            # Reporting failure must never replace the application failure.
+            self.event_log.persistence_error = _redact_game_import_text(error)
+        finally:
+            self._emitting.active = False
+
+
+def configure_application_error_log(
+    path: str | Path | None = None,
+) -> RuntimeSupportLog:
+    global application_error_log, _application_error_handler
+    root = logging.getLogger()
+    if _application_error_handler is not None:
+        root.removeHandler(_application_error_handler)
+        _application_error_handler.close()
+    application_error_log = RuntimeSupportLog(
+        path=path, detail_fields=application_error_fields
+    )
+
+    def retain_read_failure(error: OSError) -> None:
+        application_error_log.persistence_error = _redact_game_import_text(
+            f"Unable to restore application error log: {error}"
+        )
+        # Preserve unreadable evidence instead of overwriting it with this run.
+        application_error_log.path = None
+
+    for entry in _read_bounded_json_lines(
+        application_error_log.path,
+        application_error_log.maximum_bytes,
+        on_error=retain_read_failure,
+    ):
+        if not isinstance(entry.get("level"), str) or entry["level"] not in {
+            "warning",
+            "error",
+            "critical",
+        }:
+            continue
+        application_error_log.entries.append(sanitize_event(entry))
+    _application_error_handler = _ApplicationErrorHandler(application_error_log)
+    root.addHandler(_application_error_handler)
+    return application_error_log
+
+
+@contextmanager
+def capture_unhandled_errors() -> Iterator[None]:
+    """Keep Python/Qt callbacks and worker-thread failures in the ordinary report."""
+    previous_system = sys.excepthook
+    previous_thread = threading.excepthook
+    previous_unraisable = sys.unraisablehook
+    logger = logging.getLogger("vntts.unhandled")
+
+    def system_hook(
+        error_type: type[BaseException],
+        error: BaseException,
+        trace: TracebackType | None,
+    ) -> None:
+        if not issubclass(error_type, (KeyboardInterrupt, SystemExit)):
+            logger.critical(
+                "Unhandled application exception", exc_info=(error_type, error, trace)
+            )
+        previous_system(error_type, error, trace)
+
+    def thread_hook(args: threading.ExceptHookArgs) -> None:
+        if not issubclass(args.exc_type, (KeyboardInterrupt, SystemExit)):
+            logger.critical(
+                "Unhandled worker-thread exception",
+                exc_info=(args.exc_type, args.exc_value, args.exc_traceback)
+                if args.exc_value is not None
+                else None,
+            )
+        previous_thread(args)
+
+    def unraisable_hook(args: Any) -> None:
+        logger.error(
+            "Unraisable application exception",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+        previous_unraisable(args)
+
+    sys.excepthook = system_hook
+    threading.excepthook = thread_hook
+    sys.unraisablehook = unraisable_hook
+    try:
+        yield
+    except Exception:
+        logger.critical(
+            "Application startup, event loop or shutdown failed", exc_info=True
+        )
+        raise
+    finally:
+        sys.excepthook = previous_system
+        threading.excepthook = previous_thread
+        sys.unraisablehook = previous_unraisable
 
 
 generation_stall_phases = frozenset(
@@ -2459,6 +2613,12 @@ class SupportBundleBuilder:
             },
             "runtime-events.json": {
                 "events": [sanitize_event(entry) for entry in self.event_log.snapshot()]
+            },
+            "application-errors.json": {
+                "events": [
+                    sanitize_event(entry) for entry in application_error_log.snapshot()
+                ],
+                "persistence_error": application_error_log.persistence_error,
             },
             "game-import.json": {
                 "events": [

@@ -1,4 +1,5 @@
 import argparse
+import logging
 import sys
 from collections import deque
 from collections.abc import Callable, Iterator, Sequence
@@ -172,7 +173,9 @@ from vntts.support import (
     RuntimeSupportLog,
     SupportBundleBuilder,
     SupportDocument,
+    capture_unhandled_errors,
     collect_active_content_identity,
+    configure_application_error_log,
     configure_audio_lifecycle_log,
     configure_game_import_log,
     configure_generation_stall_log,
@@ -1888,6 +1891,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._settings_revision: bytes | None = None
         self._last_saved_settings: AppSettings | None = None
         uses_saved_settings = settings is None
+        configure_application_error_log(
+            get_local_data_directory() / "errors.log" if uses_saved_settings else None
+        )
         self.previous_session: SupportDocument = (
             preserve_previous_session(get_local_data_directory())
             if uses_saved_settings
@@ -3459,6 +3465,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.diagnostics_dialog.set_snapshot(snapshot)
 
     def set_diagnostics_error(self, message: str) -> None:
+        logging.getLogger(__name__).warning("Live diagnostics: %s", message)
         if self.diagnostics_dialog is not None:
             self.diagnostics_dialog.set_warning(
                 message,
@@ -4789,6 +4796,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
             self.set_status("Diagnostic session started." + identity)
         except Exception as error:
+            logging.getLogger(__name__).exception("Unable to start diagnostic session")
             if self.support_dialog is not None:
                 self.support_dialog.set_reading_start_error(
                     f"Unable to start diagnostics: {error}"
@@ -4856,6 +4864,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         try:
             self.open_diagnostics()
         except Exception as error:
+            logging.getLogger(__name__).exception("Unable to open live diagnostics")
             if self.support_dialog is not None:
                 self.support_dialog.set_launcher_result(
                     "diagnostics", False, f"Unable to open live diagnostics: {error}"
@@ -4870,6 +4879,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         try:
             path = self.open_settings_folder()
         except Exception as error:
+            logging.getLogger(__name__).exception("Unable to open settings folder")
             if self.support_dialog is not None:
                 self.support_dialog.set_launcher_result(
                     "settings-folder",
@@ -5383,6 +5393,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._apply_runtime_control_state(self._runtime_control_state())
 
     def show_error(self, message: str) -> None:
+        logging.getLogger(__name__).error(
+            "Application action failed: %s", message, exc_info=sys.exception()
+        )
         self.support_log.add("error", message)
         self.set_status(message)
         self._show_tray_notification(
@@ -5393,6 +5406,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def report_controller_error(self, error: BaseException) -> None:
+        logging.getLogger(__name__).error("Controller operation failed", exc_info=error)
         message = format_runtime_error(error)
         self.last_controller_error = message
         self.signals.error_reported.emit(message)
@@ -5538,7 +5552,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments, qt_arguments = parser.parse_known_args(
         sys.argv[1:] if argv is None else argv
     )
-    configure_bundled_dependencies()
+    release_smoke = any(
+        value is not None
+        for name, value in vars(arguments).items()
+        if name.startswith("release_smoke_test_")
+    )
+    if not any(
+        (
+            arguments.game_content_import_worker,
+            arguments.source_audio_publisher_worker,
+            arguments.offline_generation_worker,
+            arguments.prepared_sequence_worker,
+            arguments.package_self_test,
+            release_smoke,
+        )
+    ):
+        configure_application_error_log(get_local_data_directory() / "errors.log")
+    try:
+        configure_bundled_dependencies()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Unable to configure bundled dependencies"
+        )
+        raise
     if arguments.game_content_import_worker == "reverse1999":
         from r1999extractor.bootstrap import main as reverse1999_bootstrap_main
 
@@ -5561,11 +5597,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _worker_exit_code(live_sequence_main(qt_arguments))
     if arguments.package_self_test:
         return run_package_self_test(arguments.package_self_test_report).exit_code
-    if any(
-        value is not None
-        for name, value in vars(arguments).items()
-        if name.startswith("release_smoke_test_")
-    ):
+    if release_smoke:
         return run_release_smoke_test(
             image_path=arguments.release_smoke_test_image,
             window_title=arguments.release_smoke_test_window_title,
@@ -5581,31 +5613,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         ).exit_code
 
-    enable_windows_dpi_awareness()
-    application = QApplication.instance()
-    if not isinstance(application, QApplication):
-        application = QApplication([sys.argv[0], *qt_arguments])
-    application.setApplicationName(application_name)
-    application.setQuitOnLastWindowClosed(False)
-    from vntts.system_audio import initialize_audio_device_monitor
+    with capture_unhandled_errors():
+        enable_windows_dpi_awareness()
+        application = QApplication.instance()
+        if not isinstance(application, QApplication):
+            application = QApplication([sys.argv[0], *qt_arguments])
+        application.setApplicationName(application_name)
+        application.setQuitOnLastWindowClosed(False)
+        from vntts.system_audio import initialize_audio_device_monitor
 
-    initialize_audio_device_monitor()
-    tray_application = TrayApplication(application)
-    with (
-        cleanup_on_exit(
-            lambda: tray_application.generation_timelines.stop_acquisition(
-                timeout=0.25
+        initialize_audio_device_monitor()
+        tray_application = TrayApplication(application)
+        with (
+            cleanup_on_exit(
+                lambda: tray_application.generation_timelines.stop_acquisition(
+                    timeout=0.25
+                ),
+                description="Timeline acquisition stop",
             ),
-            description="Timeline acquisition stop",
-        ),
-        cleanup_on_exit(tray_application.shutdown, description="Application shutdown"),
-    ):
-        if arguments.timeline_journal is not None:
-            tray_application.generation_timelines.start_acquisition(
-                arguments.timeline_journal
-            )
-        tray_application.start()
-        return application.exec()
+            cleanup_on_exit(
+                tray_application.shutdown, description="Application shutdown"
+            ),
+        ):
+            if arguments.timeline_journal is not None:
+                tray_application.generation_timelines.start_acquisition(
+                    arguments.timeline_journal
+                )
+            tray_application.start()
+            return application.exec()
 
 
 if __name__ == "__main__":

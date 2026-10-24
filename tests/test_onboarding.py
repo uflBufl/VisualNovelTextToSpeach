@@ -44,6 +44,24 @@ def granted_permissions():
 
 
 class OnboardingDiagnosticsTest(unittest.TestCase):
+    def test_failed_readiness_probe_logs_the_original_exception_chain(self):
+        cause = OSError("device disconnected")
+        failure = RuntimeError("audio probe failed")
+        failure.__cause__ = cause
+        diagnostics = OnboardingDiagnostics(audio_probe=Mock(side_effect=failure))
+        with self.assertLogs("vntts.onboarding", level="ERROR") as logged:
+            result = diagnostics._check_audio()
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.message, "audio probe failed")
+        self.assertIs(logged.records[0].exc_info[1], failure)
+        self.assertIn("device disconnected", logged.output[0])
+        with self.assertLogs("vntts.onboarding", level="ERROR") as logged:
+            result = diagnostics._check_capture_source(
+                AppSettings(capture_mode="window")
+            )
+        self.assertEqual(result.status, "error")
+        self.assertIn("no game window selected", logged.output[0])
+
     def test_missing_audio_runtime_has_installation_remediation_and_can_recover(self):
         from vntts.rust_audio import AudioRuntimeUnavailable
 
