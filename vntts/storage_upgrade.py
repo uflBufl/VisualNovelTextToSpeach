@@ -12,6 +12,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import traceback
 from collections.abc import Sequence
 from contextlib import ExitStack, closing
 from pathlib import Path
@@ -19,6 +20,7 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 
 from vntts.audio_store import (
     _CATALOG_SCHEMA,
+    AudioStorageUpgradeRequired,
     SharedAudioStore,
     _read_wav,
     _sync_directory,
@@ -47,7 +49,10 @@ from vntts.path_safety import copy_regular_file, read_regular_bytes
 from vntts.pregeneration_queue import _validate_input_publication
 from vntts.pregeneration_setup import PregenerationJob, job_schema_version
 from vntts.pregeneration_voices import _decision_key, voice_plan_schema_version
-from vntts.preparation_catalog import PreparationCatalog
+from vntts.preparation_catalog import (
+    PreparationCatalog,
+    PreparationCatalogUpgradeRequired,
+)
 
 
 class StorageUpgradeError(ValueError):
@@ -60,12 +65,10 @@ class _Upgrade:
         root: Path,
         backup: Path,
         *,
-        apply: bool,
         workspace_roots: Sequence[Path] = (),
     ) -> None:
         self.root = root.resolve()
         self.backup_root = backup.resolve()
-        self.apply = apply
         self.roots = (self.root, *(path.absolute() for path in workspace_roots))
         self.publications: dict[Path, tuple[bytes, str]] = {}
         self.sources: dict[Path, str] = {}
@@ -507,12 +510,11 @@ def _decisions(upgrade: _Upgrade, path: Path, catalog: PreparationCatalog) -> No
         existing = catalog.decision(key)
         if existing is not None and existing != value["source_id"]:
             raise StorageUpgradeError("Voice decision conflicts with SQLite")
-    if upgrade.apply:
-        catalog.save_decisions(values, replace=False)
-        if any(
-            catalog.decision(key) != value["source_id"] for key, value in values.items()
-        ):
-            raise StorageUpgradeError("Voice decision readback differs")
+    catalog.save_decisions(values, replace=False)
+    if any(
+        catalog.decision(key) != value["source_id"] for key, value in values.items()
+    ):
+        raise StorageUpgradeError("Voice decision readback differs")
     upgrade.counted("voice_decisions")
 
 
@@ -520,10 +522,14 @@ def _job(upgrade: _Upgrade, path: Path, catalog: PreparationCatalog) -> None:
     document = upgrade.document(path, job_schema_version)
     job = PregenerationJob.from_document(document)
     canonical = job.to_document()
-    if (
-        job.job_id != path.parent.name
-        or {k: v for k, v in document.items() if k != "schema_version"} != canonical
-    ):
+    legacy = {key: value for key, value in document.items() if key != "schema_version"}
+    estimate = legacy["estimate"]
+    assert isinstance(estimate, dict)
+    estimate = dict(estimate)
+    for field in ("generation_text_characters", "rough_audio_seconds"):
+        estimate.setdefault(field, 0)
+    legacy["estimate"] = estimate
+    if job.job_id != path.parent.name or legacy != canonical:
         raise StorageUpgradeError("Job directory or document identity changed")
     catalog.save_job(canonical, replace=False)
     if catalog.load_job(job.job_id) != canonical:
@@ -602,16 +608,18 @@ def _generation_input(
     upgrade.counted("generation_inputs")
 
 
+_PREPARATION_SOURCES = (
+    ("*/job.json", _job),
+    ("selections/*.json", _selection),
+    ("*/voice-plan.json", _voice_plan),
+    ("*/generation-input-*/input.json", _generation_input),
+)
+
+
 def _preparation_documents(
     upgrade: _Upgrade, jobs: Path, catalog: PreparationCatalog
 ) -> None:
-    sources = (
-        ("*/job.json", _job),
-        ("selections/*.json", _selection),
-        ("*/voice-plan.json", _voice_plan),
-        ("*/generation-input-*/input.json", _generation_input),
-    )
-    for pattern, handler in sources:
+    for pattern, handler in _PREPARATION_SOURCES:
         for path in sorted(jobs.glob(pattern)):
             handler(upgrade, path, catalog)
             upgrade.retire([path])
@@ -716,16 +724,78 @@ def _workspace(upgrade: _Upgrade, root: Path) -> None:
         )
 
 
+_AUDIO_STORES = (
+    "audio-cache/pocket-tts",
+    "audio-cache/moss-tts",
+    "audio-cache/chatterbox-nano",
+    "audio-cache/qwen-tts",
+    "pregeneration/jobs/audio-store",
+    "pregeneration/jobs/synthesis-cache/audio",
+)
+
+
+def storage_upgrade_required(root: Path) -> bool:
+    """Inspect existing authority without creating or upgrading any storage."""
+    if root.is_symlink() or root.is_junction():
+        raise StorageUpgradeError("Data root must be an existing regular directory")
+    if not root.exists():
+        return False
+    if not root.is_dir():
+        raise StorageUpgradeError("Data root must be an existing regular directory")
+    upgrade = _Upgrade(root, root.parent)
+    jobs = upgrade.root / "pregeneration" / "jobs"
+    upgrade.safe_path(jobs)
+    catalog = PreparationCatalog(jobs, owned_root=True)
+    required = False
+    try:
+        with catalog._connection():
+            pass
+    except PreparationCatalogUpgradeRequired:
+        required = True
+        if not catalog.path.exists():
+            _check_preparation_inventory(jobs)
+    for pattern, _handler in _PREPARATION_SOURCES:
+        for path in jobs.glob(pattern):
+            upgrade.safe_path(path)
+            required = True
+    decisions = jobs.parent / "voice-decisions.json"
+    upgrade.safe_path(decisions)
+    required |= decisions.exists()
+    for relative in _AUDIO_STORES:
+        directory = upgrade.root / relative
+        upgrade.safe_path(directory)
+        if not directory.exists():
+            continue
+        if not directory.is_dir():
+            raise StorageUpgradeError(f"Audio store is not a directory: {directory}")
+        store = SharedAudioStore(directory)
+        store._check_catalog_paths(store.catalog_path)
+        if store.catalog_path.exists():
+            try:
+                with closing(
+                    sqlite3.connect(store.catalog_path.as_uri() + "?mode=ro", uri=True)
+                ) as connection:
+                    connection.execute("PRAGMA trusted_schema=OFF")
+                    try:
+                        store._validate_catalog(connection)
+                    except AudioStorageUpgradeRequired:
+                        required = True
+            except sqlite3.Error as error:
+                raise StorageUpgradeError(
+                    f"Unable to inspect audio catalog {store.catalog_path}: {error}"
+                ) from error
+        legacy_bindings = False
+        for path in (directory / "bindings").glob("*.json"):
+            upgrade.safe_path(path)
+            required = True
+            legacy_bindings = True
+        if not store.catalog_path.exists() and not legacy_bindings:
+            store._require_empty_store()
+    return required
+
+
 def _inventory(upgrade: _Upgrade) -> None:
-    stores = (
-        "audio-cache/pocket-tts",
-        "audio-cache/moss-tts",
-        "audio-cache/chatterbox-nano",
-        "audio-cache/qwen-tts",
-        "pregeneration/jobs/audio-store",
-        "pregeneration/jobs/synthesis-cache/audio",
-    )
-    for relative in stores:
+    for relative in _AUDIO_STORES:
         store = upgrade.root / relative
         upgrade.safe_path(store)
         if store.exists():
@@ -787,15 +857,90 @@ def _fresh_readback(path: Path, kind: str, payload: bytes) -> None:
     if kind == "marker":
         return
     expected = _readback_digest(path, kind)
-    code = "from pathlib import Path; from vntts.storage_upgrade import _readback_digest; import sys; print(_readback_digest(Path(sys.argv[1]), sys.argv[2]))"
-    result = subprocess.run(
-        [sys.executable, "-c", code, str(path), kind],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    if result.stdout.strip() != expected or sha256_file(path) != digest:
+    if getattr(sys, "frozen", False):
+        with TemporaryDirectory(prefix="vntts-storage-readback-") as directory:
+            result_path = Path(directory).resolve() / "digest.txt"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "--storage-upgrade-readback",
+                    str(path),
+                    kind,
+                    str(result_path),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            try:
+                observed = read_regular_bytes(result_path).decode("utf-8").strip()
+            except (OSError, UnicodeError) as error:
+                detail = (result.stderr or result.stdout or str(error))[-12_000:]
+                raise StorageUpgradeError(
+                    f"Fresh-process readback produced no readable result for {path}: {detail}"
+                ) from error
+            if result.returncode:
+                raise StorageUpgradeError(
+                    f"Fresh-process readback failed for {path}: {observed[-12_000:]}"
+                )
+    else:
+        code = "from pathlib import Path; from vntts.storage_upgrade import _readback_digest; import sys; print(_readback_digest(Path(sys.argv[1]), sys.argv[2]))"
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", code, str(path), kind],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except subprocess.CalledProcessError as error:
+            detail = (error.stderr or error.stdout or str(error))[-12_000:]
+            raise StorageUpgradeError(
+                f"Fresh-process readback failed for {path}: {detail}"
+            ) from error
+        observed = result.stdout.strip()
+    if observed != expected or sha256_file(path) != digest:
         raise StorageUpgradeError(f"Fresh-process readback differs: {path}")
+
+
+def readback_main(argv: Sequence[str]) -> int:
+    """Validate one published catalog in a frozen worker without starting Qt."""
+    filenames = {
+        "audio": "audio-catalog.sqlite3",
+        "preparation": "preparation.sqlite3",
+        "generation": "generation-state.sqlite3",
+    }
+    if len(argv) != 3 or argv[1] not in filenames:
+        raise StorageUpgradeError(
+            "Readback requires a path, supported storage kind and result path"
+        )
+    path = Path(argv[0])
+    result_path = Path(argv[2])
+    if not result_path.is_absolute():
+        raise StorageUpgradeError("Readback result path must be absolute")
+    for candidate in (result_path, *result_path.parents):
+        if candidate.is_symlink() or candidate.is_junction():
+            raise StorageUpgradeError("Readback result path must not be a link")
+    with result_path.open("x", encoding="utf-8") as stream:
+        try:
+            if (
+                not path.is_absolute()
+                or not path.is_file()
+                or path.name != filenames[argv[1]]
+            ):
+                raise StorageUpgradeError(
+                    "Readback requires an absolute supported SQLite file path"
+                )
+            _check_sqlite_source(path)
+            digest = _readback_digest(path, argv[1])
+        except Exception as error:
+            stream.write(
+                "ERROR\n" + "".join(traceback.format_exception(error))[-12_000:]
+            )
+            return 1
+        stream.write(digest + "\n")
+    return 0
 
 
 def _publish(upgrade: _Upgrade, target: Path, payload: bytes) -> None:
@@ -857,7 +1002,7 @@ def upgrade_storage(
     if backup.absolute().is_relative_to(root.absolute()):
         raise StorageUpgradeError("Backup must be outside the active data root")
     _safe_backup_path(backup.absolute(), backup.absolute())
-    upgrade = _Upgrade(root, backup, apply=False, workspace_roots=workspace_roots)
+    upgrade = _Upgrade(root, backup, workspace_roots=workspace_roots)
     _inventory(upgrade)
     upgrade.verify_sources()
     upgrade.check_backups()

@@ -9533,6 +9533,29 @@ class TrayApplicationTest(unittest.TestCase):
         self_test.assert_called_once_with("custom-report.json")
         application.assert_not_called()
 
+    def test_storage_upgrade_readback_does_not_start_qt_or_bundled_dependencies(self):
+        with (
+            patch("vntts.storage_upgrade.readback_main", return_value=0) as readback,
+            patch("vntts.app.configure_bundled_dependencies") as dependencies,
+            patch("vntts.app.QApplication") as application,
+        ):
+            self.assertEqual(
+                main(
+                    [
+                        "--storage-upgrade-readback",
+                        "preparation.sqlite3",
+                        "preparation",
+                        "result.txt",
+                    ]
+                ),
+                0,
+            )
+        readback.assert_called_once_with(
+            ["preparation.sqlite3", "preparation", "result.txt"]
+        )
+        application.assert_not_called()
+        dependencies.assert_not_called()
+
     def test_release_smoke_test_does_not_start_qt_application(self):
         with (
             patch("vntts.app.configure_bundled_dependencies"),

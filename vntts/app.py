@@ -5549,9 +5549,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument("--storage-upgrade-readback", nargs=3, help=argparse.SUPPRESS)
     arguments, qt_arguments = parser.parse_known_args(
         sys.argv[1:] if argv is None else argv
     )
+    if arguments.storage_upgrade_readback is not None:
+        from vntts.storage_upgrade import readback_main
+
+        return readback_main(arguments.storage_upgrade_readback)
     release_smoke = any(
         value is not None
         for name, value in vars(arguments).items()
@@ -5620,6 +5625,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             application = QApplication([sys.argv[0], *qt_arguments])
         application.setApplicationName(application_name)
         application.setQuitOnLastWindowClosed(False)
+        from vntts.storage_upgrade_ui import offer_storage_upgrade
+
+        offer_storage_upgrade(get_local_data_directory())
         from vntts.system_audio import initialize_audio_device_monitor
 
         initialize_audio_device_monitor()

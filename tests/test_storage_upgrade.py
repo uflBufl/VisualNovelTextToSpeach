@@ -26,8 +26,17 @@ from vntts.generation_database import read_state
 from vntts.pregeneration_queue import load_generation_input_metadata
 from vntts.pregeneration_setup import PregenerationJobStore, job_schema_version
 from vntts.pregeneration_voices import VoicePlanStore, voice_plan_schema_version
-from vntts.preparation_catalog import PreparationCatalog
-from vntts.storage_upgrade import StorageUpgradeError, upgrade_storage
+from vntts.preparation_catalog import (
+    PreparationCatalog,
+    PreparationCatalogError,
+    PreparationCatalogUpgradeRequired,
+)
+from vntts.storage_upgrade import (
+    StorageUpgradeError,
+    readback_main,
+    storage_upgrade_required,
+    upgrade_storage,
+)
 from vntts.synthesis import SynthesisCompletion
 from vntts.versioned_json import write_versioned_json
 
@@ -111,6 +120,271 @@ class StorageUpgradeTest(unittest.TestCase):
         jobs.catalog.required_marker.unlink()
         sources = {path: path.read_bytes() for path in (*documents, generated.state)}
         return prepared, plan, job, sources
+
+    def test_detection_finds_each_legacy_authority_without_mutation(self):
+        catalog = PreparationCatalog(self.root / "pregeneration/jobs", owned_root=True)
+        catalog.initialize()
+        before = self.snapshot(self.root)
+        self.assertFalse(storage_upgrade_required(self.root))
+        self.assertEqual(self.snapshot(self.root), before)
+        job_id = "a" * 24
+        for relative in (
+            f"pregeneration/jobs/{job_id}/job.json",
+            f"pregeneration/jobs/{job_id}/voice-plan.json",
+            f"pregeneration/jobs/{job_id}/generation-input-test/input.json",
+            "pregeneration/jobs/selections/selection.json",
+            "pregeneration/voice-decisions.json",
+            "audio-cache/moss-tts/bindings/key.json",
+        ):
+            with self.subTest(relative=relative):
+                path = self.root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}", encoding="utf-8")
+                before = self.snapshot(self.root)
+                self.assertTrue(storage_upgrade_required(self.root))
+                self.assertEqual(self.snapshot(self.root), before)
+                path.unlink()
+        absent = self.parent / "not-created"
+        self.assertFalse(storage_upgrade_required(absent))
+        self.assertFalse(absent.exists())
+
+    def test_detection_recognizes_v1_and_incomplete_preparation_without_upgrading(self):
+        for version_one in (False, True):
+            with self.subTest(version_one=version_one):
+                root = self.root / str(version_one)
+                catalog = PreparationCatalog(
+                    root / "pregeneration/jobs", owned_root=True
+                )
+                catalog.initialize()
+                with closing(sqlite3.connect(catalog.path)) as connection:
+                    if version_one:
+                        connection.execute("DROP TABLE input_publications")
+                        connection.execute("DROP TABLE catalog_state")
+                        connection.execute("PRAGMA user_version=1")
+                    else:
+                        connection.execute(
+                            "UPDATE catalog_state SET migration_complete=0"
+                        )
+                    connection.commit()
+                before = self.snapshot(root)
+                self.assertTrue(storage_upgrade_required(root))
+                self.assertEqual(self.snapshot(root), before)
+
+    def test_reserved_job_directories_without_authority_offer_safe_initialization(self):
+        jobs = self.root / "pregeneration/jobs"
+        for name in ("selections", "story-snapshots"):
+            (jobs / name).mkdir(parents=True)
+        before = self.snapshot(self.root)
+        self.assertTrue(storage_upgrade_required(self.root))
+        self.assertEqual(self.snapshot(self.root), before)
+        self.assertFalse((jobs / "preparation.sqlite3").exists())
+
+    def test_detection_refuses_lost_or_corrupt_preparation_before_offering_upgrade(
+        self,
+    ):
+        for corrupt in (False, True):
+            with self.subTest(corrupt=corrupt):
+                root = self.root / str(corrupt)
+                catalog = PreparationCatalog(
+                    root / "pregeneration/jobs", owned_root=True
+                )
+                catalog.initialize()
+                if corrupt:
+                    catalog.path.write_bytes(b"corrupt SQLite")
+                else:
+                    catalog.path.unlink()
+                before = self.snapshot(root)
+                with self.assertRaises(PreparationCatalogError) as caught:
+                    storage_upgrade_required(root)
+                self.assertNotIsInstance(
+                    caught.exception, PreparationCatalogUpgradeRequired
+                )
+                self.assertEqual(self.snapshot(root), before)
+
+    def test_legacy_job_estimate_defaults_are_admitted_without_inventing_identity(self):
+        _prepared, _plan, job, _sources = self.legacy_preparation()
+        path = self.root / "pregeneration/jobs" / job.job_id / "job.json"
+        document = json.loads(path.read_bytes())
+        for field in ("game_id", "source_story_index", "source_story_index_sha256"):
+            document.pop(field, None)
+        for field in ("generation_text_characters", "rough_audio_seconds"):
+            document["estimate"].pop(field)
+        path.write_text(json.dumps(document), encoding="utf-8")
+        original = path.read_bytes()
+        self.assertTrue(storage_upgrade_required(self.root))
+        upgrade_storage(self.root, self.backup, apply=True)
+        loaded = PregenerationJobStore(self.root / "pregeneration/jobs").load(
+            job.job_id
+        )
+        self.assertEqual(loaded.selected_line_ids, job.selected_line_ids)
+        self.assertIsNone(loaded.game_id)
+        self.assertIsNone(loaded.source_story_index)
+        self.assertEqual(loaded.estimate.generation_text_characters, 0)
+        self.assertEqual(loaded.estimate.rough_audio_seconds, 0)
+        self.assert_backed_up(path, original)
+        self.assertFalse(storage_upgrade_required(self.root))
+
+    def test_legacy_job_unknown_or_conflicting_fields_are_still_refused(self):
+        _prepared, _plan, job, _sources = self.legacy_preparation()
+        path = self.root / "pregeneration/jobs" / job.job_id / "job.json"
+        document = json.loads(path.read_bytes())
+        for mutation in (
+            "unknown_job",
+            "unknown_estimate",
+            "job_identity",
+            "invalid_default",
+        ):
+            with self.subTest(mutation=mutation):
+                value = json.loads(json.dumps(document))
+                if mutation == "unknown_job":
+                    value["unknown"] = "preserve me"
+                elif mutation == "unknown_estimate":
+                    value["estimate"]["unknown"] = 1
+                elif mutation == "job_identity":
+                    value["job_id"] = "b" * 24
+                else:
+                    value["estimate"]["rough_audio_seconds"] = None
+                path.write_text(json.dumps(value), encoding="utf-8")
+                self.assert_refused_without_mutation()
+
+    def test_legacy_voice_decisions_are_staged_and_verified_before_retirement(self):
+        path = self.root / "pregeneration/voice-decisions.json"
+        path.parent.mkdir(parents=True)
+        context = "a" * 64
+        group_id = "b" * 64
+        key = upgrade_module._decision_key(group_id, context)
+        write_versioned_json(
+            path,
+            1,
+            {
+                "decisions": {
+                    key: {
+                        "group_id": group_id,
+                        "decision_context_sha256": context,
+                        "source_id": "preset:alba",
+                        "decided_at": "2026-10-15T00:00:00Z",
+                    }
+                }
+            },
+        )
+        original = path.read_bytes()
+        self.assertTrue(storage_upgrade_required(self.root))
+        before = self.snapshot(self.root)
+        upgrade_storage(self.root, self.backup)
+        self.assertEqual(self.snapshot(self.root), before)
+        upgrade_storage(self.root, self.backup, apply=True)
+        catalog = PreparationCatalog(self.root / "pregeneration/jobs", owned_root=True)
+        self.assertEqual(catalog.decision(key), "preset:alba")
+        self.assertFalse(path.exists())
+        self.assert_backed_up(path, original)
+
+    def test_current_audio_detection_uses_only_read_only_catalog_metadata(self):
+        store = SharedAudioStore(self.root / "audio-cache/moss-tts")
+        store.initialize()
+        before = self.snapshot(self.root)
+        with (
+            patch.object(
+                upgrade_module._Upgrade,
+                "capture",
+                side_effect=AssertionError("full catalog read"),
+            ),
+            patch.object(
+                upgrade_module._Upgrade,
+                "verify_sources",
+                side_effect=AssertionError("catalog rehash"),
+            ),
+        ):
+            self.assertFalse(storage_upgrade_required(self.root))
+        self.assertEqual(self.snapshot(self.root), before)
+        with closing(sqlite3.connect(store.catalog_path)) as connection:
+            connection.execute("DROP TABLE unavailable_keys")
+            connection.execute(
+                "CREATE TABLE legacy_errors (filename TEXT PRIMARY KEY NOT NULL, error TEXT NOT NULL)"
+            )
+            connection.execute("PRAGMA user_version=1")
+            connection.commit()
+        before = self.snapshot(self.root)
+        self.assertTrue(storage_upgrade_required(self.root))
+        self.assertEqual(self.snapshot(self.root), before)
+
+    def test_frozen_fresh_readback_uses_result_file_instead_of_stdout(self):
+        catalog = PreparationCatalog(self.root / "pregeneration/jobs", owned_root=True)
+        catalog.initialize()
+        digest = upgrade_module._readback_digest(catalog.path, "preparation")
+        output_paths = []
+
+        def child(command, **_options):
+            self.assertEqual(
+                command[:4],
+                [
+                    upgrade_module.sys.executable,
+                    "--storage-upgrade-readback",
+                    str(catalog.path),
+                    "preparation",
+                ],
+            )
+            result_path = Path(command[4])
+            output_paths.append(result_path)
+            with patch.object(upgrade_module.sys, "stdout", None):
+                self.assertEqual(readback_main(command[2:]), 0)
+            self.assertEqual(result_path.read_text(encoding="ascii").strip(), digest)
+            return CompletedProcess(command, 0, stdout=None)
+
+        with (
+            patch.object(upgrade_module.sys, "frozen", True, create=True),
+            patch.object(upgrade_module.subprocess, "run", side_effect=child),
+        ):
+            upgrade_module._fresh_readback(
+                catalog.path, "preparation", catalog.path.read_bytes()
+            )
+        self.assertEqual(len(output_paths), 1)
+        self.assertFalse(output_paths[0].parent.exists())
+
+    def test_readback_rejects_unknown_paths_kinds_and_existing_result_files(self):
+        catalog = PreparationCatalog(self.root / "pregeneration/jobs", owned_root=True)
+        catalog.initialize()
+        output = self.parent / "readback.txt"
+        for arguments in (
+            (),
+            (str(catalog.path), "preparation"),
+            (str(catalog.path), "unknown", str(output)),
+            (str(catalog.path), "preparation", "relative-result"),
+        ):
+            with (
+                self.subTest(arguments=arguments),
+                self.assertRaises(StorageUpgradeError),
+            ):
+                readback_main(arguments)
+        output.write_text("existing evidence", encoding="ascii")
+        with self.assertRaises(FileExistsError):
+            readback_main((str(catalog.path), "preparation", str(output)))
+        self.assertEqual(output.read_text(encoding="ascii"), "existing evidence")
+
+    def test_frozen_readback_preserves_child_failure_without_stdout(self):
+        catalog = PreparationCatalog(self.root / "pregeneration/jobs", owned_root=True)
+        catalog.initialize()
+        payload = catalog.path.read_bytes()
+        failure = RuntimeError("Child catalog admission failed")
+
+        def child(command, **options):
+            self.assertFalse(options["check"])
+            with (
+                patch.object(upgrade_module.sys, "stdout", None),
+                patch.object(upgrade_module, "_readback_digest", side_effect=failure),
+            ):
+                returncode = readback_main(command[2:])
+            self.assertEqual(returncode, 1)
+            return CompletedProcess(command, returncode, stdout=None, stderr=None)
+
+        with (
+            patch.object(upgrade_module.sys, "frozen", True, create=True),
+            patch.object(upgrade_module.subprocess, "run", side_effect=child),
+            self.assertRaisesRegex(
+                StorageUpgradeError, "Child catalog admission failed"
+            ),
+        ):
+            upgrade_module._fresh_readback(catalog.path, "preparation", payload)
+        self.assertEqual(catalog.path.read_bytes(), payload)
 
     def test_dry_run_reads_the_complete_inventory_without_creating_any_files(self):
         self.legacy_audio()

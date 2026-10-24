@@ -16,11 +16,33 @@ from vntts.pregeneration_setup import (
     PregenerationSetupError,
     inspect_story_index,
 )
-from vntts.preparation_catalog import PreparationCatalog, PreparationCatalogError
+from vntts.preparation_catalog import (
+    PreparationCatalog,
+    PreparationCatalogError,
+    PreparationCatalogUpgradeRequired,
+)
 from vntts.versioned_json import write_versioned_json
 
 
 class PreparationCatalogTest(unittest.TestCase):
+    def test_upgrade_required_distinguishes_legacy_authority_from_lost_catalog(self):
+        with TemporaryDirectory() as temporary:
+            catalog = PreparationCatalog(Path(temporary) / "jobs", owned_root=True)
+            legacy = catalog.path.parent / ("a" * 24) / "job.json"
+            legacy.parent.mkdir(parents=True)
+            legacy.write_bytes(b"legacy job authority")
+            with self.assertRaises(PreparationCatalogUpgradeRequired):
+                catalog.jobs()
+            self.assertFalse(catalog.path.exists())
+            catalog.required_marker.touch()
+            with self.assertRaises(PreparationCatalogError) as caught:
+                catalog.jobs()
+            self.assertNotIsInstance(
+                caught.exception, PreparationCatalogUpgradeRequired
+            )
+            self.assertIn("restore", str(caught.exception))
+            self.assertFalse(catalog.path.exists())
+
     def test_interrupted_schema_creation_never_publishes_empty_database(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

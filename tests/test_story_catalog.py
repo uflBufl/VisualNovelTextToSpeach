@@ -1,10 +1,12 @@
 import hashlib
+import os
 import sqlite3
 import unittest
 from contextlib import closing, contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from vntts_artifacts.story_index import load_story_index_document
@@ -332,6 +334,80 @@ class StoryCatalogTest(unittest.TestCase):
             path.write_bytes(path.read_bytes() + b" ")
 
         with patch("vntts.story_catalog.open_regular_binary", change_source_after_read):
+            with self.assertRaisesRegex(StoryCatalogError, "source changed"):
+                storage.save(document, story=story)
+        self.assertEqual(storage.path.read_bytes(), original)
+        self.assertEqual(list(self.catalog.parent.glob(".story-catalog-*")), [])
+
+    def test_stable_source_allows_different_fd_and_path_ctime(self):
+        storage, document = self.indexed_catalog()
+        story = load_story_index_document(self.path)
+        original_fstat = story_catalog.os.fstat
+
+        def different_ctime(descriptor):
+            info = original_fstat(descriptor)
+            values = {
+                name: getattr(info, name)
+                for name in dir(info)
+                if name.startswith("st_")
+            }
+            values["st_ctime_ns"] += 1000
+            return SimpleNamespace(**values)
+
+        with patch("vntts.story_catalog.os.fstat", side_effect=different_ctime):
+            storage.save(document, story=story)
+        self.assertIsNotNone(
+            storage.record_locations(
+                document["source_story_index_sha256"],
+                document["source_audio_semantic_evidence_sha256"],
+                ("reverse1999:3",),
+            )
+        )
+
+    def test_fd_ctime_change_preserves_previous_complete_index(self):
+        storage, document = self.indexed_catalog()
+        original = storage.path.read_bytes()
+        story = load_story_index_document(self.path)
+        original_fstat = story_catalog.os.fstat
+        calls = 0
+
+        def changed_ctime(descriptor):
+            nonlocal calls
+            info = original_fstat(descriptor)
+            values = {
+                name: getattr(info, name)
+                for name in dir(info)
+                if name.startswith("st_")
+            }
+            calls += 1
+            if calls == 3:  # Regular-file admission, then before/after the source read.
+                values["st_ctime_ns"] += 1000
+            return SimpleNamespace(**values)
+
+        with patch("vntts.story_catalog.os.fstat", side_effect=changed_ctime):
+            with self.assertRaisesRegex(StoryCatalogError, "source changed"):
+                storage.save(document, story=story)
+        self.assertEqual(storage.path.read_bytes(), original)
+        self.assertEqual(list(self.catalog.parent.glob(".story-catalog-*")), [])
+
+    def test_same_content_source_replacement_preserves_previous_complete_index(self):
+        storage, document = self.indexed_catalog()
+        original = storage.path.read_bytes()
+        story = load_story_index_document(self.path)
+
+        @contextmanager
+        def replace_source_after_read(path):
+            with open_regular_binary(path) as stream:
+                yield stream
+            info = path.stat()
+            replacement = path.with_name("replacement.jsonl")
+            replacement.write_bytes(path.read_bytes())
+            os.utime(replacement, ns=(info.st_atime_ns, info.st_mtime_ns))
+            replacement.replace(path)
+
+        with patch(
+            "vntts.story_catalog.open_regular_binary", replace_source_after_read
+        ):
             with self.assertRaisesRegex(StoryCatalogError, "source changed"):
                 storage.save(document, story=story)
         self.assertEqual(storage.path.read_bytes(), original)

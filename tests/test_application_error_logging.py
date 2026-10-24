@@ -70,7 +70,7 @@ class ApplicationErrorLoggingTest(unittest.TestCase):
             text = json.dumps(report)
             for expected in (
                 "explicit legacy migration",
-                "PreparationCatalogError",
+                "PreparationCatalogUpgradeRequired",
                 "PregenerationSetupError",
                 "_check_missing_catalog",
                 "_catalog_call",

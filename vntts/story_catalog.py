@@ -522,12 +522,13 @@ class StoryCatalog:
             "st_mode",
             "st_size",
             "st_mtime_ns",
-            "st_ctime_ns",
         )
+        # Windows stat() and fstat() can expose different meanings for ctime.
         if (
             next(records, None) is not None
             or offset != before.st_size
             or digest.hexdigest() != document["source_story_index_sha256"]
+            or before.st_ctime_ns != after.st_ctime_ns
             or any(
                 getattr(before, field) != getattr(info, field)
                 for info in (after, current)

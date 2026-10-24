@@ -117,6 +117,10 @@ class PreparationCatalogError(ValueError):
     """The local catalog is unsafe, unsupported, or invalid."""
 
 
+class PreparationCatalogUpgradeRequired(PreparationCatalogError):
+    """Legacy preparation authority requires the explicit offline upgrade."""
+
+
 def _verify_catalog(connection: sqlite3.Connection, *, upgrade: bool = False) -> None:
     version = connection.execute("PRAGMA user_version").fetchone()[0]
     application = connection.execute("PRAGMA application_id").fetchone()[0]
@@ -172,7 +176,12 @@ class PreparationCatalog:
                 for path in self.path.parent.iterdir()
             )
         ):
-            raise PreparationCatalogError(
+            if self.required_marker.exists():
+                raise PreparationCatalogError(
+                    "Previously initialized preparation catalog is missing; restore "
+                    "preparation.sqlite3 from its verified backup before continuing"
+                )
+            raise PreparationCatalogUpgradeRequired(
                 "Preparation catalog is missing from an existing jobs directory; "
                 "restore preparation.sqlite3 or run the explicit legacy migration"
             )
@@ -236,7 +245,7 @@ class PreparationCatalog:
             else None
         )
         if complete is None or complete[0] != 1:
-            raise PreparationCatalogError(
+            raise PreparationCatalogUpgradeRequired(
                 "Preparation catalog requires the explicit legacy migration "
                 "to finish before offline preparation can resume"
             )

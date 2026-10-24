@@ -2,7 +2,7 @@
 
 ## Active - Windows story import and persistence
 
-- [ ] Verify the affected Windows installation by ordinary launch/reproduction and a support ZIP with the new automatic logging. If legacy data requires migration, prepare a validated offline upgrade with a separate backup.
+- [ ] Verify the affected Windows installation by ordinary launch/reproduction and a support ZIP after the update.
 
 ## Active - Finish diagnostic-session native acceptance
 
