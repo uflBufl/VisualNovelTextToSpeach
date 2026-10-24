@@ -502,7 +502,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertIn("Playable line", tooltip)
             self.assertIn("Morning", tooltip)
             self.assertNotIn("abcdef123456", panel.voice_reference.currentText())
-            self.assertIn("Voice: Game voice", panel.a_reason.text())
+            self.assertIn("Voice: Rhiannon (game voice)", panel.a_reason.text())
             self.assertNotIn("abcdef123456", panel.a_reason.text())
             self.assertIn("Original spoken text: Good morning", panel.a_reason.text())
             self.assertNotIn("Greeting:", panel.a_reason.text())
@@ -2566,7 +2566,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 self.assertEqual(clicked.call_count, 1)
                 dialog.voice_panel.shutdown()
 
-    def test_inspected_voice_updates_route_without_replanning_or_checking_audio(self):
+    def test_inspected_voice_updates_route_and_rechecks_saved_audio(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             dialog, pool, plan, group, decisions, voice_plan_store = (
@@ -2607,31 +2607,18 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
             self.assertFalse(dialog.auditioning_voices)
-            self.assertTrue(dialog._awaiting_voice_confirmation)
-            self.assertFalse(dialog.preparing_inputs)
+            self.assertFalse(dialog._awaiting_voice_confirmation)
+            self.assertTrue(dialog.preparing_inputs)
             self.assertEqual(voice_plan_store.create.call_count, 1)
             voice_plan_store.apply_saved_choice.assert_called_once()
             self.assertEqual(dialog.voice_plan().groups[0].route, "voice")
-            self.assertIn(
-                "Not selected for this preparation", dialog.confirmed_narrator.text()
-            )
-            self.assertNotIn("Marius", dialog.confirmed_narrator.text())
-            fallback = dialog.voice_routes.item(0).data(
-                int(Qt.ItemDataRole.UserRole) + 2
-            )
-            self.assertEqual(fallback[1], "Narrator required")
-            self.assertEqual(fallback[4], "Choose a narrator voice before generation")
             self.assertEqual(
                 decisions.choice_for(group.group_id, group.decision_context_sha256),
                 group.candidates[0].source_id,
             )
-            self.assertEqual(len(pool.tasks), 0)
-            dialog.narrator_choice.addItem("Marius", "preset:marius")
-            dialog.narrator_choice.setCurrentIndex(dialog.narrator_choice.count() - 1)
-            self.assertIn("Marius", dialog.confirmed_narrator.text())
-            dialog.continue_button.click()
-            self.assertTrue(dialog.preparing_inputs)
             self.assertEqual(len(pool.tasks), 1)
+            self.assertTrue(dialog.input_runner.active)
+            self.assertIn("Checking", dialog.resume_status.text())
             dialog.voice_panel.shutdown()
             dialog.deleteLater()
 

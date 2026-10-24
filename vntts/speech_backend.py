@@ -93,7 +93,11 @@ def _read_cached_audio(
         return audio, "memory-cache"
     if persistent_key is None:
         return None, "fresh-generation"
-    audio = persistent.get(persistent_key)
+    audio = (
+        persistent.get(persistent_key)
+        if persistent.max_entries > 0
+        else persistent.get_existing(persistent_key)
+    )
     if audio is not None:
         memory.put(key, audio)
         return audio, "persistent-cache"
@@ -718,7 +722,10 @@ class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
         persistent_key = (
             self._persistent_cache_key(request.voice, spoken_text)
             if cache_policy is not SynthesisCachePolicy.BYPASS
-            and self.persistent_audio_cache.max_entries > 0
+            and (
+                self.persistent_audio_cache.max_entries > 0
+                or (self.persistent_audio_cache.directory / "bindings").is_dir()
+            )
             else None
         )
         started = self.clock()
@@ -1261,7 +1268,10 @@ class PocketTTSVoiceRouterBackend:
         persistent_key = (
             self._persistent_cache_key(voice_key, spoken_text, source)
             if cache_policy is not SynthesisCachePolicy.BYPASS
-            and self.persistent_audio_cache.max_entries > 0
+            and (
+                self.persistent_audio_cache.max_entries > 0
+                or (self.persistent_audio_cache.directory / "bindings").is_dir()
+            )
             else None
         )
         cached_audio, cache_source = _read_cached_audio(
@@ -2019,7 +2029,10 @@ class MossTTSVoiceRouterBackend:
                 generation_options=generation_options,
             )
             if cache_policy is not SynthesisCachePolicy.BYPASS
-            and self.persistent_audio_cache.max_entries > 0
+            and (
+                self.persistent_audio_cache.max_entries > 0
+                or (self.persistent_audio_cache.directory / "bindings").is_dir()
+            )
             else None
         )
         cached_audio, cache_source = _read_cached_audio(

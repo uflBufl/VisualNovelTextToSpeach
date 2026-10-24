@@ -202,13 +202,20 @@ def load_generation_state_from_snapshot(
     queue_sha256: str,
     *,
     state_document: StateObject | None = None,
+    selected_line_ids: frozenset[str] | None = None,
 ) -> StateObject:
-    """Validate a state against queue bytes already captured by the caller."""
+    """Validate captured queue authority and optionally only selected lines' WAVs."""
     state_path = Path(state_path).expanduser().resolve()
     state = (
         _read_generation_state(state_path) if state_document is None else state_document
     )
-    _validate_state_document(state, state_path.parent, queue, queue_sha256)
+    _validate_state_document(
+        state,
+        state_path.parent,
+        queue,
+        queue_sha256,
+        selected_line_ids=selected_line_ids,
+    )
     return state
 
 
@@ -386,6 +393,8 @@ def _validate_state_document(
     output_directory: Path,
     queue: VoiceGenerationQueue | None,
     queue_sha256: str | None,
+    *,
+    selected_line_ids: frozenset[str] | None = None,
 ) -> None:
     schema_pair = (state.get("schema"), state.get("schema_version"))
     if type(state.get("schema_version")) is not int or schema_pair not in {
@@ -409,8 +418,18 @@ def _validate_state_document(
         None if queue is None else {item.queue_id: item for item in queue.items}
     )
     for queue_id, result in state_items.items():
+        item = None if queue_by_id is None else queue_by_id.get(queue_id)
         _validate_state_item(
-            queue_id, result, output_directory, queue_by_id, state["schema"]
+            queue_id,
+            result,
+            output_directory,
+            queue_by_id,
+            state["schema"],
+            validate_files=(
+                selected_line_ids is None
+                or item is None
+                or item.line_id in selected_line_ids
+            ),
         )
     _validate_reviewed_waveform_publication(state, queue_by_id)
     _validate_state_active(state, queue_by_id)
@@ -441,6 +460,8 @@ def _validate_state_item(
     output_directory: Path,
     queue_by_id: QueueById | None,
     state_schema: object,
+    *,
+    validate_files: bool = True,
 ) -> None:
     if not isinstance(queue_id, str) or (
         queue_by_id is not None and queue_id not in queue_by_id
@@ -467,7 +488,12 @@ def _validate_state_item(
         _validate_synthesis_identity(result, queue_id, queue_item)
     else:
         _validate_success_item(
-            queue_id, result, output_directory, queue_item, state_schema=state_schema
+            queue_id,
+            result,
+            output_directory,
+            queue_item,
+            state_schema=state_schema,
+            validate_files=validate_files,
         )
     _validate_failure_repair_record(result, queue_id, queue_item)
     _validate_seed_application(result, queue_id)
@@ -2542,6 +2568,7 @@ def _validate_success_item(
     queue_item: VoiceGenerationQueueItem | None,
     *,
     state_schema: object,
+    validate_files: bool = True,
 ) -> None:
     if queue_item is not None and (
         result.get("line_id") != queue_item.line_id
@@ -2558,6 +2585,8 @@ def _validate_success_item(
         result.get("path"), f"State item {queue_id!r} path"
     )
     audio = contained_generation_path(output_directory, relative, "Generated WAV")
+    if not validate_files:
+        return
     quality, samples = validate_success_file_with_samples(queue_id, result, audio)
     if state_schema == STATE_SCHEMA:
         _validate_success_speech_quality(result, queue_id, quality, samples)

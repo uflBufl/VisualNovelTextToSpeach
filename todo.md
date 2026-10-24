@@ -1285,22 +1285,14 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 
 - [ ] Before shipping frozen macOS/Windows builds, smoke-test preview ASR spawn from the packaged entrypoint: start checking during playback, play ready audio during checking, cancel/close and reopen. Confirm no second desktop window, no surviving ASR worker and continued prefetch. Source-mode Mac qualification and early-dispatch unit tests do not establish bundled behavior; record entrypoint/build, worker PID lifecycle and timing for this packaged run.
 
-## Remaining - Selective character regeneration
+## Remaining - Shared audio storage
 
 - [ ] Qualify shared WAV hard links on the supported Windows filesystem and in
       packaged builds. Keep explicit same-filesystem/link errors and existing audio
       intact; do not add a silent copy fallback. Controlled Mac UI runs and unit
       tests do not qualify these platforms or neural-model/hardware behavior.
-- [ ] Retain the legacy NPY reader until an explicit migration has visited all
-      supported existing cache roots with the backend's known sample rate and
-      verified that no unmigrated NPY entries remain. New writes use WAV only;
-      unmatched legacy data must remain recoverable. Remove the parser and its
-      compatibility tests only after that migration gate is met.
-- [ ] **P2 - Make character-change scope and source labels explicit.** Confirmation
-      now counts reused recordings correctly, but both original and replacement
-      imported sources still appear as Game voice. Show old/new source and separate
-      the changed character's lines from previously missing lines in checked
-      stories. Add character-only regeneration separately from whole-story
-      completion: a partial five-ready case should render only Zuzanna :6/:8 for
-      the former, and also missing Everecho :5 for the latter. Verify embedded
-      Voices-to-Stories navigation and final labels in the real desktop app.
+- [ ] Retain the legacy NPY reader until proven sample-rate/model provenance is recovered for
+      the 16 remaining local synthesis arrays (5 Pocket, 2 MOSS live, 9 offline).
+      Keep those originals recoverable; migrate and verify restart lookup before
+      removing the parser and compatibility tests. The 542 proven arrays are
+      already migrated; other machines still require their own explicit inventory.

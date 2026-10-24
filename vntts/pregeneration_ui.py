@@ -147,6 +147,7 @@ from vntts.voices import (
     remember_voice_binding,
     voice_binding_label,
     voice_binding_source_id,
+    voice_source_label,
 )
 
 StoryAudioKey: TypeAlias = tuple[str | None, str, str | None]
@@ -344,6 +345,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.discovery_runner.finished.connect(self._discovery_finished)
         self.coverage_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.coverage_runner.finished.connect(self._story_audio_finished)
+        self._story_check_timer = QTimer(self)
+        self._story_check_timer.setSingleShot(True)
+        self._story_check_timer.timeout.connect(self._queue_story_checks)
         self._story_audio_cancel_event = Event()
         self._checking_story_ids: tuple[str, ...] = ()
         self.saved_pack_runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -437,6 +441,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self._story_job_statuses: dict[str, str] = {}
         self._job: PregenerationJob | None = None
         self._voice_plan: VoicePlan | None = None
+        self._voice_plan_before_edit: VoicePlan | None = None
+        self._voice_change_rows: tuple[tuple[str, str], ...] = ()
         self._prepared_voice_manifest: str | Path | None = None
         self._prepared_voice_job: str | None = None
         self._generation_input: PregenerationInput | None = None
@@ -1716,6 +1722,9 @@ class OfflineAudioPreparationDialog(QDialog):
         return_to_confirmation = (
             self._awaiting_voice_confirmation and self._job is not None
         )
+        previous_counts = self._changes_rows
+        if voice_changed:
+            self._voice_plan_before_edit = self._voice_plan
         self.settings = settings
         self._cancel_story_audio_check()
         self._story_audio_changed()
@@ -1740,7 +1749,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._generation_result = None
         self._recovery_result = None
         self._pack_result = None
-        self._changes_rows = ()
+        self._changes_rows = previous_counts if return_to_confirmation else ()
         self._awaiting_voice_confirmation = False
         self.voice_confirmation.hide()
         self._set_progress_visible(False)
@@ -1824,6 +1833,8 @@ class OfflineAudioPreparationDialog(QDialog):
     def _narrator_configuration_values(self) -> tuple[AppSettings, str | None]:
         settings = resolve_pregeneration_settings(self.settings)
         narrator = voice_binding_label(self.voice_library.binding("Narrator"))
+        if narrator is not None:
+            narrator = voice_source_label(narrator)
         if self._awaiting_voice_confirmation and self._voice_plan is not None:
             plan = self._voice_plan
             if isinstance(plan.synthesis_backend, str):
@@ -1953,7 +1964,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.narrator_choice.clear()
         self.narrator_choice.addItem("Choose voice...", None)
         for choice in choices:
-            self.narrator_choice.addItem(choice.label, choice.id)
+            self.narrator_choice.addItem(voice_source_label(choice.label), choice.id)
             self.narrator_choice.setItemData(
                 self.narrator_choice.count() - 1,
                 choice.description,
@@ -2150,7 +2161,7 @@ class OfflineAudioPreparationDialog(QDialog):
             None,
         )
         if route.startswith("Player candidate "):
-            route = "Game voice"
+            route = voice_source_label(route)
             if candidate is not None and candidate.source_excerpts:
                 route += f" ({candidate.source_excerpts[0][:55]})"
         status = self._voice_selection_label(group)
@@ -3397,6 +3408,7 @@ class OfflineAudioPreparationDialog(QDialog):
         )
 
     def _cancel_story_audio_check(self) -> None:
+        self._story_check_timer.stop()
         self._story_audio_cancel_event.set()
         self.coverage_runner.cancel()
         self._checking_story = None
@@ -3516,10 +3528,6 @@ class OfflineAudioPreparationDialog(QDialog):
             self._story_audio_key(selection_id)
             for selection_id in self.selected_story_ids()
             if self._story_audio_key(selection_id) not in self._story_audio_checks
-            and (
-                self.settings.game_pack
-                or self._story_job_statuses.get(selection_id) == "ready"
-            )
         )
         if not keys:
             return
@@ -4314,7 +4322,7 @@ class OfflineAudioPreparationDialog(QDialog):
             for value in self._checking_story_ids
         ):
             self._cancel_story_audio_check()
-        self._queue_story_checks()
+        self._story_check_timer.start(0)
         can_read = self._can_start_reading()
         saved_manifest = self._saved_manifest_for_selection()
         self.prepare_again.setVisible(
@@ -4455,15 +4463,46 @@ class OfflineAudioPreparationDialog(QDialog):
             ),
             (
                 "Audio",
-                f"{estimate.original_audio_lines} original game lines; up to "
-                f"{estimate.generation_lines} need speech across about "
-                f"{estimate.speaker_count} voices",
+                f"{estimate.original_audio_lines} original game lines; "
+                f"{estimate.generation_lines} spoken lines across about "
+                f"{estimate.speaker_count} voices. Saved recordings are checked in the background",
             ),
             (
                 "Storage",
                 f"About {disk_megabytes} MB for the full selection; saved recordings can be reused",
             ),
         ]
+        saved = original = remaining = checked_count = 0
+        for selection_id in selected:
+            result = self._story_audio_checks.get(self._story_audio_key(selection_id))
+            if result is None or result[2] is not None:
+                continue
+            coverage = result[0]
+            if coverage is None:
+                continue
+            saved += coverage.generated
+            original += coverage.original
+            remaining += coverage.missing + coverage.live
+            checked_count += 1
+        if checked_count:
+            summary_rows.insert(
+                1,
+                ("Saved audio", f"{saved} recordings; {original} original game lines"),
+            )
+            summary_rows.insert(
+                2,
+                (
+                    "To prepare" if checked_count == len(selected) else "Audio check",
+                    f"{remaining} lines; selected voices are checked before generation"
+                    if checked_count == len(selected)
+                    else f"{checked_count} of {len(selected)} stories checked; checking the rest...",
+                ),
+            )
+        elif self._checking_story is not None:
+            summary_rows[1] = (
+                "Audio check",
+                "Checking saved recordings; remaining work is not known yet",
+            )
         if self.change_voices.isChecked():
             summary_rows.append(
                 (
@@ -4856,15 +4895,31 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         assert _is_voice_plan_result(plan)
         self._stale_job_retry_attempted = False
+        previous = self._voice_plan_before_edit or self._voice_plan
+        self._voice_plan_before_edit = None
+        self._voice_change_rows = ()
+        if previous is not None:
+            old_sources = {
+                group.routing_role or group.character: group
+                for group in previous.groups
+            }
+            self._voice_change_rows = tuple(
+                (
+                    f"{group.routing_role or group.character} voice",
+                    f"{voice_source_label(old.source_character or old.source_speaker or 'Narrator')} -> "
+                    f"{voice_source_label(group.source_character or group.source_speaker or 'Narrator')}",
+                )
+                for group in plan.groups
+                if (old := old_sources.get(group.routing_role or group.character))
+                is not None
+                and old.source_id != group.source_id
+            )
         self._voice_plan = plan
         self.replanning_voice_decisions = False
         if fast_choice:
             self._generation_input = None
-            self._changes_rows = (
-                (
-                    "Voice choices",
-                    "Saved. Existing audio will be checked when generation starts.",
-                ),
+            self.voice_confirmation_status.setText(
+                "Voice saved. Checking recordings with the selected voices..."
             )
         if (
             plan.synthesis_backend != "pocket-tts"
@@ -4878,9 +4933,6 @@ class OfflineAudioPreparationDialog(QDialog):
                 if self.game_narrator_chooser is not None
                 else "Choose a narrator before generation."
             )
-            return
-        if fast_choice:
-            self._show_voice_confirmation(plan)
             return
         self._start_generation_input(plan)
 
@@ -5053,10 +5105,19 @@ class OfflineAudioPreparationDialog(QDialog):
         self.cancel_button.setText("Cancel preparation")
         self._show_waiting_phase(
             "Checking saved audio",
-            "Checking which recordings can be reused. No speech is being generated.",
+            "Checking recordings with the selected voices. Saved audio is kept.",
             "Cancel stops preparation and closes this window. Reopen it and choose "
             "Continue to resume from the saved selection and voice choices.",
         )
+        if self._changes_rows:
+            set_labeled_text(
+                self.progress_counts,
+                (
+                    *self._changes_rows,
+                    ("Status", "Rechecking for the selected voices..."),
+                ),
+            )
+            self.progress_counts.show()
         self.input_runner.start(
             self._prepare_input_with_changes,
             self._job,
@@ -5132,11 +5193,16 @@ class OfflineAudioPreparationDialog(QDialog):
         self._start_prepared_sequence(self._generation_input)
         assert self._job is not None
         self._changes_rows = (
+            *self._voice_change_rows,
             (
                 "Reuse",
                 f"{changes.reused} saved recordings; {changes.original} original game lines",
             ),
-            ("Process", f"{changes.new} new lines; {changes.failed} failed lines"),
+            (
+                "To generate",
+                f"{changes.new + changes.failed} lines "
+                f"({changes.failed} previously failed)",
+            ),
             (
                 "Existing live fallback",
                 f"{changes.live_fallbacks} lines; {changes.omissions} omissions",

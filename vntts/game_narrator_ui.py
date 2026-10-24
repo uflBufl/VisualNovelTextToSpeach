@@ -88,6 +88,7 @@ from vntts.voices import (
     read_voice_reference_bytes,
     registry_with_voice_library,
     remember_voice_binding,
+    voice_source_label,
 )
 
 Binder = Callable[..., AppSettings]
@@ -663,7 +664,7 @@ class GameNarratorDialog(QDialog):
             key=lambda voice: voice.character.casefold(),
         ):
             self.catalog_choice.addItem(
-                voice.source_character or voice.character,
+                voice_source_label(voice.source_character or voice.character),
                 f"character:{normalize_character_name(voice.character)}",
             )
         selected = character or self.role.currentText() or "Narrator"

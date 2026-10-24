@@ -69,7 +69,7 @@ from vntts.reference_recommendation import (
     recommended_reference,
 )
 from vntts.speech_presentation import speech_runtime_label
-from vntts.voices import default_voice_choice_id
+from vntts.voices import default_voice_choice_id, voice_source_label
 
 
 class _PreviewAudio(Protocol):
@@ -188,11 +188,7 @@ def _read_verified_audio(path: Path, expected_sha256: str | None) -> bytes:
 
 
 def _candidate_name(candidate: VoiceCandidate) -> str:
-    return (
-        "Game voice"
-        if candidate.source_character.startswith("Player candidate ")
-        else candidate.source_character
-    )
+    return voice_source_label(candidate.source_character)
 
 
 class VoiceAuditionPanel(QGroupBox):

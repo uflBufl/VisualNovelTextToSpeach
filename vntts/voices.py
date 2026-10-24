@@ -266,6 +266,17 @@ def application_voice_library() -> VoiceLibrary:
     return VoiceLibrary(get_local_data_directory() / "voice-library")
 
 
+def voice_source_label(name: str) -> str:
+    """Keep imported character identities visible without generated catalog suffixes."""
+    if not name.startswith("Player candidate "):
+        return name
+    label = name.removeprefix("Player candidate ")
+    character, separator, suffix = label.rpartition(" ")
+    if separator and len(suffix) == 12 and all(c in "0123456789abcdef" for c in suffix):
+        label = character
+    return f"{label} (game voice)"
+
+
 def voice_binding_label(binding: VoiceBinding | None) -> str | None:
     if binding is None:
         return None

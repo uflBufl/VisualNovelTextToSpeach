@@ -49,6 +49,7 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     publish_generation_queue,
 )
+from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.pregeneration_setup import (
     PregenerationJob,
@@ -330,12 +331,15 @@ def _reuse_completed_audio(current: PregenerationInput, plan: VoicePlan) -> None
         return
     voices = CharacterVoiceRegistry.from_file(current.voice_manifest)
     current_items = {item.queue_id: item for item in queue.items}
+    voice_identities: dict[str, object] = {}
     saved: dict[str, dict[str, object]] = {}
     controls: dict[str, object] = {}
     sources: dict[str, Path] = {}
     previous_inputs = set(current.directory.parent.glob("generation-input-*"))
     previous_inputs.update(current.directory.parent.parent.glob("*/generation-input-*"))
     for previous in sorted(previous_inputs):
+        if len(protected) + len(saved) == len(current_items):
+            break
         if previous == current.directory or not previous.is_dir():
             continue
         previous_state = (
@@ -367,6 +371,7 @@ def _reuse_completed_audio(current: PregenerationInput, plan: VoicePlan) -> None
                 continue
             if not any(
                 item.queue_id not in protected
+                and item.queue_id not in saved
                 and item.queue_id in current_items
                 and item.document == current_items[item.queue_id].document
                 for item in old_queue.items
@@ -379,8 +384,8 @@ def _reuse_completed_audio(current: PregenerationInput, plan: VoicePlan) -> None
             ):
                 if sha256_file(previous / suffix) != document.get(f"{name}_sha256"):
                     raise ValueError(f"Previous {name} changed")
-            state = load_generation_state_from_snapshot(
-                previous_state, old_queue, old_sha256
+            state = load_json_object(
+                previous_state, "generation state", error_type=BulkGenerationError
             )
             old_items = generation_state_items(state)
             old_voices = CharacterVoiceRegistry.from_file(
@@ -389,9 +394,22 @@ def _reuse_completed_audio(current: PregenerationInput, plan: VoicePlan) -> None
             old_roles = document.get("narrator_fallback_roles")
             if not isinstance(old_roles, list):
                 raise ValueError("Previous narrator roles are invalid")
+            eligible: list[str] = []
+            old_identities: dict[str, object] = {}
             for item in old_queue.items:
                 target = current_items.get(item.queue_id)
                 result = old_items.get(item.queue_id)
+                if (
+                    target is None
+                    or item.queue_id in protected
+                    or item.queue_id in saved
+                    or target.document != item.document
+                    or not isinstance(result, dict)
+                    or result.get("status") not in {"generated", "approved"}
+                    or "audio_event_composition" in result
+                    or result.get("provider") != plan.synthesis_backend
+                ):
+                    continue
                 requested = synthesis_character_for_line(
                     item.speaker, item.voice_character
                 )
@@ -402,22 +420,36 @@ def _reuse_completed_audio(current: PregenerationInput, plan: VoicePlan) -> None
                     else requested
                 )
                 if (
-                    target is None
-                    or item.queue_id in protected
-                    or target.document != item.document
-                    or not isinstance(result, dict)
-                    or result.get("status") not in {"generated", "approved"}
-                    or "audio_event_composition" in result
-                    or result.get("provider") != plan.synthesis_backend
+                    old_character != current_character
                     or result.get("voice_character") != old_character
-                    or old_character != current_character
-                    or _voice_content_identity(voices, current_character) is None
-                    or _voice_content_identity(old_voices, old_character)
-                    != _voice_content_identity(voices, current_character)
                 ):
                     continue
-                saved[item.queue_id] = copy.deepcopy(result)
-                sources[item.queue_id] = previous_state.parent / str(result["path"])
+                if current_character not in voice_identities:
+                    voice_identities[current_character] = _voice_content_identity(
+                        voices, current_character
+                    )
+                if old_character not in old_identities:
+                    old_identities[old_character] = _voice_content_identity(
+                        old_voices, old_character
+                    )
+                identity = voice_identities[current_character]
+                if identity is not None and old_identities[old_character] == identity:
+                    eligible.append(item.queue_id)
+            if not eligible:
+                continue
+            state = load_generation_state_from_snapshot(
+                previous_state,
+                old_queue,
+                old_sha256,
+                state_document=state,
+                selected_line_ids=frozenset(
+                    current_items[queue_id].line_id for queue_id in eligible
+                ),
+            )
+            for queue_id in eligible:
+                result = old_items[queue_id]
+                saved[queue_id] = copy.deepcopy(result)
+                sources[queue_id] = previous_state.parent / str(result["path"])
             registry = state.get("synthesis_controls")
             if isinstance(registry, dict):
                 controls.update(registry)

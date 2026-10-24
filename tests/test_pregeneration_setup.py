@@ -2355,6 +2355,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 dialog._discovery_finished(ContentDiscovery((content,)), None)
                 self.assertFalse(dialog.selection_panel.isHidden())
                 self.assertEqual(dialog.stories.item(0).text(1), "Not checked")
+                QTest.qWait(1)
                 self.assertEqual(len(pool.tasks), 1)
                 self.assertTrue(dialog.continue_button.isEnabled())
                 self.assertEqual(dialog.continue_button.text(), "Continue preparation")
@@ -2385,6 +2386,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 thread_pool=pool,
             )
             self.addCleanup(dialog.deleteLater)
+            QTest.qWait(1)
             pending = pool.tasks.pop()
             cancelled = dialog._story_audio_cancel_event
             self.assertTrue(dialog.coverage_runner.active)
@@ -2424,10 +2426,12 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.addCleanup(dialog.deleteLater)
             dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
+            QTest.qWait(1)
             pending = pool.tasks.pop()
             cancelled = dialog._story_audio_cancel_event
             dialog.stories.item(0).setCheckState(0, Qt.CheckState.Unchecked)
             dialog.stories.item(1).setCheckState(0, Qt.CheckState.Checked)
+            QTest.qWait(1)
             key = dialog._story_audio_key("rhiannon")
             self.assertTrue(cancelled.is_set())
             self.assertEqual(dialog._checking_story, key)
@@ -2540,6 +2544,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.addCleanup(dialog.deleteLater)
             dialog.select_all_button.click()
+            QTest.qWait(1)
             self.assertEqual(len(pool.tasks), 1)
             self.assertTrue(dialog.continue_button.isEnabled())
             ready = StoryAudioCoverage(
@@ -2572,9 +2577,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.addCleanup(dialog.deleteLater)
             dialog.select_all_button.click()
+            QTest.qWait(1)
             pending = pool.tasks.pop()
             cancellation = dialog._story_audio_cancel_event
             dialog.stories.item(1).setCheckState(0, Qt.CheckState.Unchecked)
+            QTest.qWait(1)
             self.assertTrue(cancellation.is_set())
             self.assertEqual(dialog._checking_story_ids, ("main-1",))
             pending.run()
@@ -2658,6 +2665,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                     manifest=str(active_path),
                     cancel_event=None,
                 )
+                QTest.qWait(1)
                 pool.tasks.pop(0).run()
                 self.application.processEvents()
                 self.assertEqual(dialog.continue_button.text(), "Start reading")
@@ -3365,7 +3373,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertFalse(dialog.preparing_inputs)
             self.assertTrue(dialog._awaiting_voice_confirmation)
-            self.assertIn("new lines", plain_label_text(dialog.change_summary))
+            self.assertIn(
+                "To generate: 2 lines", plain_label_text(dialog.change_summary)
+            )
             generator.generate.assert_not_called()
             dialog.continue_button.click()
             self.assertTrue(dialog.generating)

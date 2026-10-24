@@ -1554,9 +1554,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 thread_pool=pool,
             )
 
+            QTest.qWait(1)
             while pool.tasks:
                 pool.tasks.pop(0).run()
-                self.application.processEvents()
+                QTest.qWait(1)
 
             self.assertEqual(reopened.continue_button.text(), "Use prepared audio")
             self.assertIsNone(reopened.job())
@@ -1565,7 +1566,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertTrue(reopened.activating_saved)
             self.assertEqual(len(pool.tasks), 1)
             pool.tasks.pop().run()
-            self.application.processEvents()
+            QTest.qWait(1)
 
             self.assertEqual(reopened.result(), QDialog.DialogCode.Accepted)
             self.assertEqual(reopened.pack_result().identity, pack.identity)
@@ -1586,9 +1587,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             reading_requested = Mock()
             active.readingRequested.connect(reading_requested)
+            QTest.qWait(1)
             while active_pool.tasks:
                 active_pool.tasks.pop(0).run()
-                self.application.processEvents()
+                QTest.qWait(1)
 
             self.assertEqual(active.continue_button.text(), "Start reading")
             active.continue_button.click()
@@ -1615,9 +1617,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                         thread_pool=pool,
                     )
                     self.addCleanup(dialog.deleteLater)
+                    QTest.qWait(1)
                     while pool.tasks:
                         pool.tasks.pop(0).run()
-                        self.application.processEvents()
+                        QTest.qWait(1)
                     self.assertEqual(
                         dialog.continue_button.text(), "Use prepared audio"
                     )
@@ -1630,7 +1633,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                         )
                         audio.write_bytes(b"damaged after the first check")
                     pool.tasks.pop(0).run()
-                    self.application.processEvents()
+                    QTest.qWait(1)
                     self.assertIsNone(dialog.pack_result())
                     self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
                     if not cancel:

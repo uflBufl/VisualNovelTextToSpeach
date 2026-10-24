@@ -741,6 +741,24 @@ class MossTTSBackendTest(unittest.TestCase):
         self.assertEqual(len(first_model.generate_calls), 1)
         self.assertEqual(second_model.generate_calls, [])
 
+    def test_offline_backend_reuses_migrated_wav_without_new_intermediate_writes(self):
+        backend, model, _output = self.create_backend()
+        request = SynthesisRequest(voice="Narrator", text="Migrated work.")
+        key = backend.synthesis_key(request)
+        cache = backend.persistent_audio_cache
+        cache.directory.mkdir(parents=True, exist_ok=True)
+        legacy = cache.directory / f"{key}.npy"
+        np.save(legacy, np.asarray([0.1, -0.1, 0.2], dtype=np.float32))
+        self.assertIsNotNone(cache.get(key))
+        self.assertFalse(legacy.exists())
+        cache.max_entries = 0
+        with patch.object(cache.store, "put", side_effect=AssertionError("raw write")):
+            result = backend.render(request).collect()
+        self.assertEqual(result.diagnostics.cache_source, "persistent-cache")
+        self.assertEqual(model.generate_calls, [])
+        self.assertEqual(model.encoded_references, [])
+        self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
+
     def test_prompt_codes_survive_backend_restart(self):
         first_backend, first_model, _output = self.create_backend()
         self.assertTrue(first_backend.prime("Narrator"))

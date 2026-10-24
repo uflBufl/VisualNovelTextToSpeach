@@ -3,7 +3,7 @@ import os
 from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import suppress
-from hashlib import blake2b
+from hashlib import blake2b, file_digest
 from math import prod
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -129,11 +129,16 @@ class PersistentAudioCache:
         return blake2b(encoded, digest_size=24).hexdigest()
 
     def get(self, key: object) -> AudioArray | None:
-        if (
-            self.max_entries == 0
-            or not isinstance(key, str)
-            or self._path_for_key(key) is None
-        ):
+        if self.max_entries == 0:
+            return None
+        return self._get(key, migrate=True)
+
+    def get_existing(self, key: object) -> AudioArray | None:
+        """Read a verified saved WAV even when new persistence is disabled."""
+        return self._get(key, migrate=False)
+
+    def _get(self, key: object, *, migrate: bool) -> AudioArray | None:
+        if not isinstance(key, str) or self._path_for_key(key) is None:
             return None
         try:
             path = self.store.get(key)
@@ -154,7 +159,7 @@ class PersistentAudioCache:
                 if audio is None:
                     return None
                 return audio[:, 0] if audio.shape[1] == 1 else audio
-            return self._migrate_legacy(key)
+            return self._migrate_legacy(key) if migrate else None
         except OSError, ValueError, TypeError, sf.LibsndfileError:
             return None
 
@@ -168,6 +173,11 @@ class PersistentAudioCache:
         prepared = _prepared_audio(audio)
         if prepared is None:
             return None
+        return self._put_prepared(key, prepared)
+
+    def _put_prepared(
+        self, key: str, prepared: AudioArray, *, preserve_existing: bool = False
+    ) -> Path | None:
         temporary = None
         try:
             self.directory.mkdir(parents=True, exist_ok=True)
@@ -178,6 +188,17 @@ class PersistentAudioCache:
             sf.write(
                 temporary, prepared, self.sample_rate, format="WAV", subtype="PCM_16"
             )
+            if preserve_existing and (existing := self.store.get(key)) is not None:
+                with (
+                    open_regular_binary(existing) as saved,
+                    open_regular_binary(temporary) as candidate,
+                ):
+                    if (
+                        file_digest(saved, "sha256").digest()
+                        != file_digest(candidate, "sha256").digest()
+                    ):
+                        return None
+                return existing
             return self.store.put(key, temporary)
         except OSError, ValueError, TypeError, sf.LibsndfileError:
             return None
@@ -198,12 +219,18 @@ class PersistentAudioCache:
                 ):
                     return None
                 audio = _prepared_audio(_read_cached_array(source))
-            if audio is None or self.put(key, audio) is None:
+            if (
+                audio is None
+                or self._put_prepared(key, audio, preserve_existing=True) is None
+            ):
+                return None
+            restored = self.get_existing(key)
+            if restored is None:
                 return None
             # Never remove a substituted legacy entry after publication.
             if self._same_legacy_file(original, path.stat(follow_symlinks=False)):
                 path.unlink()
-            return self.get(key)
+            return restored
         except OSError, ValueError, TypeError, EOFError, OverflowError, TokenError:
             return None
 
