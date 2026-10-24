@@ -10,7 +10,8 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtCore import QCoreApplication, QEvent, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QLabel,
     QScrollArea,
+    QToolButton,
 )
 from shiboken6 import isValid
 from vntts_artifacts.file_integrity import sha256_file
@@ -839,6 +841,36 @@ class GameNarratorTest(unittest.TestCase):
         self.save(accepted)
         self.assertTrue(accepted.result_settings.pocket_gated_model_accepted)
         self.assertIsNotNone(self.library.binding("Narrator"))
+
+    def test_files_and_diagnostics_disclosures_toggle_independently_with_keyboard(self):
+        plan, group, _manifest = ambiguous_fixture(self.root / "disclosures")
+        dialog = self.editor()
+        dialog.set_voice_context(plan, character=group.character)
+        self.drain()
+        dialog.show()
+        self.application.processEvents()
+        panel = dialog.voice_panel
+        files, diagnostics = dialog.source_setup, panel.reference_details_toggle
+        for button in (files, diagnostics):
+            self.assertIsInstance(button, QToolButton)
+            self.assertEqual(button.arrowType(), Qt.ArrowType.RightArrow)
+        QTest.keyClick(files, Qt.Key.Key_Space)
+        self.assertTrue(dialog.source_setup_controls.isVisible())
+        self.assertEqual(files.arrowType(), Qt.ArrowType.DownArrow)
+        self.assertFalse(panel.reference_details.isVisible())
+        QTest.keyClick(diagnostics, Qt.Key.Key_Space)
+        self.assertTrue(panel.reference_details.isVisible())
+        self.assertTrue(dialog.copy_details.isVisible())
+        self.assertEqual(diagnostics.arrowType(), Qt.ArrowType.DownArrow)
+        self.assertTrue(dialog.source_setup_controls.isVisible())
+        QTest.keyClick(files, Qt.Key.Key_Space)
+        self.assertFalse(dialog.source_setup_controls.isVisible())
+        self.assertTrue(panel.reference_details.isVisible())
+        self.select(dialog, "automatic")
+        self.assertFalse(diagnostics.isChecked())
+        self.assertEqual(diagnostics.arrowType(), Qt.ArrowType.RightArrow)
+        self.assertFalse(dialog.copy_details.isVisible())
+        self.assertFalse(files.isVisible())
 
     def test_source_details_preserves_candidate_phrase_and_donor_without_reloading(
         self,

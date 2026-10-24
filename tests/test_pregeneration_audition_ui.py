@@ -601,7 +601,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertIn("Playable line", tooltip)
             self.assertIn("Morning", tooltip)
             self.assertNotIn("abcdef123456", panel.voice_reference.currentText())
-            self.assertIn("Voice: Rhiannon", panel.reference_details.toPlainText())
+            self.assertIn("Name: Rhiannon", panel.reference_details.toPlainText())
             self.assertNotIn("abcdef123456", panel.a_reason.text())
             self.assertEqual(panel.a_reason.text(), "Good morning, traveller.")
             self.assertNotIn("Greeting:", panel.a_reason.text())

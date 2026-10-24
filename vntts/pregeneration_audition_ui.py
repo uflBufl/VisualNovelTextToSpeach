@@ -21,7 +21,6 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QPixmap, QTextOption
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFrame,
     QGroupBox,
@@ -32,6 +31,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QStyledItemDelegate,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -295,7 +295,7 @@ class VoiceAuditionPanel(QGroupBox):
         self.candidate_voice_label.hide()
         self._initialize_selectors()
         voice_reference_row = QHBoxLayout()
-        self.voice_reference_label = QLabel("Voice reference")
+        self.voice_reference_label = QLabel("Reference")
         voice_reference_row.addWidget(self.voice_reference_label)
         voice_reference_row.addWidget(self.voice_reference, 1)
 
@@ -698,7 +698,21 @@ class VoiceAuditionPanel(QGroupBox):
         self._create_advice_widgets()
 
     def _create_advice_widgets(self) -> None:
-        self.reference_details_toggle = QCheckBox("Technical details")
+        self.reference_details_toggle = QToolButton(
+            text="Diagnostics",
+            checkable=True,
+            toolButtonStyle=Qt.ToolButtonStyle.ToolButtonTextBesideIcon,
+            arrowType=Qt.ArrowType.RightArrow,
+        )
+        self.reference_details_toggle.setAccessibleName("Reference diagnostics")
+        self.reference_details_toggle.setToolTip(
+            "Show reference identifiers, checksums, preview errors and speech checks"
+        )
+        self.reference_details_toggle.toggled.connect(
+            lambda expanded: self.reference_details_toggle.setArrowType(
+                Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+            )
+        )
         self.reference_details = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
         self.reference_details.setAccessibleName("Technical voice reference details")
         self.reference_details.setWordWrapMode(QTextOption.WrapMode.WrapAnywhere)
@@ -1423,8 +1437,8 @@ class VoiceAuditionPanel(QGroupBox):
 
     def _show_reference_details(self, candidate: VoiceCandidate) -> None:
         details = [
-            f"Voice: {_candidate_name(candidate)}",
-            f"Voice source: {candidate.source_speaker}",
+            f"Name: {_candidate_name(candidate)}",
+            f"Speaker: {candidate.source_speaker}",
             f"Source ID: {candidate.source_id}",
             f"Original references: {len(candidate.reference_sha256s)}",
             candidate.recommendation,

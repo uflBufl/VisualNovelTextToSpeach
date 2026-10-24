@@ -6,7 +6,7 @@
 
 ## UI improvements - one item at a time
 
-- [ ] 2. Review the corrected native voice editor trial: distinct framed sections with bold headings, no repeated donor name, and Pocket acceptance only in Settings. Confirm the visual result before item 3.
+- [ ] 2. Review the native voice editor trial: framed sections with bold headings, no repeated donor name, Pocket acceptance only in Settings, Game files/Diagnostics disclosure buttons and shorter Source/Reference labels. Confirm the visual result before item 3.
 - [ ] 3. Separate Settings from Tools: give the disclosure/menu of maintenance actions a distinct name and keep the actual Settings entry unambiguous. Start after item 2.
 - [ ] 4. Add action feedback and keyboard affordances: confirm clipboard copies, include existing shortcuts in tooltips, and provide native clear buttons in search fields. Start after item 3; preserve existing keyboard dispatch and accessibility.
 

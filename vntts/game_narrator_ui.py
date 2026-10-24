@@ -20,7 +20,6 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QCloseEvent, QPixmap, QStandardItemModel
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -33,6 +32,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -287,23 +287,23 @@ class GameNarratorDialog(QDialog):
         self.source = QComboBox()
         self.source.setAccessibleName("Voice source")
         for label, mode in (
-            ("Game character voice", "game"),
-            ("Built-in voice", "preset"),
-            ("Imported voice", "catalog"),
-            ("Saved voice", "saved"),
+            ("Game character", "game"),
+            ("Built-in", "preset"),
+            ("Imported", "catalog"),
+            ("Saved", "saved"),
             ("Choose automatically", "automatic"),
-            ("Use narrator's voice", "narrator"),
+            ("Use narrator", "narrator"),
         ):
             self.source.addItem(label, mode)
-        self.form.addRow("Voice source", self.source)
+        self.form.addRow("Source", self.source)
         self.presets = QComboBox()
         self.presets.setAccessibleName("Built-in narrator candidate")
         for name in pocket_tts_preset_voices:
             self.presets.addItem(name.replace("_", " ").title(), f"preset:{name}")
-        self.form.addRow("Voice", self.presets)
+        self.form.addRow("Preset", self.presets)
         self.catalog_choice = QComboBox()
         self.catalog_choice.setAccessibleName("Imported character voice candidate")
-        self.form.addRow("Voice", self.catalog_choice)
+        self.form.addRow("Donor", self.catalog_choice)
         self._build_game_reference_controls()
 
     def _build_editor_actions(self, content: QVBoxLayout) -> None:
@@ -355,7 +355,16 @@ class GameNarratorDialog(QDialog):
             QTimer.singleShot(0, self, self._finish_close)
 
     def _build_game_reference_controls(self) -> None:
-        self.source_setup = QCheckBox("Source details")
+        self.source_setup = QToolButton(
+            text="Game files",
+            checkable=True,
+            toolButtonStyle=Qt.ToolButtonStyle.ToolButtonTextBesideIcon,
+            arrowType=Qt.ArrowType.RightArrow,
+        )
+        self.source_setup.setToolTip(
+            "Show the game folder and refresh imported references"
+        )
+        self.source_setup.setAccessibleName("Game files")
         self.source_setup_controls = QWidget()
         setup_layout = QHBoxLayout(self.source_setup_controls)
         setup_layout.setContentsMargins(0, 0, 0, 0)
@@ -387,6 +396,11 @@ class GameNarratorDialog(QDialog):
         self.form.addRow(self.source_setup_controls)
 
     def _refresh_source_details(self, *_args: object) -> None:
+        self.source_setup.setArrowType(
+            Qt.ArrowType.DownArrow
+            if self.source_setup.isChecked()
+            else Qt.ArrowType.RightArrow
+        )
         mode = self.source.currentData()
         self.source_setup.setVisible(mode == "game")
         self.source_setup_controls.setVisible(
