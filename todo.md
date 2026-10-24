@@ -625,7 +625,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 ## Continue regular-file admission through remaining integrity owners
 
-- [ ] On Windows, qualify the one-time NPY1/2/3 migration before retiring its parser: reject malformed extents before allocation, preserve valid mono/stereo/Fortran/endian conversion and close truncated sources safely. Remove normal-runtime NPY reads under the SQLite-only storage plan below. Qualify candidate-directory replacement/alias refusal before cleanup, active claims and normal retry with native directory identities/locking/rmtree. Mac proofs do not establish Windows behavior.
+- [ ] On Windows, qualify candidate-directory replacement/alias refusal before cleanup, active claims and normal retry with native directory identities/locking/rmtree. Mac proofs do not establish Windows behavior.
 
 - [ ] Qualify admitted SHA readers and direct/recursive/runtime copy behavior on Windows, including native metadata/alternate streams, DLL/junction handling and executable behavior. Local Mac output identities, metadata, relocated interpreter provenance and warm-cache throughput passed; cold-disk/network throughput and native model generation remain unmeasured.
 
@@ -1319,16 +1319,8 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 - [ ] Fix the existing mypy errors in `vntts/diagnostic_recording.py`, `vntts/reading_diagnostics_analysis.py` and the preview backend factory contract in `vntts/app.py`; format the existing `vntts/moss_runtime.py` signature. These failures also reproduce on main before the unified-editor integration. Gate: the full configured mypy and Ruff format checks pass without suppressing diagnostics.
 - [ ] Bring the existing Reading, recording, generation and saved-audio complexity findings back within `tests/fixtures/ruff-complexity-v2.json`. Run `scripts/check_ruff_complexity.py` for the current scope inventory; refactor coherent responsibilities without increasing allowances, preserve lifecycle/error handling and run affected tests. Gate: the full complexity ratchet passes, with obsolete allowances removed or reduced.
 
-## Complete the SQLite-only storage rollout
+## Qualify SQLite-only storage
 
-- [ ] Recover backend/model/sample-rate proof for the 16 remaining synthesis NPY
-      files (5 Pocket, 2 live MOSS, 9 offline). Preserve their originals and backups;
-      unavailable synthesis keys must fail explicitly rather than regenerate.
-      Exact completed-WAV matching found no proof, so never infer the rate from
-      current defaults. Use the separate offline `vntts.audio_cache_migration`
-      only with verified per-key evidence. Remove that converter and its NPY
-      parser after all 16 have equivalent verified WAV lookup and migration
-      acceptance. No normal cache or preparation reader may import it.
 - [ ] Qualify the SQLite-only publication, interrupted upgrade/retry, hard links
       and catalog-loss refusal in Windows and packaged builds. Keep current
       immutable authoring proof files and portable manifests intact; those are

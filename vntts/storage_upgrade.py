@@ -302,25 +302,6 @@ def _audio_bindings(
     return originals
 
 
-def _audio_arrays(
-    upgrade: _Upgrade,
-    store: SharedAudioStore,
-    bindings: dict[str, str],
-    unavailable: dict[str, str],
-) -> list[Path]:
-    for path in sorted(store.directory.glob("*.npy")):
-        store._validate_key(path.stem)
-        upgrade.capture(path)
-        if path.stem in bindings:
-            upgrade.counted("preserved_bound_arrays")
-        else:
-            unavailable[path.stem] = (
-                "Original samples remain in place and in the upgrade backup; verified model/sample-rate evidence is required before reuse"
-            )
-            upgrade.counted("preserved_unproven_arrays")
-    return []
-
-
 def _stage_audio_catalog(
     upgrade: _Upgrade,
     store: SharedAudioStore,
@@ -382,7 +363,6 @@ def _audio_catalog(upgrade: _Upgrade, directory: Path) -> None:
         _read_wav(object_path, digest)
         upgrade.capture(object_path)
         unavailable.pop(key, None)
-    originals.extend(_audio_arrays(upgrade, store, bindings, unavailable))
     _stage_audio_catalog(upgrade, store, bindings, unavailable)
     upgrade.retire(originals)
 

@@ -12,7 +12,6 @@ from subprocess import CompletedProcess
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
 
 import vntts.storage_upgrade as upgrade_module
@@ -20,7 +19,7 @@ from tests.generation_state_fixtures import replace_generation_state
 from tests.symlink_support import symlink_or_skip
 from tests.test_sqlite_generation_integration import legacy_worker_output
 from vntts.audio_cache import PersistentAudioCache
-from vntts.audio_store import AudioCatalogError, SharedAudioStore
+from vntts.audio_store import SharedAudioStore
 from vntts.authoring.generation_failures import failure_record
 from vntts.authoring.generation_lease import GenerationLease, process_is_alive
 from vntts.generation_database import read_state
@@ -116,8 +115,6 @@ class StorageUpgradeTest(unittest.TestCase):
     def test_dry_run_reads_the_complete_inventory_without_creating_any_files(self):
         self.legacy_audio()
         prepared, _plan, _job, _sources = self.legacy_preparation()
-        array = self.root / "audio-cache/moss-tts" / ("a" * 48 + ".npy")
-        np.save(array, np.array([0.125], dtype=np.float32))
         before = self.snapshot(self.root)
         report = upgrade_storage(self.root, self.backup)
         self.assertFalse(report["applied"])
@@ -184,19 +181,17 @@ class StorageUpgradeTest(unittest.TestCase):
         self.assertFalse(binding.exists())
         self.assert_backed_up(binding, original)
 
-    def test_unproven_numpy_samples_remain_backed_up_and_reserve_the_original_key(self):
+    def test_obsolete_numpy_decoy_does_not_reserve_a_synthesis_key(self):
         directory = self.root / "audio-cache/moss-tts"
         directory.mkdir(parents=True)
         key = "a" * 48
-        array = directory / f"{key}.npy"
-        np.save(array, np.array([0.125], dtype=np.float32))
-        before = array.read_bytes()
+        (directory / f"{key}.npy").write_bytes(b"obsolete unconfirmed artifact")
         upgrade_storage(self.root, self.backup, apply=True)
-        self.assertEqual(array.read_bytes(), before)
-        self.assert_backed_up(array, before)
-        for read in ("get", "get_existing"):
-            with self.subTest(read=read), self.assertRaises(AudioCatalogError):
-                getattr(PersistentAudioCache(directory, sample_rate=16000), read)(key)
+        cache = PersistentAudioCache(directory, sample_rate=16000)
+        self.assertIsNone(cache.get_existing(key))
+        saved = cache.put(key, [0.125])
+        self.assertEqual(cache.store.get(key), saved)
+        self.assertEqual(list(self.backup.rglob("*.npy")), [])
 
     def test_current_generation_json_becomes_sql_without_replacing_recordings(self):
         prepared, _plan, generated = legacy_worker_output(self.root / "pregeneration")
