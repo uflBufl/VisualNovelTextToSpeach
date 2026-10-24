@@ -512,18 +512,16 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 ):
                     tray.open_pregeneration()
                     tray.open_voice_previews()
-                    narrator._start("preview", "Generating...", lambda: None)
+                    narrator.source.setCurrentIndex(narrator.source.findData("preset"))
+                    narrator.voice_panel.a_play.click()
+                    self.assertTrue(narrator.voice_panel.active)
                     tray.dashboard.show_reading()
                     tray.dashboard.quit_button.click()
                     quit_application.assert_not_called()
                     self.assertTrue(narrator.cancellation.is_set())
                     pool.tasks.pop(0).run()
                     self.application.processEvents()
-                    quit_application.assert_not_called()
-                    previews.close.assert_not_called()
-                    pool.tasks.pop(0).run()
-                    self.application.processEvents()
-                    previews.close.assert_called_once()
+                    previews.close.assert_called()
                     quit_application.assert_called_once()
                     self.assertIsNone(tray.narrator_dialog)
                     self.assertIsNone(tray.pregeneration_dialog)
@@ -847,7 +845,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 preview_player=player,
                 thread_pool=pool,
             )
-            self.assertFalse(dialog.choose_character_voice.isEnabled())
+            self.assertFalse(dialog.inspect_character_voice.isEnabled())
             dialog.select_all_button.click()
             dialog.continue_button.click()
             for _ in range(2):
@@ -876,7 +874,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                     dialog.voice_routes.setCurrentRow(row)
                     break
             dialog._render_voice_routes(plan)
-            dialog.choose_character_voice.click()
+            dialog.inspect_character_voice.click()
             chooser.assert_called_once_with(settings, dialog, character="Aderyn")
             player.stop.assert_called()
             self.assertIs(dialog.voice_plan(), plan)
@@ -892,7 +890,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 return settings
 
             chooser.side_effect = save_aderyn
-            dialog.choose_character_voice.click()
+            dialog.inspect_character_voice.click()
             self.assertIs(dialog.settings, settings)
             self.assertIsNone(dialog.voice_plan())
             self.assertTrue(dialog.voice_confirmation.isHidden())
@@ -1121,7 +1119,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 "Voice or model changes may require new recordings",
                 dialog.voice_configuration.text(),
             )
-            self.assertFalse(dialog.voice_panel.preview_service._closed)
+            self.assertFalse(dialog.audition_service._closed)
             self.assertEqual(
                 dialog.continue_button.text(), "Generate with these voices"
             )
@@ -1222,13 +1220,13 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertTrue(
                 dialog._awaiting_voice_confirmation, dialog.resume_status.text()
             )
-            self.assertFalse(dialog.voice_panel.preview_service._closed)
+            self.assertFalse(dialog.audition_service._closed)
             player.reset_mock()
             dialog.continue_button.click()
             self.assertTrue(dialog.generating, dialog.resume_status.text())
             self.assertFalse(dialog.planning_voices)
             player.stop.assert_called()
-            self.assertTrue(dialog.voice_panel.preview_service._closed)
+            self.assertFalse(dialog.audition_service._closed)
             dialog.reject()
             player.reset_mock()
             dialog.reject()
@@ -1675,7 +1673,6 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             first.continue_button.click()
             pool.tasks.pop(0).run()
             self.application.processEvents()
-            self.assertFalse(first.auditioning_voices)
             self.assertTrue(first.preparing_inputs)
             interrupted_job_id = first.job().job_id
             first.cancel_button.click()
@@ -1706,7 +1703,6 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             pool.tasks.pop(0).run()
             self.application.processEvents()
             self.assertEqual(second.job().job_id, interrupted_job_id)
-            self.assertFalse(second.auditioning_voices)
             self.assertTrue(second.preparing_inputs)
             pool.tasks.pop(0).run()
             self.application.processEvents()

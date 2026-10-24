@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import stat
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -266,6 +267,12 @@ def application_voice_library() -> VoiceLibrary:
     return VoiceLibrary(get_local_data_directory() / "voice-library")
 
 
+def voice_source_label(name: str) -> str:
+    name = name.strip()
+    generated = re.fullmatch(r"Player candidate (.+) [0-9a-f]{12}", name)
+    return generated.group(1) if generated else name
+
+
 def voice_binding_label(binding: VoiceBinding | None) -> str | None:
     if binding is None:
         return None
@@ -274,14 +281,16 @@ def voice_binding_label(binding: VoiceBinding | None) -> str | None:
     if binding.route == "live-fallback":
         return "Backend default live voice"
     source_id = binding.source_id
-    if isinstance(source_id, str) and source_id:
+    if isinstance(source_id, str) and source_id.startswith("preset:"):
         return source_id.removeprefix("preset:").replace("_", " ").title()
     evidence = binding.provenance.get("evidence")
     if isinstance(evidence, dict):
-        source = evidence.get("source_character")
+        source = evidence.get("source_character") or evidence.get("selected_character")
         if isinstance(source, str) and source.strip():
-            return source.strip()
-    return binding.role if isinstance(binding.role, str) else None
+            return voice_source_label(source)
+    if isinstance(source_id, str) and source_id:
+        return source_id.removeprefix("character:").replace("_", " ").title()
+    return voice_source_label(binding.role) if isinstance(binding.role, str) else None
 
 
 def voice_binding_source_id(binding: VoiceBinding | None) -> str | None:
@@ -417,7 +426,7 @@ def remember_voice_binding(
         "speaker": voice.speaker,
         "evidence": evidence,
     }
-    if reference_transcript:
+    if reference_transcript is not None:
         source_evidence["reference_transcript"] = reference_transcript.strip()
     elif voice.reference_transcript:
         source_evidence["reference_transcript"] = voice.reference_transcript

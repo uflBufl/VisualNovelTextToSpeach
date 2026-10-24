@@ -1218,7 +1218,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       and its manifest name; verify original playback and preview on Windows after
       the identity-check fix, then remove this item.
 - [ ] On supported macOS and Windows builds, use VoiceOver and NVDA to traverse
-      target, source, game-reference, consent, preview, impact and action controls;
+      target, source, game-reference, consent, preview and action controls;
       enter the same editor from live character recovery with that character selected.
       Confirm an unknown character in live and Read once uses the narrator without
       opening a blocking choice. After a live voice edit, exercise Save, Back,
@@ -1284,3 +1284,25 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 ## Qualify packaged preview ASR isolation
 
 - [ ] Before shipping frozen macOS/Windows builds, smoke-test preview ASR spawn from the packaged entrypoint: start checking during playback, play ready audio during checking, cancel/close and reopen. Confirm no second desktop window, no surviving ASR worker and continued prefetch. Source-mode Mac qualification and early-dispatch unit tests do not establish bundled behavior; record entrypoint/build, worker PID lifecycle and timing for this packaged run.
+
+## Voices tab - remaining fixes from the October 24 native UI audit
+
+- [ ] **P1 - Add a compact saved-voice overview.** Show a compact character/current-voice overview in Voices and a Play current voice action; distinguish saved binding, auditioned candidate and prepared story recordings. Gate: game/imported/built-in/narrator-fallback/automatic/missing-source cases have useful consistent labels; browsing/cancel never changes the saved-voice display or assignment.
+
+- [ ] **P2 - Qualify selective regeneration.** The separate selective-regeneration audit must qualify that changing one character preserves other characters' ready recordings, including partly generated stories, and that the Stories preparation UI communicates this scope.
+
+- [ ] **P2 - Make saved assignment changes recoverable.** Label saving with the target character and global scope, and provide an undo path for an already saved choice. Gate: undo restores that character's previous binding without changing other characters or prepared audio; deliberate keyboard save and cancellation remain accessible. Use copied data for verification.
+
+- [ ] **P2 - Clarify copied diagnostics.** Check that copied diagnostics include the actual inner foreground preview failure as well as source discovery and background preparation failures. Gate: saved/candidate voices can be identified and auditioned without opening diagnostics; refresh/import remain discoverable with clear side effects and cancellation behavior.
+
+## Saved voice reference metadata
+
+- [ ] Preserve source transcripts/excerpts when saving game references into VoiceLibrary and recover them for old bindings only when the exact audio/source can be verified. A real saved Narrator/Centurion binding has audio bytes and donor provenance but no transcript: the editor can play it, while original text is unavailable and Use game phrase is disabled. Gate: saved references keep their original phrase after reopen, missing historical text stays explicit, no guessed transcript or assignment changes.
+
+## MCP Unicode text input
+
+- [ ] Fix the PySide6 MCP `type_text` input path for Unicode. Native macOS reproduction: focus a QPlainTextEdit and call `type_text` with Cyrillic; QtTest aborts the application at `testlib/qasciikey.cpp:192` (`ASSERT: "false"`). Use Unicode-capable Qt text/input events for non-ASCII instead of ASCII-only simulated keys, preserving cursor/selection and textChanged behavior. Gate: Cyrillic, accented Latin and mixed text append/replace correctly without aborting; ordinary ASCII shortcuts still work. Isolated UI fixtures only; this failure is in MCP input simulation, not evidence of normal keyboard input failing.
+
+## Qualify game-phrase preview silence rejection
+
+- [ ] Reproduce the real MOSS local v1.5 MLX Centurion preview rejection: choose Narrator > Game character voice > Centurion, first 12.5 s reference beginning "Morning ... Huh?", then Use game phrase for "Ooh, it's you, Jefe? Wanna go on an adventure? There are over 261.6 places that have been rated as dangerous. Murder scenes or cliffs, it's your call." The generated WAV failed objective preflight with 1.60 s internal silence. Preserve model/text/reference/seed and inspect audio before deciding whether synthesis failed or the pause gate rejected an acceptable pause; do not loosen the gate from one example. Require a useful retry outcome and visible reason, with unchanged saved voice assignments.

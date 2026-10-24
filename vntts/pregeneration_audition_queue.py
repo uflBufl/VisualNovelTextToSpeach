@@ -219,9 +219,11 @@ class VoiceAuditionCoordinator:
                 if job.error is not None and not isinstance(
                     job.error, VoiceAuditionCancelled
                 ):
-                    job.session._failures.add(job.key)
+                    job.session._failures[job.key] = (
+                        str(job.error) or type(job.error).__name__
+                    )
                 elif job.preview is not None:
-                    job.session._failures.discard(job.key)
+                    job.session._failures.pop(job.key, None)
                 if job.session._jobs.get(job.key) is job:
                     job.session._jobs.pop(job.key, None)
                 self._running = None
@@ -317,7 +319,7 @@ class VoiceAuditionSession:
         self._closed = False
         self._focus_keys: set[str] = set()
         self._manual_key: str | None = None
-        self._failures: set[str] = set()
+        self._failures: dict[str, str] = {}
 
     @property
     def backend(self) -> object | None:
@@ -374,7 +376,7 @@ class VoiceAuditionSession:
         if not automatic:
             with self.owner._lock:
                 self._manual_key = key
-                self._failures.discard(key)
+                self._failures.pop(key, None)
         # Saved audio does not queue behind an unrelated model render.
         with self.owner._cache_lock:
             preview = self.owner.service.lookup(
@@ -512,6 +514,20 @@ class VoiceAuditionSession:
             if job is not None and not job.cancel.is_set():
                 return "preparing" if self.owner._running is job else "queued"
             return "failed" if key in self._failures else "not-prepared"
+
+    def preparation_error(
+        self,
+        plan: VoicePlan,
+        group: VoiceGroup,
+        candidate_source_id: str,
+        *,
+        text: str | None = None,
+    ) -> str | None:
+        if self.peek(plan, group, candidate_source_id, text=text) is not None:
+            return None
+        key = _context_key(plan, group, candidate_source_id, text)
+        with self.owner._lock:
+            return self._failures.get(key)
 
     def prefetch(
         self,

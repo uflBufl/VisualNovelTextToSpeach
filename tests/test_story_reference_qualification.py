@@ -250,7 +250,8 @@ class StoryReferenceQualificationTest(unittest.TestCase):
         from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 
         context = SimpleNamespace(
-            voice_panel=panel,
+            audition_service=panel.preview_service,
+            content_advisor=panel.content_advisor,
             voice_cancel_event=self.cancellation,
             decoderProgress=SimpleNamespace(emit=self.progress.append),
         )

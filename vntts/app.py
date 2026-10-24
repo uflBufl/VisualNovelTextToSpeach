@@ -4323,11 +4323,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                         {speaker for item in selected for speaker in item.speakers}
                     ),
                     story_titles=tuple(item.title for item in selected),
-                    impact_context=(
-                        content,
-                        self.pregeneration_dialog.job_store,
-                        self.pregeneration_dialog.voice_decisions,
-                    ),
                 )
             elif isinstance(plan, VoicePlan):
                 dialog.set_voice_context(plan, character=character)
@@ -4338,23 +4333,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if recovery and character is not None:
             dialog.set_recovery_context(character, resume_live=bool(resume_live))
         self.narrator_dialog = dialog
-        dialog.impactContextRequested.connect(self._load_voice_impact_context)
         self._resume_live_after_narrator = resume_live
         dialog.finished.connect(self._narrator_finished)
-        dialog.runner.activeChanged.connect(self.dashboard.set_voice_editor_busy)
+        dialog.busyChanged.connect(self.dashboard.set_voice_editor_busy)
         dialog.settingsChanged.connect(self.dashboard.set_voice_editor_dirty)
         self.show_dashboard()
         self.dashboard.embed_narrator(dialog)
         self._apply_controller_action_state()
         self.set_status(
-            "Choose a voice in Voices. Changes apply when you save."
-            + (
-                " Current story preparation keeps its confirmed voices; new "
-                "defaults apply to later preparation."
-                if self.pregeneration_dialog is not None
-                and self.pregeneration_dialog.has_pending_work()
-                else ""
-            )
+            "Current story preparation keeps its confirmed voices."
+            if self.pregeneration_dialog is not None
+            and self.pregeneration_dialog.has_pending_work()
+            else ""
         )
 
     def _open_preparation_narrator(
@@ -4366,46 +4356,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     ) -> AppSettings | None:
         self.open_voice_previews(character=character, for_preparation=True)
         return None
-
-    def _load_voice_impact_context(self) -> None:
-        dialog = self.narrator_dialog
-        if dialog is None:
-            return
-        preparation = self.pregeneration_dialog or self.open_pregeneration(show=False)
-        if preparation is None:
-            dialog._loading_impact_context = False
-            dialog.impact_status.setText(
-                "Unable to load Stories. Finish the current operation and retry."
-            )
-            dialog._update()
-            return
-        self._narrator_preparation = preparation
-
-        def finish(*_args: object) -> None:
-            if self.narrator_dialog is not dialog:
-                return
-            content = preparation.current_content()
-            if isinstance(content, GameContent):
-                dialog.set_story_impact_context(
-                    content, preparation.job_store, preparation.voice_decisions
-                )
-                dialog._check_impact()
-            else:
-                dialog._loading_impact_context = False
-                dialog.impact_status.setText(
-                    "No story content found. Save or cancel your voice selection, then import content in Stories."
-                )
-                dialog._update()
-
-        if (
-            preparation.discovery_runner.active
-            or not preparation.discovery_panel.isHidden()
-        ):
-            preparation.discovery_runner.finished.connect(
-                finish, Qt.ConnectionType.SingleShotConnection
-            )
-        else:
-            finish()
 
     def _save_narrator_candidate(
         self, dialog: GameNarratorDialog, *, offline: bool = False
@@ -4451,22 +4401,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _apply_narrator_to_preparation(
         self,
-        dialog: GameNarratorDialog,
         candidate: AppSettings,
         preparation: OfflineAudioPreparationDialog | None,
-    ) -> bool:
+    ) -> None:
         if preparation is not self.pregeneration_dialog or preparation is None:
-            return False
+            return
         if preparation.has_pending_work():
-            return False
+            return
         preparation.apply_narrator_settings(candidate, voice_changed=True)
-        if dialog.select_affected_after_save is not True:
-            return False
-        results = dialog._impact_results
-        if results is None:
-            return False
-        preparation.select_voice_affected_stories(results)
-        return True
 
     def _narrator_finished(self, result: int) -> None:
         dialog = self.narrator_dialog
@@ -4516,9 +4458,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     and dialog.voice_library.binding(mapping_speaker) is not None
                 )
                 profile_synced = self._sync_active_profile()
-                return_to_stories |= self._apply_narrator_to_preparation(
-                    dialog, candidate, preparation
-                )
+                self._apply_narrator_to_preparation(candidate, preparation)
                 completion_deferred = bool(mapping_speaker or resume_live)
                 self.unknown_speaker_mapping_in_progress = None
                 self._reload_game_narrator(
@@ -5263,6 +5203,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     narrator = None
                 if isinstance(narrator, str):
                     self.dashboard.set_speech_identity(self.settings, narrator)
+        else:
+            from vntts.speech_presentation import narrator_voice_label
+
+            library = getattr(self.controller, "voice_library", None)
+            if isinstance(library, VoiceLibrary):
+                self.dashboard.set_speech_identity(
+                    self.settings, narrator_voice_label(self.settings, library)
+                )
         configuration_enabled = not (
             self._controller_busy or self._shutting_down or preparing or choosing_voice
         )

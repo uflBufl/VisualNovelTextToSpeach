@@ -159,7 +159,7 @@ class StoryVoicePreviewTest(unittest.TestCase):
         self.run_tasks()
 
         self.assertFalse(self.dialog.voice_confirmation.isHidden())
-        self.assertTrue(self.dialog.voice_panel.isHidden())
+        self.assertFalse(hasattr(self.dialog, "voice_panel"))
         self.service.generate.assert_called_once()
         self.assertEqual(
             self.service.generate.call_args.args,

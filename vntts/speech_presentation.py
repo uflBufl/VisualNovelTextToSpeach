@@ -7,7 +7,7 @@ from pathlib import Path
 from vntts.release_backends import SPEECH_BACKEND_LABELS
 from vntts.settings import AppSettings
 from vntts.voice_library import VoiceLibrary
-from vntts.voices import pocket_tts_preset_voices
+from vntts.voices import pocket_tts_preset_voices, voice_binding_label
 
 
 def speech_runtime_label(backend: object | None) -> str:
@@ -171,22 +171,8 @@ def narrator_voice_label(
     settings: AppSettings, voice_library: VoiceLibrary | None = None
 ) -> str:
     binding = voice_library.binding("Narrator") if voice_library is not None else None
-    source = binding.source_id if binding is not None else None
-    if isinstance(source, str) and source and source != "default":
-        kind, _, value = source.partition(":")
-        if kind in {"character", "preset"}:
-            return value.replace("_", " ").title()
     if binding is not None:
-        evidence = binding.provenance.get("evidence")
-        if isinstance(evidence, dict):
-            character = evidence.get("source_character") or evidence.get(
-                "selected_character"
-            )
-            if isinstance(character, str) and character.strip():
-                return character.strip()
-        if binding.route != "voice":
-            return "Narrator fallback"
-        return "Selected game voice"
+        return voice_binding_label(binding) or "Selected game voice"
     if settings.tts_speaker_wav:
         return f"Reference: {Path(settings.tts_speaker_wav).name}"
     if settings.speech_backend == "pocket-tts":

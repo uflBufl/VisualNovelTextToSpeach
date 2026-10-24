@@ -41,6 +41,55 @@ from vntts.synthesis import (
 
 
 class VoiceAuditionPreviewServiceTest(unittest.TestCase):
+    def test_qwen_empty_transcript_clears_manifest_conditioning_and_cache_identity(
+        self,
+    ):
+        from vntts.game_narrator import narrator_preview_plan
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _plan, _group, manifest = ambiguous_fixture(root)
+            document = json.loads(manifest.read_text())
+            for voice in document["voices"]:
+                voice["vntts.reference_transcript"] = "Existing reference words."
+            manifest.write_text(json.dumps(document))
+            settings = AppSettings(speech_backend="qwen-tts")
+            inherited = narrator_preview_plan(
+                settings, manifest, "character:rhiannon", "A comparison phrase."
+            )
+            cleared = narrator_preview_plan(
+                settings,
+                manifest,
+                "character:rhiannon",
+                "A comparison phrase.",
+                reference_transcript="",
+            )
+            self.assertEqual(
+                inherited.groups[0].candidates[0].reference_transcript,
+                "Existing reference words.",
+            )
+            self.assertEqual(cleared.groups[0].candidates[0].reference_transcript, "")
+            backend = FakeBackend("qwen-tts")
+            conditioning = []
+
+            def factory(_name, registry, _cache_root, **_options):
+                backend.registry = registry
+                return backend
+
+            backend.on_render = lambda: conditioning.append(
+                backend.registry.resolve("Rhiannon").reference_transcript
+            )
+            service = VoiceAuditionPreviewService(
+                root / "previews", backend_factory=factory
+            )
+            self.addCleanup(service.close)
+            first = service.generate(
+                inherited, inherited.groups[0], "character:rhiannon"
+            )
+            second = service.generate(cleared, cleared.groups[0], "character:rhiannon")
+            self.assertNotEqual(first.identity, second.identity)
+            self.assertEqual(conditioning, ["Existing reference words.", ""])
+
     def test_warm_preview_reuses_registry_and_captured_checksum_preflight(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -1106,6 +1155,66 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
 
             self.assertFalse(factory_called)
 
+    def test_custom_game_and_edited_phrases_keep_exact_text_and_separate_caches(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            backend = FakeBackend("moss-tts")
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=lambda *_args, **_kwargs: backend
+            )
+            self.addCleanup(service.close)
+            source = group.candidates[0].source_id
+            phrases = ("Morning, traveller.", "  Моя изменённая реплика?!  ")
+            previews = []
+            for phrase in phrases:
+                with self.subTest(phrase=phrase):
+                    self.assertFalse(
+                        service.has_cached_preview(plan, group, source, text=phrase)
+                    )
+                    self.assertIsNone(service.lookup(plan, group, source, text=phrase))
+                    preview = service.generate(plan, group, source, text=phrase)
+                    self.assertEqual(preview.text, phrase)
+                    self.assertTrue(
+                        service.has_cached_preview(plan, group, source, text=phrase)
+                    )
+                    self.assertEqual(
+                        service.lookup(plan, group, source, text=phrase),
+                        replace(preview, reused=True),
+                    )
+                    self.assertEqual(
+                        service.generate(plan, group, source, text=phrase),
+                        replace(preview, reused=True),
+                    )
+                    previews.append(preview)
+            self.assertNotEqual(previews[0].identity, previews[1].identity)
+            self.assertEqual(
+                [request.text for request in backend.requests], list(phrases)
+            )
+
+    def test_empty_and_non_text_preview_requests_are_rejected_before_render(self):
+        with TemporaryDirectory() as directory:
+            plan, group, _manifest = ambiguous_fixture(Path(directory))
+            factory = Mock()
+            service = VoiceAuditionPreviewService(
+                Path(directory) / "auditions", backend_factory=factory
+            )
+            self.addCleanup(service.close)
+            for text in ("", " \n ", 17):
+                with self.subTest(text=text):
+                    for request in (
+                        service.generate,
+                        service.lookup,
+                        service.has_cached_preview,
+                    ):
+                        with self.assertRaisesRegex(
+                            VoiceAuditionError, "text is invalid"
+                        ):
+                            request(
+                                plan, group, group.candidates[0].source_id, text=text
+                            )
+            factory.assert_not_called()
+
     def test_optional_second_phrase_uses_a_separate_persistent_preview(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1124,8 +1233,6 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                 source_id,
                 text=group.alternate_sample_text,
             )
-            with self.assertRaisesRegex(VoiceAuditionError, "text is invalid"):
-                service.generate(plan, group, source_id, text="Unbound phrase")
             service.close()
 
             self.assertNotEqual(first.identity, alternate.identity)

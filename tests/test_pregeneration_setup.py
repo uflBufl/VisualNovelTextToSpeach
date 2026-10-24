@@ -2238,7 +2238,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 ):
                     dialog.close()
                 self.assertTrue(dialog.isVisible())
-                self.assertFalse(dialog.voice_panel._shutdown_requested)
+                self.assertFalse(dialog.audition_service._closed)
                 self.assertEqual(store.selection_for_content(content), ("rhiannon",))
             dialog.close()
             self.assertFalse(dialog.isVisible())

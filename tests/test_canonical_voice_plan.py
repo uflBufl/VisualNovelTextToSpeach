@@ -10,20 +10,19 @@ from vntts_artifacts.voice_generation_queue import (
     text_sha256,
 )
 
-from tests.voice_manifest_fixtures import write_conflicting_manifest, write_reference
+from tests.voice_manifest_fixtures import write_conflicting_manifest
 from vntts.authoring.source_reference_bindings import (
     SOURCE_REFERENCE_BINDINGS_FIELD,
     queue_voice_overrides_sha256,
 )
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
 from vntts.pregeneration_voices import (
-    PregenerationVoiceError,
     VoiceDecisionStore,
     VoicePlanStore,
 )
 from vntts.settings import AppSettings
 from vntts.voice_library import VoiceLibrary
-from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
+from vntts.voices import VoiceManifestError
 
 
 class CanonicalVoicePlanTest(unittest.TestCase):
@@ -177,81 +176,6 @@ class CanonicalVoicePlanTest(unittest.TestCase):
                     reloaded.binding("Aderyn"), reloaded.binding("Rhiannon")
                 )
                 self.assertEqual(reloaded.binding(role).provenance["method"], "manual")
-
-    def test_saving_a_legacy_alias_variant_updates_all_canonical_routes_only(self):
-        with TemporaryDirectory() as directory:
-            content, jobs, manifest, _library, decisions, store, settings = (
-                self.fixture(Path(directory))
-            )
-            job = jobs.create_or_resume(content, ("first", "second"))
-            initial = store.create(job, settings, manifest_path=manifest)
-            group = next(
-                group for group in initial.groups if group.character == "Rhiannon"
-            )
-            unrelated = next(
-                group for group in initial.groups if group.character == "Hotelier"
-            )
-            adult = replace(group, group_id="a" * 64, variant_key="adult")
-            alias = replace(
-                group,
-                group_id="b" * 64,
-                character="Aderyn",
-                routing_role="Aderyn",
-                variant_key="story-name:aderyn",
-            )
-            child = replace(
-                group, group_id="c" * 64, variant_key="child", route="narrator"
-            )
-            plan = replace(initial, groups=(adult, alias, child, unrelated))
-            candidate = next(
-                value
-                for value in alias.candidate_inventory
-                if value.source_speaker == "child-v1"
-            )
-            decisions.remember(alias, candidate.source_id)
-
-            updated = store.apply_saved_choice(
-                job, plan, settings, (alias, candidate.source_id)
-            )
-
-            for value in updated.groups[:3]:
-                self.assertEqual(value.route, "voice")
-                self.assertEqual(value.source_id, candidate.source_id)
-                self.assertEqual(value.reference_sha256s, candidate.reference_sha256s)
-            self.assertEqual(updated.groups[-1], unrelated)
-            self.assertEqual(
-                json.loads(store.path_for(job).read_text())["groups"],
-                [group.to_document() for group in updated.groups],
-            )
-
-    def test_changed_reference_cannot_publish_a_partial_canonical_plan(self):
-        with TemporaryDirectory() as directory:
-            content, jobs, manifest, library, _decisions, store, settings = (
-                self.fixture(Path(directory))
-            )
-            job = jobs.create_or_resume(content, ("first", "second"))
-            plan = store.create(job, settings, manifest_path=manifest)
-            group = next(
-                group for group in plan.groups if group.character == "Rhiannon"
-            )
-            candidate = next(
-                value
-                for value in group.candidate_inventory
-                if value.source_speaker == "child-v1"
-            )
-            registry = CharacterVoiceRegistry.from_file(plan.voice_manifest)
-            reference = registry.resolve_source(candidate.source_id).references[0]
-            before_plan = store.path_for(job).read_bytes()
-            before_bindings = library.bindings()
-            write_reference(reference, b"changed after preview")
-
-            with self.assertRaisesRegex(PregenerationVoiceError, "reference changed"):
-                store.apply_saved_choice(
-                    job, plan, settings, (group, candidate.source_id)
-                )
-
-            self.assertEqual(store.path_for(job).read_bytes(), before_plan)
-            self.assertEqual(library.bindings(), before_bindings)
 
     def test_unavailable_archived_source_is_optional_but_selected_source_is_strict(
         self,

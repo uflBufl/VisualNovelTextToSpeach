@@ -18,12 +18,9 @@ from tests.voice_manifest_fixtures import (
     write_conflicting_manifest,
     write_manifest,
     write_player_candidate_manifest,
-    write_reference,
 )
 from vntts.pregeneration_queue import (
     PregenerationInputStore,
-    PregenerationQueueError,
-    _generation_input_identity,
 )
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
 from vntts.pregeneration_voices import (
@@ -44,7 +41,6 @@ from vntts.versioned_json import write_versioned_json
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
     CharacterVoiceRegistry,
-    default_voice_choice_id,
     read_voice_reference_bytes,
     remember_voice_binding,
     voice_binding_source_id,
@@ -1625,188 +1621,6 @@ class VoicePlanStoreTest(unittest.TestCase):
                 )
 
             saved_groups.assert_not_called()
-
-    def test_saved_inspection_choice_updates_only_affected_routes(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            job, jobs = self.create_fixture(root)
-            manifest = write_conflicting_manifest(root / "voices")
-            library = VoiceLibrary(root / "library")
-            decisions = VoiceDecisionStore(
-                root / "decisions.json", voice_library=library
-            )
-            store = VoicePlanStore(jobs, decisions=decisions, voice_library=library)
-            settings = AppSettings(pocket_gated_model_accepted=True)
-            before = store.create(job, settings, manifest_path=manifest)
-            group = next(
-                value for value in before.groups if value.character == "Rhiannon"
-            )
-            choice = group.candidates[1].source_id
-            decisions.remember(group, choice)
-
-            with (
-                patch("vntts.pregeneration_voices._load_bound_story") as load_story,
-                patch(
-                    "vntts.pregeneration_voices._materialize_voice_catalog"
-                ) as catalog,
-                patch(
-                    "vntts.pregeneration_voices.voice_source_discoveries"
-                ) as discover,
-            ):
-                updated = store.apply_saved_choice(
-                    job, before, settings, (group, choice)
-                )
-            load_story.assert_not_called()
-            catalog.assert_not_called()
-            discover.assert_not_called()
-
-            changed = next(
-                value for value in updated.groups if value.group_id == group.group_id
-            )
-            self.assertEqual(changed.route, "voice")
-            self.assertEqual(changed.source_id, choice)
-            self.assertEqual(
-                changed.reference_sha256s, group.candidates[1].reference_sha256s
-            )
-            self.assertNotEqual(changed.control_sha256, group.control_sha256)
-            self.assertEqual(updated.voice_manifest, before.voice_manifest)
-            self.assertEqual(
-                tuple(
-                    value
-                    for value in updated.groups
-                    if value.group_id != group.group_id
-                ),
-                tuple(
-                    value for value in before.groups if value.group_id != group.group_id
-                ),
-            )
-            self.assertTrue(store.path_for(job).is_file())
-            replanned = store.create(job, settings, manifest_path=manifest)
-            persisted = next(
-                value for value in replanned.groups if value.group_id == group.group_id
-            )
-            self.assertEqual(changed.source_id, persisted.source_id)
-            self.assertEqual(changed.control_sha256, persisted.control_sha256)
-            self.assertEqual(
-                _generation_input_identity(job, updated),
-                _generation_input_identity(job, replanned),
-            )
-
-    def test_saved_inspection_choice_updates_all_character_variants(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            job, jobs = self.create_fixture(root)
-            store = VoicePlanStore(jobs)
-            settings = AppSettings(pocket_gated_model_accepted=True)
-            initial = store.create(
-                job, settings, manifest_path=write_conflicting_manifest(root / "voices")
-            )
-            group = next(
-                value for value in initial.groups if value.character == "Rhiannon"
-            )
-            same_role = replace(group, group_id="e" * 64, route="narrator")
-            other_variant = replace(
-                group, group_id="f" * 64, variant_key="child", route="narrator"
-            )
-            plan = replace(initial, groups=(*initial.groups, same_role, other_variant))
-
-            updated = store.apply_saved_choice(
-                job, plan, settings, (group, group.candidates[1].source_id)
-            )
-
-            self.assertEqual(
-                updated.groups[-2].source_id, group.candidates[1].source_id
-            )
-            self.assertEqual(updated.groups[-2].route, "voice")
-            self.assertEqual(
-                updated.groups[-1].source_id, group.candidates[1].source_id
-            )
-            self.assertEqual(updated.groups[-1].route, "voice")
-
-    def test_saved_inspection_choice_rejects_changed_reference_without_rewriting_plan(
-        self,
-    ):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            job, jobs = self.create_fixture(root)
-            manifest = write_conflicting_manifest(root / "voices")
-            store = VoicePlanStore(jobs)
-            settings = AppSettings(pocket_gated_model_accepted=True)
-            plan = store.create(job, settings, manifest_path=manifest)
-            group = next(
-                value for value in plan.groups if value.character == "Rhiannon"
-            )
-            choice = group.candidates[1].source_id
-            selected = CharacterVoiceRegistry.from_file(
-                plan.voice_manifest
-            ).resolve_source(choice)
-            assert selected is not None
-            before = store.path_for(job).read_bytes()
-            write_reference(selected.references[0], b"changed")
-
-            with self.assertRaisesRegex(PregenerationVoiceError, "reference changed"):
-                store.apply_saved_choice(job, plan, settings, (group, choice))
-            self.assertEqual(store.path_for(job).read_bytes(), before)
-
-    def test_saved_inspection_choice_defers_but_preserves_input_validation(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            job, jobs = self.create_fixture(root)
-            store = VoicePlanStore(jobs)
-            settings = AppSettings(pocket_gated_model_accepted=True)
-            plan = store.create(
-                job, settings, manifest_path=write_conflicting_manifest(root / "voices")
-            )
-            group = next(
-                value for value in plan.groups if value.character == "Rhiannon"
-            )
-            choice = group.candidates[1].source_id
-            updated = store.apply_saved_choice(job, plan, settings, (group, choice))
-            selected = CharacterVoiceRegistry.from_file(
-                updated.voice_manifest
-            ).resolve_source(choice)
-            assert selected is not None
-            write_reference(selected.references[0], b"changed after selection")
-
-            with self.assertRaisesRegex(PregenerationQueueError, "reference changed"):
-                PregenerationInputStore(jobs).materialize(job, updated)
-
-    def test_saved_inspection_can_choose_narrator_without_replanning(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            job, jobs = self.create_fixture(root)
-            library = VoiceLibrary(root / "library")
-            decisions = VoiceDecisionStore(
-                root / "decisions.json", voice_library=library
-            )
-            store = VoicePlanStore(jobs, decisions=decisions, voice_library=library)
-            settings = AppSettings(pocket_gated_model_accepted=True)
-            plan = store.create(
-                job, settings, manifest_path=write_conflicting_manifest(root / "voices")
-            )
-            group = next(
-                value for value in plan.groups if value.character == "Rhiannon"
-            )
-            decisions.remember(group, default_voice_choice_id)
-
-            updated = store.apply_saved_choice(
-                job, plan, settings, (group, default_voice_choice_id)
-            )
-            changed = next(
-                value for value in updated.groups if value.group_id == group.group_id
-            )
-            self.assertEqual(changed.route, "narrator")
-            self.assertEqual(changed.source_id, default_voice_choice_id)
-            self.assertEqual(changed.source_character, "alba")
-            replanned = store.create(
-                job,
-                settings,
-                manifest_path=plan.voice_manifest,
-            )
-            self.assertEqual(
-                _generation_input_identity(job, updated),
-                _generation_input_identity(job, replanned),
-            )
 
     def test_changed_eligible_reference_requires_a_new_choice(self):
         with TemporaryDirectory() as temporary_directory:

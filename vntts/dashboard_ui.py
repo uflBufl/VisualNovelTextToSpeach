@@ -637,23 +637,11 @@ class ControlDashboard(QMainWindow):
         voices_title.setStyleSheet("font-weight: 600;")
         voices_layout.addWidget(voices_title)
         voices_layout.addWidget(self.speech_configuration)
-        voice_help = QLabel(
-            "Choose and preview your narrator and character defaults below. "
-            "Review narrator substitutions before story generation. "
-            "Changing a default voice does not change existing recordings."
-        )
-        voice_help.setWordWrap(True)
-        voices_layout.addWidget(voice_help)
-        self.narrator_voice_button.setText("Choose and preview voices...")
+        self.narrator_voice_button.setText("Edit voices...")
         self.narrator_voice_button.setDefault(True)
         voices_layout.addWidget(
             self.narrator_voice_button, 0, Qt.AlignmentFlag.AlignLeft
         )
-        self.voice_availability = QLabel(
-            "The preview loads its model when needed. Reading setup is not required."
-        )
-        self.voice_availability.setWordWrap(True)
-        voices_layout.addWidget(self.voice_availability)
         voices_layout.addStretch()
         return voices_page
 
@@ -687,10 +675,13 @@ class ControlDashboard(QMainWindow):
         status_row.addWidget(self.copy_status_button)
         shell_layout.addLayout(status_row)
         shell_layout.addWidget(self.loading_panel)
-        self.voice_edit_status = QPushButton("Voices: unsaved selection — Show")
+        self.voice_edit_status = QPushButton("Voices: unsaved selection - Show")
         self.voice_edit_status.setAccessibleName("Pending voice selection")
         self.voice_edit_status.clicked.connect(self.show_voices)
         self.voice_edit_status.hide()
+        self.sections.currentChanged.connect(
+            lambda _index: self.set_voice_editor_busy(self._voice_busy)
+        )
         shell_layout.addWidget(self.voice_edit_status)
         shell_layout.addWidget(self.sections, 1)
         shell_layout.addWidget(setup_group)
@@ -773,11 +764,14 @@ class ControlDashboard(QMainWindow):
     def set_voice_editor_busy(self, busy: bool) -> None:
         self._voice_busy = bool(busy)
         self.voice_edit_status.setText(
-            "Voice preview running — Show / cancel"
+            "Voice editor is working - Show / cancel"
             if busy
-            else "Voices: unsaved selection — Show"
+            else "Voices: unsaved selection - Show"
         )
-        self.voice_edit_status.setVisible(self._voice_busy or self._voice_dirty)
+        self.voice_edit_status.setVisible(
+            self.sections.currentWidget() is not self.voices_stack
+            and (self._voice_busy or self._voice_dirty)
+        )
 
     def set_voice_editor_dirty(self, dirty: bool) -> None:
         self._voice_dirty = bool(dirty)

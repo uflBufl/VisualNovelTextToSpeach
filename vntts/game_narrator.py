@@ -89,10 +89,14 @@ def narrator_preview_plan(
         raise ValueError("The selected game reference is unavailable")
     candidate = VoiceCandidate(
         source_id=source_id,
-        source_character=voice.character,
+        source_character=voice.source_character or voice.character,
         source_speaker=voice.speaker,
         reference_sha256s=tuple(file_sha256(path) for path in voice.references),
-        reference_transcript=reference_transcript or voice.reference_transcript,
+        reference_transcript=(
+            reference_transcript
+            if reference_transcript is not None
+            else voice.reference_transcript
+        ),
     )
     controls = hashlib.sha256(
         repr(
@@ -116,7 +120,7 @@ def narrator_preview_plan(
         alternate_sample_text=None,
         route="needs-audition",
         source_id=source_id,
-        source_character=voice.character,
+        source_character=voice.source_character or voice.character,
         source_speaker=voice.speaker,
         reference_sha256s=candidate.reference_sha256s,
         decision_context_sha256=identity,

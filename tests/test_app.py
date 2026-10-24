@@ -66,7 +66,7 @@ from vntts.onboarding import DiagnosticResult  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivationResult  # noqa: E402
 from vntts.pregeneration_audition import VoiceAuditionCancelled  # noqa: E402
 from vntts.pregeneration_pack import OfflinePackResult  # noqa: E402
-from vntts.pregeneration_setup import ContentDiscovery  # noqa: E402
+from vntts.pregeneration_setup import ContentDiscovery, GameContent  # noqa: E402
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
 from vntts.pregeneration_voices import resolve_pregeneration_settings  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
@@ -1520,6 +1520,14 @@ class TrayApplicationTest(unittest.TestCase):
         preparation = Mock()
         preparation.has_pending_work.return_value = False
         preparation.settings = AppSettings(offline_speech_backend="moss-tts")
+        preparation.current_content.return_value = Mock(
+            spec=GameContent,
+            selections=(
+                Mock(selection_id="selected", title="Selected", speakers=("Selone",)),
+                Mock(selection_id="other", title="Other", speakers=("Hotelier",)),
+            ),
+        )
+        preparation.selected_story_ids.return_value = ("selected",)
         tray_application.pregeneration_dialog = preparation
         with (
             patch("vntts.app.GameNarratorDialog") as factory,
@@ -1534,6 +1542,12 @@ class TrayApplicationTest(unittest.TestCase):
                 tray_application.dashboard,
                 preview_service=ANY,
                 use_offline_engine=True,
+            )
+            factory.return_value.set_voice_context.assert_called_once_with(
+                None,
+                character=None,
+                roles=("Selone",),
+                story_titles=("Selected",),
             )
             tray_application._narrator_finished(QDialog.DialogCode.Rejected)
         tray_application.pregeneration_dialog = None
@@ -1566,6 +1580,35 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(saved.tts_speaker_wav, "live.wav")
         self.assertTrue(saved.pocket_gated_model_accepted)
         tray_application.shutdown()
+
+    def test_saved_narrator_label_is_visible_before_reading_engine_starts(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            library.select(
+                "Narrator",
+                route="voice",
+                source_id="character:centurion",
+                evidence={
+                    "source_character": "Player candidate Centurion bd3540bbf881"
+                },
+            )
+            controller = Mock(
+                is_ready=False, is_live_running=False, voice_library=library
+            )
+            tray = TrayApplication(
+                self.application,
+                AppSettings(speech_backend="moss-tts"),
+                controller_factory=Mock(return_value=controller),
+            )
+            tray._controller_ready = False
+            tray._apply_controller_action_state()
+            self.assertIn("Centurion", tray.dashboard.speech_configuration.text())
+            self.assertNotIn(
+                "Player candidate", tray.dashboard.speech_configuration.text()
+            )
+            self.assertNotIn("Not chosen", tray.dashboard.speech_configuration.text())
+            controller.start.assert_not_called()
+            tray.shutdown()
 
     def test_shared_voice_entry_and_reading_start_use_existing_actions(self):
         controller = Mock(is_ready=False, is_live_running=False)
@@ -1849,7 +1892,6 @@ class TrayApplicationTest(unittest.TestCase):
         try:
             for stage in (
                 "planning_voices",
-                "auditioning_voices",
                 "preparing_inputs",
                 "generating",
                 "recovering",
@@ -1871,10 +1913,8 @@ class TrayApplicationTest(unittest.TestCase):
                     setattr(preparation, stage, False)
             preparation.generating = True
             with patch.object(preparation, "apply_narrator_settings") as apply:
-                self.assertFalse(
-                    tray._apply_narrator_to_preparation(
-                        Mock(), tray.settings.updated(tts_speaker="marius"), preparation
-                    )
+                tray._apply_narrator_to_preparation(
+                    tray.settings.updated(tts_speaker="marius"), preparation
                 )
                 apply.assert_not_called()
             controller.is_live_running = True
@@ -1913,7 +1953,6 @@ class TrayApplicationTest(unittest.TestCase):
         finally:
             for stage in (
                 "planning_voices",
-                "auditioning_voices",
                 "preparing_inputs",
                 "generating",
                 "recovering",

@@ -1,67 +1,52 @@
-"""Guided game narrator discovery, reference listening and synthesis preview."""
+"""Role/source host for the shared character voice editor."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from functools import partial
-from hashlib import sha256
 from pathlib import Path
+from tempfile import TemporaryDirectory, mkdtemp
 from threading import Event
-from traceback import format_exception
-from typing import TypeGuard, cast
+from typing import cast
 
 from PySide6.QtCore import QSignalBlocker, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QPixmap, QStandardItemModel
-from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
     QFormLayout,
-    QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSpacerItem,
     QVBoxLayout,
     QWidget,
 )
-from vntts_artifacts.voice_manifest import VoiceManifestError, write_voice_manifest
+from vntts_artifacts.voice_manifest import write_voice_manifest
 
 from vntts.async_ui import LatestTaskRunner
-from vntts.authoring.pcm_playback import PcmPlaybackError
-from vntts.cleanup import temporary_directory
 from vntts.document_identity import sha256_file
 from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
 from vntts.game_content_importer import Reverse1999GameImporter
-from vntts.game_narrator import (
-    OriginalReference,
-    bind_voice_library_selection,
-    load_original_reference,
-    narrator_preview_plan,
-)
-from vntts.path_safety import read_regular_bytes
+from vntts.game_narrator import bind_voice_library_selection, narrator_preview_plan
 from vntts.pregeneration_audition import (
     COMPARISON_PREVIEW_TEXT,
-    VoiceAuditionPreview,
     VoiceAuditionPreviewService,
 )
 from vntts.pregeneration_audition_queue import VoiceAuditionSession
-from vntts.pregeneration_setup import GameContent, PregenerationJobStore
+from vntts.pregeneration_audition_ui import VoiceAuditionPanel, VoiceAuditionUIError
 from vntts.pregeneration_voices import (
-    UNLINKED_BANK_LABEL,
-    UNLINKED_BANK_MEDIA,
     PregenerationVoiceError,
-    VoiceDecisionStore,
+    VoiceCandidate,
     VoiceGroup,
     VoicePlan,
-    is_playable_main_voice_source,
     pregeneration_narrator_source_id,
     resolve_pregeneration_settings,
     validated_player_voice_candidates,
@@ -69,14 +54,8 @@ from vntts.pregeneration_voices import (
 from vntts.qt_audio import QtPcmPlayer
 from vntts.release_backends import speech_backend_options
 from vntts.settings import AppSettings
-from vntts.speech_presentation import (
-    compact_runtime_label,
-    engine_model_label,
-    speech_runtime_label,
-)
 from vntts.tts_benchmark import create_backend
 from vntts.ui_text import copy_text_button, make_text_copyable
-from vntts.voice_default_impact import StoryVoiceImpact, inspect_voice_default_impact
 from vntts.voice_library import VoiceBinding, VoiceBindingRollback, VoiceLibrary
 from vntts.voices import (
     CharacterVoiceRegistry,
@@ -88,36 +67,28 @@ from vntts.voices import (
     read_voice_reference_bytes,
     registry_with_voice_library,
     remember_voice_binding,
+    voice_binding_label,
+    voice_binding_source_id,
+    voice_source_label,
 )
 
 Binder = Callable[..., AppSettings]
-ImpactContext = tuple[GameContent, PregenerationJobStore, VoiceDecisionStore]
-
-
-def _is_story_voice_impact(
-    result: object,
-) -> TypeGuard[tuple[StoryVoiceImpact, ...]]:
-    return isinstance(result, tuple) and all(
-        isinstance(value, StoryVoiceImpact) for value in result
-    )
-
-
-def _is_string_tuple(value: object) -> TypeGuard[tuple[str, ...]]:
-    return isinstance(value, tuple) and all(isinstance(item, str) for item in value)
+CurrentVoice = tuple[VoicePlan, str, tuple[tuple[str, VoiceBinding | None], ...]]
 
 
 def _display_role_name(role: str) -> str:
-    """Use one display spelling for the role identity used by synthesis."""
     value = role.strip()
-    if len(value) > 2 and value[0] == value[-1] == '"':
-        return value[1:-1].strip()
-    return value
+    return (
+        value[1:-1].strip()
+        if len(value) > 2 and value[0] == value[-1] == '"'
+        else value
+    )
 
 
 class GameNarratorDialog(QDialog):
-    impactContextRequested = Signal()
     decoderProgress = Signal(str)
     settingsChanged = Signal(bool)
+    busyChanged = Signal(bool)
 
     def __init__(
         self,
@@ -136,78 +107,33 @@ class GameNarratorDialog(QDialog):
         use_offline_engine: bool = True,
     ) -> None:
         super().__init__(parent)
-        self._initialize_state(
-            settings,
-            importer,
-            preview_service,
-            binder,
-            player,
-            thread_pool,
-            voice_library,
-            voice_binding_rollback,
-            use_offline_engine,
-        )
-        self._build_status_and_assignment_controls()
-        self._build_voice_source_controls(settings)
-        self._build_game_reference_controls(settings)
-        self._build_preview_controls()
-        layout = self._build_dialog_layout()
-        self._build_impact_controls()
-        self._build_actions(layout)
-        self._connect_controls()
-        self._finish_setup()
-
-    def _initialize_state(
-        self,
-        settings: AppSettings,
-        importer: Reverse1999GameImporter | None,
-        preview_service: VoiceAuditionPreviewService | VoiceAuditionSession | None,
-        binder: Binder,
-        player: QtPcmPlayer | None,
-        thread_pool: QThreadPool | None,
-        voice_library: VoiceLibrary | None,
-        voice_binding_rollback: VoiceBindingRollback | None,
-        use_offline_engine: bool,
-    ) -> None:
         self.setWindowTitle("Narrator and character voices")
-        self.resize(900, 560)
+        self.resize(900, 680)
         self.settings_value = (
             resolve_pregeneration_settings(settings) if use_offline_engine else settings
         )
         self._initial_settings_value = self.settings_value
-        self._settings_dirty = False
         self.result_settings: AppSettings | None = None
-        self.importer = importer or Reverse1999GameImporter()
-        self.previews = preview_service or VoiceAuditionPreviewService(
-            backend_factory=partial(
-                create_backend, terms_accepted=settings.xtts_terms_accepted
-            )
-        )
-        self.binder = binder
         self.voice_library = voice_library or application_voice_library()
         self._voice_binding_rollback = voice_binding_rollback
         self._owns_voice_binding_rollback = voice_binding_rollback is None
-        self.player = player or QtPcmPlayer(self)
+        self.binder = binder
+        self.importer = importer or Reverse1999GameImporter()
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.runner.finished.connect(self._finished)
+        self.runner.activeChanged.connect(self._activity_changed)
+        self.current_voice_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.current_voice_runner.finished.connect(self._current_voice_finished)
+        self.current_voice_runner.activeChanged.connect(self._activity_changed)
+        self._current_voice_label = ""
+        self._pending_current_voice: Callable[[], CurrentVoice] | None = None
         self.cancellation = Event()
-        self.decoderProgress.connect(self._decoder_progress)
-        self._prepared: dict[str, Path] = {}
-        self._candidate_source_ids: set[str] = set()
-        self._exact_transcripts: dict[str, str] = {}
-        self._prepared_role: str | None = None
-        self._character: str | None = None
         self._operation: str | None = None
-        self._warming_reference: str | None = None
-        self._queued_action: str | None = None
-        self._playback_requested = False
-        self._playback_ready = False
-        self._closing = False
-        self._closed = False
-        self._preview_reused = False
-        self._preview_identity: tuple[object, ...] | None = None
-        self._prefetch_identity: tuple[object, ...] | None = None
-        self._prefetch_plan: VoicePlan | None = None
+        self._closing = self._closed = self._initializing = False
+        self._panel_cancelled = False
+        self._busy = self._settings_dirty = False
+        self._character: str | None = None
+        self._installation_root: Path | None = None
         self._catalog_manifest = (
             settings.voice_manifest or find_default_voice_manifest()
         )
@@ -215,393 +141,222 @@ class GameNarratorDialog(QDialog):
         self._voice_context: VoicePlan | None = None
         self._story_titles: tuple[str, ...] = ()
         self._saving_role = "Narrator"
-        self._impact_context: ImpactContext | None = None
-        self._loading_impact_context = False
-        self._impact_results: tuple[StoryVoiceImpact, ...] | None = None
-        self._impact_details = ""
-        self._game_reference_dirty = False
-        self._installation_root: Path | None = None
+        self._saved_source: str | None = None
+        self._narrator_binding: VoiceBinding | None = None
+        self._saved_voice_binding: VoiceBinding | None = None
         self._recovery_role: str | None = None
-        self._recovery_resume_live = False
-        self._suppress_auto_discovery = False
-        self.select_affected_after_save = False
-
-    def _build_status_and_assignment_controls(self) -> None:
-        self.status = QLabel("Choose a candidate. Nothing changes until you save.")
-        self.status.setTextFormat(Qt.TextFormat.PlainText)
+        self._recovery_resume_live = self._suppress_auto_discovery = False
+        self._candidate_manifest: Path | str | None = None
+        self._narrator_directory = TemporaryDirectory(prefix="vntts-narrator-editor-")
+        self.status = QLabel()
+        self.status.hide()
         self.status.setWordWrap(True)
-        self.status.setAccessibleName("Game narrator progress")
-        self.runtime = QLabel()
-        self.runtime.setWordWrap(True)
-        self.runtime.setTextFormat(Qt.TextFormat.PlainText)
-        self.runtime.setAccessibleName("Narrator preview compute device")
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.hide()
         self.controls = QWidget()
-        form = QFormLayout(self.controls)
-        self.form = form
-        form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        content = QVBoxLayout(self.controls)
+        content.setAlignment(Qt.AlignmentFlag.AlignTop)
+        content.setContentsMargins(8, 8, 8, 8)
+        content.setSpacing(8)
+        self.new_voice_box = QGroupBox("New voice")
+        self.new_voice_box.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
+        )
+        self.form = QFormLayout(self.new_voice_box)
+        self.form.setContentsMargins(8, 6, 8, 6)
+        self.form.setVerticalSpacing(4)
+        self.form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        self.form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.context_note = QLabel()
         self.context_note.setWordWrap(True)
-        self.context_note.setTextFormat(Qt.TextFormat.PlainText)
-        self.context_note.setAccessibleName("Voice selection context")
-        self.context_note.setStyleSheet("font-weight: 600;")
         self.context_note.hide()
-        form.addRow(self.context_note)
+        content.addWidget(self.context_note)
         self.role = QComboBox()
         self.role.setAccessibleName("Narrator or character role")
-        self.role.addItem("Narrator")
-        form.addRow("Assign voice to", self.role)
         self.portrait = QLabel()
-        self.portrait.setAccessibleName("Selected character portrait")
         self.role_summary = QLabel()
-        self.role_summary.setTextFormat(Qt.TextFormat.PlainText)
         self.role_summary.setWordWrap(True)
-        self.role_summary.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
-        )
-        assignment = QHBoxLayout()
-        assignment.addWidget(self.portrait)
-        assignment.addWidget(self.role_summary, 1)
-        form.addRow("Currently assigned", assignment)
-
-    def _build_voice_source_controls(self, settings: AppSettings) -> None:
-        form = self.form
+        self.role_summary.hide()
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Voice for"))
+        row.addWidget(self.portrait)
+        row.addWidget(self.role, 1)
+        content.addLayout(row)
         self.source = QComboBox()
         self.source.setAccessibleName("Voice source")
-        self.source.addItem("Game character voice", "game")
-        self.source.addItem("Built-in voice", "preset")
-        self.source.addItem("Imported voice", "catalog")
-        self.source.addItem("Choose automatically", "automatic")
-        self.source.addItem("Use narrator's voice", "narrator")
-        narrator_binding = self.voice_library.binding("Narrator")
-        selected = (
-            narrator_binding.source_id
-            if narrator_binding is not None
-            else pregeneration_narrator_source_id(
-                settings, voice_library=self.voice_library
-            )
-        )
-        if str(selected or "").startswith("preset:"):
-            self.source.setCurrentIndex(1)
-        form.addRow("Voice source", self.source)
+        for label, mode in (
+            ("Game character voice", "game"),
+            ("Built-in voice", "preset"),
+            ("Imported voice", "catalog"),
+            ("Saved voice", "saved"),
+            ("Choose automatically", "automatic"),
+            ("Use narrator's voice", "narrator"),
+        ):
+            self.source.addItem(label, mode)
+        self.form.addRow("Voice source", self.source)
         self.presets = QComboBox()
         self.presets.setAccessibleName("Built-in narrator candidate")
         for name in pocket_tts_preset_voices:
             self.presets.addItem(name.replace("_", " ").title(), f"preset:{name}")
-        self.presets.setCurrentIndex(max(0, self.presets.findData(selected)))
-        self.presets.currentIndexChanged.connect(self._stop_audio)
-        form.addRow("Voice", self.presets)
+        self.form.addRow("Voice", self.presets)
         self.catalog_choice = QComboBox()
         self.catalog_choice.setAccessibleName("Imported character voice candidate")
-        self.catalog_choice.currentIndexChanged.connect(lambda: self._stop_audio())
-        self.catalog_original_button = QPushButton("Play original")
-        self.catalog_original_button.setAccessibleName(
-            "Play original imported voice reference"
+        self.form.addRow("Voice", self.catalog_choice)
+        self._build_game_reference_controls()
+        self.voice_panel = VoiceAuditionPanel(
+            self,
+            preview_service=preview_service
+            or VoiceAuditionPreviewService(
+                backend_factory=partial(
+                    create_backend, terms_accepted=settings.xtts_terms_accepted
+                )
+            ),
+            thread_pool=thread_pool,
+            player=player,
+            parent=self,
         )
-        self.catalog_original_button.clicked.connect(self._original)
-        catalog_row = QHBoxLayout()
-        catalog_row.addWidget(self.catalog_choice, 1)
-        catalog_row.addWidget(self.catalog_original_button)
-        self.catalog_row = catalog_row
-        form.addRow("Voice", catalog_row)
+        self.voice_panel.completed.connect(self._saved)
+        self.voice_panel.cancelled.connect(self._panel_finished)
+        self.voice_panel.activeChanged.connect(self._activity_changed)
+        self.voice_panel.selectionChanged.connect(self._selection_changed)
+        self.voice_panel.beforeSave.connect(self._capture_save)
+        self.voice_panel.layout().removeWidget(self.voice_panel.phrase_box)
+        content.addWidget(self.voice_panel.phrase_box)
+        content.addWidget(self.new_voice_box)
+        self.voice_panel.layout().removeWidget(self.voice_panel.current_voice_box)
+        content.addWidget(self.voice_panel.current_voice_box)
+        self.form.addRow(self.voice_panel)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.reject)
+        self.copy_details = copy_text_button(
+            "Copy diagnostics", self._copy_details, self
+        )
+        actions = QHBoxLayout()
+        self.copy_details.hide()
+        self.voice_panel.reference_details_toggle.toggled.connect(
+            self.copy_details.setVisible
+        )
+        self._build_details_controls()
+        actions.addWidget(self.voice_panel.retry_save_button)
+        self.voice_panel.outcome_actions.removeWidget(
+            self.voice_panel.retry_save_button
+        )
+        actions.addStretch()
+        actions.addWidget(self.cancel_button)
+        self.voice_panel.a_use.setText("Save")
+        self.voice_panel.outcome_actions.removeWidget(self.voice_panel.a_use)
+        actions.addWidget(self.voice_panel.a_use)
+        self.voice_panel.layout().removeItem(self.voice_panel.outcome_actions)
+        content.addLayout(actions)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.controls)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.status)
+        layout.addWidget(self.progress)
+        layout.addWidget(scroll, 1)
+        self.source.currentIndexChanged.connect(self._source_changed)
+        self.role.currentTextChanged.connect(self._role_changed)
+        self.presets.currentIndexChanged.connect(self._source_changed)
+        self.catalog_choice.currentIndexChanged.connect(self._source_changed)
+        self.consent.toggled.connect(self._consent_changed)
+        self.decoderProgress.connect(self._set_status)
+        self._initializing = True
+        self.set_voice_context()
+        self._initializing = False
+        for combo in (
+            self.role,
+            self.source,
+            self.presets,
+            self.catalog_choice,
+            self.characters,
+        ):
+            combo.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            combo.setMinimumContentsLength(10)
+            combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        make_text_copyable(self)
+        QTimer.singleShot(0, self, self._role_changed)
 
-    def _build_game_reference_controls(self, settings: AppSettings) -> None:
-        form = self.form
-        self.game_controls = QWidget()
-        self.game_controls.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
+    @property
+    def active(self) -> bool:
+        return (
+            self.runner.active
+            or self.current_voice_runner.active
+            or self.voice_panel.active
         )
-        game_form = QFormLayout(self.game_controls)
-        self.game_form = game_form
-        game_form.setContentsMargins(0, 0, 0, 0)
-        game_form.setFieldGrowthPolicy(
-            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
-        )
-        game_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        form.addRow(self.game_controls)
-        self._build_game_terms_controls(settings)
-        self._build_game_installation_controls(game_form)
-        self._build_game_character_controls(game_form)
-        self._build_game_reference_selection_controls(game_form)
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        form.addRow(separator)
 
-    def _build_game_terms_controls(self, settings: AppSettings) -> None:
-        form = self.form
+    def _set_status(self, text: str) -> None:
+        self.status.setText(text)
+        self.status.setVisible(bool(text))
+
+    def _activity_changed(self, *_args: object) -> None:
+        busy = self.active
+        if busy != self._busy:
+            self._busy = busy
+            self.busyChanged.emit(busy)
+        self._update()
+        if self._closing:
+            QTimer.singleShot(0, self, self._finish_close)
+
+    def _build_game_reference_controls(self) -> None:
         self.terms = QLabel(
             "Game voice cloning with Pocket requires accepting the "
             '<a href="https://huggingface.co/kyutai/pocket-tts">model terms</a> '
-            "and Hugging Face access on this computer. Built-in voices need neither."
+            "and Hugging Face access. Built-in voices need neither."
         )
         self.terms.setWordWrap(True)
         self.terms.setOpenExternalLinks(True)
         self.consent = QCheckBox("I accepted Pocket's terms")
-        self.consent.setChecked(settings.pocket_gated_model_accepted)
-        self.consent.toggled.connect(self._update)
-        pocket = self.settings_value.speech_backend == "pocket-tts"
-        self.terms.setVisible(pocket)
-        self.consent.setVisible(pocket)
-        form.addRow(self.terms)
-        form.addRow(self.consent)
-
-    def _build_game_installation_controls(self, game_form: QFormLayout) -> None:
+        self.consent.setChecked(self.settings_value.pocket_gated_model_accepted)
+        self.form.addRow(self.terms)
+        self.form.addRow(self.consent)
+        self.game_controls = QWidget()
+        game_form = QFormLayout(self.game_controls)
+        game_form.setContentsMargins(0, 0, 0, 0)
+        game_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        self.source_setup = QCheckBox("Game source setup")
+        setup = QWidget()
+        setup_layout = QHBoxLayout(setup)
+        setup_layout.setContentsMargins(0, 0, 0, 0)
         self.game_installation = QLineEdit("Automatically detected")
         self.game_installation.setReadOnly(True)
-        self.game_installation.setAccessibleName("Selected game installation")
         self._show_known_installation()
         self.discover_button = QPushButton("Refresh voices")
         self.discover_button.clicked.connect(lambda: self.discover())
         self.folder_button = QPushButton("Change folder...")
         self.folder_button.clicked.connect(self._choose_folder)
-        installation = QHBoxLayout()
-        installation.addWidget(self.game_installation, 1)
-        installation.addWidget(self.folder_button)
-        installation.addWidget(self.discover_button)
-        game_form.addRow("Game installation", installation)
-
-    def _build_game_character_controls(self, game_form: QFormLayout) -> None:
+        setup_layout.addWidget(self.game_installation, 1)
+        setup_layout.addWidget(self.folder_button)
+        setup_layout.addWidget(self.discover_button)
+        setup.hide()
+        self.source_setup.toggled.connect(setup.setVisible)
         self.characters = QComboBox()
-        self.characters.setAccessibleName("Game character")
+        self.characters.setAccessibleName("Game voice donor")
         self.characters.currentIndexChanged.connect(self._character_changed)
-        game_form.addRow("Character voice", self.characters)
+        donor = QHBoxLayout()
+        donor.addWidget(self.characters, 1)
+        donor.addWidget(self.source_setup)
+        game_form.addRow("Donor", donor)
+        game_form.addRow(setup)
+        self.form.addRow(self.game_controls)
 
-    def _build_game_reference_selection_controls(self, game_form: QFormLayout) -> None:
-        self.references = QComboBox()
-        self.references.setAccessibleName("Original game reference")
-        self.references.currentIndexChanged.connect(self._reference_changed)
-        self.original_button = QPushButton("Play original")
-        self.original_button.setAccessibleName("Play original game reference")
-        self.original_button.clicked.connect(self._original)
-        reference = QHBoxLayout()
-        reference.addWidget(self.references, 1)
-        reference.addWidget(self.original_button)
-        self.reference_row = reference
-        game_form.addRow("Original reference", reference)
-        self.reference_text = QLabel()
-        self.reference_text.setWordWrap(True)
-        self.reference_text.setTextFormat(Qt.TextFormat.PlainText)
-        self.reference_text.setAccessibleName("Associated game dialogue text")
-        game_form.addRow("Game dialogue text", self.reference_text)
-        self.exact_transcript = QLineEdit()
-        self.exact_transcript.setAccessibleName("Exact reference transcript for Qwen")
-        self.exact_transcript.setPlaceholderText(
-            "Optional: enter verified words spoken in this recording"
+    def _build_details_controls(self) -> None:
+        self.voice_panel.layout().removeWidget(
+            self.voice_panel.reference_details_toggle
         )
-        self.exact_transcript.setToolTip(
-            "Leave blank to clone the speaker's voice only. Enter verified spoken "
-            "words for higher-fidelity reference conditioning."
-        )
-        if self.settings_value.speech_backend == "qwen-tts":
-            self.form.addRow("Qwen reference text (optional)", self.exact_transcript)
-
-    def _build_preview_controls(self) -> None:
-        form = self.form
-        self.text = QPlainTextEdit(COMPARISON_PREVIEW_TEXT)
-        self.text.setAccessibleName("Text to generate with the selected voice")
-        self.text.setTabChangesFocus(True)
-        line_height = self.text.fontMetrics().lineSpacing()
-        self.text.setMinimumHeight(line_height * 3 + 16)
-        self.text.setMaximumHeight(line_height * 5 + 20)
-        self.preview_button = QPushButton("Play preview")
-        self.preview_button.setAccessibleName("Play voice preview")
-        self.preview_button.setToolTip(
-            "Play the saved preview, or prepare it if this voice and text are new."
-        )
-        self.preview_button.clicked.connect(self._preview)
-        action_width = max(
-            button.sizeHint().width()
-            for button in (
-                self.catalog_original_button,
-                self.original_button,
-                self.preview_button,
-            )
-        )
-        for button in (
-            self.catalog_original_button,
-            self.original_button,
-            self.preview_button,
-        ):
-            button.setMinimumWidth(action_width)
-        preview = QHBoxLayout()
-        preview.addWidget(self.text, 1)
-        preview.addWidget(self.preview_button, 0, Qt.AlignmentFlag.AlignTop)
-        self.preview_row = preview
-        form.addRow("Preview text", preview)
-        self.save_button = QPushButton("Use this voice")
-        self.save_button.setDefault(True)
-        self.save_button.clicked.connect(self._save)
-        self.stop_button = QPushButton("Stop audio")
-        self.stop_button.clicked.connect(self._stop_audio)
-        stop_policy = self.stop_button.sizePolicy()
-        stop_policy.setRetainSizeWhenHidden(True)
-        self.stop_button.setSizePolicy(stop_policy)
-        self.stop_button.hide()
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.clicked.connect(self.reject)
-
-    def _build_dialog_layout(self) -> QVBoxLayout:
-        layout = QVBoxLayout(self)
-        status_layout = QHBoxLayout()
-        status_layout.addWidget(self.status, 1)
-        status_layout.addWidget(self.stop_button)
-        layout.addLayout(status_layout)
-        layout.addWidget(self.runtime)
-        layout.addWidget(self.progress)
-        self.controls_scroll = QScrollArea()
-        self.controls_scroll.setWidgetResizable(True)
-        self.controls_scroll.setWidget(self.controls)
-        layout.addWidget(self.controls_scroll, 1)
-        self.reference_details = QLabel()
-        self.reference_details.setWordWrap(True)
-        self.reference_details.setTextFormat(Qt.TextFormat.PlainText)
-        self.reference_details.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        self.reference_details.setAccessibleName("Original audio source and checks")
-        return layout
-
-    def _build_impact_controls(self) -> None:
-        form = self.form
-        self.impact_note = QLabel(
-            "The saved voice will be used for future speech and story preparation. "
-            "Existing prepared audio will not change."
-        )
-        self.impact_note.setWordWrap(True)
-        self.impact_note.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
-        )
-        form.addRow(self.impact_note)
-        self.check_impact = QPushButton("Review stories to regenerate...")
-        self.check_impact.clicked.connect(self._check_impact)
-        self.impact_status = QLabel(
-            "Open Stories to load prepared content for a voice comparison."
-        )
-        self.impact_status.hide()
-        self.impact_status.setWordWrap(True)
-        self.impact_status.setTextFormat(Qt.TextFormat.PlainText)
-        self.impact_status.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-            | Qt.TextInteractionFlag.TextSelectableByKeyboard
-        )
-        self.impact_status.setAccessibleName("Prepared stories affected by this voice")
-        self.select_affected = QPushButton("Use voice and open affected stories")
-        self.select_affected.clicked.connect(self._save_and_select_affected)
-        self.select_affected.hide()
-        form.addRow(self.check_impact)
-        form.addRow(self.impact_status)
-        form.addRow(self.select_affected)
-        form.addItem(
-            QSpacerItem(
-                0,
-                0,
-                QSizePolicy.Policy.Minimum,
-                QSizePolicy.Policy.Expanding,
-            )
-        )
-        self.presets.currentIndexChanged.connect(self._clear_impact)
-        self.catalog_choice.currentIndexChanged.connect(self._clear_impact)
-        self.consent.toggled.connect(self._clear_impact)
-
-    def _build_actions(self, layout: QVBoxLayout) -> None:
-        actions = QHBoxLayout()
-        self.copy_details = copy_text_button(
-            "Copy diagnostics", self._copy_details, self
-        )
-        self.copy_details.setAccessibleName("Copy voice diagnostics")
-        actions.addWidget(self.copy_details)
-        actions.addStretch(1)
-        actions.addWidget(self.cancel_button)
-        actions.addWidget(self.save_button)
-        layout.addLayout(actions)
-
-    def _connect_controls(self) -> None:
-        self.player.errorOccurred.connect(self._playback_error)
-        self.player.playbackStateChanged.connect(self._playback_state_changed)
-        self.player.mediaStatusChanged.connect(self._playback_media_changed)
-        self.source.currentIndexChanged.connect(self._source_changed)
-        self.runtime_timer = QTimer(self)
-        self.runtime_timer.setInterval(500)
-        self.runtime_timer.timeout.connect(self._refresh_runtime)
-        self.finished.connect(self.runtime_timer.stop)
-        self.runtime_timer.start()
-        self.role.currentTextChanged.connect(self._role_changed)
-
-    def _finish_setup(self) -> None:
-        self._initializing = True
-        self.set_voice_context()
-        self._initializing = False
-        for choice in self.findChildren(QComboBox):
-            choice.setSizeAdjustPolicy(
-                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
-            )
-            choice.setMinimumContentsLength(16)
-            choice.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            choice.setToolTip(choice.currentText())
-            choice.currentTextChanged.connect(choice.setToolTip)
-        for button in (
-            self.folder_button,
-            self.discover_button,
-            self.original_button,
-            self.catalog_original_button,
-            self.preview_button,
-            self.check_impact,
-            self.select_affected,
-        ):
-            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.source.currentIndexChanged.connect(self._settings_choice_changed)
-        self.presets.currentIndexChanged.connect(self._settings_choice_changed)
-        self.catalog_choice.currentIndexChanged.connect(self._settings_choice_changed)
-        self.catalog_choice.currentIndexChanged.connect(self._catalog_reference_changed)
-        self.consent.toggled.connect(self._settings_choice_changed)
-        self.consent.toggled.connect(self._stop_audio)
-        self.text.textChanged.connect(self._stop_audio)
-        self.exact_transcript.textChanged.connect(self._stop_audio)
-        self.references.currentIndexChanged.connect(self._reference_choice_changed)
-        tab_order = (
-            self.role,
-            self.source,
-            self.presets,
-            self.catalog_choice,
-            self.catalog_original_button,
-            self.game_installation,
-            self.folder_button,
-            self.discover_button,
-            self.characters,
-            self.references,
-            self.original_button,
-            self.consent,
-            self.text,
-            self.preview_button,
-            self.check_impact,
-            self.select_affected,
-            self.copy_details,
-            self.cancel_button,
-            self.save_button,
-        )
-        for current, following in zip(tab_order, tab_order[1:], strict=False):
-            QWidget.setTabOrder(current, following)
-        make_text_copyable(self)
-        labels = [
-            label
-            for form in (self.form, self.game_form)
-            for row in range(form.rowCount())
-            if (item := form.itemAt(row, QFormLayout.ItemRole.LabelRole)) is not None
-            and (label := item.widget()) is not None
-        ]
-        label_width = max(label.sizeHint().width() for label in labels)
-        for label in labels:
-            label.setMinimumWidth(label_width)
-        self._update()
-        QTimer.singleShot(0, self, self._initialize_source)
-
-    def _initialize_source(self) -> None:
-        if self._operation is None:
-            self._source_changed()
+        tools = QHBoxLayout()
+        tools.addWidget(self.voice_panel.reference_details_toggle)
+        tools.addWidget(self.copy_details)
+        tools.addStretch()
+        self.form.addRow(tools)
 
     def select_role(self, role: str) -> bool:
         """Select a trusted application-provided role without enabling free-form UI."""
@@ -638,13 +393,11 @@ class GameNarratorDialog(QDialog):
         *,
         roles: Sequence[str] = (),
         story_titles: Sequence[str] = (),
-        impact_context: ImpactContext | None = None,
     ) -> None:
-        """Use imported metadata without starting the reading engine."""
+        """Hydrate role metadata atomically before selecting its source."""
         if self.runner.active:
             return
         self._voice_context = plan
-        self._impact_context = impact_context
         self._story_titles = tuple(story_titles)
         if plan is not None and plan.voice_manifest:
             self._catalog_manifest = plan.voice_manifest
@@ -655,136 +408,47 @@ class GameNarratorDialog(QDialog):
                 else CharacterVoiceRegistry()
             )
         except (OSError, ValueError) as error:
-            self.status.setText(f"Unable to load imported voices: {error}")
+            self._set_status(f"Unable to load imported voices: {error}")
             self._catalog_registry = CharacterVoiceRegistry()
-        self.catalog_choice.clear()
-        for voice in sorted(
-            self._catalog_registry.unique_voices(),
-            key=lambda voice: voice.character.casefold(),
-        ):
-            self.catalog_choice.addItem(
-                voice.source_character or voice.character,
-                f"character:{normalize_character_name(voice.character)}",
-            )
+        with QSignalBlocker(self.catalog_choice):
+            self.catalog_choice.clear()
+            for voice in sorted(
+                self._catalog_registry.unique_voices(),
+                key=lambda voice: voice.character.casefold(),
+            ):
+                self.catalog_choice.addItem(
+                    voice_source_label(voice.source_character or voice.character),
+                    f"character:{normalize_character_name(voice.character)}",
+                )
         selected = character or self.role.currentText() or "Narrator"
-        available_roles = {
+        available = {
             *roles,
             *(binding.role for binding in self.voice_library.bindings()),
             *(
                 voice.character
                 for voice in self._catalog_registry.unique_voices()
                 if not voice.character.startswith(("Game narrator ", "Game voice "))
+                and voice_source_label(voice.character) == voice.character
             ),
             *(
                 (group.routing_role or group.character for group in plan.groups)
-                if plan is not None
+                if plan
                 else ()
             ),
             selected,
         }
-        display_roles: dict[str, str] = {}
-        for role in available_roles:
+        display_roles = {}
+        for role in available:
             identity = normalize_character_name(role)
-            if not identity or is_narrator(role):
-                continue
-            display_roles.setdefault(identity, _display_role_name(role))
+            if identity and not is_narrator(role):
+                display_roles.setdefault(identity, _display_role_name(role))
         with QSignalBlocker(self.role):
             self.role.clear()
             self.role.addItems(
-                [
-                    "Narrator",
-                    *sorted(
-                        display_roles.values(),
-                        key=str.casefold,
-                    ),
-                ]
+                ["Narrator", *sorted(display_roles.values(), key=str.casefold)]
             )
             self.select_role(selected)
         self._role_changed()
-
-    def set_story_impact_context(
-        self,
-        content: GameContent,
-        jobs: PregenerationJobStore,
-        decisions: VoiceDecisionStore,
-    ) -> None:
-        self._loading_impact_context = False
-        self._impact_context = (content, jobs, decisions)
-        self._clear_impact()
-        self._update()
-
-    def set_recovery_context(self, role: str, *, resume_live: bool) -> None:
-        """Explain why the canonical editor opened for an unresolved live role."""
-        display_role = role.strip() or "this character"
-        self._recovery_role = normalize_character_name(display_role)
-        self._recovery_resume_live = resume_live
-        self._suppress_auto_discovery = True
-        if resume_live:
-            message = (
-                f"Live reading is paused for voice editing: {display_role}. "
-                "Save a voice to continue after any other voice choices. "
-                "Back to recovery choices keeps live reading paused."
-            )
-        else:
-            message = (
-                f"Choose a voice for {display_role} to change future speech. "
-                "Reading stays stopped."
-            )
-        self.context_note.setText(message)
-        self.context_note.show()
-        self.save_button.setText("Save voice")
-        self.cancel_button.setText(
-            "Back to recovery choices" if resume_live else "Cancel"
-        )
-        self.save_button.adjustSize()
-        self.cancel_button.adjustSize()
-        if (
-            self.voice_library.binding(
-                display_role,
-                variant_key=self.voice_library.linked_variant_key(display_role),
-            )
-            is None
-        ):
-            with QSignalBlocker(self.source):
-                self.source.setCurrentIndex(self.source.findData("game"))
-            self._source_changed()
-            summary = "Narrator fallback (no saved choice)"
-            if self._story_titles:
-                summary += "\nSelected stories: " + ", ".join(self._story_titles[:3])
-            self.role_summary.setText(summary)
-
-    def _role_changed(self) -> None:
-        self._stop_audio()
-        self._game_reference_dirty = False
-        role = self.role.currentText().strip()
-        if role == "???":
-            self.role.setCurrentText("Narrator")
-            return
-        narrator = normalize_character_name(role) == "narrator"
-        stale_game_references = (
-            self.references.count() > 0
-            and self._prepared_role != normalize_character_name(role)
-        )
-        if stale_game_references:
-            self._prepared.clear()
-            self._candidate_source_ids.clear()
-            self.references.clear()
-        saved_binding, selected = self._saved_role_voice(role, narrator)
-        self.role_summary.setText(
-            self._role_summary_text(role, narrator, selected, saved_binding)
-        )
-        self._show_role_context(role)
-        self._select_role_source(narrator, selected)
-        self._source_changed()
-        self._settings_choice_changed()
-        if (
-            stale_game_references
-            and self.source.currentData() == "game"
-            and self.characters.currentText()
-            and not self.runner.active
-            and not self._initializing
-        ):
-            self._prepare()
 
     def _saved_role_voice(
         self, role: str, narrator: bool
@@ -833,13 +497,9 @@ class GameNarratorDialog(QDialog):
             self._recovery_role == normalize_character_name(role)
             and saved_binding is None
         ):
-            return "Narrator fallback (no saved choice)"
-        summary = self._source_label(selected)
-        return (
-            summary
-            if narrator
-            else f"{summary}\nOriginal and prepared recordings keep priority."
-        )
+            return "No saved voice (narrator fallback)"
+        summary = voice_binding_label(saved_binding) or self._source_label(selected)
+        return f"Saved: {summary}" if saved_binding is not None or narrator else summary
 
     def _show_role_context(self, role: str) -> None:
         self.portrait.clear()
@@ -861,10 +521,6 @@ class GameNarratorDialog(QDialog):
         )
         if group is None:
             return
-        self.role_summary.setText(
-            self.role_summary.text()
-            + f"\nPlanned: {self._source_label(group.source_id)}\nLines: {len(group.line_ids)}"
-        )
         if all(
             value.portrait_image and value.portrait_image_sha256
             for value in self._voice_context.groups
@@ -887,8 +543,8 @@ class GameNarratorDialog(QDialog):
                 return
             self.portrait.setPixmap(
                 pixmap.scaled(
-                    96,
-                    96,
+                    48,
+                    48,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
@@ -898,22 +554,19 @@ class GameNarratorDialog(QDialog):
             return
 
     def _show_story_titles(self) -> None:
-        if self._story_titles:
-            self.role_summary.setText(
-                self.role_summary.text()
-                + "\nSelected stories: "
-                + ", ".join(self._story_titles[:3])
-                + (
-                    f" and {len(self._story_titles) - 3} more"
-                    if len(self._story_titles) > 3
-                    else ""
-                )
-            )
-        self.role_summary.setToolTip("\n".join(self._story_titles))
+        scope = (
+            "Saving changes future speech and preparation for this role. "
+            "Existing recordings keep priority."
+        )
+        self.role_summary.setToolTip("\n".join((scope, *self._story_titles)))
+        self.role_summary.setAccessibleDescription(scope)
 
     def _select_role_source(self, narrator: bool, selected: str | None) -> None:
+        binding, _saved = self._saved_role_voice(self.role.currentText(), narrator)
+        saved_reference = binding is not None and bool(binding.source_sha256s)
         model = self.source.model()
         if isinstance(model, QStandardItemModel):
+            model.item(self.source.findData("saved")).setEnabled(saved_reference)
             model.item(self.source.findData("automatic")).setEnabled(not narrator)
             model.item(self.source.findData("narrator")).setEnabled(not narrator)
         mode = "game"
@@ -925,6 +578,8 @@ class GameNarratorDialog(QDialog):
             with QSignalBlocker(self.presets):
                 self.presets.setCurrentIndex(self.presets.findData(selected))
             mode = "preset"
+        elif saved_reference and self.catalog_choice.findData(selected) < 0:
+            mode = "saved"
         elif selected and self.catalog_choice.findData(selected) >= 0:
             with QSignalBlocker(self.catalog_choice):
                 self.catalog_choice.setCurrentIndex(
@@ -933,552 +588,6 @@ class GameNarratorDialog(QDialog):
             mode = "catalog"
         with QSignalBlocker(self.source):
             self.source.setCurrentIndex(self.source.findData(mode))
-
-    def _source_label(self, source_id: str | None) -> str:
-        if source_id is None:
-            return "automatic assignment"
-        if source_id == "default":
-            return "narrator fallback"
-        if source_id.startswith("preset:"):
-            return source_id.partition(":")[2].replace("_", " ").title()
-        index = self.catalog_choice.findData(source_id)
-        if index >= 0:
-            return self.catalog_choice.itemText(index)
-        index = self.references.findData(source_id)
-        if index >= 0:
-            return self.references.itemText(index)
-        return (
-            "Game voice"
-            if source_id.startswith("character:")
-            else "unavailable saved voice"
-        )
-
-    def saved_assignment_summary(self) -> str:
-        """Describe the accepted role and voice for the enclosing dashboard."""
-        role = self._saving_role or self.role.currentText().strip() or "Narrator"
-        mode = self.source.currentData()
-        voice = {
-            "automatic": "automatic assignment",
-            "narrator": "narrator fallback",
-            "preset": self.presets.currentText(),
-            "catalog": self.catalog_choice.currentText(),
-            "game": self.characters.currentText(),
-        }.get(mode, self.source.currentText())
-        return f"{role}: {voice or 'selected voice'}"
-
-    def _engine_details(self) -> str:
-        settings = self._settings()
-        return (
-            str(
-                engine_model_label(
-                    settings.speech_backend,
-                    settings.tts_model,
-                    pocket_cloning=settings.pocket_gated_model_accepted,
-                )
-            )
-            + f"\nBackend ID: {settings.speech_backend}"
-            + f"\nConfigured model: {settings.tts_model or '(default)'}"
-        )
-
-    def _voice_details(self) -> str:
-        role = self.role.currentText().strip() or "Narrator"
-        source_id = (
-            self.presets.currentData()
-            if self.source.currentData() == "preset"
-            else self.catalog_choice.currentData()
-            if self.source.currentData() == "catalog"
-            else self.references.currentData()
-            if self.source.currentData() == "game"
-            else self.source.currentData()
-        )
-        return (
-            f"{self.role_summary.text()}\nRole: {role}\n"
-            f"Candidate source: {source_id or '(none)'}"
-        )
-
-    def _reference_copy_text(self) -> str:
-        asset = self.references.currentText()
-        source_id = self.references.currentData() or "(none)"
-        game_text = self.reference_text.text() or "Game text unavailable."
-        return f"{asset}\nSource ID: {source_id}\nGame dialogue text: {game_text}"
-
-    def _playback_copy_text(self) -> str:
-        return "\n".join(
-            value
-            for value in (
-                self.reference_details.text(),
-                self.reference_details.toolTip(),
-            )
-            if value
-        )
-
-    def _impact_copy_text(self) -> str:
-        return "\n\n".join(
-            value
-            for value in (self.impact_status.text(), self._impact_details)
-            if value
-        )
-
-    def _copy_details(self) -> str:
-        return "\n\n".join(
-            value
-            for value in (
-                self.status.text(),
-                self.runtime.toolTip() or self.runtime.text(),
-                self._engine_details(),
-                self._voice_details(),
-                self._reference_copy_text(),
-                self._playback_copy_text(),
-                self._impact_copy_text(),
-            )
-            if value
-        )
-
-    def _reference_choice_changed(self, *_args: object) -> None:
-        if self._initializing or self._closing or self._closed:
-            return
-        # Initial population is signal-blocked. A later selection changes what Save
-        # would bind, without treating automatic reference loading as an edit.
-        self._game_reference_dirty = bool(self.references.currentData())
-        self._settings_choice_changed()
-
-    def _settings_choice_changed(self, *_args: object) -> None:
-        if self._initializing or self._closing or self._closed:
-            return
-        current = self._settings()
-        initial = self._initial_settings_value
-        changed = (
-            current.pocket_gated_model_accepted != initial.pocket_gated_model_accepted
-        )
-        role = self.role.currentText().strip()
-        narrator = normalize_character_name(role) == "narrator"
-        binding = self.voice_library.binding(
-            role, variant_key=self.voice_library.linked_variant_key(role)
-        )
-        evidence = binding.provenance.get("evidence") if binding is not None else None
-        saved = (
-            binding.source_id
-            or (evidence.get("source_id") if isinstance(evidence, dict) else None)
-            or ("default" if binding.route in {"narrator", "live-fallback"} else None)
-            if binding is not None
-            else pregeneration_narrator_source_id(
-                initial, voice_library=self.voice_library
-            )
-            if narrator
-            else None
-        )
-        candidate = {
-            "automatic": None,
-            "narrator": "default",
-            "preset": self.presets.currentData(),
-            "catalog": self.catalog_choice.currentData(),
-            "game": self.references.currentData()
-            if self._game_reference_dirty
-            else saved,
-        }.get(self.source.currentData())
-        changed = changed or candidate != saved
-        if changed != self._settings_dirty:
-            self._settings_dirty = changed
-            self.settingsChanged.emit(changed)
-
-    def _engine_available(self) -> bool:
-        backend = self.settings_value.speech_backend
-        return (
-            backend != "coqui-xtts" or self.settings_value.xtts_terms_accepted
-        ) and any(
-            option == backend and available
-            for _label, option, available in speech_backend_options(backend)
-        )
-
-    def _engine_guidance_text(self) -> str:
-        backend = self.settings_value.speech_backend
-        if backend == "coqui-xtts":
-            if not self.settings_value.xtts_terms_accepted:
-                return "Accept the XTTS model terms in Settings before previewing."
-        if not self._engine_available():
-            return (
-                "This engine is not included in this package. "
-                "Choose an available engine in Settings."
-            )
-        if (
-            self.source.currentData() == "preset" or self._narrator_uses_preset()
-        ) and backend != "pocket-tts":
-            return (
-                "Built-in voices require Pocket TTS. "
-                "Choose a game voice or change the engine in Settings."
-            )
-        return ""
-
-    def _narrator_uses_preset(self) -> bool:
-        return self.source.currentData() == "narrator" and (
-            pregeneration_narrator_source_id(
-                self._settings().updated(pocket_gated_model_accepted=True),
-                voice_library=self.voice_library,
-            ).startswith("preset:")
-        )
-
-    def _source_changed(self) -> None:
-        if self._closing or self._closed:
-            return
-        self._stop_audio()
-        self._clear_impact()
-        preset = self.source.currentData() == "preset"
-        catalog = self.source.currentData() == "catalog"
-        policy = self.source.currentData() in {"automatic", "narrator"}
-        self.form.setRowVisible(self.presets, preset)
-        self.form.setRowVisible(self.catalog_row, catalog)
-        self.form.setRowVisible(self.game_controls, self.source.currentData() == "game")
-        if self.settings_value.speech_backend == "qwen-tts":
-            self.form.setRowVisible(
-                self.exact_transcript,
-                self.source.currentData() in {"game", "catalog"},
-            )
-        if catalog and self.settings_value.speech_backend == "qwen-tts":
-            self._catalog_reference_changed()
-        self.form.setRowVisible(
-            self.preview_row, self.source.currentData() != "automatic"
-        )
-        self.status.setText(
-            "Save to restore automatic character matching. Existing recordings keep priority."
-            if self.source.currentData() == "automatic"
-            else "Missing recordings will use your saved narrator. Play its preview before saving."
-            if policy
-            else "Choose an imported voice. Play its original or preview before saving."
-            if catalog
-            else "Built-in voices need no game references or Hugging Face account. Play a preview, then save."
-            if preset
-            else "Choose a game character and load an original reference."
-        )
-        self._update()
-        if not self._engine_available() or (
-            (preset or self._narrator_uses_preset())
-            and self.settings_value.speech_backend != "pocket-tts"
-        ):
-            self.status.setText(self._engine_guidance_text())
-        if (
-            self.source.currentData() == "game"
-            and not self.characters.count()
-            and not self.runner.active
-            and not self._initializing
-            and not self._suppress_auto_discovery
-        ):
-            self.discover()
-
-    def _settings(self) -> AppSettings:
-        return self.settings_value.updated(
-            pocket_gated_model_accepted=self.consent.isChecked(),
-        )
-
-    def _update(self) -> None:
-        self._refresh_runtime()
-        settings = self._settings()
-        pocket = settings.speech_backend == "pocket-tts"
-        preset = self.source.currentData() == "preset"
-        catalog = self.source.currentData() == "catalog"
-        policy = self.source.currentData() in {"automatic", "narrator"}
-        narrator_preset = self._narrator_uses_preset()
-        available = self._engine_available()
-        allowed = (
-            policy
-            or available
-            and (pocket if preset else not pocket or self.consent.isChecked())
-        )
-        ready = (
-            bool(self.catalog_choice.currentData())
-            if catalog
-            else preset or policy or bool(self.references.currentData())
-        )
-        idle = not self.runner.active and not self._closed and not self._closing
-        browsing = idle or (
-            self.runner.active
-            and self._operation == "preview"
-            and not self._closed
-            and not self._closing
-        )
-        warming = self.runner.active and self._operation == "warm"
-        self.role.setEnabled(browsing)
-        self.catalog_choice.setEnabled(browsing)
-        model = self.source.model()
-        if isinstance(model, QStandardItemModel):
-            model.item(self.source.findData("preset")).setEnabled(pocket)
-        self.presets.setEnabled(browsing)
-        self.consent.setEnabled(browsing)
-        self.text.setEnabled(browsing)
-        cloning = (
-            pocket
-            and not preset
-            and not narrator_preset
-            and (self.source.currentData() != "automatic")
-        )
-        self.terms.setVisible(cloning)
-        self.consent.setVisible(cloning)
-        self.characters.setEnabled(browsing)
-        self.source.setEnabled(browsing)
-        self.discover_button.setEnabled(idle)
-        self.folder_button.setEnabled(idle)
-        self.original_button.setEnabled(
-            ready and not preset and not policy and (browsing or warming)
-        )
-        self.original_button.setToolTip(
-            "Built-in voices have no original game reference."
-            if preset
-            else "Play the original recording, not generated speech."
-        )
-        self.catalog_original_button.setEnabled(catalog and ready and browsing)
-        self.preview_button.setEnabled(
-            ready
-            and available
-            and (pocket or not (preset or narrator_preset))
-            and (not pocket or preset or narrator_preset or self.consent.isChecked())
-            and self.source.currentData() != "automatic"
-            and (browsing or warming)
-        )
-        self.preview_button.setText(
-            "Play narrator preview"
-            if self.source.currentData() == "narrator"
-            else "Play preview"
-        )
-        self.preview_button.setToolTip(
-            self._engine_guidance_text()
-            or "Play the saved preview, or prepare it if this voice and text are new."
-        )
-        self.save_button.setEnabled(
-            ready
-            and allowed
-            and bool(normalize_character_name(self.role.currentText()))
-            and (idle or warming)
-        )
-        self.check_impact.setEnabled(
-            not self._loading_impact_context
-            and idle
-            and ready
-            and allowed
-            and (
-                self.source.currentData() != "game"
-                or self.references.currentData() in self._prepared
-            )
-        )
-        self.select_affected.setEnabled(idle and self.save_button.isEnabled())
-
-    def _clear_impact(self, *_args: object) -> None:
-        self._impact_results = None
-        self._impact_details = ""
-        self.select_affected_after_save = False
-        self.select_affected.hide()
-        self.impact_status.hide()
-        self.impact_status.setText(
-            "Check this selection against recorded voices in prepared stories."
-            if self._impact_context is not None
-            else "Check affected stories to load and compare prepared content."
-        )
-        self.impact_status.setToolTip("")
-
-    def _check_impact(self) -> None:
-        if not self.check_impact.isEnabled():
-            return
-        if self._impact_context is None:
-            self._loading_impact_context = True
-            self.impact_status.show()
-            self.impact_status.setText("Loading prepared stories for comparison...")
-            self._update()
-            self.impactContextRequested.emit()
-            return
-        self._saving_role = self.role.currentText().strip()
-        mode = self.source.currentData()
-        manifest = (
-            self._catalog_manifest
-            if mode == "catalog"
-            else self._prepared.get(self.references.currentData())
-        )
-        source_id = (
-            self.catalog_choice.currentData()
-            if mode == "catalog"
-            else self.references.currentData()
-            if mode == "game"
-            and self.references.currentData() in self._candidate_source_ids
-            else None
-        )
-        settings = self._settings()
-        if mode == "preset":
-            source_id = self.presets.currentData()
-        elif mode == "narrator":
-            source_id = "default"
-        self._start(
-            "impact",
-            "Comparing prepared recordings with this voice selection...",
-            self._perform_impact,
-            settings,
-            mode,
-            manifest,
-            source_id,
-        )
-
-    def _perform_impact(
-        self,
-        settings: AppSettings,
-        mode: str,
-        manifest: Path | str | None,
-        source_id: str | None,
-    ) -> tuple[StoryVoiceImpact, ...]:
-        if self._impact_context is None:
-            raise RuntimeError("Prepared-story context is unavailable")
-        content, jobs, decisions = self._impact_context
-        with temporary_directory(prefix="vntts-voice-choice-") as temporary:
-            proposed_library = self.voice_library.copy_to(
-                Path(temporary) / "proposed-voices"
-            )
-            variant_key = proposed_library.linked_variant_key(self._saving_role)
-            if mode == "automatic":
-                proposed_library.clear(self._saving_role, variant_key=variant_key)
-            elif mode == "narrator":
-                proposed_library.select(
-                    self._saving_role,
-                    variant_key=variant_key,
-                    route=(
-                        "live-fallback"
-                        if is_narrator(self._saving_role)
-                        else "narrator"
-                    ),
-                    method="manual",
-                    evidence={"selected_in": "voice-impact-preview"},
-                    algorithm="voice-picker-v1",
-                )
-            else:
-                if source_id is None:
-                    if manifest is None:
-                        raise ValueError("Voice manifest is required")
-                    choices = CharacterVoiceRegistry.from_file(manifest).choices()
-                    if len(choices) != 1:
-                        raise ValueError(
-                            "Expected exactly one selected voice reference"
-                        )
-                    source_id = choices[0].id
-                if mode in {"preset", "catalog"}:
-                    registry = self._catalog_registry
-                else:
-                    if manifest is None:
-                        raise ValueError("Voice manifest is required")
-                    registry = CharacterVoiceRegistry.from_file(manifest)
-                remember_voice_binding(
-                    proposed_library,
-                    registry,
-                    self._saving_role,
-                    source_id,
-                    variant_key=variant_key,
-                    method="manual",
-                    evidence={"selected_in": "voice-impact-preview"},
-                    algorithm="voice-picker-v1",
-                )
-            results = inspect_voice_default_impact(
-                content,
-                jobs,
-                decisions,
-                settings,
-                self._saving_role,
-                current_voice_library=self.voice_library,
-                proposed_voice_library=proposed_library,
-                cancellation=self.cancellation,
-            )
-            if not _is_story_voice_impact(results):
-                raise TypeError("Voice-impact service returned an invalid result")
-            return results
-
-    def _show_impact(self, results: tuple[StoryVoiceImpact, ...]) -> None:
-        self._impact_results = results
-        self.impact_status.show()
-        affected = [value for value in results if value.changed_line_ids]
-        lines = sum(len(value.changed_line_ids) for value in affected)
-        details = [
-            f"{value.title}: {len(value.changed_line_ids)} changed, {value.matching} same voice, "
-            f"{value.original} originals kept, {value.unknown} recorded voice unknown, {value.needs_choice} need a voice choice."
-            for value in results
-        ]
-        self._impact_details = "\n".join(details)
-        self.impact_status.setText(
-            (
-                f"{lines} prepared lines in {len(affected)} stories would change voice. "
-                + (
-                    "Affected: "
-                    + ", ".join(value.title for value in affected[:3])
-                    + ". "
-                    if affected
-                    else ""
-                )
-                + "Existing audio stays playable until preparation succeeds."
-            )
-            if results
-            else "No prepared stories found. This default applies to future preparation."
-        )
-        self.impact_status.setToolTip(self._impact_details)
-        self.select_affected.setVisible(bool(affected))
-
-    def _save_and_select_affected(self) -> None:
-        if self._impact_results is None or not any(
-            value.changed_line_ids for value in self._impact_results
-        ):
-            return
-        self.select_affected_after_save = True
-        self._save()
-
-    def _refresh_runtime(self) -> None:
-        self._prefetch_selected()
-        background_preparing = getattr(self.previews, "preparing", False) is True
-        if self._operation == "preview":
-            message = (
-                "Saved preview: no generation for this playback."
-                if self._preview_reused
-                else speech_runtime_label(getattr(self.previews, "backend", None))
-            )
-        elif background_preparing:
-            message = "Preparing voice samples in the background. You can browse and play ready samples."
-        else:
-            message = "No preview generation. Original recordings play without TTS."
-        self.runtime.setText(compact_runtime_label(message))
-        self.runtime.setToolTip(message)
-        self.runtime.setVisible(self._operation == "preview" or background_preparing)
-
-    def _start(
-        self,
-        operation: str,
-        message: str,
-        function: Callable[..., object],
-        *arguments: object,
-    ) -> None:
-        if self.runner.active:
-            return
-        self.player.stop()
-        self.cancellation = Event()
-        self._operation = operation
-        self._preview_identity = (
-            self._current_preview_identity() if operation == "preview" else None
-        )
-        self._preview_reused = False
-        self._playback_ready = False
-        self.status.setText(message)
-        self.controls.setEnabled(operation in {"warm", "preview"})
-        self.progress.show()
-        self.cancel_button.setText("Cancel and close")
-        self.cancel_button.adjustSize()
-        if operation == "preview":
-            arguments = (*arguments, self.cancellation)
-        self.runner.start(function, *arguments)
-        self._update()
-
-    def discover(self, installation_root: Path | None = None) -> None:
-        if self.runner.active or self._closing:
-            return
-        if installation_root is not None:
-            self._installation_root = installation_root
-            self.game_installation.setText(str(installation_root))
-            self.game_installation.setToolTip(str(installation_root))
-        self.characters.clear()
-        self._start(
-            "discover",
-            "Finding installed game voices. First import may take a few minutes...",
-            self.importer.narrator_characters,
-            self.cancellation,
-            installation_root,
-        )
 
     def _show_known_installation(self) -> None:
         selected = getattr(self.importer, "selected_installation_root", None)
@@ -1496,39 +605,617 @@ class GameNarratorDialog(QDialog):
         if path:
             self.discover(Path(path))
 
-    def _character_changed(self) -> None:
-        self.player.stop()
-        self._prepared.clear()
-        self._prepared_role = None
-        self._candidate_source_ids.clear()
-        self.references.clear()
-        self._game_reference_dirty = False
-        self._clear_impact()
+    def set_recovery_context(self, role: str, *, resume_live: bool) -> None:
+        self._recovery_role = normalize_character_name(role)
+        self._recovery_resume_live = resume_live
+        self._suppress_auto_discovery = True
+        self.context_note.setText(
+            f"Live reading is paused for voice editing: {role}. Save a voice to continue after any other voice choices."
+            if resume_live
+            else f"Choose a voice for {role} to change future speech. Reading stays stopped."
+        )
+        self.context_note.show()
+        self.cancel_button.setText(
+            "Back to recovery choices" if resume_live else "Cancel"
+        )
+        if self.voice_library.binding(role) is None:
+            with QSignalBlocker(self.source):
+                self.source.setCurrentIndex(self.source.findData("game"))
+            self._source_changed()
+            self.role_summary.setText("No saved voice (narrator fallback)")
+
+    def _role_changed(self) -> None:
+        if self._initializing or self._closing or self._closed:
+            return
+        role = self.role.currentText().strip()
+        if role == "???":
+            self.select_role("Narrator")
+            return
+        binding, selected = self._saved_role_voice(role, is_narrator(role))
+        self.role_summary.setText(
+            self._role_summary_text(role, is_narrator(role), selected, binding)
+        )
+        self._show_role_context(role)
+        self._select_role_source(is_narrator(role), selected)
+        self._load_current_voice()
+        if self._story_group() is not None and self.source.currentData() != "saved":
+            with QSignalBlocker(self.characters):
+                self.characters.clear()
+                self.characters.addItem(role)
+            with QSignalBlocker(self.source):
+                self.source.setCurrentIndex(self.source.findData("game"))
+        self._source_changed()
+
+    def _consent_changed(self, *_args: object) -> None:
+        if not self._initializing:
+            self._load_current_voice()
+        self._source_changed()
+
+    def _load_current_voice(self) -> None:
+        role = self.role.currentText()
+        binding, selected = self._saved_role_voice(role, is_narrator(role))
+        self._current_voice_label = voice_binding_label(binding) or self._source_label(
+            selected
+        )
+        self.voice_panel.set_current_voice(
+            None, self._current_voice_label, error="Loading current voice..."
+        )
+        request = partial(
+            self._resolve_current_voice,
+            self._settings(),
+            role,
+            binding,
+            selected,
+            self._voice_context,
+            self._story_group(),
+            self._catalog_manifest,
+            self._catalog_registry,
+        )
+        if self.current_voice_runner.active:
+            self._pending_current_voice = request
+        else:
+            self.current_voice_runner.start(request)
+
+    def _resolve_current_voice(
+        self,
+        settings: AppSettings,
+        role: str,
+        binding: VoiceBinding | None,
+        selected: str | None,
+        story_plan: VoicePlan | None,
+        story_group: VoiceGroup | None,
+        manifest: str | Path | None,
+        registry: CharacterVoiceRegistry,
+    ) -> CurrentVoice:
+        authorities = ((role, binding),)
+        label = voice_binding_label(binding) or selected or "Automatic"
+        plan: VoicePlan | None = None
+        if binding is not None and binding.source_sha256s:
+            plan = self._narrator_plan(settings, role)
+        elif selected and selected != "default":
+            plan = narrator_preview_plan(
+                settings, manifest, selected, COMPARISON_PREVIEW_TEXT
+            )
+        elif selected is None and story_plan is not None and story_group is not None:
+            if story_group.route == "voice":
+                candidate = next(
+                    (
+                        value
+                        for value in (
+                            *story_group.candidates,
+                            *story_group.candidate_inventory,
+                        )
+                        if value.source_id == story_group.source_id
+                    ),
+                    None,
+                )
+                if candidate is None:
+                    raise ValueError(
+                        "The current story voice reference is unavailable."
+                    )
+                group = replace(
+                    story_group,
+                    candidates=(candidate,),
+                    candidate_inventory=(candidate,),
+                    narrator_candidate=None,
+                )
+                plan = replace(story_plan, groups=(group,))
+                label = f"Automatic: {voice_source_label(candidate.source_character)}"
+            elif story_group.route == "narrator":
+                selected = "default"
+            else:
+                raise ValueError(
+                    "No single current voice is assigned to this story character. "
+                    "Choose a voice above."
+                )
+        elif selected is None:
+            voice = registry.resolve(role)
+            if voice is not None and voice.references:
+                plan = narrator_preview_plan(
+                    settings,
+                    manifest,
+                    f"character:{normalize_character_name(voice.character)}",
+                    COMPARISON_PREVIEW_TEXT,
+                )
+                label = f"Automatic: {voice_source_label(voice.source_character or voice.character)}"
+            else:
+                selected = "default"
+        if selected == "default":
+            narrator_binding = self.voice_library.binding("Narrator")
+            authorities = (*authorities, ("Narrator", narrator_binding))
+            source = pregeneration_narrator_source_id(
+                settings, voice_library=self.voice_library
+            )
+            plan = (
+                narrator_preview_plan(settings, None, source, COMPARISON_PREVIEW_TEXT)
+                if source.startswith("preset:")
+                else self._narrator_plan(settings)
+            )
+            label = "Narrator: " + (
+                voice_binding_label(narrator_binding)
+                or voice_source_label(plan.groups[0].candidates[0].source_character)
+            )
+        self._check_current_voice_authority(authorities)
+        if plan is None:
+            raise ValueError("The current voice is unavailable. Choose a voice above.")
+        if selected and selected.startswith("preset:"):
+            label = self._source_label(selected)
+        return plan, label, authorities
+
+    def _check_current_voice_authority(
+        self, authorities: tuple[tuple[str, VoiceBinding | None], ...]
+    ) -> None:
+        for role, expected in authorities:
+            current = self.voice_library.binding(
+                role, variant_key=self.voice_library.linked_variant_key(role)
+            )
+            if current != expected:
+                raise ValueError("Current voice changed. Reopen the voice editor.")
+            if current is not None and current.source_sha256s:
+                self.voice_library.reference_paths(current)
+
+    def _current_voice_finished(self, result: object, error: Exception | None) -> None:
+        if self._closing:
+            self._finish_close()
+            return
+        if self._pending_current_voice is not None:
+            request, self._pending_current_voice = self._pending_current_voice, None
+            self.current_voice_runner.start(request)
+            return
+        if error is not None:
+            self.voice_panel.set_current_voice(
+                None, self._current_voice_label, error=str(error)
+            )
+        else:
+            plan, label, authorities = cast(CurrentVoice, result)
+            self.voice_panel.set_current_voice(
+                plan,
+                label,
+                playback_guard=partial(
+                    self._check_current_voice_authority, authorities
+                ),
+            )
+        self._update()
+
+    def _source_label(self, source_id: str | None) -> str:
+        if source_id is None:
+            return "automatic assignment"
+        if source_id == "default":
+            return "narrator fallback"
+        if source_id.startswith("preset:"):
+            return source_id.partition(":")[2].replace("_", " ").title()
+        voice = self._catalog_registry.resolve_source(source_id)
+        return (
+            voice_source_label(voice.source_character or voice.character)
+            if voice
+            else "Game voice"
+        )
+
+    def saved_assignment_summary(self) -> str:
+        binding, selected = self._saved_role_voice(
+            self._saving_role, is_narrator(self._saving_role)
+        )
+        label = voice_binding_label(binding) or self._source_label(selected)
+        return f"{self._saving_role}: {label}"
+
+    def _settings(self) -> AppSettings:
+        return self.settings_value.updated(
+            pocket_gated_model_accepted=self.consent.isChecked()
+        )
+
+    def _capture_save(self, _selections: object) -> None:
+        self._selection_settings = self._settings()
+        self._selection_manifest = self._candidate_manifest
+        self._saving_role = self.role.currentText().strip()
+        self._selection_engine_available = self._engine_available()
+
+    def _check_narrator_authority(self) -> None:
+        current = self.voice_library.binding("Narrator")
+        if current != self._narrator_binding:
+            raise ValueError(
+                "Narrator voice changed. Select its source again before playback."
+            )
+        if current is not None and current.source_sha256s:
+            self.voice_library.reference_paths(current)
+            selection = self.voice_panel.current_selection
+            candidate = selection[1].narrator_candidate if selection else None
+            if (
+                candidate is not None
+                and candidate.reference_sha256s != current.source_sha256s
+            ):
+                raise ValueError(
+                    "Narrator reference changed. Select its source again before playback."
+                )
+
+    def _selection_changed(self) -> None:
+        if (
+            self.source.currentData() == "saved"
+            and self._saved_voice_binding is not None
+        ):
+            self.voice_panel.playback_guard = partial(
+                self._check_saved_voice_authority, self._saved_voice_binding
+            )
+        elif self._selected_source() == "default":
+            if self.source.currentData() != "narrator":
+                self._narrator_binding = self.voice_library.binding("Narrator")
+            self.voice_panel.playback_guard = self._check_narrator_authority
+        else:
+            self.voice_panel.playback_guard = None
+        if not self._initializing:
+            self._settings_choice_changed()
+
+    def _selected_source(self) -> str | None:
+        selection = (
+            None if self.voice_panel.isHidden() else self.voice_panel.current_selection
+        )
+        return selection[2] if selection is not None else None
+
+    def _check_saved_voice_authority(self, binding: VoiceBinding) -> None:
+        current = self.voice_library.binding(
+            binding.role, variant_key=binding.variant_key
+        )
+        if current != binding:
+            raise ValueError(
+                "Saved voice changed. Select its source again before playback."
+            )
+        self.voice_library.reference_paths(binding)
+        selection = self.voice_panel.current_selection
+        candidate = selection[1].candidates[0] if selection else None
+        if (
+            candidate is not None
+            and candidate.reference_sha256s != binding.source_sha256s
+        ):
+            raise ValueError(
+                "Saved reference changed. Select its source again before playback."
+            )
+
+    def _settings_choice_changed(self) -> None:
+        binding, saved = self._saved_role_voice(
+            self.role.currentText(), is_narrator(self.role.currentText())
+        )
+        source = self._selected_source()
+        if self.source.currentData() == "saved" and (
+            source is None or source == voice_binding_source_id(binding)
+        ):
+            source = saved
+        if source == "automatic":
+            source = None
+        changed = (
+            source != saved
+            or self.consent.isChecked()
+            != self._initial_settings_value.pocket_gated_model_accepted
+        )
+        if changed != self._settings_dirty:
+            self._settings_dirty = changed
+            self.settingsChanged.emit(changed)
+
+    def _source_changed(self, *_args: object) -> None:
+        if self._initializing or self._closing or self._closed:
+            return
+        self._set_status("")
+        mode = self.source.currentData()
+        self.voice_panel.playback_guard = None
+        self.form.setRowVisible(self.presets, mode == "preset")
+        self.form.setRowVisible(self.catalog_choice, mode == "catalog")
+        self.form.setRowVisible(self.game_controls, mode == "game")
+        pocket = self.settings_value.speech_backend == "pocket-tts"
+        self.terms.setVisible(
+            pocket and mode in {"game", "catalog", "narrator", "saved"}
+        )
+        self.consent.setVisible(self.terms.isVisibleTo(self.controls))
+        if mode == "game":
+            group = self._story_group()
+            if (
+                group is not None
+                and self._voice_context is not None
+                and (
+                    not self.characters.currentText()
+                    or normalize_character_name(self.characters.currentText())
+                    == normalize_character_name(self.role.currentText())
+                )
+            ):
+                with QSignalBlocker(self.characters):
+                    self.characters.clear()
+                    self.characters.addItems(
+                        sorted(
+                            {
+                                self.role.currentText(),
+                                *(
+                                    value.routing_role or value.character
+                                    for value in self._voice_context.groups
+                                ),
+                            },
+                            key=str.casefold,
+                        )
+                    )
+                    self.characters.setCurrentText(self.role.currentText())
+                self._character = self.role.currentText()
+                self._show_plan_candidates(self._voice_context.voice_manifest, group)
+            elif self.characters.currentText():
+                self._prepare()
+            elif not self.runner.active and not self._suppress_auto_discovery:
+                self.discover()
+            else:
+                self.voice_panel.hide()
+        elif mode == "automatic":
+            self._show_policy("automatic", "Restore automatic voice matching")
+        elif mode == "narrator":
+            self._show_narrator()
+        elif mode == "saved":
+            self._saved_voice_binding = self.voice_library.binding(
+                self.role.currentText(),
+                variant_key=self.voice_library.linked_variant_key(
+                    self.role.currentText()
+                ),
+            )
+            self.voice_panel.hide()
+            self._start(
+                "saved",
+                "Loading the saved voice reference...",
+                self._narrator_plan,
+                self._settings(),
+                self.role.currentText(),
+            )
+        else:
+            source_id = (
+                self.presets.currentData()
+                if mode == "preset"
+                else self.catalog_choice.currentData()
+            )
+            if source_id:
+                self._show_source(
+                    None if mode == "preset" else self._catalog_manifest, source_id
+                )
+            else:
+                self.voice_panel.hide()
+                self._set_status(
+                    "No imported voices available. Choose a game voice or built-in voice."
+                )
         self._update()
         self._settings_choice_changed()
+
+    def _policy_group(self) -> VoiceGroup:
+        role = self.role.currentText().strip()
+        return VoiceGroup(
+            group_id=normalize_character_name(role),
+            character=role,
+            speakers=(role,),
+            portrait=None,
+            source_bank=None,
+            source_voice_id=None,
+            line_ids=(),
+            sample_text=COMPARISON_PREVIEW_TEXT,
+            alternate_sample_text=None,
+            route="narrator",
+            source_id="default",
+            source_character=None,
+            source_speaker=None,
+            reference_sha256s=(),
+            decision_context_sha256="",
+            control_sha256="",
+            resolution="player-voice-policy",
+        )
+
+    def _show_policy(self, source_id: str, label: str) -> None:
+        self._candidate_manifest = None
+        group = self._policy_group()
+        settings = self._settings()
+        plan = VoicePlan(
+            job_id="voice-policy",
+            created_at="",
+            story_index_sha256="",
+            voice_manifest=None,
+            voice_manifest_sha256=None,
+            synthesis_backend=settings.speech_backend,
+            synthesis_model=settings.tts_model,
+            synthesis_language=settings.tts_language,
+            synthesis_profile=settings.tts_profile,
+            pocket_voice_cloning=settings.pocket_gated_model_accepted,
+            xtts_terms_accepted=settings.xtts_terms_accepted,
+            synthesis_controls_sha256="",
+            groups=(group,),
+        )
+        self.voice_panel.start_policy(
+            plan, group_id=group.group_id, label=label, choice_id=source_id
+        )
+
+    def _show_source(self, manifest: str | Path | None, source_id: str) -> None:
+        try:
+            plan = narrator_preview_plan(
+                self._settings(), manifest, source_id, COMPARISON_PREVIEW_TEXT
+            )
+            group = replace(
+                plan.groups[0],
+                character=self.role.currentText(),
+                speakers=(self.role.currentText(),),
+                candidate_inventory=plan.groups[0].candidates,
+            )
+            self._candidate_manifest = manifest
+            self.voice_panel.start(
+                replace(plan, groups=(group,)), group_id=group.group_id
+            )
+            if not self._engine_available():
+                self.voice_panel.a_play.setEnabled(False)
+                self._set_status(
+                    "Accept the XTTS model terms in Settings before previewing."
+                    if self.settings_value.speech_backend == "coqui-xtts"
+                    and not self.settings_value.xtts_terms_accepted
+                    else "This engine is not included in this package. Choose an available engine in Settings."
+                )
+        except (OSError, ValueError) as error:
+            self.voice_panel.hide()
+            self._set_status(str(error))
+
+    def _show_narrator(self) -> None:
+        self._narrator_binding = self.voice_library.binding("Narrator")
+        try:
+            source = pregeneration_narrator_source_id(
+                self._settings(), voice_library=self.voice_library
+            )
+        except (ValueError, PregenerationVoiceError) as error:
+            self._show_policy("default", "Use narrator's voice")
+            self._set_status(str(error))
+            return
+        if source.startswith("preset:"):
+            try:
+                plan = narrator_preview_plan(
+                    self._settings(), None, source, COMPARISON_PREVIEW_TEXT
+                )
+                self._start_narrator_panel(plan)
+            except ValueError as error:
+                self._show_policy("default", "Use narrator's voice")
+                self._set_status(str(error))
+            return
+        self._start(
+            "narrator",
+            "Loading the saved narrator reference...",
+            self._narrator_plan,
+            self._settings(),
+        )
+
+    def _narrator_plan(
+        self, settings: AppSettings, role: str = "Narrator"
+    ) -> VoicePlan:
+        registry = registry_with_voice_library(
+            self._catalog_registry, self.voice_library
+        )
+        binding = self.voice_library.binding(
+            role, variant_key=self.voice_library.linked_variant_key(role)
+        )
+        source_id = voice_binding_source_id(binding)
+        voice = (
+            registry.resolve_source(source_id) if source_id else registry.resolve(role)
+        )
+        if voice is None or not voice.references:
+            raise ValueError(f"Choose an available {role} voice before previewing it")
+        # Concurrent current/candidate loads must never rewrite audio being read.
+        folder = Path(mkdtemp(prefix="reference-", dir=self._narrator_directory.name))
+        names = []
+        for index, reference in enumerate(voice.references):
+            if self.cancellation.is_set():
+                raise RuntimeError("Narrator selection cancelled")
+            name = f"reference-{index}.wav"
+            (folder / name).write_bytes(read_voice_reference_bytes(voice, reference))
+            names.append(name)
+        manifest = folder / "manifest.json"
+        write_voice_manifest(
+            manifest,
+            {
+                "version": 2,
+                "voices": [
+                    {
+                        "character": voice.character,
+                        "speaker": voice.speaker,
+                        "references": names,
+                        "vntts.source_character": voice.source_character
+                        or voice.character,
+                    }
+                ],
+            },
+        )
+        return narrator_preview_plan(
+            settings,
+            manifest,
+            f"character:{normalize_character_name(voice.character)}",
+            COMPARISON_PREVIEW_TEXT,
+            voice.reference_transcript,
+        )
+
+    def _start_narrator_panel(self, plan: VoicePlan) -> None:
+        candidate = plan.groups[0].candidates[0]
+        group = replace(
+            plan.groups[0],
+            character=self.role.currentText(),
+            speakers=(self.role.currentText(),),
+            candidates=(),
+            candidate_inventory=(),
+            narrator_candidate=candidate,
+        )
+        self._candidate_manifest = plan.voice_manifest
+        self.voice_panel.start(replace(plan, groups=(group,)), group_id=group.group_id)
+
+    def _story_group(self) -> VoiceGroup | None:
+        return (
+            next(
+                (
+                    group
+                    for group in self._voice_context.groups
+                    if normalize_character_name(group.routing_role or group.character)
+                    == normalize_character_name(self.role.currentText())
+                ),
+                None,
+            )
+            if self._voice_context
+            else None
+        )
+
+    def _show_plan_candidates(
+        self, manifest: str | Path | None, group: VoiceGroup
+    ) -> None:
+        self._candidate_manifest = manifest
+        if self._voice_context is None:
+            return
+        try:
+            self.voice_panel.start(self._voice_context, group_id=group.group_id)
+        except (ValueError, VoiceAuditionUIError) as error:
+            self.voice_panel.hide()
+            self._set_status(
+                f"{error}. Choose another voice source or narrator fallback."
+            )
+
+    def _character_changed(self, *_args: object) -> None:
         if (
-            self.characters.currentText()
+            not self._initializing
             and not self.runner.active
-            and not self._initializing
+            and self.characters.currentText()
         ):
             self._prepare()
+
+    def discover(self, installation_root: Path | None = None) -> None:
+        if self.runner.active or self._closing:
+            return
+        if installation_root is not None:
+            self._installation_root = installation_root
+            self.game_installation.setText(str(installation_root))
+        with QSignalBlocker(self.characters):
+            self.characters.clear()
+        self.voice_panel.hide()
+        self._start(
+            "discover",
+            "Finding installed game voices...",
+            self.importer.narrator_characters,
+            self.cancellation,
+            installation_root,
+        )
 
     def _prepare(self) -> None:
         if self.runner.active or not self.characters.currentText():
             return
         self._character = self.characters.currentText()
-        self._prepared.clear()
-        self._candidate_source_ids.clear()
-        self.references.clear()
-        self._prepared_role = normalize_character_name(self.role.currentText())
-        group = self._current_story_group()
-        if group is not None and self._voice_context is not None:
-            assert self._voice_context.voice_manifest is not None
-            self._show_plan_candidates(self._voice_context.voice_manifest, group)
-            return
+        self.voice_panel.hide()
         self._start(
             "prepare",
-            f"Preparing voice candidates for {self._character}. Please wait...",
+            f"Preparing voice candidates for {self._character}...",
             partial(
                 self.importer.prepare_voice_roles,
                 (self._character,),
@@ -1539,1030 +1226,269 @@ class GameNarratorDialog(QDialog):
             ),
         )
 
-    def _current_story_group(self) -> VoiceGroup | None:
-        plan = self._voice_context
-        role = normalize_character_name(self.role.currentText())
-        if (
-            plan is None
-            or not plan.voice_manifest
-            or role == "narrator"
-            or normalize_character_name(self._character or "") != role
-        ):
-            return None
-        return next(
-            (
-                group
-                for group in plan.groups
-                if normalize_character_name(group.routing_role or group.character)
-                == role
-            ),
-            None,
-        )
-
-    def _show_plan_candidates(self, manifest: Path | str, group: VoiceGroup) -> None:
-        manifest_path = Path(manifest)
-        registry = CharacterVoiceRegistry.from_file(manifest_path)
-        details: list[tuple[str, dict[str, object]]] = []
-        for candidate in group.candidate_inventory:
-            if not candidate.source_id.startswith("character:"):
-                continue
-            voice = registry.resolve_source(candidate.source_id)
-            if voice is None or tuple(
-                sha256_file(path) for path in voice.references
-            ) != (candidate.reference_sha256s):
-                raise ValueError("Story voice changed. Reopen voice matching.")
-            details.append(
-                (
-                    candidate.source_id,
-                    {
-                        "voice_character": candidate.source_character,
-                        "duration_seconds": candidate.reference_duration_seconds,
-                        "source_bank": candidate.source_bank,
-                        "source_line_ids": list(candidate.source_line_ids),
-                        "source_voice_ids": list(candidate.source_voice_ids),
-                        "source_excerpts": list(candidate.source_excerpts),
-                        "candidate_origin": candidate.candidate_origin,
-                    },
-                )
-            )
-        self._display_game_candidates(
-            manifest_path, details, selected_source=group.source_id
-        )
-
     def _show_character_candidates(self, manifest: Path | str) -> None:
-        """List the validated global sources when no story plan is available."""
-        manifest_path = Path(manifest)
         registry, variants = validated_player_voice_candidates(
-            manifest_path, speech_backend=self.settings_value.speech_backend
+            manifest, speech_backend=self.settings_value.speech_backend
         )
-        candidate_details: list[tuple[str, dict[str, object]]] = []
+        candidates = []
         for variant in variants:
             if normalize_character_name(
                 str(variant.get("character", ""))
             ) != normalize_character_name(self._character):
                 continue
-            voice_character = variant["voice_character"]
-            source_id = f"character:{normalize_character_name(voice_character)}"
-            if registry.resolve_source(source_id) is not None:
-                candidate_details.append((source_id, variant))
-        self._display_game_candidates(manifest_path, candidate_details)
-
-    def _display_game_candidates(
-        self,
-        manifest_path: Path,
-        candidate_details: list[tuple[str, dict[str, object]]],
-        *,
-        selected_source: str | None = None,
-    ) -> None:
-        self.references.blockSignals(True)
-        self.references.clear()
-        self._candidate_source_ids.clear()
-        self._exact_transcripts = {}
-        self._prepared.clear()
-        registry = CharacterVoiceRegistry.from_file(manifest_path)
-        for index, (source_id, variant) in enumerate(candidate_details, 1):
-            duration = variant.get("duration_seconds")
-            duration_label = (
-                f"{float(duration):.3f} s"
-                if isinstance(duration, (int, float)) and not isinstance(duration, bool)
-                else "duration unavailable"
-            )
-            excerpts = variant.get("source_excerpts")
-            spoken_text = (
-                [
-                    str(value.get("text") or "").strip()
-                    if isinstance(value, dict)
-                    else str(value).strip()
-                    for value in excerpts
-                ]
-                if isinstance(excerpts, list)
-                else []
-            )
-            transcript = "\n".join(
-                dict.fromkeys(value for value in spoken_text if value)
-            )
-            voice = registry.resolve_source(source_id)
-            if voice is not None and voice.reference_transcript:
-                self._exact_transcripts[source_id] = voice.reference_transcript
-            bank_only = variant.get("candidate_origin") == UNLINKED_BANK_MEDIA
-            excerpt = (
-                UNLINKED_BANK_LABEL
-                if bank_only
-                else transcript.replace("\n", " ")[:65] or "text unavailable"
-            )
-            playable = is_playable_main_voice_source(
-                variant.get("source_bank"), variant.get("source_line_ids")
-            )
-            self.references.addItem(
-                f"Reference {index} - {duration_label} - "
-                + ("Playable line - " if playable else "")
-                + excerpt,
-                source_id,
-            )
-            self.references.setItemData(
-                index - 1,
-                transcript
-                or (UNLINKED_BANK_LABEL if bank_only else "Game text unavailable."),
-                Qt.ItemDataRole.ToolTipRole,
-            )
-            self._candidate_source_ids.add(source_id)
-            self._prepared[source_id] = manifest_path
-        _binding, saved_source = self._saved_role_voice(
-            self.role.currentText(), narrator=is_narrator(self.role.currentText())
-        )
-        if saved_source == "default" or (
-            saved_source is not None and saved_source.startswith("preset:")
-        ):
-            saved_source = None
-        selected_source = saved_source or selected_source
-        selected_index = self.references.findData(selected_source)
-        if selected_index >= 0:
-            self.references.setCurrentIndex(selected_index)
-        elif saved_source:
-            self.references.setCurrentIndex(-1)
-        self.references.blockSignals(False)
-        self._reference_changed()
-        if saved_source and selected_index < 0:
-            message = (
-                "Your saved voice remains active but is not among these candidates. "
-                "Choose a candidate only if you want to replace it."
-            )
-        elif candidate_details:
-            message = (
-                f"{len(candidate_details)} checked game voice candidates. "
-                "Short or unusable clips are omitted. Play original to compare."
-            )
-        else:
-            message = "No usable voice candidates found. Choose another character."
-        self.status.setText(message)
-
-    def _reference_changed(self) -> None:
-        self._stop_audio()
-        self._clear_impact()
-        self.reference_text.setText(
-            self.references.currentData(Qt.ItemDataRole.ToolTipRole)
-            or ("Game text unavailable." if self.references.count() else "")
-        )
-        self.exact_transcript.setText(
-            self._exact_transcripts.get(self.references.currentData(), "")
-        )
-        self._warm_selected()
-
-    def _catalog_reference_changed(self, *_args: object) -> None:
-        if (
-            self.source.currentData() != "catalog"
-            or self.settings_value.speech_backend != "qwen-tts"
-        ):
-            return
-        source_id = self.catalog_choice.currentData()
-        try:
-            voice = (
-                self._catalog_registry.resolve_source(source_id) if source_id else None
-            )
-        except ValueError:
-            voice = None
-        self.exact_transcript.setText(
-            (voice.reference_transcript or "") if voice is not None else ""
-        )
-
-    def _stop_audio(self) -> None:
-        self.player.stop()
-        self.stop_button.hide()
-        self.reference_details.clear()
-        self.reference_details.setToolTip("")
-        if self._playback_requested:
-            self.status.setText(
-                "Original reference playback stopped."
-                if self._operation == "audio"
-                else "Preview playback stopped."
-            )
-        self._queued_action = None
-        self._playback_requested = False
-        self._playback_ready = False
-        if self.runner.active and self._operation == "preview":
-            self.cancellation.set()
-
-    def _warm_selected(self) -> None:
-        reference = self.references.currentData()
-        if (
-            self._closing
-            or self._closed
-            or self.runner.active
-            or self.source.currentData() != "game"
-            or not reference
-        ):
-            return
-        if reference in self._prepared:
-            self.status.setText(
-                "Original reference ready. Press Play original to listen."
-            )
-            queued = self._queued_action
-            self._queued_action = None
-            if queued:
-                self._candidate_action(queued)
-            return
-        self._warming_reference = reference
-        self._start(
-            "warm",
-            "Preparing selected audio... You can browse or press Play to queue playback.",
-            self._perform_candidate_action,
-            "warm",
-            self._settings(),
-            self._character,
-            reference,
-            self.text.toPlainText().strip(),
-        )
-
-    def _decoder_progress(self, message: str) -> None:
-        if self.runner.active and not self._closing:
-            self.status.setText(message)
-
-    def _original(self) -> None:
-        self._candidate_action("audio")
-
-    def _preview(self) -> None:
-        self._candidate_action("preview")
-
-    def _candidate_action(self, operation: str) -> None:
-        if operation in {"audio", "preview"}:
-            try:
-                check_available = getattr(self.player, "check_available", None)
-                if callable(check_available):
-                    check_available()
-            except PcmPlaybackError as error:
-                self.status.setText(f"Audio playback unavailable: {error}")
-                return
-        reference_transcript = self.exact_transcript.text().strip()
-        if operation != "audio" and (
-            not self._engine_available()
-            or (self.source.currentData() == "preset" or self._narrator_uses_preset())
-            and self.settings_value.speech_backend != "pocket-tts"
-        ):
-            self.status.setText(self._engine_guidance_text())
-            return
-        if (
-            operation != "audio"
-            and self.source.currentData() in {"game", "catalog", "narrator"}
-            and self.settings_value.speech_backend == "pocket-tts"
-            and not self.consent.isChecked()
-            and not self._narrator_uses_preset()
-        ):
-            self.status.setText(
-                "Accept Pocket's terms before generating or saving a game voice."
-            )
-            return
-        if operation == "preview":
-            self._request_preview(reference_transcript)
-            return
-        if self.runner.active and self._operation == "preview":
-            self.cancellation.set()
-            self._queued_action = operation
-            return
-        if self.source.currentData() == "catalog":
-            self._playback_requested = operation in {"audio", "preview"}
-            self._start(
-                operation,
-                "Preparing the imported voice...",
-                self._perform_catalog_action,
-                operation,
-                self._settings(),
-                self.catalog_choice.currentData(),
-                self.text.toPlainText().strip(),
-                reference_transcript,
-            )
-            return
-        self._playback_requested = operation in {"audio", "preview"}
-        if self.runner.active and self._operation == "warm":
-            self._queued_action = operation
-            self.status.setText(
-                "Preparing audio... Playback will start when ready."
-                if operation in {"audio", "preview"}
-                else "Preparing audio... Your narrator will be saved when ready."
-            )
-            return
-        self._start(
-            operation,
-            {
-                "audio": "Preparing the selected original reference...",
-                "preview": (
-                    "Generating your preview..."
-                    if self.source.currentData() == "preset"
-                    else "Preparing the selected reference and generating your preview..."
-                ),
-                "save": "Saving the selected narrator. Character voices stay unchanged...",
-            }[operation],
-            self._perform_candidate_action,
-            operation,
-            self._settings(),
-            self._character,
-            self.presets.currentData()
-            if self.source.currentData() == "preset"
-            else self.references.currentData(),
-            self.text.toPlainText().strip(),
-            reference_transcript,
-        )
-
-    def _prefetch_selected(self) -> None:
-        if (
-            getattr(self.previews, "supports_prefetch", False) is not True
-            or self._closing
-            or self._closed
-            or self._initializing
-            or self.source.currentData() in {"automatic", "narrator"}
-            or not self._engine_available()
-        ):
-            return
-        identity = self._current_preview_identity()
-        if identity == self._prefetch_identity:
-            return
-        settings = self._settings()
-        source = self.source.currentData()
-        if (
-            settings.speech_backend == "pocket-tts"
-            and source != "preset"
-            and not settings.pocket_gated_model_accepted
-        ):
-            return
-        source_id = (
-            self.catalog_choice.currentData()
-            if source == "catalog"
-            else self.presets.currentData()
-            if source == "preset"
-            else self.references.currentData()
-        )
-        manifest = (
-            self._catalog_manifest
-            if source == "catalog"
-            else None
-            if source == "preset"
-            else self._prepared.get(source_id)
-        )
-        try:
-            plan = narrator_preview_plan(
-                settings,
-                manifest,
-                source_id,
-                self.text.toPlainText().strip(),
-                self.exact_transcript.text().strip(),
-            )
-        except OSError, ValueError:
-            return
-        self._prefetch_identity = identity
-        self._prefetch_plan = plan
-        cast(VoiceAuditionSession, self.previews).prefetch(
-            plan, ((plan.groups[0], source_id, None),)
-        )
-
-    def _current_preview_identity(self) -> tuple[object, ...]:
-        return (
-            self.role.currentText(),
-            self.source.currentData(),
-            self._character,
-            self.catalog_choice.currentData(),
-            self.references.currentData(),
-            self.presets.currentData(),
-            self.text.toPlainText().strip(),
-            self.exact_transcript.text().strip(),
-            self._settings(),
-            repr(self.voice_library.binding("Narrator"))
-            if self.source.currentData() == "narrator"
-            else None,
-        )
-
-    def _request_preview(self, transcript: str) -> None:
-        if self.runner.active and self._operation not in {"warm", "preview"}:
-            return
-        settings = self._settings()
-        source = self.source.currentData()
-        source_id = (
-            self.catalog_choice.currentData()
-            if source == "catalog"
-            else self.presets.currentData()
-            if source == "preset"
-            else self.references.currentData()
-        )
-        manifest = (
-            self._catalog_manifest
-            if source == "catalog"
-            else None
-            if source == "preset"
-            else self._prepared.get(source_id)
-        )
-        text = self.text.toPlainText().strip()
-        if source != "narrator" and (
-            getattr(self.previews, "supports_prefetch", False) is True
-        ):
-            try:
-                plan = (
-                    self._prefetch_plan
-                    if self._prefetch_identity == self._current_preview_identity()
-                    else narrator_preview_plan(
-                        settings, manifest, source_id, text, transcript
-                    )
+            source = f"character:{normalize_character_name(variant['voice_character'])}"
+            voice = registry.resolve_source(source)
+            if voice is None:
+                continue
+            excerpts = variant.get("source_excerpts", ())
+            candidates.append(
+                VoiceCandidate(
+                    source_id=source,
+                    source_character=voice.source_character or voice.character,
+                    source_speaker=voice.speaker,
+                    reference_sha256s=tuple(
+                        sha256_file(path) for path in voice.references
+                    ),
+                    reference_duration_seconds=variant.get("duration_seconds"),
+                    source_bank=variant.get("source_bank"),
+                    source_line_ids=tuple(variant.get("source_line_ids", ())),
+                    source_voice_ids=tuple(variant.get("source_voice_ids", ())),
+                    source_excerpts=tuple(
+                        str(value.get("text", "")) for value in excerpts
+                    ),
+                    candidate_origin=variant.get("candidate_origin"),
+                    reference_transcript=voice.reference_transcript,
                 )
-                ready = (
-                    cast(VoiceAuditionSession, self.previews).peek(
-                        plan, plan.groups[0], source_id
-                    )
-                    if plan is not None
-                    else None
-                )
-            except OSError, ValueError:
-                ready = None
-            if ready is not None:
-                if self.runner.active and self._operation == "preview":
-                    self.cancellation.set()
-                self._operation = self._operation if self.runner.active else "preview"
-                self._queued_action = None
-                self._playback_requested = True
-                self._finish_playback("preview", ready)
-                return
-        if (
-            source == "narrator"
-            and self.runner.active
-            and self._operation == "preview"
-            and self._preview_identity is not None
-            and self._preview_identity[1] != "narrator"
-            and getattr(self.previews, "supports_prefetch", False) is True
-        ):
-            # The session checks disk audio independently of the displaced render.
-            self.cancellation.set()
-            self.runner.cancel()
-            self._queued_action = None
-        if self.runner.active:
-            if self._operation == "preview":
-                self.cancellation.set()
-            self._queued_action = "preview"
-            self.status.setText(
-                "Waiting for the previous request. You can browse voices."
+            )
+        if not candidates:
+            self._set_status(
+                "No usable voice candidates found. Choose another character."
             )
             return
-        self._playback_requested = True
-        if source == "narrator":
-            self._start(
-                "preview",
-                "Preparing your saved narrator preview...",
-                self._generate_narrator_preview,
-                settings,
-                self._catalog_registry,
-                text,
-            )
-            return
-        self._start(
-            "preview",
-            "Generating your preview...",
-            self._generate_preview,
-            settings,
-            manifest,
-            source_id,
-            text,
-            transcript,
+        plan = narrator_preview_plan(
+            self._settings(), manifest, candidates[0].source_id, COMPARISON_PREVIEW_TEXT
         )
-
-    def _generate_narrator_preview(
-        self,
-        settings: AppSettings,
-        registry: CharacterVoiceRegistry,
-        text: str,
-        cancellation: Event,
-    ) -> VoiceAuditionPreview:
-        # Separate request ownership prevents an old same-voice waiter cancelling us.
-        previews = (
-            cast(VoiceAuditionSession, self.previews).new_session()
-            if getattr(self.previews, "supports_prefetch", False) is True
-            else self.previews
+        _binding, saved = self._saved_role_voice(
+            self.role.currentText(), is_narrator(self.role.currentText())
         )
-        try:
-            source_id = pregeneration_narrator_source_id(
-                settings, voice_library=self.voice_library
-            )
-            if source_id.startswith("preset:"):
-                return self._generate_preview(
-                    settings,
-                    None,
-                    source_id,
-                    text,
-                    "",
-                    cancellation,
-                    preview_service=previews,
-                )
-            registry = registry_with_voice_library(registry, self.voice_library)
-            voice = registry.resolve("Narrator")
-            if voice is None or not voice.references:
-                raise ValueError(
-                    "Choose an available Narrator voice before previewing it"
-                )
-            with temporary_directory(prefix="vntts-narrator-preview-") as directory:
-                root = Path(directory)
-                references = []
-                for index, reference in enumerate(voice.references):
-                    if cancellation.is_set():
-                        raise RuntimeError("Narrator preview cancelled")
-                    name = f"reference-{index}.wav"
-                    (root / name).write_bytes(
-                        read_voice_reference_bytes(voice, reference)
-                    )
-                    references.append(name)
-                manifest = root / "manifest.json"
-                write_voice_manifest(
-                    manifest,
-                    {
-                        "version": 2,
-                        "voices": [
-                            {
-                                "character": voice.character,
-                                "speaker": voice.speaker,
-                                "references": references,
-                            }
-                        ],
-                    },
-                )
-                preview = self._generate_preview(
-                    settings,
-                    manifest,
-                    f"character:{normalize_character_name(voice.character)}",
-                    text,
-                    voice.reference_transcript or "",
-                    cancellation,
-                    preview_service=previews,
-                )
-                self.voice_library.resolve_source_paths("Narrator")
-                if any(
-                    sha256(read_voice_reference_bytes(voice, reference)).hexdigest()
-                    != sha256_file(root / name)
-                    for reference, name in zip(
-                        voice.references, references, strict=True
-                    )
-                ):
-                    raise ValueError(
-                        "Narrator reference changed during preview preparation"
-                    )
-                return preview
-        finally:
-            if previews is not self.previews:
-                previews.close()
-
-    def _generate_preview(
-        self,
-        settings: AppSettings,
-        manifest: Path | str | None,
-        source_id: str,
-        text: str,
-        transcript: str,
-        cancellation: Event,
-        *,
-        preview_service: VoiceAuditionPreviewService
-        | VoiceAuditionSession
-        | None = None,
-    ) -> VoiceAuditionPreview:
-        plan = narrator_preview_plan(settings, manifest, source_id, text, transcript)
-        return (preview_service or self.previews).generate(
-            plan,
+        group = replace(
             plan.groups[0],
-            source_id,
-            cancel_event=cancellation,
-            progress=self.decoderProgress.emit,
+            character=self.role.currentText(),
+            speakers=(self.role.currentText(),),
+            candidates=tuple(candidates),
+            candidate_inventory=tuple(candidates),
+            source_id=saved or candidates[0].source_id,
         )
+        self._candidate_manifest = manifest
+        self.voice_panel.start(replace(plan, groups=(group,)), group_id=group.group_id)
 
-    def _perform_candidate_action(
+    def _start(
         self,
         operation: str,
-        settings: AppSettings,
-        character: str | None,
-        reference: str,
-        text: str,
-        reference_transcript: str = "",
-    ) -> AppSettings | OriginalReference | Path | VoiceAuditionPreview | None:
-        manifest = None
-        source_id = reference
-        if not reference.startswith("preset:"):
-            if character is None:
-                raise ValueError("Choose a game character first")
-            if reference not in self._prepared:
-                raise ValueError("Choose a checked game voice candidate")
-            manifest = self._prepared[reference]
-            source_id = reference
-        if self.cancellation.is_set():
-            raise RuntimeError("Narrator selection cancelled")
-        if operation == "warm":
-            return manifest
-        if operation == "save":
-            return self._bind_selected_voice(
-                settings,
-                manifest,
-                source_id,
-                character,
-                reference_transcript=reference_transcript,
-            )
-        if operation == "audio":
-            return load_original_reference(manifest, source_id)
-        return self._generate_preview(
-            settings, manifest, source_id, text, reference_transcript, self.cancellation
-        )
+        message: str,
+        function: Callable[..., object],
+        *arguments: object,
+    ) -> None:
+        if self.runner.active:
+            return
+        self._operation = operation
+        self.cancellation.clear()
+        self._set_status(message)
+        self.runner.start(function, *arguments)
+        self._update()
 
-    def _bind_selected_voice(
-        self,
-        settings: AppSettings,
-        manifest: Path | str | None,
-        source_id: str,
-        character: str | None,
-        *,
-        root: Path | str | None = None,
-        reference_transcript: str = "",
-    ) -> AppSettings:
+    def _finished(self, result: object, error: Exception | None) -> None:
+        if self._closing:
+            self._finish_close()
+            return
+        operation = self._operation
+        self._operation = None
+        if error is None:
+            self._set_status("")
+        if error is not None:
+            if isinstance(error, DecoderSetupRequired) and confirm_decoder_setup(
+                self, error
+            ):
+                self.importer.allow_decoder_homebrew = True
+                self._prepare()
+                return
+            if operation == "narrator":
+                self._show_policy("default", "Use narrator's voice")
+            self._set_status(f"{error}\nRetry or cancel. Nothing was assigned.")
+        elif operation == "discover":
+            if not isinstance(result, tuple) or not all(
+                isinstance(value, str) for value in result
+            ):
+                self._set_status("Game importer returned invalid character names")
+            else:
+                with QSignalBlocker(self.characters):
+                    self.characters.addItems(result)
+                    index = self.characters.findText(self.role.currentText())
+                    if index >= 0:
+                        self.characters.setCurrentIndex(index)
+                self._show_known_installation()
+                if result:
+                    self._prepare()
+                else:
+                    self._set_status(
+                        "No voiced characters found. Choose the game folder to reimport."
+                    )
+        elif operation == "prepare" and self.source.currentData() == "game":
+            try:
+                if not isinstance(result, (Path, str)):
+                    raise ValueError("Game importer returned an invalid voice manifest")
+                self._show_character_candidates(result)
+            except (OSError, ValueError, PregenerationVoiceError) as failure:
+                self._set_status(f"{failure}\nRetry or choose another game folder.")
+        elif operation == "narrator":
+            if isinstance(result, VoicePlan):
+                self._start_narrator_panel(result)
+        elif operation == "saved" and isinstance(result, VoicePlan):
+            group = replace(
+                result.groups[0],
+                character=self.role.currentText(),
+                speakers=(self.role.currentText(),),
+                candidate_inventory=result.groups[0].candidates,
+            )
+            self._candidate_manifest = result.voice_manifest
+            self.voice_panel.start(
+                replace(result, groups=(group,)), group_id=group.group_id
+            )
+        self._update()
+
+    def remember_many(self, selections: tuple[tuple[VoiceGroup, str], ...]) -> None:
+        if len(selections) != 1:
+            raise ValueError("Choose one role at a time")
+        group, source_id = selections[0]
+        settings = self._selection_settings
         role = self._saving_role
-        context: dict[str, object] = (
-            {"additional_manifest": self._voice_context.voice_manifest}
-            if self._voice_context is not None and self._voice_context.voice_manifest
-            else {}
-        )
-        if root is not None:
-            context["root"] = root
         if (
-            self.binder is bind_voice_library_selection
-            or getattr(self.binder, "func", None) is bind_voice_library_selection
+            self.source.currentData() == "saved"
+            and self._saved_voice_binding is not None
         ):
-            context["rollback"] = self._voice_binding_rollback
-            if reference_transcript:
-                context["reference_transcript"] = reference_transcript
-        if normalize_character_name(role) == "narrator":
-            return self.binder(settings, manifest, source_id, character, **context)
-        return self.binder(
-            settings,
-            manifest,
-            source_id,
-            character,
-            target_character=role,
-            **context,
-        )
-
-    def _perform_catalog_action(
-        self,
-        operation: str,
-        settings: AppSettings,
-        source_id: str,
-        text: str,
-        reference_transcript: str = "",
-    ) -> AppSettings | OriginalReference | VoiceAuditionPreview:
-        voice = self._catalog_registry.resolve_source(source_id)
-        if voice is None:
-            raise ValueError(f"Unknown voice source {source_id!r}")
-        if operation == "save":
-            return self._bind_selected_voice(
-                settings,
-                self._catalog_manifest,
-                source_id,
-                voice.source_character or voice.character,
-                reference_transcript=reference_transcript,
-            )
-        if operation == "audio":
-            return load_original_reference(self._catalog_manifest, source_id)
-        return self._generate_preview(
-            settings,
-            self._catalog_manifest,
-            source_id,
-            text,
-            reference_transcript,
-            self.cancellation,
-        )
-
-    def _policy_settings(self, settings: AppSettings) -> AppSettings:
-        role = self.role.currentText().strip()
-        narrator = normalize_character_name(role) == "narrator"
-        policy = self.source.currentData()
-        if policy == "automatic":
+            self._check_saved_voice_authority(self._saved_voice_binding)
+        self._saved_source = source_id
+        if self._owns_voice_binding_rollback:
+            self._voice_binding_rollback = self.voice_library.binding_rollback()
+        if source_id == "automatic":
             self.voice_library.clear(
                 role,
                 variant_key=self.voice_library.linked_variant_key(role),
                 rollback=self._voice_binding_rollback,
             )
-        else:
+            self.result_settings = settings.updated(
+                tts_speaker_wav=None if is_narrator(role) else settings.tts_speaker_wav
+            )
+            return
+        if source_id == "default" or source_id.startswith("preset:"):
+            if (
+                source_id.startswith("preset:")
+                and settings.speech_backend != "pocket-tts"
+            ):
+                raise ValueError(
+                    "Built-in voices require Pocket TTS. Choose another engine in Settings."
+                )
             remember_voice_binding(
                 self.voice_library,
                 self._catalog_registry,
                 role,
-                ("default" if policy == "narrator" else self.presets.currentData()),
+                source_id,
                 variant_key=self.voice_library.linked_variant_key(role),
                 method="manual",
                 evidence={"selected_in": "voice-picker"},
                 algorithm="voice-picker-v1",
                 rollback=self._voice_binding_rollback,
             )
-        return settings.updated(
-            tts_speaker_wav=None if narrator else settings.tts_speaker_wav,
-        )
-
-    def _save(self) -> None:
-        if not self.save_button.isEnabled():
+            self.result_settings = settings.updated(
+                tts_speaker_wav=None if is_narrator(role) else settings.tts_speaker_wav
+            )
             return
-        self._saving_role = self.role.currentText().strip()
-        if self._owns_voice_binding_rollback:
-            self._voice_binding_rollback = self.voice_library.binding_rollback()
-        if self.source.currentData() in {"preset", "automatic", "narrator"}:
-            self.result_settings = self._policy_settings(self._settings())
-            self._cleanup()
-            return
-        self._candidate_action("save")
-
-    def _finished(self, result: object, error: Exception | None) -> None:
-        operation = self._operation
-        if operation == "close":
-            self._closed = True
-            if self.result_settings is not None and not self._closing:
-                super().accept()
-            else:
-                super().reject()
-            return
-        if self._closing:
-            self._cleanup()
-            return
-        self.controls.setEnabled(True)
-        self.progress.hide()
-        self.cancel_button.setText(
-            "Back to recovery choices" if self._recovery_resume_live else "Cancel"
-        )
-        self.cancel_button.adjustSize()
-        if operation == "warm":
-            self._finish_warm(error)
-            return
-        if operation == "preview" and self._finish_stale_preview():
-            return
-        if error is not None:
-            if self._finish_error(operation, error):
-                return
-        elif self._finish_success(operation, result):
-            return
-        self._update()
-
-    def _finish_stale_preview(self) -> bool:
-        queued = self._queued_action
-        self._queued_action = None
         if (
-            not self.cancellation.is_set()
-            and self._preview_identity == self._current_preview_identity()
+            settings.speech_backend == "pocket-tts"
+            and not settings.pocket_gated_model_accepted
         ):
-            return False
-        if queued:
-            self._candidate_action(queued)
-        elif (
-            self.characters.currentText()
-            and self.characters.currentText() != self._character
-        ):
-            self._prepare()
-        else:
-            self._update()
-        return True
-
-    def _finish_warm(self, error: Exception | None) -> None:
-        if self.references.currentData() != self._warming_reference:
-            self._warm_selected()
-            self._update()
-            return
-        queued = self._queued_action
-        self._queued_action = None
-        if error is None:
-            self.status.setText(
-                "Original reference ready. Press Play original to listen."
+            raise ValueError("Accept Pocket's terms before saving a game voice")
+        if not self._selection_engine_available:
+            raise ValueError(
+                "Choose an available engine and accept its model terms in Settings"
             )
-            if queued:
-                self._candidate_action(queued)
-        elif isinstance(error, DecoderSetupRequired):
-            # Browsing must not open an installation prompt without a user action.
-            self.status.setText("Audio decoder setup needed. Press Play to set it up.")
-            if queued and confirm_decoder_setup(self, error):
-                self.importer.allow_decoder_homebrew = True
-                self._candidate_action(queued)
-        else:
-            self.status.setText(
-                f"{error}\nPress Play to retry or choose another reference."
-            )
-        self._update()
-
-    def _finish_error(self, operation: str | None, error: Exception) -> bool:
-        from vntts.support import record_game_import
-
-        record_game_import(
-            "voice-dialog",
-            outcome="failed",
-            command_kind=operation,
-            exception_type=type(error).__name__,
-            reason=str(error),
-            traceback_tail="".join(format_exception(error))[-12000:],
-        )
-        if isinstance(error, DecoderSetupRequired) and confirm_decoder_setup(
-            self, error
-        ):
-            self.importer.allow_decoder_homebrew = True
-            if operation is not None:
-                self._candidate_action(operation)
-            return True
-        self.status.setText(
+        candidate = next(
             (
-                f"{error}\nNothing was assigned. Select Play preview to "
-                "try again, or Cancel to leave.\n"
-                if operation == "preview"
-                else f"{error}\nRetry, choose a game folder, or cancel. "
-                "Nothing was assigned.\n"
-            )
-            + "Failure details: Support and logs > Export support report."
+                value
+                for value in (*group.candidates, *group.candidate_inventory)
+                if value.source_id == source_id
+            ),
+            None,
         )
-        return False
-
-    def _finish_success(self, operation: str | None, result: object) -> bool:
-        if operation == "impact":
-            self._finish_impact(result)
-        elif operation == "discover":
-            return self._finish_discovery(result)
-        elif operation == "prepare":
-            self._finish_preparation(result)
-        elif operation in {"audio", "preview"}:
-            return self._finish_playback(operation, result)
-        elif operation == "save":
-            self._finish_save(result)
-            return True
-        return False
-
-    def _finish_impact(self, result: object) -> None:
-        if not _is_story_voice_impact(result):
-            raise TypeError("Voice-impact service returned an invalid result")
-        self._show_impact(result)
-        self.status.setText(
-            "Voice comparison complete. Nothing has been saved or generated."
-        )
-
-    def _finish_discovery(self, result: object) -> bool:
-        if not _is_string_tuple(result):
-            raise TypeError("Game importer returned invalid character names")
-        preferred = self.role.currentText()
-        if is_narrator(preferred):
-            binding = self.voice_library.binding(preferred)
-            evidence = binding.provenance.get("evidence") if binding else None
-            saved_character = (
-                evidence.get("selected_character")
-                if isinstance(evidence, dict)
-                else None
-            )
-            preferred = (
-                saved_character
-                if isinstance(saved_character, str)
-                else self._character or ""
-            )
-        with QSignalBlocker(self.characters):
-            self.characters.addItems(result)
-            for index, name in enumerate(result):
-                if normalize_character_name(name) == normalize_character_name(
-                    preferred
-                ):
-                    self.characters.setCurrentIndex(index)
-                    break
-        self._show_known_installation()
-        self.status.setText(
-            "Choose a character to load its voice references."
-            if result
-            else "No voiced characters found. Choose the game folder to reimport."
-        )
-        if not result:
-            return False
-        self._prepare()
-        return True
-
-    def _finish_preparation(self, result: object) -> None:
-        if not isinstance(result, (Path, str)):
-            raise TypeError("Game importer returned an invalid voice manifest")
-        try:
-            self._show_character_candidates(result)
-        except (
-            OSError,
-            ValueError,
-            VoiceManifestError,
-            PregenerationVoiceError,
-        ) as error:
-            from vntts.support import record_game_import
-
-            record_game_import(
-                "voice-dialog",
-                outcome="failed",
-                command_kind="prepare",
-                exception_type=type(error).__name__,
-                reason=str(error),
-            )
-            self.status.setText(
-                f"{error}\nRetry, choose a game folder, or cancel. "
-                "Nothing was assigned."
-            )
-
-    def _finish_playback(self, operation: str, result: object) -> bool:
-        preview_path: object | None = None
-        if operation == "preview":
-            preview_path = getattr(result, "path", None)
-            if preview_path is None:
-                raise TypeError("Preview service returned an invalid preview")
-            self._preview_reused = getattr(result, "reused", False) is True
-        if not self._playback_requested:
-            self.status.setText("Audio ready. Playback stopped.")
-            self._update()
-            return True
-        self.status.setText("Starting playback...")
-        self._playback_ready = True
-        if operation == "audio":
-            if not isinstance(result, OriginalReference):
-                raise TypeError("Reference loader returned an invalid reference")
-            check = (
-                "Not suitable for cloning: " + ", ".join(result.rejection_reasons)
-                if result.rejection_reasons
-                else "Technical reference checks passed; voice quality is yours to judge."
-            )
-            self.reference_details.setText(
-                f"Original: {result.character} | {result.duration_seconds:.3f} s\n{check}"
-            )
-            self.reference_details.setToolTip(
-                f"{result.source_id}\n{result.path}\nSHA-256: {result.sha256}"
-            )
-            self.player.play_bytes(result.payload, source=str(result.path))
-        else:
-            try:
-                payload = read_regular_bytes(Path(str(preview_path)))
-                if sha256(payload).hexdigest() != getattr(result, "audio_sha256", None):
-                    raise ValueError("Voice sample changed after validation")
-            except (OSError, ValueError) as error:
-                self._playback_error(None, str(error))
-                return True
-            self.player.play_bytes(payload, source=str(preview_path))
-        return False
-
-    def _finish_save(self, result: object) -> None:
-        if not isinstance(result, AppSettings):
-            raise TypeError("Voice binding returned invalid settings")
-        self.result_settings = result
-        self._cleanup()
-
-    def _playback_state_changed(self, state: object) -> None:
-        if self.runner.active and not self._playback_ready:
-            return
-        playing = (
-            state == QMediaPlayer.PlaybackState.PlayingState
-            and self._playback_requested
-        )
-        self.stop_button.setVisible(playing)
-        if playing:
-            self.status.setText(
-                "Playing original reference."
-                if self._operation == "audio"
-                else "Playing saved preview (no generation)."
-                if self._preview_reused
-                else "Playing generated preview."
-            )
-
-    def _playback_error(self, _code: object, message: str) -> None:
+        if candidate is None:
+            raise ValueError("Choose a checked voice candidate")
+        context: dict[str, object] = {}
         if (
-            self.runner.active and not self._playback_ready
-        ) or not self._playback_requested:
-            return
-        self._playback_requested = False
-        self._playback_ready = False
-        self.stop_button.hide()
-        subject = (
-            "Original reference"
-            if self._operation == "audio"
-            else "Preview"
-            if self._operation == "preview"
-            else "Audio"
-        )
-        self.status.setText(f"{subject} playback failed: {message}")
-
-    def _playback_media_changed(self, status: object) -> None:
-        if (
-            (not self.runner.active or self._playback_ready)
-            and status == QMediaPlayer.MediaStatus.EndOfMedia
-            and self._playback_requested
+            self.binder is bind_voice_library_selection
+            or getattr(self.binder, "func", None) is bind_voice_library_selection
         ):
-            self.status.setText(
-                "Original reference finished. Press Play original to listen again."
-                if self._operation == "audio"
-                else "Preview finished. Press Play preview to listen again."
+            context.update(
+                root=self.voice_library.root,
+                rollback=self._voice_binding_rollback,
+                reference_transcript=candidate.reference_transcript,
             )
-            self._playback_requested = False
-            self._playback_ready = False
-            self.stop_button.hide()
+        if not is_narrator(role):
+            context["target_character"] = role
+        registry = CharacterVoiceRegistry.from_file(self._selection_manifest)
+        selected = registry.resolve_source(source_id)
+        if (
+            selected is None
+            or tuple(sha256_file(path) for path in selected.references)
+            != candidate.reference_sha256s
+        ):
+            raise ValueError(
+                "Selected voice reference changed. Reopen the voice editor."
+            )
+        self.result_settings = self.binder(
+            settings,
+            self._selection_manifest,
+            source_id,
+            candidate.source_character,
+            **context,
+        )
 
-    def _cleanup(self) -> None:
-        self._start("close", "Closing voice preview...", self.previews.close)
+    def _saved(self) -> None:
+        self._closing = True
+        self._panel_cancelled = True
+        self.voice_panel.shutdown()
+        self._finish_close()
+
+    def _panel_finished(self) -> None:
+        self._panel_cancelled = True
+        if self._closing:
+            self.voice_panel.shutdown()
+            self._finish_close()
+
+    def _finish_close(self) -> None:
+        if (
+            self._closed
+            or not self._closing
+            or self.active
+            or not self._panel_cancelled
+        ):
+            return
+        self._closed = True
+        if self._narrator_directory is not None:
+            self._narrator_directory.cleanup()
+        if self.result_settings is not None:
+            super().accept()
+        else:
+            super().reject()
 
     def reject(self) -> None:
         if self._closed:
             super().reject()
             return
         self._closing = True
-        self.player.stop()
         self.cancellation.set()
-        if getattr(self.previews, "supports_prefetch", False) is True:
-            self.previews.cancel()
-        if self.runner.active:
-            self.status.setText(
-                "Cancelling. Waiting for the current operation to stop..."
-            )
-        else:
-            self._cleanup()
+        self._set_status("Cancelling. Waiting for voice operations to stop...")
+        self.voice_panel.cancel()
+        self._finish_close()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._closed:
@@ -2570,3 +1496,36 @@ class GameNarratorDialog(QDialog):
         else:
             event.ignore()
             self.reject()
+
+    def _engine_available(self) -> bool:
+        backend = self.settings_value.speech_backend
+        return (
+            backend != "coqui-xtts" or self.settings_value.xtts_terms_accepted
+        ) and any(
+            option == backend and available
+            for _label, option, available in speech_backend_options(backend)
+        )
+
+    def _update(self, *_args: object) -> None:
+        idle = not self.active and not self._closing
+        self.progress.setVisible(self.runner.active)
+        for control in (
+            self.role,
+            self.source,
+            self.presets,
+            self.catalog_choice,
+            self.characters,
+            self.discover_button,
+            self.folder_button,
+            self.consent,
+        ):
+            control.setEnabled(idle)
+
+    def _copy_details(self) -> str:
+        return "\n".join(
+            (
+                self.saved_assignment_summary(),
+                self.status.text(),
+                self.voice_panel.status.toPlainText(),
+            )
+        )

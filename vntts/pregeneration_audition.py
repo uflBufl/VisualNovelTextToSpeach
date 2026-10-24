@@ -429,7 +429,7 @@ class VoiceAuditionPreviewService:
         cancel_event: _Cancellation | None = None,
         progress: ProgressReporter | None = None,
     ) -> VoiceAuditionPreview:
-        """Generate or reuse the group's one representative candidate phrase."""
+        """Generate or reuse the exact requested candidate phrase."""
         with self._lock:
             if self._closed:
                 raise VoiceAuditionError("Voice audition service is closed")
@@ -964,12 +964,7 @@ def _validate_request(
 
 def _preview_text(group: VoiceGroup, text: str | None) -> str:
     selected = group.sample_text if text is None else text
-    if (
-        not isinstance(selected, str)
-        or not selected.strip()
-        or selected
-        not in {COMPARISON_PREVIEW_TEXT, group.sample_text, group.alternate_sample_text}
-    ):
+    if not isinstance(selected, str) or not selected.strip():
         raise VoiceAuditionError("Voice audition text is invalid")
     return selected
 
@@ -1078,7 +1073,7 @@ def _load_candidate(
         _preflight_captured_references(
             captured, checksums, preflight_cache, cancellation
         )
-    if candidate.reference_transcript:
+    if candidate.reference_transcript is not None:
         voice = replace(voice, reference_transcript=candidate.reference_transcript)
     return CharacterVoiceRegistry((voice,)), reference
 

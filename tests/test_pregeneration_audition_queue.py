@@ -161,6 +161,36 @@ class VoiceAuditionQueueTest(unittest.TestCase):
     def wait(self, owner):
         owner._pool.submit(lambda: None).result(timeout=5)
 
+    def test_prefetched_game_phrase_and_manual_custom_text_use_exact_inputs(self):
+        with TemporaryDirectory() as directory:
+            plan, group, _, backend, owner = self.fixture(Path(directory))
+            session = owner.session()
+            source = group.candidates[0].source_id
+            game_phrase = "Morning, traveller."
+            custom_phrase = "Моя собственная реплика!"
+            session.prefetch(plan, ((group, source, game_phrase),), automatic=True)
+            self.wait(owner)
+            self.assertEqual(
+                session.preparation_state(plan, group, source, text=game_phrase),
+                "ready",
+            )
+            self.assertIsNone(
+                session.preparation_error(plan, group, source, text=game_phrase)
+            )
+            prepared = session.peek(plan, group, source, text=game_phrase)
+            self.assertEqual(prepared.text, game_phrase)
+            self.assertEqual(
+                session.generate(plan, group, source, text=game_phrase),
+                replace(prepared, reused=True),
+            )
+            edited = session.generate(plan, group, source, text=custom_phrase)
+            self.assertEqual(edited.text, custom_phrase)
+            self.assertNotEqual(edited.identity, prepared.identity)
+            self.assertEqual(
+                [request.text for request in backend.requests],
+                [game_phrase, custom_phrase],
+            )
+
     def test_automatic_preparation_can_start_a_cold_model(self):
         with TemporaryDirectory() as directory:
             plan, group, _, backend, owner = self.fixture(Path(directory))
@@ -435,10 +465,19 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                 self.assertEqual(
                     session.preparation_state(plan, group, source), "failed"
                 )
+                self.assertEqual(
+                    session.preparation_error(plan, group, source), "model unavailable"
+                )
+                self.assertIsNone(
+                    session.preparation_error(plan, group, source, text="Other phrase")
+                )
                 generate.assert_called_once()
                 with self.assertRaisesRegex(RuntimeError, "model unavailable"):
                     session.generate(plan, group, source)
                 self.assertEqual(generate.call_count, 2)
+            session.generate(plan, group, source)
+            self.assertEqual(session.preparation_state(plan, group, source), "ready")
+            self.assertIsNone(session.preparation_error(plan, group, source))
 
     def test_restore_cached_inventory_admits_audio_without_starting_model(self):
         with TemporaryDirectory() as directory:

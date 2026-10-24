@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
     from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
     from vntts.calibration import CalibrationReviewDialog, DialogRegionOverlay
+    from vntts.game_narrator_ui import GameNarratorDialog
     from vntts.ocr_review_ui import OCRReviewDialog
     from vntts.onboarding_ui import OnboardingWizard
     from vntts.pregeneration_audition_ui import VoiceAuditionPanel
@@ -779,7 +780,7 @@ def _narrator_only_overview_story(
     return _voice_overview_story(dialog, "narrator-only")
 
 
-def _voice_overview_inspection_error(
+def _voice_overview_without_references(
     dialog: OfflineAudioPreparationDialog,
 ) -> OfflineAudioPreparationDialog:
     plan = dialog._voice_plan
@@ -789,7 +790,6 @@ def _voice_overview_inspection_error(
     )
     dialog._voice_plan = replace(plan, groups=(unavailable, *plan.groups[1:]))
     dialog._show_voice_confirmation(dialog._voice_plan)
-    dialog._inspect_character_voice()
     return dialog
 
 
@@ -1159,7 +1159,9 @@ def _prepare_offline_preparation_screenshot(
 def _prepare_voice_audition_screenshot(
     widget: QWidget, story_id: str, app: QApplication
 ) -> None:
-    from vntts.pregeneration_ui import OfflineAudioPreparationDialog
+    from PySide6.QtWidgets import QScrollArea
+
+    from vntts.game_narrator_ui import GameNarratorDialog
 
     if story_id in {
         "voice-audition.compact-preview",
@@ -1169,7 +1171,7 @@ def _prepare_voice_audition_screenshot(
         "voice-audition.compact-save-waiting",
         "voice-audition.compact-save-failure",
     }:
-        assert isinstance(widget, OfflineAudioPreparationDialog)
+        assert isinstance(widget, GameNarratorDialog)
         target = (
             widget.voice_panel.reference_details
             if story_id.endswith("details")
@@ -1177,7 +1179,7 @@ def _prepare_voice_audition_screenshot(
             if story_id.endswith(("failure", "waiting"))
             else widget.voice_panel.preview_box
         )
-        widget.content_scroll.ensureWidgetVisible(target)
+        widget.findChild(QScrollArea).ensureWidgetVisible(target)
         app.processEvents()
 
 
@@ -1247,6 +1249,8 @@ def _compact_voice_audition(dialog: OfflineAudioPreparationDialog) -> None:
     first = replace(
         first,
         character="The Traveling Hotelier of the Northern Province",
+        routing_role="The Traveling Hotelier of the Northern Province",
+        speakers=("The Traveling Hotelier of the Northern Province",),
         candidate_inventory=(candidate, *first.candidate_inventory[1:]),
         candidates=(candidate, *first.candidates[1:]),
         sample_text=long_text,
@@ -1266,7 +1270,8 @@ def _voice_audition_story(
     dialog: OfflineAudioPreparationDialog,
     resources: ExitStack,
     write_sample: Callable[[Path], None],
-) -> OfflineAudioPreparationDialog:
+) -> GameNarratorDialog:
+    from vntts.game_narrator_ui import GameNarratorDialog
 
     if state.startswith("compact"):
         _compact_voice_audition(dialog)
@@ -1286,16 +1291,41 @@ def _voice_audition_story(
         dialog._voice_plan = replace(
             dialog._voice_plan, groups=(group, *dialog._voice_plan.groups[1:])
         )
-    dialog._inspect_character_voice()
+    assert dialog._voice_plan is not None
+    editor = GameNarratorDialog(
+        dialog.settings,
+        importer=dialog.importer,
+        preview_service=dialog.audition_service,
+        thread_pool=dialog.voice_runner.thread_pool,
+        player=dialog._narrator_player,
+        voice_library=dialog.voice_library,
+    )
+    editor._suppress_auto_discovery = True
     from PySide6.QtWidgets import QApplication
 
-    dialog.show()
     QApplication.processEvents()
-    panel = dialog.voice_panel
+    editor.set_voice_context(
+        dialog._voice_plan,
+        character=dialog._voice_plan.groups[0].character,
+        story_titles=("Chapter 7", "Chapter 8"),
+    )
+    editor.consent.setChecked(True)
+    editor.source.setCurrentIndex(editor.source.findData("game"))
+    editor._source_changed()
+    assert editor.source.currentData() == "game", editor.status.text()
+    assert editor.voice_panel.current_selection is not None, editor.status.text()
+    editor.setFont(dialog.font())
+    editor.resize(dialog.size())
+    dialog.deleteLater()
+    editor.show()
+    QApplication.processEvents()
+    panel = editor.voice_panel
+    assert editor.source.currentData() == "game", editor.status.text()
+    assert panel._candidate_entries, editor.status.text()
     actions = {
         "alternate": lambda: panel.voice_reference.setCurrentIndex(1),
-        "alternate-phrase": lambda: panel.preview_phrase.setCurrentIndex(
-            panel.preview_phrase.findData(panel.current_group().alternate_sample_text)
+        "alternate-phrase": lambda: panel.preview_text.setPlainText(
+            panel.current_group().alternate_sample_text
         ),
         "original-playing": lambda: _voice_original_playback_story(panel),
         "preview-generating": panel.a_play.click,
@@ -1319,7 +1349,7 @@ def _voice_audition_story(
         _voice_original_playback_story(panel)
         panel.a_use.click()
         if state == "save-waiting":
-            dialog.cancel_button.click()
+            editor.cancel_button.click()
         if state == "save-failure":
             panel.decision_runner._task_finished(
                 panel.decision_runner._serial,
@@ -1328,7 +1358,7 @@ def _voice_audition_story(
             )
             assert not panel.active
             assert panel.retry_save_button.isEnabled()
-    return dialog
+    return editor
 
 
 def _voice_original_playback_story(panel: VoiceAuditionPanel) -> None:
@@ -1383,7 +1413,7 @@ def _voice_content_check_story(
 
     plan, group = panel._require_plan(), panel.current_group()
     candidate = panel._current_entry()[0]
-    text = panel.preview_phrase.currentData()
+    text = panel.preview_text.toPlainText()
     preview_path = (
         Path(resources.enter_context(temporary_directory(prefix="vntts-ui-catalog-")))
         / "preview.wav"
@@ -2497,7 +2527,6 @@ def _render_stories(
         QCoreApplication,
         QEvent,
         QRunnable,
-        QSignalBlocker,
         QThreadPool,
         QTimer,
     )
@@ -2550,7 +2579,6 @@ def _render_stories(
     from vntts.diagnostics_ui import DiagnosticsDialog
     from vntts.document_identity import sha256_file
     from vntts.game_content_importer import ImporterAvailability
-    from vntts.game_narrator_ui import GameNarratorDialog
     from vntts.history import DialogueHistory
     from vntts.history_ui import DialogueHistoryDialog
     from vntts.ocr import DialogRegion
@@ -3103,121 +3131,44 @@ def _render_stories(
         narrator_fallback: bool = False,
         resume_live: bool = True,
     ) -> ControlDashboard | GameNarratorDialog:
-        dashboard = ControlDashboard(settings)
-        dashboard.resize(
-            820 if compact_long_values else 1180,
-            720 if compact_long_values else 900,
-        )
-        importer = Mock()
-        importer.selected_installation_root.return_value = None
-        pool = IdlePool()
-        previews = Mock()
-        previews.backend.runtime_status = "Apple GPU · model loaded"
-        temporary = resources.enter_context(
-            temporary_directory(prefix="vntts-ui-catalog-")
-        )
-
-        panel = GameNarratorDialog(
-            settings,
-            importer=importer,
-            preview_service=previews,
-            thread_pool=pool,
-            player=Mock(),
-            voice_library=VoiceLibrary(Path(temporary) / "voice-library"),
-        )
-        panel._initializing = True
-        long_role = "The Extremely Long Character Name Used to Verify Layout"
-        selected_role = long_role if compact_long_values else role
-        panel.set_voice_context(
-            character=selected_role,
-            roles=("Believer IV", "Centurion", "Selone", long_role),
-            story_titles=("Chapter 7",),
-        )
-        selected_character = (
-            long_role
+        story = offline_preparation("confirmation")
+        assert story._voice_plan is not None
+        selected_role = (
+            "The Extremely Long Character Name Used to Verify Layout"
             if compact_long_values
             else role
-            if role != "Narrator"
-            else "Believer IV"
         )
-        if compact_long_values:
-            reference_title = (
-                "Chapter 7 - A deliberately long original reference title that "
-                "must remain readable without hiding the playback action"
-            )
-            transcript = (
-                "A deliberately long transcript verifies wrapping and resizing "
-                "while remaining visible beside the reference it describes."
-            )
-        elif role == "Selone":
-            reference_title = "Chapter 7 - Selone reference 1"
-            transcript = "The road is quiet now. We should keep moving."
-        else:
-            reference_title = (
-                "Chapter 7 - They at least paid with their lives. What about you?"
-            )
-            transcript = "They at least paid with their lives. What about you?"
-        with QSignalBlocker(panel.characters), QSignalBlocker(panel.references):
-            panel.characters.clear()
-            panel.characters.addItems(("Believer IV", "Centurion", "Selone", long_role))
-            panel.characters.setCurrentText(selected_character)
-            panel.references.clear()
-            panel.references.addItem(
-                reference_title,
-                f"reference:{selected_character.casefold().replace(' ', '-')}"
-                ":chapter-7",
-            )
-        panel._character = panel.characters.currentText()
-        with QSignalBlocker(panel.source):
-            panel.source.setCurrentIndex(panel.source.findData("game"))
-        panel.reference_text.setText(transcript)
-        panel.reference_details.setText(
-            f"{selected_character} spoken reference 1 | 12.510 s\n"
-            "Technical reference checks passed; voice quality is yours to judge."
+        first = replace(
+            story._voice_plan.groups[0],
+            character=selected_role,
+            routing_role=selected_role,
+            speakers=(selected_role,),
         )
-        panel._prepared[panel.references.currentData()] = (
-            Path(temporary) / "reference-manifest.json"
+        story._voice_plan = replace(story._voice_plan, groups=(first,))
+        editor = _voice_audition_story(
+            "compact"
+            if compact_long_values
+            else "preview-generating"
+            if generating
+            else "preview-failure"
+            if failed
+            else "reference",
+            story,
+            resources,
+            write_silent_wav,
         )
-        panel._initializing = False
-        resources.enter_context(
-            patch.object(panel, "_engine_available", return_value=True)
-        )
-        panel._update()
-        panel.status.setText(
-            "Choose a voice for this role. Nothing changes until you save."
-            if role == "Narrator"
-            else "Choose narrator fallback for Selone. Nothing changes until you save."
-            if narrator_fallback
-            else f"{role} was not mapped during live reading. Choose and save a voice."
-        )
-        if role == "Selone" and not narrator_fallback:
-            panel.set_recovery_context("Selone", resume_live=resume_live)
+        if role == "Selone":
+            editor.set_recovery_context(role, resume_live=resume_live)
         if narrator_fallback:
-            with QSignalBlocker(panel.source):
-                panel.source.setCurrentIndex(panel.source.findData("narrator"))
-            panel._update()
-        if generating:
-            QTimer.singleShot(
-                0,
-                lambda: panel._start(
-                    "preview", "Generating your preview...", lambda: None
-                ),
-            )
-        elif failed:
-
-            def finish_with_error() -> None:
-                panel._operation = "preview"
-                with patch("vntts.support.record_game_import"):
-                    panel._finished(None, RuntimeError("Preview generation failed."))
-
-            QTimer.singleShot(0, finish_with_error)
-        if narrator_fallback:
-            panel.resize(940, 620)
-            return panel
-        dashboard.embed_narrator(panel)
-        dashboard.set_status(
-            "Choose and preview a voice. Nothing changes until you save."
+            editor.source.setCurrentIndex(editor.source.findData("narrator"))
+            editor.resize(940, 620)
+            return editor
+        dashboard = ControlDashboard(settings)
+        dashboard.resize(
+            820 if compact_long_values else 1180, 720 if compact_long_values else 900
         )
+        dashboard.embed_narrator(editor)
+        dashboard.set_status("Choose and preview a voice. Changes apply when saved.")
         return dashboard
 
     def unknown_speaker_prompt(*, long_name: bool = False) -> QMessageBox:
@@ -3255,6 +3206,7 @@ def _render_stories(
         discovery = None if state == "loading" else lambda: ContentDiscovery((content,))
         offline_settings = settings.updated(
             speech_backend="pocket-tts",
+            offline_speech_backend="pocket-tts",
             tts_model=None,
             tts_profile="default",
             narrator_speaker="alba",
@@ -3271,6 +3223,23 @@ def _render_stories(
         write_silent_wav(original_reference)
         audition_service.reference_audio.return_value = VoiceAuditionReference(
             original_reference, original_reference.read_bytes()
+        )
+        from vntts_artifacts.voice_manifest import write_voice_manifest
+
+        manifest = root / "voice-manifest.json"
+        write_voice_manifest(
+            manifest,
+            {
+                "version": 2,
+                "voices": [
+                    {
+                        "character": name,
+                        "speaker": name.casefold().replace(" ", "-"),
+                        "references": [original_reference.name],
+                    }
+                    for name in ("Centurion", "A Knight")
+                ],
+            },
         )
         dialog = OfflineAudioPreparationDialog(
             offline_settings,
@@ -3336,8 +3305,8 @@ def _render_stories(
                 dialog._job.job_id,
                 "2026-09-22T00:00:00+00:00",
                 content.story_index_sha256,
-                None,
-                None,
+                str(manifest),
+                sha256_file(manifest),
                 "pocket-tts",
                 None,
                 "en",
@@ -3495,7 +3464,7 @@ def _render_stories(
         dialog.continue_button.setFocus()
         return dialog
 
-    def voice_audition(state: str) -> OfflineAudioPreparationDialog:
+    def voice_audition(state: str) -> GameNarratorDialog:
         return _voice_audition_story(
             state, offline_preparation("confirmation"), resources, write_silent_wav
         )
@@ -4268,8 +4237,8 @@ def _render_stories(
         "offline-preparation.voice-overview-narrator-only": lambda: (
             _narrator_only_overview_story(offline_preparation("confirmation"))
         ),
-        "offline-preparation.voice-overview-inspection-error": lambda: (
-            _voice_overview_inspection_error(offline_preparation("confirmation"))
+        "offline-preparation.voice-overview-no-references": lambda: (
+            _voice_overview_without_references(offline_preparation("confirmation"))
         ),
         "offline-preparation.voice-overview-details": lambda: _voice_overview_story(
             offline_preparation("confirmation"), "details"

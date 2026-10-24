@@ -1,6 +1,6 @@
 """Guided player UI for selecting content to prepare for offline speech."""
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
@@ -57,8 +57,7 @@ from vntts.game_narrator import load_original_reference, narrator_preview_plan
 from vntts.person_link_suggestions import PersonLinkSuggestion
 from vntts.pregeneration_audition import COMPARISON_PREVIEW_TEXT
 from vntts.pregeneration_audition_ui import (
-    VoiceAuditionPanel,
-    VoiceAuditionUIError,
+    _preview_service_factory,
     _VoiceAuditionPreviewer,
 )
 from vntts.pregeneration_generation import (
@@ -114,6 +113,7 @@ from vntts.prepared_sequence import (
     PreparedSequenceError,
     prepare_sequence_for_prepared_story,
 )
+from vntts.preview_content_advisor import PreviewContentAdvisor
 from vntts.qt_audio import QtPcmPlayer
 from vntts.release_backends import speech_backend_options
 from vntts.settings import AppSettings
@@ -134,7 +134,6 @@ from vntts.ui_text import (
     set_labeled_text,
 )
 from vntts.voice_candidate_cache import prune_obsolete_voice_candidate_caches
-from vntts.voice_default_impact import StoryVoiceImpact
 from vntts.voice_library import VoiceBindingRollback, VoiceLibrary, VoiceLibraryError
 from vntts.voices import (
     CharacterVoiceRegistry,
@@ -354,20 +353,18 @@ class OfflineAudioPreparationDialog(QDialog):
         self.decoderProgress.connect(self._decoder_progress)
         self.sourceAudioProgress.connect(self._source_audio_progress)
         self.voice_runner.finished.connect(self._voice_plan_finished)
-        self.voice_panel = VoiceAuditionPanel(
-            self.voice_decisions,
-            preview_service=audition_service,
-            thread_pool=thread_pool,
-            player=preview_player,
-            parent=self,
+        self.audition_service = audition_service or _preview_service_factory()
+        preview_root = getattr(self.audition_service, "root", None)
+        if not isinstance(preview_root, (str, Path)):
+            owner = getattr(self.audition_service, "owner", None)
+            preview_root = getattr(getattr(owner, "service", None), "root", None)
+        self.content_advisor = PreviewContentAdvisor(
+            preview_root if isinstance(preview_root, (str, Path)) else None
         )
-        self.voice_panel.completed.connect(self._voice_auditions_completed)
-        self.voice_panel.cancelled.connect(self._voice_auditions_cancelled)
-        self.voice_panel.saveFailed.connect(lambda: self.cancel_button.setEnabled(True))
         self._narrator_player = preview_player
         self._summary_preview_target: str | None = None
         self.summary_voice_preview = StoryVoicePreview(
-            self.voice_panel.preview_service,
+            self.audition_service,
             self,
             player=preview_player,
             thread_pool=thread_pool,
@@ -412,10 +409,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.importing = False
         self._automatic_import = False
         self.planning_voices = False
-        self.auditioning_voices = False
-        self.inspecting_voice_plan = False
         self.replanning_voice_decisions = False
-        self._fast_voice_choice_pending = False
         self._semantic_preparation_enabled = False
         self._generate_after_input = False
         self.preparing_inputs = False
@@ -455,7 +449,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self._resume_error_details = ""
 
     def _configure_window(self) -> None:
-        self._voice_plan_window_size: QSize | None = None
         self.setWindowTitle("Prepare offline audio")
         self.setMinimumSize(620, 440)
         self.resize(860, 720)
@@ -941,15 +934,8 @@ class OfflineAudioPreparationDialog(QDialog):
             QAbstractItemView.ScrollMode.ScrollPerPixel
         )
         self._build_voice_route_header()
-        self.choose_character_voice = QPushButton("Edit role in Voices...")
-        self.choose_character_voice.setAccessibleName("Change selected character voice")
-        self.choose_character_voice.setToolTip(
-            "Choose another voice, use the narrator, or restore automatic matching."
-        )
-        self.choose_character_voice.setEnabled(False)
-        self.choose_character_voice.clicked.connect(self._choose_character_voice)
         self.voice_routes.itemDoubleClicked.connect(
-            lambda _item: self._inspect_character_voice()
+            lambda _item: self._choose_character_voice()
         )
         self.voice_route_details = QLabel()
         self.voice_route_details.setTextFormat(Qt.TextFormat.PlainText)
@@ -967,7 +953,7 @@ class OfflineAudioPreparationDialog(QDialog):
             "Listen to a role's game references and choose its voice."
         )
         self.inspect_character_voice.setEnabled(False)
-        self.inspect_character_voice.clicked.connect(self._inspect_character_voice)
+        self.inspect_character_voice.clicked.connect(self._choose_character_voice)
         self.play_selected_voice = QPushButton("Play selected voice")
         self.play_selected_voice.setAccessibleDescription(
             "Preview the voice this role will actually use, without changing its choice."
@@ -1033,9 +1019,6 @@ class OfflineAudioPreparationDialog(QDialog):
         actions.setContentsMargins(8, 4, 8, 4)
         actions.addWidget(self.identity_suggestion)
         buttons = QVBoxLayout()
-        buttons.addWidget(
-            self.choose_character_voice, alignment=Qt.AlignmentFlag.AlignLeft
-        )
         buttons.addWidget(self.link_identity, alignment=Qt.AlignmentFlag.AlignLeft)
         buttons.addWidget(self.unlink_identity, alignment=Qt.AlignmentFlag.AlignLeft)
         buttons.addStretch()
@@ -1124,12 +1107,6 @@ class OfflineAudioPreparationDialog(QDialog):
         assert continue_button is not None
         self.cancel_button = cancel_button
         self.continue_button = continue_button
-        # Invalidate the old layout item before Qt reparents the button.
-        self.voice_panel.outcome_actions.removeWidget(self.voice_panel.a_use)
-        self.buttons.addButton(
-            self.voice_panel.a_use, QDialogButtonBox.ButtonRole.AcceptRole
-        )
-        self.voice_panel.a_use.hide()
         self.continue_button.setDefault(True)
         self.continue_button.setAccessibleDescription(
             "Save this selection and continue or resume offline audio preparation"
@@ -1180,7 +1157,6 @@ class OfflineAudioPreparationDialog(QDialog):
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.setSpacing(4)
         layout.addWidget(self.discovery_panel)
-        layout.addWidget(self.voice_panel)
         layout.addWidget(self.voice_confirmation, 1)
         layout.addWidget(self.progress_panel)
         layout.addStretch()
@@ -1264,7 +1240,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self._stop_summary_preview()
         if self._narrator_player is not None:
             self._narrator_player.stop()
-        previous_voices = self.voice_library.bindings()
         if self.game_narrator_chooser is not None:
             settings = self.game_narrator_chooser(
                 self.settings, self, character=character
@@ -1272,7 +1247,12 @@ class OfflineAudioPreparationDialog(QDialog):
         else:
             from vntts.game_narrator_ui import GameNarratorDialog
 
-            dialog = GameNarratorDialog(self.settings, self, importer=self.importer)
+            dialog = GameNarratorDialog(
+                self.settings,
+                self,
+                importer=self.importer,
+                voice_library=self.voice_library,
+            )
             dialog.set_voice_context(self._voice_plan, character=character)
             settings = (
                 dialog.result_settings
@@ -1282,7 +1262,7 @@ class OfflineAudioPreparationDialog(QDialog):
         if settings is not None:
             self.apply_narrator_settings(
                 settings,
-                voice_changed=self.voice_library.bindings() != previous_voices,
+                voice_changed=True,
             )
 
     def _summary_preview_changed(self, active: bool) -> None:
@@ -1393,60 +1373,6 @@ class OfflineAudioPreparationDialog(QDialog):
                 f"Unable to preview this voice: {error}"
             )
 
-    def _inspect_character_voice(self) -> None:
-        item = self.voice_routes.currentItem()
-        if (
-            item is None
-            or self.has_pending_work()
-            or self._voice_plan is None
-            or self._voice_plan_needs_update()
-        ):
-            return
-        group_id = item.data(int(Qt.ItemDataRole.UserRole) + 1)
-        try:
-            self.voice_panel.start(self._voice_plan, group_id=group_id)
-        except VoiceAuditionUIError as error:
-            self.voice_confirmation_status.setText(
-                f"Unable to inspect {item.data(Qt.ItemDataRole.UserRole)}'s voice: {error}\n"
-                "Choose another voice through More actions > Edit role in Voices."
-            )
-            return
-        self._voice_plan_window_size = self.size()
-        self._awaiting_voice_confirmation = False
-        self.step.setText("Step 2 of 4 - Inspect selected voice")
-        self.voice_confirmation.hide()
-        self.auditioning_voices = True
-        self.inspecting_voice_plan = True
-        self.cancel_button.setText("Back to voice plan")
-        self.cancel_button.setAutoDefault(False)
-        self.voice_panel.a_use.show()
-        self.voice_panel.a_use.setDefault(True)
-        self.cancel_button.setToolTip(
-            "Return to the voice plan. An unsaved candidate is not applied; "
-            "a voice choice already being saved finishes before returning."
-        )
-        self.continue_button.hide()
-        self.selection_panel.hide()
-        self.voice_panel.voice_reference.setFocus()
-        QTimer.singleShot(0, self, self._fit_voice_audition_window)
-
-    def _fit_voice_audition_window(self) -> None:
-        if not self.inspecting_voice_plan or self.isMaximized():
-            return
-        content = self.content_scroll.widget()
-        assert content is not None
-        height = content.sizeHint().height()
-        chrome = self.height() - self.content_scroll.viewport().height()
-        self.resize(
-            self.width(), max(self.minimumHeight(), min(self.height(), height + chrome))
-        )
-
-    def _restore_voice_plan_window(self) -> None:
-        self.voice_panel.a_use.hide()
-        if self._voice_plan_window_size is not None:
-            self.resize(self._voice_plan_window_size)
-            self._voice_plan_window_size = None
-
     def _selected_routing_role(self) -> str | None:
         item = self.voice_routes.currentItem()
         role = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
@@ -1457,7 +1383,6 @@ class OfflineAudioPreparationDialog(QDialog):
         ready = role is not None and not self._voice_plan_needs_update()
         self.inspect_character_voice.setEnabled(ready)
         self.play_selected_voice.setEnabled(ready)
-        self.choose_character_voice.setEnabled(ready)
         if role and normalize_character_name(role) == "narrator":
             role = None
         linked = bool(role and self.voice_library.linked_variant_key(role))
@@ -1646,7 +1571,7 @@ class OfflineAudioPreparationDialog(QDialog):
         except (OSError, VoiceLibraryError) as error:
             self.voice_confirmation_status.setText(f"Unable to link names: {error}")
             return
-        self._voice_auditions_completed()
+        self._replan_voice_choices()
 
     def _unlink_selected_person(self) -> None:
         role = self._selected_routing_role()
@@ -1674,7 +1599,7 @@ class OfflineAudioPreparationDialog(QDialog):
         except (OSError, VoiceLibraryError) as error:
             self.voice_confirmation_status.setText(f"Unable to unlink name: {error}")
             return
-        self._voice_auditions_completed()
+        self._replan_voice_choices()
 
     def _return_to_story_selection(self) -> None:
         if self.has_pending_work():
@@ -1689,7 +1614,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self._generation_input = None
         self._changes_rows = ()
         self._refresh_narrator_status()
-        self.voice_panel.hide()
         self.voice_confirmation.hide()
         self._set_progress_visible(False)
         self.content_scroll.hide()
@@ -1744,7 +1668,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self._awaiting_voice_confirmation = False
         self.voice_confirmation.hide()
         self._set_progress_visible(False)
-        self.voice_panel.hide()
         self.selection_panel.show()
         self._set_import_controls(True)
         self.step.setText("Step 1 of 4 - Choose stories")
@@ -1929,7 +1852,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.game_narrator_button.setEnabled(True)
         self.pocket_voice_cloning.setEnabled(True)
         self.selection_panel.hide()
-        self.voice_panel.hide()
         self._set_progress_visible(False)
         self.voice_confirmation.show()
         self.work_summary.setTextFormat(Qt.TextFormat.RichText)
@@ -3297,7 +3219,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_timer.stop()
         self.step.setText("Step 4 of 4 - Activate and read")
         self.selection_panel.hide()
-        self.voice_panel.hide()
         if self._generation_result is not None:
             self._render_generation_result(self._generation_result)
         self.progress_counts.clear()
@@ -4524,41 +4445,6 @@ class OfflineAudioPreparationDialog(QDialog):
         set_labeled_text(self.summary, summary_rows)
         self.prepare_again.setToolTip("Prepare again: " + ", ".join(titles))
 
-    def select_voice_affected_stories(
-        self, results: Iterable[StoryVoiceImpact]
-    ) -> None:
-        """Offer the normal scoped preparation flow; saving a default never generates."""
-        if self.has_pending_work():
-            return
-        selected = {value.selection_id for value in results if value.changed_line_ids}
-        with QSignalBlocker(self.stories):
-            for row in range(self.stories.count()):
-                item = self.stories.item(row)
-                item.setCheckState(
-                    0,
-                    Qt.CheckState.Checked
-                    if item.data(0, Qt.ItemDataRole.UserRole) in selected
-                    else Qt.CheckState.Unchecked,
-                )
-        self._selection_changed()
-        self.prepare_again.setVisible(bool(selected))
-        set_labeled_text(
-            self.summary,
-            (
-                ("Affected stories", str(len(selected))),
-                (
-                    "Changed voice lines",
-                    str(sum(len(value.changed_line_ids) for value in results)),
-                ),
-                (
-                    "Next step",
-                    "Choose Prepare selected stories again to review and apply these "
-                    "defaults. Original recordings and existing audio stay playable "
-                    "until preparation succeeds.",
-                ),
-            ),
-        )
-
     def _prepare_again_requested(self) -> None:
         if self.has_pending_work() or not self._save_story_selection_drafts():
             return
@@ -4777,7 +4663,7 @@ class OfflineAudioPreparationDialog(QDialog):
             qualify_story_references,
         )
 
-        previewer = self.voice_panel.preview_service
+        previewer = self.audition_service
         new_session = getattr(previewer, "new_session", None)
         planning_previewer = None
         if getattr(previewer, "supports_prefetch", False) is True and callable(
@@ -4793,7 +4679,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 plan,
                 preview_service=planning_previewer
                 or cast(ReferencePreviewer, previewer),
-                content_advisor=self.voice_panel.content_advisor,
+                content_advisor=self.content_advisor,
                 cancellation=self.voice_cancel_event,
                 progress=self.decoderProgress.emit,
             )
@@ -4841,8 +4727,6 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _voice_plan_finished(self, plan: object, error: Exception | None) -> None:
         self.planning_voices = False
-        fast_choice = self._fast_voice_choice_pending
-        self._fast_voice_choice_pending = False
         if self._recover_stale_voice_job(error):
             return
         if isinstance(plan, _SemanticVoicePlan):
@@ -4858,14 +4742,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self._stale_job_retry_attempted = False
         self._voice_plan = plan
         self.replanning_voice_decisions = False
-        if fast_choice:
-            self._generation_input = None
-            self._changes_rows = (
-                (
-                    "Voice choices",
-                    "Saved. Existing audio will be checked when generation starts.",
-                ),
-            )
         if (
             plan.synthesis_backend != "pocket-tts"
             and any(group.route == "narrator" for group in plan.groups)
@@ -4878,9 +4754,6 @@ class OfflineAudioPreparationDialog(QDialog):
                 if self.game_narrator_chooser is not None
                 else "Choose a narrator before generation."
             )
-            return
-        if fast_choice:
-            self._show_voice_confirmation(plan)
             return
         self._start_generation_input(plan)
 
@@ -4972,41 +4845,12 @@ class OfflineAudioPreparationDialog(QDialog):
             return error
         return None
 
-    def _voice_auditions_completed(self) -> None:
-        self._restore_voice_plan_window()
-        fast_choice = (
-            self.voice_panel.saved_inspection_choice
-            if self.inspecting_voice_plan
-            else None
-        )
-        self.auditioning_voices = False
-        self.inspecting_voice_plan = False
-        self.continue_button.setDefault(True)
-        self.cancel_button.setAutoDefault(True)
+    def _replan_voice_choices(self) -> None:
         self.replanning_voice_decisions = True
         self.planning_voices = True
         self.voice_confirmation.hide()
         self.cancel_button.setText("Cancel voice matching")
         self.cancel_button.setEnabled(True)
-        if (
-            fast_choice is not None
-            and self._job is not None
-            and self._voice_plan is not None
-        ):
-            self._fast_voice_choice_pending = True
-            self._show_waiting_phase(
-                "Applying selected voice",
-                "Applying the selected character voice...",
-                "The voice choice is saved. Reopen this story to continue if cancelled.",
-            )
-            self.voice_runner.start(
-                self.voice_plan_store.apply_saved_choice,
-                self._job,
-                self._voice_plan,
-                resolve_pregeneration_settings(self.settings),
-                fast_choice,
-            )
-            return
         self._show_waiting_phase(
             "Applying voice choices",
             "Applying your saved voice choices...",
@@ -5018,32 +4862,6 @@ class OfflineAudioPreparationDialog(QDialog):
             self._job,
             False,
         )
-
-    def _voice_auditions_cancelled(self) -> None:
-        self._restore_voice_plan_window()
-        self.auditioning_voices = False
-        if self.inspecting_voice_plan:
-            self.inspecting_voice_plan = False
-            self.cancel_button.setText("Cancel")
-            self.cancel_button.setToolTip("")
-            self.cancel_button.setEnabled(True)
-            assert self._voice_plan is not None
-            self._show_voice_confirmation(self._voice_plan)
-            self.voice_confirmation_status.setText(
-                "No new voice was saved. If none of the references fit, choose another "
-                "voice or narrator fallback before continuing."
-            )
-            return
-        if self._close_after_voice_cancel:
-            self.reject()
-            return
-        self.cancel_button.setText("Cancel")
-        self.cancel_button.setEnabled(True)
-        self._set_import_controls(True)
-        self.selection_panel.setVisible(True)
-        self._set_selection_status("Voice selection cancelled.")
-        self._set_phase_detail("Voice selection cancelled.")
-        self._set_progress_visible(False)
 
     def _start_generation_input(self, plan: VoicePlan) -> None:
         self.preparing_inputs = True
@@ -5186,7 +5004,9 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _start_generation(self) -> None:
         self.step.setText("Step 3 of 4 - Generate and check audio")
-        self.voice_panel.shutdown()
+        self.summary_voice_preview.close()
+        if self._narrator_player is not None:
+            self._narrator_player.stop()
         self.generating = True
         self._set_import_controls(False)
         self.cancel_button.setText("Cancel generation")
@@ -5492,7 +5312,6 @@ class OfflineAudioPreparationDialog(QDialog):
                 include_sequence and self.sequence_runner.active,
                 "playback sequence preparation",
             ),
-            (self.auditioning_voices, "voice selection"),
             (self.planning_voices, "voice matching"),
         ):
             if active:
@@ -5515,16 +5334,10 @@ class OfflineAudioPreparationDialog(QDialog):
             self.activating_saved = False
             self.reject()
             return
-        if self.auditioning_voices and self.inspecting_voice_plan:
-            self.cancel_button.setEnabled(False)
-            self.voice_panel.cancel()
-            return
         stage = self._pending_preparation_stage(include_sequence=True)
         if stage is not None:
             self._close_after_voice_cancel = True
             self.voice_cancel_event.set()
-            if self.auditioning_voices:
-                self.voice_panel.cancel()
             self.cancel_button.setEnabled(False)
             self.play_ready_button.setEnabled(False)
             self.progress_phase.setText(f"Cancelling {stage}...")
@@ -5565,7 +5378,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_timer.stop()
         if self._narrator_player is not None:
             self._narrator_player.stop()
-        self.voice_panel.shutdown()
+        self.audition_service.close()
         super().closeEvent(event)
 
     def done(self, result: int) -> None:
@@ -5583,8 +5396,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._cancel_story_audio_check()
         self.saved_pack_runner.cancel()
         self.progress_timer.stop()
-        if not self.voice_panel.active:
-            self.voice_panel.shutdown()
+        self.audition_service.close()
         super().done(result)
 
     def _confirm_selection_close(self) -> bool:

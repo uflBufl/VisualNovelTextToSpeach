@@ -61,7 +61,7 @@ class VoicePlanOverviewTest(unittest.TestCase):
             thread_pool=ManualThreadPool(),
         )
         self.addCleanup(self.dialog.deleteLater)
-        self.addCleanup(self.dialog.voice_panel.shutdown)
+        self.addCleanup(self.dialog.summary_voice_preview.close)
 
     def show_plan(self, groups=None):
         plan = replace(self.plan, groups=tuple(groups)) if groups else self.plan
@@ -157,7 +157,6 @@ class VoicePlanOverviewTest(unittest.TestCase):
                 ),
             )
         )
-        self.dialog.voice_panel.start = Mock()
         self.dialog.game_narrator_chooser = Mock()
         for control in ("narrator", "cloning"):
             with self.subTest(control=control):
@@ -189,14 +188,13 @@ class VoicePlanOverviewTest(unittest.TestCase):
                 )
                 for action in (
                     self.dialog.inspect_character_voice,
-                    self.dialog.choose_character_voice,
                     self.dialog.link_identity,
                     self.dialog.unlink_identity,
                 ):
                     self.assertFalse(action.isEnabled())
                 aliases = self.library.person_aliases()
                 with patch("vntts.pregeneration_ui.QInputDialog.getItem") as picker:
-                    self.dialog._inspect_character_voice()
+                    self.dialog._choose_character_voice()
                     self.dialog.voice_routes.itemDoubleClicked.emit(
                         self.dialog.voice_routes.currentItem()
                     )
@@ -205,7 +203,6 @@ class VoicePlanOverviewTest(unittest.TestCase):
                     self.dialog._unlink_selected_person()
                     picker.assert_not_called()
                 self.assertEqual(self.library.person_aliases(), aliases)
-                self.dialog.voice_panel.start.assert_not_called()
                 self.dialog.game_narrator_chooser.assert_not_called()
                 if control == "narrator":
                     self.dialog.narrator_choice.setCurrentIndex(
@@ -217,10 +214,9 @@ class VoicePlanOverviewTest(unittest.TestCase):
                     self.dialog.continue_button.text(), "Generate with these voices"
                 )
                 self.assertTrue(self.dialog.inspect_character_voice.isEnabled())
-                self.assertTrue(self.dialog.choose_character_voice.isEnabled())
                 self.assertTrue(self.dialog.unlink_identity.isEnabled())
 
-    def test_unavailable_inspection_keeps_the_character_editor_available(self):
+    def test_character_without_candidates_opens_the_shared_editor(self):
         group = replace(
             self.saved_group(),
             candidate_inventory=(),
@@ -229,20 +225,87 @@ class VoicePlanOverviewTest(unittest.TestCase):
         )
         self.show_plan((group,))
         self.dialog.game_narrator_chooser = Mock(return_value=None)
-        self.dialog._inspect_character_voice()
-        self.assertFalse(self.dialog.auditioning_voices)
-        self.assertTrue(self.dialog._awaiting_voice_confirmation)
-        message = self.dialog.voice_confirmation_status.text()
-        self.assertIn(group.character, message)
-        self.assertIn("More actions > Edit role in Voices", message)
-        self.assertTrue(self.dialog.continue_button.isEnabled())
-        self.dialog.more_voice_actions_toggle.click()
-        self.assertFalse(self.dialog.more_voice_actions.isHidden())
-        self.assertTrue(self.dialog.choose_character_voice.isEnabled())
-        self.dialog.choose_character_voice.click()
+        self.dialog.inspect_character_voice.click()
         self.dialog.game_narrator_chooser.assert_called_once_with(
             self.dialog.settings, self.dialog, character=group.character
         )
+        self.assertTrue(self.dialog._awaiting_voice_confirmation)
+        self.assertTrue(self.dialog.continue_button.isEnabled())
+        self.assertFalse(hasattr(self.dialog, "voice_panel"))
+        self.assertFalse(hasattr(self.dialog, "choose_character_voice"))
+
+    def test_primary_action_and_double_click_open_the_same_editor(self):
+        self.show_plan()
+        self.dialog.game_narrator_chooser = Mock(return_value=None)
+        self.dialog.inspect_character_voice.click()
+        self.dialog.voice_routes.itemDoubleClicked.emit(
+            self.dialog.voice_routes.currentItem()
+        )
+        self.assertEqual(self.dialog.game_narrator_chooser.call_count, 2)
+        for call in self.dialog.game_narrator_chooser.call_args_list:
+            self.assertEqual(call.args, (self.dialog.settings, self.dialog))
+            self.assertEqual(call.kwargs, {"character": self.group.character})
+
+    def test_cancelled_or_async_editor_keeps_the_story_plan_unchanged(self):
+        plan = self.show_plan()
+        self.dialog.game_narrator_chooser = Mock(return_value=None)
+        self.dialog.apply_narrator_settings = Mock()
+        self.dialog.inspect_character_voice.click()
+        self.assertIs(self.dialog.voice_plan(), plan)
+        self.assertTrue(self.dialog._awaiting_voice_confirmation)
+        self.dialog.apply_narrator_settings.assert_not_called()
+
+    def test_accepted_editor_replans_even_when_narrator_settings_are_unchanged(self):
+        self.show_plan()
+        self.dialog.game_narrator_chooser = Mock(return_value=self.dialog.settings)
+        self.dialog.apply_narrator_settings = Mock()
+        self.dialog.inspect_character_voice.click()
+        self.dialog.apply_narrator_settings.assert_called_once_with(
+            self.dialog.settings, voice_changed=True
+        )
+
+    def test_standalone_editor_receives_selected_role_and_story_plan(self):
+        from PySide6.QtWidgets import QDialog
+
+        plan = self.show_plan()
+        with patch("vntts.game_narrator_ui.GameNarratorDialog") as editor:
+            editor.return_value.exec.return_value = QDialog.DialogCode.Rejected
+            self.dialog.inspect_character_voice.click()
+        editor.return_value.set_voice_context.assert_called_once_with(
+            plan, character=self.group.character
+        )
+        self.assertIs(editor.call_args.kwargs["voice_library"], self.library)
+        self.assertIs(self.dialog.voice_plan(), plan)
+
+    def test_editor_context_survives_deferred_initialization(self):
+        from vntts.game_narrator_ui import GameNarratorDialog
+
+        group = self.saved_group()
+        plan = self.show_plan((group,))
+        self.library.select(group.character, route="voice", source_id=group.source_id)
+        importer = Mock()
+        importer.selected_installation_root.return_value = None
+        editor = GameNarratorDialog(
+            self.dialog.settings,
+            importer=importer,
+            preview_service=Mock(),
+            player=Mock(),
+            thread_pool=ManualThreadPool(),
+            voice_library=self.library,
+        )
+        self.addCleanup(editor.deleteLater)
+        self.addCleanup(editor.voice_panel.shutdown)
+        editor.set_voice_context(plan, character=group.character)
+        self.application.processEvents()
+        self.assertIs(editor._voice_context, plan)
+        self.assertEqual(editor.role.currentText(), group.character)
+        self.assertFalse(editor.voice_panel.isHidden())
+        selection = editor.voice_panel.current_selection
+        self.assertIsNotNone(selection)
+        self.assertEqual(selection[1].character, group.character)
+        self.assertEqual(selection[2], group.source_id)
+        importer.prepare_voice_roles.assert_not_called()
+        importer.narrator_characters.assert_not_called()
 
     def test_choice_uses_saved_binding_provenance(self):
         group = self.saved_group()
@@ -311,24 +374,24 @@ class VoicePlanOverviewTest(unittest.TestCase):
         group = replace(
             self.saved_group(), line_ids=("story-one:line", "story-two:line")
         )
-        plan = self.show_plan((group,))
+        self.show_plan((group,))
         self.assertEqual(self.dialog.voice_routes.count(), 1)
         self.assertEqual(self.row_values()[3], "2")
         self.assertFalse(hasattr(self.dialog, "voice_assignment_choice"))
         self.assertTrue(
             self.dialog.voice_route_details.text().startswith(f"{group.character}: ")
         )
-        self.dialog.voice_panel.start = Mock()
-        self.dialog._inspect_character_voice()
-        self.dialog.voice_panel.start.assert_called_once_with(
-            plan, group_id=group.group_id
+        self.dialog.game_narrator_chooser = Mock(return_value=None)
+        self.dialog._choose_character_voice()
+        self.dialog.game_narrator_chooser.assert_called_once_with(
+            self.dialog.settings, self.dialog, character=group.character
         )
 
     def test_canonical_row_can_unlink_its_other_name(self):
         group = self.saved_group()
         self.library.link_person(group.character, "Other name")
         self.show_plan((group,))
-        self.dialog._voice_auditions_completed = Mock()
+        self.dialog._replan_voice_choices = Mock()
         self.assertTrue(self.dialog.unlink_identity.isEnabled())
         self.assertFalse(self.dialog.link_identity.isEnabled())
         self.assertEqual(
@@ -336,21 +399,21 @@ class VoicePlanOverviewTest(unittest.TestCase):
         )
         self.dialog.unlink_identity.click()
         self.assertEqual(self.library.person_aliases(), {})
-        self.dialog._voice_auditions_completed.assert_called_once()
+        self.dialog._replan_voice_choices.assert_called_once()
 
     def test_canonical_row_can_choose_which_name_to_unlink(self):
         group = self.saved_group()
         self.library.link_person(group.character, "Other name")
         self.library.link_person(group.character, "Second name")
         self.show_plan((group,))
-        self.dialog._voice_auditions_completed = Mock()
+        self.dialog._replan_voice_choices = Mock()
         with patch(
             "vntts.pregeneration_ui.QInputDialog.getItem",
             return_value=("secondname", True),
         ):
             self.dialog.unlink_identity.click()
         self.assertEqual(set(self.library.person_aliases()), {"othername"})
-        self.dialog._voice_auditions_completed.assert_called_once()
+        self.dialog._replan_voice_choices.assert_called_once()
 
     def test_substitution_filter_keeps_valid_selection_and_restores_all_rows(self):
         direct = self.saved_group()
@@ -550,9 +613,7 @@ class VoicePlanOverviewTest(unittest.TestCase):
         )
         self.assertTrue(self.dialog.more_voice_actions.isHidden())
         self.assertFalse(
-            self.dialog.choose_character_voice.isVisibleTo(
-                self.dialog.voice_confirmation
-            )
+            self.dialog.link_identity.isVisibleTo(self.dialog.voice_confirmation)
         )
         self.dialog.preparation_details_toggle.click()
         self.assertFalse(self.dialog.preparation_details.isHidden())
@@ -562,11 +623,9 @@ class VoicePlanOverviewTest(unittest.TestCase):
         self.dialog.more_voice_actions_toggle.click()
         self.assertFalse(self.dialog.more_voice_actions.isHidden())
         self.assertTrue(
-            self.dialog.choose_character_voice.isVisibleTo(
-                self.dialog.voice_confirmation
-            )
+            self.dialog.link_identity.isVisibleTo(self.dialog.voice_confirmation)
         )
-        self.assertTrue(self.dialog.choose_character_voice.isEnabled())
+        self.assertTrue(self.dialog.inspect_character_voice.isEnabled())
         headers = [
             label.text()
             for label in self.dialog.voice_routes_header.findChildren(QLabel)

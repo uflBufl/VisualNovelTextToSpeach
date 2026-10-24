@@ -20,7 +20,6 @@ from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.test_pregeneration_audition_ui import with_second_candidate  # noqa: E402
 from vntts.document_identity import sha256_file  # noqa: E402
 from vntts.pregeneration_audition import (  # noqa: E402
-    COMPARISON_PREVIEW_TEXT,
     VoiceAuditionCancelled,
     VoiceAuditionPreview,
     VoiceAuditionReference,
@@ -50,8 +49,8 @@ class ReferenceAdviceUITest(unittest.TestCase):
         }
         transcript = Mock(
             side_effect=[
-                COMPARISON_PREVIEW_TEXT + " Wine.",
-                COMPARISON_PREVIEW_TEXT,
+                group.sample_text + " Wine.",
+                group.sample_text,
             ]
         )
         model = {"status": "missing"}
@@ -92,7 +91,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
         def generate(_plan, _group, source, *, text, cancel_event, automatic=False):
             if cancel_event.is_set():
                 raise VoiceAuditionCancelled("Cancelled")
-            self.assertEqual(text, COMPARISON_PREVIEW_TEXT)
+            self.assertEqual(text, group.sample_text)
             ready[source] = previews[source]
             return ready[source]
 
@@ -131,7 +130,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
     def preview(root, plan, group, candidate):
         identity = preview_identity(
             candidate,
-            COMPARISON_PREVIEW_TEXT,
+            group.sample_text,
             backend=plan.synthesis_backend,
             model=plan.synthesis_model,
             language=plan.synthesis_language,
@@ -147,7 +146,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             identity=identity,
             group_id=group.group_id,
             candidate_source_id=candidate.source_id,
-            text=COMPARISON_PREVIEW_TEXT,
+            text=group.sample_text,
             backend=plan.synthesis_backend,
             model=plan.synthesis_model,
             generation_profile=plan.synthesis_profile,
@@ -200,7 +199,11 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 "Possible extra or missing words", f.panel.recommendation.text()
             )
             self.assertIn("Check words by ear", f.panel.voice_reference.itemText(0))
-            self.assertIn("No text mismatch", f.panel.voice_reference.itemText(1))
+            self.assertNotIn("No text mismatch", f.panel.voice_reference.itemText(1))
+            self.assertEqual(
+                f.panel._content_checks[f.candidates[1].source_id].advice.status,
+                "no_asr_mismatch",
+            )
             self.assertFalse(f.panel.a_use.isEnabled())
             f.player.play_bytes.assert_not_called()
             f.decisions.remember_many.assert_not_called()
@@ -296,7 +299,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             for candidate in candidates[2:]
         )
         f.transcript.side_effect = None
-        f.transcript.return_value = COMPARISON_PREVIEW_TEXT
+        f.transcript.return_value = group.sample_text
         return replace(f.plan, groups=(group,)), group, candidates
 
     def test_full_inventory_last_reference_plays_matching_original_and_returns(self):
@@ -339,7 +342,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 [candidates[index].source_id for index in (4, 5, 3)],
             )
             self.assertIn("Queued", f.panel.voice_reference.itemText(4))
-            self.assertIn("Not prepared", f.panel.voice_reference.itemText(7))
+            self.assertNotIn("Not prepared", f.panel.voice_reference.itemText(7))
             f.ready.update(
                 (candidate.source_id, f.previews[candidate.source_id])
                 for candidate in candidates
@@ -347,7 +350,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             self.drain(f)
             self.assertEqual(f.transcript.call_count, 3)
             self.assertIn("Ready", f.panel.voice_reference.itemText(7))
-            self.assertIn("Content not checked", f.panel.voice_reference.itemText(7))
+            self.assertNotIn("Content not checked", f.panel.voice_reference.itemText(7))
             self.assertEqual(f.panel.voice_reference.currentIndex(), 4)
 
     def test_highlight_dwell_prepares_before_click_without_changing_selection(self):
@@ -518,7 +521,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             requests = f.service.restore_cached.call_args.args[1]
             self.assertEqual(len(requests), len(candidates))
             self.assertIn("Ready", f.panel.voice_reference.itemText(7))
-            self.assertIn("Content not checked", f.panel.voice_reference.itemText(7))
+            self.assertNotIn("Content not checked", f.panel.voice_reference.itemText(7))
             f.service.generate.assert_not_called()
             self.assertEqual(f.transcript.call_count, 3)
             f.player.play_bytes.assert_not_called()
@@ -538,10 +541,14 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 f.panel._refresh_runtime()
                 self.drain(f)
             self.assertEqual(f.advisor.lookup_saved.call_count, reads)
-            self.assertIn("No text mismatch", f.panel.voice_reference.itemText(1))
+            self.assertNotIn("No text mismatch", f.panel.voice_reference.itemText(1))
+            self.assertEqual(
+                f.panel._content_checks[f.candidates[1].source_id].advice.status,
+                "no_asr_mismatch",
+            )
             f.ready.clear()
             f.panel._refresh_runtime()
-            self.assertIn("Content not checked", f.panel.voice_reference.itemText(1))
+            self.assertNotIn("No text mismatch", f.panel.advice_details.toPlainText())
 
     def test_cancelled_phrase_check_can_run_when_returning_to_original_phrase(self):
         with TemporaryDirectory() as directory:
@@ -552,11 +559,15 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f.pool.run_next()
             self.application.processEvents()
             self.assertTrue(f.panel.advice_runner.active)
-            f.panel.preview_phrase.setCurrentIndex(1)
-            f.panel.preview_phrase.setCurrentIndex(0)
+            f.panel.preview_text.setPlainText(f.group.alternate_sample_text)
+            f.panel.preview_text.setPlainText(f.group.sample_text)
             self.drain(f)
             self.assertEqual(f.transcript.call_count, 2)
-            self.assertIn("No text mismatch", f.panel.voice_reference.itemText(1))
+            self.assertNotIn("No text mismatch", f.panel.voice_reference.itemText(1))
+            self.assertEqual(
+                f.panel._content_checks[f.candidates[1].source_id].advice.status,
+                "no_asr_mismatch",
+            )
 
     def test_same_audio_with_changed_seed_cannot_reuse_admitted_evidence(self):
         with TemporaryDirectory() as directory:
@@ -569,7 +580,50 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 check, seed=check.seed + 1
             )
             f.panel._refresh_reference_advice()
-            self.assertIn("Content not checked", f.panel.voice_reference.itemText(0))
+            self.assertIn("Content not checked", f.panel.advice_details.toPlainText())
+            self.assertTrue(f.panel.recommendation.isHidden())
+
+    def test_background_failure_shows_reason_without_playing_or_saving(self):
+        with TemporaryDirectory() as directory:
+            f = self.fixture(Path(directory))
+            f.panel.start(f.plan, group_id=f.group.group_id)
+            self.assertTrue(f.panel.status.isHidden())
+            first = f.candidates[0]
+            failed = {first.source_id}
+            f.service.preparation_state.side_effect = (
+                lambda _plan, _group, source, **_: (
+                    "failed" if source in failed else "not-prepared"
+                )
+            )
+            f.service.preparation_error.return_value = "Model assets are missing."
+            f.panel._refresh_runtime()
+            message = f.panel.status.toPlainText()
+            self.assertFalse(f.panel.status.isHidden())
+            self.assertIn("Model assets are missing", message)
+            self.assertIn("retry", message)
+            self.assertIn(
+                "Model assets are missing", f.panel.reference_details.toPlainText()
+            )
+            f.panel.status.selectAll()
+            f.panel.status.copy()
+            self.assertEqual(self.application.clipboard().text(), message)
+            f.panel.voice_reference.setCurrentIndex(1)
+            self.assertTrue(f.panel.status.isHidden())
+            f.panel.voice_reference.setCurrentIndex(0)
+            self.assertIn("Model assets are missing", f.panel.status.toPlainText())
+            f.panel._set_status("Unable to save choices: disk full")
+            f.panel._refresh_runtime()
+            self.assertIn("disk full", f.panel.status.toPlainText())
+            f.panel._set_status(message)
+            failed.clear()
+            f.panel._refresh_runtime()
+            self.assertTrue(f.panel.status.isHidden())
+            self.assertNotIn(
+                "Model assets are missing", f.panel.reference_details.toPlainText()
+            )
+            f.service.generate.assert_not_called()
+            f.player.play_bytes.assert_not_called()
+            f.decisions.remember_many.assert_not_called()
 
     def test_failed_recognition_is_not_retried_by_runtime_timer(self):
         with TemporaryDirectory() as directory:

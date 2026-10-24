@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from tests.symlink_support import symlink_or_skip
-from vntts.voice_library import VoiceLibrary
+from vntts.voice_library import VoiceBinding, VoiceLibrary
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -23,10 +23,35 @@ from vntts.voices import (
     remember_voice_binding,
     synthesis_character,
     synthesis_character_for_line,
+    voice_binding_label,
+    voice_source_label,
 )
 
 
 class CharacterVoiceRegistryTest(unittest.TestCase):
+    def test_saved_voice_label_uses_readable_donor_without_changing_identity(self):
+        binding = VoiceBinding(
+            role="Narrator",
+            variant_key=None,
+            route="voice",
+            source_sha256s=(),
+            source_id="character:playercandidatecenturionbd3540bbf881",
+            provenance={
+                "evidence": {
+                    "source_character": "Player candidate Centurion bd3540bbf881"
+                }
+            },
+        )
+        self.assertEqual(voice_binding_label(binding), "Centurion")
+        self.assertEqual(
+            binding.source_id, "character:playercandidatecenturionbd3540bbf881"
+        )
+        self.assertEqual(
+            voice_source_label("Player candidate My own voice"),
+            "Player candidate My own voice",
+        )
+        self.assertEqual(voice_source_label("Agent 47"), "Agent 47")
+
     def test_library_projection_reads_one_index_for_all_bindings(self):
         with TemporaryDirectory() as directory:
             library = VoiceLibrary(directory)
