@@ -6,7 +6,7 @@
 
 ## UI improvements - one item at a time
 
-- [ ] 1. Review the native Qt assignment/replacement layout before item 2: current voice and its reference text above selection settings/shared synthesis phrase, new voice below. Compare the real before/after and same-character/different-reference views, then adjust if needed.
+- [ ] 1. Review the native Qt assignment/replacement layout before item 2: current voice and its reference text first, then selection settings and new voice, with the shared synthesis phrase last. Keep two native separators: after the current voice and before the synthesis phrase. Compare the real before/after and same-character/different-reference views, then adjust if needed.
 - [ ] 2. Simplify the voice editor: reduce nested frames and move accepted terms/source maintenance into contextual details without weakening consent or readiness checks. Start after item 1 is reviewed; retain clear voice selection and preview actions.
 - [ ] 3. Separate Settings from Tools: give the disclosure/menu of maintenance actions a distinct name and keep the actual Settings entry unambiguous. Start after item 2.
 - [ ] 4. Add action feedback and keyboard affordances: confirm clipboard copies, include existing shortcuts in tooltips, and provide native clear buttons in search fields. Start after item 3; preserve existing keyboard dispatch and accessibility.

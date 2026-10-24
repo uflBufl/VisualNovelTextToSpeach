@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -160,10 +161,18 @@ class GameNarratorDialog(QDialog):
         assert panel_layout is not None
         panel_layout.removeWidget(self.voice_panel.current_voice_box)
         content.addWidget(self.voice_panel.current_voice_box)
+        current_separator = QFrame()
+        current_separator.setFrameShape(QFrame.Shape.HLine)
+        current_separator.setFrameShadow(QFrame.Shadow.Sunken)
+        content.addWidget(current_separator)
         content.addWidget(self.source_controls)
+        content.addWidget(self.voice_panel)
+        preview_separator = QFrame()
+        preview_separator.setFrameShape(QFrame.Shape.HLine)
+        preview_separator.setFrameShadow(QFrame.Shadow.Sunken)
+        content.addWidget(preview_separator)
         panel_layout.removeWidget(self.voice_panel.phrase_box)
         content.addWidget(self.voice_panel.phrase_box)
-        content.addWidget(self.voice_panel)
         self._build_editor_actions(content)
         self.content_scroll = QScrollArea()
         self.content_scroll.setWidgetResizable(True)

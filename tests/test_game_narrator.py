@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QCoreApplication, QEvent
-from PySide6.QtWidgets import QApplication, QDialog, QScrollArea
+from PySide6.QtWidgets import QApplication, QDialog, QFrame, QScrollArea
 from shiboken6 import isValid
 from vntts_artifacts.file_integrity import sha256_file
 
@@ -273,12 +273,22 @@ class GameNarratorTest(unittest.TestCase):
         current = dialog.voice_panel.current_voice_box.geometry()
         candidate = dialog.voice_panel.geometry()
         self.assertLess(current.bottom(), dialog.source_controls.geometry().top())
+        self.assertLess(dialog.source_controls.geometry().bottom(), candidate.top())
         self.assertLess(
-            dialog.source_controls.geometry().bottom(),
-            dialog.voice_panel.phrase_box.geometry().top(),
+            candidate.bottom(), dialog.voice_panel.phrase_box.geometry().top()
         )
+        separators = [
+            frame
+            for frame in dialog.controls.findChildren(QFrame)
+            if frame.frameShape() == QFrame.Shape.HLine
+        ]
+        self.assertEqual(len(separators), 2)
+        separators.sort(key=lambda frame: frame.y())
+        self.assertLess(current.bottom(), separators[0].y())
+        self.assertLess(separators[0].geometry().bottom(), dialog.source_controls.y())
+        self.assertLess(candidate.bottom(), separators[1].y())
         self.assertLess(
-            dialog.voice_panel.phrase_box.geometry().bottom(), candidate.top()
+            separators[1].geometry().bottom(), dialog.voice_panel.phrase_box.y()
         )
 
     def test_voice_replacement_remains_vertical_with_reachable_playback_controls(self):
@@ -300,8 +310,8 @@ class GameNarratorTest(unittest.TestCase):
                 dialog.source_controls.geometry().top(),
             )
             self.assertLess(
-                dialog.voice_panel.phrase_box.geometry().bottom(),
-                dialog.voice_panel.geometry().top(),
+                dialog.voice_panel.geometry().bottom(),
+                dialog.voice_panel.phrase_box.geometry().top(),
             )
             self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
         for box, buttons in (
