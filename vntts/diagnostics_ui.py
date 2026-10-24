@@ -478,7 +478,9 @@ class DiagnosticsDialog(QDialog):
         self.warning_action.setText(remediation[1] if remediation else "")
         set_action_icon(
             self.warning_action,
-            "key-round" if self.warning_remediation == "macos-permissions" else "settings",
+            "key-round"
+            if self.warning_remediation == "macos-permissions"
+            else "settings",
         )
         self.warning_action.setVisible(bool(message and remediation))
         self.restore_after_capture()
