@@ -11,15 +11,23 @@ from tempfile import TemporaryDirectory, mkdtemp
 from threading import Event
 from typing import cast
 
-from PySide6.QtCore import QSignalBlocker, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QSignalBlocker,
+    Qt,
+    QThreadPool,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QCloseEvent, QPixmap, QStandardItemModel
 from PySide6.QtWidgets import (
+    QBoxLayout,
     QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -155,19 +163,52 @@ class GameNarratorDialog(QDialog):
         assert panel_layout is not None
         panel_layout.removeWidget(self.voice_panel.phrase_box)
         content.addWidget(self.voice_panel.phrase_box)
-        content.addWidget(self.new_voice_box)
+        content.addWidget(self.source_controls)
         panel_layout.removeWidget(self.voice_panel.current_voice_box)
-        content.addWidget(self.voice_panel.current_voice_box)
-        self.form.addRow(self.voice_panel)
+        self.voice_comparison = QHBoxLayout()
+        for box in (self.voice_panel.current_voice_box, self.voice_panel):
+            box.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
+            self.voice_comparison.addWidget(box, 1)
+        content.addLayout(self.voice_comparison)
         self._build_editor_actions(content)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.controls)
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setWidget(self.controls)
+        self.controls.installEventFilter(self)
+        self.content_scroll.viewport().installEventFilter(self)
         layout = QVBoxLayout(self)
         layout.addWidget(self.status)
         layout.addWidget(self.progress)
-        layout.addWidget(scroll, 1)
+        layout.addWidget(self.content_scroll, 1)
         self._connect_voice_controls()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() in (
+            QEvent.Type.Resize,
+            QEvent.Type.LayoutRequest,
+        ) and watched in (
+            self.controls,
+            self.content_scroll.viewport(),
+        ):
+            margins = self.controls.layout().contentsMargins()
+            available = (
+                self.content_scroll.viewport().width()
+                - margins.left()
+                - margins.right()
+            )
+            required = (
+                self.voice_panel.current_voice_box.minimumSizeHint().width()
+                + self.voice_panel.minimumSizeHint().width()
+                + self.voice_comparison.spacing()
+            )
+            self.voice_comparison.setDirection(
+                QBoxLayout.Direction.LeftToRight
+                if available >= required
+                else QBoxLayout.Direction.TopToBottom
+            )
+        return super().eventFilter(watched, event)
 
     def _connect_voice_controls(self) -> None:
         self.source.currentIndexChanged.connect(self._source_changed)
@@ -245,11 +286,11 @@ class GameNarratorDialog(QDialog):
         self._narrator_directory = TemporaryDirectory(prefix="vntts-narrator-editor-")
 
     def _build_voice_sources(self, content: QVBoxLayout) -> None:
-        self.new_voice_box = QGroupBox("New voice")
-        self.new_voice_box.setSizePolicy(
+        self.source_controls = QWidget()
+        self.source_controls.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
         )
-        self.form = QFormLayout(self.new_voice_box)
+        self.form = QFormLayout(self.source_controls)
         self.form.setContentsMargins(8, 6, 8, 6)
         self.form.setVerticalSpacing(4)
         self.form.setFieldGrowthPolicy(

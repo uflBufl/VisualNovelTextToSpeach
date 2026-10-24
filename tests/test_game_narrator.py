@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QCoreApplication, QEvent
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QBoxLayout, QDialog, QScrollArea
 from shiboken6 import isValid
 from vntts_artifacts.file_integrity import sha256_file
 
@@ -252,20 +252,72 @@ class GameNarratorTest(unittest.TestCase):
         self.assertTrue(dialog.voice_panel.current_reason.text())
         self.listen(dialog, original=True)
 
-    def test_approved_layout_has_shared_phrase_and_two_sections(self):
+    def test_voice_comparison_has_shared_phrase_and_side_by_side_sections(self):
         dialog = self.editor()
-        self.assertEqual(dialog.new_voice_box.title(), "New voice")
+        self.assertEqual(dialog.voice_panel.title(), "New voice")
         self.assertEqual(dialog.voice_panel.current_voice_box.title(), "Current voice")
         self.assertIs(dialog.voice_panel.phrase_box.parentWidget(), dialog.controls)
         self.assertIs(
             dialog.voice_panel.current_voice_box.parentWidget(), dialog.controls
         )
-        self.assertIs(dialog.voice_panel.parentWidget(), dialog.new_voice_box)
+        self.assertIs(dialog.voice_panel.parentWidget(), dialog.controls)
         self.assertEqual(dialog.voice_panel.a_use.text(), "Save")
         phrase = "A shared comparison phrase."
         dialog.voice_panel.preview_text.setPlainText(phrase)
         self.select(dialog, "catalog", source="character:centurion")
         self.assertEqual(dialog.voice_panel.preview_text.toPlainText(), phrase)
+        self.assertEqual(dialog.voice_panel.candidate_voice_label.text(), "Centurion")
+        dialog.resize(1060, 720)
+        dialog.show()
+        self.application.processEvents()
+        current = dialog.voice_panel.current_voice_box.geometry()
+        candidate = dialog.voice_panel.geometry()
+        self.assertEqual(
+            dialog.voice_comparison.direction(), QBoxLayout.Direction.LeftToRight
+        )
+        self.assertEqual(current.top(), candidate.top())
+        self.assertLess(current.right(), candidate.left())
+
+    def test_voice_comparison_stacks_when_playback_controls_need_more_width(self):
+        dialog = self.editor()
+        self.select(dialog, "catalog", source="character:centurion")
+        font = dialog.font()
+        font.setPointSizeF(font.pointSizeF() * 2)
+        dialog.setFont(font)
+        dialog.resize(480, 540)
+        dialog.show()
+        self.application.processEvents()
+        self.assertEqual(
+            dialog.voice_comparison.direction(), QBoxLayout.Direction.TopToBottom
+        )
+        scroll = dialog.findChild(QScrollArea)
+        self.assertIsNotNone(scroll)
+        self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
+        dialog.resize(1060, 720)
+        self.application.processEvents()
+        self.assertEqual(
+            dialog.voice_comparison.direction(), QBoxLayout.Direction.LeftToRight
+        )
+        dialog.resize(480, 540)
+        self.application.processEvents()
+        self.assertEqual(
+            dialog.voice_comparison.direction(), QBoxLayout.Direction.TopToBottom
+        )
+        self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
+        for box, buttons in (
+            (
+                dialog.voice_panel.current_voice_box,
+                (dialog.voice_panel.current_original, dialog.voice_panel.current_play),
+            ),
+            (
+                dialog.voice_panel,
+                (dialog.voice_panel.a_original, dialog.voice_panel.a_play),
+            ),
+        ):
+            for button in buttons:
+                self.assertTrue(
+                    box.rect().contains(button.mapTo(box, button.rect().bottomRight()))
+                )
 
     def test_saved_game_voice_label_uses_library_without_the_catalog(self):
         self.bind_narrator()
@@ -429,6 +481,8 @@ class GameNarratorTest(unittest.TestCase):
                 self.library.select("Aderyn", route="voice", source_id="preset:marius")
                 dialog = self.editor()
                 self.select(dialog, mode, role="Aderyn")
+                self.assertFalse(dialog.voice_panel.candidate_voice_label.isHidden())
+                self.assertTrue(dialog.voice_panel.candidate_voice_label.text())
                 self.save(dialog)
                 binding = self.library.binding("Aderyn")
                 self.assertIsNone(binding) if mode == "automatic" else self.assertEqual(

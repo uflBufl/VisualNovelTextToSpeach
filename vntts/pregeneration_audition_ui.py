@@ -288,6 +288,11 @@ class VoiceAuditionPanel(QGroupBox):
         self.runtime.setWordWrap(True)
         self.runtime.setTextFormat(Qt.TextFormat.PlainText)
         self.runtime.setAccessibleName("Character voice preview compute device")
+        self.candidate_voice_label = QLabel()
+        self.candidate_voice_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.candidate_voice_label.setWordWrap(True)
+        self.candidate_voice_label.setAccessibleName("New voice for comparison")
+        self.candidate_voice_label.hide()
         self._initialize_selectors()
         voice_reference_row = QHBoxLayout()
         self.voice_reference_label = QLabel("Voice reference")
@@ -344,6 +349,7 @@ class VoiceAuditionPanel(QGroupBox):
         layout.addWidget(self.character)
         layout.addWidget(self.scope)
         layout.addWidget(self.phrase_box)
+        layout.addWidget(self.candidate_voice_label)
         layout.addLayout(voice_reference_row)
         layout.addWidget(self.a_box)
         layout.addWidget(self.preview_box)
@@ -493,8 +499,12 @@ class VoiceAuditionPanel(QGroupBox):
         if not self._comparison_mode:
             self._build_comparison_layout()
         self._comparison_mode = True
+        self.candidate_voice_label.setVisible(
+            bool(self._candidate_entries or self._policy_choice)
+        )
         self._size_transient_controls()
-        self.setFlat(True)
+        self.setTitle("New voice")
+        self.setFlat(False)
         self.game_phrase_button.setText("Game phrase")
         self.a_box.setTitle("")
         self.a_box.setFlat(True)
@@ -551,11 +561,12 @@ class VoiceAuditionPanel(QGroupBox):
         cast(QVBoxLayout, self.preview_box.layout()).removeWidget(self.recommendation)
         layout.insertWidget(layout.indexOf(self.status), self.recommendation)
         self.preview_box.hide()
+        self.a_box.setContentsMargins(0, 0, 0, 0)
         for compact_layout in (layout, self.a_box.layout()):
             assert compact_layout is not None
             compact_layout.setContentsMargins(0, 0, 0, 0)
             compact_layout.setSpacing(4)
-        for box in (self.phrase_box, self.current_voice_box):
+        for box in (self.phrase_box, self.current_voice_box, self):
             box_layout = box.layout()
             assert box_layout is not None
             box_layout.setContentsMargins(8, 6, 8, 6)
@@ -1054,6 +1065,8 @@ class VoiceAuditionPanel(QGroupBox):
             self.a_box.hide()
             self.scope.clear()
             self._accepted_choice, label = self._policy_choice
+            self.candidate_voice_label.setText(label)
+            self.candidate_voice_label.setVisible(self._comparison_mode)
             self.a_use.setText("Save" if self._comparison_mode else label)
             self.a_use.setEnabled(True)
             self._set_status("")
@@ -1291,6 +1304,8 @@ class VoiceAuditionPanel(QGroupBox):
         self._stop_player()
         self._accepted_choice = None
         candidate, _choice, narrator = self._current_entry()
+        self.candidate_voice_label.setText(_candidate_name(candidate))
+        self.candidate_voice_label.setVisible(self._comparison_mode)
         with QSignalBlocker(self.reference_transcript):
             self.reference_transcript.setText(candidate.reference_transcript or "")
         self.reference_transcript.setVisible(

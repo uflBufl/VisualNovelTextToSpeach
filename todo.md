@@ -4,6 +4,13 @@
 
 - [ ] Verify the affected Windows installation after the user's manual cleanup and regeneration.
 
+## UI improvements - one item at a time
+
+- [ ] 1. Review the implemented native Qt comparison of current and new voices before proceeding to item 2. Check the before/after views with the same data and window size; adjust the comparison if needed. The shared phrase and independent Original/Preview actions must remain clear in normal and narrow layouts.
+- [ ] 2. Simplify the voice editor: reduce nested frames and move accepted terms/source maintenance into contextual details without weakening consent or readiness checks. Start after item 1 is reviewed; retain clear voice selection and preview actions.
+- [ ] 3. Separate Settings from Tools: give the disclosure/menu of maintenance actions a distinct name and keep the actual Settings entry unambiguous. Start after item 2.
+- [ ] 4. Add action feedback and keyboard affordances: confirm clipboard copies, include existing shortcuts in tooltips, and provide native clear buttons in search fields. Start after item 3; preserve existing keyboard dispatch and accessibility.
+
 ## Active - Finish diagnostic-session native acceptance
 
 - [ ] Preserve usable diagnostics after process/OS interruption. A native run left

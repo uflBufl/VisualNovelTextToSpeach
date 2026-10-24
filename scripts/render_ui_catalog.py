@@ -1181,7 +1181,7 @@ def _prepare_voice_audition_screenshot(
             if story_id.endswith("details")
             else widget.voice_panel.status
             if story_id.endswith(("failure", "waiting"))
-            else widget.voice_panel.preview_box
+            else widget.voice_panel.a_play
         )
         scroll = widget.findChild(QScrollArea)
         assert scroll is not None
