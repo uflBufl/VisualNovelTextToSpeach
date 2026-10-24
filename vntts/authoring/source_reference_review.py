@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import shutil
 from collections.abc import Iterable, Mapping, MutableSequence, Sequence
 from dataclasses import dataclass
@@ -34,7 +33,11 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     JsonDocument,
 )
-from vntts.authoring.generation_state import load_generation_state_from_snapshot
+from vntts.authoring.generation_state import (
+    decode_generation_state_snapshot,
+    load_generation_state_from_snapshot,
+    read_generation_state_payload,
+)
 from vntts.authoring.listening import (
     ModelListeningError,
     create_listening_session_from_reports,
@@ -1769,9 +1772,9 @@ def _load_evaluation_generation(
     try:
         queue = VoiceGenerationQueue.load(queue_path)
         _manifest, voices = load_voice_manifest(manifest_path, allow_legacy=False)
-        state_path, state_payload, state_document = _read_json(
-            state_path, "generation state"
-        )
+        state_path = Path(state_path).expanduser().resolve()
+        state_payload = read_generation_state_payload(state_path)
+        state_document = decode_generation_state_snapshot(state_payload)
         state = load_generation_state_from_snapshot(
             state_path, queue, queue_sha256, state_document=state_document
         )
@@ -2425,7 +2428,7 @@ def _read_json(path: str | Path, label: str) -> tuple[Path, bytes, JsonObject]:
     try:
         payload = read_regular_bytes(path)
         document = decode_json(payload.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, ValueError) as error:
         raise SourceReferenceReviewError(
             f"Unable to read {label} {path}: {error}"
         ) from error

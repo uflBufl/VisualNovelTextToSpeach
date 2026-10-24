@@ -9,7 +9,9 @@ from unittest.mock import patch
 
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
+from tests.generation_state_fixtures import replace_generation_state
 from tests.source_reference_fixtures import publish_source_reference_quality_fixture
+from vntts import generation_database
 from vntts.authoring import source_reference_quality_records as quality_records
 from vntts.authoring import source_reference_review as source_review
 
@@ -80,11 +82,13 @@ class SourceReferenceSnapshotsTest(unittest.TestCase):
                 publish_source_reference_quality_fixture(root)
             )
             original = generation.state.read_bytes()
-            replacement = json.loads(original)
+            replacement = generation_database.read_snapshot(original)
             for item in replacement["items"].values():
                 item["model"] = "different-admissible-model"
-            replacement_payload = json.dumps(replacement).encode("utf-8")
-            read_bytes = source_review.read_regular_bytes
+            replace_generation_state(generation.state, replacement)
+            replacement_payload = generation.state.read_bytes()
+            generation.state.write_bytes(original)
+            read_bytes = source_review.read_generation_state_payload
             captures = []
 
             def read_replacement(path):
@@ -99,7 +103,9 @@ class SourceReferenceSnapshotsTest(unittest.TestCase):
 
             output = root / "listening-reports"
             with (
-                patch.object(source_review, "read_regular_bytes", read_replacement),
+                patch.object(
+                    source_review, "read_generation_state_payload", read_replacement
+                ),
                 self.assertRaisesRegex(
                     source_review.SourceReferenceReviewError,
                     "generation state changed",

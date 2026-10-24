@@ -15,7 +15,7 @@ from vntts_artifacts.audio import write_pcm16_wav
 
 from tests.symlink_support import symlink_or_skip
 from vntts.audio_cache import PersistentAudioCache
-from vntts.audio_store import SharedAudioStore, SharedAudioStoreError
+from vntts.audio_store import AudioCatalogError, SharedAudioStore, SharedAudioStoreError
 from vntts.path_safety import open_regular_binary
 from vntts.pregeneration_queue import (
     PregenerationQueueError,
@@ -221,10 +221,10 @@ class AudioSnapshotTest(unittest.TestCase):
 
             with patch.object(cache.store, "get_bytes", side_effect=replace_after_read):
                 np.testing.assert_array_equal(cache.get("key"), [0.125, 0.25])
-            self.assertIsNone(cache.get("key"))
-            self.assertIsNone(
+            with self.assertRaises(AudioCatalogError):
+                cache.get("key")
+            with self.assertRaises(AudioCatalogError):
                 PersistentAudioCache(directory, sample_rate=16000).get("key")
-            )
 
     def test_path_replacement_during_snapshot_is_rejected(self):
         with TemporaryDirectory() as directory:
@@ -255,6 +255,7 @@ class AudioSnapshotTest(unittest.TestCase):
             write_pcm16_wav(source, [0.125, 0.25], 16000)
             before = source.stat()
             store = SharedAudioStore(root / "store")
+            store.initialize()
             link = os.link
 
             def mutate_then_link(original, target):

@@ -15,6 +15,7 @@ from vntts_artifacts import (
 )
 from vntts_artifacts.voice_manifest import VoiceManifestEntry
 
+from vntts import generation_database
 from vntts.authoring.bulk_generation import (
     BulkGenerationResult,
     audio_event_spoken_projection,
@@ -49,6 +50,7 @@ from vntts.authoring.source_reference_bindings import (
 )
 from vntts.cleanup import temporary_directory
 from vntts.cli import print_json
+from vntts.document_identity import sha256_file
 from vntts.path_safety import read_regular_bytes
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import SynthesisCancellation
@@ -99,7 +101,6 @@ def _configure_generate_parser(
     )
     generate.add_argument("--queue", type=Path, required=True)
     generate.add_argument("--output", type=Path, required=True)
-    generate.add_argument("--state-storage", choices=("json", "sqlite"), default="json")
     generate.add_argument(
         "--workspace",
         type=Path,
@@ -684,7 +685,6 @@ def _run_bulk_generation(
                     "refresh" if arguments.regenerate_existing else "use"
                 ),
                 cancellation=cancellation,
-                state_storage=arguments.state_storage,
                 approve_validated_audio=arguments.approve_validated_audio,
                 progress_callback=progress_callback,
             )
@@ -695,6 +695,20 @@ def _run_bulk_generation(
             shutdown_speech_backend(backend, primary_error=primary_error)
 
 
+def _preflight_generation_output(output: Path, queue: Path) -> None:
+    """Reject missing/corrupt saved authority before constructing a model backend."""
+    output = output.expanduser()
+    try:
+        generation_database.require_registered_output(output)
+        path = generation_database.state_path(output)
+        if path.is_file() and generation_database.read_progress(
+            path
+        ).queue_sha256 != sha256_file(queue):
+            raise ValueError("Generation queue changed; use a new output directory")
+    except (OSError, ValueError) as error:
+        raise BulkGenerationError(str(error)) from error
+
+
 def run_generation(
     arguments: argparse.Namespace,
     *,
@@ -703,6 +717,7 @@ def run_generation(
     startup_progress: object = None,
     progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> BulkGenerationResult:
+    _preflight_generation_output(arguments.output, arguments.queue)
     missing_policy = missing_voice_policy(arguments)
     repair_policy = failure_repair_policy(arguments)
     projection_ids = tuple(arguments.audio_event_spoken_projection_queue_ids or ())

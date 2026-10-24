@@ -74,7 +74,11 @@ from vntts.document_identity import (
 )
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
-from vntts.generation_database import is_database, validate_database_path
+from vntts.generation_database import (
+    read_audio_paths,
+    require_registered_output,
+    validate_database_path,
+)
 from vntts.generation_database import state_path as generation_state_path
 from vntts.json_types import decode_json
 from vntts.live_sequence import load_live_sequence_snapshot
@@ -176,7 +180,6 @@ class _SavedGenerationInput:
     files: dict[Path, tuple[int, ...]]
     queue: VoiceGenerationQueue
     queue_sha256: str
-    state: JsonObject | None = None
     recordings: dict[str, list[tuple[Path, str]]] = field(default_factory=dict)
     validated_line_ids: set[str] = field(default_factory=set)
     uncacheable_line_ids: set[str] = field(default_factory=set)
@@ -241,6 +244,7 @@ class StoryAudioInspector:
                     directory.name.replace("generation-input-", "generation-output-", 1)
                 )
             )
+            require_registered_output(state_path.parent)
             if not state_path.is_file():
                 continue
             queue_path = directory / "queue.jsonl"
@@ -264,6 +268,12 @@ class StoryAudioInspector:
         paths: tuple[Path, Path],
         before: dict[Path, tuple[int, ...]],
     ) -> tuple[str, str, str]:
+        for relative in read_audio_paths(paths[1]):
+            contained_generation_path(
+                paths[1].parent,
+                safe_relative_path(relative, "Saved recording"),
+                "Saved recording",
+            )
         previous = self._recording_sources.get(directory)
         if previous is not None and previous[0] == before:
             return previous[1]
@@ -283,8 +293,7 @@ class StoryAudioInspector:
         paths: tuple[Path, Path],
         before: dict[Path, tuple[int, ...]],
     ) -> None:
-        if is_database(paths[1]):
-            validate_database_path(paths[1])
+        validate_database_path(paths[1])
         if any(
             _file_fingerprint(path) != before[path] for path in paths
         ) or canonical_document_sha256(
@@ -304,19 +313,13 @@ class StoryAudioInspector:
         if document.get("source_story_index_sha256") != job.story_index_sha256:
             raise OfflinePackError("Saved generation input belongs to changed dialogue")
         generation_state_file(state_path)
-        if is_database(state_path):
-            validate_database_path(state_path)
+        validate_database_path(state_path)
         paths = (queue_path, state_path)
         before = {path: _file_fingerprint(path) for path in paths}
         before[self.job_store.catalog.path] = tuple(
             bytes.fromhex(canonical_document_sha256(document))
         )
-        # Legacy JSON validates unselected path metadata in full on each new batch.
-        source = (
-            self._recording_source(directory, document, paths, before)
-            if is_database(state_path)
-            else None
-        )
+        source = self._recording_source(directory, document, paths, before)
         requested = {
             line_id: self._source_records[line_id].text_sha256
             for line_id in selected
@@ -366,17 +369,15 @@ class StoryAudioInspector:
             self._validate_saved_recordings(
                 directory, document, paths, before, cached, unchecked
             )
-        if source is not None:
-            index.save(
-                directory,
-                source,
-                {item.line_id: item.text_sha256 for item in cached.queue.items},
-                {
-                    line_id: next(iter(cached.recordings.get(line_id, ())), None)
-                    for line_id in cached.validated_line_ids
-                    - cached.uncacheable_line_ids
-                },
-            )
+        index.save(
+            directory,
+            source,
+            {item.line_id: item.text_sha256 for item in cached.queue.items},
+            {
+                line_id: next(iter(cached.recordings.get(line_id, ())), None)
+                for line_id in cached.validated_line_ids - cached.uncacheable_line_ids
+            },
+        )
         self._check_saved_input(directory, document, paths, before)
         return {line_id: cached.recordings.get(line_id, []) for line_id in relevant}
 
@@ -394,7 +395,7 @@ class StoryAudioInspector:
             state_path,
             cached.queue,
             cached.queue_sha256,
-            state_document=None if is_database(state_path) else cached.state,
+            state_document=None,
             selected_line_ids=requested,
         )
         self._check_saved_input(directory, document, paths, before)
@@ -413,7 +414,6 @@ class StoryAudioInspector:
                         str(result["file_sha256"]),
                     )
                 )
-        cached.state = state
         cached.validated_line_ids.update(requested)
 
     def inspect(

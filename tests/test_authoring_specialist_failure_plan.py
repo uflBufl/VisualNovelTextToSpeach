@@ -4,6 +4,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from tests.authoring_fixtures import create_specialist_failure_workspace
+from tests.generation_state_fixtures import replace_generation_state
+from vntts import generation_database
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cohort_review import CohortReviewError
 from vntts.authoring.specialist_failure_plan import (
@@ -117,12 +119,12 @@ class SpecialistFailurePlanTest(unittest.TestCase):
             workspace = create_specialist_failure_workspace(
                 root, "sentence_boundary_segmentation", "a"
             )
-            state_path = workspace / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text())
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             failure = state["items"]["a"]["failure"]
             failure["kind"] = "speech_silence"
             failure["completion"] = "complete"
-            state_path.write_text(json.dumps(state))
+            replace_generation_state(state_path, state)
 
             plan = build_specialist_failure_plan((workspace,))
 
@@ -141,10 +143,10 @@ class SpecialistFailurePlanTest(unittest.TestCase):
             workspace = create_specialist_failure_workspace(
                 root, "sentence_boundary_segmentation", "a"
             )
-            state_path = workspace / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text())
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["items"]["a"]["attempts"] = 2
-            state_path.write_text(json.dumps(state))
+            replace_generation_state(state_path, state)
 
             plan = build_specialist_failure_plan((workspace,))
 
@@ -158,14 +160,14 @@ class SpecialistFailurePlanTest(unittest.TestCase):
             workspace = create_specialist_failure_workspace(
                 root, INLINE_PAUSE_MARKER, "a"
             )
-            state_path = workspace / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text())
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             item = state["items"]["a"]
             item["failure"]["kind"] = "speech_silence"
             item["failure"]["completion"] = "complete"
             item["attempts"] = 3
             item["attempts_by_provider"] = {"moss-tts": 3}
-            state_path.write_text(json.dumps(state))
+            replace_generation_state(state_path, state)
 
             plan = build_specialist_failure_plan((workspace,))
 

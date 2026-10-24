@@ -376,7 +376,7 @@ def voice_impact_fixture(
     job = jobs.create_or_resume(
         content, tuple(value.selection_id for value in content.selections)
     )
-    pack_root = jobs.path_for(job.job_id).parent / "game-packs" / f"pack-{'a' * 24}"
+    pack_root = jobs.directory_for(job.job_id) / "game-packs" / f"pack-{'a' * 24}"
     pack_root.mkdir(parents=True)
     voices = root / "voices.json"
     write_voice_manifest(voices, {"version": 2, "voices": []})

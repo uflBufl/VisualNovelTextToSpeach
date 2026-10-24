@@ -22,7 +22,6 @@ import vntts.authoring.generation_failures as failure_module
 import vntts.authoring.generation_fallback as fallback_module
 import vntts.authoring.generation_lease as generation_lease_module
 import vntts.authoring.generation_review as review_module
-import vntts.authoring.generation_state as state_module
 from tests.authoring_fixtures import tree_hashes
 from tests.bulk_generation_fixtures import (
     SyntheticRenderer,
@@ -30,11 +29,12 @@ from tests.bulk_generation_fixtures import (
     queue_item,
     write_queue,
 )
+from tests.generation_state_fixtures import replace_generation_state
 from tests.symlink_support import symlink_or_skip
+from vntts import generation_database
 from vntts.audio_cache import PersistentAudioCache
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.bulk_generation import (
-    LEGACY_STATE_SCHEMA,
     STATE_SCHEMA,
     BulkGenerationError,
     load_generation_state,
@@ -242,7 +242,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             def observe(state):
                 self.assertEqual(
-                    json.loads((output / "generation-state.json").read_text()),
+                    generation_database.read_state(output / "generation-state.sqlite3"),
                     state,
                 )
                 if any(
@@ -277,8 +277,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             observed = {}
 
             def inspect_state(_request):
-                state = json.loads(
-                    (output / "generation-state.json").read_text(encoding="utf-8")
+                state = generation_database.read_state(
+                    output / "generation-state.sqlite3"
                 )
                 observed.update(state["active"])
 
@@ -407,8 +407,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             def inspect_state(_request):
                 if len(renderer.requests) == 2:
-                    active = json.loads(
-                        (output / "generation-state.json").read_text(encoding="utf-8")
+                    active = generation_database.read_state(
+                        output / "generation-state.sqlite3"
                     )["active"]
                     active_during_second.append((active["queue_id"], active["phase"]))
                     second_started.set()
@@ -518,22 +518,22 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 generation_profile="default",
                 retries=0,
             )
-            original = json.loads(failed.state.read_text(encoding="utf-8"))
+            original = generation_database.read_state(failed.state)
 
             for version in (True, 1.0):
                 forged = json.loads(json.dumps(original))
                 forged["schema_version"] = version
-                failed.state.write_text(json.dumps(forged), encoding="utf-8")
+                replace_generation_state(failed.state, forged)
                 with self.assertRaisesRegex(BulkGenerationError, "Unsupported"):
                     load_generation_state(failed.state, queue)
 
                 forged = json.loads(json.dumps(original))
                 forged["items"][item["queue_id"]]["failure"]["schema_version"] = version
-                failed.state.write_text(json.dumps(forged), encoding="utf-8")
+                replace_generation_state(failed.state, forged)
                 with self.assertRaisesRegex(BulkGenerationError, "typed failure"):
                     load_generation_state(failed.state, queue)
 
-            failed.state.write_text(json.dumps(original), encoding="utf-8")
+            replace_generation_state(failed.state, original)
             authorize_live_fallback(
                 failed.state,
                 queue,
@@ -541,9 +541,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 reason="automatic_recovery_exhausted",
                 model="pocket-tts",
             )
-            forged = json.loads(failed.state.read_text(encoding="utf-8"))
+            forged = generation_database.read_state(failed.state)
             forged["items"][item["queue_id"]]["live_fallback"]["schema_version"] = 8.0
-            failed.state.write_text(json.dumps(forged), encoding="utf-8")
+            replace_generation_state(failed.state, forged)
             with self.assertRaisesRegex(BulkGenerationError, "live fallback decision"):
                 load_generation_state(failed.state, queue)
 
@@ -851,13 +851,13 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     ),
                 ):
                     generation_review_authority(result.state, queue_id)
-            foreign_state = json.loads(original)
+            foreign_state = generation_database.read_snapshot(original)
             foreign_state["items"][item["queue_id"]]["model"] = "foreign-review-model"
-            foreign = json.dumps(foreign_state, sort_keys=True).encode("utf-8")
-            result.state.write_bytes(foreign)
+            replace_generation_state(result.state, foreign_state)
+            foreign = result.state.read_bytes()
             load_generation_state(result.state, queue)
             result.state.write_bytes(original)
-            original_read = state_module.read_regular_bytes
+            original_read = generation_database.read_regular_bytes
             for capture, selection in (
                 (generation_review_authority, item["queue_id"]),
                 (generation_review_authorities, [item["queue_id"]]),
@@ -877,7 +877,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
                 with (
                     self.subTest(capture=capture.__name__),
-                    patch.object(state_module, "read_regular_bytes", read_replacement),
+                    patch.object(
+                        generation_database, "read_regular_bytes", read_replacement
+                    ),
                     self.assertRaisesRegex(
                         BulkGenerationError,
                         "Generation state changed while review authorities were captured",
@@ -895,7 +897,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             output = root / "output"
             first_renderer = SyntheticRenderer()
             self.run_generation(queue, output, first_renderer, seed=0)
-            first_state = load_generation_state(output / "generation-state.json", queue)
+            first_state = load_generation_state(
+                output / "generation-state.sqlite3", queue
+            )
             first_item = first_state["items"][item["queue_id"]]
             first_sha256 = first_item["file_sha256"]
 
@@ -956,7 +960,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             queue = write_queue(root / "queue.jsonl", [first, second])
             output = root / "output"
             self.run_generation(queue, output, SyntheticRenderer())
-            state_path = output / "generation-state.json"
+            state_path = output / "generation-state.sqlite3"
             review_generation_item(state_path, second["queue_id"], "approved")
             before = state_path.read_bytes()
             renderer = SyntheticRenderer()
@@ -1280,7 +1284,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             output = root / "output"
             output.mkdir()
             state = {
-                "schema": LEGACY_STATE_SCHEMA,
+                "schema": STATE_SCHEMA,
+                "game": "Synthetic Game",
+                "language": "en",
                 "schema_version": 1,
                 "queue_sha256": sha256_file(queue),
                 "items": {
@@ -1303,14 +1309,14 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     "started_at": "2026-08-16T10:01:00+00:00",
                 },
             }
-            atomic_write_json(output / "generation-state.json", state, sort_keys=True)
+            replace_generation_state(output / "generation-state.sqlite3", state)
             renderer = SyntheticRenderer()
 
             self.run_generation(queue, output, renderer, retries=0, seed=0)
-            resumed = load_generation_state(output / "generation-state.json", queue)
+            resumed = load_generation_state(output / "generation-state.sqlite3", queue)
 
         self.assertEqual(renderer.requests[0].seed, 3)
-        self.assertEqual(resumed["schema"], LEGACY_STATE_SCHEMA)
+        self.assertEqual(resumed["schema"], STATE_SCHEMA)
         self.assertEqual(resumed["items"][item["queue_id"]]["attempts"], 4)
         self.assertEqual(resumed["interrupted_attempts"][0]["seed"], 2)
 
@@ -1429,7 +1435,16 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     record["failure"].pop("attempt_counted")
                     record["attempts"] = 3
                     record["attempts_by_provider"] = {"synthetic": 3}
-                    atomic_write_json(cancelled.state, state, sort_keys=True)
+                    replace_generation_state(cancelled.state, state)
+                    with self.assertRaisesRegex(
+                        BulkGenerationError, "explicit storage upgrade"
+                    ):
+                        load_generation_state(cancelled.state, queue)
+                    from vntts.storage_upgrade import _normalize_cancellations
+
+                    replace_generation_state(
+                        cancelled.state, _normalize_cancellations(state)
+                    )
                 report = generation_failure_report(cancelled.state, queue)
                 self.assertEqual(report["records"][0]["attempts"], 2)
                 self.assertEqual(
@@ -1496,13 +1511,13 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertEqual(state["items"][item["queue_id"]]["attempts"], 1)
             for invalid in (0, "false", None):
                 state["items"][item["queue_id"]]["failure"]["attempt_counted"] = invalid
-                atomic_write_json(cancelled.state, state, sort_keys=True)
+                replace_generation_state(cancelled.state, state)
                 with self.assertRaisesRegex(
                     BulkGenerationError, "cancellation attempt marker"
                 ):
                     load_generation_state(cancelled.state, queue)
             state["items"][item["queue_id"]]["failure"]["attempt_counted"] = False
-            atomic_write_json(cancelled.state, state, sort_keys=True)
+            replace_generation_state(cancelled.state, state)
             renderer = SyntheticRenderer()
             resumed = self.run_generation(
                 queue,
@@ -1578,7 +1593,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 retries=0,
                 include_queue_ids=[limited_item["queue_id"]],
             )
-            state = json.loads(result.state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(result.state)
             limited = state["items"][limited_item["queue_id"]]
             limited["attempts"] = 5
             limited["attempts_by_provider"] = {
@@ -1603,7 +1618,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 "last_error": "MOSS generation hit the text-length audio limit before EOS",
                 "updated_at": "2026-08-18T00:00:00+00:00",
             }
-            atomic_write_json(result.state, state, sort_keys=True)
+            replace_generation_state(result.state, state)
 
             report = generation_failure_report(result.state, queue)
             repair_plan = generation_failure_repair_plan(result.state, queue)
@@ -1706,15 +1721,15 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     retries=0,
                     seed=4,
                 )
-            crashed = json.loads(
-                (output / "generation-state.json").read_text(encoding="utf-8")
+            crashed = generation_database.read_state(
+                output / "generation-state.sqlite3"
             )
             self.assertEqual(crashed["active"]["seed"], 4)
             self.assertFalse((output / ".generation-lease.json").exists())
 
             renderer = SyntheticRenderer()
             self.run_generation(queue, output, renderer, retries=0, seed=4)
-            resumed = load_generation_state(output / "generation-state.json", queue)
+            resumed = load_generation_state(output / "generation-state.sqlite3", queue)
 
         self.assertEqual(renderer.requests[0].seed, 5)
         self.assertEqual(resumed["items"][item["queue_id"]]["attempts"], 2)
@@ -1770,7 +1785,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             def crash_after_replace(path, document, **options):
                 if (
-                    Path(path).name == "generation-state.json"
+                    Path(path).name == "generation-state.sqlite3"
                     and document.get("active") is None
                     and document.get("items", {})
                     .get(item["queue_id"], {})
@@ -1799,7 +1814,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             archived = list((output / "interrupted").glob("*.wav"))
             archived_hash = sha256_file(archived[0])
-            state = load_generation_state(output / "generation-state.json", queue)
+            state = load_generation_state(output / "generation-state.sqlite3", queue)
 
         self.assertEqual(renderer.requests[0].seed, 1)
         self.assertEqual(len(archived), 1)
@@ -1816,7 +1831,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             def fail_success_write(path, document, **options):
                 if (
-                    Path(path).name == "generation-state.json"
+                    Path(path).name == "generation-state.sqlite3"
                     and document.get("active") is None
                     and document.get("items", {})
                     .get(item["queue_id"], {})
@@ -1837,7 +1852,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 self.run_generation(queue, output, SyntheticRenderer(), retries=2)
 
             self.assertIsNotNone(
-                json.loads((output / "generation-state.json").read_text())["active"]
+                generation_database.read_state(output / "generation-state.sqlite3")[
+                    "active"
+                ]
             )
             resumed = self.run_generation(queue, output, SyntheticRenderer(), retries=0)
             self.assertEqual(resumed.generated, 1)
@@ -1990,7 +2007,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     queue_path=queue,
                 )
 
-            saved = json.loads(result.state.read_text(encoding="utf-8"))
+            saved = generation_database.read_state(result.state)
             self.assertEqual(saved["items"][item["queue_id"]]["status"], "approved")
             self.assertEqual(result.manifest.read_bytes(), manifest_before)
 
@@ -2012,11 +2029,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     "review_status": "pending_review",
                     "path": audio.name,
                 }
-            state_path = root / "generation-state.json"
-            atomic_write_json(
-                state_path,
-                {"queue_sha256": queue_sha256, "items": items},
-                sort_keys=True,
+            state_path = root / "generation-state.sqlite3"
+            replace_generation_state(
+                state_path, {"queue_sha256": queue_sha256, "items": items}
             )
             state_sha256 = sha256_file(state_path)
             authorities = {
@@ -2037,7 +2052,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(review_module, "read_regular_bytes", tracked_read_bytes),
-                patch.object(state_module, "read_regular_bytes", tracked_read_bytes),
+                patch.object(
+                    generation_database, "read_regular_bytes", tracked_read_bytes
+                ),
             ):
                 state, snapshots = review_module.assert_review_authorities(
                     state_path, authorities, queue
@@ -2071,7 +2088,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             second_authority = generation_review_authority(
                 result.state, second["queue_id"]
             )
-            state = json.loads(result.state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(result.state)
             first_wav = result.state.parent / state["items"][first["queue_id"]]["path"]
             write_pcm16_wav(first_wav, audio_samples() * 0.5, 16_000)
             checked = []
@@ -2093,7 +2110,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     "approved",
                     provenance={"test": "approved-manifest-integrity"},
                 )
-            state = json.loads(result.state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(result.state)
             manifest = GeneratedAudioIndex.load(result.manifest)
 
             with self.assertRaisesRegex(BulkGenerationError, "checksum mismatch"):
@@ -2340,7 +2357,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     provenance={"test": "cohort-wav-race"},
                 )
 
-            committed = json.loads(result.state.read_text(encoding="utf-8"))
+            committed = generation_database.read_state(result.state)
             manifest = GeneratedAudioIndex.load(result.manifest)
 
         self.assertEqual(
@@ -2354,7 +2371,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             item = queue_item()
             queue = write_queue(root / "queue.jsonl", [item])
             result = self.run_generation(queue, root / "output", SyntheticRenderer())
-            state = json.loads(result.state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(result.state)
             audio = result.state.parent / state["items"][item["queue_id"]]["path"]
             write_pcm16_wav(audio, audio_samples() * 0.5, 16_000)
 
@@ -2390,7 +2407,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(result.generated, 0)
         self.assertEqual(renderer.requests, [])
 
-    def test_live_lease_or_job_pid_blocks_and_stale_lease_is_preserved(self):
+    def test_live_lease_blocks_and_stale_lease_recovery_ignores_legacy_job_decoy(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             item = queue_item()
@@ -2419,7 +2436,12 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 process_checker=lambda _pid: False,
             )
             self.assertEqual(result.generated, 1)
-            self.assertTrue(list((output / "interrupted").glob("*.json")))
+            archived_lease = next((output / "interrupted").glob("*.json"))
+            recovered = load_generation_state(result.state, queue)[
+                "interrupted_processes"
+            ][0]
+            self.assertEqual(recovered["pid"], 123)
+            self.assertEqual(recovered["lease_sha256"], sha256_file(archived_lease))
 
             second_output = root / "active-job" / "generated-audio"
             second_output.mkdir(parents=True)
@@ -2427,13 +2449,16 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 second_output.parent / "job.json",
                 {"status": "running", "pid": os.getpid()},
             )
-            with self.assertRaisesRegex(BulkGenerationError, "active"):
-                self.run_generation(
+            with patch.object(
+                bulk_module, "_load_json", side_effect=AssertionError("read legacy job")
+            ):
+                ignored = self.run_generation(
                     queue,
                     second_output,
                     SyntheticRenderer(),
                     process_checker=lambda _pid: True,
                 )
+            self.assertEqual(ignored.generated, 1)
 
     def test_stale_lease_recovery_cannot_archive_a_replacement_owner(self):
         with TemporaryDirectory() as directory:
@@ -2593,9 +2618,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             queue = write_queue(root / "queue.jsonl", [first_item, second_item])
             output = root / "output"
             self.run_generation(queue, output, SyntheticRenderer(), limit=1)
-            state_path = output / "generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            state["schema"] = LEGACY_STATE_SCHEMA
+            state_path = output / "generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
+            state["schema"] = STATE_SCHEMA
             state["items"][second_item["queue_id"]] = {
                 "status": "failed",
                 "attempts": 7,
@@ -2603,7 +2628,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 "last_error": "Legacy limit",
                 "updated_at": "2026-08-16T10:00:00+00:00",
             }
-            atomic_write_json(state_path, state, sort_keys=True)
+            replace_generation_state(state_path, state)
             renderer = SyntheticRenderer()
 
             result = self.run_generation(queue, output, renderer, retries=0, seed=0)
@@ -2611,12 +2636,12 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
         self.assertEqual(result.generated, 1)
         self.assertEqual(renderer.requests[0].seed, 7)
-        self.assertEqual(resumed["schema"], LEGACY_STATE_SCHEMA)
+        self.assertEqual(resumed["schema"], STATE_SCHEMA)
         self.assertEqual(resumed["items"][second_item["queue_id"]]["attempts"], 8)
         self.assertEqual(
             resumed["items"][first_item["queue_id"]]["status"], "generated"
         )
-        self.assertNotEqual(resumed["schema"], STATE_SCHEMA)
+        self.assertEqual(resumed["schema"], STATE_SCHEMA)
 
     def test_explicit_legacy_failure_regeneration_starts_fresh_provider_seed(self):
         with TemporaryDirectory() as directory:
@@ -2624,16 +2649,16 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             item = queue_item("legacy")
             queue = write_queue(root / "queue.jsonl", [item])
             output = root / "output"
-            state_path = output / "generation-state.json"
+            state_path = output / "generation-state.sqlite3"
             output.mkdir()
-            atomic_write_json(
+            replace_generation_state(
                 state_path,
                 {
-                    "schema": LEGACY_STATE_SCHEMA,
+                    "schema": STATE_SCHEMA,
                     "schema_version": 1,
                     "queue_sha256": sha256_file(queue),
-                    "game": None,
-                    "language": None,
+                    "game": "Synthetic Game",
+                    "language": "en",
                     "active": None,
                     "items": {
                         item["queue_id"]: {
@@ -2645,7 +2670,6 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                         }
                     },
                 },
-                sort_keys=True,
             )
             renderer = SyntheticRenderer()
 
@@ -2677,11 +2701,13 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             queue = write_queue(root / "queue.jsonl", [item])
             output = root / "output"
             output.mkdir()
-            atomic_write_json(
-                output / "generation-state.json",
+            replace_generation_state(
+                output / "generation-state.sqlite3",
                 {
-                    "schema": LEGACY_STATE_SCHEMA,
+                    "schema": STATE_SCHEMA,
                     "schema_version": 1,
+                    "game": "Synthetic Game",
+                    "language": "en",
                     "queue_sha256": sha256_file(queue),
                     "items": {},
                     "active": {
@@ -2699,8 +2725,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with self.assertRaisesRegex(BulkGenerationError, "line_id"):
                 self.run_generation(queue, output, SyntheticRenderer())
-            unchanged = json.loads(
-                (output / "generation-state.json").read_text(encoding="utf-8")
+            unchanged = generation_database.read_state(
+                output / "generation-state.sqlite3"
             )
 
         self.assertEqual(unchanged["active"]["line_id"], "wrong-line")
@@ -2730,8 +2756,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     control_files={"voice_reference": control},
                 )
 
-            state = json.loads(
-                (root / "output/generation-state.json").read_text(encoding="utf-8")
+            state = generation_database.read_state(
+                root / "output/generation-state.sqlite3"
             )
             self.assertEqual(state["items"], {})
             self.assertIsNotNone(state["active"])
@@ -2779,7 +2805,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 control_files={"model_artifact": model},
             )
 
-            state = json.loads(result.state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(result.state)
             generated = state["items"][item["queue_id"]]
             controls = state["synthesis_controls"][
                 generated["synthesis_provenance_sha256"]
@@ -2847,9 +2873,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             ):
                 self.run_generation(queue, output, SyntheticRenderer())
 
-            state = json.loads(
-                (output / "generation-state.json").read_text(encoding="utf-8")
-            )
+            state = generation_database.read_state(output / "generation-state.sqlite3")
             completed = [
                 path
                 for path in output.rglob("*.wav")
@@ -2868,9 +2892,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 queue, root / "generated-audio", SyntheticRenderer()
             )
             (root / "workspace.json").write_text("{}", encoding="utf-8")
-            state = json.loads(result.state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(result.state)
             state["items"][item["queue_id"]]["line_id"] = "wrong-line"
-            atomic_write_json(result.state, state, sort_keys=True)
+            replace_generation_state(result.state, state)
 
             with self.assertRaisesRegex(BulkGenerationError, "identity"):
                 publish_generated_manifest(result.state)
@@ -2902,7 +2926,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             with self.assertRaisesRegex(BulkGenerationError, "Another generation"):
                 publish_generated_manifest(result.state)
 
-            state = json.loads(result.state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(result.state)
 
         self.assertEqual(state["items"][item["queue_id"]]["status"], "generated")
 
@@ -2912,14 +2936,14 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             item = queue_item()
             queue = write_queue(root / "queue.jsonl", [item])
             result = self.run_generation(queue, root / "output", SyntheticRenderer())
-            state = json.loads(result.state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(result.state)
             del state["items"][item["queue_id"]]["provider"]
-            atomic_write_json(result.state, state, sort_keys=True)
+            replace_generation_state(result.state, state)
 
             with self.assertRaisesRegex(BulkGenerationError, "provider"):
                 review_generation_item(result.state, item["queue_id"], "approved")
 
-            unchanged = json.loads(result.state.read_text(encoding="utf-8"))
+            unchanged = generation_database.read_state(result.state)
 
         self.assertEqual(unchanged["items"][item["queue_id"]]["status"], "generated")
 
@@ -3051,7 +3075,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 saved = {}
 
                 def fail_publication(*arguments, **options):
-                    for name in ("generation-state.json", "manifest.json"):
+                    for name in ("generation-state.sqlite3", "manifest.json"):
                         saved[name] = (output / name).read_bytes()
                     raise failure
 
@@ -3070,7 +3094,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 self.assertIs(caught.exception.__cause__, failure)
                 for name, payload in saved.items():
                     self.assertEqual((output / name).read_bytes(), payload)
-                state = load_generation_state(output / "generation-state.json", queue)
+                state = load_generation_state(
+                    output / "generation-state.sqlite3", queue
+                )
                 self.assertIsNone(state["active"])
                 stored = state["items"][item["queue_id"]]
                 self.assertEqual(stored["status"], "failed")
@@ -3178,7 +3204,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertNotIn("Traceback", errors.getvalue())
             renderer.shutdown.assert_called_once_with()
             self.assertEqual(len(renderer.requests), 1)
-            state = load_generation_state(output / "generation-state.json", queue)
+            state = load_generation_state(output / "generation-state.sqlite3", queue)
             self.assertIsNone(state["active"])
             self.assertEqual(
                 state["items"][item["queue_id"]]["failure"]["kind"], "speech_silence"
@@ -3256,11 +3282,11 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             ]
             original = result.state.read_bytes()
             for version in (True, 2.0, [], {}, None, "2"):
-                malformed = json.loads(original)
+                malformed = generation_database.read_snapshot(original)
                 malformed["items"][item["queue_id"]]["failure"]["pause_diagnosis"][
                     "analysis_version"
                 ] = version
-                result.state.write_text(json.dumps(malformed), encoding="utf-8")
+                replace_generation_state(result.state, malformed)
                 with (
                     self.subTest(analysis_version=version),
                     self.assertRaisesRegex(
@@ -3270,11 +3296,15 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     load_generation_state(result.state, queue)
             for field in ("start_seconds", "end_seconds", "duration_seconds"):
                 for value in (10**400, float("inf"), float("nan"), True, -1, "bad"):
-                    malformed = json.loads(original)
+                    malformed = generation_database.read_snapshot(original)
                     malformed["items"][item["queue_id"]]["failure"]["pause_diagnosis"][
                         "spans"
                     ][0][field] = value
-                    result.state.write_text(json.dumps(malformed), encoding="utf-8")
+                    if isinstance(value, float) and not np.isfinite(value):
+                        with self.assertRaises(ValueError):
+                            replace_generation_state(result.state, malformed)
+                        continue
+                    replace_generation_state(result.state, malformed)
                     before = result.state.read_bytes()
                     with (
                         self.subTest(field=field, value=value),
@@ -3284,13 +3314,11 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     ):
                         load_generation_state(result.state, queue)
                     self.assertEqual(result.state.read_bytes(), before)
-            tampered = json.loads(original)
+            tampered = generation_database.read_snapshot(original)
             tampered["items"][item["queue_id"]]["failure"]["pause_diagnosis"][
                 "attempt_binding"
             ]["seed"] = 999
-            result.state.write_text(
-                json.dumps(tampered, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(result.state, tampered)
             with self.assertRaisesRegex(BulkGenerationError, "binding changed"):
                 load_generation_state(result.state, queue)
 
@@ -3343,13 +3371,13 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 seed=0,
             )
             plan = generation_failure_repair_plan(
-                output / "generation-state.json", queue
+                output / "generation-state.sqlite3", queue
             )
             observed_active = {}
 
             def inspect_active(_request):
                 observed_active.update(
-                    load_generation_state(output / "generation-state.json", queue)[
+                    load_generation_state(output / "generation-state.sqlite3", queue)[
                         "active"
                     ]
                 )
@@ -3492,7 +3520,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 root / "output",
                 SyntheticRenderer(pcm=np.tile(audio_samples(), 4)),
             )
-            original = json.loads(result.state.read_text(encoding="utf-8"))
+            original = generation_database.read_state(result.state)
             manifest_before = result.manifest.read_bytes()
             generated = original["items"][item["queue_id"]]
             audio = result.state.parent / generated["path"]
@@ -3512,7 +3540,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     generated["speech_quality"]["analysis_version"] = version
                 generated["quality"]["duration_seconds"] = 1
                 generated["quality"]["channels"] = 1.0
-                result.state.write_text(json.dumps(original), encoding="utf-8")
+                replace_generation_state(result.state, original)
                 load_generation_state(result.state, queue)
                 cases = [
                     ("quality", "duration_seconds", True),
@@ -3527,7 +3555,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     with self.subTest(version=version, category=category, field=field):
                         state = json.loads(json.dumps(original))
                         state["items"][item["queue_id"]][category][field] = value
-                        result.state.write_text(json.dumps(state), encoding="utf-8")
+                        replace_generation_state(result.state, state)
                         state_before = result.state.read_bytes()
                         with self.assertRaisesRegex(
                             BulkGenerationError, "quality.*mismatch"
@@ -3552,7 +3580,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             item = queue_item()
             queue = write_queue(root / "queue.jsonl", [item])
             result = self.run_generation(queue, root / "output", SyntheticRenderer())
-            state = json.loads(result.state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(result.state)
             generated = state["items"][item["queue_id"]]
             self.assertEqual(generated["speech_quality"]["analysis_version"], 2)
 
@@ -3569,7 +3597,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     legacy.longest_internal_silence_seconds
                 ),
             }
-            result.state.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(result.state, state)
 
             loaded = load_generation_state(result.state, queue)
 
@@ -3744,11 +3772,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             published_wavs = list((output / "audio").rglob("*.wav"))
             for seed in (True, "1"):
                 with self.subTest(seed=seed):
-                    tampered = json.loads(after)
+                    tampered = generation_database.read_snapshot(after)
                     tampered["items"][item["queue_id"]]["seed"] = seed
-                    failed.state.write_text(
-                        json.dumps(tampered, sort_keys=True), encoding="utf-8"
-                    )
+                    replace_generation_state(failed.state, tampered)
                     with self.assertRaisesRegex(
                         BulkGenerationError, "sentence repair seed must be an integer"
                     ):
@@ -3963,7 +3989,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 SyntheticRenderer([SynthesisCompletion.LIMITED]),
                 retries=0,
             )
-            state = json.loads(generated.state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(generated.state)
             failure = {
                 "schema_version": 1,
                 "kind": "speech_silence",
@@ -3981,7 +4007,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     "longest_internal_silence_seconds": longest_internal,
                 }
                 failure["speech_quality"] = quality
-                generated.state.write_text(json.dumps(state), encoding="utf-8")
+                replace_generation_state(generated.state, state)
                 self.assertEqual(
                     generation_failure_repair_plan(generated.state, queue)["records"][
                         0
@@ -3994,9 +4020,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                             field=field, invalid=invalid, repair=expected
                         ):
                             failure["speech_quality"] = quality | {field: invalid}
-                            generated.state.write_text(
-                                json.dumps(state), encoding="utf-8"
-                            )
+                            replace_generation_state(generated.state, state)
                             before = generated.state.read_bytes()
                             self.assertIn(
                                 item["queue_id"],
@@ -4256,7 +4280,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 [mixed["queue_id"]],
             )
             state["items"][mixed["queue_id"]]["synthesis_text_sha256"] = "0" * 64
-            atomic_write_json(result.state, state, sort_keys=True)
+            replace_generation_state(result.state, state)
             with self.assertRaisesRegex(
                 BulkGenerationError, "audio-event spoken projection changed"
             ):
@@ -4268,9 +4292,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             item = queue_item()
             queue = write_queue(root / "queue.jsonl", [item])
             result = self.run_generation(queue, root / "output", SyntheticRenderer())
-            state = json.loads(result.state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(result.state)
             state["game"] = "Different Game"
-            atomic_write_json(result.state, state, sort_keys=True)
+            replace_generation_state(result.state, state)
 
             with self.assertRaisesRegex(BulkGenerationError, "game"):
                 load_generation_state(result.state, queue)
@@ -4335,7 +4359,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertEqual(generated["generated"], 1)
             renderer.shutdown.assert_called_once_with()
             self.assertEqual(renderer.stop_calls, 0)
-            state = load_generation_state(output / "generation-state.json", queue)
+            state = load_generation_state(output / "generation-state.sqlite3", queue)
             controls = next(iter(state["synthesis_controls"].values()))
             self.assertTrue(
                 any(
@@ -4352,7 +4376,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                         [
                             "review",
                             "--state",
-                            str(output / "generation-state.json"),
+                            str(output / "generation-state.sqlite3"),
                             item["queue_id"],
                             "approved",
                         ]
@@ -4370,7 +4394,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                         [
                             "publish",
                             "--state",
-                            str(output / "generation-state.json"),
+                            str(output / "generation-state.sqlite3"),
                         ]
                     ),
                     0,
@@ -4387,7 +4411,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                         [
                             "status",
                             "--state",
-                            str(output / "generation-state.json"),
+                            str(output / "generation-state.sqlite3"),
                             "--queue",
                             str(queue),
                         ]
@@ -4450,7 +4474,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     0,
                 )
 
-            state = load_generation_state(output / "generation-state.json", queue)
+            state = load_generation_state(output / "generation-state.sqlite3", queue)
             self.assertEqual(
                 state["items"][item["queue_id"]]["model"],
                 "openmoss-cpp:sha256:resolved",
@@ -4515,11 +4539,11 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                         )
 
             first_state = load_generation_state(
-                root / "first-output" / "generation-state.json",
+                root / "first-output" / "generation-state.sqlite3",
                 queue,
             )
             second_state = load_generation_state(
-                root / "second-output" / "generation-state.json",
+                root / "second-output" / "generation-state.sqlite3",
                 queue,
             )
             first = next((root / "first-output/audio").rglob("*.wav"))

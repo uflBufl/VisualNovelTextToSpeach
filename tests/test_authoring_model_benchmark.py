@@ -14,7 +14,9 @@ from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
 import vntts.authoring.model_benchmark as benchmark_module
 from tests.authoring_fixtures import tree_hashes, write_legacy_fixture
+from tests.generation_state_fixtures import replace_generation_state
 from tests.symlink_support import symlink_or_skip
+from vntts import generation_database
 from vntts.authoring import generation_state
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.model_benchmark import (
@@ -30,6 +32,7 @@ from vntts.authoring.model_benchmark import (
     select_representative_items,
 )
 from vntts.authoring.publication import rename_directory_no_replace
+from vntts.document_identity import sha256_file
 from vntts.synthesis import (
     SynthesisChunk,
     SynthesisChunkStream,
@@ -334,7 +337,8 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                     fixture["queue_id"]: {"status": "failed", "provider": "moss-tts"}
                 }
             }
-            fixture["state"].write_text(json.dumps(state), encoding="utf-8")
+            state.setdefault("queue_sha256", sha256_file(fixture["queue"]))
+            replace_generation_state(fixture["state"], state)
             original_read = generation_state.read_regular_bytes
 
             replaced = []
@@ -374,7 +378,7 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                 hashlib.sha256(original_payload).hexdigest(),
             )
 
-    def test_failure_corpus_default_loader_retains_current_and_legacy_state_validation(
+    def test_failure_corpus_default_loader_validates_current_and_rejects_old_schema(
         self,
     ):
         for schema in (
@@ -384,7 +388,7 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
             with self.subTest(schema=schema), TemporaryDirectory() as directory:
                 root = Path(directory)
                 fixture = write_legacy_fixture(root / "legacy")
-                state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+                state = generation_database.read_state(fixture["state"])
                 state["schema"] = schema
                 state["items"] = {
                     fixture["queue_id"]: {
@@ -393,7 +397,16 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                         "provider": "moss-tts",
                     }
                 }
-                fixture["state"].write_text(json.dumps(state), encoding="utf-8")
+                state.setdefault("queue_sha256", sha256_file(fixture["queue"]))
+                replace_generation_state(fixture["state"], state)
+                if schema == "r1999.bulk-generation-state":
+                    with self.assertRaisesRegex(
+                        BulkGenerationError, "Unsupported generation state schema"
+                    ):
+                        build_failure_comparison_corpus(
+                            fixture["queue"], fixture["state"], root / "corpus.json"
+                        )
+                    continue
                 corpus = build_failure_comparison_corpus(
                     fixture["queue"], fixture["state"], root / "corpus.json"
                 )
@@ -404,7 +417,8 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                 )
 
                 state["queue_sha256"] = "0" * 64
-                fixture["state"].write_text(json.dumps(state), encoding="utf-8")
+                state.setdefault("queue_sha256", sha256_file(fixture["queue"]))
+                replace_generation_state(fixture["state"], state)
                 with self.assertRaisesRegex(BulkGenerationError, "queue changed"):
                     build_failure_comparison_corpus(
                         fixture["queue"], fixture["state"], root / "invalid.json"
@@ -448,8 +462,9 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                 state = {
                     "items": {queue_id: {"status": "failed", "provider": "moss-tts"}}
                 }
-                state_path = root / "state.json"
-                state_path.write_text(json.dumps(state), encoding="utf-8")
+                state_path = root / "state.sqlite3"
+                state["queue_sha256"] = sha256_file(queue)
+                replace_generation_state(state_path, state)
                 reference = root / "reference.wav"
                 reference.write_bytes(b"fixture reference")
                 manifest = root / "manifest.json"
@@ -831,7 +846,7 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                     },
                 ],
             )
-            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state = generation_database.read_state(fixture["state"])
             state["queue_sha256"] = hashlib.sha256(queue.read_bytes()).hexdigest()
             state["active"] = None
             state["items"][queue_id] = {
@@ -839,7 +854,8 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                 "attempts": 1,
                 "provider": "moss-tts",
             }
-            fixture["state"].write_text(json.dumps(state), encoding="utf-8")
+            state.setdefault("queue_sha256", sha256_file(fixture["queue"]))
+            replace_generation_state(fixture["state"], state)
             manifest = Path(fixture["job"]["voice_manifest"])
             manifest.write_text(
                 json.dumps(
@@ -952,8 +968,21 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                 },
             }
             state_document = {"items": states}
-            state_path = root / "state.json"
-            state_path.write_text(json.dumps(state_document), encoding="utf-8")
+            state_path = root / "state.sqlite3"
+            state_document.update(
+                schema="vntts.authoring-generation-state",
+                schema_version=1,
+                queue_sha256=sha256_file(queue),
+            )
+            for result in state_document["items"].values():
+                if result.get("status") in {"approved", "generated"}:
+                    result.setdefault(
+                        "review_status",
+                        "approved"
+                        if result["status"] == "approved"
+                        else "pending_review",
+                    )
+            replace_generation_state(state_path, state_document)
 
             corpus = build_failure_comparison_corpus(
                 queue,
@@ -1032,8 +1061,21 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                     },
                 }
             }
-            state_path = root / "state.json"
-            state_path.write_text(json.dumps(state_document), encoding="utf-8")
+            state_path = root / "state.sqlite3"
+            state_document.update(
+                schema="vntts.authoring-generation-state",
+                schema_version=1,
+                queue_sha256=sha256_file(queue),
+            )
+            for result in state_document["items"].values():
+                if result.get("status") in {"approved", "generated"}:
+                    result.setdefault(
+                        "review_status",
+                        "approved"
+                        if result["status"] == "approved"
+                        else "pending_review",
+                    )
+            replace_generation_state(state_path, state_document)
             manifest = root / "manifest.json"
             manifest.write_text(
                 json.dumps(

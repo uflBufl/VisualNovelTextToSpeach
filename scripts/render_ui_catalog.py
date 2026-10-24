@@ -52,7 +52,6 @@ DEFAULT_OUTPUT = PROJECT_ROOT / ".codex" / "ui-catalog"
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from vntts.cleanup import cleanup_on_exit, temporary_directory  # noqa: E402
-from vntts.path_safety import read_regular_text  # noqa: E402
 from vntts.pregeneration_audition import VoiceAuditionReference  # noqa: E402
 from vntts.ui_catalog import (  # noqa: E402
     UICatalog,
@@ -476,10 +475,13 @@ def _authoring_catalog_workspace(root: Path, state: str) -> Path:
     from tests.authoring_fixtures import create_test_workspace
     from vntts.authoring.generation_lease import process_started_at
     from vntts.document_identity import sha256_file
+    from vntts.generation_database import read_state, write_state
 
     workspace = create_test_workspace(root)[2].directory
-    state_path = workspace / "generated-audio" / "generation-state.json"
-    document = json.loads(read_regular_text(state_path, encoding="utf-8"))
+    state_path = workspace / "generated-audio" / "generation-state.sqlite3"
+    document = read_state(state_path)
+    items = document["items"]
+    assert isinstance(items, dict)
     if state == "ready" or state.startswith("selection-refresh-"):
         document["active"] = None
         document["items"] = {}
@@ -488,22 +490,23 @@ def _authoring_catalog_workspace(root: Path, state: str) -> Path:
         "technical-details",
     }:
         document["active"] = None
-        item = next(iter(document["items"].values()))
+        item = next(iter(items.values()))
+        assert isinstance(item, dict)
         item["status"] = "generated"
         item["review_status"] = "pending_review"
     elif state == "approved":
         document["active"] = None
     elif state == "failed":
         document["active"] = None
-        queue_id = next(iter(document["items"]))
-        document["items"][queue_id] = {
+        queue_id = next(iter(items))
+        items[queue_id] = {
             "status": "failed",
             "attempts": 3,
             "seed": 2,
             "last_error": "Voice synthesis ended without usable speech",
             "updated_at": "2026-08-17T00:00:00+00:00",
         }
-    state_path.write_text(json.dumps(document), encoding="utf-8")
+    write_state(state_path, document)
     if state == "running-elsewhere" or state.startswith("stopping"):
         (workspace / "generated-audio" / ".generation-lease.json").write_text(
             json.dumps(
@@ -1402,7 +1405,7 @@ def _voice_preview_playback_story(
         None,
     )
     assert panel.a_play.isEnabled()
-    assert panel.a_play.text() == "Stop preview"
+    assert panel.a_play.accessibleName() == "Stop voice preview"
     if state == "preview-ready":
         panel.a_play.click()
 

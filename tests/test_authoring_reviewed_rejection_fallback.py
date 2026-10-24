@@ -17,6 +17,8 @@ from tests.authoring_fixtures import (
     create_audio_event_projection_fixture,
     create_test_workspace,
 )
+from tests.generation_state_fixtures import replace_generation_state
+from vntts import generation_database
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.game_pack import _decision_records
@@ -45,8 +47,8 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
         workspace = json.loads((base / "workspace.json").read_text(encoding="utf-8"))
         voice_manifest = base / workspace["voice_manifest"]["path"]
         reference = voice_manifest.parent / "rhiannon.wav"
-        state_path = base / "generated-audio/generation-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state_path = base / "generated-audio/generation-state.sqlite3"
+        state = generation_database.read_state(state_path)
         item = state["items"][queue_item.queue_id]
         item["config_rebase"] = {
             "status": "generated",
@@ -61,7 +63,7 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
             "target_route_status": "active",
             "successor_state": "carried_terminal",
         }
-        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        replace_generation_state(state_path, state)
         write_generated_manifest_from_state(
             state, state_path.parent, state_path.parent / "manifest.json"
         )
@@ -71,14 +73,16 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             base, queue_item = self._base(root / "source")
-            base_state = (base / "generated-audio/generation-state.json").read_bytes()
+            base_state = (
+                base / "generated-audio/generation-state.sqlite3"
+            ).read_bytes()
             first = create_reviewed_rejection_fallback_workspace(
                 base, root / "workspaces"
             )
             second = create_reviewed_rejection_fallback_workspace(
                 base, root / "workspaces"
             )
-            state_path = first.directory / "generated-audio/generation-state.json"
+            state_path = first.directory / "generated-audio/generation-state.sqlite3"
             state = load_generation_state(state_path, first.directory / "queue.jsonl")
             queue = VoiceGenerationQueue.load(first.directory / "queue.jsonl")
             records = _decision_records(
@@ -130,7 +134,7 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
             )
             route = backend.prepare_route(queue_item.speaker, queue_item.text)
             base_state_after = (
-                base / "generated-audio/generation-state.json"
+                base / "generated-audio/generation-state.sqlite3"
             ).read_bytes()
 
         self.assertTrue(first.created)
@@ -148,12 +152,12 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
             result = create_reviewed_rejection_fallback_workspace(
                 base, root / "workspaces"
             )
-            state_path = result.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = result.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["items"][queue_item.queue_id]["live_fallback"]["evidence"][
                 "synthesis_character"
             ] = "Centurion"
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             with self.assertRaises(BulkGenerationError):
                 load_generation_state(state_path, result.directory / "queue.jsonl")
 
@@ -182,8 +186,8 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
             _fixture, _imported, workspace = create_test_workspace(root / "source")
             base = workspace.directory
             queue_item = VoiceGenerationQueue.load(base / "queue.jsonl").items[0]
-            state_path = base / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = base / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["active"] = None
             state["items"][queue_item.queue_id].update(
                 {
@@ -194,7 +198,7 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
                     "voice_character": "Rhiannon",
                 }
             )
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             write_generated_manifest_from_state(
                 state, state_path.parent, state_path.parent / "manifest.json"
             )
@@ -217,12 +221,12 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
             with self.subTest(references=references), TemporaryDirectory() as directory:
                 root = Path(directory)
                 base, item = self._base(root / "source")
-                path = base / "generated-audio/generation-state.json"
-                original = json.loads(path.read_text())
+                path = base / "generated-audio/generation-state.sqlite3"
+                original = generation_database.read_state(path)
                 original["items"][item.queue_id]["config_rebase"][
                     "target_reference_sha256s"
                 ] = references
-                path.write_text(json.dumps(original))
+                replace_generation_state(path, original)
                 state_bytes = path.read_bytes()
                 target = root / "workspaces"
                 with self.assertRaises(AuthoringWorkbenchError):
@@ -270,9 +274,12 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
                     result.directory
                     / workspace["reviewed_rejection_live_fallback"]["base_state_path"]
                 )
-                document = json.loads(path.read_text())
-                document["items"]["unexpected-approved-result"] = {"status": "approved"}
-                path.write_text(json.dumps(document))
+                document = generation_database.read_state(path)
+                document["items"]["unexpected-approved-result"] = {
+                    "status": "approved",
+                    "review_status": "approved",
+                }
+                replace_generation_state(path, document)
                 return captured
 
             with patch.object(

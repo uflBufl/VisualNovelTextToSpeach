@@ -25,6 +25,7 @@ from vntts.authoring.generation_state import (
     REVIEWED_WAVEFORM_PUBLICATION_REASON,
     REVIEWED_WAVEFORM_PUBLICATION_SCHEMA,
     REVIEWED_WAVEFORM_PUBLICATION_VERSION,
+    write_generation_state,
 )
 from vntts.authoring.publication import (
     publish_single_base_successor,
@@ -46,7 +47,10 @@ from vntts.authoring.workspace_config import (
     workspace_id_for_config,
     workspace_successor_config_fingerprint,
 )
-from vntts.authoring.workspace_foundation import stage_single_base_successor
+from vntts.authoring.workspace_foundation import (
+    load_generation_state_proof,
+    stage_single_base_successor,
+)
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import file_sha256
 from vntts.path_safety import contained_no_replace_destination
@@ -118,7 +122,7 @@ def create_reviewed_waveform_publication_workspace(
         "base_workspace_id": base_document["workspace_id"],
         "base_workspace_path": "inputs/reviewed-waveform/base-workspace.json",
         "base_workspace_sha256": base_workspace_sha256,
-        "base_state_path": "inputs/reviewed-waveform/base-generation-state.json",
+        "base_state_path": "inputs/reviewed-waveform/base-generation-state.sqlite3",
         "base_state_sha256": state_sha256,
         "queue_sha256": queue_sha256,
         "selected_story_index_sha256": story_sha256,
@@ -153,7 +157,7 @@ def create_reviewed_waveform_publication_workspace(
 
     snapshots = [
         (base_directory / "workspace.json", base_workspace_sha256),
-        (base_directory / "generated-audio/generation-state.json", state_sha256),
+        (base_directory / "generated-audio/generation-state.sqlite3", state_sha256),
         (queue_path, queue_sha256),
     ]
     try:
@@ -296,7 +300,7 @@ def _write_staged_reviewed_waveform_workspace(
     batch: dict[str, object],
     config_fingerprint: str,
 ) -> dict[str, object]:
-    atomic_write_json(output / "generation-state.json", target_state, sort_keys=True)
+    write_generation_state(output / "generation-state.sqlite3", target_state)
     write_generated_manifest_from_state(target_state, output, output / "manifest.json")
     workspace = copy.deepcopy(base_document)
     workspace.update(
@@ -327,7 +331,7 @@ def _validate_staged_reviewed_waveform_workspace(
         staging / "provenance/import.json", "reviewed-waveform import"
     )
     validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
-    load_generation_state(output / "generation-state.json", staging / "queue.jsonl")
+    load_generation_state(output / "generation-state.sqlite3", staging / "queue.jsonl")
 
 
 def validate_reviewed_waveform_publication_workspace(
@@ -367,7 +371,7 @@ def _reviewed_waveform_base_state(
             raise AuthoringWorkbenchError(
                 f"Reviewed-waveform {label} authority changed"
             )
-    return load_workspace_json(
+    return load_generation_state_proof(
         contained_workspace_path(
             root,
             safe_workspace_relative_path(

@@ -335,8 +335,8 @@ class QwenBackendTest(unittest.TestCase):
                 reference_root=root,
                 reference_transcript="The original line.",
             )
-            staging = root / "staging"
-            staging.mkdir()
+            staging = root / "jobs" / "job" / "staging"
+            staging.mkdir(parents=True)
             effective = {
                 "routes": {"Narrator": (voice, (digest,), "Narrator")},
                 "narrator_roles": (),
@@ -353,8 +353,8 @@ class QwenBackendTest(unittest.TestCase):
                 (digest,),
                 "Narrator",
             )
-            missing_staging = root / "missing-staging"
-            missing_staging.mkdir()
+            missing_staging = root / "jobs" / "job" / "missing-staging"
+            missing_staging.mkdir(parents=True)
             entries = _write_effective_voices(missing_staging, effective)
             self.assertNotIn("vntts.reference_transcript", entries[0])
 
@@ -376,9 +376,7 @@ class QwenBackendTest(unittest.TestCase):
                     )
                 ]
             )
-            store = SimpleNamespace(
-                path_for=lambda _job_id: root / "job" / "state.json"
-            )
+            store = SimpleNamespace(directory_for=lambda _job_id: root / "job")
             manifest = _materialize_voice_catalog(
                 store, SimpleNamespace(job_id="job"), registry
             )

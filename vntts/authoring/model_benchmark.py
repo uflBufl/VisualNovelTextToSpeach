@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
-import json
 import platform
 import re
 import sys
@@ -25,8 +24,10 @@ from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_state import (
+    decode_generation_state_snapshot,
     load_generation_state,
     load_generation_state_from_snapshot,
+    load_generation_state_object_snapshot,
     load_stable_generation_queue,
 )
 from vntts.authoring.publication import (
@@ -39,7 +40,6 @@ from vntts.authoring.speech_quality import (
     SPEECH_QUALITY_ANALYSIS_VERSION,
     measure_generated_speech_samples,
 )
-from vntts.authoring.workspace_foundation import load_json_object_snapshot
 from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_messages
 from vntts.document_identity import (
@@ -297,7 +297,7 @@ def _capture_failure_corpus_inputs(
             f"Unable to capture comparison inputs: {error}"
         ) from error
     if state_loader is load_generation_state:
-        state, state_sha256, _payload = load_json_object_snapshot(
+        state, state_sha256, _payload = load_generation_state_object_snapshot(
             state_path, "comparison generation state", error_type=ModelBenchmarkError
         )
         state = load_generation_state_from_snapshot(
@@ -307,8 +307,8 @@ def _capture_failure_corpus_inputs(
         # Custom loaders retain their path-based and byte-decoder contracts.
         try:
             state_payload = read_regular_bytes(state_path)
-            state_snapshot = decode_json(state_payload)
-        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            state_snapshot = decode_generation_state_snapshot(state_payload)
+        except (OSError, UnicodeError, ValueError) as error:
             raise ModelBenchmarkError(
                 f"Unable to capture comparison inputs: {error}"
             ) from error
@@ -518,7 +518,7 @@ def _comparison_voice_context(
     except (
         OSError,
         UnicodeDecodeError,
-        json.JSONDecodeError,
+        ValueError,
         VoiceManifestError,
     ) as error:
         raise ModelBenchmarkError(
@@ -661,7 +661,7 @@ def load_benchmark_corpus(path: str | Path) -> JsonDocument:
     path = Path(path).expanduser().resolve()
     try:
         document = decode_json(read_regular_text(path, encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError, ValueError) as error:
         raise ModelBenchmarkError(
             f"Unable to read benchmark corpus {path}: {error}"
         ) from error
@@ -1290,7 +1290,7 @@ def _snapshot_voice_registry(
 def load_model_variants(path: str | Path) -> list[ModelVariant]:
     try:
         document = decode_json(read_regular_text(Path(path), encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError, ValueError) as error:
         raise ModelBenchmarkError(
             f"Unable to read model variants {path}: {error}"
         ) from error

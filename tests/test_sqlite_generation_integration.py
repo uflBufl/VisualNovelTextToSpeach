@@ -4,6 +4,7 @@ import json
 import socket
 import unittest
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -93,7 +94,11 @@ def legacy_worker_output(root):
         ),
         approve_validated_audio=True,
     )
-    return prepared, plan, result
+    state = load_generation_state(result.state, prepared.queue)
+    legacy = result.state.with_suffix(".json")
+    legacy.write_text(json.dumps(state), encoding="utf-8")
+    result.state.unlink()
+    return prepared, plan, replace(result, state=legacy)
 
 
 class SqliteGenerationIntegrationTest(unittest.TestCase):
@@ -126,7 +131,6 @@ class SqliteGenerationIntegrationTest(unittest.TestCase):
                 queue,
                 output,
                 renderer,
-                state_storage="sqlite",
                 progress_callback=observe,
             )
             state = load_generation_state(first.state, queue)
@@ -150,48 +154,42 @@ class SqliteGenerationIntegrationTest(unittest.TestCase):
             for phase in ("generating", "validating", "publishing", None):
                 self.assertIn(phase, snapshots)
 
-    def test_completed_and_partial_json_migration_preserve_originals_and_only_render_missing(
+    def test_completed_and_partial_json_outputs_require_explicit_upgrade_without_rendering(
         self,
     ):
         for partial in (False, True):
             with self.subTest(partial=partial), TemporaryDirectory() as directory:
                 root = Path(directory)
-                values = [queue_item("one"), queue_item("two")]
-                queue = write_queue(root / "queue.jsonl", values)
+                queue = write_queue(
+                    root / "queue.jsonl", [queue_item("one"), queue_item("two")]
+                )
                 output = root / "output"
                 original = self.generate(
                     queue, output, SyntheticRenderer(), limit=1 if partial else None
                 )
-                self.assertEqual(original.state.name, "generation-state.json")
-                legacy_payload = original.state.read_bytes()
-                legacy_stat = original.state.stat()
                 previous = load_generation_state(original.state, queue)
                 recordings = {
-                    key: (
-                        output / item["path"],
+                    output / item["path"]: (
                         (output / item["path"]).stat(),
                         sha256_file(output / item["path"]),
                     )
-                    for key, item in previous["items"].items()
+                    for item in previous["items"].values()
                 }
+                legacy = original.state.with_suffix(".json")
+                legacy.write_text(json.dumps(previous), encoding="utf-8")
+                original.state.unlink()
+                payload, before = legacy.read_bytes(), legacy.stat()
                 renderer = SyntheticRenderer()
-                migrated = self.generate(
-                    queue, output, renderer, state_storage="sqlite"
-                )
-                self.assertEqual(migrated.state.name, "generation-state.sqlite3")
-                self.assertEqual(len(renderer.requests), 1 if partial else 0)
-                self.assertEqual(migrated.skipped_existing, 1 if partial else 2)
-                self.assertEqual(original.state.read_bytes(), legacy_payload)
-                self.assertEqual(
-                    original.state.stat().st_mtime_ns, legacy_stat.st_mtime_ns
-                )
-                after = load_generation_state(migrated.state, queue)
-                self.assertEqual(len(after["items"]), 2)
-                for key, (audio, before, digest) in recordings.items():
-                    self.assertEqual(after["items"][key], previous["items"][key])
+                with self.assertRaises(bulk.BulkGenerationError):
+                    self.generate(queue, output, renderer)
+                self.assertEqual(renderer.requests, [])
+                self.assertFalse(original.state.exists())
+                self.assertEqual(legacy.read_bytes(), payload)
+                self.assertEqual(legacy.stat().st_mtime_ns, before.st_mtime_ns)
+                for audio, (recording_before, digest) in recordings.items():
                     self.assertEqual(
                         (audio.stat().st_dev, audio.stat().st_ino),
-                        (before.st_dev, before.st_ino),
+                        (recording_before.st_dev, recording_before.st_ino),
                     )
                     self.assertEqual(sha256_file(audio), digest)
 
@@ -201,9 +199,7 @@ class SqliteGenerationIntegrationTest(unittest.TestCase):
             value = queue_item()
             queue = write_queue(root / "queue.jsonl", [value])
             output = root / "output"
-            result = self.generate(
-                queue, output, SyntheticRenderer(), state_storage="sqlite"
-            )
+            result = self.generate(queue, output, SyntheticRenderer())
             record = load_generation_state(result.state, queue)["items"][
                 value["queue_id"]
             ]
@@ -250,7 +246,6 @@ class SqliteGenerationIntegrationTest(unittest.TestCase):
                 model="pocket-tts",
                 generation_profile="default",
                 retries=0,
-                state_storage="sqlite",
             )
             report = generation_failure_report(failed.state, queue)
             self.assertEqual(report["records"][0]["queue_id"], value["queue_id"])
@@ -272,53 +267,46 @@ class SqliteGenerationIntegrationTest(unittest.TestCase):
             self.assertFalse((output / "generation-state.json").exists())
             self.assertEqual(GeneratedAudioIndex.load(failed.manifest).entries, ())
 
-    def test_completed_legacy_worker_output_upgrades_before_return_without_model_calls(
-        self,
-    ):
+    def test_completed_legacy_worker_output_requires_upgrade_without_model_calls(self):
         with TemporaryDirectory() as directory:
             prepared, plan, legacy = legacy_worker_output(Path(directory))
-            self.assertEqual(legacy.state.name, "generation-state.json")
-            original = legacy.state.read_bytes()
-            original_stat = legacy.state.stat()
-            state = load_generation_state(legacy.state, prepared.queue)
+            original, original_stat = legacy.state.read_bytes(), legacy.state.stat()
+            state = json.loads(original)
             recordings = {
-                key: (
-                    prepared.output_directory / value["path"],
+                prepared.output_directory / value["path"]: (
                     (prepared.output_directory / value["path"]).stat(),
                     value["file_sha256"],
                 )
-                for key, value in state["items"].items()
+                for value in state["items"].values()
             }
-            sql = prepared.output_directory / "generation-state.sqlite3"
-            self.assertEqual(
-                OfflineGenerationWorker().inspect_progress(prepared).generated,
-                prepared.ready_items,
-            )
-            self.assertFalse(sql.exists())
             backend = Mock(side_effect=AssertionError("model was started"))
             process = Mock(side_effect=AssertionError("worker process was started"))
-            upgraded = OfflineGenerationWorker(
+            worker = OfflineGenerationWorker(
                 backend_factory=backend, popen_factory=process
-            ).generate(prepared, plan)
-            self.assertEqual(upgraded.state, sql)
-            self.assertEqual(upgraded.generated, prepared.ready_items)
-            self.assertEqual(load_generation_state(sql, prepared.queue), state)
+            )
+            with self.assertRaises(OfflineGenerationError):
+                worker.inspect_progress(prepared)
+            with self.assertRaises(OfflineGenerationError):
+                worker.generate(prepared, plan)
+            self.assertFalse(
+                (prepared.output_directory / "generation-state.sqlite3").exists()
+            )
             self.assertEqual(legacy.state.read_bytes(), original)
             self.assertEqual(legacy.state.stat().st_mtime_ns, original_stat.st_mtime_ns)
             backend.assert_not_called()
             process.assert_not_called()
-            for audio, before, digest in recordings.values():
+            for audio, (before, digest) in recordings.items():
                 self.assertEqual(
                     (audio.stat().st_dev, audio.stat().st_ino),
                     (before.st_dev, before.st_ino),
                 )
                 self.assertEqual(sha256_file(audio), digest)
 
-    def test_legacy_worker_upgrade_refuses_corrupt_state_queue_or_recording(self):
+    def test_legacy_worker_refuses_corrupt_state_queue_or_recording(self):
         for damage in ("state", "queue", "recording"):
             with self.subTest(damage=damage), TemporaryDirectory() as directory:
                 prepared, plan, legacy = legacy_worker_output(Path(directory))
-                state = load_generation_state(legacy.state, prepared.queue)
+                state = json.loads(legacy.state.read_text())
                 audio = (
                     prepared.output_directory
                     / next(iter(state["items"].values()))["path"]
@@ -346,7 +334,7 @@ class SqliteGenerationIntegrationTest(unittest.TestCase):
                 backend.assert_not_called()
                 process.assert_not_called()
 
-    def test_legacy_worker_upgrade_respects_live_generation_lease(self):
+    def test_legacy_worker_refuses_implicit_upgrade_with_live_generation_lease(self):
         with TemporaryDirectory() as directory:
             prepared, plan, legacy = legacy_worker_output(Path(directory))
             original = legacy.state.read_bytes()
@@ -371,19 +359,15 @@ class SqliteGenerationIntegrationTest(unittest.TestCase):
     ):
         with TemporaryDirectory() as directory:
             prepared, plan, legacy = legacy_worker_output(Path(directory))
-            state = load_generation_state(legacy.state, prepared.queue)
+            state = json.loads(legacy.state.read_text())
             sql = prepared.output_directory / "generation-state.sqlite3"
             write_generation_state(sql, state)
             legacy.state.write_bytes(b"obsolete corrupt JSON must not be read")
             original = sql.read_bytes()
             backend = Mock(side_effect=AssertionError("model was started"))
-            with patch(
-                "vntts.pregeneration_generation.generation_state_snapshot",
-                side_effect=AssertionError("legacy JSON was read"),
-            ):
-                result = OfflineGenerationWorker(backend_factory=backend).generate(
-                    prepared, plan
-                )
+            result = OfflineGenerationWorker(backend_factory=backend).generate(
+                prepared, plan
+            )
             self.assertEqual(result.state, sql)
             self.assertEqual(sql.read_bytes(), original)
             self.assertEqual(
@@ -476,7 +460,7 @@ class SqliteGenerationIntegrationTest(unittest.TestCase):
                 )
             )
             with self.assertRaises(SystemExit):
-                self.generate(queue, output, renderer, state_storage="sqlite", seed=5)
+                self.generate(queue, output, renderer, seed=5)
             process = Mock(pid=999999, returncode=None)
             process.poll.side_effect = lambda: process.returncode
             state = load_generation_state(path, queue)
@@ -531,15 +515,16 @@ class SqliteGenerationIntegrationTest(unittest.TestCase):
                 digest = sha256_file(recording)
                 if damage == "legacy":
                     value["schema_version"] = 999
-                    saved.state.write_text(json.dumps(value))
-                    authority = saved.state
+                    authority = saved.state.with_suffix(".json")
+                    authority.write_text(json.dumps(value))
+                    saved.state.unlink()
                 else:
                     authority = output / "generation-state.sqlite3"
                     authority.write_bytes(b"saved damaged database")
                 original = authority.read_bytes()
                 renderer = SyntheticRenderer()
                 with self.assertRaises(bulk.BulkGenerationError):
-                    self.generate(queue, output, renderer, state_storage="sqlite")
+                    self.generate(queue, output, renderer)
                 self.assertEqual(renderer.requests, [])
                 self.assertEqual(authority.read_bytes(), original)
                 self.assertEqual(
@@ -569,7 +554,6 @@ class SqliteGenerationIntegrationTest(unittest.TestCase):
                     queue,
                     root / "output",
                     SyntheticRenderer(),
-                    state_storage="sqlite",
                     control_files={"model_config": source},
                 )
                 original = load_generation_state(result.state, queue)
@@ -625,9 +609,7 @@ class SqliteGenerationIntegrationTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             queue = write_queue(root / "queue.jsonl", [queue_item()])
-            result = self.generate(
-                queue, root / "output", SyntheticRenderer(), state_storage="sqlite"
-            )
+            result = self.generate(queue, root / "output", SyntheticRenderer())
             alias = result.state.with_name("alias.sqlite3")
             symlink_or_skip(alias, result.state)
             with self.assertRaises((bulk.BulkGenerationError, ValueError)):

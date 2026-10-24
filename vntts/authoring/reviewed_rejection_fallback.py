@@ -32,6 +32,7 @@ from vntts.authoring.generation_state import (
     LIVE_FALLBACK_REVIEWED_REJECTION_VERSION,
     REVIEWED_REJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA,
     live_fallback_decision,
+    write_generation_state,
 )
 from vntts.authoring.publication import (
     publish_single_base_successor,
@@ -269,7 +270,7 @@ def _rejection_identity(
         "base_workspace_id": base_document["workspace_id"],
         "base_workspace_path": "inputs/reviewed-rejection/base-workspace.json",
         "base_workspace_sha256": selection.base_workspace_sha256,
-        "base_state_path": "inputs/reviewed-rejection/base-generation-state.json",
+        "base_state_path": "inputs/reviewed-rejection/base-generation-state.sqlite3",
         "base_state_sha256": selection.state_sha256,
         "queue_sha256": selection.queue_sha256,
         "voice_manifest_sha256": selection.voice_sha256,
@@ -314,7 +315,7 @@ def _stage_rejection_workspace(
     snapshots = [
         (selection.base_directory / "workspace.json", selection.base_workspace_sha256),
         (
-            selection.base_directory / "generated-audio/generation-state.json",
+            selection.base_directory / "generated-audio/generation-state.sqlite3",
             selection.state_sha256,
         ),
         (selection.queue_path, selection.queue_sha256),
@@ -379,8 +380,8 @@ def _mutate_rejection_state(
         projected["updated_at"] = decided_at
         target_items[queue_id] = projected
     staged.target_state["active"] = None
-    atomic_write_json(
-        staged.output / "generation-state.json", staged.target_state, sort_keys=True
+    write_generation_state(
+        staged.output / "generation-state.sqlite3", staged.target_state
     )
     write_generated_manifest_from_state(
         staged.target_state, staged.output, staged.output / "manifest.json"
@@ -407,7 +408,7 @@ def _validate_staged_rejection_workspace(
     )
     validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
     load_generation_state(
-        staged.output / "generation-state.json", staging / "queue.jsonl"
+        staged.output / "generation-state.sqlite3", staging / "queue.jsonl"
     )
 
 
@@ -538,7 +539,9 @@ def _validate_rejection_authority_snapshots(
                     f"Reviewed-rejection {label} authority changed"
                 )
             snapshots.append(captured)
-        base_state = snapshots[1].json_document("reviewed-rejection base state")
+        base_state = snapshots[1].generation_state_proof(
+            "reviewed-rejection base state"
+        )
     except AuthoringAuthorityError as error:
         raise AuthoringWorkbenchError(str(error)) from error
     return base_state, tuple(snapshots)

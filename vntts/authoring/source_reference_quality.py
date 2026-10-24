@@ -20,7 +20,11 @@ from vntts_artifacts import (
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
 )
-from vntts.authoring.generation_state import validate_generation_state_document
+from vntts.authoring.generation_state import (
+    decode_generation_state_snapshot,
+    read_generation_state_payload,
+    validate_generation_state_document,
+)
 from vntts.authoring.publication import (
     no_replace_destination,
     publication_errors,
@@ -187,7 +191,8 @@ def _load_quality_review_evaluation(
 def _load_quality_review_generation(
     state_path: Path, evaluation: _QualityReviewEvaluation
 ) -> _QualityReviewGeneration:
-    state_payload, state = _read_json(state_path, "generation state")
+    state_payload = read_generation_state_payload(state_path)
+    state = decode_generation_state_snapshot(state_payload)
     state_sha256 = hashlib.sha256(state_payload).hexdigest()
     try:
         with temporary_directory(prefix="vntts-quality-queue-") as directory:
@@ -557,7 +562,7 @@ def main(argv: list[str] | None = None) -> int:
         SourceReferenceQualityError,
         ReferenceCompositeError,
         OSError,
-        json.JSONDecodeError,
+        ValueError,
     ) as error:
         return _exit_code(cli_error(error))
 

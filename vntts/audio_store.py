@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import sqlite3
@@ -18,12 +17,19 @@ from uuid import uuid4
 from vntts.path_safety import (
     open_regular_binary,
     open_regular_candidate,
-    read_regular_text,
 )
 
 
 class SharedAudioStoreError(OSError):
     """A recording cannot be admitted or linked without risking saved work."""
+
+
+class AudioCatalogError(SharedAudioStoreError):
+    """Saved key authority is unavailable; generating again would lose reuse."""
+
+
+class AudioStorageUpgradeRequired(AudioCatalogError):
+    """An existing store must complete its explicit upgrade before use."""
 
 
 def _regular(path: Path) -> Path:
@@ -137,7 +143,7 @@ def link_shared_audio(
 
 _CATALOG_SCHEMA = {
     "bindings": "CREATE TABLE bindings (synthesis_key TEXT PRIMARY KEY NOT NULL, audio_sha256 TEXT NOT NULL)",
-    "legacy_errors": "CREATE TABLE legacy_errors (filename TEXT PRIMARY KEY NOT NULL, error TEXT NOT NULL)",
+    "unavailable_keys": "CREATE TABLE unavailable_keys (synthesis_key TEXT PRIMARY KEY NOT NULL, reason TEXT NOT NULL)",
 }
 
 
@@ -168,18 +174,21 @@ class SharedAudioStore:
         ):
             raise ValueError("Invalid audio synthesis key")
 
-    def _object(self, digest: str) -> Path:
+    def _read_object(self, digest: str) -> tuple[Path, bytes]:
         if not isinstance(digest, str) or re.fullmatch(r"[a-f0-9]{64}", digest) is None:
-            raise SharedAudioStoreError("Invalid audio object digest")
-        path = self._directory("objects") / f"{digest}.wav"
-        _read_wav(path, digest)
-        return path
+            raise AudioCatalogError("Invalid audio object digest")
+        try:
+            path = self._directory("objects") / f"{digest}.wav"
+            payload, _ = _read_wav(path, digest)
+        except OSError as error:
+            raise AudioCatalogError(
+                f"Saved audio object {digest} is unavailable; restore its verified WAV before generating: {error}"
+            ) from error
+        return path, payload
 
     def _check_catalog_paths(self, path: Path) -> None:
         if self.directory.is_symlink():
-            raise SharedAudioStoreError(
-                f"Audio store is a symbolic link: {self.directory}"
-            )
+            raise AudioCatalogError(f"Audio store is a symbolic link: {self.directory}")
         for candidate in (
             path,
             *(Path(str(path) + suffix) for suffix in ("-journal", "-wal", "-shm")),
@@ -189,54 +198,26 @@ class SharedAudioStore:
             except FileNotFoundError:
                 continue
             if not stat.S_ISREG(info.st_mode):
-                raise SharedAudioStoreError(
+                raise AudioCatalogError(
                     f"Audio catalog must be a regular file: {candidate}"
                 )
 
-    def _read_legacy_binding(self, binding: Path) -> tuple[str, str]:
-        self._validate_key(binding.stem)
-        if binding.suffix != ".json" or binding.is_symlink():
-            raise ValueError("Not a regular legacy synthesis binding")
-        payload = read_regular_text(binding, encoding="utf-8")
-        record = json.loads(payload)
-        if (
-            not isinstance(record, dict)
-            or set(record) != {"schema_version", "audio_sha256"}
-            or type(record["schema_version"]) is not int
-            or record["schema_version"] != 1
-        ):
-            raise ValueError("Unsupported legacy audio binding schema")
-        digest = record["audio_sha256"]
-        self._object(digest)
-        return payload, digest
-
     def _initialize_catalog(self) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
+        try:
+            self._require_empty_store()
+        except AudioStorageUpgradeRequired:
+            if not self.catalog_path.exists():
+                raise
+            # A competing fresh-store initializer published first; validate it below.
+            return
         temporary = self._directory(f".audio-catalog.{uuid4().hex}.sqlite3")
-        imported: list[tuple[Path, str, str]] = []
         try:
             with self._connect(temporary, create=True) as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 for statement in _CATALOG_SCHEMA.values():
                     connection.execute(statement)
-                connection.execute("PRAGMA user_version = 1")
-                legacy = self._directory("bindings")
-                if legacy.exists() and not legacy.is_dir():
-                    raise SharedAudioStoreError(
-                        f"Invalid legacy audio bindings: {legacy}"
-                    )
-                for binding in sorted(legacy.iterdir()) if legacy.exists() else ():
-                    try:
-                        payload, digest = self._read_legacy_binding(binding)
-                        connection.execute(
-                            "INSERT INTO bindings VALUES (?, ?)", (binding.stem, digest)
-                        )
-                        imported.append((binding, payload, digest))
-                    except (OSError, ValueError, TypeError, KeyError) as error:
-                        connection.execute(
-                            "INSERT INTO legacy_errors VALUES (?, ?)",
-                            (binding.name, str(error)),
-                        )
+                connection.execute("PRAGMA user_version = 2")
                 connection.commit()
                 self._validate_catalog(connection)
             _sync_regular_file(temporary)
@@ -245,29 +226,24 @@ class SharedAudioStore:
             except FileExistsError:
                 pass
             _sync_directory(self.directory)
-            # Keep every original until the committed, published catalog agrees.
-            with self._connect(self.catalog_path) as connection:
-                self._validate_catalog(connection)
-                for binding, payload, digest in imported:
-                    row = connection.execute(
-                        "SELECT audio_sha256 FROM bindings WHERE synthesis_key = ?",
-                        (binding.stem,),
-                    ).fetchone()
-                    if row != (digest,):
-                        raise SharedAudioStoreError(
-                            f"Legacy binding conflicts with audio catalog: {binding}"
-                        )
-                    self._object(digest)
-                    if (
-                        binding.exists()
-                        and not binding.is_symlink()
-                        and read_regular_text(binding, encoding="utf-8") == payload
-                    ):
-                        binding.unlink(missing_ok=True)
-            if imported:
-                _sync_directory(self._directory("bindings"))
         finally:
             temporary.unlink(missing_ok=True)
+
+    def _require_empty_store(self) -> None:
+        if self.directory.exists() and any(
+            path.name != ".reference-normalization.guard"
+            and not path.name.startswith(".audio-catalog.")
+            for path in self.directory.iterdir()
+        ):
+            raise AudioStorageUpgradeRequired(
+                f"Saved audio catalog is missing: {self.catalog_path}. "
+                "Run the explicit storage upgrade or restore its backup before generating."
+            )
+
+    def initialize(self) -> None:
+        """Create a fresh key catalog before publishing temporary/object files."""
+        with self._catalog(create=True):
+            pass
 
     @contextmanager
     def _connect(
@@ -286,7 +262,7 @@ class SharedAudioStore:
             connection.execute("PRAGMA synchronous = FULL")
             yield connection
         except sqlite3.Error as error:
-            raise SharedAudioStoreError(
+            raise AudioCatalogError(
                 f"Invalid or unavailable audio catalog: {path}: {error}"
             ) from error
         finally:
@@ -295,26 +271,28 @@ class SharedAudioStore:
 
     @staticmethod
     def _validate_catalog(connection: sqlite3.Connection) -> None:
-        if connection.execute("PRAGMA user_version").fetchone() != (1,):
-            raise SharedAudioStoreError("Unsupported audio catalog schema version")
+        version = connection.execute("PRAGMA user_version").fetchone()
+        if version == (1,):
+            raise AudioStorageUpgradeRequired(
+                "Audio catalog requires the explicit storage upgrade"
+            )
+        if version != (2,):
+            raise AudioCatalogError("Unsupported audio catalog schema version")
         actual = dict(
             connection.execute(
                 "SELECT name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
             )
         )
         if actual != _CATALOG_SCHEMA:
-            raise SharedAudioStoreError("Invalid audio catalog schema")
+            raise AudioCatalogError("Invalid audio catalog schema")
 
     @contextmanager
     def _catalog(self, *, create: bool = False) -> Iterator[sqlite3.Connection | None]:
         path = self.catalog_path
         self._check_catalog_paths(path)
         if not path.exists():
-            legacy = self._directory("bindings")
-            if not create and (
-                not legacy.exists()
-                or (legacy.is_dir() and next(legacy.iterdir(), None) is None)
-            ):
+            if not create:
+                self._require_empty_store()
                 yield None
                 return
             self._initialize_catalog()
@@ -334,25 +312,16 @@ class SharedAudioStore:
                         not isinstance(digest, str)
                         or re.fullmatch(r"[a-f0-9]{64}", digest) is None
                     ):
-                        raise SharedAudioStoreError("Invalid audio object digest")
+                        raise AudioCatalogError("Invalid audio object digest")
                     yield key, digest
 
-    def iter_legacy_issues(self) -> Iterator[tuple[Path, str]]:
-        """Report preserved legacy files that could not be safely imported."""
-        with self._catalog() as connection:
-            if connection is not None:
-                for name, error in connection.execute(
-                    "SELECT filename, error FROM legacy_errors ORDER BY filename"
-                ):
-                    yield self._directory("bindings") / name, error
-
     def has_saved_entries(self) -> bool:
-        """Detect saved work, including retained unimportable legacy files."""
+        """Detect durable recordings and keys whose original work is unavailable."""
         with self._catalog() as connection:
             if (
                 connection is not None
                 and connection.execute(
-                    "SELECT 1 FROM bindings UNION ALL SELECT 1 FROM legacy_errors LIMIT 1"
+                    "SELECT 1 FROM bindings UNION ALL SELECT 1 FROM unavailable_keys LIMIT 1"
                 ).fetchone()
             ):
                 return True
@@ -365,36 +334,36 @@ class SharedAudioStore:
             if connection is None:
                 return None
             error = connection.execute(
-                "SELECT error FROM legacy_errors WHERE filename = ?", (f"{key}.json",)
+                "SELECT reason FROM unavailable_keys WHERE synthesis_key = ?", (key,)
             ).fetchone()
             row = connection.execute(
                 "SELECT audio_sha256 FROM bindings WHERE synthesis_key = ?", (key,)
             ).fetchone()
             if row is None:
                 if error is not None:
-                    raise SharedAudioStoreError(
-                        f"Invalid legacy audio binding for {key}: {error[0]}"
+                    raise AudioCatalogError(
+                        f"Saved audio for {key} is unavailable: {error[0]}"
                     )
                 return None
         digest = row[0]
         if not isinstance(digest, str) or re.fullmatch(r"[a-f0-9]{64}", digest) is None:
-            raise SharedAudioStoreError("Invalid audio object digest")
+            raise AudioCatalogError("Invalid audio object digest")
         return digest
 
     def get(self, key: str) -> Path | None:
         digest = self._binding_digest(key)
-        return self._object(digest) if digest is not None else None
+        return self._read_object(digest)[0] if digest is not None else None
 
     def get_bytes(self, key: str) -> bytes | None:
         """Return the exact verified snapshot without requiring a second file read."""
         digest = self._binding_digest(key)
         if digest is None:
             return None
-        payload, _ = _read_wav(self._directory("objects") / f"{digest}.wav", digest)
-        return payload
+        return self._read_object(digest)[1]
 
     def put(self, key: str, source: str | Path) -> Path:
         self._validate_key(key)
+        self.initialize()
         source = _regular(Path(source))
         digest = _read_wav(source)[1]
         objects = self._directory("objects")
@@ -424,7 +393,7 @@ class SharedAudioStore:
                 (key, digest),
             )
             connection.execute(
-                "DELETE FROM legacy_errors WHERE filename = ?", (f"{key}.json",)
+                "DELETE FROM unavailable_keys WHERE synthesis_key = ?", (key,)
             )
             connection.commit()
         return destination

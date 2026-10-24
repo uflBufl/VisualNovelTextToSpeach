@@ -28,6 +28,7 @@ from vntts_artifacts.voice_generation_queue import (
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
 from tests.authoring_fixtures import tree_hashes
+from tests.generation_state_fixtures import replace_generation_state
 from tests.pregeneration_fixtures import fixture
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.story_fixtures import write_source_audio_semantic_evidence
@@ -36,6 +37,7 @@ from vntts.authoring.bulk_generation import BulkGenerationError
 from vntts.authoring.generation_state import load_generation_state_from_snapshot
 from vntts.game_pack import import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
+from vntts.generation_database import read_state
 from vntts.pregeneration_contract import OfflineGenerationCancelled
 from vntts.pregeneration_pack import (
     OfflinePackError,
@@ -67,7 +69,6 @@ from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
 )
 from vntts.story_index_snapshot import load_story_index_snapshot
-from vntts.versioned_json import write_versioned_json
 
 
 def game_fixture(
@@ -621,7 +622,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
         prepared = replace(
             prepared, voice_manifest_sha256=sha256_file(prepared.voice_manifest)
         )
-        state = json.loads(generated.state.read_text())
+        state = read_state(generated.state)
         source = {
             "story": prepared.story_index,
             "voice-manifest": prepared.voice_manifest,
@@ -1155,7 +1156,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
     def test_published_current_audio_shares_inode_with_completed_output(self):
         with TemporaryDirectory() as directory:
             job, prepared, generated, _ = fixture(Path(directory))
-            state = json.loads(generated.state.read_text())
+            state = read_state(generated.state)
             approved = next(
                 value
                 for value in state["items"].values()
@@ -1185,7 +1186,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 .records[0]
                 .audio
             )
-            base_state = json.loads(base_result.state.read_text())
+            base_state = read_state(base_result.state)
             approved = next(
                 value
                 for value in base_state["items"].values()
@@ -1211,7 +1212,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 .audio
             )
             self.assertTrue(base_audio.samefile(audio))
-            current_state = json.loads(generated.state.read_text())
+            current_state = read_state(generated.state)
             current = next(
                 value
                 for value in current_state["items"].values()
@@ -1345,6 +1346,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
     def test_story_coverage_verifies_mixed_saved_routes_and_rejects_damaged_audio(self):
         with TemporaryDirectory() as directory:
             store = PregenerationJobStore(Path(directory) / "jobs")
+            store.catalog.initialize()
             job, inputs, result, _items = fixture(
                 store.root / ("b" * 24), include_omission=True
             )
@@ -1369,7 +1371,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
             content = inspect_story_index(inputs.story_index)
             selection = content.selections[0]
             job = replace(job, selected_story_ids=(selection.selection_id,))
-            write_versioned_json(store.path_for(job.job_id), 1, job.to_document())
+            store.catalog.save_job(job.to_document())
             absent = inspect_story_audio(content, selection.selection_id, store)
             self.assertIsNone(absent.manifest)
             self.assertEqual(absent.missing, 3)
@@ -1502,7 +1504,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
                     generation_input,
                     result,
                     sha256_file(result.state),
-                    state_document=json.loads(result.state.read_text()),
+                    state_document=read_state(result.state),
                 )
 
             validated_queue = state_loader.call_args.args[1]
@@ -1539,7 +1541,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
             )
             self.assertEqual(fresh.live_fallbacks, 0)
             self.assertFalse(fresh.switches_pack)
-            state = json.loads(result.state.read_text())
+            state = read_state(result.state)
             saved = next(
                 item for item in state["items"].values() if item["status"] == "approved"
             )
@@ -1597,15 +1599,15 @@ class OfflinePackPublisherTest(unittest.TestCase):
             job, generation_input, generation_result, _items = fixture(
                 Path(temporary_directory)
             )
-            original_state = json.loads(generation_result.state.read_text())
+            original_state = read_state(generation_result.state)
             original_sha256 = sha256_file(generation_result.state)
 
             def replace_state_after_snapshot(*args, **kwargs):
-                replacement = json.loads(generation_result.state.read_text())
+                replacement = read_state(generation_result.state)
                 replacement["items"][next(iter(replacement["items"]))]["updated_at"] = (
                     "2030-01-01T00:00:00+00:00"
                 )
-                atomic_write_json(generation_result.state, replacement, sort_keys=True)
+                replace_generation_state(generation_result.state, replacement)
                 self.assertEqual(kwargs["state_document"], original_state)
                 return _load_terminal_generation(*args, **kwargs)
 
@@ -1769,7 +1771,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
             job, generation_input, generation_result, _items = fixture(
                 Path(temporary_directory)
             )
-            state = json.loads(generation_result.state.read_text())
+            state = read_state(generation_result.state)
             approved = next(
                 item for item in state["items"].values() if item["status"] == "approved"
             )

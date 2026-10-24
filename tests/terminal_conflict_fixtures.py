@@ -13,6 +13,8 @@ from tests.authoring_fixtures import (
     create_carry_source_workspace,
     create_test_workspace,
 )
+from tests.generation_state_fixtures import replace_generation_state
+from vntts import generation_database
 from vntts.authoring.bulk_generation import inspect_generated_wav
 from vntts.authoring.cohort_bundle import (
     build_cohort_review_bundle,
@@ -26,7 +28,6 @@ from vntts.authoring.reconciliation import (
 )
 from vntts.authoring.terminal_conflict_review import publish_terminal_conflict_review
 from vntts.authoring.workbench import create_resume_workspace
-from vntts.authoring.workspace_foundation import load_json_object
 
 
 def create_parallel_review_workspaces(
@@ -53,8 +54,8 @@ def create_parallel_review_workspaces(
         (primary_directory, "stable"),
         (secondary, "alternate"),
     ):
-        state_path = workspace / "generated-audio/generation-state.json"
-        state = load_json_object(state_path, "fixture generation state")
+        state_path = workspace / "generated-audio/generation-state.sqlite3"
+        state = generation_database.read_state(state_path)
         items = state["items"]
         assert isinstance(items, dict)
         queue_id = next(iter(items))
@@ -72,7 +73,7 @@ def create_parallel_review_workspaces(
                 }
             )
         state["active"] = None
-        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        replace_generation_state(state_path, state)
     bundles = root / "review-bundles"
     bundles.mkdir()
     publication = bundles / "parallel.json"
@@ -122,8 +123,8 @@ def create_terminal_conflict_fixture(
         create_parallel_review_workspaces(root, item_count=item_count)
     )
     publication.unlink()
-    state_path = secondary / "generated-audio/generation-state.json"
-    state = load_json_object(state_path, "fixture generation state")
+    state_path = secondary / "generated-audio/generation-state.sqlite3"
+    state = generation_database.read_state(state_path)
     items = state["items"]
     assert isinstance(items, dict)
     samples = np.linspace(-0.25, 0.25, 4_000, dtype=np.float32)
@@ -135,7 +136,7 @@ def create_terminal_conflict_fixture(
         write_pcm16_wav(audio, samples, 16_000)
         result["file_sha256"] = hashlib.sha256(audio.read_bytes()).hexdigest()
         result["quality"] = asdict(inspect_generated_wav(audio))
-    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    replace_generation_state(state_path, state)
     write_cohort_review_bundle(
         build_cohort_review_bundle((primary, secondary)), publication
     )

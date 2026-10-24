@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -42,6 +41,7 @@ from vntts.authoring.cohort_review import (
     _validated_plan_document as _validate_plan_document,
 )
 from vntts.authoring.generation_review import ReviewAuthority
+from vntts.authoring.generation_state import decode_generation_state_snapshot
 from vntts.authoring.workbench import ReviewItem
 from vntts.json_types import decode_json, has_schema_version, is_json_object
 from vntts.numeric_values import optional_finite_number
@@ -1101,7 +1101,7 @@ def _current_source_snapshot(source: _SourceDocument) -> _CurrentSourceSnapshot:
     if queue_sha256 != source["plan"]["queue_sha256"]:
         raise CohortReviewError("Bundle source queue changed")
     state_payload = _read_bytes(paths.state_path, "bundle state")
-    state = _decode_json(state_payload, "bundle state")
+    state = decode_generation_state_snapshot(state_payload)
     if not isinstance(state, dict):
         raise CohortReviewError("Bundle source state identity changed")
     state_items = state.get("items")
@@ -1563,7 +1563,7 @@ def _load_sample_source(source: _SourceDocument) -> _LoadedSampleSource:
         raise CohortReviewError("Bundle source queue changed")
     if state_sha256 != source["plan"]["state_sha256"]:
         raise CohortReviewError("Bundle source state changed")
-    state = _decode_json(state_payload, "bundle state")
+    state = decode_generation_state_snapshot(state_payload)
     if not isinstance(state, dict):
         raise CohortReviewError("Bundle source state items are invalid")
     state_items = state.get("items")
@@ -1767,7 +1767,7 @@ def _read_bytes(path: PathLike, label: str) -> bytes:
 def _decode_json(payload: bytes, label: str) -> object:
     try:
         return decode_json(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, ValueError) as error:
         raise CohortReviewError(f"Unable to decode {label}: {error}") from error
 
 
@@ -1775,7 +1775,7 @@ def _decode_queue_records(payload: bytes) -> dict[str, dict[str, object]]:
     try:
         rows = payload.decode("utf-8").splitlines()
         records = [decode_json(row) for row in rows]
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, ValueError) as error:
         raise CohortReviewError(f"Unable to decode bundle queue: {error}") from error
     if not records or not isinstance(records[0], dict):
         raise CohortReviewError("Bundle queue metadata is invalid")

@@ -375,9 +375,11 @@ def _load_workspace_snapshot(
     state: StateObject = {"active": None, "items": {}}
     state_sha256 = None
     if summary.state is not None:
-        state_snapshot, state_document = _read_json_snapshot(
-            summary.state, "workspace state"
-        )
+        state_snapshot = _capture_snapshot(summary.state, "workspace state")
+        try:
+            state_document = state_snapshot.generation_state_document("workspace state")
+        except AuthoringAuthorityError as error:
+            raise AuthoringReconciliationError(str(error)) from error
         _remember_snapshot(snapshots, summary.state, state_snapshot.sha256)
         state_sha256 = state_snapshot.sha256
         try:
@@ -390,7 +392,7 @@ def _load_workspace_snapshot(
         except Exception as error:
             raise AuthoringReconciliationError(str(error)) from error
     else:
-        _remember_absence(snapshots, summary.output / "generation-state.json")
+        _remember_absence(snapshots, summary.output / "generation-state.sqlite3")
 
     manifest = summary.output / "manifest.json"
     manifest_sha256 = None

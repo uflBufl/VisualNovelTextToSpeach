@@ -1984,12 +1984,9 @@ def _pregeneration_state_summary(path: str | Path | None) -> SupportDocument:
         return {"available": False, "reason": "state exceeds support read limit"}
     try:
         document: object
-        if payload.startswith(b"SQLite format 3\x00"):
-            from vntts.generation_database import read_snapshot
+        from vntts.generation_database import read_snapshot
 
-            document = read_snapshot(payload)
-        else:
-            document = decode_json(payload)
+        document = read_snapshot(payload)
     except UnicodeError, ValueError:
         return {"available": False, "reason": "state could not be read"}
     if not isinstance(document, dict):

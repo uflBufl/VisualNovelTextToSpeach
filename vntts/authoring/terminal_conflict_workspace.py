@@ -20,6 +20,7 @@ from vntts.authoring.authority import (
 from vntts.authoring.bulk_generation import BulkGenerationError, process_is_alive
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.generation_review import ReviewAuthority, assert_review_authorities
+from vntts.authoring.generation_state import write_generation_state
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
@@ -510,7 +511,7 @@ def _select_terminal_conflict_sources(
         state_path = Path(source["state"]).resolve()
         queue_path = Path(source["queue"]).resolve()
         if (
-            source_directory / "generated-audio/generation-state.json" != state_path
+            source_directory / "generated-audio/generation-state.sqlite3" != state_path
             or source_directory / "queue.jsonl" != queue_path
             or source_document["source"] != inputs.base_document["source"]
             or source_record["config_fingerprint"] != source_config_fingerprint
@@ -649,7 +650,7 @@ def _stage_terminal_conflict_workspace(
     base_snapshots = [
         (inputs.base_directory / "workspace.json", inputs.base_workspace_sha256),
         (
-            inputs.base_directory / "generated-audio/generation-state.json",
+            inputs.base_directory / "generated-audio/generation-state.sqlite3",
             inputs.base_state_sha256,
         ),
     ]
@@ -712,7 +713,7 @@ def _stage_terminal_conflict_workspace(
             key: value for key, value in ledger.items() if key != "queue_id"
         }
         _generation_state_items(target_state)[queue_id] = copied
-    atomic_write_json(output / "generation-state.json", target_state, sort_keys=True)
+    write_generation_state(output / "generation-state.sqlite3", target_state)
     workspace = copy.deepcopy(inputs.base_document)
     workspace.update(
         {

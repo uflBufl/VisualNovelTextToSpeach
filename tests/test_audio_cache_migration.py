@@ -14,7 +14,11 @@ from vntts_artifacts.audio import write_pcm16_wav
 from tests.symlink_support import symlink_or_skip
 from vntts.audio_cache import PersistentAudioCache
 from vntts.audio_cache_migration import main, migrate_legacy_cache
-from vntts.audio_store import SharedAudioStore
+from vntts.audio_store import (
+    AudioCatalogError,
+    AudioStorageUpgradeRequired,
+    SharedAudioStore,
+)
 from vntts.authoring.bulk_generation import generated_mono_pcm
 
 _KEY = "a" * 48
@@ -101,6 +105,8 @@ class LegacyAudioMigrationTest(unittest.TestCase):
             )
             self.assertEqual(report["counts"], {"migrated": 2, "preserved_unproven": 1})
             self.assertTrue((root / f"{unproven}.npy").exists())
+            with self.assertRaisesRegex(AudioCatalogError, "evidence"):
+                PersistentAudioCache(root, sample_rate=48_000).get_existing(unproven)
             for key, rate in ((_KEY, 48_000), (_OTHER, 24_000)):
                 cache = PersistentAudioCache(root, sample_rate=rate, max_entries=0)
                 np.testing.assert_array_equal(cache.get_existing(key), [0.125])
@@ -110,6 +116,28 @@ class LegacyAudioMigrationTest(unittest.TestCase):
             self.assertEqual(
                 repeated["counts"], {"already_wav": 2, "preserved_unproven": 1}
             )
+
+    def test_unproven_array_added_to_existing_catalog_is_preserved_and_blocks_recreation(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = self.make_root(directory)
+            cache = PersistentAudioCache(root, sample_rate=48_000)
+            cache.put(_KEY, [0.25])
+            legacy = root / f"{_OTHER}.npy"
+            np.save(legacy, np.array([0.125]))
+            original = legacy.read_bytes()
+            before = cache.store.catalog_path.read_bytes()
+            report = migrate_legacy_cache(
+                root, **_PROVENANCE, key_provenance={}, apply=False
+            )
+            self.assertEqual(report["counts"], {"preserved_unproven": 2})
+            self.assertEqual(cache.store.catalog_path.read_bytes(), before)
+            migrate_legacy_cache(root, **_PROVENANCE, key_provenance={}, apply=True)
+            self.assertEqual(legacy.read_bytes(), original)
+            with self.assertRaisesRegex(AudioCatalogError, "evidence"):
+                cache.get_existing(_OTHER)
+            np.testing.assert_array_equal(cache.get_existing(_KEY), [0.25])
 
     def test_unknown_corrupt_and_symlink_entries_are_preserved(self):
         with TemporaryDirectory() as directory:
@@ -127,6 +155,27 @@ class LegacyAudioMigrationTest(unittest.TestCase):
             self.assertEqual(outside.read_bytes(), before)
             self.assertTrue((root / f"{_OTHER}.npy").is_symlink())
             self.assertEqual((root / f"{_KEY}.npy").read_bytes(), b"broken")
+
+    def test_missing_wav_catalog_is_not_recreated_from_unrelated_arrays(self):
+        with TemporaryDirectory() as directory:
+            root = self.make_root(directory)
+            cache = PersistentAudioCache(root, sample_rate=48_000)
+            saved = cache.put(_OTHER, [0.25])
+            cache.store.catalog_path.unlink()
+            legacy = root / f"{_KEY}.npy"
+            np.save(legacy, np.array([0.125]))
+            before = {
+                path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+            }
+            report = migrate_legacy_cache(root, **_PROVENANCE, apply=True)
+            self.assertEqual(report["counts"], {"preserved_error": 1})
+            self.assertIn("explicit storage upgrade", report["entries"][0]["reason"])
+            self.assertFalse(cache.store.catalog_path.exists())
+            self.assertTrue(saved.is_file())
+            self.assertEqual(
+                {path: path.read_bytes() for path in root.rglob("*") if path.is_file()},
+                before,
+            )
 
     def test_unrecognized_or_symlink_roots_are_refused(self):
         with TemporaryDirectory() as directory:
@@ -200,12 +249,25 @@ class LegacyAudioMigrationTest(unittest.TestCase):
             legacy = root / f"{_KEY}.npy"
             np.save(legacy, np.array([0.125]))
             for limit in (0, 256):
-                self.assertIsNone(
+                with self.assertRaises(AudioStorageUpgradeRequired):
                     PersistentAudioCache(
                         root, sample_rate=48_000, max_entries=limit
                     ).get_existing(_KEY)
-                )
             self.assertEqual(list(root.iterdir()), [legacy])
+
+    def test_bound_wav_with_wrong_proven_rate_is_reported_without_mutation(self):
+        with TemporaryDirectory() as directory:
+            root = self.make_root(directory)
+            PersistentAudioCache(root, sample_rate=16000).put(_KEY, [0.125])
+            before = {
+                path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+            }
+            report = migrate_legacy_cache(root, **_PROVENANCE, apply=True)
+            self.assertEqual(report["counts"], {"preserved_error": 1})
+            self.assertEqual(
+                {path: path.read_bytes() for path in root.rglob("*") if path.is_file()},
+                before,
+            )
 
     def test_disappearing_saved_binding_is_reported_without_claiming_success(self):
         with TemporaryDirectory() as directory:
@@ -304,6 +366,8 @@ class LegacyAudioMigrationTest(unittest.TestCase):
         ):
             with self.subTest(damage=damage), TemporaryDirectory() as directory:
                 root = self.make_root(directory)
+                if damage == "conflict":
+                    SharedAudioStore(root).initialize()
                 legacy = root / f"{_KEY}.npy"
                 audio = np.array([-0.1, 0.1], dtype=np.float32)
                 np.save(legacy, audio)

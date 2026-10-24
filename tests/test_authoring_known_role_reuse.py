@@ -119,7 +119,7 @@ class AuthoringKnownRoleReuseTest(unittest.TestCase):
             root = Path(directory)
             workspace, unresolved, queue_id = self.fixture(root)
             output = root / "known-role"
-            state_path = workspace / "generated-audio/generation-state.json"
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
             before = state_path.read_bytes()
 
             preflight = publish_known_role_reuse_binding(

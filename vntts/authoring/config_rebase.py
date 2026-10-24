@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -24,8 +23,10 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.generation_lease import GenerationLease
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.generation_state import (
+    decode_generation_state_snapshot,
     load_stable_generation_queue,
     validate_generation_state_document,
+    write_generation_state,
 )
 from vntts.authoring.missing_voice_policy import MissingVoicePolicy
 from vntts.authoring.publication import (
@@ -62,6 +63,7 @@ from vntts.authoring.workspace_config import (
     workspace_missing_voice_policy,
     workspace_successor_config_fingerprint,
 )
+from vntts.authoring.workspace_foundation import load_generation_state_proof
 from vntts.authoring.workspace_voice_runtime import (
     FailureReferenceRuntimeBinding,
     load_failure_reference_runtime_binding,
@@ -69,7 +71,7 @@ from vntts.authoring.workspace_voice_runtime import (
     load_workspace_voice_registry,
 )
 from vntts.document_identity import sha256_file
-from vntts.json_types import decode_json, has_schema_version, is_json_object
+from vntts.json_types import has_schema_version, is_json_object
 from vntts.path_safety import contained_no_replace_destination
 from vntts.voices import CharacterVoiceRegistry, load_voice_manifest
 
@@ -303,8 +305,8 @@ def _assert_workspace_authority_snapshots(selection: _RebaseSelection) -> None:
 
 
 def _load_rebase_state(selection: _RebaseSelection) -> _RebaseState:
-    source_path = selection.source_output / "generation-state.json"
-    target_path = selection.target_output / "generation-state.json"
+    source_path = selection.source_output / "generation-state.sqlite3"
+    target_path = selection.target_output / "generation-state.sqlite3"
     source_payload = read_workspace_file_bytes(
         source_path, "config rebase source state"
     )
@@ -348,8 +350,8 @@ def _load_captured_rebase_state(
     if queue_sha256 != expected_queue_sha256:
         raise AuthoringWorkbenchError("Config rebase queue changed during capture")
     try:
-        document = decode_json(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        document = decode_generation_state_snapshot(payload)
+    except (UnicodeDecodeError, ValueError) as error:
         raise BulkGenerationError(
             f"Unable to read generation state {path}: {error}"
         ) from error
@@ -769,7 +771,7 @@ def _stage_rebase_provenance(
     )
     source_audio = source_root / "generated-audio"
     source_audio.mkdir(parents=True)
-    (source_audio / "generation-state.json").write_bytes(state.source_payload)
+    (source_audio / "generation-state.sqlite3").write_bytes(state.source_payload)
     _stage_pending_history(
         source_audio, selection.source_output, state.source, records, snapshots
     )
@@ -780,7 +782,7 @@ def _stage_rebase_provenance(
             selection.target_directory / "workspace.json", "target workspace"
         )
     )
-    (target_root / "generation-state.json").write_bytes(state.target_payload)
+    (target_root / "generation-state.sqlite3").write_bytes(state.target_payload)
 
 
 def _stage_pending_history(
@@ -839,7 +841,7 @@ def _stage_rebase_output(
         rebased_ids,
         snapshots,
     )
-    atomic_write_json(output / "generation-state.json", projected_state, sort_keys=True)
+    write_generation_state(output / "generation-state.sqlite3", projected_state)
     write_generated_manifest_from_state(
         projected_state, output, output / "manifest.json"
     )
@@ -936,7 +938,7 @@ def _validate_staged_rebase(
 ) -> None:
     validate_config_rebase_workspace(staging, workspace, projected_state)
     output = staging / "generated-audio"
-    load_generation_state(output / "generation-state.json", staging / "queue.jsonl")
+    load_generation_state(output / "generation-state.sqlite3", staging / "queue.jsonl")
     _assert_rebase_snapshots(snapshots)
     for lease in leases:
         lease.assert_owned()
@@ -1125,12 +1127,16 @@ def _rebase_validation_context(
         directory, workspace, source_root, source_document, ledger.document
     )
     source_items = _object(
-        load_workspace_json(source_state, "config rebase source state").get("items"),
+        load_generation_state_proof(
+            source_state,
+            "config rebase source state",
+            error_type=AuthoringWorkbenchError,
+        ).get("items"),
         "Config rebase source state items",
     )
     if state is None:
         state = load_generation_state(
-            directory / "generated-audio" / "generation-state.json", queue_path
+            directory / "generated-audio" / "generation-state.sqlite3", queue_path
         )
     state_items = _object(state.get("items"), "Config rebase state items")
     return _RebaseValidationContext(
@@ -1149,12 +1155,22 @@ def _rebase_source_snapshot_paths(root: Path) -> tuple[Path, Path, Path]:
     return (
         root / "workspace.json",
         root / "queue.jsonl",
-        root / "generated-audio" / "generation-state.json",
+        _captured_rebase_state_path(root / "generated-audio"),
     )
 
 
 def _rebase_target_snapshot_paths(root: Path) -> tuple[Path, Path]:
-    return root / "workspace.json", root / "generation-state.json"
+    return root / "workspace.json", _captured_rebase_state_path(root)
+
+
+def _captured_rebase_state_path(directory: Path) -> Path:
+    """Older immutable rebase proofs retain their exact original JSON bytes."""
+    current = directory / "generation-state.sqlite3"
+    return (
+        current
+        if current.exists() or current.is_symlink()
+        else directory / "generation-state.json"
+    )
 
 
 def _validate_rebase_snapshots(
@@ -1680,7 +1696,7 @@ def validate_config_rebase_publication_authority(
             workspace_path.parent
         )
         canonical_state_path = (
-            directory / "generated-audio" / "generation-state.json"
+            directory / "generated-audio" / "generation-state.sqlite3"
         ).resolve()
         if canonical_state_path != state_path:
             raise BulkGenerationError(

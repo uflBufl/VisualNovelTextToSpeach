@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -13,14 +11,13 @@ from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_state import (
+    load_generation_state_object_snapshot,
     load_stable_generation_queue,
     validate_generation_state_document,
 )
 from vntts.authoring.publication import publication_errors
 from vntts.authoring.workspace_config import workspace_queue_sha256
-from vntts.authoring.workspace_foundation import read_regular_file
 from vntts.document_identity import sha256_file
-from vntts.json_types import decode_json
 
 WorkspaceState = tuple[VoiceGenerationQueue, dict[str, object], bytes, str]
 WorkspaceStateCache = dict[tuple[str, object], WorkspaceState]
@@ -101,24 +98,18 @@ def _load_stable_workspace_generation_state(
         raise error_type("Workspace queue was modified")
 
     output = directory / "generated-audio"
-    state_path = output / "generation-state.json"
-    payload = read_regular_file(
-        state_path,
-        f"{label} generation state",
-        error_type=error_type,
-    )
-    digest = hashlib.sha256(payload).hexdigest()
+    state_path = output / "generation-state.sqlite3"
     try:
-        parsed = decode_json(payload.decode("utf-8"))
-        if not isinstance(parsed, dict):
-            raise BulkGenerationError("Generation state must be a JSON object")
+        parsed, digest, payload = load_generation_state_object_snapshot(
+            state_path, f"{label} generation state"
+        )
         validated = validate_generation_state_document(
             parsed,
             output,
             queue,
             queue_sha256,
         )
-    except (UnicodeDecodeError, json.JSONDecodeError, BulkGenerationError) as error:
+    except (UnicodeDecodeError, ValueError, BulkGenerationError) as error:
         raise error_type(f"Outcome merge {label} state is invalid: {error}") from error
     with publication_errors(error_type):
         if parsed != validated or sha256_file(state_path) != digest:

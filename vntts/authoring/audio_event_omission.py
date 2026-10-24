@@ -29,6 +29,7 @@ from vntts.authoring.generation_state import (
     AUDIO_EVENT_OMISSION_REASON,
     AUDIO_EVENT_OMISSION_SCHEMA,
     AUDIO_EVENT_OMISSION_VERSION,
+    write_generation_state,
 )
 from vntts.authoring.publication import (
     publish_single_base_successor,
@@ -203,7 +204,7 @@ def _omission_identity(
         "base_workspace_id": selection.base_document["workspace_id"],
         "base_workspace_path": "inputs/audio-event-omission/base-workspace.json",
         "base_workspace_sha256": selection.base_workspace_sha256,
-        "base_state_path": "inputs/audio-event-omission/base-generation-state.json",
+        "base_state_path": "inputs/audio-event-omission/base-generation-state.sqlite3",
         "base_state_sha256": selection.state_sha256,
         "queue_sha256": selection.queue_sha256,
         "items": selection.items,
@@ -242,7 +243,7 @@ def _authority_snapshots(selection: _OmissionSelection) -> list[tuple[Path, str]
     return [
         (selection.base_directory / "workspace.json", selection.base_workspace_sha256),
         (
-            selection.base_directory / "generated-audio/generation-state.json",
+            selection.base_directory / "generated-audio/generation-state.sqlite3",
             selection.state_sha256,
         ),
         (selection.queue_path, selection.queue_sha256),
@@ -312,7 +313,7 @@ def _write_staged_omission_workspace(
     identity: _OmissionIdentity,
     target_state: dict[str, object],
 ) -> dict[str, object]:
-    atomic_write_json(output / "generation-state.json", target_state, sort_keys=True)
+    write_generation_state(output / "generation-state.sqlite3", target_state)
     write_generated_manifest_from_state(target_state, output, output / "manifest.json")
     workspace = copy.deepcopy(selection.base_document)
     workspace.update(
@@ -334,7 +335,7 @@ def _validate_staged_omission_workspace(
         staging / "provenance/import.json", "audio-event omission import"
     )
     validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
-    load_generation_state(output / "generation-state.json", staging / "queue.jsonl")
+    load_generation_state(output / "generation-state.sqlite3", staging / "queue.jsonl")
 
 
 def validate_audio_event_omission_workspace(

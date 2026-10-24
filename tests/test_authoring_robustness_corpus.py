@@ -14,6 +14,8 @@ import numpy as np
 
 import vntts.authoring.robustness_asr as asr_module
 from tests.authoring_fixtures import create_test_workspace
+from tests.generation_state_fixtures import replace_generation_state
+from vntts import generation_database
 from vntts.authoring import robustness_corpus
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import (
@@ -38,8 +40,8 @@ from vntts.authoring.robustness_corpus import (
 
 def _pending_workspace(root, *, text=None):
     _fixture, _imported, created = create_test_workspace(root, text=text)
-    state_path = created.directory / "generated-audio/generation-state.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state_path = created.directory / "generated-audio/generation-state.sqlite3"
+    state = generation_database.read_state(state_path)
     queue_id, item = next(iter(state["items"].items()))
     item.update(
         {
@@ -52,7 +54,7 @@ def _pending_workspace(root, *, text=None):
         }
     )
     state["active"] = None
-    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    replace_generation_state(state_path, state)
     return created.directory, state_path, queue_id
 
 
@@ -749,7 +751,7 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
             failed, failed_state_path, failed_queue_id = _pending_workspace(
                 root / "failed"
             )
-            state = json.loads(failed_state_path.read_text(encoding="utf-8"))
+            state = generation_database.read_state(failed_state_path)
             state["items"][failed_queue_id] = {
                 "status": "failed",
                 "attempts": 4,
@@ -760,9 +762,7 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
                 "generation_profile": "stable",
                 "updated_at": "2026-08-27T00:00:00+00:00",
             }
-            failed_state_path.write_text(
-                json.dumps(state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(failed_state_path, state)
 
             result = publish_speech_robustness_corpus(
                 [reviewed / "cohort-reviews"], [failed], root / "corpus"

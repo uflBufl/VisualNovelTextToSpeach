@@ -11,6 +11,8 @@ from tests.authoring_fixtures import (
     create_voice_quality_review,
     create_voice_quality_review_from_workspace,
 )
+from tests.generation_state_fixtures import replace_generation_state
+from vntts import generation_database
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import (
     build_cohort_review_decision,
@@ -46,9 +48,9 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
                 create_voice_quality_review(root)
             )
             gate = build_voice_quality_gate(workspace, plan, decision)
-            state = json.loads(state_path.read_text())
+            state = generation_database.read_state(state_path)
             state["items"][queue_id]["seed"] += 1
-            state_path.write_text(json.dumps(state, sort_keys=True))
+            replace_generation_state(state_path, state)
 
             compatibility = inspect_voice_quality_gate(gate, workspace, queue_id)
 
@@ -64,9 +66,9 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
             workspace, state_path, queue_id, _plan, _decision = (
                 create_voice_quality_review(root)
             )
-            state = json.loads(state_path.read_text())
+            state = generation_database.read_state(state_path)
             state["items"][queue_id]["voice_character"] = "Narrator"
-            state_path.write_text(json.dumps(state, sort_keys=True))
+            replace_generation_state(state_path, state)
             workspace, _state, _queue_id, plan, decision = (
                 create_voice_quality_review_from_workspace(
                     workspace, state_path, queue_id
@@ -97,9 +99,9 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
             source, state_path, queue_id, _plan, _decision = (
                 create_voice_quality_review(root / "source")
             )
-            state = json.loads(state_path.read_text())
+            state = generation_database.read_state(state_path)
             state["items"][queue_id]["voice_character"] = "Narrator"
-            state_path.write_text(json.dumps(state, sort_keys=True))
+            replace_generation_state(state_path, state)
             source, _state, _queue_id, plan, decision = (
                 create_voice_quality_review_from_workspace(source, state_path, queue_id)
             )
@@ -128,8 +130,8 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
                 generation_profile="stable",
                 narrator_character="Other Narrator",
             )
-            later_state = later.directory / "generated-audio/generation-state.json"
-            later_document = json.loads(later_state.read_text())
+            later_state = later.directory / "generated-audio/generation-state.sqlite3"
+            later_document = generation_database.read_state(later_state)
             later_queue_id, result = next(iter(later_document["items"].items()))
             result.update(
                 {
@@ -143,7 +145,7 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
                     "synthesis_provenance_sha256": "b" * 64,
                 }
             )
-            later_state.write_text(json.dumps(later_document, sort_keys=True))
+            replace_generation_state(later_state, later_document)
 
             compatibility = inspect_voice_quality_gate(
                 gate, later.directory, later_queue_id
@@ -159,9 +161,9 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
             workspace, state_path, queue_id, _plan, _decision = (
                 create_voice_quality_review(root)
             )
-            state = json.loads(state_path.read_text())
+            state = generation_database.read_state(state_path)
             state["items"][queue_id]["voice_character"] = "Narrator"
-            state_path.write_text(json.dumps(state, sort_keys=True))
+            replace_generation_state(state_path, state)
             workspace, _state, _queue_id, plan, _decision = (
                 create_voice_quality_review_from_workspace(
                     workspace, state_path, queue_id
@@ -214,8 +216,8 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
                 generation_profile="stable",
                 narrator_character="Rhiannon",
             )
-            later_state = later.directory / "generated-audio/generation-state.json"
-            state = json.loads(later_state.read_text())
+            later_state = later.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(later_state)
             queue_id, result = next(iter(state["items"].items()))
             result.update(
                 {
@@ -229,7 +231,7 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
                     "synthesis_provenance_sha256": "b" * 64,
                 }
             )
-            later_state.write_text(json.dumps(state, sort_keys=True))
+            replace_generation_state(later_state, state)
 
             compatibility = inspect_voice_quality_gate(gate, later.directory, queue_id)
 
@@ -253,8 +255,10 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
                 generation_profile="stable",
                 narrator_character="Rhiannon",
             )
-            state_path = workspace.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text())
+            state_path = (
+                workspace.directory / "generated-audio/generation-state.sqlite3"
+            )
+            state = generation_database.read_state(state_path)
             queue_id, result = next(iter(state["items"].items()))
             result.update(
                 {
@@ -268,7 +272,7 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
                     "synthesis_provenance_sha256": "b" * 64,
                 }
             )
-            state_path.write_text(json.dumps(state, sort_keys=True))
+            replace_generation_state(state_path, state)
             workspace, _state, _queue, plan, decision = (
                 create_voice_quality_review_from_workspace(
                     workspace.directory, state_path, queue_id

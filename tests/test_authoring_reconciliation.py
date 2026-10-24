@@ -23,6 +23,7 @@ from tests.authoring_fixtures import (
     tree_hashes,
     write_legacy_fixture,
 )
+from tests.generation_state_fixtures import replace_generation_state
 from tests.source_reference_fixtures import (
     publish_source_reference_quality_fixture,
 )
@@ -31,6 +32,7 @@ from tests.terminal_conflict_fixtures import (
     create_parallel_review_workspaces,
     decide_parallel_review_bundle,
 )
+from vntts import generation_database
 from vntts.authoring.cohort_bundle import (
     build_cohort_review_bundle,
     write_cohort_review_bundle,
@@ -377,10 +379,10 @@ class AuthoringReconciliationTest(unittest.TestCase):
             )
             queue_sha256 = sha256_file(fixture["queue"])
             output = Path(fixture["job"]["output"])
-            state_path = output / "generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = output / "generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state.update({"queue_sha256": queue_sha256, "active": None, "items": {}})
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             manifest_path = output / "manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["source_queue_sha256"] = queue_sha256
@@ -632,9 +634,9 @@ class AuthoringReconciliationTest(unittest.TestCase):
                 generation_profile="terminal-source",
             ).directory
             primary_state_path = (
-                primary.directory / "generated-audio/generation-state.json"
+                primary.directory / "generated-audio/generation-state.sqlite3"
             )
-            primary_state = json.loads(primary_state_path.read_text(encoding="utf-8"))
+            primary_state = generation_database.read_state(primary_state_path)
             queue_id = next(iter(primary_state["items"]))
             primary_state["active"] = None
             primary_state["items"][queue_id] = {
@@ -644,13 +646,11 @@ class AuthoringReconciliationTest(unittest.TestCase):
                 "last_error": "bounded primary failure",
                 "updated_at": "2026-08-27T00:00:00+00:00",
             }
-            primary_state_path.write_text(
-                json.dumps(primary_state, sort_keys=True), encoding="utf-8"
+            replace_generation_state(primary_state_path, primary_state)
+            secondary_state_path = (
+                secondary / "generated-audio/generation-state.sqlite3"
             )
-            secondary_state_path = secondary / "generated-audio/generation-state.json"
-            secondary_state = json.loads(
-                secondary_state_path.read_text(encoding="utf-8")
-            )
+            secondary_state = generation_database.read_state(secondary_state_path)
             secondary_state["active"] = None
             secondary_state["items"][queue_id].update(
                 {
@@ -662,9 +662,7 @@ class AuthoringReconciliationTest(unittest.TestCase):
                     "synthesis_provenance_sha256": "b" * 64,
                 }
             )
-            secondary_state_path.write_text(
-                json.dumps(secondary_state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(secondary_state_path, secondary_state)
             bundles = root / "review-bundles"
             bundles.mkdir()
             publication = bundles / "secondary.json"
@@ -728,10 +726,8 @@ class AuthoringReconciliationTest(unittest.TestCase):
                 report_path,
                 root / "workspaces",
             )
-            merged_state = json.loads(
-                (merged.directory / "generated-audio/generation-state.json").read_text(
-                    encoding="utf-8"
-                )
+            merged_state = generation_database.read_state(
+                merged.directory / "generated-audio/generation-state.sqlite3"
             )
 
         action = next(
@@ -802,7 +798,7 @@ class AuthoringReconciliationTest(unittest.TestCase):
                 ((primary.name, "accepted"), (secondary.name, "rejected")),
             )
             authorize_live_fallback(
-                secondary / "generated-audio/generation-state.json",
+                secondary / "generated-audio/generation-state.sqlite3",
                 secondary / "queue.jsonl",
                 queue_id,
                 reason="generated_audio_rejected",
@@ -899,9 +895,9 @@ class AuthoringReconciliationTest(unittest.TestCase):
             original = reconciliation_module._assert_snapshots_unchanged
 
             def mutate_then_check(snapshots):
-                document = json.loads(state.read_text(encoding="utf-8"))
+                document = generation_database.read_state(state)
                 document["active"] = {"phase": "changed"}
-                state.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+                replace_generation_state(state, document)
                 original(snapshots)
 
             with (

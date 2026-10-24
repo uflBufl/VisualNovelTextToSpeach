@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import io
-import json
 import re
 from collections.abc import Iterable, Mapping, MutableSequence, Sequence
 from dataclasses import asdict, dataclass
@@ -82,6 +81,11 @@ from vntts.authoring.generation_lease import (
 from vntts.authoring.generation_manifest import (
     inspect_generated_wav_with_samples,
     write_generated_manifest_from_state,
+)
+from vntts.authoring.generation_state import (
+    decode_generation_state_snapshot,
+    read_generation_state_document,
+    write_generation_state,
 )
 from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
@@ -172,7 +176,6 @@ from vntts.authoring.workspace_voice_runtime import (
     load_workspace_voice_registry,
 )
 from vntts.document_identity import canonical_document_sha256, file_sha256, sha256_file
-from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import (
     contained_no_replace_destination,
@@ -321,7 +324,7 @@ def _load_resume_source(import_directory: str | Path) -> _ResumeSource:
         (
             item
             for item in artifacts
-            if item["path"] == "generated-audio/generation-state.json"
+            if item["path"] == "generated-audio/generation-state.sqlite3"
         ),
         None,
     )
@@ -463,7 +466,7 @@ def _validate_unrendered_projections(
         return
     try:
         state = load_generation_state(
-            staging / "generated-audio/generation-state.json",
+            staging / "generated-audio/generation-state.sqlite3",
             staging / "queue.jsonl",
         )
     except BulkGenerationError as error:
@@ -903,7 +906,7 @@ def create_failure_reference_workspace(
     root.mkdir(parents=True, exist_ok=True)
     base_snapshots = [
         (base_directory / "workspace.json", base_workspace_sha256),
-        (base_directory / "generated-audio/generation-state.json", state_sha256),
+        (base_directory / "generated-audio/generation-state.sqlite3", state_sha256),
         (base_directory / "queue.jsonl", queue_sha256),
     ]
     return _publish_failure_reference_workspace(
@@ -1092,7 +1095,7 @@ def create_audio_event_composition_workspace(
     root.mkdir(parents=True, exist_ok=True)
     base_snapshots = [
         (base_directory / "workspace.json", base_workspace_sha256),
-        (base_directory / "generated-audio/generation-state.json", state_sha256),
+        (base_directory / "generated-audio/generation-state.sqlite3", state_sha256),
         (base_directory / "queue.jsonl", queue_sha256),
         (previous_audio, previous_audio_sha256),
     ]
@@ -1116,7 +1119,7 @@ def create_audio_event_composition_workspace(
         copied_base = staging / "inputs" / "audio-event-base"
         copied_base.mkdir(parents=True)
         (copied_base / "workspace.json").write_bytes(base_workspace_payload)
-        (copied_base / "generation-state.json").write_bytes(state_payload)
+        (copied_base / "generation-state.sqlite3").write_bytes(state_payload)
         (copied_base / "rejected.wav").write_bytes(previous_audio_payload)
         composition_config, destination, workspace = _audio_event_workspace_document(
             root,
@@ -1140,8 +1143,8 @@ def create_audio_event_composition_workspace(
             composition_config,
             queue_item,
         )
-        target_state_path = staging / "generated-audio/generation-state.json"
-        atomic_write_json(target_state_path, target_state, sort_keys=True)
+        target_state_path = staging / "generated-audio/generation-state.sqlite3"
+        write_generation_state(target_state_path, target_state)
         write_generated_manifest_from_state(
             target_state,
             staging / "generated-audio",
@@ -1438,7 +1441,7 @@ def _audio_event_workspace_document(
         "base_workspace_id": base["workspace_id"],
         "base_workspace_path": "inputs/audio-event-base/workspace.json",
         "base_workspace_sha256": workspace_sha256,
-        "base_state_path": "inputs/audio-event-base/generation-state.json",
+        "base_state_path": "inputs/audio-event-base/generation-state.sqlite3",
         "base_state_sha256": state_sha256,
         "base_item_sha256": canonical_document_sha256(previous),
         "base_audio_path": "inputs/audio-event-base/rejected.wav",
@@ -1471,12 +1474,12 @@ def _audio_event_workspace_document(
 def _preserve_seed_generation_state(
     staging: Path, state_artifact: ArtifactRecord
 ) -> JsonDocument:
-    source = staging / "generated-audio" / "generation-state.json"
+    source = staging / "generated-audio" / "generation-state.sqlite3"
     expected = _require_sha256(
         state_artifact.get("sha256"), "Imported generation state SHA-256"
     )
     payload = _read_bound_bytes(source, expected, "Imported generation state")
-    relative = Path("provenance/seed-generation-state.json")
+    relative = Path("provenance/seed-generation-state.sqlite3")
     target = staging / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(payload)
@@ -1514,12 +1517,13 @@ def _install_extended_generation_queue(
     copy_regular_file(base_queue, base_snapshot)
     base_queue.write_bytes(payload)
 
-    state_path = staging / "generated-audio/generation-state.json"
-    state = _load_json(state_path, "imported generation state")
+    state_path = staging / "generated-audio/generation-state.sqlite3"
+    state = read_generation_state_document(state_path)
     if state.get("active") is not None:
         raise AuthoringWorkbenchError("Queue extension source has an active attempt")
     state["queue_sha256"] = digest
-    atomic_write_json(state_path, state, sort_keys=True)
+    state_path.unlink()
+    write_generation_state(state_path, state)
     try:
         load_generation_state(state_path, base_queue)
     except BulkGenerationError as error:
@@ -1698,18 +1702,18 @@ def _load_carry_forward_source(
         source_document, run_config, selection
     )
     source_output = source_directory / "generated-audio"
-    source_state_path = source_output / "generation-state.json"
+    source_state_path = source_output / "generation-state.sqlite3"
     source_state_payload = _read_file_bytes(
         source_state_path, "source generation state"
     )
     source_state_sha256 = hashlib.sha256(source_state_payload).hexdigest()
     try:
         state = _json_document(
-            decode_json(source_state_payload.decode("utf-8")),
+            decode_generation_state_snapshot(source_state_payload),
             "Carry-forward source state",
         )
         validated_state = load_generation_state(source_state_path, source_queue_path)
-    except (UnicodeDecodeError, json.JSONDecodeError, BulkGenerationError) as error:
+    except (UnicodeDecodeError, ValueError, BulkGenerationError) as error:
         raise AuthoringWorkbenchError(
             f"Carry-forward source state is invalid: {error}"
         ) from error
@@ -1795,7 +1799,7 @@ def _load_carry_forward_target(
     dict[str, str],
     dict[str, str],
 ]:
-    target_state_path = staging / "generated-audio" / "generation-state.json"
+    target_state_path = staging / "generated-audio" / "generation-state.sqlite3"
     try:
         target_state = load_generation_state(target_state_path, target_queue_path)
     except BulkGenerationError as error:
@@ -2209,7 +2213,7 @@ def _publish_carry_forward_staging(
     source: _CarryForwardSource,
     snapshots: Iterable[WorkspaceSnapshot],
 ) -> None:
-    atomic_write_json(target_state_path, target_state, sort_keys=True)
+    write_generation_state(target_state_path, target_state)
     try:
         publish_generated_manifest(target_state_path)
     except BulkGenerationError as error:

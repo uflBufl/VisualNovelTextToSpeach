@@ -20,6 +20,7 @@ from tests.test_pregeneration_generation import generation_inputs
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_state import load_generation_state
+from vntts.generation_database import read_state, write_state
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationWorker,
@@ -35,7 +36,7 @@ class SubprocessGenerationCancellationTest(unittest.TestCase):
         self.item = queue_item()
         self.queue = write_queue(self.root / "queue.jsonl", [self.item])
         self.output = self.root / "output"
-        self.state_path = self.output / "generation-state.json"
+        self.state_path = self.output / "generation-state.sqlite3"
         self.lease_path = self.output / ".generation-lease.json"
         self.process = Mock(pid=999999, returncode=None)
         self.process.poll.side_effect = lambda: self.process.returncode
@@ -79,9 +80,9 @@ class SubprocessGenerationCancellationTest(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit):
                 self.generate(renderer, retries=1, **options)
-        state = json.loads(self.state_path.read_text())
+        state = read_state(self.state_path)
         state["active"]["generation_owner_pid"] = self.process.pid
-        self.state_path.write_text(json.dumps(state))
+        write_state(self.state_path, state)
         self.write_lease()
         return state
 
@@ -116,7 +117,7 @@ class SubprocessGenerationCancellationTest(unittest.TestCase):
                 self.root = Path(folder)
                 self.queue = write_queue(self.root / "queue.jsonl", [self.item])
                 self.output = self.root / "output"
-                self.state_path = self.output / "generation-state.json"
+                self.state_path = self.output / "generation-state.sqlite3"
                 self.lease_path = self.output / ".generation-lease.json"
                 self.process.returncode = None
                 self.interrupted(phase)
@@ -255,7 +256,7 @@ class SubprocessGenerationCancellationTest(unittest.TestCase):
 
     def test_unknown_crash_keeps_existing_interrupted_accounting(self):
         self.interrupted()
-        state = json.loads(self.state_path.read_text())
+        state = read_state(self.state_path)
         queue, _digest = bulk.load_stable_generation_queue(self.queue)
         bulk._reconcile_interrupted_attempt(self.state_path, state, queue)
         record = load_generation_state(self.state_path, self.queue)["items"][
@@ -319,7 +320,7 @@ run_bulk_generation(sys.argv[1], sys.argv[2], SyntheticRenderer(inspect_state=wa
         self.assertTrue(marker.exists())
         self.assertLess(time.monotonic() - started, 8)
         state = load_generation_state(
-            inputs.output_directory / "generation-state.json", inputs.queue
+            inputs.output_directory / "generation-state.sqlite3", inputs.queue
         )
         record = state["items"][self.item["queue_id"]]
         self.assertIsNone(state["active"])

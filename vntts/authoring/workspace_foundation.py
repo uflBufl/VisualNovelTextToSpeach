@@ -72,6 +72,29 @@ def load_json_object_snapshot(
     return value, digest, payload
 
 
+def load_generation_state_proof(
+    path: str | Path,
+    description: str,
+    *,
+    error_type: type[Exception] = ValueError,
+) -> dict[str, object]:
+    """Read an explicit captured state proof, including published JSON contracts."""
+    from vntts import generation_database
+
+    payload = read_regular_file(path, description, error_type=error_type)
+    try:
+        value = (
+            decode_json(payload.decode("utf-8"))
+            if Path(path).suffix == ".json"
+            else generation_database.read_snapshot(payload)
+        )
+    except (UnicodeError, ValueError) as error:
+        raise error_type(f"Unable to read {description}: {error}") from error
+    if not isinstance(value, dict):
+        raise error_type(f"{description.title()} must be an object")
+    return value
+
+
 def require_sha256(
     value: object, label: str, *, error_type: type[Exception] = ValueError
 ) -> str:
@@ -197,8 +220,8 @@ def stage_single_base_successor(
             f"{label} base workspace",
         ),
         (
-            "base-generation-state.json",
-            base_directory / "generated-audio/generation-state.json",
+            "base-generation-state.sqlite3",
+            base_directory / "generated-audio/generation-state.sqlite3",
             f"{label} base state",
         ),
     ):

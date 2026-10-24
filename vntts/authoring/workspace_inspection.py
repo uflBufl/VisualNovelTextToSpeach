@@ -57,6 +57,7 @@ from vntts.authoring.generation_state import (
     completed_generation_attempts,
     generation_item_status,
     load_generation_state_from_snapshot,
+    load_generation_state_object_snapshot,
 )
 from vntts.authoring.missing_voice_policy import (
     NARRATOR_ALL_UNRESOLVED,
@@ -1223,15 +1224,17 @@ def _load_workbench_projection_read_scoped(
         if cached_state is not None
         else _load_bound_workspace_queue(directory, workspace)
     )
-    state_path = output / "generation-state.json"
+    state_path = output / "generation-state.sqlite3"
     state = None
     state_sha256 = None
     if state_path.is_file():
         if cached_state is not None:
             state, state_sha256 = cached_state[1], cached_state[3]
         else:
-            state_document, state_sha256, _payload = _load_json_snapshot(
-                state_path, "generation state"
+            state_document, state_sha256, _payload = (
+                load_generation_state_object_snapshot(
+                    state_path, "generation state", error_type=AuthoringWorkbenchError
+                )
             )
             try:
                 state = load_generation_state_from_snapshot(

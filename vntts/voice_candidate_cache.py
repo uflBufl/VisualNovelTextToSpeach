@@ -270,7 +270,7 @@ def _references_in_catalog(root: Path, jobs: Path) -> set[str] | None:
 
     references: set[str] = set()
     try:
-        plans = PreparationCatalog(jobs).plan_documents()
+        plans = PreparationCatalog(jobs, owned_root=True).plan_documents()
         for document in plans:
             job_id = document.get("job_id")
             if not isinstance(job_id, str) or _JOB_ID.fullmatch(job_id) is None:
@@ -288,7 +288,7 @@ def _references_in_catalog(root: Path, jobs: Path) -> set[str] | None:
 
 def _references_in_job(root: Path, directory: Path) -> set[str] | None:
     references: set[str] = set()
-    for path in (directory / "voice-plan.json", *_pack_manifests(directory)):
+    for path in _pack_manifests(directory):
         if path is None or _unsafe(path):
             return None
         if not path.exists():

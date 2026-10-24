@@ -1,35 +1,24 @@
 import json
 import os
 from collections import OrderedDict
-from collections.abc import Callable
 from contextlib import suppress
-from hashlib import blake2b, file_digest
+from hashlib import blake2b
 from io import BytesIO
-from math import prod
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import RLock
-from tokenize import TokenError
-from typing import BinaryIO, Generic, TypeAlias, TypeVar
+from typing import Generic, TypeAlias, TypeVar
 
 import numpy as np
 import soundfile as sf
-from numpy.lib import _format_impl as npy_format
 from numpy.typing import NDArray
 
-from vntts.audio_store import SharedAudioStore
-from vntts.path_safety import open_regular_binary
+from vntts.audio_store import AudioCatalogError, SharedAudioStore
 
 PathInput: TypeAlias = str | os.PathLike[str]
 AudioArray: TypeAlias = NDArray[np.float32]
 CacheKey = TypeVar("CacheKey")
 CacheValue = TypeVar("CacheValue")
-
-# shortcut: NumPy lacks a public NPY3 header reader; replace when one is available.
-_read_npy_header: Callable[
-    [BinaryIO, tuple[int, int]],
-    tuple[tuple[int, ...], bool, np.dtype[np.generic]],
-] = getattr(npy_format, "_read_array_header")
 
 
 def _prepared_audio(value: object) -> AudioArray | None:
@@ -44,21 +33,12 @@ def _prepared_audio(value: object) -> AudioArray | None:
     return audio
 
 
-def _read_cached_array(source: BinaryIO) -> NDArray[np.generic]:
-    version = np.lib.format.read_magic(source)
-    shape, fortran_order, dtype = _read_npy_header(source, version)
-    count = prod(shape)
-    remaining = os.fstat(source.fileno()).st_size - source.tell()
-    if (
-        dtype.hasobject
-        or any(dimension < 0 for dimension in shape)
-        or count * dtype.itemsize > remaining
-    ):
-        raise ValueError("Invalid cached array body")
-    loaded = np.fromfile(source, dtype=dtype, count=count)
-    if loaded.size != count:
-        raise ValueError("Incomplete cached array body")
-    return loaded.reshape(shape, order="F" if fortran_order else "C")
+def _valid_cache_key(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and all(character.isalnum() or character in "-_" for character in value)
+    )
 
 
 class BoundedCache(Generic[CacheKey, CacheValue]):
@@ -132,14 +112,14 @@ class PersistentAudioCache:
     def get(self, key: object) -> AudioArray | None:
         if self.max_entries == 0:
             return None
-        return self._get(key, migrate=True)
+        return self._get(key)
 
     def get_existing(self, key: object) -> AudioArray | None:
         """Read a verified saved WAV even when new persistence is disabled."""
-        return self._get(key, migrate=False)
+        return self._get(key)
 
-    def _get(self, key: object, *, migrate: bool) -> AudioArray | None:
-        if not isinstance(key, str) or self._path_for_key(key) is None:
+    def _get(self, key: object) -> AudioArray | None:
+        if not isinstance(key, str) or not _valid_cache_key(key):
             return None
         try:
             payload = self.store.get_bytes(key)
@@ -150,22 +130,28 @@ class PersistentAudioCache:
                         or waveform.subtype != "PCM_16"
                         or waveform.samplerate != self.sample_rate
                     ):
-                        return None
+                        raise AudioCatalogError(
+                            "Saved WAV format/sample rate differs from its synthesis request"
+                        )
                     audio = _prepared_audio(
                         waveform.read(dtype="float32", always_2d=True)
                     )
                 if audio is None:
-                    return None
+                    raise AudioCatalogError("Saved WAV contains invalid samples")
                 return audio[:, 0] if audio.shape[1] == 1 else audio
-            return self._migrate_legacy(key) if migrate else None
-        except OSError, ValueError, TypeError, sf.LibsndfileError:
             return None
+        except AudioCatalogError:
+            raise
+        except (OSError, ValueError, TypeError, sf.LibsndfileError) as error:
+            raise AudioCatalogError(
+                f"Saved audio could not be decoded: {error}"
+            ) from error
 
     def put(self, key: object, audio: object) -> Path | None:
         if (
             self.max_entries == 0
             or not isinstance(key, str)
-            or self._path_for_key(key) is None
+            or not _valid_cache_key(key)
         ):
             return None
         prepared = _prepared_audio(audio)
@@ -173,12 +159,10 @@ class PersistentAudioCache:
             return None
         return self._put_prepared(key, prepared)
 
-    def _put_prepared(
-        self, key: str, prepared: AudioArray, *, preserve_existing: bool = False
-    ) -> Path | None:
+    def _put_prepared(self, key: str, prepared: AudioArray) -> Path | None:
         temporary = None
         try:
-            self.directory.mkdir(parents=True, exist_ok=True)
+            self.store.initialize()
             with NamedTemporaryFile(
                 suffix=".wav", dir=self.directory, delete=False
             ) as output:
@@ -186,71 +170,12 @@ class PersistentAudioCache:
             sf.write(
                 temporary, prepared, self.sample_rate, format="WAV", subtype="PCM_16"
             )
-            if preserve_existing and (existing := self.store.get(key)) is not None:
-                with (
-                    open_regular_binary(existing) as saved,
-                    open_regular_binary(temporary) as candidate,
-                ):
-                    if (
-                        file_digest(saved, "sha256").digest()
-                        != file_digest(candidate, "sha256").digest()
-                    ):
-                        return None
-                return existing
             return self.store.put(key, temporary)
+        except AudioCatalogError:
+            raise
         except OSError, ValueError, TypeError, sf.LibsndfileError:
             return None
         finally:
             if temporary is not None:
                 with suppress(OSError):
                     temporary.unlink(missing_ok=True)
-
-    def _migrate_legacy(self, key: str) -> AudioArray | None:
-        path = self._path_for_key(key)
-        if path is None or path.is_symlink():
-            return None
-        try:
-            with open_regular_binary(path) as source:
-                original = os.fstat(source.fileno())
-                if not self._same_legacy_file(
-                    original, path.stat(follow_symlinks=False)
-                ):
-                    return None
-                audio = _prepared_audio(_read_cached_array(source))
-            if (
-                audio is None
-                or self._put_prepared(key, audio, preserve_existing=True) is None
-            ):
-                return None
-            restored = self.get_existing(key)
-            if restored is None:
-                return None
-            # Never remove a substituted legacy entry after publication.
-            if self._same_legacy_file(original, path.stat(follow_symlinks=False)):
-                path.unlink()
-            return restored
-        except OSError, ValueError, TypeError, EOFError, OverflowError, TokenError:
-            return None
-
-    @staticmethod
-    def _same_legacy_file(original: os.stat_result, current: os.stat_result) -> bool:
-        return all(
-            getattr(original, field) == getattr(current, field)
-            for field in (
-                "st_dev",
-                "st_ino",
-                "st_mode",
-                "st_size",
-                "st_mtime_ns",
-                "st_ctime_ns",
-            )
-        )
-
-    def _path_for_key(self, key: object) -> Path | None:
-        if (
-            not isinstance(key, str)
-            or not key
-            or not all(character.isalnum() or character in "-_" for character in key)
-        ):
-            return None
-        return self.directory / f"{key}.npy"

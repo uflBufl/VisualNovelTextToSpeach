@@ -36,8 +36,8 @@ from vntts.audio_output import (
 )
 from vntts.chapter_voice_preload import ChapterDialogue
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
-from vntts.json_types import decode_json, has_schema_version
-from vntts.path_safety import read_regular_bytes, read_regular_text
+from vntts.json_types import has_schema_version
+from vntts.path_safety import read_regular_bytes
 from vntts.playback import (
     PlaybackOutcome as PlaybackOutcome,
 )
@@ -536,11 +536,7 @@ class GeneratedAudioLibrary:
         if signature != self.progress_state_signature:
             try:
                 active: object
-                if generation_database.is_database(state_path):
-                    active = generation_database.active_attempt(state_path)
-                else:
-                    state = decode_json(read_regular_text(state_path, encoding="utf-8"))
-                    active = state.get("active") if isinstance(state, dict) else None
+                active = generation_database.active_attempt(state_path)
             except OSError, UnicodeError, ValueError:
                 return None
             self.progress_state_signature = signature

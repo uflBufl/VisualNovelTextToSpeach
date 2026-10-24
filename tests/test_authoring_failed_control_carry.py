@@ -6,7 +6,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from tests.generation_state_fixtures import replace_generation_state
 from tests.missing_voice_reuse_fixtures import create_missing_voice_reuse_workspace
+from vntts import generation_database
 from vntts.authoring import failed_control_carry as carry_module
 from vntts.authoring.bulk_generation import load_generation_state
 from vntts.authoring.failed_control_carry import (
@@ -38,16 +40,14 @@ class AuthoringFailedControlCarryTest(unittest.TestCase):
             missing_voice_policy=policy,
             failure_repair_policy=run["failure_repair_policy"],
         ).directory
-        source_state_path = source / "generated-audio/generation-state.json"
-        source_state = json.loads(source_state_path.read_text(encoding="utf-8"))
+        source_state_path = source / "generated-audio/generation-state.sqlite3"
+        source_state = generation_database.read_state(source_state_path)
         source_state["items"][fixture["queue_id"]] = {
             "status": "failed",
             "attempts": 3,
             "last_error": "Generated WAV failed speech-silence validation",
         }
-        source_state_path.write_text(
-            json.dumps(source_state, sort_keys=True), encoding="utf-8"
-        )
+        replace_generation_state(source_state_path, source_state)
 
         target_voice = root / f"target-voice-{target_narrator}"
         shutil.copytree(source / "inputs/voice", target_voice)
@@ -82,11 +82,11 @@ class AuthoringFailedControlCarryTest(unittest.TestCase):
             first = carry_failed_controls(source, target, (fixture["queue_id"],))
             second = carry_failed_controls(source, target, (fixture["queue_id"],))
             source_state = load_generation_state(
-                source / "generated-audio/generation-state.json",
+                source / "generated-audio/generation-state.sqlite3",
                 source / "queue.jsonl",
             )
             target_state = load_generation_state(
-                target / "generated-audio/generation-state.json",
+                target / "generated-audio/generation-state.sqlite3",
                 target / "queue.jsonl",
             )
             report = json.loads(first.report.read_text(encoding="utf-8"))
@@ -105,12 +105,12 @@ class AuthoringFailedControlCarryTest(unittest.TestCase):
         for role in ("source", "target"):
             with self.subTest(role=role), TemporaryDirectory() as directory:
                 fixture, source, target = self.create_source_and_target(Path(directory))
-                source_state_path = source / "generated-audio/generation-state.json"
-                target_state_path = target / "generated-audio/generation-state.json"
+                source_state_path = source / "generated-audio/generation-state.sqlite3"
+                target_state_path = target / "generated-audio/generation-state.sqlite3"
                 changed_path = (
                     source_state_path if role == "source" else target_state_path
                 )
-                changed = json.loads(changed_path.read_text(encoding="utf-8"))
+                changed = generation_database.read_state(changed_path)
                 changed["items"][fixture["queue_id"]] = {
                     "status": "failed",
                     "attempts": 1,
@@ -125,7 +125,7 @@ class AuthoringFailedControlCarryTest(unittest.TestCase):
                     result = original_route(*arguments, **keywords)
                     routes += 1
                     if routes == 2:
-                        changed_path.write_text(json.dumps(changed), encoding="utf-8")
+                        replace_generation_state(changed_path, changed)
                     return result
 
                 with (
@@ -148,21 +148,23 @@ class AuthoringFailedControlCarryTest(unittest.TestCase):
                 if role == "source":
                     self.assertEqual(target_state_path.read_bytes(), target_before)
                 else:
-                    self.assertEqual(json.loads(target_state_path.read_text()), changed)
+                    self.assertEqual(
+                        generation_database.read_state(target_state_path), changed
+                    )
 
     def test_existing_report_rechecks_source_after_validation(self):
         with TemporaryDirectory() as directory:
             fixture, source, target = self.create_source_and_target(Path(directory))
             first = carry_failed_controls(source, target, (fixture["queue_id"],))
             report_before = first.report.read_bytes()
-            source_path = source / "generated-audio/generation-state.json"
-            changed = json.loads(source_path.read_text())
+            source_path = source / "generated-audio/generation-state.sqlite3"
+            changed = generation_database.read_state(source_path)
             changed["items"][fixture["queue_id"]]["last_error"] = "external update"
             original_validate = carry_module._validate_existing_report
 
             def change_after_validation(*arguments):
                 original_validate(*arguments)
-                source_path.write_text(json.dumps(changed), encoding="utf-8")
+                replace_generation_state(source_path, changed)
 
             with (
                 patch.object(
@@ -180,15 +182,16 @@ class AuthoringFailedControlCarryTest(unittest.TestCase):
     def test_carry_preserves_legacy_state_and_captured_source_checksum(self):
         with TemporaryDirectory() as directory:
             fixture, source, target = self.create_source_and_target(Path(directory))
-            path = source / "generated-audio/generation-state.json"
-            document = json.loads(path.read_text())
-            document["schema"] = "r1999.bulk-generation-state"
-            path.write_text(json.dumps(document), encoding="utf-8")
+            path = source / "generated-audio/generation-state.sqlite3"
+            document = generation_database.read_state(path)
+            document["schema"] = "vntts.authoring-generation-state"
+            replace_generation_state(path, document)
             payload = path.read_bytes()
             result = carry_failed_controls(source, target, (fixture["queue_id"],))
             report = json.loads(result.report.read_text())
             target_state = load_generation_state(
-                target / "generated-audio/generation-state.json", target / "queue.jsonl"
+                target / "generated-audio/generation-state.sqlite3",
+                target / "queue.jsonl",
             )
             self.assertEqual(
                 report["source_state_sha256"], hashlib.sha256(payload).hexdigest()
@@ -204,7 +207,7 @@ class AuthoringFailedControlCarryTest(unittest.TestCase):
             fixture, source, target = self.create_source_and_target(
                 Path(directory), target_narrator="Adult Aderyn"
             )
-            state_path = target / "generated-audio/generation-state.json"
+            state_path = target / "generated-audio/generation-state.sqlite3"
             before = state_path.read_bytes()
             with self.assertRaisesRegex(
                 FailedControlCarryError, "changes the effective reference"
@@ -220,14 +223,14 @@ class AuthoringFailedControlCarryTest(unittest.TestCase):
     def test_rejects_different_existing_target_item(self):
         with TemporaryDirectory() as directory:
             fixture, source, target = self.create_source_and_target(Path(directory))
-            state_path = target / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = target / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["items"][fixture["queue_id"]] = {
                 "status": "failed",
                 "attempts": 1,
                 "last_error": "different",
             }
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             with self.assertRaisesRegex(FailedControlCarryError, "already different"):
                 carry_failed_controls(source, target, (fixture["queue_id"],))
 

@@ -7,11 +7,13 @@ from unittest.mock import patch
 from vntts_artifacts.file_integrity import sha256_file
 
 import vntts.authoring.experimental_composite_voice as experimental
+from tests.generation_state_fixtures import replace_generation_state
 from tests.source_reference_fixtures import (
     CompositeRenderer,
     write_exact_bank_composite_report,
     write_experimental_composite_voice_fixture,
 )
+from vntts import generation_database
 from vntts.authoring.authority import canonical_document_sha256
 
 
@@ -277,9 +279,9 @@ class CompositeContractsTest(unittest.TestCase):
 
             def change(*args, **kwargs):
                 result = original(*args, **kwargs)
-                doc = json.loads(generation.state.read_text())
+                doc = generation_database.read_state(generation.state)
                 doc["context"] = "changed after validation"
-                generation.state.write_text(json.dumps(doc))
+                replace_generation_state(generation.state, doc)
                 return result
 
             with patch.object(

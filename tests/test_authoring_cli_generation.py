@@ -9,16 +9,65 @@ from unittest.mock import Mock, patch
 from vntts_artifacts.voice_manifest import load_voice_manifest
 
 from tests.symlink_support import symlink_or_skip
+from vntts import generation_database
 from vntts.authoring.cli import create_parser
 from vntts.authoring.cli_generation import (
     _load_stable_voice_registry,
     _ready_spoken_item,
     _run_bulk_generation,
+    run_generation,
 )
+from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
 
 class AuthoringGenerationCleanupTest(unittest.TestCase):
+    def test_saved_authority_is_validated_before_backend_construction(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = root / "queue.jsonl"
+            queue.write_text("captured queue")
+            output = root / "output"
+            output.mkdir()
+            arguments = create_parser().parse_args(
+                [
+                    "generate",
+                    "--queue",
+                    str(queue),
+                    "--output",
+                    str(output),
+                    "--voice-manifest",
+                    "unused-voices.json",
+                    "--backend",
+                    "pocket-tts",
+                ]
+            )
+            for payload in (b"unregistered recording", b"corrupt SQLite"):
+                target = output / (
+                    "paid.wav"
+                    if payload.startswith(b"unregistered")
+                    else "generation-state.sqlite3"
+                )
+                target.write_bytes(payload)
+                factory = Mock()
+                with self.assertRaises(BulkGenerationError):
+                    run_generation(arguments, backend_factory=factory)
+                factory.assert_not_called()
+                target.unlink()
+            generation_database.write_state(
+                output / "generation-state.sqlite3",
+                {
+                    "schema": "vntts.authoring-generation-state",
+                    "schema_version": 1,
+                    "queue_sha256": "f" * 64,
+                    "items": {},
+                },
+            )
+            factory = Mock()
+            with self.assertRaisesRegex(BulkGenerationError, "queue changed"):
+                run_generation(arguments, backend_factory=factory)
+            factory.assert_not_called()
+
     def test_generation_cleanup_keeps_primary_failure_and_rejects_failed_release(self):
         arguments = create_parser().parse_args(
             [

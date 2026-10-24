@@ -1,16 +1,20 @@
 import hashlib
 import json
+import sqlite3
 import threading
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from tests.authoring_fixtures import create_failed_reference_workspace
+from tests.generation_state_fixtures import replace_generation_state
 from tests.source_reference_fixtures import (
     PreviewBackendFactory as _PreviewBackendFactory,
 )
+from vntts import generation_database
 from vntts.authoring import failure_reference_audit as audit_module
 from vntts.authoring import reference_render_comparison
 from vntts.authoring.advisory_lock import (
@@ -151,8 +155,8 @@ class FailureReferenceAuditTest(unittest.TestCase):
             workspace, _queue_id = self.create_failed_workspace(root)
             output = root / "audit"
             publish_failure_reference_audit(workspace, output)
-            state_path = workspace / "generated-audio/generation-state.json"
-            for path in (output / "audit.json", output / ".blind-key.json", state_path):
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
+            for path in (output / "audit.json", output / ".blind-key.json"):
                 original = path.read_bytes()
                 for value in ([], None, True, 1, "text"):
                     path.write_text(json.dumps(value))
@@ -164,16 +168,45 @@ class FailureReferenceAuditTest(unittest.TestCase):
                     ):
                         load_failure_reference_audit(output)
                 path.write_bytes(original)
-            original = json.loads(state_path.read_bytes())
+            original_bytes = state_path.read_bytes()
+            original = generation_database.read_state(state_path)
+            for value in ([], None, True, 1, "text"):
+                with self.subTest(source_metadata=value):
+                    try:
+                        with closing(sqlite3.connect(state_path)) as connection:
+                            connection.execute(
+                                "UPDATE run SET metadata=? WHERE id=1",
+                                (json.dumps(value),),
+                            )
+                            connection.commit()
+                        with self.assertRaisesRegex(
+                            FailureReferenceAuditError, "record must be an object"
+                        ):
+                            load_failure_reference_audit(output)
+                    finally:
+                        state_path.write_bytes(original_bytes)
             for items in ([], None, True, 1, "text"):
-                state_path.write_text(json.dumps({**original, "items": items}))
-                with (
-                    self.subTest(items=items),
-                    self.assertRaisesRegex(
-                        FailureReferenceAuditError, "source items are malformed"
-                    ),
-                ):
-                    load_failure_reference_audit(output)
+                with self.subTest(items=items):
+                    malformed = {**original, "items": items}
+                    with self.assertRaisesRegex(
+                        ValueError, "requires items, controls and queue identity"
+                    ):
+                        replace_generation_state(state_path, malformed)
+                    self.assertEqual(state_path.read_bytes(), original_bytes)
+                    try:
+                        with closing(sqlite3.connect(state_path)) as connection:
+                            connection.execute(
+                                "UPDATE run SET metadata=? WHERE id=1",
+                                (json.dumps(malformed),),
+                            )
+                            connection.commit()
+                        with self.assertRaisesRegex(
+                            FailureReferenceAuditError,
+                            "metadata differs from its indexes",
+                        ):
+                            load_failure_reference_audit(output)
+                    finally:
+                        state_path.write_bytes(original_bytes)
 
     def test_audit_rejects_invalid_workspace_paths(self):
         with TemporaryDirectory() as directory:
@@ -225,7 +258,7 @@ class FailureReferenceAuditTest(unittest.TestCase):
                     lambda doc: doc,
                 ),
                 (
-                    workspace / "generated-audio/generation-state.json",
+                    workspace / "generated-audio/generation-state.sqlite3",
                     load_failure_reference_audit,
                     lambda doc: doc["items"][queue_id],
                 ),
@@ -234,10 +267,29 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 original = path.read_bytes()
                 for number in (float("nan"), float("inf"), float("-inf")):
                     with self.subTest(document=path.name, number=number):
-                        document = json.loads(original)
+                        document = (
+                            generation_database.read_state(path)
+                            if path
+                            == workspace / "generated-audio/generation-state.sqlite3"
+                            else json.loads(original)
+                        )
                         target(document)["unexpected_number"] = number
                         try:
-                            path.write_text(json.dumps(document))
+                            if path.suffix == ".sqlite3":
+                                with self.assertRaises(ValueError):
+                                    replace_generation_state(path, document)
+                                self.assertEqual(path.read_bytes(), original)
+                                with closing(sqlite3.connect(path)) as connection:
+                                    connection.execute(
+                                        "UPDATE items SET payload=? WHERE queue_id=?",
+                                        (
+                                            json.dumps(document["items"][queue_id]),
+                                            queue_id,
+                                        ),
+                                    )
+                                    connection.commit()
+                            else:
+                                path.write_text(json.dumps(document))
                             with self.assertRaises(FailureReferenceAuditError):
                                 loader(output)
                         finally:
@@ -264,12 +316,12 @@ class FailureReferenceAuditTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             workspace, queue_id = self.create_failed_workspace(root)
-            state_path = workspace / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text())
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             item = state["items"][queue_id]
             item.pop("failure")
             item["last_error"] = "Legacy output failed speech quality: silence"
-            state_path.write_text(json.dumps(state, sort_keys=True))
+            replace_generation_state(state_path, state)
 
             publish_failure_reference_audit(
                 workspace,
@@ -506,21 +558,21 @@ class FailureReferenceAuditTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             workspace, queue_id = self.create_failed_workspace(root)
-            state_path = workspace / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text())
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["audit_unrelated_diagnostic"] = {"refresh": 1}
-            state_path.write_text(json.dumps(state, sort_keys=True))
+            replace_generation_state(state_path, state)
             output = root / "audit"
             publish_failure_reference_audit(workspace, output)
 
-            state = json.loads(state_path.read_text())
+            state = generation_database.read_state(state_path)
             state["audit_unrelated_diagnostic"]["refresh"] = 2
-            state_path.write_text(json.dumps(state, sort_keys=True))
+            replace_generation_state(state_path, state)
             self.assertEqual(load_failure_reference_audit(output).case_count, 1)
 
-            state = json.loads(state_path.read_text())
+            state = generation_database.read_state(state_path)
             state["items"][queue_id]["attempts"] += 1
-            state_path.write_text(json.dumps(state, sort_keys=True))
+            replace_generation_state(state_path, state)
             with self.assertRaisesRegex(FailureReferenceAuditError, queue_id):
                 load_failure_reference_audit(output)
 
@@ -534,7 +586,7 @@ class FailureReferenceAuditTest(unittest.TestCase):
             group = document["groups"][0]
             candidate = group["candidates"][0]
             text = group["cases"][0]["text"]
-            state_path = workspace / "generated-audio/generation-state.json"
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
             state_before = state_path.read_bytes()
             factory = _PreviewBackendFactory()
             service = FailureReferencePreviewService(output, backend_factory=factory)
@@ -596,7 +648,7 @@ class FailureReferenceAuditTest(unittest.TestCase):
             document = json.loads((output / "audit.json").read_text())
             group = document["groups"][0]
             candidate = group["candidates"][0]
-            state_path = workspace / "generated-audio/generation-state.json"
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
             state_before = state_path.read_bytes()
             entered = threading.Event()
 
@@ -663,7 +715,7 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 (audit / "audit.json", load_failure_reference_audit),
                 (audit / ".blind-key.json", load_failure_reference_audit),
                 (
-                    workspace / "generated-audio/generation-state.json",
+                    workspace / "generated-audio/generation-state.sqlite3",
                     load_failure_reference_audit,
                 ),
                 (audit / "decisions.json", load_failure_reference_decisions),
@@ -726,7 +778,7 @@ class FailureReferenceAuditTest(unittest.TestCase):
             self.assertEqual(
                 decoded_plan.sha256, hashlib.sha256(unicode_payload).hexdigest()
             )
-            state_path = workspace / "generated-audio/generation-state.json"
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
             state_before = state_path.read_bytes()
             factory = _PreviewBackendFactory()
 

@@ -8,7 +8,9 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from tests.authoring_fixtures import create_test_workspace, tree_hashes
+from tests.generation_state_fixtures import replace_generation_state
 from tests.symlink_support import symlink_or_skip
+from vntts import generation_database
 from vntts.authoring import voice_repair_comparison as comparison_module
 from vntts.authoring.bulk_generation import _canonical_sha256
 from vntts.authoring.cli import main as authoring_main
@@ -26,24 +28,24 @@ from vntts.authoring.workbench import create_resume_workspace
 class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
     def create_rejected_workspace(self, root, *, text=None):
         fixture, _imported, workspace = create_test_workspace(root, text=text)
-        state_path = workspace.directory / "generated-audio/generation-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state_path = workspace.directory / "generated-audio/generation-state.sqlite3"
+        state = generation_database.read_state(state_path)
         state["active"] = None
         result = state["items"][fixture["queue_id"]]
         result["status"] = "generated"
         result["review_status"] = "rejected"
-        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        replace_generation_state(state_path, state)
         return fixture, workspace.directory, state_path
 
     def create_candidate(self, root):
         fixture, imported, workspace = create_test_workspace(root / "seed")
-        state_path = workspace.directory / "generated-audio/generation-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state_path = workspace.directory / "generated-audio/generation-state.sqlite3"
+        state = generation_database.read_state(state_path)
         state["active"] = None
         result = state["items"][fixture["queue_id"]]
         result["status"] = "generated"
         result["review_status"] = "rejected"
-        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        replace_generation_state(state_path, state)
         plan = build_voice_repair_comparison_plan(workspace.directory, "Rhiannon")
         candidate = plan.document["candidates"][0]
         prepared = prepare_voice_repair_candidate_workspace(
@@ -176,11 +178,13 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
                     model=candidate["model"],
                     generation_profile=candidate["generation_profile"],
                 ).directory
-                state_path = changed_workspace / "generated-audio/generation-state.json"
-                state = json.loads(state_path.read_text(encoding="utf-8"))
+                state_path = (
+                    changed_workspace / "generated-audio/generation-state.sqlite3"
+                )
+                state = generation_database.read_state(state_path)
                 state["active"] = None
                 state["items"].pop(fixture["queue_id"], None)
-                state_path.write_text(json.dumps(state), encoding="utf-8")
+                replace_generation_state(state_path, state)
                 with self.assertRaisesRegex(VoiceRepairComparisonError, message):
                     build_voice_repair_candidate_command(
                         plan, candidate["candidate_id"], changed_workspace
@@ -335,10 +339,12 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
     def test_approved_only_character_is_not_silently_repaired(self):
         with TemporaryDirectory() as directory:
             _fixture, _imported, workspace = create_test_workspace(Path(directory))
-            state_path = workspace.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = (
+                workspace.directory / "generated-audio/generation-state.sqlite3"
+            )
+            state = generation_database.read_state(state_path)
             state["active"] = None
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
 
             with self.assertRaisesRegex(VoiceRepairComparisonError, "no unresolved"):
                 build_voice_repair_comparison_plan(workspace.directory, "Rhiannon")
@@ -442,9 +448,9 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
             _fixture, workspace, state_path = self.create_rejected_workspace(
                 Path(directory)
             )
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state = generation_database.read_state(state_path)
             state["items"] = {}
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
 
             plan = build_voice_repair_comparison_plan(workspace, "Rhiannon")
 
@@ -481,13 +487,13 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
             root = Path(directory)
             fixture, imported, workspace_result = create_test_workspace(root / "seed")
             source_workspace = workspace_result.directory
-            source_state = source_workspace / "generated-audio/generation-state.json"
-            state = json.loads(source_state.read_text(encoding="utf-8"))
+            source_state = source_workspace / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(source_state)
             state["active"] = None
             result = state["items"][fixture["queue_id"]]
             result["status"] = "generated"
             result["review_status"] = "rejected"
-            source_state.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(source_state, state)
             source_before = source_state.read_bytes()
             plan = build_voice_repair_comparison_plan(source_workspace, "Rhiannon")
             candidate_id = plan.document["candidates"][1]["candidate_id"]
@@ -507,14 +513,12 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
                 root / "candidate-workspaces",
             )
             candidate_state = (
-                first.workspace_directory / "generated-audio/generation-state.json"
+                first.workspace_directory / "generated-audio/generation-state.sqlite3"
             )
-            candidate_document = json.loads(candidate_state.read_text(encoding="utf-8"))
+            candidate_document = generation_database.read_state(candidate_state)
             candidate_document["active"] = None
             candidate_document["items"].pop(fixture["queue_id"], None)
-            candidate_state.write_text(
-                json.dumps(candidate_document, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(candidate_state, candidate_document)
             command = build_voice_repair_candidate_command(
                 plan, candidate_id, first.workspace_directory
             )
@@ -552,14 +556,14 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
             root = Path(directory)
             _fixture, imported, workspace_result = create_test_workspace(root / "seed")
             source_state = (
-                workspace_result.directory / "generated-audio/generation-state.json"
+                workspace_result.directory / "generated-audio/generation-state.sqlite3"
             )
-            state = json.loads(source_state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(source_state)
             state["active"] = None
             _queue_id, result = next(iter(state["items"].items()))
             result["status"] = "generated"
             result["review_status"] = "rejected"
-            source_state.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(source_state, state)
             plan = build_voice_repair_comparison_plan(
                 workspace_result.directory, "Rhiannon"
             )
@@ -592,14 +596,14 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
             root = Path(directory)
             _fixture, imported, workspace_result = create_test_workspace(root / "seed")
             source_state = (
-                workspace_result.directory / "generated-audio/generation-state.json"
+                workspace_result.directory / "generated-audio/generation-state.sqlite3"
             )
-            state = json.loads(source_state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(source_state)
             state["active"] = None
             _queue_id, result = next(iter(state["items"].items()))
             result["status"] = "generated"
             result["review_status"] = "rejected"
-            source_state.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(source_state, state)
             plan = build_voice_repair_comparison_plan(
                 workspace_result.directory, "Rhiannon"
             )
@@ -687,14 +691,14 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
             root = Path(directory)
             _fixture, imported, workspace_result = create_test_workspace(root / "seed")
             source_state = (
-                workspace_result.directory / "generated-audio/generation-state.json"
+                workspace_result.directory / "generated-audio/generation-state.sqlite3"
             )
-            state = json.loads(source_state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(source_state)
             state["active"] = None
             _queue_id, result = next(iter(state["items"].items()))
             result["status"] = "generated"
             result["review_status"] = "rejected"
-            source_state.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(source_state, state)
             plan = build_voice_repair_comparison_plan(
                 workspace_result.directory, "Rhiannon"
             )
@@ -728,14 +732,14 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
             root = Path(directory)
             _fixture, imported, workspace_result = create_test_workspace(root / "seed")
             source_state = (
-                workspace_result.directory / "generated-audio/generation-state.json"
+                workspace_result.directory / "generated-audio/generation-state.sqlite3"
             )
-            state = json.loads(source_state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(source_state)
             state["active"] = None
             _queue_id, result = next(iter(state["items"].items()))
             result["status"] = "generated"
             result["review_status"] = "rejected"
-            source_state.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(source_state, state)
             plan = build_voice_repair_comparison_plan(
                 workspace_result.directory, "Rhiannon"
             )

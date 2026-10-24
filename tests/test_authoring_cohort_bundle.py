@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -8,8 +9,11 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import vntts.authoring.cohort_bundle as cohort_bundle_module
+import vntts.authoring.cohort_review as cohort_review_module
 from tests.authoring_fixtures import create_pending_cohort_workspace
+from tests.generation_state_fixtures import replace_generation_state
 from tests.symlink_support import symlink_or_skip
+from vntts import generation_database
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_bundle import (
@@ -76,12 +80,22 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             root = Path(directory)
             sources = self.create_sources(root)
             blocked_workspace, state_path, queue_id = sources[0]
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            state["items"][queue_id].pop("generation_profile")
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            state = generation_database.read_state(state_path)
+            state["items"][queue_id]["generation_profile"] = "unavailable-profile"
+            replace_generation_state(state_path, state)
             before = state_path.read_bytes()
 
-            bundle = build_cohort_review_bundle([source[0] for source in sources])
+            original_identity = cohort_review_module._cohort_identity
+
+            def unavailable_identity(workspace, result):
+                if result.get("generation_profile") == "unavailable-profile":
+                    raise CohortReviewError("Generation profile is unavailable")
+                return original_identity(workspace, result)
+
+            with patch.object(
+                cohort_review_module, "_cohort_identity", unavailable_identity
+            ):
+                bundle = build_cohort_review_bundle([source[0] for source in sources])
             blocked_plan = next(
                 source["plan"]
                 for source in bundle.document["sources"]
@@ -106,10 +120,17 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             self.assertEqual(state_path.read_bytes(), before)
 
             second_state_path = sources[1][1]
-            second_state = json.loads(second_state_path.read_text(encoding="utf-8"))
-            second_state["items"][sources[1][2]].pop("generation_profile")
-            second_state_path.write_text(json.dumps(second_state), encoding="utf-8")
-            blocked_only = build_cohort_review_bundle([source[0] for source in sources])
+            second_state = generation_database.read_state(second_state_path)
+            second_state["items"][sources[1][2]]["generation_profile"] = (
+                "unavailable-profile"
+            )
+            replace_generation_state(second_state_path, second_state)
+            with patch.object(
+                cohort_review_module, "_cohort_identity", unavailable_identity
+            ):
+                blocked_only = build_cohort_review_bundle(
+                    [source[0] for source in sources]
+                )
             self.assertEqual(blocked_only.document["workspace_count"], 2)
             self.assertEqual(blocked_only.document["cohort_count"], 0)
             self.assertEqual(blocked_only.document["blocked_item_count"], 1)
@@ -466,9 +487,9 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             sources = self.create_sources(Path(directory))
             bundle = build_cohort_review_bundle([value[0] for value in sources])
             state_path = sources[1][1]
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state = generation_database.read_state(state_path)
             state["active"] = {"phase": "changed"}
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             with self.assertRaises(CohortReviewError):
                 refresh_cohort_review_bundle(bundle)
 
@@ -992,7 +1013,7 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             root = Path(directory)
             workspace, state_path, queue_id = create_pending_cohort_workspace(root)
             original = build_cohort_review_bundle([workspace]).document
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state = generation_database.read_state(state_path)
             publication = root / "bundle.json"
             for value, expected_duration, expected_number, invalid_authority in (
                 (10**400, None, None, False),
@@ -1004,7 +1025,11 @@ class AuthoringCohortBundleTest(unittest.TestCase):
                     document = json.loads(json.dumps(original))
                     result = state["items"][queue_id]
                     result["quality"].update(duration_seconds=value, peak=value)
-                    state_path.write_text(json.dumps(state), encoding="utf-8")
+                    if isinstance(value, float) and not math.isfinite(value):
+                        with self.assertRaises(ValueError):
+                            replace_generation_state(state_path, state)
+                        continue
+                    replace_generation_state(state_path, state)
                     plan = document["sources"][0]["plan"]
                     plan["state_sha256"] = hashlib.sha256(
                         state_path.read_bytes()
@@ -1089,7 +1114,7 @@ class AuthoringCohortBundleTest(unittest.TestCase):
         for relative in (
             "queue.jsonl",
             "generated-audio",
-            "generated-audio/generation-state.json",
+            "generated-audio/generation-state.sqlite3",
         ):
             with self.subTest(relative=relative), TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -1206,11 +1231,11 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             publication = root / "bundle.json"
             write_cohort_review_bundle(bundle, publication)
             state_path = sources[0][1]
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state = generation_database.read_state(state_path)
             queue_id = sources[0][2]
             state["items"][queue_id]["status"] = "approved"
             state["items"][queue_id]["review_status"] = "approved"
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
 
             with self.assertRaisesRegex(CohortReviewError, "without exact terminal"):
                 load_resumable_cohort_review_bundle(publication)
@@ -1225,8 +1250,8 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             source = bundle.document["sources"][0]
             queue_id = source["plan"]["cohorts"][0]["items"][0]["queue_id"]
             workspace = Path(source["workspace"])
-            state = json.loads(
-                (workspace / "generated-audio/generation-state.json").read_text()
+            state = generation_database.read_state(
+                workspace / "generated-audio/generation-state.sqlite3"
             )
             audio = workspace / "generated-audio" / state["items"][queue_id]["path"]
             audio.write_bytes(b"changed")

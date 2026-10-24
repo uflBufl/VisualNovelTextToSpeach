@@ -1,4 +1,3 @@
-import json
 import os
 import unittest
 from dataclasses import replace
@@ -10,6 +9,7 @@ from unittest.mock import Mock, patch
 from vntts_artifacts.file_integrity import sha256_file
 
 from tests.bulk_generation_fixtures import SyntheticRenderer, queue_item, write_queue
+from vntts import generation_database
 from vntts.authoring import bulk_generation
 from vntts.pregeneration_generation import OfflineGenerationWorker
 from vntts.synthesis import SynthesisChunkStream, SynthesisCompletion
@@ -61,7 +61,7 @@ class GenerationDiagnosticEvidenceTest(unittest.TestCase):
         ):
             root = Path(directory)
             item, result = self.generate(root, DiagnosticRenderer())
-            state = json.loads(result.state.read_text())
+            state = generation_database.read_state(result.state)
             published = state["items"][item["queue_id"]]
             audio_sha256 = sha256_file(root / "output" / published["path"])
         self.assertEqual(result.generated, 1)
@@ -137,8 +137,8 @@ class GenerationDiagnosticEvidenceTest(unittest.TestCase):
                 observed = {}
 
                 def observe(_request):
-                    state = json.loads(
-                        (root / "output" / "generation-state.json").read_text()
+                    state = generation_database.read_state(
+                        root / "output" / "generation-state.sqlite3"
                     )
                     observed.update(state["active"])
 

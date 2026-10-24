@@ -29,6 +29,7 @@ from vntts_artifacts.voice_manifest import write_voice_manifest
 from vntts.authoring.bulk_generation import BulkGenerationError
 from vntts.authoring.generation_state import (
     load_generation_state_from_snapshot,
+    load_generation_state_object_snapshot,
     load_stable_generation_queue,
 )
 from vntts.authoring.publication import (
@@ -48,7 +49,6 @@ from vntts.authoring.source_reference_quality_records import (
 from vntts.authoring.source_reference_review import FIXED_EVALUATION_CORPUS
 from vntts.authoring.workspace_foundation import (
     contained_regular_file,
-    load_json_object_snapshot,
 )
 from vntts.cli import cli_error, cli_success
 from vntts.document_identity import file_sha256, is_lowercase_sha256, sha256_file
@@ -159,8 +159,12 @@ def publish_composite_quality_review(
         queue, queue_sha256 = load_stable_generation_queue(inputs.queue_path)
         if queue_sha256 != inputs.queue_sha256:
             raise ReferenceCompositeError("Composite evaluation queue changed")
-        state_document, state_sha256, _state_payload = load_json_object_snapshot(
-            state_path, "composite generation state", error_type=ReferenceCompositeError
+        state_document, state_sha256, _state_payload = (
+            load_generation_state_object_snapshot(
+                state_path,
+                "composite generation state",
+                error_type=ReferenceCompositeError,
+            )
         )
         state = load_generation_state_from_snapshot(
             state_path, queue, queue_sha256, state_document=state_document

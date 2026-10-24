@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import os
 import secrets
 from collections.abc import Mapping
@@ -14,7 +13,6 @@ from functools import partial
 from pathlib import Path
 from typing import TypedDict
 
-from durable_file import atomic_write_json
 from vntts_artifacts import VoiceGenerationQueueItem
 
 from vntts.authoring.authority import canonical_document_sha256
@@ -32,9 +30,11 @@ from vntts.authoring.generation_manifest import (
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
     MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA,
+    decode_generation_state_snapshot,
     live_fallback_decision,
     load_stable_generation_queue,
     validate_generation_state_document,
+    write_generation_state,
 )
 from vntts.authoring.missing_voice_reuse import (
     _validate_plan,
@@ -48,7 +48,7 @@ from vntts.authoring.missing_voice_reuse_binding import (
 from vntts.authoring.workbench import inspect_workspace
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import file_sha256
-from vntts.json_types import decode_json, has_schema_version
+from vntts.json_types import has_schema_version
 from vntts.path_safety import read_regular_bytes
 from vntts.voices import synthesis_character_for_line
 
@@ -101,7 +101,7 @@ def authorize_missing_voice_live_fallback(
     workspace = Path(workspace).expanduser().resolve()
     authority_directory = Path(authority_directory).expanduser().resolve()
     character = _required_text(character, "Missing-voice fallback character")
-    state_path = workspace / "generated-audio/generation-state.json"
+    state_path = workspace / "generated-audio/generation-state.sqlite3"
     queue_path = workspace / "queue.jsonl"
     workspace_path = workspace / "workspace.json"
     inspect_workspace(workspace)
@@ -292,7 +292,7 @@ def authorize_missing_voice_live_fallback(
             queue_sha256,
             process_checker=process_is_alive,
         ) as lease:
-            atomic_write_json(staged_state, proposed, sort_keys=True)
+            write_generation_state(staged_state, proposed)
             write_generated_manifest_from_state(
                 proposed,
                 state_path.parent,
@@ -627,8 +627,8 @@ def _existing_batch_id(
 
 def _decode_state(payload: bytes) -> dict[str, object]:
     try:
-        value = decode_json(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        value = decode_generation_state_snapshot(payload)
+    except (UnicodeDecodeError, ValueError) as error:
         raise MissingVoiceLiveFallbackError(str(error)) from error
     if not isinstance(value, dict):
         raise MissingVoiceLiveFallbackError("Generation state must be a JSON object")

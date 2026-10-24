@@ -8,9 +8,11 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from tests.authoring_fixtures import tree_hashes
+from tests.generation_state_fixtures import replace_generation_state
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from tests.terminal_conflict_fixtures import create_terminal_conflict_fixture
+from vntts import generation_database
 from vntts.authoring import terminal_conflict_review as terminal_module
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.authority import canonical_document_sha256
@@ -165,10 +167,10 @@ class TerminalConflictReviewTest(unittest.TestCase):
                 source, case["case_id"], chosen
             )
 
-            state_path = secondary / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = secondary / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["items"][queue_id]["updated_at"] = "2026-08-27T12:00:00+00:00"
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             refreshed_report = build_authoring_reconciliation(
                 primary, root / "review-bundles"
             )
@@ -268,11 +270,11 @@ class TerminalConflictReviewTest(unittest.TestCase):
             created = publish_terminal_conflict_review(report_path, output)
             review = json.loads(created.review.read_text(encoding="utf-8"))
             case = review["cases"][0]
-            state_path = primary / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = primary / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["items"][queue_id]["review_status"] = "rejected"
             state["items"][queue_id]["status"] = "generated"
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
 
             with self.assertRaisesRegex(
                 TerminalConflictReviewError, "authority changed"
@@ -289,10 +291,10 @@ class TerminalConflictReviewTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             primary, _secondary, queue_id, report_path = self.create_fixture(root)
-            state_path = primary / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = primary / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["items"][queue_id]["updated_at"] = "2026-08-26T12:00:00+00:00"
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
 
             with self.assertRaisesRegex(
                 TerminalConflictReviewError, "changed after reconciliation"

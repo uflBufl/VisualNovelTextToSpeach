@@ -21,7 +21,9 @@ from vntts_artifacts.voice_manifest import VoiceManifestError, write_voice_manif
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_inspection as workspace_inspection_module
 from tests.authoring_fixtures import create_test_workspace, tree_hashes
+from tests.generation_state_fixtures import replace_generation_state
 from tests.symlink_support import symlink_or_skip
+from vntts import generation_database
 from vntts.authoring.bulk_generation import process_started_at
 from vntts.authoring.cohort_bundle import CohortReviewBundle
 from vntts.authoring.generation_review import ReviewCommit
@@ -214,20 +216,20 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
         self.fail("Timed out waiting for Qt background work")
 
     def clear_authoring_state(self, workspace):
-        state_path = workspace / "generated-audio" / "generation-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state_path = workspace / "generated-audio" / "generation-state.sqlite3"
+        state = generation_database.read_state(state_path)
         state["active"] = None
         state["items"] = {}
-        state_path.write_text(json.dumps(state), encoding="utf-8")
+        replace_generation_state(state_path, state)
 
     def mark_fixture_pending_review(self, workspace):
-        state_path = workspace / "generated-audio" / "generation-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state_path = workspace / "generated-audio" / "generation-state.sqlite3"
+        state = generation_database.read_state(state_path)
         queue_id = next(iter(state["items"]))
         state["active"] = None
         state["items"][queue_id]["status"] = "generated"
         state["items"][queue_id]["review_status"] = "pending_review"
-        atomic_write_json(state_path, state, sort_keys=True)
+        replace_generation_state(state_path, state)
         return queue_id
 
     def mark_selected_review_heard(self, dialog):
@@ -491,8 +493,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = self.create_workspace(root)
-            state_path = workspace / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             queue_id = next(iter(state["items"]))
             state["active"] = None
             state["items"][queue_id] = {
@@ -502,7 +504,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 "last_error": "synthesis failed",
                 "updated_at": "2026-08-17T00:00:00+00:00",
             }
-            atomic_write_json(state_path, state, sort_keys=True)
+            replace_generation_state(state_path, state)
 
             dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
 
@@ -738,8 +740,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = self.create_workspace(root)
-            state_path = workspace / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             queue_id, item = next(iter(state["items"].items()))
             queue_item = next(
                 candidate
@@ -762,7 +764,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 "updated_at": "2026-08-17T00:01:00+00:00",
                 "last_error": "Earlier limited render",
             }
-            atomic_write_json(state_path, state, sort_keys=True)
+            replace_generation_state(state_path, state)
             dialog = AuthoringWorkbenchDialog(
                 workspace,
                 settings=self.settings(root),
@@ -866,8 +868,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 root = Path(directory)
                 workspace = self.create_workspace(root)
                 if retry:
-                    state_path = workspace / "generated-audio/generation-state.json"
-                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    state_path = workspace / "generated-audio/generation-state.sqlite3"
+                    state = generation_database.read_state(state_path)
                     queue_id = next(iter(state["items"]))
                     state["active"] = None
                     state["items"][queue_id] = {
@@ -877,7 +879,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                         "last_error": "synthesis failed",
                         "updated_at": "2026-08-17T00:00:00+00:00",
                     }
-                    atomic_write_json(state_path, state, sort_keys=True)
+                    replace_generation_state(state_path, state)
                 else:
                     self.clear_authoring_state(workspace)
                 dialog = AuthoringWorkbenchDialog(
@@ -1510,10 +1512,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertIn("Close deferred", dialog.review_action_reason.text())
             dialog.review_selected("rejected")
             self.assertIn("wait for the current", dialog.review_action_reason.text())
-            state = json.loads(
-                (workspace / "generated-audio/generation-state.json").read_text(
-                    encoding="utf-8"
-                )
+            state = generation_database.read_state(
+                workspace / "generated-audio/generation-state.sqlite3"
             )
             self.assertEqual(
                 state["items"][queue_id]["review_status"], "pending_review"
@@ -1523,10 +1523,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.wait_for(lambda: not dialog._review_save_active)
             self.wait_for(
                 lambda: (
-                    json.loads(
-                        (workspace / "generated-audio/generation-state.json").read_text(
-                            encoding="utf-8"
-                        )
+                    generation_database.read_state(
+                        workspace / "generated-audio/generation-state.sqlite3"
                     )["items"][queue_id]["review_status"]
                     == "approved"
                 )
@@ -1866,10 +1864,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.wait_for(lambda: not dialog._review_save_active)
             self.application.processEvents()
 
-            state = json.loads(
-                (workspace / "generated-audio/generation-state.json").read_text(
-                    encoding="utf-8"
-                )
+            state = generation_database.read_state(
+                workspace / "generated-audio/generation-state.sqlite3"
             )
             manifest = json.loads(
                 (workspace / "generated-audio/manifest.json").read_text(
@@ -1892,10 +1888,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             dialog.reject_button.click()
             self.wait_for(lambda: not dialog._review_save_active)
-            state = json.loads(
-                (workspace / "generated-audio/generation-state.json").read_text(
-                    encoding="utf-8"
-                )
+            state = generation_database.read_state(
+                workspace / "generated-audio/generation-state.sqlite3"
             )
 
             self.assertIsNotNone(displayed_authority)
@@ -2082,7 +2076,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 workspace / "queue.jsonl",
                 workspace / "inputs/story-index.jsonl",
                 workspace / "inputs/voice/manifest.json",
-                output / "generation-state.json",
+                output / "generation-state.sqlite3",
                 output / "manifest.json",
                 output / ".generation-lease.json",
                 output / ".job-process.json",
@@ -2125,8 +2119,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = self.create_workspace(root)
-            state_path = workspace / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             queue_id = next(iter(state["items"]))
             state["active"] = None
             state["items"][queue_id] = {
@@ -2136,7 +2130,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 "last_error": "synthetic failure",
                 "updated_at": "2026-08-17T00:00:00+00:00",
             }
-            atomic_write_json(state_path, state, sort_keys=True)
+            replace_generation_state(state_path, state)
             atomic_write_json(
                 workspace / "generated-audio/.generation-lease.json",
                 {
@@ -2177,7 +2171,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.status_timer.timeout.emit()
             dialog.refresh.assert_not_called()
 
-            state = workspace / "generated-audio/generation-state.json"
+            state = workspace / "generated-audio/generation-state.sqlite3"
             state.write_bytes(state.read_bytes() + b"\n")
             dialog.status_timer.timeout.emit()
             dialog.refresh.assert_called_once_with()

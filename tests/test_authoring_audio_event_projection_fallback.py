@@ -17,7 +17,9 @@ from tests.audio_output_fixtures import FakeAudioOutput
 from tests.authoring_fixtures import (
     create_audio_event_projection_fixture,
 )
+from tests.generation_state_fixtures import replace_generation_state
 from tests.symlink_support import symlink_or_skip
+from vntts import generation_database
 from vntts.authoring.audio_event_projection_fallback import (
     create_audio_event_projection_fallback_workspace,
     validate_audio_event_projection_fallback_workspace,
@@ -42,8 +44,8 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
         batch["batch_id"] = canonical_document_sha256(
             {key: value for key, value in batch.items() if key != "batch_id"}
         )
-        path = directory / "generated-audio/generation-state.json"
-        state = json.loads(path.read_text())
+        path = directory / "generated-audio/generation-state.sqlite3"
+        state = generation_database.read_state(path)
         result = state["items"][queue_id]
         authority = result["live_fallback"]["evidence"]
         for field in (
@@ -54,7 +56,7 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
             "queue_sha256",
         ):
             authority[field] = batch[field]
-        path.write_text(json.dumps(state, sort_keys=True))
+        replace_generation_state(path, state)
 
     def test_batch_versions_and_invalid_json_values_raise_workbench_errors(self):
         with TemporaryDirectory() as directory:
@@ -152,9 +154,9 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
                     batch = workspace["audio_event_projection_fallback"]
                     target = created.directory / batch["base_state_path"]
                     payload = target.read_bytes()
-                    document = json.loads(payload)
+                    document = generation_database.read_snapshot(payload)
                     document[field] = value
-                    target.write_text(json.dumps(document, sort_keys=True))
+                    replace_generation_state(target, document)
                     batch["base_state_sha256"] = successor_module.sha256_file(target)
                     self._rebind_batch(created.directory, workspace, item.queue_id)
                     try:
@@ -211,14 +213,16 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             base, queue_item = create_audio_event_projection_fixture(root / "source")
-            base_state = (base / "generated-audio/generation-state.json").read_bytes()
+            base_state = (
+                base / "generated-audio/generation-state.sqlite3"
+            ).read_bytes()
             first = create_audio_event_projection_fallback_workspace(
                 base, (queue_item.queue_id,), root / "workspaces"
             )
             second = create_audio_event_projection_fallback_workspace(
                 base, (queue_item.queue_id,), root / "workspaces"
             )
-            state_path = first.directory / "generated-audio/generation-state.json"
+            state_path = first.directory / "generated-audio/generation-state.sqlite3"
             state = load_generation_state(state_path, first.directory / "queue.jsonl")
             queue = VoiceGenerationQueue.load(first.directory / "queue.jsonl")
             records = _decision_records(
@@ -270,7 +274,7 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
             )
             route = backend.prepare_route(queue_item.speaker, queue_item.text)
             base_state_after = (
-                base / "generated-audio/generation-state.json"
+                base / "generated-audio/generation-state.sqlite3"
             ).read_bytes()
 
         self.assertTrue(first.created)
@@ -299,12 +303,12 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
             result = create_audio_event_projection_fallback_workspace(
                 base, (queue_item.queue_id,), root / "workspaces"
             )
-            state_path = result.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = result.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["items"][queue_item.queue_id]["live_fallback"]["evidence"][
                 "spoken_text"
             ] = "Read the marker *gasp*"
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             with self.assertRaises(BulkGenerationError):
                 load_generation_state(state_path, result.directory / "queue.jsonl")
 

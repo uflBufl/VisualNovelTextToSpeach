@@ -215,6 +215,7 @@ class GenerationLease:
         self.lease_id = secrets.token_hex(16)
         self.committed = False
         self.document: GenerationLeaseDocument | None = None
+        self.interrupted_process: dict[str, object] | None = None
 
     def __enter__(self) -> GenerationLease:
         try:
@@ -265,11 +266,19 @@ class GenerationLease:
                             "Another generation process is active with PID "
                             f"{existing.get('pid')}"
                         )
-                    archive_interrupted_artifact(
+                    archived = archive_interrupted_artifact(
                         self.output_directory,
                         self.path,
                         expected_payload=lease_payload,
                     )
+                    self.interrupted_process = {
+                        "lease": str(archived.resolve()),
+                        "lease_sha256": hashlib.sha256(lease_payload).hexdigest(),
+                        "pid": existing["pid"],
+                        "recorded_status": "running",
+                        "detected_status": "interrupted",
+                        "detected_at": datetime.now(timezone.utc).isoformat(),
+                    }
                 lease: GenerationLeaseDocument = {
                     "schema": LEASE_SCHEMA,
                     "schema_version": LEASE_VERSION,

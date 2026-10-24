@@ -233,19 +233,17 @@ class NativeSpeechLogTest(unittest.TestCase):
 class PregenerationSupportSummaryTest(unittest.TestCase):
     def test_failed_item_summary_is_bounded_and_counts_all_failures(self):
         with TemporaryDirectory() as temporary_directory:
-            path = Path(temporary_directory) / "generation-state.json"
+            path = Path(temporary_directory) / "generation-state.sqlite3"
             items = {
                 f"failed-{index:02d}": {"status": "failed", "line_id": str(index)}
                 for index in reversed(range(70))
             }
             items.update(
                 {
-                    "approved": {"status": "approved"},
-                    "bad-status": {"status": 1},
-                    "not-an-object": ["failed"],
+                    "approved": {"status": "approved", "review_status": "approved"},
                 }
             )
-            path.write_text(json.dumps({"items": items}), encoding="utf-8")
+            write_generation_database(path, {"queue_sha256": "f" * 64, "items": items})
 
             with patch(
                 "vntts.support._pregeneration_failure_summary",
@@ -260,6 +258,22 @@ class PregenerationSupportSummaryTest(unittest.TestCase):
             [f"failed-{index:02d}" for index in range(64)],
         )
         self.assertEqual(summarize.call_count, 64)
+
+    def test_failure_summary_skips_malformed_sanitizer_records(self):
+        self.assertEqual(
+            support_module._pregeneration_item_summary(
+                {
+                    "approved": {"status": "approved"},
+                    "bad-status": {"status": 1},
+                    "not-an-object": ["failed"],
+                }
+            ),
+            {
+                "status_counts": {"approved": 1},
+                "failed_items": [],
+                "failed_items_truncated": 0,
+            },
+        )
 
     def test_sqlite_snapshot_preserves_bounded_failure_summary_and_redaction(self):
         with TemporaryDirectory() as directory:
@@ -299,7 +313,10 @@ class PregenerationSupportSummaryTest(unittest.TestCase):
             self.assertEqual(result["status_counts"], {"approved": 1, "failed": 70})
             self.assertEqual(result["failed_items_truncated"], 6)
             self.assertEqual(len(result["failed_items"]), 64)
-            self.assertEqual(result["failed_items"], json_result["failed_items"])
+            self.assertEqual(
+                json_result, {"available": False, "reason": "state could not be read"}
+            )
+            self.assertEqual(json.loads(legacy.read_text()), state)
             self.assertEqual(
                 result["failed_items"][0]["attempts_by_provider"],
                 {"moss-tts": 2, "pocket-tts": 1},
@@ -2022,39 +2039,37 @@ class SupportBundleBuilderTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            state = directory / "generation-state.json"
-            state.write_text(
-                json.dumps(
-                    {
-                        "queue_sha256": "f" * 64,
-                        "items": {
-                            "reverse1999:314605:113:04d5e08b450a8d7a": {
-                                "status": "failed",
-                                "line_id": "reverse1999:314605:113",
-                                "speaker": "Aderyn",
-                                "provider": "moss-tts",
-                                "model": str(Path.home() / "private-model"),
-                                "attempts": 4,
-                                "attempts_by_provider": {
-                                    "moss-tts": 3,
-                                    "pocket-tts": 1,
+            state = directory / "generation-state.sqlite3"
+            write_generation_database(
+                state,
+                {
+                    "queue_sha256": "f" * 64,
+                    "items": {
+                        "reverse1999:314605:113:04d5e08b450a8d7a": {
+                            "status": "failed",
+                            "line_id": "reverse1999:314605:113",
+                            "speaker": "Aderyn",
+                            "provider": "moss-tts",
+                            "model": str(Path.home() / "private-model"),
+                            "attempts": 4,
+                            "attempts_by_provider": {
+                                "moss-tts": 3,
+                                "pocket-tts": 1,
+                            },
+                            "failure": {
+                                "kind": "speech_silence",
+                                "error_type": "SpeechQualityError",
+                            },
+                            "failure_repair": {
+                                "strategy": "offline_fallback_backend",
+                                "source_failure": {
+                                    "source_provider": "moss-tts",
+                                    "source_failure_kind": "speech_silence",
                                 },
-                                "failure": {
-                                    "kind": "speech_silence",
-                                    "error_type": "SpeechQualityError",
-                                },
-                                "failure_repair": {
-                                    "strategy": "offline_fallback_backend",
-                                    "source_failure": {
-                                        "source_provider": "moss-tts",
-                                        "source_failure_kind": "speech_silence",
-                                    },
-                                },
-                            }
-                        },
-                    }
-                ),
-                encoding="utf-8",
+                            },
+                        }
+                    },
+                },
             )
             support = PregenerationSupportState(directory / "pregeneration.json")
             support.record(
@@ -2164,9 +2179,9 @@ class SupportBundleBuilderTest(unittest.TestCase):
     def test_pregeneration_support_does_not_follow_state_symlinks(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            outside = root / "outside-state.json"
-            outside.write_text('{"items": {}}', encoding="utf-8")
-            alias = root / "generation-state.json"
+            outside = root / "outside-state.sqlite3"
+            write_generation_database(outside, {"queue_sha256": "f" * 64, "items": {}})
+            alias = root / "generation-state.sqlite3"
             symlink_or_skip(alias, outside)
 
             report = PregenerationSupportState().record(

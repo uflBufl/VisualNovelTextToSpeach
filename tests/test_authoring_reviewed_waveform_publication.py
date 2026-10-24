@@ -8,6 +8,8 @@ from vntts_artifacts.game_pack import load_game_pack
 from tests.authoring_fixtures import (
     create_reviewed_waveform_fixture,
 )
+from tests.generation_state_fixtures import replace_generation_state
+from vntts import generation_database
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.game_pack import publish_final_game_pack
 from vntts.authoring.reviewed_waveform_publication import (
@@ -24,14 +26,16 @@ class ReviewedWaveformPublicationTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             base, queue_item = create_reviewed_waveform_fixture(root / "source")
-            base_state = (base / "generated-audio/generation-state.json").read_bytes()
+            base_state = (
+                base / "generated-audio/generation-state.sqlite3"
+            ).read_bytes()
             first = create_reviewed_waveform_publication_workspace(
                 base, root / "workspaces"
             )
             second = create_reviewed_waveform_publication_workspace(
                 base, root / "workspaces"
             )
-            state_path = first.directory / "generated-audio/generation-state.json"
+            state_path = first.directory / "generated-audio/generation-state.sqlite3"
             state = load_generation_state(state_path, first.directory / "queue.jsonl")
             publication = state["reviewed_waveform_publication"]
             workspace = json.loads(
@@ -56,7 +60,7 @@ class ReviewedWaveformPublicationTests(unittest.TestCase):
                 )
             )
             base_state_after = (
-                base / "generated-audio/generation-state.json"
+                base / "generated-audio/generation-state.sqlite3"
             ).read_bytes()
 
         self.assertTrue(first.created)
@@ -88,10 +92,10 @@ class ReviewedWaveformPublicationTests(unittest.TestCase):
             result = create_reviewed_waveform_publication_workspace(
                 base, root / "workspaces"
             )
-            state_path = result.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = result.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["reviewed_waveform_publication"]["items"] = []
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             with self.assertRaises(BulkGenerationError):
                 load_generation_state(state_path, result.directory / "queue.jsonl")
 

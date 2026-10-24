@@ -53,13 +53,73 @@ def state():
 
 
 class GenerationDatabaseTest(unittest.TestCase):
+    def test_unregistered_saved_output_requires_explicit_upgrade_without_legacy_reads(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            database.require_registered_output(output)
+            (output / ".generation-lease.json").write_text("lease")
+            database.require_registered_output(output)
+            legacy = output / "unregistered-recording.wav"
+            legacy.write_bytes(b"saved work")
+            with patch.object(
+                database,
+                "read_regular_bytes",
+                side_effect=AssertionError("opened saved work"),
+            ):
+                with self.assertRaisesRegex(ValueError, "explicit storage upgrade"):
+                    database.require_registered_output(output)
+            database.write_state(database.state_path(output), state())
+            database.require_registered_output(output)
+
+    def test_progress_refuses_old_and_inexact_working_state_schema_versions(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "generation-state.sqlite3"
+            for schema, version in (
+                ("r1999.bulk-generation-state", 1),
+                ("vntts.authoring-generation-state", True),
+                ("vntts.authoring-generation-state", 1.0),
+            ):
+                value = state()
+                value.update(schema=schema, schema_version=version)
+                database.write_state(path, value)
+                with self.assertRaisesRegex(ValueError, "working-state schema"):
+                    database.read_progress(path)
+                with self.assertRaisesRegex(ValueError, "working-state schema"):
+                    database.active_attempt(path)
+
+    def test_all_success_paths_are_available_without_decoding_item_evidence(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "generation-state.sqlite3"
+            database.write_state(path, state())
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute(
+                    "UPDATE items SET payload='invalid evidence' WHERE queue_id='two'"
+                )
+                connection.commit()
+            with patch.object(
+                database, "_object", side_effect=AssertionError("decoded evidence")
+            ):
+                self.assertEqual(
+                    set(database.read_audio_paths(path)),
+                    {"audio/one.wav", "audio/two.wav"},
+                )
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute(
+                    "UPDATE items SET audio_path=NULL WHERE queue_id='two'"
+                )
+                connection.commit()
+            with self.assertRaisesRegex(ValueError, "audio path"):
+                database.read_audio_paths(path)
+
     def test_progress_reads_counts_and_line_identity_without_completed_evidence(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "generation-state.sqlite3"
             value = state()
             value["items"]["cancelled"] = {
                 "status": "failed",
-                "failure": {"kind": "cancelled"},
+                "failure": {"kind": "cancelled", "attempt_counted": False},
             }
             value["items"]["failed"] = {
                 "status": "failed",
@@ -93,6 +153,21 @@ class GenerationDatabaseTest(unittest.TestCase):
             self.assertEqual(path.read_bytes(), before)
             with self.assertRaises(ValueError):
                 database.read_state(path)
+
+    def test_progress_rejects_counted_cancellation_before_renderer_creation(self):
+        for marker in ({}, {"attempt_counted": True}, {"attempt_counted": 0}):
+            with self.subTest(marker=marker), TemporaryDirectory() as directory:
+                path = Path(directory) / "generation-state.sqlite3"
+                value = state()
+                value["items"] = {
+                    "cancelled": {
+                        "status": "failed",
+                        "failure": {"kind": "cancelled", **marker},
+                    }
+                }
+                database.write_state(path, value)
+                with self.assertRaisesRegex(ValueError, "explicit storage upgrade"):
+                    database.read_progress(path)
 
     def test_progress_rejects_malformed_failed_evidence(self):
         for payload in ("not JSON", "[]", '{"status":"approved"}'):
@@ -229,7 +304,7 @@ class GenerationDatabaseTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory) / "missing"
             path = root / "generation-state.sqlite3"
-            self.assertEqual(database.state_path(root), root / "generation-state.json")
+            self.assertEqual(database.state_path(root), path)
             for operation in (
                 lambda: database.read_state(path),
                 lambda: database.read_progress(path),
@@ -238,11 +313,6 @@ class GenerationDatabaseTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     operation()
             self.assertFalse(root.exists())
-            self.assertTrue(database.is_database(path))
-            self.assertTrue(
-                database.is_database(path.with_name(path.name + ".123.tmp"))
-            )
-            self.assertFalse(database.is_database(root / "generation-state.json"))
 
     def test_failed_first_write_never_masks_legacy_json_with_empty_database(self):
         for failure in ("write", "sync"):
@@ -259,7 +329,7 @@ class GenerationDatabaseTest(unittest.TestCase):
                     with self.assertRaises(OSError):
                         database.write_state(path, state())
                 self.assertFalse(path.exists())
-                self.assertEqual(database.state_path(root), legacy)
+                self.assertEqual(database.state_path(root), path)
                 self.assertEqual(legacy.read_bytes(), original)
                 self.assertEqual(list(root.iterdir()), [legacy])
                 database.write_state(path, state())

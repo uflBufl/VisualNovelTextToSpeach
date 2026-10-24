@@ -56,7 +56,7 @@ def inputs(root):
     output = root / f"generation-output-{identity[:16]}"
     result = OfflineGenerationResult(
         output,
-        output / "generation-state.json",
+        output / "generation-state.sqlite3",
         output / "manifest.json",
         1,
         2,

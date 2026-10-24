@@ -15,24 +15,178 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 from collections import Counter
+from contextlib import closing
 from hashlib import file_digest, sha256
 from io import BytesIO
+from math import prod
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from tokenize import TokenError
-from typing import TypedDict
+from typing import BinaryIO, TypedDict
 
 import numpy as np
 import soundfile as sf
+from numpy.lib import _format_impl as npy_format
+from numpy.typing import NDArray
 
 from vntts.audio_cache import (
     AudioArray,
     PersistentAudioCache,
     _prepared_audio,
-    _read_cached_array,
 )
-from vntts.audio_store import SharedAudioStore
+from vntts.audio_store import (
+    _CATALOG_SCHEMA,
+    AudioCatalogError,
+    AudioStorageUpgradeRequired,
+    SharedAudioStore,
+    _sync_directory,
+    _sync_regular_file,
+)
 from vntts.path_safety import open_regular_binary, read_regular_text
+
+# NumPy has no public NPY3 header reader; isolated to the one-time converter.
+_read_npy_header = getattr(npy_format, "_read_array_header")
+
+
+def _read_cached_array(source: BinaryIO) -> NDArray[np.generic]:
+    version = np.lib.format.read_magic(source)
+    shape, fortran_order, dtype = _read_npy_header(source, version)
+    count = prod(shape)
+    remaining = os.fstat(source.fileno()).st_size - source.tell()
+    if (
+        dtype.hasobject
+        or any(dimension < 0 for dimension in shape)
+        or count * dtype.itemsize > remaining
+    ):
+        raise ValueError("Invalid cached array body")
+    loaded = np.fromfile(source, dtype=dtype, count=count)
+    if loaded.size != count:
+        raise ValueError("Incomplete cached array body")
+    return loaded.reshape(shape, order="F" if fortran_order else "C")
+
+
+def _same_legacy_file(original: os.stat_result, current: os.stat_result) -> bool:
+    return all(
+        getattr(original, field) == getattr(current, field)
+        for field in (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+    )
+
+
+def _saved_wav(store: SharedAudioStore, key: str) -> Path | None:
+    if not store.catalog_path.exists():
+        if any((store.directory / name).exists() for name in ("objects", "bindings")):
+            raise AudioStorageUpgradeRequired(
+                "Existing WAV storage requires the explicit storage upgrade"
+            )
+        return None
+    return store.get(key) if key in dict(store.iter_bindings()) else None
+
+
+def _prepare_conversion_catalog(store: SharedAudioStore) -> None:
+    if store.catalog_path.exists():
+        list(store.iter_bindings())
+        return
+    _saved_wav(store, "catalog-preflight")
+    keys = sorted(
+        path.stem
+        for path in store.directory.iterdir()
+        if path.suffix == ".npy" and _KEY.fullmatch(path.stem) is not None
+    )
+    with NamedTemporaryFile(
+        dir=store.directory,
+        prefix=".audio-catalog.conversion-",
+        suffix=".sqlite3",
+        delete=False,
+    ) as output:
+        temporary = Path(output.name)
+    try:
+        with closing(sqlite3.connect(temporary)) as connection:
+            connection.execute("PRAGMA synchronous=FULL")
+            connection.execute("BEGIN IMMEDIATE")
+            for statement in _CATALOG_SCHEMA.values():
+                connection.execute(statement)
+            connection.execute("PRAGMA user_version=2")
+            connection.executemany(
+                "INSERT INTO unavailable_keys VALUES (?, ?)",
+                (
+                    (
+                        key,
+                        "Preserved NPY samples require model/sample-rate evidence before reuse",
+                    )
+                    for key in keys
+                ),
+            )
+            connection.commit()
+            store._validate_catalog(connection)
+        _sync_regular_file(temporary)
+        try:
+            os.link(temporary, store.catalog_path)
+        except FileExistsError:
+            list(store.iter_bindings())
+        _sync_directory(store.directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _put_migrated(
+    cache: PersistentAudioCache, key: str, audio: AudioArray
+) -> Path | None:
+    existing = _saved_wav(cache.store, key)
+    if existing is not None:
+        with BytesIO() as encoded:
+            sf.write(encoded, audio, cache.sample_rate, format="WAV", subtype="PCM_16")
+            with open_regular_binary(existing) as saved:
+                if (
+                    file_digest(saved, "sha256").digest()
+                    != sha256(encoded.getvalue()).digest()
+                ):
+                    return None
+        return existing
+    _prepare_conversion_catalog(cache.store)
+    return cache.put(key, audio)
+
+
+def _migrate_legacy(cache: PersistentAudioCache, key: str) -> AudioArray | None:
+    path = cache.directory / f"{key}.npy"
+    if path.is_symlink():
+        return None
+    try:
+        with open_regular_binary(path) as source:
+            original = os.fstat(source.fileno())
+            if not _same_legacy_file(original, path.stat(follow_symlinks=False)):
+                return None
+            audio = _prepared_audio(_read_cached_array(source))
+            if not all(
+                _same_legacy_file(original, info)
+                for info in (
+                    os.fstat(source.fileno()),
+                    path.stat(follow_symlinks=False),
+                )
+            ):
+                return None
+        if audio is None or _put_migrated(cache, key, audio) is None:
+            return None
+        restored = cache.get_existing(key)
+        if restored is None:
+            return None
+        # Never remove a substituted legacy entry after publication.
+        if _same_legacy_file(original, path.stat(follow_symlinks=False)):
+            path.unlink()
+        return restored
+    except AudioCatalogError:
+        raise
+    except OSError, ValueError, TypeError, EOFError, OverflowError, TokenError:
+        return None
+
 
 _BACKENDS = {"chatterbox-nano", "pocket-tts", "moss-tts", "qwen-tts"}
 _KEY = re.compile(r"[a-f0-9]{48}")
@@ -90,17 +244,18 @@ def _reuse_completed_wav(
                 raise ValueError(
                     "Completed WAV PCM differs from legacy artifact quantization"
                 )
-        if not cache._same_legacy_file(original, os.fstat(source.fileno())):
+        if not _same_legacy_file(original, os.fstat(source.fileno())):
             raise ValueError("Completed WAV changed during verification")
-    if not cache._same_legacy_file(original, candidate.stat(follow_symlinks=False)):
+    if not _same_legacy_file(original, candidate.stat(follow_symlinks=False)):
         raise ValueError("Completed WAV changed during verification")
-    existing = cache.store.get(key)
+    existing = _saved_wav(cache.store, key)
     if existing is not None:
         with open_regular_binary(existing) as source:
             if file_digest(source, "sha256").hexdigest() != record["sha256"]:
                 raise ValueError("Existing WAV conflicts with the completed recording")
     if not apply:
         return candidate
+    _prepare_conversion_catalog(cache.store)
     saved = existing or cache.store.put(key, candidate)
     with open_regular_binary(saved) as source:
         if file_digest(source, "sha256").hexdigest() != record["sha256"]:
@@ -127,6 +282,102 @@ def _cache_with_provenance(
     ):
         return None
     return PersistentAudioCache(root, sample_rate=rate)
+
+
+def _record_unavailable_arrays(store: SharedAudioStore, keys: set[str]) -> None:
+    with store._catalog() as connection:
+        assert connection is not None
+        connection.execute("BEGIN IMMEDIATE")
+        connection.executemany(
+            "INSERT INTO unavailable_keys SELECT ?, ? WHERE NOT EXISTS "
+            "(SELECT 1 FROM bindings WHERE synthesis_key=?) "
+            "ON CONFLICT(synthesis_key) DO NOTHING",
+            (
+                (
+                    key,
+                    "Preserved NPY samples require model/sample-rate evidence before reuse",
+                    key,
+                )
+                for key in sorted(keys)
+            ),
+        )
+        connection.commit()
+
+
+def _saved_catalog_inventory(
+    store: SharedAudioStore, legacy_keys: set[str], *, apply: bool
+) -> tuple[list[tuple[str, str]], list[dict[str, object]]]:
+    catalog_entries: list[dict[str, object]] = []
+    try:
+        saved_bindings = (
+            list(store.iter_bindings()) if store.catalog_path.exists() else []
+        )
+        issues = []
+        if store.catalog_path.exists():
+            if apply:
+                _record_unavailable_arrays(store, legacy_keys)
+            with store._catalog() as connection:
+                assert connection is not None
+                issues = connection.execute(
+                    "SELECT synthesis_key, reason FROM unavailable_keys ORDER BY synthesis_key"
+                ).fetchall()
+    except (OSError, ValueError) as error:
+        catalog_entries.append(
+            dict(
+                path=str(store.catalog_path),
+                status="preserved_error",
+                reason=str(error),
+            )
+        )
+        saved_bindings, issues = [], []
+    for key, reason in issues:
+        if key not in legacy_keys:
+            catalog_entries.append(
+                dict(
+                    path=str(store.catalog_path),
+                    key=key,
+                    status="preserved_error",
+                    reason=reason,
+                )
+            )
+    return saved_bindings, catalog_entries
+
+
+def _saved_binding_entry(
+    store: SharedAudioStore, key: str, provenance: dict[str, object]
+) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "path": str(store.catalog_path),
+        "key": key,
+        "provenance": provenance,
+    }
+    cache = _cache_with_provenance(store.directory, provenance)
+    if _KEY.fullmatch(key) is None:
+        return {**entry, "status": "preserved_unknown"}
+    if cache is None:
+        return {
+            **entry,
+            "status": "preserved_unproven",
+            "reason": "Missing model/rate evidence",
+        }
+    try:
+        if cache.get_existing(key) is None:
+            raise ValueError("Saved WAV verification failed")
+        saved = store.get(key)
+        if saved is None:
+            raise ValueError("Saved WAV binding disappeared")
+        completed = provenance.get("completed_wav")
+        if completed is not None:
+            with open_regular_binary(saved) as source:
+                actual = file_digest(source, "sha256").hexdigest()
+            if not isinstance(completed, dict) or completed.get("sha256") != actual:
+                raise ValueError(
+                    "Saved WAV conflicts with completed recording evidence"
+                )
+        entry.update(status="already_wav", wav=str(saved))
+    except (OSError, ValueError, TypeError, sf.LibsndfileError) as error:
+        entry.update(status="preserved_error", reason=str(error))
+    return entry
 
 
 def migrate_legacy_cache(
@@ -211,11 +462,13 @@ def migrate_legacy_cache(
                 raise ValueError("Legacy entry is a symbolic link")
             with open_regular_binary(path) as source:
                 original = os.fstat(source.fileno())
-                if not cache._same_legacy_file(
-                    original, path.stat(follow_symlinks=False)
-                ):
+                if not _same_legacy_file(original, path.stat(follow_symlinks=False)):
                     raise ValueError("Legacy entry changed during inspection")
                 audio = _prepared_audio(_read_cached_array(source))
+                if not _same_legacy_file(
+                    original, os.fstat(source.fileno())
+                ) or not _same_legacy_file(original, path.stat(follow_symlinks=False)):
+                    raise ValueError("Legacy entry changed while reading")
             if audio is None or (audio.ndim == 2 and audio.shape[1] not in (1, 2)):
                 raise ValueError("Legacy array is not finite mono/stereo audio")
             entry.update(
@@ -230,9 +483,9 @@ def migrate_legacy_cache(
                 if not apply:
                     entry.update(status="ready", wav=str(completed_saved))
                     continue
-                if cache._same_legacy_file(original, path.stat(follow_symlinks=False)):
+                if _same_legacy_file(original, path.stat(follow_symlinks=False)):
                     path.unlink()
-            elif not apply and (saved := cache.store.get(key)) is not None:
+            elif not apply and (saved := _saved_wav(cache.store, key)) is not None:
                 with BytesIO() as encoded:
                     sf.write(
                         encoded,
@@ -252,7 +505,10 @@ def migrate_legacy_cache(
             if not apply:
                 entry["status"] = "ready"
                 continue
-            if "completed_wav" not in provenance and cache._migrate_legacy(key) is None:
+            if (
+                "completed_wav" not in provenance
+                and _migrate_legacy(cache, key) is None
+            ):
                 raise ValueError(
                     "WAV publication/readback failed or existing WAV conflicts"
                 )
@@ -272,64 +528,16 @@ def migrate_legacy_cache(
             sf.LibsndfileError,
         ) as error:
             entry.update(status="preserved_error", reason=str(error))
-    try:
-        saved_bindings = list(store.iter_bindings())
-        issues = list(store.iter_legacy_issues())
-    except (OSError, ValueError) as error:
-        entries.append(
-            dict(
-                path=str(store.catalog_path),
-                status="preserved_error",
-                reason=str(error),
-            )
-        )
-        saved_bindings, issues = [], []
-    for path, reason in issues:
-        if path.stem not in legacy_keys:
-            entries.append(
-                dict(
-                    path=str(path),
-                    key=path.stem,
-                    status="preserved_error",
-                    reason=reason,
-                )
-            )
+    saved_bindings, catalog_entries = _saved_catalog_inventory(
+        store, legacy_keys, apply=apply
+    )
+    entries.extend(catalog_entries)
     for key, _digest in saved_bindings:
-        if key in legacy_keys:
-            continue
-        entry = {"path": str(store.catalog_path), "key": key}
-        entries.append(entry)
-        provenance = proof if key_provenance is None else key_provenance.get(key, {})
-        cache = _cache_with_provenance(root, provenance)
-        entry["provenance"] = provenance
-        if _KEY.fullmatch(key) is None:
-            entry["status"] = "preserved_unknown"
-        elif cache is None:
-            entry.update(
-                status="preserved_unproven", reason="Missing model/rate evidence"
+        if key not in legacy_keys:
+            provenance = (
+                proof if key_provenance is None else key_provenance.get(key, {})
             )
-        elif cache.get_existing(key) is None:
-            entry.update(
-                status="preserved_error", reason="Saved WAV verification failed"
-            )
-        else:
-            saved = cache.store.get(key)
-            if saved is None:
-                entry.update(
-                    status="preserved_error", reason="Saved WAV binding disappeared"
-                )
-                continue
-            completed = provenance.get("completed_wav")
-            if completed is not None:
-                with open_regular_binary(saved) as source:
-                    actual = file_digest(source, "sha256").hexdigest()
-                if not isinstance(completed, dict) or completed.get("sha256") != actual:
-                    entry.update(
-                        status="preserved_error",
-                        reason="Saved WAV conflicts with completed recording evidence",
-                    )
-                    continue
-            entry.update(status="already_wav", wav=str(saved))
+            entries.append(_saved_binding_entry(store, key, provenance))
     return MigrationReport(
         directory=str(root),
         backend=backend,

@@ -300,7 +300,7 @@ def _workspace_snapshot(
         )
     except AuthoringWorkbenchError as error:
         raise SpeechRobustnessCorpusError(str(error)) from error
-    state_path = directory / "generated-audio/generation-state.json"
+    state_path = directory / "generated-audio/generation-state.sqlite3"
     queue_path = directory / "queue.jsonl"
     try:
         queue_snapshot = capture_authority_file(
@@ -313,9 +313,15 @@ def _workspace_snapshot(
         assert_authority_snapshot(queue_snapshot, "robustness source queue")
     except (AuthoringAuthorityError, VoiceGenerationQueueError) as error:
         raise SpeechRobustnessCorpusError(str(error)) from error
-    state_snapshot, parsed = _json_snapshot(
-        state_path, "robustness source generation state", root=directory
-    )
+    try:
+        state_snapshot = capture_authority_file(
+            state_path, "robustness source generation state", root=directory
+        )
+        parsed = state_snapshot.generation_state_document(
+            "robustness source generation state"
+        )
+    except AuthoringAuthorityError as error:
+        raise SpeechRobustnessCorpusError(str(error)) from error
     try:
         validated = load_generation_state(state_path, directory / "queue.jsonl")
     except BulkGenerationError as error:

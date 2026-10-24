@@ -11,9 +11,10 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from vntts.audio_store import _sync_directory, _sync_regular_file
+from vntts.authoring.advisory_lock import exclusive_advisory_lock
 
 _APPLICATION_ID = 0x564E5043
-_VERSION = 1
+_VERSION = 2
 _JOB_FIELDS = (
     "job_id",
     "created_at",
@@ -53,7 +54,7 @@ _PLAN_FIELDS = (
     "xtts_terms_accepted",
     "synthesis_controls_sha256",
 )
-_SCHEMA = (
+_SCHEMA: tuple[str, ...] = (
     "CREATE TABLE jobs (job_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
     "updated_at TEXT NOT NULL, status TEXT NOT NULL, provider_id TEXT NOT NULL, "
     "game TEXT NOT NULL, game_version TEXT, game_id TEXT, story_index TEXT NOT NULL, "
@@ -100,18 +101,37 @@ _SCHEMA = (
     "CREATE INDEX generation_inputs_job ON generation_inputs(job_id)",
     "CREATE INDEX generation_inputs_content ON generation_inputs(catalog_story_index_sha256)",
 )
+_SCHEMA_V1 = _SCHEMA
+_PENDING_SCHEMA = (
+    "CREATE TABLE input_publications (directory TEXT PRIMARY KEY REFERENCES "
+    "generation_inputs(directory) ON DELETE CASCADE, staging TEXT NOT NULL) STRICT"
+)
+_UPGRADE_SCHEMA = (
+    "CREATE TABLE catalog_state (id INTEGER PRIMARY KEY CHECK(id=1), "
+    "migration_complete INTEGER NOT NULL CHECK(migration_complete IN (0, 1))) STRICT"
+)
+_SCHEMA = (*_SCHEMA, _PENDING_SCHEMA, _UPGRADE_SCHEMA)
 
 
 class PreparationCatalogError(ValueError):
     """The local catalog is unsafe, unsupported, or invalid."""
 
 
-def _verify_catalog(connection: sqlite3.Connection) -> None:
+def _verify_catalog(connection: sqlite3.Connection, *, upgrade: bool = False) -> None:
     version = connection.execute("PRAGMA user_version").fetchone()[0]
     application = connection.execute("PRAGMA application_id").fetchone()[0]
     objects = connection.execute(
         "SELECT name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
     ).fetchall()
+    if version == 1 and application == _APPLICATION_ID:
+        if {row["sql"] for row in objects} != set(_SCHEMA_V1):
+            raise PreparationCatalogError("Preparation catalog schema changed")
+        if upgrade:
+            connection.execute(_PENDING_SCHEMA)
+            connection.execute(_UPGRADE_SCHEMA)
+            connection.execute("INSERT INTO catalog_state VALUES (1, 0)")
+            connection.execute(f"PRAGMA user_version = {_VERSION}")
+        return
     if version != _VERSION or application != _APPLICATION_ID:
         raise PreparationCatalogError("Unsupported preparation catalog schema")
     if {row["sql"] for row in objects} != set(_SCHEMA):
@@ -119,8 +139,43 @@ def _verify_catalog(connection: sqlite3.Connection) -> None:
 
 
 class PreparationCatalog:
-    def __init__(self, root: Path, *, filename: str = "preparation.sqlite3") -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        filename: str = "preparation.sqlite3",
+        owned_root: bool = False,
+        require_complete: bool | None = None,
+    ) -> None:
         self.path = root / filename
+        self.owned_root = owned_root
+        self.require_complete = (
+            owned_root if require_complete is None else require_complete
+        )
+
+    @property
+    def required_marker(self) -> Path:
+        return self.path.with_name(self.path.name + ".required")
+
+    @property
+    def initialization_lock(self) -> Path:
+        return self.path.with_name(f".{self.path.name}.guard")
+
+    def _check_missing_catalog(self) -> None:
+        if (
+            self.owned_root
+            and not self.path.exists()
+            and self.path.parent.is_dir()
+            and any(
+                path != self.initialization_lock
+                and not path.name.startswith(".preparation-")
+                for path in self.path.parent.iterdir()
+            )
+        ):
+            raise PreparationCatalogError(
+                "Preparation catalog is missing from an existing jobs directory; "
+                "restore preparation.sqlite3 or run the explicit legacy migration"
+            )
 
     def _initialize(self) -> None:
         temporary = None
@@ -137,6 +192,10 @@ class PreparationCatalog:
                 connection.execute("BEGIN IMMEDIATE")
                 for statement in _SCHEMA:
                     connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO catalog_state VALUES (1, ?)",
+                    (int(self.require_complete),),
+                )
                 connection.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
                 connection.execute(f"PRAGMA user_version = {_VERSION}")
                 connection.commit()
@@ -144,11 +203,43 @@ class PreparationCatalog:
             try:
                 os.link(temporary, self.path)
             except FileExistsError:
-                return
+                pass
+            with self.required_marker.open("a", encoding="utf-8") as stream:
+                stream.flush()
+                os.fsync(stream.fileno())
             _sync_directory(self.path.parent)
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
+
+    def _ensure_initialized(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path.exists():
+            return
+        if self.owned_root:
+            with exclusive_advisory_lock(self.initialization_lock, blocking=True):
+                if not self.path.exists():
+                    self._check_missing_catalog()
+                    self._initialize()
+        else:
+            self._initialize()
+
+    def _check_runtime_ready(self, connection: sqlite3.Connection) -> None:
+        if not self.require_complete:
+            return
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        complete = (
+            connection.execute(
+                "SELECT migration_complete FROM catalog_state WHERE id=1"
+            ).fetchone()
+            if version == _VERSION
+            else None
+        )
+        if complete is None or complete[0] != 1:
+            raise PreparationCatalogError(
+                "Preparation catalog requires the explicit legacy migration "
+                "to finish before offline preparation can resume"
+            )
 
     @contextmanager
     def _connection(
@@ -159,6 +250,7 @@ class PreparationCatalog:
             for path in (
                 self.path.parent,
                 self.path,
+                self.required_marker,
                 self.path.with_name(self.path.name + "-journal"),
                 self.path.with_name(self.path.name + "-wal"),
                 self.path.with_name(self.path.name + "-shm"),
@@ -168,13 +260,14 @@ class PreparationCatalog:
                         "Preparation catalog must not be a link"
                     )
             existed = self.path.exists()
+            if not existed and not write:
+                self._check_missing_catalog()
+                existed = self.path.exists()
             if not write and not existed:
                 yield None
                 return
             if write:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                if not existed:
-                    self._initialize()
+                self._ensure_initialized()
             mode = "rw" if write else "ro"
             connection = sqlite3.connect(
                 self.path.absolute().as_uri() + f"?mode={mode}", uri=True, timeout=30
@@ -182,7 +275,8 @@ class PreparationCatalog:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
-            _verify_catalog(connection)
+            _verify_catalog(connection, upgrade=write)
+            self._check_runtime_ready(connection)
             yield connection
             if write:
                 connection.commit()
@@ -193,6 +287,29 @@ class PreparationCatalog:
         finally:
             if connection is not None:
                 connection.close()
+
+    def initialize(self) -> None:
+        with self._connection(write=True):
+            pass
+
+    def begin_upgrade(self) -> None:
+        """Block normal readers until an explicit complete inventory is verified."""
+        with self._connection(write=True) as connection:
+            assert connection is not None
+            connection.execute(
+                "UPDATE catalog_state SET migration_complete = 0 WHERE id=1"
+            )
+
+    def complete_upgrade(self) -> None:
+        with self._connection(write=True) as connection:
+            assert connection is not None
+            connection.execute(
+                "UPDATE catalog_state SET migration_complete = 1 WHERE id=1"
+            )
+            with self.required_marker.open("a", encoding="utf-8") as stream:
+                stream.flush()
+                os.fsync(stream.fileno())
+            _sync_directory(self.path.parent)
 
     def load_job(self, job_id: str) -> dict[str, object] | None:
         with self._connection() as connection:
@@ -494,7 +611,12 @@ class PreparationCatalog:
             )
 
     def save_input(
-        self, job_id: str, document: Mapping[str, object], directory: Path
+        self,
+        job_id: str,
+        document: Mapping[str, object],
+        directory: Path,
+        *,
+        staging: Path | None = None,
     ) -> None:
         if document.get("job_id", job_id) != job_id:
             raise PreparationCatalogError("Generation input belongs to a different job")
@@ -533,6 +655,38 @@ class PreparationCatalog:
                 raise PreparationCatalogError(
                     "Saved generation input identity conflicts with its catalog"
                 )
+            if staging is not None:
+                connection.execute(
+                    "INSERT INTO input_publications VALUES (?, ?) "
+                    "ON CONFLICT(directory) DO NOTHING",
+                    (values[2], str(staging.expanduser().resolve())),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM input_publications WHERE directory = ?", (values[2],)
+                )
+
+    def input_staging(self, directory: Path) -> Path | None:
+        with self._connection() as connection:
+            if (
+                connection is None
+                or connection.execute("PRAGMA user_version").fetchone()[0] == 1
+            ):
+                return None
+            row = connection.execute(
+                "SELECT staging FROM input_publications WHERE directory = ?",
+                (str(directory.expanduser().resolve()),),
+            ).fetchone()
+            return None if row is None else Path(row[0])
+
+    def discard_unpublished_input(self, directory: Path) -> None:
+        with self._connection(write=True) as connection:
+            assert connection is not None
+            connection.execute(
+                "DELETE FROM generation_inputs WHERE directory = ? AND directory IN "
+                "(SELECT directory FROM input_publications)",
+                (str(directory.expanduser().resolve()),),
+            )
 
     def input_document(self, directory: Path) -> dict[str, object] | None:
         with self._connection() as connection:

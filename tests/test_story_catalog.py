@@ -46,10 +46,6 @@ class StoryCatalogTest(unittest.TestCase):
                 "vntts.pregeneration_setup._cached_story_index_document",
                 side_effect=AssertionError("canonical parse on cache hit"),
             ),
-            patch(
-                "vntts.pregeneration_setup.read_versioned_json",
-                side_effect=AssertionError("legacy JSON read on cache hit"),
-            ),
             patch.object(
                 StoryCatalog, "line_ids", autospec=True, side_effect=original
             ) as fetch,
@@ -77,26 +73,18 @@ class StoryCatalogTest(unittest.TestCase):
         self.assertIsInstance(asdict(selection)["line_ids"], tuple)
         self.assertEqual(selection, self.first.selections[0])
 
-    def test_valid_legacy_json_import_is_preserved_and_used_once(self):
+    def test_old_json_cache_is_ignored_and_preserved_while_source_is_rebuilt(self):
         self.catalog.unlink()
         legacy = self.catalog.with_suffix(".json")
-        write_versioned_json(legacy, story_catalog_schema_version, self.document())
+        document = self.document()
+        document["game"] = "Untrusted old summary"
+        write_versioned_json(legacy, story_catalog_schema_version, document)
         original = legacy.read_bytes()
-        with patch(
-            "vntts.pregeneration_setup._cached_story_index_document",
-            side_effect=AssertionError("valid legacy cache was parsed again"),
-        ):
-            migrated = inspect_story_index(self.path)
-        self.assertEqual(migrated.selections, self.first.selections)
+        rebuilt = inspect_story_index(self.path)
+        self.assertEqual(rebuilt.game, self.first.game)
+        self.assertEqual(rebuilt.selections, self.first.selections)
         self.assertEqual(legacy.read_bytes(), original)
         self.assertTrue(self.catalog.exists())
-        with patch(
-            "vntts.pregeneration_setup.read_versioned_json",
-            side_effect=AssertionError("migrated JSON was reread"),
-        ):
-            self.assertEqual(
-                inspect_story_index(self.path).selections, self.first.selections
-            )
 
     def test_corrupt_and_future_sql_are_preserved_while_canonical_content_rebuilds(
         self,

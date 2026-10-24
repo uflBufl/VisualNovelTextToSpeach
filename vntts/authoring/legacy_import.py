@@ -32,6 +32,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 from vntts.authoring.generation_lease import inspect_process_status
+from vntts.authoring.generation_state import load_generation_state_from_snapshot
 from vntts.authoring.import_paths import default_import_root
 from vntts.authoring.publication import (
     AtomicPublicationError,
@@ -42,6 +43,7 @@ from vntts.authoring.publication import (
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import canonical_document_sha256, sha256_file
+from vntts.generation_database import read_snapshot, snapshot_file
 from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import (
     copy_regular_file,
@@ -52,8 +54,6 @@ from vntts.path_safety import (
 
 LEGACY_JOB_SCHEMA = "r1999.pregeneration-job"
 LEGACY_JOB_SCHEMA_VERSION = 1
-LEGACY_STATE_SCHEMA = "r1999.bulk-generation-state"
-LEGACY_STATE_SCHEMA_VERSION = 1
 IMPORT_SCHEMA = "vntts.authoring-legacy-import"
 IMPORT_SCHEMA_VERSION = 2
 SUPPORTED_IMPORT_SCHEMA_VERSIONS = frozenset({1, IMPORT_SCHEMA_VERSION})
@@ -290,11 +290,11 @@ def _build_standalone_import_plan(
             f"Standalone generation output is not a directory: {output}"
         )
     queue, queue_sha256 = _load_queue_snapshot(queue_path)
-    state_path = output / "generation-state.json"
+    state_path = output / "generation-state.sqlite3"
     manifest_path = output / "manifest.json"
     if not state_path.is_file() and not manifest_path.is_file():
         raise LegacyAuthoringImportError(
-            "Standalone output must contain generation-state.json or manifest.json"
+            "Standalone output must contain generation-state.sqlite3 or manifest.json"
         )
 
     artifacts: ArtifactMap = {}
@@ -309,10 +309,10 @@ def _build_standalone_import_plan(
     state_items: StateItems = {}
     generated_files: GeneratedFiles = {}
     if state_path.is_file():
-        state, state_sha256 = _load_json_snapshot(state_path, "generation state")
+        state, state_sha256 = _load_sqlite_state_snapshot(state_path)
         if state.get("queue_sha256") != queue_sha256:
             raise LegacyAuthoringImportError(
-                "Explicit standalone pairing failed: generation-state.json does not "
+                "Explicit standalone pairing failed: generation-state.sqlite3 does not "
                 "contain the selected queue's full SHA-256"
             )
         state_items, generated_files = _validate_state(
@@ -322,7 +322,7 @@ def _build_standalone_import_plan(
             artifacts,
             "generation_state",
             state_path,
-            Path("generated-audio/generation-state.json"),
+            Path("generated-audio/generation-state.sqlite3"),
             expected_sha256=state_sha256,
         )
         for source, relative, digest in generated_files.values():
@@ -424,7 +424,7 @@ def _build_import_plan(job_directory: str | Path) -> _ImportPlan:
         raise LegacyAuthoringImportError(
             f"Pregeneration output path is not a directory: {output}"
         )
-    state_path = output / "generation-state.json"
+    state_path = output / "generation-state.sqlite3"
     manifest_path = output / "manifest.json"
 
     artifacts: ArtifactMap = {}
@@ -447,7 +447,7 @@ def _build_import_plan(job_directory: str | Path) -> _ImportPlan:
     state_items: StateItems = {}
     generated_files: GeneratedFiles = {}
     if state_path.is_file():
-        state, state_sha256 = _load_json_snapshot(state_path, "generation state")
+        state, state_sha256 = _load_sqlite_state_snapshot(state_path)
         state_items, generated_files = _validate_state(
             state,
             state_path,
@@ -459,7 +459,7 @@ def _build_import_plan(job_directory: str | Path) -> _ImportPlan:
             artifacts,
             "generation_state",
             state_path,
-            Path("generated-audio/generation-state.json"),
+            Path("generated-audio/generation-state.sqlite3"),
             expected_sha256=state_sha256,
         )
         for source, relative, digest in generated_files.values():
@@ -686,14 +686,20 @@ def _unsupported_output_candidates(
     scan_root: Path, referenced_outputs: set[Path]
 ) -> list[LegacyImportCandidate]:
     output_directories: set[Path] = set()
-    for name in ("generation-state.json", "manifest.json"):
+    for name in ("generation-state.sqlite3", "manifest.json"):
         for path in scan_root.rglob(name):
             directory = path.parent.resolve()
             if directory in referenced_outputs:
                 continue
-            document = _load_json_optional(path)
+            if path.suffix == ".sqlite3":
+                try:
+                    document, _digest = _load_sqlite_state_snapshot(path)
+                except LegacyAuthoringImportError:
+                    continue
+            else:
+                document = _load_json_optional(path)
             if document.get("schema") in {
-                LEGACY_STATE_SCHEMA,
+                "vntts.authoring-generation-state",
                 "vntts.generated-audio",
             }:
                 output_directories.add(directory)
@@ -770,98 +776,21 @@ def _validate_state(
     queue: VoiceGenerationQueue,
     queue_sha256: str,
 ) -> tuple[StateItems, GeneratedFiles]:
-    if state.get("schema") != LEGACY_STATE_SCHEMA or not has_schema_version(
-        state, LEGACY_STATE_SCHEMA_VERSION
-    ):
-        raise LegacyAuthoringImportError(
-            f"Unsupported generation state {state_path}; expected "
-            f"{LEGACY_STATE_SCHEMA!r} version {LEGACY_STATE_SCHEMA_VERSION}"
+    try:
+        load_generation_state_from_snapshot(
+            state_path, queue, queue_sha256, state_document=state
         )
-    if state.get("queue_sha256") != queue_sha256:
-        raise LegacyAuthoringImportError(
-            "Generation state belongs to different queue content. Restore the original "
-            "queue or import the matching job directory."
-        )
-    items = state.get("items")
-    if not isinstance(items, dict):
-        raise LegacyAuthoringImportError("Generation state items must be an object")
-    queue_by_id: dict[str, VoiceGenerationQueueItem] = {
-        item.queue_id: item for item in queue.items
-    }
+    except (OSError, ValueError, RuntimeError) as error:
+        raise LegacyAuthoringImportError(str(error)) from error
+    items = state["items"]
+    assert isinstance(items, dict)
     files: GeneratedFiles = {}
-    for queue_id, value in items.items():
-        generated = _validated_state_generated_file(
-            queue_id, value, queue_by_id, output
-        )
-        if generated is not None:
-            source, relative, digest = generated
-            files[source] = source, relative, digest
+    for value in items.values():
+        if isinstance(value, dict) and value.get("status") in {"generated", "approved"}:
+            relative = _safe_relative(value["path"], "Generated WAV path")
+            source = _within(output, relative, "Generated WAV")
+            files[source] = source, relative, str(value["file_sha256"])
     return items, files
-
-
-def _validated_state_generated_file(
-    queue_id: object,
-    value: object,
-    queue_by_id: dict[str, VoiceGenerationQueueItem],
-    output: Path,
-) -> tuple[Path, Path, str] | None:
-    if not isinstance(queue_id, str) or queue_id not in queue_by_id:
-        raise LegacyAuthoringImportError(
-            f"Generation state references unknown queue_id {queue_id!r}"
-        )
-    if not isinstance(value, dict):
-        raise LegacyAuthoringImportError(
-            f"Generation state item {queue_id!r} must be an object"
-        )
-    _validate_attempt_fields(queue_id, value)
-    status = _validated_state_status(queue_id, value)
-    if status == "failed":
-        return None
-    queue_item = queue_by_id[queue_id]
-    if (
-        value.get("line_id") != queue_item.line_id
-        or value.get("text_sha256") != queue_item.text_sha256
-    ):
-        raise LegacyAuthoringImportError(
-            f"Generation state identity does not match queue item {queue_id!r}"
-        )
-    relative = _safe_relative(value.get("path"), f"state item {queue_id!r} path")
-    if relative.suffix.casefold() != ".wav":
-        raise LegacyAuthoringImportError(
-            f"Generation state item {queue_id!r} must reference a WAV file"
-        )
-    source = _within(output, relative, f"state item {queue_id!r} path")
-    digest = value.get("file_sha256")
-    info = _validate_generated_wav(source, digest, queue_id)
-    _validate_quality(queue_id, value.get("quality"), info)
-    if not isinstance(digest, str):
-        raise LegacyAuthoringImportError(
-            f"Generated WAV checksum is invalid for {queue_id!r}"
-        )
-    return source, relative, digest
-
-
-def _validated_state_status(queue_id: str, value: JsonDocument) -> str:
-    status = value.get("status")
-    if not isinstance(status, str) or status not in {"failed", "generated", "approved"}:
-        raise LegacyAuthoringImportError(
-            f"Generation state item {queue_id!r} has unsupported status {status!r}"
-        )
-    review = value.get("review_status")
-    valid_reviews: dict[str, set[str | None]] = {
-        "failed": {None},
-        "generated": {"pending_review", "rejected"},
-        "approved": {"approved"},
-    }
-    if (
-        review is not None
-        and not isinstance(review, str)
-        or review not in valid_reviews[status]
-    ):
-        raise LegacyAuthoringImportError(
-            f"Generation state item {queue_id!r} has invalid {status!r}/{review!r} status and review combination"
-        )
-    return status
 
 
 def _validate_generated_manifest(
@@ -1009,39 +938,6 @@ def _validate_generated_wav(
         raise LegacyAuthoringImportError(
             f"Generated WAV for {queue_id!r} is invalid: {error}"
         ) from error
-
-
-def _validate_quality(queue_id: str, quality: object, info: Pcm16MonoWavInfo) -> None:
-    if not isinstance(quality, dict):
-        raise LegacyAuthoringImportError(
-            f"Generated state item {queue_id!r} requires quality metadata"
-        )
-    expected = {
-        "channels": 1,
-        "sample_rate": info.sample_rate,
-        "sample_count": info.sample_count,
-    }
-    for field, value in expected.items():
-        if quality.get(field) != value:
-            raise LegacyAuthoringImportError(
-                f"Generated state item {queue_id!r} quality {field} does not match its WAV"
-            )
-
-
-def _validate_attempt_fields(queue_id: str, value: JsonDocument) -> None:
-    for field in ("attempts", "seed"):
-        field_value = value.get(field)
-        if field_value is not None and (
-            isinstance(field_value, bool) or not isinstance(field_value, int)
-        ):
-            raise LegacyAuthoringImportError(
-                f"Generation state item {queue_id!r} {field} must be an integer"
-            )
-    attempts = value.get("attempts")
-    if isinstance(attempts, int) and not isinstance(attempts, bool) and attempts < 0:
-        raise LegacyAuthoringImportError(
-            f"Generation state item {queue_id!r} attempts must not be negative"
-        )
 
 
 def _external_inputs(
@@ -1450,6 +1346,16 @@ def _relative_within(root: str | Path, path: str | Path, label: str) -> Path:
 
 def _load_json(path: str | Path, description: str) -> JsonDocument:
     return load_json_object(path, description, error_type=LegacyAuthoringImportError)
+
+
+def _load_sqlite_state_snapshot(path: Path) -> tuple[JsonDocument, str]:
+    try:
+        payload = snapshot_file(path)
+        return read_snapshot(payload), hashlib.sha256(payload).hexdigest()
+    except (OSError, ValueError) as error:
+        raise LegacyAuthoringImportError(
+            f"Unable to read generation state {path}: {error}"
+        ) from error
 
 
 def _load_json_snapshot(path: str | Path, description: str) -> tuple[JsonDocument, str]:

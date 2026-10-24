@@ -31,7 +31,12 @@ from vntts_artifacts.voice_manifest import (
     write_voice_manifest,
 )
 
-from vntts.audio_store import SharedAudioStore, link_shared_audio
+from vntts.audio_store import (
+    SharedAudioStore,
+    _sync_directory,
+    _sync_regular_file,
+    link_shared_audio,
+)
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.generation_lease import GenerationLease, process_is_alive
@@ -43,7 +48,6 @@ from vntts.authoring.generation_state import (
     generation_state_items,
     load_generation_state_from_snapshot,
     load_stable_generation_queue,
-    read_generation_state_document,
     write_generation_state,
 )
 from vntts.authoring.publication import (
@@ -58,7 +62,6 @@ from vntts.authoring.queue_builder import (
 )
 from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.generation_database import (
-    is_database,
     read_state,
     validate_database_path,
 )
@@ -80,7 +83,6 @@ from vntts.source_audio_semantics import (
     project_source_audio_semantics,
 )
 from vntts.support import record_background_operation
-from vntts.versioned_json import read_versioned_json, write_versioned_json
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -156,6 +158,13 @@ class PregenerationInputStore:
         destination = self.job_store.directory_for(job.job_id) / (
             f"generation-input-{identity[:16]}"
         )
+        try:
+            if self.job_store.catalog.input_staging(destination) is not None:
+                load_generation_input_metadata(destination)
+        except (AtomicPublicationError, OSError, ValueError) as error:
+            raise PregenerationQueueError(
+                f"Saved offline generation inputs are invalid: {error}"
+            ) from error
         if destination.is_dir():
             result = self._reused_input(destination, identity, effective)
             _reuse_completed_audio(result, plan, self.job_store)
@@ -236,7 +245,8 @@ class PregenerationInputStore:
                 )
                 _raise_if_cancelled(cancellation)
                 phase_started, cpu_started = perf_counter(), process_time()
-                fields = {
+                document = {
+                    "schema_version": generation_input_schema_version,
                     "identity": identity,
                     "job_id": job.job_id,
                     "source_story_index_sha256": job.story_index_sha256,
@@ -255,15 +265,9 @@ class PregenerationInputStore:
                         else sha256_file(semantic_evidence)
                     ),
                 }
-                write_versioned_json(
-                    staging / "input.json", generation_input_schema_version, fields
+                _publish_input(
+                    self.job_store.catalog, job.job_id, document, staging, destination
                 )
-                try:
-                    rename_directory_no_replace(staging, destination)
-                except AtomicPublicationError:
-                    if destination.is_dir():
-                        return _load_existing(destination, identity, effective)
-                    raise
                 result = _load_existing(destination, identity, effective)
                 _reuse_completed_audio(result, plan, self.job_store)
                 _record_input_phase(
@@ -342,13 +346,10 @@ def _may_have_saved_recordings(
     if document.get("voice_plan_controls_sha256") != controls_sha256:
         return False
     index = RecordingIndex(job_store.catalog.path.parent)
-    if not is_database(state) or (
-        not index.path.exists() and not index.path.is_symlink()
-    ):
+    if not index.path.exists() and not index.path.is_symlink():
         return True
     generation_state_file(state)
-    if is_database(state):
-        validate_database_path(state)
+    validate_database_path(state)
     paths = (directory / "queue.jsonl", state)
     before = tuple(_recording_fingerprint(path) for path in paths)
     source = (
@@ -359,8 +360,7 @@ def _may_have_saved_recordings(
     indexed = index.load(
         directory, source, {item.line_id: item.text_sha256 for item in current.values()}
     )
-    if is_database(state):
-        validate_database_path(state)
+    validate_database_path(state)
     if tuple(_recording_fingerprint(path) for path in paths) != before:
         raise PregenerationQueueError("Saved generation state changed while inspected")
     return indexed is None or bool(indexed[0] or indexed[1])
@@ -453,18 +453,12 @@ def _reuse_completed_audio(
             ):
                 if sha256_file(previous / suffix) != document.get(f"{name}_sha256"):
                     raise ValueError(f"Previous {name} changed")
-            state = (
-                read_state(
-                    previous_state,
-                    selected_line_ids=frozenset(
-                        item.line_id for item in current_items.values()
-                    ),
-                    allowed_queue_ids=frozenset(
-                        item.queue_id for item in old_queue.items
-                    ),
-                )
-                if is_database(previous_state)
-                else read_generation_state_document(previous_state)
+            state = read_state(
+                previous_state,
+                selected_line_ids=frozenset(
+                    item.line_id for item in current_items.values()
+                ),
+                allowed_queue_ids=frozenset(item.queue_id for item in old_queue.items),
             )
             old_items = generation_state_items(state)
             old_voices = CharacterVoiceRegistry.from_file(
@@ -892,6 +886,7 @@ def _write_reference_wav(
     with exclusive_advisory_lock(
         store.directory / ".reference-normalization.guard", blocking=True
     ):
+        store.initialize()
         saved = store.get(key)
         if saved is None:
             with NamedTemporaryFile(
@@ -923,24 +918,67 @@ def _normalize_reference_wav(path: Path, payload: bytes, character: str) -> None
     write_pcm16_wav(path, mono, int(sample_rate))
 
 
-def _validate_legacy_generation_input(
-    directory: Path, document: dict[str, object]
+def _publish_input(
+    catalog: PreparationCatalog,
+    job_id: str,
+    document: dict[str, object],
+    staging: Path,
+    destination: Path,
+) -> None:
+    _sync_input_directory(staging)
+    with exclusive_advisory_lock(_input_publication_lock(destination), blocking=True):
+        _recover_input_publication(catalog, destination)
+        if not destination.exists():
+            try:
+                catalog.save_input(job_id, document, destination, staging=staging)
+                rename_directory_no_replace(staging, destination)
+                _sync_directory(destination.parent)
+            except BaseException:
+                if not destination.exists():
+                    catalog.discard_unpublished_input(destination)
+                raise
+            catalog.save_input(job_id, document, destination)
+
+
+def _input_publication_lock(directory: Path) -> Path:
+    return directory.parent / f".{directory.name}.guard"
+
+
+def _sync_input_directory(directory: Path) -> None:
+    paths = tuple(directory.rglob("*"))
+    for path in paths:
+        if path.is_symlink() or path.is_junction():
+            raise ValueError("Generation input assets must not be links")
+        if path.is_file():
+            _sync_regular_file(path)
+    for path in reversed(paths):
+        if path.is_dir():
+            _sync_directory(path)
+    _sync_directory(directory)
+
+
+def _validate_input_publication(
+    directory: Path, document: dict[str, object], *, assets: Path | None = None
 ) -> str:
-    if (directory / "input.json").is_symlink():
-        raise ValueError("Generation input metadata must not be a symbolic link")
+    assets = assets or directory
+    if document.get("schema_version") != generation_input_schema_version:
+        raise ValueError("Unsupported offline generation input schema")
     identity = _required_text(document.get("identity"), "Generation input identity")
     if directory.name != f"generation-input-{identity[:16]}":
         raise ValueError("Generation input directory identity changed")
     job_id = _required_text(document.get("job_id"), "Generation input job")
     if directory.parent.name != job_id:
         raise ValueError("Generation input job directory changed")
-    for name in ("story_index", "voice_manifest", "queue"):
-        suffix = {
-            "story_index": "story-index.jsonl",
-            "voice_manifest": "voice-manifest.json",
-            "queue": "queue.jsonl",
-        }[name]
-        if sha256_file(directory / suffix) != document.get(f"{name}_sha256"):
+    for name, suffix in (
+        ("story_index", "story-index.jsonl"),
+        ("voice_manifest", "voice-manifest.json"),
+        ("queue", "queue.jsonl"),
+        ("source_audio_semantic_evidence", "source-audio-semantic-evidence.json"),
+    ):
+        expected = document.get(f"{name}_sha256")
+        if name == "source_audio_semantic_evidence" and expected is None:
+            continue
+        if sha256_file(assets / suffix) != expected:
             raise ValueError(f"Generation input {name} changed")
     for name in ("queue_items", "ready_items"):
         _nonnegative_int(document.get(name), name)
@@ -952,39 +990,49 @@ def _validate_legacy_generation_input(
     return job_id
 
 
-def load_generation_input_metadata(directory: Path) -> dict[str, object]:
-    """Admit an immutable legacy/publication snapshot once, then query its SQL row."""
-    catalog = PreparationCatalog(directory.parent.parent)
-    document = catalog.input_document(directory)
-    if document is not None:
-        return document
-    legacy = directory / "input.json"
-    try:
-        original = legacy.stat(follow_symlinks=False)
-        document = read_versioned_json(
-            legacy,
-            schema_version=generation_input_schema_version,
-            document_name="offline generation input",
+def _recover_input_publication(catalog: PreparationCatalog, directory: Path) -> None:
+    staging = catalog.input_staging(directory)
+    if staging is None:
+        return
+    if (
+        directory.parent.parent.resolve() != catalog.path.parent.resolve()
+        or staging.parent != directory.parent.resolve()
+        or not staging.name.startswith(".generation-input-")
+        or any(
+            path.is_symlink() or path.is_junction()
+            for path in (directory, directory.parent, staging)
         )
-    except FileNotFoundError:
-        # Another process may have committed and retired the snapshot after our miss.
-        admitted = catalog.input_document(directory)
-        if admitted is not None:
-            return admitted
-        raise
-    job_id = _validate_legacy_generation_input(directory, document)
-    catalog.save_input(job_id, document, directory)
-    if catalog.input_document(directory) != document:
-        raise ValueError("Generation input SQLite readback differs")
-    try:
-        current = legacy.stat(follow_symlinks=False)
-    except FileNotFoundError:
-        return document
-    if all(
-        getattr(original, field) == getattr(current, field)
-        for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
     ):
-        legacy.unlink()
+        raise ValueError(
+            "Generation input publication leaves its preparation directory"
+        )
+    document = catalog.input_document(directory)
+    if document is None:
+        raise ValueError("Generation input publication lost its catalog metadata")
+    if not directory.exists():
+        if not staging.is_dir():
+            raise ValueError("Generation input publication lost its staged assets")
+        _validate_input_publication(directory, document, assets=staging)
+        rename_directory_no_replace(staging, directory)
+        _sync_directory(directory.parent)
+    job_id = _validate_input_publication(directory, document)
+    catalog.save_input(job_id, document, directory)
+
+
+def load_generation_input_metadata(directory: Path) -> dict[str, object]:
+    """Read SQL metadata, completing a durable pending publication if necessary."""
+    catalog = PreparationCatalog(directory.parent.parent, owned_root=True)
+    if catalog.input_staging(directory) is not None:
+        with exclusive_advisory_lock(_input_publication_lock(directory), blocking=True):
+            _recover_input_publication(catalog, directory)
+    document = catalog.input_document(directory)
+    if document is None:
+        raise ValueError(
+            "Generation input metadata is missing from preparation.sqlite3; "
+            "restore the catalog or run the explicit legacy migration"
+        )
+    if document.get("schema_version") != generation_input_schema_version:
+        raise ValueError("Unsupported offline generation input schema")
     return document
 
 

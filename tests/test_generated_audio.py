@@ -22,6 +22,7 @@ from vntts_artifacts.generated_audio import (
 
 from tests.audio_output_fixtures import FakeAudioOutput
 from tests.symlink_support import symlink_or_skip
+from vntts import generation_database
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.document_identity import canonical_document_sha256
 from vntts.generated_audio import (
@@ -149,18 +150,20 @@ class GeneratedAudioTest(unittest.TestCase):
             write_generated_audio_manifest(
                 manifest, {"vntts.runtime.progress": True}, []
             )
-            (root / "generation-state.json").write_text(
-                json.dumps(
-                    {
-                        "active": {
-                            "line_id": "game:1",
-                            "text_sha256": text_sha256("Hello."),
-                            "attempt": 2,
-                            "attempt_limit": 3,
-                        }
-                    }
-                ),
-                encoding="utf-8",
+            generation_database.write_state(
+                root / "generation-state.sqlite3",
+                {
+                    "queue_sha256": "a" * 64,
+                    "schema": "vntts.authoring-generation-state",
+                    "schema_version": 1,
+                    "items": {},
+                    "active": {
+                        "line_id": "game:1",
+                        "text_sha256": text_sha256("Hello."),
+                        "attempt": 2,
+                        "attempt_limit": 3,
+                    },
+                },
             )
             library = GeneratedAudioLibrary.load_optional(manifest)
             output = FakeAudioOutput()

@@ -13,7 +13,9 @@ from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 import vntts.authoring.audio_event_omission as successor_module
 from tests.audio_output_fixtures import FakeAudioOutput
 from tests.authoring_fixtures import create_test_workspace
+from tests.generation_state_fixtures import replace_generation_state
 from tests.symlink_support import symlink_or_skip
+from vntts import generation_database
 from vntts.authoring.audio_event_omission import (
     create_audio_event_omission_workspace,
     validate_audio_event_omission_workspace,
@@ -48,11 +50,11 @@ class AudioEventOmissionTests(unittest.TestCase):
         base = created.directory
         queue = VoiceGenerationQueue.load(base / "queue.jsonl")
         queue_id = queue.items[0].queue_id
-        state_path = base / "generated-audio/generation-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state_path = base / "generated-audio/generation-state.sqlite3"
+        state = generation_database.read_state(state_path)
         state["active"] = None
         state["items"].pop(queue_id)
-        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        replace_generation_state(state_path, state)
         write_generated_manifest_from_state(
             state, base / "generated-audio", base / "generated-audio/manifest.json"
         )
@@ -63,8 +65,8 @@ class AudioEventOmissionTests(unittest.TestCase):
         batch["batch_id"] = canonical_document_sha256(
             {key: value for key, value in batch.items() if key != "batch_id"}
         )
-        path = directory / "generated-audio/generation-state.json"
-        state = json.loads(path.read_text())
+        path = directory / "generated-audio/generation-state.sqlite3"
+        state = generation_database.read_state(path)
         result = state["items"][queue_id]
         authority = result["audio_event_omission"]["authority"]
         for field in (
@@ -75,7 +77,7 @@ class AudioEventOmissionTests(unittest.TestCase):
             "queue_sha256",
         ):
             authority[field] = batch[field]
-        path.write_text(json.dumps(state, sort_keys=True))
+        replace_generation_state(path, state)
 
     def test_batch_versions_and_invalid_json_values_raise_workbench_errors(self):
         with TemporaryDirectory() as directory:
@@ -168,9 +170,9 @@ class AudioEventOmissionTests(unittest.TestCase):
                     batch = workspace["audio_event_omission"]
                     target = created.directory / batch["base_state_path"]
                     payload = target.read_bytes()
-                    document = json.loads(payload)
+                    document = generation_database.read_snapshot(payload)
                     document[field] = value
-                    target.write_text(json.dumps(document, sort_keys=True))
+                    replace_generation_state(target, document)
                     batch["base_state_sha256"] = successor_module.sha256_file(target)
                     self._rebind_batch(created.directory, workspace, item.queue_id)
                     try:
@@ -199,7 +201,9 @@ class AudioEventOmissionTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             base, queue_item = self._base(root / "source")
-            base_state = (base / "generated-audio/generation-state.json").read_bytes()
+            base_state = (
+                base / "generated-audio/generation-state.sqlite3"
+            ).read_bytes()
 
             first = create_audio_event_omission_workspace(
                 base, (queue_item.queue_id,), root / "workspaces"
@@ -207,7 +211,7 @@ class AudioEventOmissionTests(unittest.TestCase):
             second = create_audio_event_omission_workspace(
                 base, (queue_item.queue_id,), root / "workspaces"
             )
-            state_path = first.directory / "generated-audio/generation-state.json"
+            state_path = first.directory / "generated-audio/generation-state.sqlite3"
             state = load_generation_state(state_path, first.directory / "queue.jsonl")
             summary = inspect_workspace(first.directory)
             queue = VoiceGenerationQueue.load(first.directory / "queue.jsonl")
@@ -273,7 +277,7 @@ class AudioEventOmissionTests(unittest.TestCase):
             selected = controller._prepare_live_chunk(chunk)
             played = controller._play_live_chunk(chunk, selected)
             base_state_after = (
-                base / "generated-audio/generation-state.json"
+                base / "generated-audio/generation-state.sqlite3"
             ).read_bytes()
 
         self.assertTrue(first.created)
@@ -308,12 +312,12 @@ class AudioEventOmissionTests(unittest.TestCase):
             result = create_audio_event_omission_workspace(
                 base, (queue_item.queue_id,), root / "workspaces"
             )
-            state_path = result.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = result.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["items"][queue_item.queue_id]["audio_event_omission"][
                 "plan_sha256"
             ] = "0" * 64
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             with self.assertRaises(BulkGenerationError):
                 load_generation_state(state_path, result.directory / "queue.jsonl")
 

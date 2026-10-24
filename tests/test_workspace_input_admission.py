@@ -390,7 +390,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
                 for name in (
                     "workspace.json",
                     "queue.jsonl",
-                    "generated-audio/generation-state.json",
+                    "generated-audio/generation-state.sqlite3",
                     "inputs/voice/manifest.json",
                 )
             ),
@@ -453,7 +453,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
             )
             output = root / "known-role"
             gate = {
-                "path": workspace / "generated-audio/generation-state.json",
+                "path": workspace / "generated-audio/generation-state.sqlite3",
                 "armed": False,
             }
             original = known_role.load_stable_generation_queue
@@ -540,7 +540,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
                     "path": {
                         "audit": output / "audit.json",
                         "key": output / ".blind-key.json",
-                        "state": workspace / "generated-audio/generation-state.json",
+                        "state": workspace / "generated-audio/generation-state.sqlite3",
                         "decisions": output / "decisions.json",
                         "inventory": output / "audit.json",
                     }[phase],

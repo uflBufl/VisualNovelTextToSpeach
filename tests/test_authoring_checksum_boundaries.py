@@ -128,7 +128,7 @@ class ChecksumBoundaryTest(unittest.TestCase):
             workspace, authority, _queue_id = (
                 create_missing_voice_live_fallback_fixture(root)
             )
-            state = workspace / "generated-audio/generation-state.json"
+            state = workspace / "generated-audio/generation-state.sqlite3"
             before = state.read_bytes()
             self._disappear_after(
                 missing_voice_live_fallback,

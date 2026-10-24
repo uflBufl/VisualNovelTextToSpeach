@@ -28,6 +28,7 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.generation_lease import GenerationLease
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_state import write_generation_state
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
@@ -314,7 +315,7 @@ def _stage_explicit_fallback_merge(
     base_snapshots = [
         (plan.base_directory / "workspace.json", plan.base_workspace_sha256),
         (
-            plan.base_directory / "generated-audio/generation-state.json",
+            plan.base_directory / "generated-audio/generation-state.sqlite3",
             plan.base_state_sha256,
         ),
         (plan.base_queue_path, plan.base_queue_sha256),
@@ -322,7 +323,7 @@ def _stage_explicit_fallback_merge(
     source_snapshots = [
         (plan.source_directory / "workspace.json", plan.source_workspace_sha256),
         (
-            plan.source_directory / "generated-audio/generation-state.json",
+            plan.source_directory / "generated-audio/generation-state.sqlite3",
             plan.source_state_sha256,
         ),
         (plan.source_queue_path, plan.source_queue_sha256),
@@ -360,7 +361,7 @@ def _mutate_explicit_fallback_merge(
             }
         target_items[queue_id] = copied
     target_state["active"] = None
-    atomic_write_json(output / "generation-state.json", target_state, sort_keys=True)
+    write_generation_state(output / "generation-state.sqlite3", target_state)
     write_generated_manifest_from_state(target_state, output, output / "manifest.json")
     workspace = copy.deepcopy(plan.base_document)
     workspace.update(
@@ -382,7 +383,7 @@ def _validate_staged_explicit_fallback_merge(
         staging / "provenance/import.json", "explicit fallback import snapshot"
     )
     validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
-    load_generation_state(output / "generation-state.json", staging / "queue.jsonl")
+    load_generation_state(output / "generation-state.sqlite3", staging / "queue.jsonl")
 
 
 def _publish_explicit_fallback_merge(
@@ -573,7 +574,7 @@ def _explicit_fallback_state_items(
     if state is None:
         try:
             state = load_generation_state(
-                Path(directory) / "generated-audio/generation-state.json",
+                Path(directory) / "generated-audio/generation-state.sqlite3",
                 Path(directory) / "queue.jsonl",
             )
         except BulkGenerationError as error:

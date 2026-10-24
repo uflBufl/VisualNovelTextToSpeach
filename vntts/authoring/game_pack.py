@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import os
 import socket
 from collections.abc import Callable, Mapping, Sequence, Set
@@ -54,6 +53,7 @@ from vntts.authoring.failure_reference_binding_records import (
 from vntts.authoring.generation_lease import GenerationLease, process_started_at
 from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_state import (
+    decode_generation_state_snapshot,
     load_stable_generation_queue,
     reviewed_waveform_publication_queue_ids,
     validate_generation_state_document,
@@ -888,7 +888,7 @@ class _PublicationLease:
                     try:
                         existing_payload = read_regular_bytes(self.path)
                         existing = decode_json(existing_payload.decode("utf-8"))
-                    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                    except (OSError, UnicodeDecodeError, ValueError) as error:
                         raise FinalGamePackError(
                             f"Unable to inspect publication lease: {error}"
                         ) from error
@@ -933,7 +933,7 @@ class _PublicationLease:
                     document = decode_json(
                         read_regular_text(self.path, encoding="utf-8")
                     )
-                except OSError, UnicodeDecodeError, json.JSONDecodeError:
+                except OSError, UnicodeDecodeError, ValueError:
                     ownership_lost = True
                 else:
                     if (
@@ -954,7 +954,7 @@ class _PublicationLease:
     def assert_owned(self) -> None:
         try:
             document = decode_json(read_regular_text(self.path, encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        except (OSError, UnicodeDecodeError, ValueError) as error:
             raise FinalGamePackError(
                 "Final game-pack publication lease became unreadable"
             ) from error
@@ -1507,8 +1507,8 @@ def _load_stable_state(
 ) -> tuple[JsonDocument, str]:
     try:
         payload = read_regular_bytes(state_path)
-        state = decode_json(payload)
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        state = decode_generation_state_snapshot(payload)
+    except (OSError, UnicodeError, ValueError) as error:
         raise FinalGamePackError(
             f"Unable to read generation state {state_path}: {error}"
         ) from error

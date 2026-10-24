@@ -17,6 +17,8 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 from tests.authoring_fixtures import LegacyFixture, write_legacy_fixture
+from tests.generation_state_fixtures import replace_generation_state
+from vntts import generation_database
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_policy import MissingVoicePolicy
 from vntts.authoring.missing_voice_reuse import (
@@ -59,11 +61,11 @@ def create_missing_voice_reuse_workspace(
     write_voice_generation_queue(fixture["queue"], queue.metadata, [record])
     queue_sha256 = sha256_file(fixture["queue"])
 
-    state: dict[str, object] = json.loads(fixture["state"].read_text(encoding="utf-8"))
+    state: dict[str, object] = generation_database.read_state(fixture["state"])
     state["queue_sha256"] = queue_sha256
     state["active"] = None
     state["items"] = {}
-    fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    replace_generation_state(fixture["state"], state)
     write_generated_audio_manifest(
         fixture["manifest"],
         {
@@ -172,8 +174,8 @@ def build_failed_missing_voice_reuse_plan_fixture(
     fixture: LegacyFixture,
     workspace: str | Path,
 ) -> MissingVoiceReusePlan:
-    state_path = Path(workspace) / "generated-audio/generation-state.json"
-    state: dict[str, object] = json.loads(state_path.read_text(encoding="utf-8"))
+    state_path = Path(workspace) / "generated-audio/generation-state.sqlite3"
+    state: dict[str, object] = generation_database.read_state(state_path)
     items = state.get("items")
     if not isinstance(items, dict):
         raise TypeError("Missing-voice fixture generation state is malformed")
@@ -182,7 +184,7 @@ def build_failed_missing_voice_reuse_plan_fixture(
         "attempts": 3,
         "last_error": "Generated WAV failed speech-silence validation",
     }
-    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    replace_generation_state(state_path, state)
     return build_missing_voice_reuse_plan(
         workspace,
         "Aderyn",
@@ -213,8 +215,8 @@ def create_failed_prompt_hypothesis_review(
             "roles": ["Aderyn"],
         },
     )
-    state_path = workspace / "generated-audio/generation-state.json"
-    state: dict[str, object] = json.loads(state_path.read_text(encoding="utf-8"))
+    state_path = workspace / "generated-audio/generation-state.sqlite3"
+    state: dict[str, object] = generation_database.read_state(state_path)
     items = state.get("items")
     if not isinstance(items, dict):
         raise TypeError("Missing-voice prompt fixture state is malformed")
@@ -223,7 +225,7 @@ def create_failed_prompt_hypothesis_review(
         "attempts": 1,
         "last_error": "Generated WAV failed speech-silence validation",
     }
-    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    replace_generation_state(state_path, state)
     plan = build_missing_voice_reuse_plan(
         workspace,
         "Aderyn",

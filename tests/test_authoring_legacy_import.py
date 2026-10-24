@@ -14,7 +14,9 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 from tests.authoring_fixtures import tree_hashes, write_legacy_fixture
+from tests.generation_state_fixtures import replace_generation_state
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from vntts import generation_database
 from vntts.authoring import legacy_import as legacy_module
 from vntts.authoring.cli import main
 from vntts.authoring.legacy_import import (
@@ -461,9 +463,16 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                         if artifact == "job"
                         else fixture["state"]
                     )
-                    document = json.loads(path.read_text(encoding="utf-8"))
+                    document = (
+                        json.loads(path.read_text(encoding="utf-8"))
+                        if artifact == "job"
+                        else generation_database.read_state(path)
+                    )
                     document["schema_version"] = version
-                    path.write_text(json.dumps(document), encoding="utf-8")
+                    if artifact == "job":
+                        path.write_text(json.dumps(document), encoding="utf-8")
+                    else:
+                        replace_generation_state(path, document)
                     original = path.read_bytes()
 
                     with self.assertRaisesRegex(
@@ -502,13 +511,13 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             root = Path(directory)
             fixture = write_legacy_fixture(root)
             first = import_legacy_job(fixture["job_directory"], root / "app-data")
-            imported_state = first.destination / "generated-audio/generation-state.json"
-            imported_hash = sha256_file(imported_state)
-            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
-            state["active"]["last_error"] = "new crash diagnostic"
-            fixture["state"].write_text(
-                json.dumps(state, sort_keys=True), encoding="utf-8"
+            imported_state = (
+                first.destination / "generated-audio/generation-state.sqlite3"
             )
+            imported_hash = sha256_file(imported_state)
+            state = generation_database.read_state(fixture["state"])
+            state["active"]["last_error"] = "new crash diagnostic"
+            replace_generation_state(fixture["state"], state)
 
             with self.assertRaisesRegex(LegacyAuthoringImportError, "source changed"):
                 import_legacy_job(fixture["job_directory"], root / "app-data")
@@ -532,11 +541,9 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                 encoding="utf-8",
             )
             queue_hash = sha256_file(second_fixture["queue"])
-            state = json.loads(second_fixture["state"].read_text(encoding="utf-8"))
+            state = generation_database.read_state(second_fixture["state"])
             state["queue_sha256"] = queue_hash
-            second_fixture["state"].write_text(
-                json.dumps(state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(second_fixture["state"], state)
             manifest = json.loads(
                 second_fixture["manifest"].read_text(encoding="utf-8")
             )
@@ -575,11 +582,18 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                         ("state", "queue_sha256"),
                         ("manifest", "source_queue_sha256"),
                     ):
-                        document = json.loads(fixture[name].read_text(encoding="utf-8"))
-                        document[field] = queue_hash
-                        fixture[name].write_text(
-                            json.dumps(document, sort_keys=True), encoding="utf-8"
+                        document = (
+                            generation_database.read_state(fixture[name])
+                            if name == "state"
+                            else json.loads(fixture[name].read_text(encoding="utf-8"))
                         )
+                        document[field] = queue_hash
+                        if name == "state":
+                            replace_generation_state(fixture[name], document)
+                        else:
+                            fixture[name].write_text(
+                                json.dumps(document, sort_keys=True), encoding="utf-8"
+                            )
                     arguments = (
                         (fixture["job_directory"],)
                         if importer is import_legacy_job
@@ -633,18 +647,12 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             ):
                 root = Path(directory)
                 fixture = write_legacy_fixture(root)
-                state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+                state = generation_database.read_state(fixture["state"])
                 item = state["items"][fixture["queue_id"]]
                 item["status"] = status
                 item["review_status"] = review
-                fixture["state"].write_text(
-                    json.dumps(state, sort_keys=True), encoding="utf-8"
-                )
-
-                with self.assertRaisesRegex(
-                    LegacyAuthoringImportError, "status and review combination"
-                ):
-                    import_legacy_job(fixture["job_directory"], root / "app-data")
+                with self.assertRaisesRegex(ValueError, "status"):
+                    replace_generation_state(fixture["state"], state)
 
     def test_active_job_and_source_mutation_during_copy_are_deferred(self):
         with TemporaryDirectory() as directory:
@@ -668,11 +676,9 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                 nonlocal mutated
                 result = original_copy(source, destination, **kwargs)
                 if Path(source).resolve() == fixture["queue"].resolve() and not mutated:
-                    state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+                    state = generation_database.read_state(fixture["state"])
                     state["active"]["updated_at"] = "2026-08-16T17:00:02+00:00"
-                    fixture["state"].write_text(
-                        json.dumps(state, sort_keys=True), encoding="utf-8"
-                    )
+                    replace_generation_state(fixture["state"], state)
                     mutated = True
                 return result
 
@@ -901,10 +907,8 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             imported_queue = VoiceGenerationQueue.load(
                 result.destination / "queue.jsonl"
             )
-            imported_state = json.loads(
-                (
-                    result.destination / "generated-audio/generation-state.json"
-                ).read_text(encoding="utf-8")
+            imported_state = generation_database.read_state(
+                result.destination / "generated-audio/generation-state.sqlite3"
             )
             imported_wav = (
                 result.destination / "generated-audio/audio/rhiannon/line.wav"
@@ -999,13 +1003,13 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             root = Path(directory)
             fixture = write_legacy_fixture(root)
             first = import_legacy_job(fixture["job_directory"], root / "app-data")
-            imported_state = first.destination / "generated-audio/generation-state.json"
-            imported_hash = sha256_file(imported_state)
-            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
-            state["items"][fixture["queue_id"]]["seed"] = 12
-            fixture["state"].write_text(
-                json.dumps(state, sort_keys=True), encoding="utf-8"
+            imported_state = (
+                first.destination / "generated-audio/generation-state.sqlite3"
             )
+            imported_hash = sha256_file(imported_state)
+            state = generation_database.read_state(fixture["state"])
+            state["items"][fixture["queue_id"]]["seed"] = 12
+            replace_generation_state(fixture["state"], state)
             manifest = json.loads(fixture["manifest"].read_text(encoding="utf-8"))
             manifest["entries"][0]["seed"] = 12
             fixture["manifest"].write_text(
@@ -1022,11 +1026,9 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             root = Path(directory)
             first_fixture = write_legacy_fixture(root / "first")
             second_fixture = write_legacy_fixture(root / "second")
-            state = json.loads(second_fixture["state"].read_text(encoding="utf-8"))
+            state = generation_database.read_state(second_fixture["state"])
             state["items"][second_fixture["queue_id"]]["provider"] = "other-provider"
-            second_fixture["state"].write_text(
-                json.dumps(state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(second_fixture["state"], state)
             manifest = json.loads(
                 second_fixture["manifest"].read_text(encoding="utf-8")
             )
@@ -1068,14 +1070,12 @@ class LegacyAuthoringImportTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture = write_legacy_fixture(root)
-            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state = generation_database.read_state(fixture["state"])
             state["queue_sha256"] = "0" * 64
-            fixture["state"].write_text(
-                json.dumps(state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(fixture["state"], state)
 
             with self.assertRaisesRegex(
-                LegacyAuthoringImportError, "belongs to different queue"
+                LegacyAuthoringImportError, "Generation queue changed"
             ):
                 import_legacy_job(fixture["job_directory"], root / "app-data")
 
@@ -1083,11 +1083,9 @@ class LegacyAuthoringImportTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture = write_legacy_fixture(root)
-            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state = generation_database.read_state(fixture["state"])
             state["items"][fixture["queue_id"]]["path"] = "../outside.wav"
-            fixture["state"].write_text(
-                json.dumps(state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(fixture["state"], state)
 
             with self.assertRaisesRegex(LegacyAuthoringImportError, "must stay within"):
                 import_legacy_job(fixture["job_directory"], root / "app-data")
@@ -1126,14 +1124,12 @@ class LegacyAuthoringImportTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture = write_legacy_fixture(root)
-            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state = generation_database.read_state(fixture["state"])
             state_item = state["items"][fixture["queue_id"]]
             state_item["status"] = "generated"
             state_item["review_status"] = "rejected"
             state_item["seed"] = 12
-            fixture["state"].write_text(
-                json.dumps(state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(fixture["state"], state)
 
             candidate = next(
                 value
@@ -1193,9 +1189,9 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             standalone_queue.write_bytes(fixture["queue"].read_bytes())
             standalone_output = root / "standalone-output"
             standalone_output.mkdir()
-            standalone_state = json.loads(fixture["state"].read_text(encoding="utf-8"))
-            (standalone_output / "generation-state.json").write_text(
-                json.dumps(standalone_state), encoding="utf-8"
+            standalone_state = generation_database.read_state(fixture["state"])
+            replace_generation_state(
+                standalone_output / "generation-state.sqlite3", standalone_state
             )
             listening = root / "model-benchmark" / "listening-session"
             listening.mkdir(parents=True)

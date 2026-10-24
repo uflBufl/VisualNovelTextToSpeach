@@ -98,7 +98,7 @@ def build_failure_regeneration_plan(
             workspace_directory
         )
         queue_path = directory / "queue.jsonl"
-        state_path = directory / "generated-audio/generation-state.json"
+        state_path = directory / "generated-audio/generation-state.sqlite3"
         repair = generation_failure_repair_plan(state_path, queue_path)
         state, sources = _failure_plan_inputs(directory, workspace_sha256, repair)
     except (
@@ -166,7 +166,7 @@ def _failure_plan_inputs(
     )
     queue = capture_authority_file(directory / "queue.jsonl", "generation queue")
     state = capture_authority_file(
-        directory / "generated-audio/generation-state.json", "generation state"
+        directory / "generated-audio/generation-state.sqlite3", "generation state"
     )
     if (
         workspace.sha256 != workspace_sha256
@@ -175,7 +175,7 @@ def _failure_plan_inputs(
     ):
         raise FailureRegenerationError("Failure repair sources changed while planning")
     document = load_generation_state(state.path, queue.path)
-    if document != state.json_document("generation state"):
+    if document != state.generation_state_document("generation state"):
         raise FailureRegenerationError("Generation state changed while planning")
     return document, (workspace, queue, state)
 

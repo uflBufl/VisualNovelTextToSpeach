@@ -16,6 +16,8 @@ import vntts.authoring.explicit_fallback_merge as fallback_merge_module
 from tests.authoring_fixtures import (
     create_explicit_fallback_merge_fixture,
 )
+from tests.generation_state_fixtures import replace_generation_state
+from vntts import generation_database
 from vntts.authoring.explicit_fallback_merge import (
     merge_explicit_live_fallbacks,
 )
@@ -55,9 +57,11 @@ class ExplicitFallbackMergeTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             base, source, queue_id = create_explicit_fallback_merge_fixture(root)
-            base_before = (base / "generated-audio/generation-state.json").read_bytes()
+            base_before = (
+                base / "generated-audio/generation-state.sqlite3"
+            ).read_bytes()
             source_before = (
-                source / "generated-audio/generation-state.json"
+                source / "generated-audio/generation-state.sqlite3"
             ).read_bytes()
 
             created = merge_explicit_live_fallbacks(
@@ -67,10 +71,8 @@ class ExplicitFallbackMergeTests(unittest.TestCase):
                 base, source, (queue_id,), root / "workspaces"
             )
             summary = inspect_workspace(created.directory)
-            state = json.loads(
-                (created.directory / "generated-audio/generation-state.json").read_text(
-                    encoding="utf-8"
-                )
+            state = generation_database.read_state(
+                created.directory / "generated-audio/generation-state.sqlite3"
             )
 
             self.assertTrue(created.created)
@@ -80,11 +82,11 @@ class ExplicitFallbackMergeTests(unittest.TestCase):
             self.assertEqual(state["items"][queue_id]["status"], "live_fallback")
             self.assertIn("explicit_fallback_merge", state["items"][queue_id])
             self.assertEqual(
-                (base / "generated-audio/generation-state.json").read_bytes(),
+                (base / "generated-audio/generation-state.sqlite3").read_bytes(),
                 base_before,
             )
             self.assertEqual(
-                (source / "generated-audio/generation-state.json").read_bytes(),
+                (source / "generated-audio/generation-state.sqlite3").read_bytes(),
                 source_before,
             )
 
@@ -102,10 +104,10 @@ class ExplicitFallbackMergeTests(unittest.TestCase):
                     result.directory, source, (queue_id,), root / "workspaces"
                 )
 
-            state_path = result.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = result.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["items"][queue_id]["live_fallback"]["model"] = "changed"
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             with self.assertRaises(AuthoringWorkbenchError):
                 inspect_workspace(result.directory)
 
@@ -152,10 +154,8 @@ class ExplicitFallbackMergeTests(unittest.TestCase):
                 (created.directory / "workspace.json").read_text(encoding="utf-8")
             )
             merge = workspace["explicit_fallback_merge"]
-            saved = json.loads(
-                (created.directory / "generated-audio/generation-state.json").read_text(
-                    encoding="utf-8"
-                )
+            saved = generation_database.read_state(
+                created.directory / "generated-audio/generation-state.sqlite3"
             )
             for version in (1, 2):
                 state = copy.deepcopy(saved)

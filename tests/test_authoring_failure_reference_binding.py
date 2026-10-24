@@ -9,7 +9,9 @@ import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_creation as workspace_creation_module
 from tests.authoring_fixtures import create_failed_reference_workspace, tree_hashes
 from tests.bulk_generation_fixtures import SyntheticRenderer
+from tests.generation_state_fixtures import replace_generation_state
 from tests.symlink_support import symlink_or_skip
+from vntts import generation_database
 from vntts.authoring import (
     failure_reference_audit as failure_audit_module,
 )
@@ -127,10 +129,10 @@ class FailureReferenceBindingTest(unittest.TestCase):
 
     def create_decided_audit(self, root):
         workspace, queue_id = create_failed_reference_workspace(root)
-        state_path = workspace / "generated-audio/generation-state.json"
-        state = json.loads(state_path.read_text())
+        state_path = workspace / "generated-audio/generation-state.sqlite3"
+        state = generation_database.read_state(state_path)
         state["active"] = None
-        state_path.write_text(json.dumps(state, sort_keys=True))
+        replace_generation_state(state_path, state)
         audit = root / "audit"
         publish_failure_reference_audit(workspace, audit, seed=7)
         document = json.loads((audit / "audit.json").read_text())
@@ -716,7 +718,7 @@ class FailureReferenceBindingTest(unittest.TestCase):
             )
             binding = root / "binding"
             publish_failure_reference_binding(audit, binding)
-            state_path = workspace / "generated-audio/generation-state.json"
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
             state_before = state_path.read_bytes()
             audio_before = {
                 path.relative_to(
@@ -755,7 +757,7 @@ class FailureReferenceBindingTest(unittest.TestCase):
             self.assertEqual(len(runtime.voices), 1)
             self.assertEqual(
                 (
-                    created.directory / "generated-audio/generation-state.json"
+                    created.directory / "generated-audio/generation-state.sqlite3"
                 ).read_bytes(),
                 state_before,
             )
@@ -835,10 +837,10 @@ class FailureReferenceBindingTest(unittest.TestCase):
             )
             binding = root / "binding"
             publish_failure_reference_binding(audit, binding)
-            state_path = workspace / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text())
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             next(iter(state["items"].values()))["attempts"] += 1
-            state_path.write_text(json.dumps(state, sort_keys=True))
+            replace_generation_state(state_path, state)
             with self.assertRaisesRegex(AuthoringWorkbenchError, "authority is stale"):
                 create_failure_reference_workspace(
                     workspace,
@@ -871,15 +873,15 @@ class FailureReferenceBindingTest(unittest.TestCase):
             )
             binding = root / "binding"
             publish_failure_reference_binding(audit, binding)
-            state_path = workspace / "generated-audio/generation-state.json"
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
             original_copy = workspace_creation_module._copy_workspace_tree_snapshot
 
             def copy_then_mutate(source, target, snapshots):
                 original_copy(source, target, snapshots)
                 if Path(source).resolve() == (workspace / "generated-audio").resolve():
-                    document = json.loads(state_path.read_text())
+                    document = generation_database.read_state(state_path)
                     document["active"] = {"phase": "changed-during-copy"}
-                    state_path.write_text(json.dumps(document, sort_keys=True))
+                    replace_generation_state(state_path, document)
 
             with patch.object(
                 workspace_creation_module,
@@ -999,10 +1001,8 @@ class FailureReferenceBindingTest(unittest.TestCase):
                 self.assertEqual(authoring_main(command[3:]), 0)
 
             runtime = failure_reference_runtime_binding(created.directory)
-            state = json.loads(
-                (
-                    created.directory / "generated-audio/generation-state.json"
-                ).read_text()
+            state = generation_database.read_state(
+                created.directory / "generated-audio/generation-state.sqlite3"
             )
             result = state["items"][queue_id]
             self.assertEqual(len(renderers), 1)
@@ -1046,10 +1046,8 @@ class FailureReferenceBindingTest(unittest.TestCase):
                 plan,
                 decision,
             )
-            reviewed_state = json.loads(
-                (
-                    created.directory / "generated-audio/generation-state.json"
-                ).read_text()
+            reviewed_state = generation_database.read_state(
+                created.directory / "generated-audio/generation-state.sqlite3"
             )
 
             self.assertEqual(projection.review_status, "approved")
@@ -1107,10 +1105,10 @@ class FailureReferenceBindingTest(unittest.TestCase):
                 generation_profile="stable",
                 narrator_character="Rhiannon",
             ).directory
-            target_state_path = target / "generated-audio/generation-state.json"
-            target_state = json.loads(target_state_path.read_text())
+            target_state_path = target / "generated-audio/generation-state.sqlite3"
+            target_state = generation_database.read_state(target_state_path)
             target_state["active"] = None
-            target_state_path.write_text(json.dumps(target_state, sort_keys=True))
+            replace_generation_state(target_state_path, target_state)
             rebased = rebase_workspace_config(
                 source,
                 target,
@@ -1121,10 +1119,8 @@ class FailureReferenceBindingTest(unittest.TestCase):
                 target,
                 root / "rebased-workspaces",
             )
-            state = json.loads(
-                (
-                    rebased.directory / "generated-audio/generation-state.json"
-                ).read_text()
+            state = generation_database.read_state(
+                rebased.directory / "generated-audio/generation-state.sqlite3"
             )
             result = state["items"][queue_id]
             authority = result["config_rebase"]
@@ -1163,8 +1159,8 @@ class FailureReferenceBindingTest(unittest.TestCase):
                 root / "successors",
             ).directory
             runtime = failure_reference_runtime_binding(successor)
-            state_path = successor / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text())
+            state_path = successor / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             failed = state["items"][queue_id]
             text_features = failed["failure"]["text_features"]
             failed.update(
@@ -1187,19 +1183,19 @@ class FailureReferenceBindingTest(unittest.TestCase):
                     },
                 }
             )
-            state_path.write_text(json.dumps(state, sort_keys=True))
+            replace_generation_state(state_path, state)
             imported = next((root / "imports").glob("legacy-*"))
-            imported_state_path = imported / "generated-audio/generation-state.json"
-            imported_state = json.loads(imported_state_path.read_text())
+            imported_state_path = imported / "generated-audio/generation-state.sqlite3"
+            imported_state = generation_database.read_state(imported_state_path)
             imported_state["active"] = None
-            imported_state_path.write_text(json.dumps(imported_state, sort_keys=True))
+            replace_generation_state(imported_state_path, imported_state)
             import_path = imported / "import.json"
             import_document = json.loads(import_path.read_text())
             imported_state_sha256 = workbench_module.sha256_file(imported_state_path)
             next(
                 item
                 for item in import_document["artifacts"]
-                if item["path"] == "generated-audio/generation-state.json"
+                if item["path"] == "generated-audio/generation-state.sqlite3"
             )["sha256"] = imported_state_sha256
             import_path.write_text(json.dumps(import_document, sort_keys=True))
 
@@ -1233,8 +1229,8 @@ class FailureReferenceBindingTest(unittest.TestCase):
             )
 
             repair_runtime = failure_reference_runtime_binding(repair.directory)
-            repair_state = json.loads(
-                (repair.directory / "generated-audio/generation-state.json").read_text()
+            repair_state = generation_database.read_state(
+                repair.directory / "generated-audio/generation-state.sqlite3"
             )
             readiness = inspect_generation_readiness(
                 repair.directory,
@@ -1269,16 +1265,16 @@ class FailureReferenceBindingTest(unittest.TestCase):
             with patch("vntts.authoring.cli_generation.create_backend", create_backend):
                 self.assertEqual(authoring_main(repair_command[3:]), 0)
             review_workspace_item(repair.directory, queue_id, "approved")
-            reviewed_state = json.loads(
-                (repair.directory / "generated-audio/generation-state.json").read_text()
+            reviewed_state = generation_database.read_state(
+                repair.directory / "generated-audio/generation-state.sqlite3"
             )
             self.assertEqual(reviewed_state["items"][queue_id]["status"], "approved")
             inspect_workspace(repair.directory)
 
-            state = json.loads(state_path.read_text())
+            state = generation_database.read_state(state_path)
             state["items"][queue_id]["attempts"] = 3
             state["items"][queue_id]["seed"] = 2
-            state_path.write_text(json.dumps(state, sort_keys=True))
+            replace_generation_state(state_path, state)
             fallback = create_resume_workspace(
                 imported,
                 root / "fallbacks",

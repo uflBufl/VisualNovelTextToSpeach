@@ -54,7 +54,6 @@ from vntts.authoring.terminal_conflict_records import (
     TerminalConflictRecordError,
     validate_terminal_conflict_item_provenance,
 )
-from vntts.authoring.workspace_foundation import load_json_object
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import has_schema_version as _has_exact_schema_version
@@ -66,8 +65,6 @@ from vntts.voices import synthesis_character_for_line
 
 STATE_SCHEMA = "vntts.authoring-generation-state"
 STATE_VERSION = 1
-LEGACY_STATE_SCHEMA = "r1999.bulk-generation-state"
-LEGACY_STATE_VERSION = 1
 LIVE_FALLBACK_SCHEMA = "vntts.authoring-live-fallback-decision"
 LIVE_FALLBACK_VERSION = 1
 LIVE_FALLBACK_EVIDENCE_VERSION = 2
@@ -146,19 +143,9 @@ def generation_item_status(result: Mapping[str, object]) -> object:
     return result.get("status")
 
 
-def _legacy_counted_cancellation(result: Mapping[str, object]) -> bool:
-    failure = result.get("failure")
-    return (
-        generation_item_status(result) == "cancelled"
-        and isinstance(failure, Mapping)
-        and failure.get("attempt_counted") is not False
-    )
-
-
 def completed_generation_attempts(result: Mapping[str, object]) -> int:
-    """Exclude the last legacy cancellation without rewriting its stored evidence."""
-    attempts = _nonnegative_int(result.get("attempts", 0), "Attempts")
-    return max(0, attempts - int(_legacy_counted_cancellation(result)))
+    """Return the persisted count of completed provider attempts."""
+    return _nonnegative_int(result.get("attempts", 0), "Attempts")
 
 
 def load_stable_generation_queue(
@@ -183,9 +170,7 @@ def load_stable_generation_queue(
 
 def generation_state_file(path: str | Path) -> Path:
     requested = Path(path).expanduser()
-    if generation_database.is_database(requested) and (
-        requested.is_symlink() or requested.is_junction()
-    ):
+    if requested.is_symlink() or requested.is_junction():
         raise BulkGenerationError(
             f"Generation database must not be a link: {requested}"
         )
@@ -195,7 +180,7 @@ def generation_state_file(path: str | Path) -> Path:
 def load_generation_state(
     state_path: str | Path, queue_path: str | Path | None = None
 ) -> StateObject:
-    """Load either VNTTS-owned or preserved legacy state and verify its files."""
+    """Load current SQLite state and verify its files."""
     state_path = generation_state_file(state_path)
     state = _read_generation_state(state_path)
     queue = None
@@ -218,11 +203,7 @@ def load_generation_state_from_snapshot(
 ) -> StateObject:
     """Validate captured queue authority and optionally only selected lines' WAVs."""
     state_path = generation_state_file(state_path)
-    if (
-        state_document is None
-        and selected_line_ids is not None
-        and generation_database.is_database(state_path)
-    ):
+    if state_document is None and selected_line_ids is not None:
         try:
             state = generation_database.read_state(
                 state_path,
@@ -248,17 +229,10 @@ def load_generation_state_from_snapshot(
 
 
 def _read_generation_state(state_path: Path) -> StateObject:
-    if generation_database.is_database(state_path):
-        try:
-            return generation_database.read_state(state_path)
-        except (OSError, ValueError) as error:
-            raise BulkGenerationError(str(error)) from error
-    return load_json_object(
-        state_path,
-        "generation state",
-        error_type=BulkGenerationError,
-        object_label="Generation state",
-    )
+    try:
+        return generation_database.read_state(state_path)
+    except (OSError, ValueError) as error:
+        raise BulkGenerationError(str(error)) from error
 
 
 def write_generation_state(
@@ -267,17 +241,10 @@ def write_generation_state(
     *,
     changed_items: tuple[str, ...] | None = None,
 ) -> None:
-    if generation_database.is_database(state_path):
-        try:
-            generation_database.write_state(
-                state_path, state, changed_items=changed_items
-            )
-        except (OSError, ValueError) as error:
-            raise BulkGenerationError(str(error)) from error
-    else:
-        from durable_file import atomic_write_json
-
-        atomic_write_json(state_path, state, sort_keys=True)
+    try:
+        generation_database.write_state(state_path, state, changed_items=changed_items)
+    except (OSError, ValueError) as error:
+        raise BulkGenerationError(str(error)) from error
 
 
 def read_generation_state_document(state_path: Path) -> StateObject:
@@ -286,14 +253,7 @@ def read_generation_state_document(state_path: Path) -> StateObject:
 
 
 def decode_generation_state_snapshot(payload: bytes) -> StateObject:
-    if payload.startswith(b"SQLite format 3\x00"):
-        return generation_database.read_snapshot(payload)
-    from vntts.json_types import decode_json
-
-    value = decode_json(payload.decode("utf-8"))
-    if not isinstance(value, dict):
-        raise BulkGenerationError("Generation state must be an object")
-    return value
+    return generation_database.read_snapshot(payload)
 
 
 def generation_state_snapshot(state_path: Path) -> tuple[StateObject, str, bytes]:
@@ -309,12 +269,23 @@ def generation_state_snapshot(state_path: Path) -> tuple[StateObject, str, bytes
 
 def read_generation_state_payload(state_path: Path) -> bytes:
     state_path = generation_state_file(state_path)
-    if generation_database.is_database(state_path):
-        try:
-            return generation_database.snapshot_file(state_path)
-        except (OSError, ValueError) as error:
-            raise BulkGenerationError(str(error)) from error
-    return read_regular_bytes(state_path)
+    try:
+        return generation_database.snapshot_file(state_path)
+    except (OSError, ValueError) as error:
+        raise BulkGenerationError(str(error)) from error
+
+
+def load_generation_state_object_snapshot(
+    path: str | Path,
+    description: str,
+    *,
+    error_type: type[Exception] = BulkGenerationError,
+) -> tuple[StateObject, str, bytes]:
+    """Capture working authority while retaining the caller's public error type."""
+    try:
+        return generation_state_snapshot(Path(path))
+    except (BulkGenerationError, OSError, ValueError) as error:
+        raise error_type(f"Unable to read {description} {path}: {error}") from error
 
 
 def _validate_live_fallback_evidence(
@@ -486,10 +457,10 @@ def _validate_state_document(
     selected_line_ids: frozenset[str] | None = None,
 ) -> None:
     schema_pair = (state.get("schema"), state.get("schema_version"))
-    if type(state.get("schema_version")) is not int or schema_pair not in {
-        (STATE_SCHEMA, STATE_VERSION),
-        (LEGACY_STATE_SCHEMA, LEGACY_STATE_VERSION),
-    }:
+    if type(state.get("schema_version")) is not int or schema_pair != (
+        STATE_SCHEMA,
+        STATE_VERSION,
+    ):
         raise BulkGenerationError(
             f"Unsupported generation state schema: {schema_pair!r}"
         )
@@ -513,7 +484,6 @@ def _validate_state_document(
             result,
             output_directory,
             queue_by_id,
-            state["schema"],
             validate_files=(
                 selected_line_ids is None
                 or item is None
@@ -533,11 +503,7 @@ def _validate_state_metadata(
             raise BulkGenerationError(
                 f"Generation state {field} must be non-empty text or null"
             )
-        if (
-            queue is not None
-            and not (state["schema"] == LEGACY_STATE_SCHEMA and value is None)
-            and value != queue.metadata.get(field)
-        ):
+        if queue is not None and value != queue.metadata.get(field):
             raise BulkGenerationError(
                 f"Generation state {field} does not match the queue metadata"
             )
@@ -548,7 +514,6 @@ def _validate_state_item(
     result: object,
     output_directory: Path,
     queue_by_id: QueueById | None,
-    state_schema: object,
     *,
     validate_files: bool = True,
 ) -> None:
@@ -581,7 +546,6 @@ def _validate_state_item(
             result,
             output_directory,
             queue_item,
-            state_schema=state_schema,
             validate_files=validate_files,
         )
     _validate_failure_repair_record(result, queue_id, queue_item)
@@ -626,6 +590,23 @@ def _validate_state_active(state: StateObject, queue_by_id: QueueById | None) ->
         _validate_active_attempt(active, queue_by_id)
 
 
+def _validate_cancellation_marker(failure: StateObject, queue_id: str) -> None:
+    if "attempt_counted" in failure and (
+        type(failure["attempt_counted"]) is not bool
+        or failure.get("kind") != "cancelled"
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} cancellation attempt marker is invalid"
+        )
+    if (
+        failure.get("kind") == "cancelled"
+        and failure.get("attempt_counted") is not False
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} counted cancellation requires the explicit storage upgrade"
+        )
+
+
 def _validate_failure_record(
     failure: object, queue_id: str, *, result: StateObject | None = None
 ) -> None:
@@ -636,13 +617,7 @@ def _validate_failure_record(
     _required_text(
         failure.get("error_type"), f"State item {queue_id!r} failure error_type"
     )
-    if "attempt_counted" in failure and (
-        type(failure["attempt_counted"]) is not bool
-        or failure.get("kind") != "cancelled"
-    ):
-        raise BulkGenerationError(
-            f"State item {queue_id!r} cancellation attempt marker is invalid"
-        )
+    _validate_cancellation_marker(failure, queue_id)
     previous = failure.get("previous_failure")
     if previous is not None:
         if (
@@ -2656,7 +2631,6 @@ def _validate_success_item(
     output_directory: Path,
     queue_item: VoiceGenerationQueueItem | None,
     *,
-    state_schema: object,
     validate_files: bool = True,
 ) -> None:
     if queue_item is not None and (
@@ -2668,8 +2642,7 @@ def _validate_success_item(
         )
     _validate_success_item_inputs(result, queue_id)
     _validate_synthesis_identity(result, queue_id, queue_item)
-    if state_schema == STATE_SCHEMA:
-        _validate_current_success_item(result, queue_id)
+    _validate_current_success_item(result, queue_id)
     relative = safe_generation_relative_path(
         result.get("path"), f"State item {queue_id!r} path"
     )
@@ -2677,8 +2650,7 @@ def _validate_success_item(
     if not validate_files:
         return
     quality, samples = validate_success_file_with_samples(queue_id, result, audio)
-    if state_schema == STATE_SCHEMA:
-        _validate_success_speech_quality(result, queue_id, quality, samples)
+    _validate_success_speech_quality(result, queue_id, quality, samples)
     _validate_success_audio_event_composition(result, queue_id, output_directory)
 
 
@@ -2799,16 +2771,12 @@ def _nonnegative_int(value: object, label: str) -> int:
 def _provider_attempts(
     result: StateObject, total_attempts: int, *, default_provider: object = None
 ) -> dict[str, int]:
-    """Return validated per-provider counts, deriving old state losslessly."""
+    """Return validated per-provider counts from current state."""
     value = result.get("attempts_by_provider")
     if value is None:
         previous = result.get("provider") or default_provider
         if total_attempts and isinstance(previous, str) and previous.strip():
-            return {
-                previous: max(
-                    0, total_attempts - int(_legacy_counted_cancellation(result))
-                )
-            }
+            return {previous: total_attempts}
         return {}
     if not isinstance(value, dict):
         raise BulkGenerationError("Attempts by provider must be an object")
@@ -2823,10 +2791,6 @@ def _provider_attempts(
         )
     if sum(canonical.values()) > total_attempts:
         raise BulkGenerationError("Attempts by provider exceed cumulative attempts")
-    if _legacy_counted_cancellation(result):
-        previous = result.get("provider") or default_provider
-        if isinstance(previous, str) and canonical.get(previous, 0):
-            canonical[previous] -= 1
     return canonical
 
 
@@ -2919,8 +2883,6 @@ __all__ = [
     "AUDIO_EVENT_OMISSION_SCHEMA",
     "AUDIO_EVENT_OMISSION_VERSION",
     "FAILURE_KINDS",
-    "LEGACY_STATE_SCHEMA",
-    "LEGACY_STATE_VERSION",
     "LIVE_FALLBACK_EVIDENCE_SCHEMA",
     "LIVE_FALLBACK_EVIDENCE_VERSION",
     "LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION",

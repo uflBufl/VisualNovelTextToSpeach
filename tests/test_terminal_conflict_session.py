@@ -37,6 +37,7 @@ from vntts.authoring.terminal_conflict_workspace import (
     merge_terminal_conflict_resolution,
 )
 from vntts.authoring.workbench import AuthoringWorkbenchError, load_workspace_authority
+from vntts.generation_database import read_snapshot
 
 
 class TerminalConflictSessionTest(unittest.TestCase):
@@ -178,9 +179,9 @@ class TerminalConflictSessionTest(unittest.TestCase):
             primary, secondary, successor, queue_ids = (
                 self._create_two_item_approved_successor(root)
             )
-            source_state_path = primary / "generated-audio/generation-state.json"
+            source_state_path = primary / "generated-audio/generation-state.sqlite3"
             source_state_payload = source_state_path.read_bytes()
-            source_state = json.loads(source_state_payload)
+            source_state = read_snapshot(source_state_payload)
             source_hashes = {
                 workspace: tree_hashes(workspace) for workspace in (primary, secondary)
             }
@@ -248,7 +249,7 @@ class TerminalConflictSessionTest(unittest.TestCase):
             2,
         )
         merged_state = load_generation_state(
-            merged / "generated-audio/generation-state.json",
+            merged / "generated-audio/generation-state.sqlite3",
             merged / "queue.jsonl",
         )
         expected_items = source_state["items"]
@@ -301,7 +302,7 @@ class TerminalConflictSessionTest(unittest.TestCase):
     def _assert_staging_mutation_rejected(
         self, primary, successor, late_workspaces, source_state_payload
     ):
-        source_state_path = primary / "generated-audio/generation-state.json"
+        source_state_path = primary / "generated-audio/generation-state.sqlite3"
         validate_staging = workspace_module.validate_workspace_provenance_extensions
         mutated = False
 

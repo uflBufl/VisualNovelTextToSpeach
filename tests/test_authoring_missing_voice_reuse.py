@@ -9,12 +9,14 @@ from unittest.mock import patch
 
 import vntts.story_index_snapshot as story_snapshot_module
 from tests.authoring_fixtures import tree_hashes
+from tests.generation_state_fixtures import replace_generation_state
 from tests.missing_voice_reuse_fixtures import (
     build_failed_missing_voice_reuse_plan_fixture,
     build_missing_voice_reuse_plan_fixture,
     create_missing_voice_reuse_workspace,
 )
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from vntts import generation_database
 from vntts.authoring import missing_voice_reuse as reuse_module
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.missing_voice_reuse import (
@@ -221,7 +223,7 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
     def test_plan_is_exact_small_and_does_not_mutate_workspace(self):
         with TemporaryDirectory() as directory:
             fixture, _imported, workspace = self.create_workspace(Path(directory))
-            state = workspace / "generated-audio/generation-state.json"
+            state = workspace / "generated-audio/generation-state.sqlite3"
             before = state.read_bytes()
 
             first = self.build_plan(workspace)
@@ -477,11 +479,9 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
                 root / "candidate-inputs",
                 root / "workspaces",
             )
-            candidate_state = json.loads(
-                (
-                    prepared.workspace_directory
-                    / "generated-audio/generation-state.json"
-                ).read_text(encoding="utf-8")
+            candidate_state = generation_database.read_state(
+                prepared.workspace_directory
+                / "generated-audio/generation-state.sqlite3"
             )
             readiness = inspect_generation_readiness(
                 prepared.workspace_directory,
@@ -530,15 +530,15 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
                     "roles": ["Aderyn"],
                 },
             )
-            state_path = workspace / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             source_item = {
                 "status": "failed",
                 "attempts": 1,
                 "last_error": "Generated WAV failed speech-silence validation",
             }
             state["items"][fixture["queue_id"]] = source_item
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             plan = build_missing_voice_reuse_plan(
                 workspace,
                 "Aderyn",
@@ -558,11 +558,9 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
             command = build_missing_voice_reuse_candidate_command(
                 plan, candidate["candidate_id"], prepared.workspace_directory
             )
-            carried = json.loads(
-                (
-                    prepared.workspace_directory
-                    / "generated-audio/generation-state.json"
-                ).read_text(encoding="utf-8")
+            carried = generation_database.read_state(
+                prepared.workspace_directory
+                / "generated-audio/generation-state.sqlite3"
             )["items"][fixture["queue_id"]]
 
         hypothesis = candidate["render_hypothesis"]

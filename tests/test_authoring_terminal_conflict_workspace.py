@@ -10,8 +10,10 @@ from unittest.mock import patch
 import vntts.authoring.terminal_conflict_workspace as terminal_workspace_module
 import vntts.authoring.workbench as workbench_module
 from tests.authoring_fixtures import tree_hashes
+from tests.generation_state_fixtures import replace_generation_state
 from tests.symlink_support import symlink_or_skip
 from tests.terminal_conflict_fixtures import create_terminal_conflict_fixture
+from vntts import generation_database
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
@@ -146,7 +148,7 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
                     )["successor_id"],
                 )
                 state = load_generation_state(
-                    created.directory / "generated-audio/generation-state.json",
+                    created.directory / "generated-audio/generation-state.sqlite3",
                     created.directory / "queue.jsonl",
                 )
                 item = state["items"][queue_id]
@@ -209,7 +211,7 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
             merged = merge_terminal_conflict_resolution(
                 primary, successor, root / "workspaces"
             ).directory
-            state_path = merged / "generated-audio/generation-state.json"
+            state_path = merged / "generated-audio/generation-state.sqlite3"
             state = load_generation_state(state_path, merged / "queue.jsonl")
 
             with _GenerationLease(
@@ -343,7 +345,8 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
                     ).hexdigest(),
                     "state_sha256": hashlib.sha256(
                         (
-                            result.directory / "generated-audio/generation-state.json"
+                            result.directory
+                            / "generated-audio/generation-state.sqlite3"
                         ).read_bytes()
                     ).hexdigest(),
                 },
@@ -361,14 +364,14 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
                 primary, successor, root / "workspaces"
             )
             merged_state = load_generation_state(
-                result.directory / "generated-audio/generation-state.json"
+                result.directory / "generated-audio/generation-state.sqlite3"
             )
-            state_path = primary / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = primary / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["items"][queue_id]["terminal_conflict_resolution"] = merged_state[
                 "items"
             ][queue_id]["terminal_conflict_resolution"]
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
 
             load_generation_state(state_path, primary / "queue.jsonl")
             with self.assertRaisesRegex(
@@ -382,10 +385,10 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
             primary, _secondary, queue_id, _report = create_terminal_conflict_fixture(
                 root
             )
-            state_path = primary / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = primary / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["items"][queue_id]["terminal_conflict_resolution"] = {"spoofed": True}
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
 
             with self.assertRaisesRegex(
                 BulkGenerationError, "state-item provenance is malformed"
@@ -403,7 +406,7 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
 
             def assert_source_locked(staging, destination):
                 state = load_generation_state(
-                    primary / "generated-audio/generation-state.json"
+                    primary / "generated-audio/generation-state.sqlite3"
                 )
                 with self.assertRaisesRegex(
                     BulkGenerationError, "Another generation process is active"

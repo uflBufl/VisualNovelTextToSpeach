@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from tests.symlink_support import symlink_or_skip
 from vntts import voice_candidate_cache as cache
+from vntts.preparation_catalog import PreparationCatalog
 from vntts.voice_candidate_cache import prune_obsolete_voice_candidate_caches
 
 
@@ -22,6 +23,7 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         self.jobs = Path(self.temporary.name) / "jobs"
         self.root.mkdir()
         self.jobs.mkdir()
+        PreparationCatalog(self.jobs, owned_root=True).initialize()
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -314,19 +316,35 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         self.assertEqual(sum(directory.exists() for directory in stale), 57)
 
     def test_keeps_manifest_referenced_by_saved_voice_plan(self) -> None:
+        from tests.test_sqlite_generation_integration import prepared_input
+        from vntts.pregeneration_voices import voice_plan_schema_version
+
+        _prepared, plan, _job = prepared_input(Path(self.temporary.name))
         old = self._candidate("old")
         saved = self._candidate("saved")
-        job = self.jobs / ("a" * 24)
-        job.mkdir()
-        (job / "voice-plan.json").write_text(
-            json.dumps({"voice_manifest": str(saved / "manifest.json")}),
-            encoding="utf-8",
+        PreparationCatalog(self.jobs).save_plan(
+            {**plan.to_document(), "voice_manifest": str(saved / "manifest.json")},
+            voice_plan_schema_version,
         )
-
         removed = prune_obsolete_voice_candidate_caches(self.root, self.jobs)
-
         self.assertEqual(removed, (old.resolve(),))
         self.assertTrue(saved.exists())
+
+    def test_incomplete_catalog_defers_cleanup_without_reading_old_plan_files(self):
+        old = self._candidate("old")
+        job = self.jobs / ("a" * 24)
+        job.mkdir()
+        (job / "voice-plan.json").write_text("{}", encoding="utf-8")
+        PreparationCatalog(self.jobs).begin_upgrade()
+        with patch.object(
+            cache,
+            "_references_in_document",
+            side_effect=AssertionError("old plan read"),
+        ):
+            self.assertEqual(
+                prune_obsolete_voice_candidate_caches(self.root, self.jobs), ()
+            )
+        self.assertTrue(old.exists())
 
     def test_keeps_manifest_referenced_by_published_pack(self) -> None:
         old = self._candidate("old")
@@ -419,7 +437,7 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         old = self._candidate("old")
         job = self.jobs / ("a" * 24)
         job.mkdir()
-        (job / "voice-plan.json").write_text("{", encoding="utf-8")
+        self._published_manifest(job).write_text("{", encoding="utf-8")
 
         self.assertEqual(
             prune_obsolete_voice_candidate_caches(self.root, self.jobs), ()
@@ -430,7 +448,7 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         old = self._candidate("old")
         job = self.jobs / ("a" * 24)
         job.mkdir()
-        reference = job / "voice-plan.json"
+        reference = self._published_manifest(job)
         reference.write_text("{}", encoding="utf-8")
         original_open = open
 
@@ -453,7 +471,7 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         old = self._candidate("old")
         job = self.jobs / ("a" * 24)
         job.mkdir()
-        (job / "voice-plan.json").write_text(
+        self._published_manifest(job).write_text(
             "[" * 2000 + "0" + "]" * 2000, encoding="utf-8"
         )
 
@@ -466,7 +484,7 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         old = self._candidate("old")
         job = self.jobs / ("a" * 24)
         job.mkdir()
-        reference = job / "voice-plan.json"
+        reference = self._published_manifest(job)
         unknown = Path("~vntts-nonexistent-user/reference.wav")
         original_expanduser = Path.expanduser
 
@@ -536,7 +554,7 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         job = self.jobs / ("a" * 24)
         job.mkdir()
         pack = job / "game-packs" / ("pack-" + "b" * 24)
-        for location in ("voice-plan.json", "game-packs", "game-pack.json"):
+        for location in ("game-packs", "game-pack.json"):
             with self.subTest(location=location):
                 if not old.exists():
                     old = self._candidate("old")
@@ -562,7 +580,7 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         old = self._candidate("old")
         job = self.jobs / ("a" * 24)
         job.mkdir()
-        reference = job / "voice-plan.json"
+        reference = self._published_manifest(job)
         invalid = str(old / "reference\x00.wav")
         for location in ("protected", "saved"):
             with self.subTest(location=location):
@@ -593,6 +611,11 @@ class VoiceCandidateCacheTest(unittest.TestCase):
             prune_obsolete_voice_candidate_caches(self.root, self.jobs),
             (old.resolve(),),
         )
+
+    def _published_manifest(self, job: Path) -> Path:
+        manifest = job / "game-packs" / ("pack-" + "b" * 24) / "game-pack.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        return manifest
 
     def _candidate(self, name: str) -> Path:
         directory = self.root / hashlib.sha256(name.encode()).hexdigest()[:24]

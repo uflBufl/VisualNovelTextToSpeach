@@ -26,6 +26,8 @@ from vntts_artifacts.voice_generation_queue import (
 )
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
+from tests.generation_state_fixtures import replace_generation_state
+from vntts import generation_database
 from vntts.authoring import bulk_generation as bulk_generation_module
 from vntts.authoring import workspace_creation as workspace_creation_module
 from vntts.authoring.audio_event_review import (
@@ -153,9 +155,9 @@ def write_legacy_fixture(
         "sample_count": info.sample_count,
         "peak": round(info.peak, 6),
     }
-    state_path = output / "generation-state.json"
+    state_path = output / "generation-state.sqlite3"
     state = {
-        "schema": "r1999.bulk-generation-state",
+        "schema": "vntts.authoring-generation-state",
         "schema_version": 1,
         "queue_sha256": queue_hash,
         "game": "Reverse: 1999",
@@ -186,11 +188,28 @@ def write_legacy_fixture(
                 "prompt_sha256": "a" * 64,
                 "seed": 11,
                 "quality": quality,
+                "speech_quality": asdict(
+                    bulk_generation_module.inspect_generated_speech(wav)
+                ),
+                "generation_profile": "stable",
+                "voice_character": "Rhiannon",
+                "synthesis_provenance_sha256": canonical_document_sha256(
+                    {
+                        "provider": "moss-tts",
+                        "model": "moss-v1.5",
+                        "generation_profile": "stable",
+                        "text_transform": None,
+                        "controls": [],
+                    }
+                ),
+                "queue_annotations_sha256": canonical_document_sha256({}),
+                "synthesis_text_sha256": text_hash,
+                "prompt_applied": False,
                 "updated_at": "2026-08-16T17:05:00+00:00",
             }
         },
     }
-    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    replace_generation_state(state_path, state)
     manifest = output / "manifest.json"
     write_generated_audio_manifest(
         manifest,
@@ -361,8 +380,8 @@ def create_test_workspace(
 
 def create_pending_cohort_workspace(root: Path) -> tuple[Path, Path, str]:
     _fixture, _imported, created = create_test_workspace(root)
-    state_path = created.directory / "generated-audio/generation-state.json"
-    state = load_json_object(state_path, "fixture generation state")
+    state_path = created.directory / "generated-audio/generation-state.sqlite3"
+    state = generation_database.read_state(state_path)
     items = state["items"]
     assert isinstance(items, dict)
     queue_id, result = next(iter(items.items()))
@@ -379,14 +398,14 @@ def create_pending_cohort_workspace(root: Path) -> tuple[Path, Path, str]:
         }
     )
     state["active"] = None
-    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    replace_generation_state(state_path, state)
     return created.directory, state_path, queue_id
 
 
 def create_failed_reference_workspace(root: Path) -> tuple[Path, str]:
     _fixture, _imported, created = create_test_workspace(root)
-    state_path = created.directory / "generated-audio/generation-state.json"
-    state = load_json_object(state_path, "fixture generation state")
+    state_path = created.directory / "generated-audio/generation-state.sqlite3"
+    state = generation_database.read_state(state_path)
     items = state["items"]
     assert isinstance(items, dict)
     queue_id, result = next(iter(items.items()))
@@ -423,7 +442,7 @@ def create_failed_reference_workspace(root: Path) -> tuple[Path, str]:
             },
         }
     )
-    state_path.write_text(json.dumps(state, sort_keys=True))
+    replace_generation_state(state_path, state)
     return created.directory, queue_id
 
 
@@ -468,7 +487,7 @@ def create_voice_quality_review(
     root: Path,
 ) -> tuple[Path, Path, str, CohortReviewPlan, CohortReviewDecision]:
     workspace, state_path, queue_id = create_pending_cohort_workspace(root)
-    state = load_json_object(state_path, "voice-quality fixture state")
+    state = generation_database.read_state(state_path)
     result = _object(_object(state["items"])[queue_id])
     result.update(
         {
@@ -477,7 +496,7 @@ def create_voice_quality_review(
             "generation_profile": "stable",
         }
     )
-    state_path.write_text(json.dumps(state, sort_keys=True))
+    replace_generation_state(state_path, state)
     return create_voice_quality_review_from_workspace(workspace, state_path, queue_id)
 
 
@@ -508,7 +527,7 @@ def create_carry_source_workspace(
     fixture = write_legacy_fixture(root / "legacy", **kwargs)
     queue = VoiceGenerationQueue.load(fixture["queue"])
     if item_count > 1:
-        state = load_json_object(fixture["state"], "carry fixture state")
+        state = generation_database.read_state(fixture["state"])
         template = queue.items[0]
         records: list[dict[str, object]] = [template.document]
         state_items = _object(state["items"])
@@ -541,7 +560,7 @@ def create_carry_source_workspace(
             state_items[queue_id] = result
         write_voice_generation_queue(fixture["queue"], queue.metadata, records)
         state["queue_sha256"] = sha256_file(fixture["queue"])
-        fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        replace_generation_state(fixture["state"], state)
         queue = VoiceGenerationQueue.load(fixture["queue"])
     write_story_index_document(
         fixture["job"]["story_index"],
@@ -617,13 +636,15 @@ def create_carry_source_workspace(
             "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
         }
     voice_manifest.write_text(json.dumps(voice_document), encoding="utf-8")
-    state = load_json_object(fixture["state"], "carry fixture state")
+    state = generation_database.read_state(fixture["state"])
     state["active"] = None
     for value in _object(state["items"]).values():
         result = _object(value)
         result["status"] = "generated"
         result["review_status"] = "pending_review"
-    fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        if queue_voice_override is not None:
+            result["voice_character"] = queue_voice_override
+    replace_generation_state(fixture["state"], state)
     write_generated_audio_manifest(
         fixture["manifest"],
         {
@@ -787,8 +808,8 @@ def create_explicit_fallback_merge_fixture(root: Path) -> tuple[Path, Path, str]
         generation_profile="fallback-source",
     ).directory
     queue_id = fixture["queue_id"]
-    source_state = source / "generated-audio/generation-state.json"
-    source_document = load_json_object(source_state, "source fixture state")
+    source_state = source / "generated-audio/generation-state.sqlite3"
+    source_document = generation_database.read_state(source_state)
     removed_source = _object(_object(source_document["items"]).pop(queue_id))
     source_document["active"] = None
     (
@@ -796,9 +817,7 @@ def create_explicit_fallback_merge_fixture(root: Path) -> tuple[Path, Path, str]
         / "generated-audio"
         / _required_text(removed_source["path"], "Fixture audio path")
     ).unlink()
-    source_state.write_text(
-        json.dumps(source_document, sort_keys=True), encoding="utf-8"
-    )
+    replace_generation_state(source_state, source_document)
     write_generated_manifest_from_state(
         source_document,
         source / "generated-audio",
@@ -812,8 +831,8 @@ def create_explicit_fallback_merge_fixture(root: Path) -> tuple[Path, Path, str]
         model="pocket-tts",
     )
 
-    base_state_path = base_directory / "generated-audio/generation-state.json"
-    base_state = load_json_object(base_state_path, "base fixture state")
+    base_state_path = base_directory / "generated-audio/generation-state.sqlite3"
+    base_state = generation_database.read_state(base_state_path)
     removed = _object(_object(base_state["items"]).pop(queue_id))
     base_state["active"] = None
     audio = (
@@ -822,7 +841,7 @@ def create_explicit_fallback_merge_fixture(root: Path) -> tuple[Path, Path, str]
         / _required_text(removed["path"], "Fixture audio path")
     )
     audio.unlink()
-    base_state_path.write_text(json.dumps(base_state, sort_keys=True), encoding="utf-8")
+    replace_generation_state(base_state_path, base_state)
     write_generated_manifest_from_state(
         base_state,
         base_directory / "generated-audio",
@@ -841,12 +860,12 @@ def create_reviewed_waveform_fixture(
     write_voice_generation_queue(fixture["queue"], old_queue.metadata, [document])
     queue_item = VoiceGenerationQueue.load(fixture["queue"]).items[0]
     state_path = fixture["state"]
-    state = load_json_object(state_path, "successor fixture state")
+    state = generation_database.read_state(state_path)
     item = _object(_object(state["items"])[fixture["queue_id"]])
     item.update({"status": "approved", "review_status": "approved"})
     state["active"] = None
     state["queue_sha256"] = sha256_file(fixture["queue"])
-    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    replace_generation_state(state_path, state)
     write_story_index_document(
         fixture["job"]["story_index"],
         {
@@ -922,7 +941,7 @@ def create_audio_event_projection_fixture(
     queue_item = queue.items[0]
     policy = MissingVoicePolicy(NARRATOR_ROLES, ("Poacher I",))
     state_path = fixture["state"]
-    state = load_json_object(state_path, "successor fixture state")
+    state = generation_database.read_state(state_path)
     state["active"] = None
     item = _object(_object(state["items"])[fixture["queue_id"]])
     item.update(
@@ -948,7 +967,7 @@ def create_audio_event_projection_fixture(
         }
     )
     state["queue_sha256"] = sha256_file(fixture["queue"])
-    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    replace_generation_state(state_path, state)
     write_generated_manifest_from_state(
         state,
         state_path.parent,
@@ -1131,8 +1150,12 @@ def create_specialist_failure_workspace(
     (workspace / "queue.jsonl").write_text(
         "\n".join(json.dumps(value) for value in queue) + "\n"
     )
-    (workspace / "generated-audio/generation-state.json").write_text(
-        json.dumps({"items": {queue_id: result}})
+    replace_generation_state(
+        workspace / "generated-audio/generation-state.sqlite3",
+        {
+            "queue_sha256": sha256_file(workspace / "queue.jsonl"),
+            "items": {queue_id: result},
+        },
     )
     return workspace
 

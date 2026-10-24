@@ -32,6 +32,11 @@ from vntts.authoring.generation_failures import (
     generation_failure_repair_plan,
     normalized_failure_record,
 )
+from vntts.authoring.generation_state import (
+    BulkGenerationError,
+    decode_generation_state_snapshot,
+    generation_state_snapshot,
+)
 from vntts.authoring.private_files import private_file_is_restricted
 from vntts.authoring.publication import (
     no_replace_destination,
@@ -296,7 +301,7 @@ def _load_audit_publication_source(workspace: Path) -> _AuditPublicationSource:
     state_path = (
         directory
         / _text(configuration.get("output"), "Workspace output path is invalid")
-        / "generation-state.json"
+        / "generation-state.sqlite3"
     )
     voice_manifest = _document(
         configuration.get("voice_manifest"), "Workspace voice manifest is invalid"
@@ -376,7 +381,7 @@ def _group_audit_cases(
 ) -> dict[str, _GeneratedGroup]:
     queue_by_id = {item.queue_id: item for item in source.queue.items}
     state = _document(
-        decode_json(source.snapshots["state"].decode("utf-8")),
+        decode_generation_state_snapshot(source.snapshots["state"]),
         "Generation state is invalid",
     )
     state_items = _document(state.get("items"), "Generation state items are invalid")
@@ -703,7 +708,7 @@ def _read_failure_reference_audit(
     try:
         document: object = _read_json(audit_path, encoding="utf-8")
         key: object = _read_json(key_path, encoding="utf-8")
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, ValueError) as error:
         raise FailureReferenceAuditError(str(error)) from error
     return (
         resolved,
@@ -881,10 +886,10 @@ def _validate_audit_source_authority(
                 f"Reference audit source authority changed: {field}"
             )
     try:
-        raw_state: object = _read_json(
-            workspace / "generated-audio/generation-state.json"
+        raw_state, _state_sha256, _payload = generation_state_snapshot(
+            workspace / "generated-audio/generation-state.sqlite3"
         )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, ValueError, BulkGenerationError) as error:
         raise FailureReferenceAuditError(str(error)) from error
     state = _document(raw_state, "Reference audit source state is malformed")
     items = _document(state.get("items"), "Reference audit source items are malformed")
@@ -929,7 +934,7 @@ def load_failure_reference_decisions(directory: str | Path) -> JsonDocument:
         }
     try:
         document = _read_json(path, encoding="utf-8")
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, ValueError) as error:
         raise FailureReferenceAuditError(str(error)) from error
     if not isinstance(document, dict):
         raise FailureReferenceAuditError("Reference audit decisions are malformed")

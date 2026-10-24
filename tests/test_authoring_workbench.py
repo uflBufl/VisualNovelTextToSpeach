@@ -41,8 +41,13 @@ from tests.authoring_fixtures import (
     write_carry_target_manifest,
     write_legacy_fixture,
 )
+from tests.generation_state_fixtures import (
+    corrupt_generation_item,
+    replace_generation_state,
+)
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
+from vntts import generation_database
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
@@ -103,17 +108,17 @@ def downgrade_workspace_run_config_to_legacy(directory):
 def write_terminal_merge_reconciliation(root, base, source, queue_id):
     queue = VoiceGenerationQueue.load(base.directory / "queue.jsonl")
     queue_item = next(item for item in queue.items if item.queue_id == queue_id)
-    base_state_path = base.directory / "generated-audio/generation-state.json"
-    source_state_path = source.directory / "generated-audio/generation-state.json"
-    base_state = json.loads(base_state_path.read_text(encoding="utf-8"))
-    source_state = json.loads(source_state_path.read_text(encoding="utf-8"))
+    base_state_path = base.directory / "generated-audio/generation-state.sqlite3"
+    source_state_path = source.directory / "generated-audio/generation-state.sqlite3"
+    base_state = generation_database.read_state(base_state_path)
+    source_state = generation_database.read_state(source_state_path)
     source_item = source_state["items"][queue_id]
 
     def workspace_record(created, *, terminal, actions):
         document = json.loads(
             (created.directory / "workspace.json").read_text(encoding="utf-8")
         )
-        state_path = created.directory / "generated-audio/generation-state.json"
+        state_path = created.directory / "generated-audio/generation-state.sqlite3"
         manifest_path = created.directory / "generated-audio/manifest.json"
         return {
             "workspace": str(created.directory),
@@ -210,7 +215,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             root = Path(directory)
             _, _, workspace = create_test_workspace(root)
             workspace_path = workspace.directory / "workspace.json"
-            state_path = workspace.directory / "generated-audio/generation-state.json"
+            state_path = (
+                workspace.directory / "generated-audio/generation-state.sqlite3"
+            )
             before = tree_hashes(root)
             for module, read, hook, target in (
                 (
@@ -290,7 +297,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             document = json.loads(
                 (workspace.directory / "workspace.json").read_text(encoding="utf-8")
             )
-            state_path = workspace.directory / "generated-audio/generation-state.json"
+            state_path = (
+                workspace.directory / "generated-audio/generation-state.sqlite3"
+            )
             state_path.write_text("[]", encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "state is invalid"):
@@ -304,10 +313,12 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             document = json.loads(
                 (workspace.directory / "workspace.json").read_text(encoding="utf-8")
             )
-            state_path = workspace.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = (
+                workspace.directory / "generated-audio/generation-state.sqlite3"
+            )
+            state = generation_database.read_state(state_path)
             state["active"] = None
-            state_path.write_text(json.dumps(state), encoding="utf-8")
+            replace_generation_state(state_path, state)
             for partial in state_path.parent.rglob("*.partial.wav"):
                 partial.unlink()
             validate = workspace_state_module.validate_generation_state_document
@@ -370,7 +381,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     root, item_count=item_count
                 )
                 queue_path = source.directory / "queue.jsonl"
-                state_path = source.directory / "generated-audio/generation-state.json"
+                state_path = (
+                    source.directory / "generated-audio/generation-state.sqlite3"
+                )
                 queue = VoiceGenerationQueue.load(queue_path)
                 visited = []
                 state_items = review_module._state_items
@@ -415,7 +428,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     source.directory
                 )
                 source_hash = sha256_file(
-                    source_directory / "generated-audio/generation-state.json"
+                    source_directory / "generated-audio/generation-state.sqlite3"
                 )
                 visited = []
                 validate_items = workspace_creation_module._is_generation_state_items
@@ -442,10 +455,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                         carry_forward_from=source_directory,
                         carry_forward_characters=("Rhiannon",),
                     )
-                state = json.loads(
-                    (
-                        carried.directory / "generated-audio/generation-state.json"
-                    ).read_text()
+                state = generation_database.read_state(
+                    carried.directory / "generated-audio/generation-state.sqlite3"
                 )
                 self.assertEqual(len(state["items"]), item_count)
                 self.assertTrue(
@@ -459,7 +470,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 self.assertEqual(
                     source_hash,
                     sha256_file(
-                        source_directory / "generated-audio/generation-state.json"
+                        source_directory / "generated-audio/generation-state.sqlite3"
                     ),
                 )
 
@@ -471,13 +482,13 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             )
             queue = VoiceGenerationQueue.load(source.directory / "queue.jsonl")
             first, second = queue.items
-            state_path = source.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text())
+            state_path = source.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             first_result = state["items"][first.queue_id]
             first_result["path"] = state["items"][second.queue_id]["path"]
             audio = source.directory / "generated-audio" / first_result["path"]
             first_result.update(current_carry_fields(source.directory, first, audio))
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             source_directory = downgrade_workspace_run_config_to_legacy(
                 source.directory
             )
@@ -655,9 +666,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             fixture = write_legacy_fixture(root / "legacy")
-            state = json.loads(fixture["state"].read_text())
+            state = generation_database.read_state(fixture["state"])
             state["active"] = None
-            fixture["state"].write_text(json.dumps(state, sort_keys=True))
+            replace_generation_state(fixture["state"], state)
             imported = import_legacy_job(
                 fixture["job_directory"], root / "imports"
             ).destination
@@ -741,11 +752,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture = write_legacy_fixture(root / "legacy")
-            source_state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            source_state = generation_database.read_state(fixture["state"])
             source_state["active"] = None
-            fixture["state"].write_text(
-                json.dumps(source_state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(fixture["state"], source_state)
             imported = import_legacy_job(
                 fixture["job_directory"], root / "imports"
             ).destination
@@ -789,10 +798,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             )
             inspected = inspect_workspace(first.directory)
             queue = VoiceGenerationQueue.load(first.directory / "queue.jsonl")
-            state = json.loads(
-                (first.directory / "generated-audio/generation-state.json").read_text(
-                    encoding="utf-8"
-                )
+            state = generation_database.read_state(
+                first.directory / "generated-audio/generation-state.sqlite3"
             )
             workspace = json.loads(
                 (first.directory / "workspace.json").read_text(encoding="utf-8")
@@ -813,11 +820,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture = write_legacy_fixture(root / "legacy")
-            source_state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            source_state = generation_database.read_state(fixture["state"])
             source_state["active"] = None
-            fixture["state"].write_text(
-                json.dumps(source_state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(fixture["state"], source_state)
             (root / "legacy/rhiannon.wav").write_bytes(b"voice-reference")
             Path(fixture["job"]["voice_manifest"]).write_text(
                 json.dumps(
@@ -918,7 +923,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             source_directory = downgrade_workspace_run_config_to_legacy(
                 source.directory
             )
-            source_state = source_directory / "generated-audio/generation-state.json"
+            source_state = source_directory / "generated-audio/generation-state.sqlite3"
             source_state_sha256 = sha256_file(source_state)
             target_manifest = write_carry_target_manifest(root)
 
@@ -946,10 +951,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 carry_forward_from=source_directory,
                 carry_forward_characters=("Rhiannon",),
             )
-            state = json.loads(
-                (carried.directory / "generated-audio/generation-state.json").read_text(
-                    encoding="utf-8"
-                )
+            state = generation_database.read_state(
+                carried.directory / "generated-audio/generation-state.sqlite3"
             )
             workspace = json.loads(
                 (carried.directory / "workspace.json").read_text(encoding="utf-8")
@@ -1068,11 +1071,15 @@ class AuthoringWorkbenchTest(unittest.TestCase):
     def test_direct_extension_state_uses_one_snapshot(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            state_path = root / "generated-audio" / "generation-state.json"
+            state_path = root / "generated-audio" / "generation-state.sqlite3"
             state_path.parent.mkdir()
-            state_path.write_text('{"revision":"A"}', encoding="utf-8")
+            replace_generation_state(
+                state_path, {"queue_sha256": "a" * 64, "items": {}, "revision": "A"}
+            )
             replacement = root / "replacement.json"
-            replacement.write_text('{"revision":"B"}', encoding="utf-8")
+            replace_generation_state(
+                replacement, {"queue_sha256": "a" * 64, "items": {}, "revision": "B"}
+            )
             observed = []
 
             def replace_after_validation_starts(
@@ -1083,7 +1090,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 return (
                     state_document
                     if state_document is not None
-                    else json.loads(path.read_text(encoding="utf-8"))
+                    else generation_database.read_state(path)
                 )
 
             with (
@@ -1113,7 +1120,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     root, {"config_rebase": {}}
                 )
 
-            self.assertEqual(observed, [{"revision": "A"}])
+            self.assertEqual(
+                observed, [{"queue_sha256": "a" * 64, "items": {}, "revision": "A"}]
+            )
             cache.assert_not_called()
 
     def test_review_rows_use_one_generation_state_snapshot(self):
@@ -1125,20 +1134,24 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             (root / "workspace.json").write_bytes(workspace_payload)
             output = root / "generated-audio"
             output.mkdir()
-            state_path = output / "generation-state.json"
-            original_bytes = b'{"revision":"A"}'
-            state_path.write_bytes(original_bytes)
+            state_path = output / "generation-state.sqlite3"
+            replace_generation_state(
+                state_path, {"queue_sha256": "a" * 64, "items": {}, "revision": "A"}
+            )
+            original_bytes = state_path.read_bytes()
             original_copy = root / "original.json"
             original_copy.write_bytes(original_bytes)
             replacement = root / "replacement.json"
-            replacement.write_text('{"revision":"B"}', encoding="utf-8")
+            replace_generation_state(
+                replacement, {"queue_sha256": "a" * 64, "items": {}, "revision": "B"}
+            )
 
             def swap_then_restore(path, _queue, _digest, *, state_document=None):
                 replacement.replace(path)
                 parsed = (
                     state_document
                     if state_document is not None
-                    else json.loads(path.read_text(encoding="utf-8"))
+                    else generation_database.read_state(path)
                 )
                 original_copy.replace(path)
                 return parsed
@@ -1183,7 +1196,10 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     workspace_inspection_module.list_review_items(root), ()
                 )
 
-            self.assertEqual(project.call_args.args[3], {"revision": "A"})
+            self.assertEqual(
+                project.call_args.args[3],
+                {"queue_sha256": "a" * 64, "items": {}, "revision": "A"},
+            )
             self.assertEqual(
                 project.call_args.args[4], hashlib.sha256(original_bytes).hexdigest()
             )
@@ -1223,7 +1239,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 include_queue_ids=(fixture["queue_id"],),
                 regenerate_existing=True,
             )
-            source_state_path = source_output / "generation-state.json"
+            source_state_path = source_output / "generation-state.sqlite3"
             source_state_before = source_state_path.read_bytes()
             source_state = load_generation_state(source_state_path, queue_path)
             moss_attempts = source_state["items"][fixture["queue_id"]]["attempts"]
@@ -1271,18 +1287,16 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 carry_forward_from=source.directory,
             )
             carried = load_generation_state(
-                fallback.directory / "generated-audio/generation-state.json",
+                fallback.directory / "generated-audio/generation-state.sqlite3",
                 fallback.directory / "queue.jsonl",
             )
             fallback_state_path = (
-                fallback.directory / "generated-audio/generation-state.json"
+                fallback.directory / "generated-audio/generation-state.sqlite3"
             )
             fallback_state_bytes = fallback_state_path.read_bytes()
-            tampered = json.loads(fallback_state_bytes)
+            tampered = generation_database.read_snapshot(fallback_state_bytes)
             tampered["items"][fixture["queue_id"]]["last_error"] = "tampered"
-            fallback_state_path.write_text(
-                json.dumps(tampered, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(fallback_state_path, tampered)
             with self.assertRaisesRegex(
                 AuthoringWorkbenchError, "carried failure changed"
             ):
@@ -1378,13 +1392,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             fixture, imported, source = create_carry_source_workspace(root)
             queue_path = source.directory / "queue.jsonl"
             output = source.directory / "generated-audio"
-            source_state_path = output / "generation-state.json"
+            source_state_path = output / "generation-state.sqlite3"
             source_state = load_generation_state(source_state_path, queue_path)
             initial_item = source_state["items"].pop(fixture["queue_id"])
             (output / initial_item["path"]).unlink()
-            source_state_path.write_text(
-                json.dumps(source_state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(source_state_path, source_state)
             publish_generated_manifest(source_state_path)
             tone = audio_samples()
             renderer = SyntheticRenderer(
@@ -1406,7 +1418,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 regenerate_existing=True,
             )
             source_item = load_generation_state(
-                output / "generation-state.json", queue_path
+                output / "generation-state.sqlite3", queue_path
             )["items"][fixture["queue_id"]]
             self.assertLess(source_item["attempts_by_provider"]["moss-tts"], 3)
             self.assertEqual(source_item["failure"]["kind"], "speech_silence")
@@ -1445,7 +1457,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 (fallback.directory / "workspace.json").read_text(encoding="utf-8")
             )
             carried = load_generation_state(
-                fallback.directory / "generated-audio/generation-state.json",
+                fallback.directory / "generated-audio/generation-state.sqlite3",
                 fallback.directory / "queue.jsonl",
             )["items"][fixture["queue_id"]]["carry_forward"]
             inspect_workspace(fallback.directory)
@@ -1467,7 +1479,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             review_workspace_item(fallback.directory, fixture["queue_id"], "approved")
             source_state_before_merge = source_state_path.read_bytes()
             fallback_state_path = (
-                fallback.directory / "generated-audio/generation-state.json"
+                fallback.directory / "generated-audio/generation-state.sqlite3"
             )
             fallback_state_before_merge = fallback_state_path.read_bytes()
             merged = merge_workspace_outcomes(
@@ -1477,7 +1489,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 source.directory, (fallback.directory,), root / "merged"
             )
             merged_item = load_generation_state(
-                merged.directory / "generated-audio/generation-state.json",
+                merged.directory / "generated-audio/generation-state.sqlite3",
                 merged.directory / "queue.jsonl",
             )["items"][fixture["queue_id"]]
             snapshot = (
@@ -1549,7 +1561,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 include_queue_ids=(fixture["queue_id"],),
                 regenerate_existing=True,
             )
-            source_state_path = source_output / "generation-state.json"
+            source_state_path = source_output / "generation-state.sqlite3"
             source_state_before = source_state_path.read_bytes()
             source_item = load_generation_state(source_state_path, queue_path)["items"][
                 fixture["queue_id"]
@@ -1586,7 +1598,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 carry_forward_from=source.directory,
             )
             repaired_state_path = (
-                repaired.directory / "generated-audio/generation-state.json"
+                repaired.directory / "generated-audio/generation-state.sqlite3"
             )
             carried_item = load_generation_state(
                 repaired_state_path, repaired.directory / "queue.jsonl"
@@ -1666,7 +1678,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 include_queue_ids=(fixture["queue_id"],),
                 regenerate_existing=True,
             )
-            source_state_path = source_output / "generation-state.json"
+            source_state_path = source_output / "generation-state.sqlite3"
             source_state_before = source_state_path.read_bytes()
             source_item = load_generation_state(source_state_path, queue_path)["items"][
                 fixture["queue_id"]
@@ -1688,7 +1700,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 carry_forward_from=source.directory,
             )
             repaired_state = load_generation_state(
-                repaired.directory / "generated-audio/generation-state.json",
+                repaired.directory / "generated-audio/generation-state.sqlite3",
                 repaired.directory / "queue.jsonl",
             )
             summary = inspect_workspace(repaired.directory)
@@ -1719,13 +1731,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             fixture, imported, source = create_carry_source_workspace(root, text=text)
             queue_path = source.directory / "queue.jsonl"
             source_output = source.directory / "generated-audio"
-            source_state_path = source_output / "generation-state.json"
+            source_state_path = source_output / "generation-state.sqlite3"
             initial = load_generation_state(source_state_path, queue_path)
             initial_item = initial["items"].pop(fixture["queue_id"])
             (source_output / initial_item["path"]).unlink()
-            source_state_path.write_text(
-                json.dumps(initial, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(source_state_path, initial)
             publish_generated_manifest(source_state_path)
             tone = audio_samples()
             failed_pcm = np.concatenate(
@@ -1768,7 +1778,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 carry_forward_from=source.directory,
             )
             carried = load_generation_state(
-                repaired.directory / "generated-audio/generation-state.json",
+                repaired.directory / "generated-audio/generation-state.sqlite3",
                 repaired.directory / "queue.jsonl",
             )["items"][fixture["queue_id"]]
             command = generation_command(repaired.directory, retries=0, seed=0)
@@ -1796,7 +1806,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 source.directory, (repaired.directory,), root / "merged-inline"
             )
             merged_item = load_generation_state(
-                merged.directory / "generated-audio/generation-state.json",
+                merged.directory / "generated-audio/generation-state.sqlite3",
                 merged.directory / "queue.jsonl",
             )["items"][fixture["queue_id"]]
             inspect_workspace(merged.directory)
@@ -1842,13 +1852,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             fixture, imported, source = create_carry_source_workspace(root, text=text)
             queue_path = source.directory / "queue.jsonl"
             source_output = source.directory / "generated-audio"
-            source_state_path = source_output / "generation-state.json"
+            source_state_path = source_output / "generation-state.sqlite3"
             initial = load_generation_state(source_state_path, queue_path)
             initial_item = initial["items"].pop(fixture["queue_id"])
             (source_output / initial_item["path"]).unlink()
-            source_state_path.write_text(
-                json.dumps(initial, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(source_state_path, initial)
             publish_generated_manifest(source_state_path)
             tone = audio_samples()
             failed_pcm = np.concatenate(
@@ -1914,7 +1922,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     failure_repair_policy=inline_policy,
                 )
             repaired_state_path = (
-                repaired.directory / "generated-audio/generation-state.json"
+                repaired.directory / "generated-audio/generation-state.sqlite3"
             )
             repaired_state_before = repaired_state_path.read_bytes()
             repaired_item = load_generation_state(
@@ -1939,19 +1947,17 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 carry_forward_from=repaired.directory,
             )
             fallback_state_path = (
-                fallback.directory / "generated-audio/generation-state.json"
+                fallback.directory / "generated-audio/generation-state.sqlite3"
             )
             carried_item = load_generation_state(
                 fallback_state_path, fallback.directory / "queue.jsonl"
             )["items"][fixture["queue_id"]]
             fallback_state_before = fallback_state_path.read_bytes()
-            tampered = json.loads(fallback_state_before)
+            tampered = generation_database.read_snapshot(fallback_state_before)
             tampered["items"][fixture["queue_id"]]["carry_forward"][
                 "source_repair_strategy"
             ] = "sentence_boundary_segmentation"
-            fallback_state_path.write_text(
-                json.dumps(tampered, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(fallback_state_path, tampered)
             with self.assertRaisesRegex(
                 AuthoringWorkbenchError,
                 "carried failure source changed",
@@ -1983,13 +1989,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 ("source_repair_strategy", "edge_silence_trim"),
                 ("source_provider_attempts", 2),
             ):
-                tampered = json.loads(final_state_before)
+                tampered = generation_database.read_snapshot(final_state_before)
                 tampered["items"][fixture["queue_id"]]["failure_repair"][
                     "source_failure"
                 ][field] = value
-                result.state.write_text(
-                    json.dumps(tampered, sort_keys=True), encoding="utf-8"
-                )
+                replace_generation_state(result.state, tampered)
                 with self.assertRaisesRegex(
                     bulk_generation_module.BulkGenerationError,
                     "offline fallback source "
@@ -2048,13 +2052,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             fixture, imported, source = create_carry_source_workspace(root, text=text)
             queue_path = source.directory / "queue.jsonl"
             source_output = source.directory / "generated-audio"
-            source_state_path = source_output / "generation-state.json"
+            source_state_path = source_output / "generation-state.sqlite3"
             initial = load_generation_state(source_state_path, queue_path)
             initial_item = initial["items"].pop(fixture["queue_id"])
             (source_output / initial_item["path"]).unlink()
-            source_state_path.write_text(
-                json.dumps(initial, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(source_state_path, initial)
             publish_generated_manifest(source_state_path)
             tone = audio_samples()
             failed_pcm = np.concatenate(
@@ -2103,7 +2105,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 carry_forward_from=source.directory,
             )
             carried_item = load_generation_state(
-                fallback.directory / "generated-audio/generation-state.json",
+                fallback.directory / "generated-audio/generation-state.sqlite3",
                 fallback.directory / "queue.jsonl",
             )["items"][fixture["queue_id"]]
             pocket = SyntheticRenderer(diagnostics_backend="pocket-tts")
@@ -2156,14 +2158,12 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             fixture, imported, source = create_carry_source_workspace(root)
             queue_path = source.directory / "queue.jsonl"
             source_state_path = (
-                source.directory / "generated-audio/generation-state.json"
+                source.directory / "generated-audio/generation-state.sqlite3"
             )
             initial = load_generation_state(source_state_path, queue_path)
             initial_item = initial["items"].pop(fixture["queue_id"])
             (source.directory / "generated-audio" / initial_item["path"]).unlink()
-            source_state_path.write_text(
-                json.dumps(initial, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(source_state_path, initial)
             publish_generated_manifest(source_state_path)
             failed_renderer = SyntheticRenderer(
                 [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
@@ -2198,7 +2198,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 carry_forward_from=source.directory,
             )
             carried = load_generation_state(
-                repaired.directory / "generated-audio/generation-state.json",
+                repaired.directory / "generated-audio/generation-state.sqlite3",
                 repaired.directory / "queue.jsonl",
             )["items"][fixture["queue_id"]]
             command = generation_command(repaired.directory, retries=1, seed=0)
@@ -2240,12 +2240,12 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 carry_forward_from=repaired.directory,
             )
             fallback_item = load_generation_state(
-                fallback.directory / "generated-audio/generation-state.json",
+                fallback.directory / "generated-audio/generation-state.sqlite3",
                 fallback.directory / "queue.jsonl",
             )["items"][fixture["queue_id"]]
             inspect_workspace(fallback.directory)
             repaired_state_path = (
-                repaired.directory / "generated-audio/generation-state.json"
+                repaired.directory / "generated-audio/generation-state.sqlite3"
             )
             repaired_state_before = repaired_state_path.read_bytes()
             pocket = SyntheticRenderer(diagnostics_backend="pocket-tts")
@@ -2272,7 +2272,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 source.directory, (fallback.directory,), root / "merged"
             )
             merged_item = load_generation_state(
-                merged.directory / "generated-audio/generation-state.json",
+                merged.directory / "generated-audio/generation-state.sqlite3",
                 merged.directory / "queue.jsonl",
             )["items"][fixture["queue_id"]]
             inspect_workspace(merged.directory)
@@ -2320,11 +2320,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 text="The gate is already open. We should leave before dawn.",
             )
             queue_path = source.directory / "queue.jsonl"
-            state_path = source.directory / "generated-audio/generation-state.json"
+            state_path = source.directory / "generated-audio/generation-state.sqlite3"
             state = load_generation_state(state_path, queue_path)
             old = state["items"].pop(fixture["queue_id"])
             (source.directory / "generated-audio" / old["path"]).unlink()
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             publish_generated_manifest(state_path)
             initial = SyntheticRenderer(
                 [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
@@ -2388,7 +2388,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 carry_forward_from=sentence.directory,
             )
             carried = load_generation_state(
-                bounded.directory / "generated-audio/generation-state.json",
+                bounded.directory / "generated-audio/generation-state.sqlite3",
                 bounded.directory / "queue.jsonl",
             )["items"][fixture["queue_id"]]
             inspect_workspace(bounded.directory)
@@ -2412,7 +2412,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         text = "The first sentence is complete. The second sentence is also complete."
         fixture, imported, source = create_carry_source_workspace(root, text=text)
         queue_path = source.directory / "queue.jsonl"
-        source_state_path = source.directory / "generated-audio/generation-state.json"
+        source_state_path = (
+            source.directory / "generated-audio/generation-state.sqlite3"
+        )
         failed_renderer = SyntheticRenderer(
             [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
         )
@@ -2509,7 +2511,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 self._create_outcome_merge_repair(root)
             )
             source_state_path = (
-                source.directory / "generated-audio/generation-state.json"
+                source.directory / "generated-audio/generation-state.sqlite3"
             )
             with self.assertRaisesRegex(
                 AuthoringWorkbenchError, "no reviewed repair outcomes"
@@ -2519,7 +2521,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 )
             review_workspace_item(repaired.directory, fixture["queue_id"], "approved")
             repair_state_path = (
-                repaired.directory / "generated-audio/generation-state.json"
+                repaired.directory / "generated-audio/generation-state.sqlite3"
             )
             repair_state_before = repair_state_path.read_bytes()
             merged = merge_workspace_outcomes(
@@ -2530,7 +2532,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             )
             summary = inspect_workspace(merged.directory)
             merged_state = load_generation_state(
-                merged.directory / "generated-audio/generation-state.json",
+                merged.directory / "generated-audio/generation-state.sqlite3",
                 merged.directory / "queue.jsonl",
             )
             item = merged_state["items"][fixture["queue_id"]]
@@ -2621,11 +2623,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             self.assertEqual(source_state_path.read_bytes(), source_state_before)
             self.assertEqual(repair_state_path.read_bytes(), repair_state_before)
 
-            tampered = json.loads(source_state_path.read_text(encoding="utf-8"))
+            tampered = generation_database.read_state(source_state_path)
             tampered["items"][fixture["queue_id"]]["last_error"] = "changed authority"
-            source_state_path.write_text(
-                json.dumps(tampered, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(source_state_path, tampered)
             with self.assertRaisesRegex(AuthoringWorkbenchError, "authority is stale"):
                 merge_workspace_outcomes(
                     source.directory, (repaired.directory,), root / "different-root"
@@ -2645,16 +2645,14 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             fixture, imported, source = create_carry_source_workspace(root)
             queue_id = fixture["queue_id"]
             source_state_path = (
-                source.directory / "generated-audio/generation-state.json"
+                source.directory / "generated-audio/generation-state.sqlite3"
             )
             source_state = load_generation_state(
                 source_state_path, source.directory / "queue.jsonl"
             )
             initial_item = source_state["items"].pop(queue_id)
             (source.directory / "generated-audio" / initial_item["path"]).unlink()
-            source_state_path.write_text(
-                json.dumps(source_state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(source_state_path, source_state)
             publish_generated_manifest(source_state_path)
             failed = SyntheticRenderer(
                 [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
@@ -2707,7 +2705,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 source.directory, (repaired.directory,), root / "merged"
             )
             item = load_generation_state(
-                merged.directory / "generated-audio/generation-state.json",
+                merged.directory / "generated-audio/generation-state.sqlite3",
                 merged.directory / "queue.jsonl",
             )["items"][queue_id]
             inspect_workspace(merged.directory)
@@ -2758,10 +2756,10 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 regenerate_existing=True,
             )
             source_before = (
-                source.directory / "generated-audio/generation-state.json"
+                source.directory / "generated-audio/generation-state.sqlite3"
             ).read_bytes()
             base_before = (
-                base.directory / "generated-audio/generation-state.json"
+                base.directory / "generated-audio/generation-state.sqlite3"
             ).read_bytes()
             report_path, report = write_terminal_merge_reconciliation(
                 root, base, source, fixture["queue_id"]
@@ -2819,7 +2817,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 base.directory, report_path, root / "merged"
             )
             merged_state = load_generation_state(
-                merged.directory / "generated-audio/generation-state.json",
+                merged.directory / "generated-audio/generation-state.sqlite3",
                 merged.directory / "queue.jsonl",
             )
             merged_workspace = json.loads(
@@ -2840,12 +2838,14 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             self.assertEqual(
                 source_before,
                 (
-                    source.directory / "generated-audio/generation-state.json"
+                    source.directory / "generated-audio/generation-state.sqlite3"
                 ).read_bytes(),
             )
             self.assertEqual(
                 base_before,
-                (base.directory / "generated-audio/generation-state.json").read_bytes(),
+                (
+                    base.directory / "generated-audio/generation-state.sqlite3"
+                ).read_bytes(),
             )
 
             tampered = json.loads(report_path.read_text(encoding="utf-8"))
@@ -2868,9 +2868,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             root = Path(directory)
             fixture, imported, source = create_carry_source_workspace(root)
             source_state_path = (
-                source.directory / "generated-audio/generation-state.json"
+                source.directory / "generated-audio/generation-state.sqlite3"
             )
-            source_state = json.loads(source_state_path.read_text(encoding="utf-8"))
+            source_state = generation_database.read_state(source_state_path)
             queue_item = VoiceGenerationQueue.load(
                 source.directory / "queue.jsonl"
             ).items[0]
@@ -2883,9 +2883,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             )
             item.update(current_carry_fields(source.directory, queue_item, audio))
             source_state["active"] = None
-            source_state_path.write_text(
-                json.dumps(source_state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(source_state_path, source_state)
             source_audio = audio.read_bytes()
             target_manifest = write_carry_target_manifest(root)
             source_directory = downgrade_workspace_run_config_to_legacy(
@@ -2904,10 +2902,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 carry_forward_from=source_directory,
                 carry_forward_characters=("Rhiannon",),
             )
-            target_state = json.loads(
-                (carried.directory / "generated-audio/generation-state.json").read_text(
-                    encoding="utf-8"
-                )
+            target_state = generation_database.read_state(
+                carried.directory / "generated-audio/generation-state.sqlite3"
             )
             target_item = target_state["items"][fixture["queue_id"]]
             target_audio = carried.directory / "generated-audio" / target_item["path"]
@@ -2926,9 +2922,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 root, queue_voice_override=variant
             )
             source_state_path = (
-                source.directory / "generated-audio/generation-state.json"
+                source.directory / "generated-audio/generation-state.sqlite3"
             )
-            source_state = json.loads(source_state_path.read_text(encoding="utf-8"))
+            source_state = generation_database.read_state(source_state_path)
             queue_item = VoiceGenerationQueue.load(
                 source.directory / "queue.jsonl"
             ).items[0]
@@ -2948,9 +2944,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 )
             )
             source_state["active"] = None
-            source_state_path.write_text(
-                json.dumps(source_state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(source_state_path, source_state)
 
             carried = create_resume_workspace(
                 imported,
@@ -2965,7 +2959,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 carry_forward_characters=("Rhiannon",),
             )
             target_state = bulk_generation_module.load_generation_state(
-                carried.directory / "generated-audio/generation-state.json",
+                carried.directory / "generated-audio/generation-state.sqlite3",
                 carried.directory / "queue.jsonl",
             )
             target_item = target_state["items"][fixture["queue_id"]]
@@ -2978,8 +2972,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture, imported, source = create_carry_source_workspace(root)
-            state_path = source.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = source.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             queue_item = VoiceGenerationQueue.load(
                 source.directory / "queue.jsonl"
             ).items[0]
@@ -2987,7 +2981,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             audio = source.directory / "generated-audio" / item["path"]
             item.update(current_carry_fields(source.directory, queue_item, audio))
             state["active"] = None
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             target_manifest = write_carry_target_manifest(
                 root,
                 rhiannon_payloads=(b"different-rhiannon", b"rhiannon-reference-two"),
@@ -3036,16 +3030,14 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     carry_forward_characters=("Narrator",),
                 )
 
-            state_path = source.directory / "generated-audio/generation-state.json"
+            state_path = source.directory / "generated-audio/generation-state.sqlite3"
             real_publish = bulk_generation_module.publish_generated_manifest
 
             def mutate_source_after_staging(*args, **kwargs):
                 result = real_publish(*args, **kwargs)
-                state = json.loads(state_path.read_text(encoding="utf-8"))
+                state = generation_database.read_state(state_path)
                 state["external_change"] = True
-                state_path.write_text(
-                    json.dumps(state, sort_keys=True), encoding="utf-8"
-                )
+                replace_generation_state(state_path, state)
                 return result
 
             with (
@@ -3424,7 +3416,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
     def test_workspace_inspection_rejects_queue_replaced_after_authority_load(self):
         with TemporaryDirectory() as directory:
             _fixture, _imported, created = self.create_workspace(Path(directory))
-            (created.directory / "generated-audio/generation-state.json").unlink()
+            (created.directory / "generated-audio/generation-state.sqlite3").unlink()
             queue_path = created.directory / "queue.jsonl"
             original_load = workspace_authority_module._load_workspace
 
@@ -3537,14 +3529,14 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             _fixture, imported, created = self.create_workspace(root)
-            state_path = created.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = created.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             queue_id = next(iter(state["items"]))
             state["items"][queue_id]["status"] = "generated"
             state["items"][queue_id]["review_status"] = "pending_review"
             state["active"] = None
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-            source_state = imported / "generated-audio/generation-state.json"
+            replace_generation_state(state_path, state)
+            source_state = imported / "generated-audio/generation-state.sqlite3"
             source_hash = sha256_file(source_state)
 
             before = inspect_workspace(created.directory)
@@ -3574,8 +3566,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             _fixture, _imported, created = self.create_workspace(root)
-            state_path = created.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = created.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             queue_id = next(iter(state["items"]))
             result = state["items"][queue_id]
             for status in ("generated", "approved"):
@@ -3589,7 +3581,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                             "pending_review" if status == "generated" else "approved"
                         )
                         result["provider_extension"] = extension
-                        state_path.write_text(json.dumps(state), encoding="utf-8")
+                        corrupt_generation_item(state_path, queue_id, result)
                         self.assertIn(b"\\ud800", state_path.read_bytes())
                         before = tree_hashes(root)
                         for read in (
@@ -3613,18 +3605,18 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             _fixture, _imported, created = self.create_workspace(root)
-            state_path = created.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = created.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             queue_id = next(iter(state["items"]))
             result = state["items"][queue_id]
-            result["provider_extension"] = {"nested": ["证据 🦉", float("nan")]}
+            result["provider_extension"] = {"nested": ["证据 🦉", 1.5]}
             for status in ("generated", "approved"):
                 with self.subTest(status=status):
                     result["status"] = status
                     result["review_status"] = (
                         "pending_review" if status == "generated" else "approved"
                     )
-                    state_path.write_text(json.dumps(state), encoding="utf-8")
+                    replace_generation_state(state_path, state)
                     expected = hashlib.sha256(
                         json.dumps(
                             result,
@@ -3651,8 +3643,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
     ):
         with TemporaryDirectory() as directory:
             workspace, queue_id = create_failed_reference_workspace(Path(directory))
-            state_path = workspace / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             result = state["items"][queue_id]
             for value in (10**400, True, -1, None):
                 with self.subTest(value=value):
@@ -3663,7 +3655,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                         "longest_internal_silence_seconds": value,
                     }
                     result["failure"]["speech_quality"] = result["speech_quality"]
-                    state_path.write_text(json.dumps(state), encoding="utf-8")
+                    replace_generation_state(state_path, state)
                     before = state_path.read_bytes()
                     reviewed = list_review_items(workspace)[0]
                     self.assertEqual(reviewed.queue_id, queue_id)
@@ -3681,7 +3673,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 "longest_internal_silence_seconds": 0,
             }
             result["failure"]["speech_quality"] = result["speech_quality"]
-            state_path.write_text(json.dumps(state), encoding="utf-8")
+            replace_generation_state(state_path, state)
             reviewed = list_review_items(workspace)[0]
             self.assertEqual(reviewed.duration_seconds, 5e-324)
             self.assertIsNone(reviewed.words_per_minute)
@@ -3969,13 +3961,13 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             _fixture, _imported, created = self.create_workspace(root)
-            state_path = created.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = created.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             queue_id = next(iter(state["items"]))
             state["items"][queue_id]["status"] = "generated"
             state["items"][queue_id]["review_status"] = "pending_review"
             state["active"] = None
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             displayed = list_review_items(created.directory)[0]
 
             review_workspace_item(created.directory, queue_id, "approved")
@@ -3997,13 +3989,13 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             _fixture, _imported, created = self.create_workspace(root)
-            state_path = created.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = created.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             queue_id = next(iter(state["items"]))
             state["items"][queue_id]["status"] = "generated"
             state["items"][queue_id]["review_status"] = "pending_review"
             state["active"] = None
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             displayed = list_review_items(created.directory)[0]
 
             original_open = open
@@ -4048,13 +4040,13 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             _fixture, _imported, created = self.create_workspace(root)
-            state_path = created.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = created.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             queue_id = next(iter(state["items"]))
             state["items"][queue_id]["status"] = "generated"
             state["items"][queue_id]["review_status"] = "pending_review"
             state["active"] = None
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             displayed = list_review_items(created.directory)[0]
             state_before = state_path.read_bytes()
             manifest = created.directory / "generated-audio/manifest.json"
@@ -4077,7 +4069,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             root = Path(directory)
             _fixture, _imported, created = self.create_workspace(root)
             output = created.directory / "generated-audio"
-            state = json.loads((output / "generation-state.json").read_bytes())
+            state = generation_database.read_state(output / "generation-state.sqlite3")
             lease_path = output / ".generation-lease.json"
             lease = {
                 "schema": "vntts.authoring-generation-lease",
@@ -4129,10 +4121,10 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             root = Path(directory)
             _fixture, _imported, created = self.create_workspace(root)
             output = created.directory / "generated-audio"
-            state_path = output / "generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = output / "generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["active"] = None
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             lease = {
                 "schema": "vntts.authoring-generation-lease",
                 "schema_version": 1,
@@ -4203,11 +4195,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 fixture["job_directory"], root / "imports"
             ).destination
             created = create_resume_workspace(imported, root / "workspaces")
-            state_path = created.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = created.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["active"] = None
             state["items"] = {}
-            state_path.write_text(json.dumps(state), encoding="utf-8")
+            replace_generation_state(state_path, state)
 
             summary = inspect_workspace(created.directory)
             readiness = inspect_generation_readiness(created.directory)
@@ -4252,8 +4244,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             )
             queue_digest = sha256_file(fixture["queue"])
             output = Path(fixture["job"]["output"])
-            state_path = output / "generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = output / "generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["queue_sha256"] = queue_digest
             state["active"] = None
             state["items"] = {
@@ -4265,7 +4257,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     "updated_at": "2026-08-17T00:00:00+00:00",
                 }
             }
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             manifest_path = output / "manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["source_queue_sha256"] = queue_digest
@@ -4451,7 +4443,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 include_queue_ids=covered.readiness.queue_ids,
             )
             resumed = load_generation_state(
-                created.directory / "generated-audio/generation-state.json",
+                created.directory / "generated-audio/generation-state.sqlite3",
                 created.directory / "queue.jsonl",
             )
 
@@ -4495,8 +4487,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             _fixture, _imported, created = self.create_workspace(root)
-            state_path = created.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = created.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             queue_id, item = next(iter(state["items"].items()))
             from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
@@ -4518,12 +4510,12 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 "updated_at": "2026-08-17T00:01:00+00:00",
                 "last_error": "Earlier limited render",
             }
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
 
             summary = inspect_workspace(created.directory)
             state["active"] = None
             state["items"] = {}
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             command = generation_command(
                 created.directory,
                 backend="moss-tts",
@@ -4601,8 +4593,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             _fixture, _imported, created = self.create_workspace(root)
             queue = VoiceGenerationQueue.load(created.directory / "queue.jsonl")
             item = queue.items[0]
-            state_path = created.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text())
+            state_path = created.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             record = state["items"][item.queue_id]
             for field in ("path", "file_sha256", "quality", "review_status"):
                 record.pop(field, None)
@@ -4616,8 +4608,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     completion=SynthesisCompletion.CANCELLED,
                 ),
             )
+            record["failure"]["attempt_counted"] = False
             state["active"] = None
-            state_path.write_text(json.dumps(state))
+            replace_generation_state(state_path, state)
             summary = inspect_workspace(created.directory)
             ready = inspect_generation_readiness(
                 created.directory, queue_ids=(item.queue_id,)
@@ -4635,11 +4628,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             _fixture, _imported, created = self.create_workspace(root)
             queue = VoiceGenerationQueue.load(created.directory / "queue.jsonl")
             queue_id = queue.items[0].queue_id
-            state_path = created.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = created.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["items"][queue_id]["status"] = "generated"
             state["items"][queue_id]["review_status"] = "pending_review"
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             bulk_generation_module.publish_generated_manifest(state_path)
 
             ordinary = inspect_generation_readiness(
@@ -4696,11 +4689,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             _fixture, _imported, created = self.create_workspace(root)
-            state_path = created.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = created.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["active"] = None
             state["items"] = {}
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
 
             selected = inspect_collection_selection(created.directory)
             main = inspect_collection_selection(
@@ -4976,11 +4969,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             _fixture, _imported, created = self.create_workspace(root)
-            state_path = created.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = created.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["active"] = None
             state["items"] = {}
-            state_path.write_text(json.dumps(state), encoding="utf-8")
+            replace_generation_state(state_path, state)
             command = generation_command(created.directory, backend="moss-tts")
             reference = created.directory / "inputs" / "voice" / "rhiannon.wav"
             reference.write_bytes(b"mutated-after-parent-preflight")
@@ -5030,11 +5023,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             _fixture, _imported, created = self.create_workspace(root)
-            state_path = created.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = created.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["active"] = None
             state["items"] = {}
-            state_path.write_text(json.dumps(state), encoding="utf-8")
+            replace_generation_state(state_path, state)
             command = generation_command(created.directory, backend="moss-tts")
             external = root / "external-output"
             external.mkdir()

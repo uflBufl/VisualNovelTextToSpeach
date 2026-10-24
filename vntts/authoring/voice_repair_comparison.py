@@ -1509,7 +1509,7 @@ def _rehash_sources(
         (directory / "workspace.json", workspace_sha256, "workspace"),
         (directory / "queue.jsonl", queue_sha256, "queue"),
         (
-            directory / "generated-audio/generation-state.json",
+            directory / "generated-audio/generation-state.sqlite3",
             state_sha256,
             "state",
         ),

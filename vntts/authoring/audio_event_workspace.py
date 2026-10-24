@@ -142,7 +142,10 @@ def _validate_composition_workspace_schema(value: object) -> dict[str, object]:
         != "inputs/audio-event-composition/composition-decision.json"
         or value.get("base_workspace_path") != "inputs/audio-event-base/workspace.json"
         or value.get("base_state_path")
-        != "inputs/audio-event-base/generation-state.json"
+        not in {
+            "inputs/audio-event-base/generation-state.sqlite3",
+            "inputs/audio-event-base/generation-state.json",
+        }
         or value.get("base_audio_path") != "inputs/audio-event-base/rejected.wav"
         or not isinstance(value.get("queue_id"), str)
         or not value["queue_id"]
@@ -203,7 +206,7 @@ def _capture_composition_workspace_authority(
         base_workspace=base_workspace_snapshot.json_document(
             "workspace audio-event base workspace"
         ),
-        base_state=base_state_snapshot.json_document(
+        base_state=base_state_snapshot.generation_state_proof(
             "workspace audio-event base state"
         ),
         composition_document=composition_snapshot.json_document(

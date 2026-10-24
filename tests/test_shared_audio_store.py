@@ -20,7 +20,12 @@ from tests.bulk_generation_fixtures import (
     write_queue,
 )
 from tests.symlink_support import symlink_or_skip
-from vntts.audio_store import SharedAudioStore, SharedAudioStoreError, link_shared_audio
+from vntts.audio_store import (
+    AudioStorageUpgradeRequired,
+    SharedAudioStore,
+    SharedAudioStoreError,
+    link_shared_audio,
+)
 from vntts.authoring.bulk_generation import run_bulk_generation
 from vntts.synthesis import SynthesisCompletion
 
@@ -176,124 +181,31 @@ class SharedAudioStoreTest(unittest.TestCase):
             self.assertFalse(store.has_saved_entries())
             self.assertFalse(store.directory.exists())
 
-    def test_json_bindings_import_once_with_same_inode_and_preserved_unknowns(self):
+    def test_json_only_store_requires_upgrade_and_preserves_originals(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             store = SharedAudioStore(root / "store")
             source = self.audio(root / "source.wav")
-            binding, saved = self.legacy_binding(store, "legacy", source)
-            corrupt = binding.with_name("corrupt.json")
-            corrupt.write_text("broken")
-            unknown = binding.with_name("notes.txt")
-            unknown.write_text("keep me")
-            future = binding.with_name("future.json")
-            future.write_text(
-                json.dumps({"schema_version": 2, "audio_sha256": saved.stem})
-            )
-            self.assertTrue(store.get("legacy").samefile(source))
-            self.assertFalse(binding.exists())
-            self.assertEqual(corrupt.read_text(), "broken")
-            self.assertEqual(unknown.read_text(), "keep me")
-            self.assertTrue(future.exists())
-            reopened = SharedAudioStore(store.directory)
-            with patch(
-                "vntts.audio_store.json.loads",
-                side_effect=AssertionError("reparsed legacy JSON"),
-            ):
-                self.assertTrue(reopened.get("legacy").samefile(saved))
-                self.assertEqual(
-                    list(reopened.iter_bindings()), [("legacy", saved.stem)]
-                )
-                self.assertTrue(reopened.has_saved_entries())
-                with self.assertRaises(SharedAudioStoreError):
-                    reopened.get("corrupt")
-            with closing(sqlite3.connect(store.catalog_path)) as connection:
-                self.assertEqual(
-                    connection.execute("PRAGMA user_version").fetchone(), (1,)
-                )
-                self.assertEqual(
-                    connection.execute(
-                        "SELECT synthesis_key, audio_sha256 FROM bindings"
-                    ).fetchall(),
-                    [("legacy", saved.stem)],
-                )
-
-    def test_empty_legacy_directory_lookup_does_not_create_catalog(self):
-        with TemporaryDirectory() as directory:
-            store = SharedAudioStore(Path(directory) / "store")
-            (store.directory / "bindings").mkdir(parents=True)
-            self.assertIsNone(store.get("missing"))
+            binding, saved = self.legacy_binding(store, "paid", source)
+            original = binding.read_bytes()
+            with self.assertRaises(AudioStorageUpgradeRequired):
+                store.get("paid")
+            self.assertEqual(binding.read_bytes(), original)
+            self.assertTrue(saved.samefile(source))
             self.assertFalse(store.catalog_path.exists())
 
-    def test_concurrent_catalog_conflict_preserves_original_legacy_binding(self):
+    def test_sqlite_lookup_never_opens_binding_json(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             store = SharedAudioStore(root / "store")
-            binding, saved = self.legacy_binding(
-                store, "key", self.audio(root / "legacy.wav")
-            )
-            source = root / "other.wav"
-            write_pcm16_wav(source, [0.125, -0.25], 16000)
-            competing = SharedAudioStore(root / "competing")
-            competing.put("key", source)
-            link = os.link
-
-            def publish_competing(source, destination, *args, **kwargs):
-                if Path(destination) == store.catalog_path:
-                    link(competing.catalog_path, destination)
-                    raise FileExistsError("competing catalog won publication")
-                return link(source, destination, *args, **kwargs)
-
-            original = binding.read_bytes()
-            with patch("vntts.audio_store.os.link", side_effect=publish_competing):
-                with self.assertRaisesRegex(SharedAudioStoreError, "conflicts"):
-                    store.get("key")
-            self.assertEqual(binding.read_bytes(), original)
-            self.assertTrue(saved.samefile(root / "legacy.wav"))
-            self.assertEqual(
-                list(store.iter_bindings()), list(competing.iter_bindings())
-            )
-
-    def test_import_sync_failure_keeps_original_binding_and_recovers(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            store = SharedAudioStore(root / "store")
-            source = self.audio(root / "source.wav")
-            binding, saved = self.legacy_binding(store, "legacy", source)
-            original = binding.read_bytes()
-            with patch(
-                "vntts.audio_store.os.fsync", side_effect=OSError("interrupted")
-            ):
-                with self.assertRaises(OSError):
-                    store.get("legacy")
-            self.assertEqual(binding.read_bytes(), original)
-            self.assertFalse(store.catalog_path.exists())
-            self.assertEqual(SharedAudioStore(store.directory).get("legacy"), saved)
-            self.assertFalse(binding.exists())
-
-    def test_import_readback_failure_keeps_original_and_reopens_published_catalog(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            store = SharedAudioStore(root / "store")
-            binding, saved = self.legacy_binding(
-                store, "legacy", self.audio(root / "source.wav")
-            )
-            verify = store._object
-            calls = 0
-
-            def interrupted(digest):
-                nonlocal calls
-                calls += 1
-                if calls == 2:
-                    raise SharedAudioStoreError("readback interrupted")
-                return verify(digest)
-
-            with patch.object(store, "_object", side_effect=interrupted):
-                with self.assertRaises(SharedAudioStoreError):
-                    store.get("legacy")
-            self.assertTrue(binding.exists())
-            self.assertEqual(SharedAudioStore(store.directory).get("legacy"), saved)
-            self.assertTrue(binding.exists())
+            saved = store.put("paid", self.audio(root / "source.wav"))
+            bindings = store.directory / "bindings"
+            bindings.mkdir()
+            (bindings / "paid.json").write_text("corrupt")
+            with patch("json.loads", side_effect=AssertionError("legacy JSON read")):
+                reopened = SharedAudioStore(store.directory)
+                self.assertEqual(reopened.get("paid"), saved)
+                self.assertEqual(list(reopened.iter_bindings()), [("paid", saved.stem)])
 
     def test_refresh_updates_mapping_and_preserves_old_recording(self):
         with TemporaryDirectory() as directory:
@@ -369,6 +281,27 @@ class SharedAudioStoreTest(unittest.TestCase):
                 self.assertTrue(store.get(f"key-{index}").samefile(source))
             self.assertEqual(len(list((store.directory / "objects").glob("*.wav"))), 1)
             self.assertEqual(list(store.directory.glob(".audio-catalog.*")), [])
+
+    def test_concurrent_initializer_winner_is_validated_and_reused(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = SharedAudioStore(root / "store")
+            winner = SharedAudioStore(store.directory)
+            source = self.audio(root / "source.wav")
+            empty = store._require_empty_store
+
+            def publish_winner():
+                winner.put("first", source)
+                empty()
+
+            with patch.object(
+                store, "_require_empty_store", side_effect=publish_winner
+            ):
+                saved = store.put("second", source)
+            self.assertTrue(saved.samefile(winner.get("first")))
+            self.assertEqual(
+                dict(store.iter_bindings()), {"first": saved.stem, "second": saved.stem}
+            )
 
     def test_corrupt_or_future_catalog_is_never_replaced(self):
         for damage in ("corrupt", "future", "empty"):

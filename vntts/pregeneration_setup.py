@@ -43,7 +43,6 @@ from vntts.preparation_catalog import PreparationCatalog, PreparationCatalogErro
 from vntts.settings import AppSettings
 from vntts.story_catalog import LazyLineIds, StoryCatalog
 from vntts.story_index_snapshot import load_story_index_snapshot
-from vntts.versioned_json import read_versioned_json
 
 if TYPE_CHECKING:
     from vntts.pregeneration_queue import PregenerationInput
@@ -398,13 +397,8 @@ def _load_story_catalog(
         document = StoryCatalog(catalog).load(
             checksum, evidence_sha256, story_catalog_schema_version
         )
-        legacy = document is None
         if document is None:
-            document = read_versioned_json(
-                catalog.with_suffix(".json"),
-                schema_version=story_catalog_schema_version,
-                document_name="story catalog cache",
-            )
+            return None
         if (
             set(document)
             != {
@@ -446,8 +440,6 @@ def _load_story_catalog(
             story_index_sha256=checksum,
             selections=selections,
         )
-        if legacy:
-            _save_story_catalog(content, evidence_sha256)
         return content
     except OSError, KeyError, TypeError, ValueError:
         return None
@@ -798,9 +790,7 @@ class PregenerationJobStore:
             root or get_local_data_directory() / "pregeneration" / "jobs"
         ).expanduser()
         self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self.catalog = PreparationCatalog(self.root)
-        self._legacy_jobs_imported = False
-        self._legacy_generation_inputs: tuple[Path, ...] | None = None
+        self.catalog = PreparationCatalog(self.root, owned_root=True)
 
     def _catalog_call[**P, T](
         self, operation: Callable[P, T], *args: P.args, **kwargs: P.kwargs
@@ -810,49 +800,13 @@ class PregenerationJobStore:
         except PreparationCatalogError as error:
             raise PregenerationSetupError(str(error)) from error
 
-    def _selection_path(self, content: GameContent) -> Path:
-        checksum = _sha256_text(
-            {"checksum": content.catalog_story_index_sha256}, "checksum"
-        )
-        return self.root / "selections" / f"{checksum}.json"
-
     def selection_for_content(self, content: GameContent) -> tuple[str, ...] | None:
         saved = self._catalog_call(
             self.catalog.selection, content.catalog_story_index_sha256
         )
         if saved is not None:
             return _normalized_selection_ids(content, saved) if saved else ()
-        path = self._selection_path(content)
-        try:
-            document = read_versioned_json(
-                path, schema_version=1, document_name="story selection"
-            )
-        except FileNotFoundError:
-            return None
-        try:
-            if document["story_index_sha256"] != content.catalog_story_index_sha256:
-                raise ValueError("Story selection belongs to different content")
-            values = document["selected_story_ids"]
-            selected = (
-                ()
-                if values == []
-                else _normalized_selection_ids(
-                    content, _text_tuple(document, "selected_story_ids")
-                )
-            )
-            self._catalog_call(
-                self.catalog.save_selection,
-                content.catalog_story_index_sha256,
-                selected,
-                replace=False,
-            )
-            return self._catalog_call(
-                self.catalog.selection, content.catalog_story_index_sha256
-            )
-        except (KeyError, TypeError, ValueError) as error:
-            raise PregenerationSetupError(
-                f"Saved story selection is invalid: {error}"
-            ) from error
+        return None
 
     def save_selection(
         self, content: GameContent, selected_story_ids: Iterable[object]
@@ -942,6 +896,7 @@ class PregenerationJobStore:
         """Prepare strict, source-bound dialogue inside a background worker."""
         from vntts.selected_story_snapshot import create_selected_story_snapshot
 
+        self._catalog_call(self.catalog.initialize)
         snapshot_identity = hashlib.sha256(
             json.dumps(
                 [job.story_index_sha256, job.selected_story_ids, job.selected_line_ids],
@@ -972,26 +927,7 @@ class PregenerationJobStore:
         return content
 
     def _load_job_document(self, job_id: str) -> dict[str, object] | None:
-        path = self.path_for(job_id)
-        document = self._catalog_call(self.catalog.load_job, job_id)
-        if document is not None:
-            return document
-        if not path.exists():
-            return None
-        try:
-            document = read_versioned_json(
-                path,
-                schema_version=job_schema_version,
-                document_name="offline audio preparation",
-            )
-        except (OSError, TypeError, ValueError) as error:
-            raise PregenerationSetupError(
-                f"Unable to resume offline audio preparation: {error}"
-            ) from error
-        job = PregenerationJob.from_document(document)
-        if job.job_id != job_id:
-            raise PregenerationSetupError("Saved preparation identity changed")
-        self._catalog_call(self.catalog.save_job, job.to_document(), replace=False)
+        self.directory_for(job_id)
         return self._catalog_call(self.catalog.load_job, job_id)
 
     def load(self, job_id: str) -> PregenerationJob:
@@ -1010,24 +946,11 @@ class PregenerationJobStore:
             default=None,
         )
 
-    def _import_legacy_jobs(self) -> None:
-        if self._legacy_jobs_imported:
-            return
-        if self.root.is_dir():
-            for path in self.root.glob("*/job.json"):
-                try:
-                    self.load(path.parent.name)
-                except PregenerationSetupError:
-                    continue
-        self._legacy_jobs_imported = True
-
     def _saved_jobs(self) -> Iterator[PregenerationJob]:
-        self._import_legacy_jobs()
         for document in self._catalog_call(self.catalog.jobs):
             yield PregenerationJob.from_document(document)
 
     def jobs_for_content(self, content: GameContent) -> tuple[PregenerationJob, ...]:
-        self._import_legacy_jobs()
         return tuple(
             PregenerationJob.from_document(document)
             for document in self._catalog_call(
@@ -1038,22 +961,9 @@ class PregenerationJobStore:
     def generation_input_directories(
         self, content_hash: str | None = None
     ) -> tuple[Path, ...]:
-        """Query current inputs while discovering unindexed legacy assets once."""
-        self._import_legacy_jobs()
-        indexed = self._catalog_call(self.catalog.input_directories, content_hash)
+        """Query immutable input metadata from the preparation catalog."""
+        directories = self._catalog_call(self.catalog.input_directories, content_hash)
         root = self.root.resolve()
-        if self._legacy_generation_inputs is None:
-            self._legacy_generation_inputs = tuple(
-                sorted(root.glob("*/generation-input-*"))
-            )
-        legacy = self._legacy_generation_inputs
-        if content_hash is not None:
-            jobs = {
-                document["job_id"]
-                for document in self._catalog_call(self.catalog.jobs, content_hash)
-            }
-            legacy = tuple(path for path in legacy if path.parent.name in jobs)
-        directories = tuple(sorted(set(indexed) | set(legacy)))
         if any(
             path.parent.parent != root
             or path.is_symlink()
@@ -1136,10 +1046,6 @@ class PregenerationJobStore:
         )
         self._catalog_call(self.catalog.save_job, prepared.to_document())
         return prepared
-
-    def path_for(self, job_id: str) -> Path:
-        """Legacy import location; use directory_for for owned job assets."""
-        return self.directory_for(job_id) / "job.json"
 
     def directory_for(self, job_id: str) -> Path:
         if (

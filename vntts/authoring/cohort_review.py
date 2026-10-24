@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -16,6 +15,7 @@ from vntts.authoring.authority import (
 )
 from vntts.authoring.bulk_generation import BulkGenerationError
 from vntts.authoring.generation_review import ReviewAuthority, review_generation_cohort
+from vntts.authoring.generation_state import decode_generation_state_snapshot
 from vntts.authoring.workbench import (
     REVIEW_ATTENTION_POLICY_VERSION,
     REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS,
@@ -709,7 +709,7 @@ def _bound_workspace_document(directory: Path) -> JsonObject:
     try:
         workspace_payload = read_regular_bytes(workspace_path)
         workspace = decode_json(workspace_payload.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, ValueError) as error:
         raise CohortReviewError(
             f"Unable to read authoring workspace {workspace_path}: {error}"
         ) from error
@@ -772,7 +772,7 @@ def _validate_bound_workspace_fingerprint(
 def _bound_workspace_paths(directory: Path) -> tuple[Path, Path]:
     queue_path = directory / "queue.jsonl"
     output = directory / "generated-audio"
-    state_path = output / "generation-state.json"
+    state_path = output / "generation-state.sqlite3"
     if (
         queue_path.is_symlink()
         or not queue_path.is_file()
@@ -798,8 +798,8 @@ def _bound_workspace_controls(
     try:
         queue_payload = read_regular_bytes(queue_path)
         state_payload = read_regular_bytes(state_path)
-        state = decode_json(state_payload.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        state = decode_generation_state_snapshot(state_payload)
+    except (OSError, UnicodeDecodeError, ValueError) as error:
         raise CohortReviewError(
             f"Unable to read cohort review controls: {error}"
         ) from error
@@ -1613,7 +1613,7 @@ def _load_document(path: str | Path, label: str) -> JsonObject:
         if not isinstance(document, dict):
             raise CohortReviewError(f"{label.title()} must be an object")
         return document
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, ValueError) as error:
         raise CohortReviewError(f"Unable to read {label} {path}: {error}") from error
 
 

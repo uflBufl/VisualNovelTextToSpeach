@@ -21,7 +21,9 @@ from tests.authoring_fixtures import (
     create_carry_source_workspace,
     write_carry_target_manifest,
 )
+from tests.generation_state_fixtures import replace_generation_state
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from vntts import generation_database
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
@@ -69,7 +71,7 @@ def _prepare(
         root, queue_voice_override=source_queue_override
     )
     review_generation_item(
-        source.directory / "generated-audio" / "generation-state.json",
+        source.directory / "generated-audio" / "generation-state.sqlite3",
         fixture["queue_id"],
         review_status,
     )
@@ -217,7 +219,7 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
                 root, item_count=2
             )
             review_generation_item(
-                source.directory / "generated-audio/generation-state.json",
+                source.directory / "generated-audio/generation-state.sqlite3",
                 fixture["queue_id"],
                 "approved",
             )
@@ -231,9 +233,9 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
                 generation_profile="stable",
                 narrator_character="Rhiannon",
             ).directory
-            state_path = target / "generated-audio/generation-state.json"
+            state_path = target / "generated-audio/generation-state.sqlite3"
             original = state_path.read_bytes()
-            original_state = json.loads(original)
+            original_state = generation_database.read_snapshot(original)
             retained_id = next(
                 queue_id
                 for queue_id in original_state["items"]
@@ -241,8 +243,8 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             )
             replacement = copy.deepcopy(original_state)
             replacement["items"][retained_id]["model"] = "foreign-target-model"
-            replacement_payload = json.dumps(replacement).encode("utf-8")
-            state_path.write_bytes(replacement_payload)
+            replace_generation_state(state_path, replacement)
+            replacement_payload = state_path.read_bytes()
             try:
                 load_generation_state(state_path, target / "queue.jsonl")
             finally:
@@ -271,11 +273,12 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             self.assertTrue(captures)
             self.assertNotIn(state_path.resolve(), captures)
             published = load_generation_state(
-                output / "generated-audio/generation-state.json", output / "queue.jsonl"
+                output / "generated-audio/generation-state.sqlite3",
+                output / "queue.jsonl",
             )
             workspace = load_workspace_authority(output)[1]
             provenance = (
-                output / "provenance/config-rebase/target-root/generation-state.json"
+                output / "provenance/config-rebase/target-root/generation-state.sqlite3"
             )
             self.assertEqual(
                 published["items"][retained_id], original_state["items"][retained_id]
@@ -295,7 +298,8 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             output = rebase_workspace_config(source, target, root / "rebased").directory
             _directory, current, _digest = load_workspace_authority(output)
             saved = load_generation_state(
-                output / "generated-audio/generation-state.json", output / "queue.jsonl"
+                output / "generated-audio/generation-state.sqlite3",
+                output / "queue.jsonl",
             )
             for version in (1, 2, 3, 4):
                 workspace = copy.deepcopy(current)
@@ -346,7 +350,8 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             ).directory
             _directory, workspace, _digest = load_workspace_authority(output)
             state = load_generation_state(
-                output / "generated-audio/generation-state.json", output / "queue.jsonl"
+                output / "generated-audio/generation-state.sqlite3",
+                output / "queue.jsonl",
             )
             self.assertNotIn("carry_forward", workspace)
             validate_config_rebase_workspace(output, workspace, state)
@@ -359,7 +364,7 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             root = Path(directory)
             fixture, imported, source = create_carry_source_workspace(root)
             review_generation_item(
-                source.directory / "generated-audio/generation-state.json",
+                source.directory / "generated-audio/generation-state.sqlite3",
                 fixture["queue_id"],
                 "approved",
             )
@@ -413,7 +418,7 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
                 (result.directory / "workspace.json").read_text(encoding="utf-8")
             )
             state = load_generation_state(
-                result.directory / "generated-audio/generation-state.json",
+                result.directory / "generated-audio/generation-state.sqlite3",
                 result.directory / "queue.jsonl",
             )
 
@@ -653,7 +658,7 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
 
             result = rebase_workspace_config(source, target, root / "workspaces")
             state = load_generation_state(
-                result.directory / "generated-audio" / "generation-state.json",
+                result.directory / "generated-audio" / "generation-state.sqlite3",
                 result.directory / "queue.jsonl",
             )
             authority = state["items"][fixture["queue_id"]]["config_rebase"]
@@ -737,7 +742,7 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
                 result.directory
             )
             state = load_generation_state(
-                result.directory / "generated-audio" / "generation-state.json",
+                result.directory / "generated-audio" / "generation-state.sqlite3",
                 result.directory / "queue.jsonl",
             )
             item = state["items"][fixture["queue_id"]]
@@ -755,9 +760,9 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
                 item["file_sha256"],
             )
             manifest = publish_generated_manifest(
-                result.directory / "generated-audio" / "generation-state.json"
+                result.directory / "generated-audio" / "generation-state.sqlite3"
             )
-            manifest_document = json.loads(manifest.read_text(encoding="utf-8"))
+            manifest_document = json.loads(manifest.read_text())
             self.assertEqual(manifest_document["entry_count"], 1)
 
     def test_does_not_recursively_revalidate_authority_under_owned_lease(self):
@@ -792,7 +797,7 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
                 (result.directory / "workspace.json").read_text(encoding="utf-8")
             )
             state = load_generation_state(
-                result.directory / "generated-audio/generation-state.json",
+                result.directory / "generated-audio/generation-state.sqlite3",
                 result.directory / "queue.jsonl",
             )
             queue_id = fixture["queue_id"]
@@ -835,7 +840,7 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             root = Path(directory)
             fixture, source, target = _prepare(root, review_status="rejected")
             result = rebase_workspace_config(source, target, root / "workspaces")
-            state_path = result.directory / "generated-audio/generation-state.json"
+            state_path = result.directory / "generated-audio/generation-state.sqlite3"
             queue_path = result.directory / "queue.jsonl"
             authorize_live_fallback(
                 state_path,
@@ -869,7 +874,9 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             root = Path(directory)
             fixture, source, target = _prepare(root, review_status="rejected")
             first = rebase_workspace_config(source, target, root / "workspaces")
-            first_state_path = first.directory / "generated-audio/generation-state.json"
+            first_state_path = (
+                first.directory / "generated-audio/generation-state.sqlite3"
+            )
             queue_path = first.directory / "queue.jsonl"
             authorize_live_fallback(
                 first_state_path,
@@ -888,7 +895,7 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
                 (second.directory / "workspace.json").read_text(encoding="utf-8")
             )
             second_state = load_generation_state(
-                second.directory / "generated-audio/generation-state.json",
+                second.directory / "generated-audio/generation-state.sqlite3",
                 second.directory / "queue.jsonl",
             )
             item = second_state["items"][fixture["queue_id"]]
@@ -935,7 +942,7 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             root = Path(directory)
             fixture, source, target = _prepare(root)
             state = load_generation_state(
-                source / "generated-audio" / "generation-state.json",
+                source / "generated-audio" / "generation-state.sqlite3",
                 source / "queue.jsonl",
             )
             wav = (
@@ -965,14 +972,14 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture, source, _target = _prepare(root)
-            state_path = source / "generated-audio" / "generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = source / "generated-audio" / "generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             item = state["items"][fixture["queue_id"]]
             item["config_rebase"] = {
                 "source_item_sha256": "1" * 64,
                 "audio_sha256": item["file_sha256"],
             }
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
 
             with self.assertRaisesRegex(
                 BulkGenerationError, "canonical workspace ledger"

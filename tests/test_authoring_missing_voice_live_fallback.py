@@ -31,7 +31,7 @@ class AuthoringMissingVoiceLiveFallbackTest(unittest.TestCase):
             workspace, binding, queue_id = create_missing_voice_live_fallback_fixture(
                 root
             )
-            state_path = workspace / "generated-audio/generation-state.json"
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
             queue_path = workspace / "queue.jsonl"
             progress_path = state_path.parent / RUNTIME_PROGRESS_MANIFEST_NAME
             write_runtime_progress_manifest_from_state(
@@ -91,7 +91,7 @@ class AuthoringMissingVoiceLiveFallbackTest(unittest.TestCase):
             workspace, binding, queue_id = create_missing_voice_live_fallback_fixture(
                 root
             )
-            state_path = workspace / "generated-audio/generation-state.json"
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
             queue_path = workspace / "queue.jsonl"
             with self.assertRaisesRegex(MissingVoiceLiveFallbackError, "wrong role"):
                 authorize_missing_voice_live_fallback(workspace, binding, "Rhiannon")

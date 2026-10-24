@@ -1,5 +1,3 @@
-import os
-import struct
 import unittest
 from collections import OrderedDict
 from pathlib import Path
@@ -12,6 +10,7 @@ import soundfile as sf
 
 from tests.symlink_support import symlink_or_skip
 from vntts.audio_cache import BoundedCache, PersistentAudioCache
+from vntts.audio_store import AudioCatalogError, AudioStorageUpgradeRequired
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
     MossTTSVoiceRouterBackend,
@@ -168,14 +167,13 @@ class PersistentAudioCacheTest(unittest.TestCase):
             self.assertIsNone(disabled.put("new", np.array([0.25])))
             self.assertIsNone(enabled.get("new"))
 
-    def test_wrong_sample_rate_is_a_miss(self):
+    def test_wrong_sample_rate_requires_restoring_correct_authority(self):
         with TemporaryDirectory() as directory:
             PersistentAudioCache(directory, sample_rate=16_000).put(
                 "line", np.array([0.125])
             )
-            self.assertIsNone(
+            with self.assertRaises(AudioCatalogError):
                 PersistentAudioCache(directory, sample_rate=24_000).get("line")
-            )
 
     def test_invalid_audio_preserves_existing_entry(self):
         with TemporaryDirectory() as directory:
@@ -194,19 +192,22 @@ class PersistentAudioCacheTest(unittest.TestCase):
                 self.assertIsNone(cache.get(key))
             self.assertFalse((Path(directory) / "outside.wav").exists())
 
-    def test_corrupt_and_symlinked_waveforms_are_misses(self):
-        for symlink in (False, True):
-            with self.subTest(symlink=symlink), TemporaryDirectory() as directory:
+    def test_corrupt_missing_and_symlinked_registered_waveforms_fail_closed(self):
+        for failure in ("corrupt", "missing", "symlink"):
+            with self.subTest(failure=failure), TemporaryDirectory() as directory:
                 cache = PersistentAudioCache(directory, sample_rate=16_000)
                 path = cache.put("line", np.array([0.125]))
-                if symlink:
+                if failure == "symlink":
                     outside = Path(directory) / "outside.wav"
                     outside.write_bytes(path.read_bytes())
                     path.unlink()
                     symlink_or_skip(path, outside)
+                elif failure == "missing":
+                    path.unlink()
                 else:
                     path.write_bytes(b"corrupt")
-                self.assertIsNone(cache.get("line"))
+                with self.assertRaises(AudioCatalogError):
+                    cache.get("line")
 
     def test_symlinked_store_root_is_refused(self):
         with TemporaryDirectory() as directory:
@@ -224,245 +225,36 @@ class PersistentAudioCacheTest(unittest.TestCase):
             cache = PersistentAudioCache(directory, sample_rate=16_000)
             with patch.object(cache.store, "put", side_effect=OSError("full disk")):
                 self.assertIsNone(cache.put("line", [0.125]))
-            self.assertEqual(list(Path(directory).iterdir()), [])
+            self.assertEqual(list(cache.store.iter_bindings()), [])
+            self.assertEqual(list(Path(directory).glob("tmp*.wav")), [])
 
-    def test_legacy_audio_migrates_after_successful_durable_publish(self):
-        for audio in (np.array([0.125, -0.125]), np.array([[0.125, -0.125]])):
-            with self.subTest(shape=audio.shape), TemporaryDirectory() as directory:
-                root = Path(directory)
-                legacy = root / "line.npy"
-                np.save(legacy, audio, allow_pickle=False)
-                cache = PersistentAudioCache(root, sample_rate=16_000)
-                np.testing.assert_array_equal(cache.get("line"), audio)
-                self.assertFalse(legacy.exists())
-                self.assertIsNotNone(cache.store.get("line"))
+    def test_unregistered_store_requires_upgrade_without_opening_array(self):
+        with TemporaryDirectory() as directory:
+            saved = Path(directory) / "paid.npy"
+            saved.write_bytes(b"preserve original samples")
+            cache = PersistentAudioCache(directory, sample_rate=16_000)
+            with patch("numpy.load", side_effect=AssertionError("legacy read")):
+                with self.assertRaises(AudioStorageUpgradeRequired):
+                    cache.get("paid")
+                with self.assertRaises(AudioStorageUpgradeRequired):
+                    cache.put("other", [0.125])
+            self.assertEqual(saved.read_bytes(), b"preserve original samples")
+
+    def test_sqlite_lookup_ignores_poisoned_legacy_decoys(self):
+        with TemporaryDirectory() as directory:
+            cache = PersistentAudioCache(directory, sample_rate=16_000)
+            saved = cache.put("paid", [0.125])
+            before = saved.stat()
+            (Path(directory) / "paid.npy").write_bytes(b"poison")
+            with patch("numpy.load", side_effect=AssertionError("legacy read")):
                 np.testing.assert_array_equal(
-                    PersistentAudioCache(root, sample_rate=16_000).get("line"), audio
+                    PersistentAudioCache(directory, sample_rate=16_000).get("paid"),
+                    [0.125],
                 )
-
-    def test_failed_migration_preserves_legacy_bytes(self):
-        with TemporaryDirectory() as directory:
-            legacy = Path(directory) / "line.npy"
-            np.save(legacy, np.array([0.125]), allow_pickle=False)
-            before = legacy.read_bytes()
-            cache = PersistentAudioCache(directory, sample_rate=16_000)
-            with patch.object(cache.store, "put", side_effect=OSError("full disk")):
-                self.assertIsNone(cache.get("line"))
-            self.assertEqual(legacy.read_bytes(), before)
-            self.assertEqual(list(Path(directory).glob("*.wav")), [])
-
-    def test_migration_preserves_substituted_legacy_entry(self):
-        with TemporaryDirectory() as directory:
-            legacy = Path(directory) / "line.npy"
-            np.save(legacy, np.array([0.125]), allow_pickle=False)
-            cache = PersistentAudioCache(directory, sample_rate=16_000)
-            publish = cache.store.put
-
-            def substitute(*arguments):
-                result = publish(*arguments)
-                replacement = Path(directory) / "replacement.npy"
-                np.save(replacement, np.array([0.25]), allow_pickle=False)
-                replacement.replace(legacy)
-                return result
-
-            with patch.object(cache.store, "put", side_effect=substitute):
-                np.testing.assert_array_equal(cache.get("line"), [0.125])
-            np.testing.assert_array_equal(np.load(legacy), [0.25])
-
-    def test_legacy_symlinks_and_nonregular_files_are_misses_before_parsing(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            cache = PersistentAudioCache(root, sample_rate=16_000)
-            outside = root / "outside.npy"
-            np.save(outside, np.array([0.125]), allow_pickle=False)
-            symlink_or_skip(root / "link.npy", outside)
-            (root / "folder.npy").mkdir()
-            entries = ["link", "folder"]
-            if hasattr(os, "mkfifo"):
-                os.mkfifo(root / "fifo.npy")
-                entries.append("fifo")
-            with patch("vntts.audio_cache._read_cached_array") as parse:
-                for key in entries:
-                    self.assertIsNone(cache.get(key))
-                parse.assert_not_called()
-            self.assertTrue(outside.exists())
-
-    def test_malformed_and_unsafe_legacy_arrays_are_misses_without_deletion(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            cache = PersistentAudioCache(root, sample_rate=16_000)
-            for invalid in (
-                np.array([np.nan]),
-                np.array([object()]),
-                np.zeros((2, 2, 2)),
-            ):
-                np.save(root / "invalid.npy", invalid, allow_pickle=True)
-                before = (root / "invalid.npy").read_bytes()
-                self.assertIsNone(cache.get("invalid"))
-                self.assertEqual((root / "invalid.npy").read_bytes(), before)
-            for corrupt in (b"", b"corrupt", b"\x93NUMPY\x01\x00\xff\xff"):
-                (root / "corrupt.npy").write_bytes(corrupt)
-                self.assertIsNone(cache.get("corrupt"))
-                self.assertEqual((root / "corrupt.npy").read_bytes(), corrupt)
-
-    def test_declared_legacy_body_is_refused_before_array_allocation(self):
-        with TemporaryDirectory() as directory:
-            legacy = Path(directory) / "huge.npy"
-            header = repr(
-                {"descr": "<f4", "fortran_order": False, "shape": (2**50,)}
-            ).encode()
-            legacy.write_bytes(
-                b"\x93NUMPY\x01\x00" + struct.pack("<H", len(header)) + header
-            )
-            with patch("vntts.audio_cache.np.fromfile") as allocate:
-                self.assertIsNone(
-                    PersistentAudioCache(directory, sample_rate=16_000).get("huge")
-                )
-                allocate.assert_not_called()
-            self.assertTrue(legacy.exists())
-
-    def test_malformed_npy_headers_are_misses_without_changing_entries(self):
-        with TemporaryDirectory() as directory:
-            cache = PersistentAudioCache(directory, sample_rate=16_000)
-            path = Path(directory) / "corrupt.npy"
-            for version in ((1, 0), (2, 0), (3, 0)):
-                with self.subTest(version=version, damage="shape overflow"):
-                    with path.open("wb") as destination:
-                        np.lib.format.write_array_header_2_0(
-                            destination,
-                            {
-                                "descr": "<f4",
-                                "fortran_order": False,
-                                "shape": (2**100,),
-                            },
-                        )
-                    if version != (2, 0):
-                        payload = path.read_bytes()
-                        header = payload[12:]
-                        path.write_bytes(
-                            np.lib.format.magic(*version)
-                            + struct.pack(
-                                "<H" if version == (1, 0) else "<I", len(header)
-                            )
-                            + header
-                        )
-                    original = path.read_bytes()
-                    with patch.object(cache.store, "put") as publish:
-                        self.assertIsNone(cache.get("corrupt"))
-                        publish.assert_not_called()
-                    self.assertEqual(path.read_bytes(), original)
-                if version != (3, 0):
-                    with self.subTest(version=version, damage="unterminated tokens"):
-                        header = b"(\n"
-                        path.write_bytes(
-                            np.lib.format.magic(*version)
-                            + struct.pack(
-                                "<H" if version == (1, 0) else "<I", len(header)
-                            )
-                            + header
-                        )
-                        original = path.read_bytes()
-                        self.assertIsNone(cache.get("corrupt"))
-                        self.assertEqual(path.read_bytes(), original)
-            expected = np.array([0.125, -0.125], dtype=np.float32)
-            cache.put("corrupt", expected)
-            np.testing.assert_array_equal(cache.get("corrupt"), expected)
-
-    def test_declared_npy_body_is_refused_before_array_allocation(self):
-        with TemporaryDirectory() as directory:
-            cache = PersistentAudioCache(directory, sample_rate=16_000)
-            path = Path(directory) / "declared.npy"
-            for version in ((1, 0), (2, 0), (3, 0)):
-                for shape, descriptor, data in (
-                    ((2**40,), "<f4", b""),
-                    ((1,), "|S10000000", b""),
-                    ((-1,), "<f4", b"\0" * 16),
-                    ((2,), "<f4", b"\0" * 4),
-                    ((1,), "|O", b""),
-                ):
-                    with self.subTest(
-                        version=version, shape=shape, descriptor=descriptor
-                    ):
-                        with path.open("wb") as output:
-                            np.lib.format.write_array_header_2_0(
-                                output,
-                                {
-                                    "descr": descriptor,
-                                    "fortran_order": False,
-                                    "shape": shape,
-                                },
-                            )
-                            output.write(data)
-                        if version != (2, 0):
-                            raw = path.read_bytes()
-                            length = struct.unpack_from("<I", raw, 8)[0]
-                            header = raw[12 : 12 + length]
-                            path.write_bytes(
-                                np.lib.format.magic(*version)
-                                + struct.pack(
-                                    "<H" if version == (1, 0) else "<I", length
-                                )
-                                + header
-                                + raw[12 + length :]
-                            )
-                        before = path.read_bytes()
-                        with (
-                            patch(
-                                "vntts.audio_cache.np.fromfile",
-                                return_value=np.empty(0, dtype=np.float32),
-                            ) as allocate,
-                            patch.object(cache.store, "put") as publish,
-                        ):
-                            self.assertIsNone(cache.get("declared"))
-                            allocate.assert_not_called()
-                            publish.assert_not_called()
-                        self.assertEqual(path.read_bytes(), before)
-            expected = np.array([0.125, -0.125], dtype=np.float32)
-            cache.put("declared", expected)
-            np.testing.assert_array_equal(cache.get("declared"), expected)
-
-    def test_legacy_body_truncated_after_extent_check_is_preserved(self):
-        with TemporaryDirectory() as directory:
-            legacy = Path(directory) / "truncated.npy"
-            audio = np.array([0.125, -0.125], dtype=np.float32)
-            np.save(legacy, audio, allow_pickle=False)
-            header = legacy.read_bytes()[: -audio.nbytes]
-            original_fromfile = np.fromfile
-
-            def truncate(source, **arguments):
-                legacy.write_bytes(header)
-                return original_fromfile(source, **arguments)
-
-            cache = PersistentAudioCache(directory, sample_rate=16_000)
-            with patch("vntts.audio_cache.np.fromfile", side_effect=truncate) as read:
-                self.assertIsNone(cache.get("truncated"))
-                read.assert_called_once()
-            self.assertEqual(legacy.read_bytes(), header)
-            self.assertIsNone(cache.store.get("truncated"))
-
-    def test_historical_npy_versions_layouts_and_dtypes_migrate(self):
-        arrays = (
-            np.array([[0.125, 0.25], [0.375, 0.5]], dtype=">f4"),
-            np.asfortranarray(np.arange(6, dtype=np.float64).reshape(3, 2) / 8),
-            np.array(["0.125", "0.25"], dtype="U5"),
-            np.array(0.25, dtype=np.float32),
-        )
-        with TemporaryDirectory() as directory:
-            cache = PersistentAudioCache(directory, sample_rate=16_000)
-            for version in ((1, 0), (2, 0), (3, 0)):
-                for number, original in enumerate(arrays):
-                    with self.subTest(version=version, array=number):
-                        key = f"historical-{version[0]}-{number}"
-                        legacy = Path(directory) / f"{key}.npy"
-                        with legacy.open("wb") as output:
-                            np.lib.format.write_array(
-                                output, original, version=version, allow_pickle=False
-                            )
-                        loaded = cache.get(key)
-                        normalized = np.atleast_1d(original).astype(np.float32)
-                        np.testing.assert_array_equal(loaded, normalized)
-                        self.assertFalse(legacy.exists())
-                        self.assertEqual(loaded.dtype, np.float32)
+            self.assertEqual(saved.stat().st_ino, before.st_ino)
+            cache.store.catalog_path.unlink()
+            with self.assertRaises(AudioCatalogError):
+                cache.get("paid")
 
 
 class SynthesisKeyTest(unittest.TestCase):

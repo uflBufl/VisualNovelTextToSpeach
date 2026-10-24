@@ -10,8 +10,10 @@ import vntts.authoring.failure_regeneration as regeneration
 import vntts.authoring.specialist_failure_plan as specialist
 from tests.authoring_fixtures import create_specialist_failure_workspace
 from tests.bulk_generation_fixtures import queue_item, write_queue
+from tests.generation_state_fixtures import replace_generation_state
+from vntts import generation_database
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.bulk_generation import LEGACY_STATE_SCHEMA
+from vntts.authoring.bulk_generation import STATE_SCHEMA
 from vntts.authoring.cohort_review import CohortReviewError
 
 
@@ -75,8 +77,8 @@ class FailurePlanContractsTest(unittest.TestCase):
             with self.subTest(field=field), TemporaryDirectory() as directory:
                 root = Path(directory)
                 workspace = self.specialist_fixture(root)
-                path = workspace / "generated-audio/generation-state.json"
-                doc = json.loads(path.read_text())
+                path = workspace / "generated-audio/generation-state.sqlite3"
+                doc = generation_database.read_state(path)
                 if field == "provider":
                     doc["items"]["a"]["failure_repair"]["strategy"] = (
                         specialist.INLINE_PAUSE_MARKER
@@ -85,7 +87,7 @@ class FailurePlanContractsTest(unittest.TestCase):
                     doc["items"]["a"]["provider"] = []
                 else:
                     doc["items"]["a"]["failure_repair"]["strategy"] = []
-                path.write_text(json.dumps(doc))
+                replace_generation_state(path, doc)
                 with self.assertRaises(CohortReviewError):
                     specialist.build_specialist_failure_plan((workspace,))
 
@@ -120,27 +122,26 @@ class FailurePlanContractsTest(unittest.TestCase):
         queue = write_queue(root / "queue.jsonl", [item])
         generated = root / "generated-audio"
         generated.mkdir()
-        state = generated / "generation-state.json"
-        state.write_text(
-            json.dumps(
-                {
-                    "schema": LEGACY_STATE_SCHEMA,
-                    "schema_version": 1,
-                    "queue_sha256": sha256_file(queue),
-                    "game": None,
-                    "language": None,
-                    "active": None,
-                    "items": {
-                        item["queue_id"]: {
-                            "status": "failed",
-                            "attempts": 7,
-                            "seed": 6,
-                            "last_error": "Legacy limit",
-                            "updated_at": "2026-08-16T10:00:00+00:00",
-                        }
-                    },
-                }
-            )
+        state = generated / "generation-state.sqlite3"
+        replace_generation_state(
+            state,
+            {
+                "schema": STATE_SCHEMA,
+                "schema_version": 1,
+                "queue_sha256": sha256_file(queue),
+                "game": "Synthetic Game",
+                "language": "en",
+                "active": None,
+                "items": {
+                    item["queue_id"]: {
+                        "status": "failed",
+                        "attempts": 7,
+                        "seed": 6,
+                        "last_error": "Legacy limit",
+                        "updated_at": "2026-08-16T10:00:00+00:00",
+                    }
+                },
+            },
         )
         return workspace, item, state
 
@@ -152,9 +153,9 @@ class FailurePlanContractsTest(unittest.TestCase):
 
             def mutate(*args):
                 result = original(*args)
-                doc = json.loads(state.read_text())
+                doc = generation_database.read_state(state)
                 doc["items"][item["queue_id"]]["attempts"] = 8
-                state.write_text(json.dumps(doc))
+                replace_generation_state(state, doc)
                 return result
 
             with (
@@ -189,7 +190,7 @@ class FailurePlanContractsTest(unittest.TestCase):
             self.assertEqual(
                 plan.document["records"][0]["item_sha256"],
                 canonical_document_sha256(
-                    json.loads(state.read_text())["items"][item["queue_id"]]
+                    generation_database.read_state(state)["items"][item["queue_id"]]
                 ),
             )
 
@@ -198,8 +199,8 @@ class FailurePlanContractsTest(unittest.TestCase):
             with self.subTest(kind=kind), TemporaryDirectory() as directory:
                 root = Path(directory)
                 workspace = self.specialist_fixture(root)
-                path = workspace / "generated-audio/generation-state.json"
-                doc = json.loads(path.read_text())
+                path = workspace / "generated-audio/generation-state.sqlite3"
+                doc = generation_database.read_state(path)
                 if kind == "result":
                     doc["items"]["a"] = []
                 elif kind == "attempts":
@@ -211,6 +212,10 @@ class FailurePlanContractsTest(unittest.TestCase):
                     config = json.loads(config_path.read_text())
                     config["workspace_id"] = None
                     config_path.write_text(json.dumps(config))
-                path.write_text(json.dumps(doc))
+                if kind in {"result", "attempts"}:
+                    with self.assertRaises(ValueError):
+                        replace_generation_state(path, doc)
+                    continue
+                replace_generation_state(path, doc)
                 with self.assertRaises(CohortReviewError):
                     specialist.build_specialist_failure_plan((workspace,))

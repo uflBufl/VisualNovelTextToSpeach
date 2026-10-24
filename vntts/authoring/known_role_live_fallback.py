@@ -33,6 +33,7 @@ from vntts.authoring.generation_state import (
     LIVE_FALLBACK_HYPOTHESES_EXHAUSTED,
     LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
     live_fallback_decision,
+    write_generation_state,
 )
 from vntts.authoring.missing_voice_policy import MissingVoicePolicy
 from vntts.authoring.publication import (
@@ -412,7 +413,7 @@ def _stage_known_role_fallback(
     base_snapshots = [
         (selection.base_directory / "workspace.json", selection.base_workspace_sha256),
         (
-            selection.base_directory / "generated-audio/generation-state.json",
+            selection.base_directory / "generated-audio/generation-state.sqlite3",
             selection.base_state_sha256,
         ),
         (selection.base_queue_path, selection.queue_sha256),
@@ -423,7 +424,10 @@ def _stage_known_role_fallback(
         evidence_snapshots.extend(
             (
                 (directory / "workspace.json", digests["workspace"]),
-                (directory / "generated-audio/generation-state.json", digests["state"]),
+                (
+                    directory / "generated-audio/generation-state.sqlite3",
+                    digests["state"],
+                ),
                 (directory / "queue.jsonl", digests["queue"]),
             )
         )
@@ -511,8 +515,8 @@ def _mutate_known_role_fallback(
             "updated_at": decided_at,
         }
     staged.target_state["active"] = None
-    atomic_write_json(
-        staged.output / "generation-state.json", staged.target_state, sort_keys=True
+    write_generation_state(
+        staged.output / "generation-state.sqlite3", staged.target_state
     )
     write_generated_manifest_from_state(
         staged.target_state, staged.output, staged.output / "manifest.json"
@@ -540,7 +544,7 @@ def _validate_staged_known_role_fallback(
     )
     validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
     load_generation_state(
-        staged.output / "generation-state.json", staging / "queue.jsonl"
+        staged.output / "generation-state.sqlite3", staging / "queue.jsonl"
     )
 
 

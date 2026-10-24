@@ -436,6 +436,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._story_playback_speakers: dict[StoryAudioKey, tuple[str, ...]] = {}
         self._checking_story: StoryAudioKey | None = None
         self._story_job_statuses: dict[str, str] = {}
+        self._preparation_catalog_error: Exception | None = None
         self._job: PregenerationJob | None = None
         self._voice_plan: VoicePlan | None = None
         self._voice_plan_before_edit: VoicePlan | None = None
@@ -4002,25 +4003,30 @@ class OfflineAudioPreparationDialog(QDialog):
             if content is not None
             else ()
         )
+        self._preparation_catalog_error = None
         if content is not None:
-            resumed = self.job_store.latest_for_content(content)
-            selection_error = None
-            if content.story_index_sha256 not in self._story_selection_drafts:
-                try:
-                    saved = self.job_store.selection_for_content(content)
-                except (OSError, ValueError, PregenerationSetupError) as error:
-                    selection_error = error
-                    saved = ()
-                if saved is not None:
-                    self._story_selection_drafts[content.story_index_sha256] = set(
-                        saved
-                    )
+            try:
+                resumed = self.job_store.latest_for_content(content)
+                story_statuses = self.job_store.story_statuses(content)
+                saved = (
+                    self.job_store.selection_for_content(content)
+                    if content.story_index_sha256 not in self._story_selection_drafts
+                    else None
+                )
+            except (OSError, ValueError, PregenerationSetupError) as error:
+                self._preparation_catalog_error = error
+                self._story_job_statuses = {}
+                self.stories.blockSignals(False)
+                self._story_audio_changed()
+                self._selection_changed()
+                return
+            if saved is not None:
+                self._story_selection_drafts[content.story_index_sha256] = set(saved)
             selected_ids = self._story_selection_drafts.get(
                 content.story_index_sha256,
                 set(resumed.selected_story_ids) if resumed else set(),
             )
             self._story_selection_drafts[content.story_index_sha256] = set(selected_ids)
-            story_statuses = self.job_store.story_statuses(content)
             self._story_job_statuses = story_statuses
             for selection in ordered_selections:
                 group = self._story_groups.get(selection.kind)
@@ -4121,9 +4127,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 if resumed
                 else "Your story selection is remembered when you continue or close."
             )
-            if selection_error is not None:
-                message = f"Unable to restore story selection: {selection_error}. Select stories again."
-            self._set_selection_status(message, visible=selection_error is not None)
+            self._set_selection_status(message, visible=False)
             self._set_phase_detail(message)
         else:
             self.selection_status.clear()
@@ -4278,6 +4282,15 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _selection_changed(self, _item: object | None = None) -> None:
         self.continue_button.show()
+        if self._preparation_catalog_error is not None:
+            message = f"Unable to restore offline preparation: {self._preparation_catalog_error}"
+            self._set_selection_status(message)
+            self._set_phase_detail(message)
+            set_labeled_text(self.summary, (("Preparation unavailable", message),))
+            self.continue_button.setEnabled(False)
+            self.prepare_again.setEnabled(False)
+            self._story_check_timer.stop()
+            return
         content = self.current_content()
         selected = self.selected_story_ids()
         previously_selected = (
@@ -4535,12 +4548,16 @@ class OfflineAudioPreparationDialog(QDialog):
         self.prepare_again.setToolTip("Prepare again: " + ", ".join(titles))
 
     def _prepare_again_requested(self) -> None:
+        if self._preparation_catalog_error is not None:
+            return
         if self.has_pending_work() or not self._save_story_selection_drafts():
             return
         self.preparationRequested.emit()
         self._save_selection()
 
     def _continue_requested(self) -> None:
+        if self._preparation_catalog_error is not None:
+            return
         if not self._save_story_selection_drafts():
             return
         if self.has_pending_work():

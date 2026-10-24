@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -23,6 +22,7 @@ from vntts.authoring.failure_repair import (
     OFFLINE_FALLBACK_BACKEND,
     SENTENCE_BOUNDARY_SEGMENTATION,
 )
+from vntts.authoring.generation_state import decode_generation_state_snapshot
 from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import read_regular_bytes
@@ -78,13 +78,13 @@ def _capture_workspace(
     workspace: Path, seen: set[str]
 ) -> tuple[JsonObject, list[JsonObject], list[tuple[Path, str]]]:
     configuration_path = workspace / "workspace.json"
-    state_path = workspace / "generated-audio/generation-state.json"
+    state_path = workspace / "generated-audio/generation-state.sqlite3"
     queue_path = workspace / "queue.jsonl"
     configuration_payload = _read(configuration_path, "workspace configuration")
     state_payload = _read(state_path, "generation state")
     queue_payload = _read(queue_path, "generation queue")
     configuration = _decode(configuration_payload, "workspace configuration")
-    state = _decode(state_payload, "generation state")
+    state = decode_generation_state_snapshot(state_payload)
     queue = _queue_records(queue_payload)
     selected = _selected_failure_ids(configuration)
     state_items = _object_field(state, "items", "generation state items")
@@ -448,7 +448,7 @@ def _read(path: str | Path, label: str) -> bytes:
 def _decode(payload: bytes, label: str) -> JsonObject:
     try:
         document = decode_json(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, ValueError) as error:
         raise CohortReviewError(
             f"Unable to decode specialist {label}: {error}"
         ) from error
@@ -460,7 +460,7 @@ def _decode(payload: bytes, label: str) -> JsonObject:
 def _queue_records(payload: bytes) -> dict[str, JsonObject]:
     try:
         rows = [decode_json(value) for value in payload.decode("utf-8").splitlines()]
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, ValueError) as error:
         raise CohortReviewError(
             f"Unable to decode specialist queue: {error}"
         ) from error

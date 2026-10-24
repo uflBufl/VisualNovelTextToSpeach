@@ -36,7 +36,7 @@ class AuthoringFailedPromptHypothesisTest(unittest.TestCase):
                 session, cohort["cohort_id"], fixture["queue_id"], label
             )
             record_missing_voice_reuse_decision(session, cohort["cohort_id"], label)
-            state_path = workspace / "generated-audio/generation-state.json"
+            state_path = workspace / "generated-audio/generation-state.sqlite3"
             manifest_path = workspace / "inputs/voice/manifest.json"
             state_before = state_path.read_bytes()
             manifest_before = manifest_path.read_bytes()

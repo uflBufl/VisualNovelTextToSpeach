@@ -23,7 +23,9 @@ from tests.authoring_fixtures import (
 from tests.authoring_fixtures import (
     write_audio_event_source_story as write_source_story,
 )
+from tests.generation_state_fixtures import replace_generation_state
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from vntts import generation_database
 from vntts.authoring.audio_event_composition import (
     publish_audio_event_composition,
     record_audio_event_composition_decision,
@@ -98,7 +100,7 @@ class AudioEventWorkspaceTest(unittest.TestCase):
                 base, composition.directory, destination
             )
             state = load_generation_state(
-                recovered.directory / "generated-audio/generation-state.json",
+                recovered.directory / "generated-audio/generation-state.sqlite3",
                 recovered.directory / "queue.jsonl",
             )
             rendition = state["items"][queue_item.queue_id]
@@ -162,8 +164,8 @@ class AudioEventWorkspaceTest(unittest.TestCase):
         base = created.directory
         queue_path = base / "queue.jsonl"
         queue_item = VoiceGenerationQueue.load(queue_path).items[0]
-        state_path = base / "generated-audio/generation-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state_path = base / "generated-audio/generation-state.sqlite3"
+        state = generation_database.read_state(state_path)
         result = state["items"][queue_item.queue_id]
         state["active"] = None
         result.update(
@@ -173,7 +175,7 @@ class AudioEventWorkspaceTest(unittest.TestCase):
                 "attempts_by_provider": {"moss-tts": result["attempts"]},
             }
         )
-        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        replace_generation_state(state_path, state)
         publish_generated_manifest(state_path)
         if outcome_merge:
             workspace_path = base / "workspace.json"
@@ -208,7 +210,7 @@ class AudioEventWorkspaceTest(unittest.TestCase):
             result["outcome_merge"] = {
                 key: value for key, value in outcome_item.items() if key != "queue_id"
             }
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             publish_generated_manifest(state_path)
             fingerprint = workbench_module._workspace_config_fingerprint(
                 workspace["source"]["import_id"],
@@ -275,10 +277,8 @@ class AudioEventWorkspaceTest(unittest.TestCase):
             )
             summary = inspect_workspace(created.directory)
             workspace = json.loads((created.directory / "workspace.json").read_text())
-            base_state = json.loads(
-                (
-                    created.directory / "inputs/audio-event-base/generation-state.json"
-                ).read_text()
+            base_state = generation_database.read_state(
+                created.directory / "inputs/audio-event-base/generation-state.sqlite3"
             )
 
             self.assertEqual(summary.generated, 1)
@@ -289,7 +289,7 @@ class AudioEventWorkspaceTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             base, queue_item, composition = self._base_and_composition(root)
-            state_path = base / "generated-audio/generation-state.json"
+            state_path = base / "generated-audio/generation-state.sqlite3"
             base_state_before = state_path.read_bytes()
             base_audio = next((base / "generated-audio/audio").rglob("*.wav"))
             base_audio_before = base_audio.read_bytes()
@@ -301,7 +301,7 @@ class AudioEventWorkspaceTest(unittest.TestCase):
                 base, composition.directory, root / "successors"
             )
             successor_state_path = (
-                created.directory / "generated-audio/generation-state.json"
+                created.directory / "generated-audio/generation-state.sqlite3"
             )
             state = load_generation_state(
                 successor_state_path, created.directory / "queue.jsonl"
@@ -319,7 +319,7 @@ class AudioEventWorkspaceTest(unittest.TestCase):
             self.assertEqual(base_audio.read_bytes(), base_audio_before)
             self.assertEqual(result["status"], "generated")
             self.assertEqual(result["review_status"], "pending_review")
-            self.assertEqual(state["schema"], "r1999.bulk-generation-state")
+            self.assertEqual(state["schema"], "vntts.authoring-generation-state")
             self.assertEqual(result["provider"], "original-game-audio-event")
             self.assertFalse(
                 result["audio_event_composition"]["speaker_identity_claim"]
@@ -351,9 +351,9 @@ class AudioEventWorkspaceTest(unittest.TestCase):
                 approved_manifest["entries"][0]["audio_event_composition"],
                 result["audio_event_composition"],
             )
-            tampered_state = json.loads(successor_state_path.read_text())
+            tampered_state = generation_database.read_state(successor_state_path)
             tampered_state["items"][queue_item.queue_id].pop("audio_event_composition")
-            successor_state_path.write_text(json.dumps(tampered_state, sort_keys=True))
+            replace_generation_state(successor_state_path, tampered_state)
             with self.assertRaisesRegex(
                 BulkGenerationError, "composition ledger changed"
             ):
@@ -369,7 +369,7 @@ class AudioEventWorkspaceTest(unittest.TestCase):
                 base, composition.directory, root / "composition-workspaces"
             )
             review_generation_item(
-                source.directory / "generated-audio/generation-state.json",
+                source.directory / "generated-audio/generation-state.sqlite3",
                 queue_item.queue_id,
                 "approved",
                 queue_path=source.directory / "queue.jsonl",
@@ -389,13 +389,11 @@ class AudioEventWorkspaceTest(unittest.TestCase):
                 narrator_character=source_workspace["narrator_character"],
             )
             target_state_path = (
-                target.directory / "generated-audio/generation-state.json"
+                target.directory / "generated-audio/generation-state.sqlite3"
             )
-            target_state = json.loads(target_state_path.read_text(encoding="utf-8"))
+            target_state = generation_database.read_state(target_state_path)
             target_state["active"] = None
-            target_state_path.write_text(
-                json.dumps(target_state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(target_state_path, target_state)
 
             rebased = rebase_workspace_config(
                 source.directory, target.directory, root / "rebased-workspaces"
@@ -440,15 +438,15 @@ class AudioEventWorkspaceTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             base, _queue_item, composition = self._base_and_composition(root)
-            state_path = base / "generated-audio/generation-state.json"
+            state_path = base / "generated-audio/generation-state.sqlite3"
             original_copy = workspace_creation_module._copy_workspace_tree_snapshot
 
             def copy_then_mutate(source, target, snapshots):
                 original_copy(source, target, snapshots)
                 if Path(source).resolve() == (base / "generated-audio").resolve():
-                    document = json.loads(state_path.read_text())
+                    document = generation_database.read_state(state_path)
                     document["test_only_race"] = True
-                    state_path.write_text(json.dumps(document, sort_keys=True))
+                    replace_generation_state(state_path, document)
 
             with patch.object(
                 workspace_creation_module,
@@ -469,7 +467,7 @@ class AudioEventWorkspaceTest(unittest.TestCase):
             "inputs/audio-event-composition/composition.json",
             "inputs/audio-event-composition/composition-decision.json",
             "inputs/audio-event-base/workspace.json",
-            "inputs/audio-event-base/generation-state.json",
+            "inputs/audio-event-base/generation-state.sqlite3",
             "inputs/audio-event-base/rejected.wav",
         )
         for relative in paths:
@@ -507,10 +505,8 @@ class AudioEventWorkspaceTest(unittest.TestCase):
             created = create_audio_event_composition_workspace(
                 base, composition.directory, root / "successors"
             )
-            state = json.loads(
-                (
-                    created.directory / "generated-audio/generation-state.json"
-                ).read_text()
+            state = generation_database.read_state(
+                created.directory / "generated-audio/generation-state.sqlite3"
             )
             original = validate_audio_event_composition_workspace
 
@@ -562,10 +558,8 @@ class AudioEventWorkspaceTest(unittest.TestCase):
             base_path.write_text(json.dumps(document, sort_keys=True))
             # Restore the original copied workspace bytes and its config hash.
             base_path.write_bytes((base / "workspace.json").read_bytes())
-            state = json.loads(
-                (
-                    created.directory / "generated-audio/generation-state.json"
-                ).read_text()
+            state = generation_database.read_state(
+                created.directory / "generated-audio/generation-state.sqlite3"
             )
             result = state["items"][queue_item.queue_id]
             for field, value in (
@@ -597,10 +591,8 @@ class AudioEventWorkspaceTest(unittest.TestCase):
             )
             path = created.directory / "workspace.json"
             workspace = json.loads(path.read_text())
-            state = json.loads(
-                (
-                    created.directory / "generated-audio/generation-state.json"
-                ).read_text()
+            state = generation_database.read_state(
+                created.directory / "generated-audio/generation-state.sqlite3"
             )
             result = state["items"][queue_item.queue_id]
             for items in (None, {}, "", 1):

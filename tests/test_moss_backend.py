@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
+from vntts.audio_store import AudioCatalogError
 from vntts.playback import PlaybackStatus
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_backend import (
@@ -741,16 +742,14 @@ class MossTTSBackendTest(unittest.TestCase):
         self.assertEqual(len(first_model.generate_calls), 1)
         self.assertEqual(second_model.generate_calls, [])
 
-    def test_offline_backend_reuses_migrated_wav_without_new_intermediate_writes(self):
+    def test_offline_backend_reuses_saved_wav_without_new_intermediate_writes(self):
         backend, model, _output = self.create_backend()
-        request = SynthesisRequest(voice="Narrator", text="Migrated work.")
+        request = SynthesisRequest(voice="Narrator", text="Saved work.")
         key = backend.synthesis_key(request)
         cache = backend.persistent_audio_cache
-        cache.directory.mkdir(parents=True, exist_ok=True)
-        legacy = cache.directory / f"{key}.npy"
-        np.save(legacy, np.asarray([0.1, -0.1, 0.2], dtype=np.float32))
-        self.assertIsNotNone(cache.get(key))
-        self.assertFalse(legacy.exists())
+        saved = cache.put(key, np.asarray([0.1, -0.1, 0.2], dtype=np.float32))
+        self.assertIsNotNone(saved)
+        identity = saved.stat()
         cache.max_entries = 0
         with patch.object(cache.store, "put", side_effect=AssertionError("raw write")):
             result = backend.render(request).collect()
@@ -758,6 +757,19 @@ class MossTTSBackendTest(unittest.TestCase):
         self.assertEqual(model.generate_calls, [])
         self.assertEqual(model.encoded_references, [])
         self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
+        self.assertEqual(saved.stat().st_ino, identity.st_ino)
+        self.assertEqual(list(cache.directory.glob("*.npy")), [])
+
+    def test_missing_paid_wav_never_reaches_model_or_conditioning(self):
+        backend, model, _output = self.create_backend()
+        request = SynthesisRequest(voice="Narrator", text="Saved paid work.")
+        cache = backend.persistent_audio_cache
+        saved = cache.put(backend.synthesis_key(request), [0.1, -0.1])
+        saved.unlink()
+        with self.assertRaises(AudioCatalogError):
+            backend.render(request).collect()
+        self.assertEqual(model.generate_calls, [])
+        self.assertEqual(model.encoded_references, [])
 
     def test_prompt_codes_survive_backend_restart(self):
         first_backend, first_model, _output = self.create_backend()

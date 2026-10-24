@@ -28,12 +28,14 @@ import vntts.authoring.game_pack as game_pack_module
 import vntts.authoring.generation_fallback as fallback_module
 from tests.authoring_fixtures import tree_hashes
 from tests.bulk_generation_fixtures import audio_samples
+from tests.generation_state_fixtures import replace_generation_state
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.source_reference_fixtures import (
     write_reference_render_comparison_fixture as write_comparison,
 )
 from tests.story_fixtures import semantic_evidence_document, semantic_evidence_entry
 from tests.symlink_support import symlink_or_skip
+from vntts import generation_database
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     _canonical_sha256,
@@ -651,7 +653,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                     )
                 },
             )
-            state = json.loads(result.state.read_text())
+            state = generation_database.read_state(result.state)
             identities = {
                 value["line_id"]: value["vntts.recorded_voice"]
                 for value in state["items"].values()
@@ -675,7 +677,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                     narrator_selection_character="Hero" if narrator else None,
                 )
                 item = fixture["items"][0]
-                state = json.loads(fixture["state"].read_text())
+                state = generation_database.read_state(fixture["state"])
                 identity = state["items"][item["queue_id"]]["vntts.recorded_voice"]
                 self.assertEqual(identity["source_character"], "Recorded Ada")
                 self.assertEqual(identity["speaker"], "synthetic-hero")
@@ -778,7 +780,7 @@ class AuthoringGamePackTest(unittest.TestCase):
             control_files=controls,
         )
         queue_id = fixture["items"][0]["queue_id"]
-        base_state = json.loads(generated.state.read_text(encoding="utf-8"))
+        base_state = generation_database.read_state(generated.state)
         base_result_sha256 = _canonical_sha256(base_state["items"][queue_id])
 
         evidence = root / "evidence"
@@ -793,7 +795,7 @@ class AuthoringGamePackTest(unittest.TestCase):
         )
         evidence_output = evidence / "generated-audio"
         evidence_output.mkdir()
-        shutil.copyfile(generated.state, evidence_output / "generation-state.json")
+        shutil.copyfile(generated.state, evidence_output / "generation-state.sqlite3")
         repair_renderer = SyntheticRenderer(SynthesisCompletion.LIMITED)
         repair_renderer.name = "moss-tts"
         repair_renderer.model_name = "moss-local"
@@ -812,13 +814,11 @@ class AuthoringGamePackTest(unittest.TestCase):
             ),
             control_files=controls,
         )
-        evidence_state = json.loads(repaired.state.read_text(encoding="utf-8"))
+        evidence_state = generation_database.read_state(repaired.state)
         evidence_state["items"][queue_id]["carry_forward"] = {
             "source_item_sha256": base_result_sha256
         }
-        repaired.state.write_text(
-            json.dumps(evidence_state, sort_keys=True), encoding="utf-8"
-        )
+        replace_generation_state(repaired.state, evidence_state)
         fixture.update(
             {
                 "queue": queue,
@@ -885,14 +885,12 @@ class AuthoringGamePackTest(unittest.TestCase):
             fixture = prepare_authoring_fixture(root / "source", names=("one",))
             queue_id = fixture["items"][0]["queue_id"]
             review_generation_item(fixture["state"], queue_id, "approved")
-            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state = generation_database.read_state(fixture["state"])
             state["items"][queue_id]["config_rebase"] = {
                 "source_item_sha256": "1" * 64,
                 "audio_sha256": state["items"][queue_id]["file_sha256"],
             }
-            fixture["state"].write_text(
-                json.dumps(state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(fixture["state"], state)
 
             with self.assertRaisesRegex(
                 FinalGamePackError, "canonical workspace ledger"
@@ -907,7 +905,7 @@ class AuthoringGamePackTest(unittest.TestCase):
             fixture = prepare_authoring_fixture(root / "source", names=("one",))
             queue_id = fixture["items"][0]["queue_id"]
             review_generation_item(fixture["state"], queue_id, "approved")
-            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state = generation_database.read_state(fixture["state"])
             state["items"][queue_id]["terminal_conflict_resolution"] = {
                 "source_workspace_id": "resume-" + "1" * 24 + "-" + "2" * 16,
                 "source_state_sha256": "3" * 64,
@@ -918,9 +916,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                 "selected_candidate_id": "5" * 64,
                 "next_action": "apply_selected_approved_outcome",
             }
-            fixture["state"].write_text(
-                json.dumps(state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(fixture["state"], state)
             destination = root / "pack"
 
             with self.assertRaisesRegex(
@@ -986,7 +982,7 @@ class AuthoringGamePackTest(unittest.TestCase):
             )
             progress_manifest = fixture["state"].parent / RUNTIME_PROGRESS_MANIFEST_NAME
             write_runtime_progress_manifest_from_state(
-                json.loads(fixture["state"].read_text(encoding="utf-8")),
+                generation_database.read_state(fixture["state"]),
                 fixture["state"].parent,
                 progress_manifest,
             )
@@ -1093,12 +1089,11 @@ class AuthoringGamePackTest(unittest.TestCase):
                 root
             )
             before = fixture["state"].read_bytes()
-            state_path = evidence / "generated-audio/generation-state.json"
-            original = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = evidence / "generated-audio/generation-state.sqlite3"
+            original = generation_database.read_state(state_path)
             for version in (True, float(original["schema_version"]), [], {}, None, "1"):
-                state_path.write_text(
-                    json.dumps({**original, "schema_version": version}),
-                    encoding="utf-8",
+                replace_generation_state(
+                    state_path, {**original, "schema_version": version}
                 )
                 with (
                     self.subTest(version=version),
@@ -1116,7 +1111,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                     )
                 self.assertEqual(fixture["state"].read_bytes(), before)
 
-            state_path.write_text(json.dumps(original), encoding="utf-8")
+            replace_generation_state(state_path, original)
             for workspace_path in (
                 fixture["state"].parent.parent / "workspace.json",
                 evidence / "workspace.json",
@@ -1149,10 +1144,10 @@ class AuthoringGamePackTest(unittest.TestCase):
                 root
             )
             before = fixture["state"].read_bytes()
-            state_path = evidence / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = evidence / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["items"][queue_id]["carry_forward"]["source_item_sha256"] = "0" * 64
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
 
             with self.assertRaisesRegex(BulkGenerationError, "exact current item"):
                 authorize_live_fallback(
@@ -1408,11 +1403,9 @@ class AuthoringGamePackTest(unittest.TestCase):
 
             def mutate_state(*args, **kwargs):
                 result = real_write(*args, **kwargs)
-                state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+                state = generation_database.read_state(fixture["state"])
                 state["external_change"] = True
-                fixture["state"].write_text(
-                    json.dumps(state, sort_keys=True), encoding="utf-8"
-                )
+                replace_generation_state(fixture["state"], state)
                 return result
 
             with patch.object(
@@ -1429,7 +1422,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                         model="pocket-tts",
                     )
 
-            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state = generation_database.read_state(fixture["state"])
 
         self.assertNotIn("live_fallback", state["items"][queue_id])
 
@@ -1440,11 +1433,9 @@ class AuthoringGamePackTest(unittest.TestCase):
             review_generation_item(
                 fixture["state"], fixture["items"][0]["queue_id"], "approved"
             )
-            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state = generation_database.read_state(fixture["state"])
             state["items"].pop(fixture["items"][1]["queue_id"])
-            fixture["state"].write_text(
-                json.dumps(state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(fixture["state"], state)
             authorize_live_fallback(
                 fixture["state"],
                 fixture["queue"],
@@ -1453,7 +1444,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                 model="pocket-tts",
             )
             result = publish(fixture, root / "pack")
-            final_state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            final_state = generation_database.read_state(fixture["state"])
             fallback_item = final_state["items"][fixture["items"][1]["queue_id"]]
 
         self.assertEqual(result.live_fallback_count, 1)
@@ -1509,7 +1500,7 @@ class AuthoringGamePackTest(unittest.TestCase):
 
             result = publish(fixture, root / "valid-pack")
             pack = load_game_pack(result.manifest)
-            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state = generation_database.read_state(fixture["state"])
 
             self.assertEqual(
                 state["items"][fixture["items"][0]["queue_id"]]["voice_character"],
@@ -1769,7 +1760,7 @@ class AuthoringGamePackTest(unittest.TestCase):
             with self.assertRaisesRegex(FinalGamePackError, "pending review"):
                 publish(fixture, root / "pending-pack")
 
-            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state = generation_database.read_state(fixture["state"])
             state["items"][fixture["items"][0]["queue_id"]] = {
                 "status": "failed",
                 "attempts": 1,
@@ -1777,9 +1768,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                 "last_error": "failed",
                 "updated_at": "2026-08-16T12:05:00+00:00",
             }
-            fixture["state"].write_text(
-                json.dumps(state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(fixture["state"], state)
             with self.assertRaisesRegex(FinalGamePackError, "failed item"):
                 publish(fixture, root / "failed-pack")
 
@@ -1794,9 +1783,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                 "total_attempts": 1,
                 "seed": 0,
             }
-            fixture["state"].write_text(
-                json.dumps(state, sort_keys=True), encoding="utf-8"
-            )
+            replace_generation_state(fixture["state"], state)
             with self.assertRaisesRegex(FinalGamePackError, "active or interrupted"):
                 publish(fixture, root / "active-pack")
 
@@ -1810,9 +1797,9 @@ class AuthoringGamePackTest(unittest.TestCase):
             review_generation_item(
                 fixture["state"], fixture["items"][1]["queue_id"], "rejected"
             )
-            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state = generation_database.read_state(fixture["state"])
             del state["items"][fixture["items"][1]["queue_id"]]
-            fixture["state"].write_text(json.dumps(state), encoding="utf-8")
+            replace_generation_state(fixture["state"], state)
 
             with self.assertRaisesRegex(FinalGamePackError, "missing 1 selected"):
                 publish(fixture, root / "final-pack")
@@ -1915,11 +1902,11 @@ class AuthoringGamePackTest(unittest.TestCase):
                 result = real_copy(*args, **kwargs)
                 if not mutated:
                     mutated = True
-                    state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+                    state = generation_database.read_state(fixture["state"])
                     item = state["items"][fixture["items"][0]["queue_id"]]
                     item["status"] = "generated"
                     item["review_status"] = "rejected"
-                    fixture["state"].write_text(json.dumps(state), encoding="utf-8")
+                    replace_generation_state(fixture["state"], state)
                 return result
 
             with patch.object(
@@ -2251,9 +2238,9 @@ class AuthoringGamePackTest(unittest.TestCase):
             review_generation_item(
                 fixture["state"], fixture["items"][0]["queue_id"], "approved"
             )
-            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state = generation_database.read_state(fixture["state"])
             del state["synthesis_controls"]
-            fixture["state"].write_text(json.dumps(state), encoding="utf-8")
+            replace_generation_state(fixture["state"], state)
             with self.assertRaisesRegex(FinalGamePackError, "per-control"):
                 publish(fixture, root / "no-controls-pack")
 

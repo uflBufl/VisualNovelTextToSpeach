@@ -43,6 +43,21 @@ class AuthoritySnapshot:
             raise AuthoringAuthorityError(f"{label.capitalize()} must be an object")
         return document
 
+    def generation_state_document(self, label: str) -> dict[str, object]:
+        """Decode current working authority without reopening its source."""
+        from vntts import generation_database
+
+        try:
+            return generation_database.read_snapshot(self.payload)
+        except ValueError as error:
+            raise AuthoringAuthorityError(f"Unable to read {label}: {error}") from error
+
+    def generation_state_proof(self, label: str) -> dict[str, object]:
+        """Published JSON proofs remain explicit immutable contracts."""
+        if self.path.suffix == ".json":
+            return self.json_document(label)
+        return self.generation_state_document(label)
+
 
 def capture_authority_file(
     path: str | Path, label: str, *, root: str | Path | None = None
@@ -124,7 +139,11 @@ def capture_successor_base_authority(
             if snapshot.sha256 != binding.get(hash_field):
                 raise error_type(f"{description.capitalize()} authority changed")
             snapshots.append(snapshot)
-            documents.append(snapshot.json_document(description))
+            documents.append(
+                snapshot.generation_state_proof(description)
+                if path_field == "base_state_path"
+                else snapshot.json_document(description)
+            )
     except AuthoringAuthorityError as error:
         raise error_type(str(error)) from error
     workspace, state = documents

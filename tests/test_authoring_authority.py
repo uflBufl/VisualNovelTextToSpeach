@@ -7,6 +7,7 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 from unittest.mock import patch
 
 from tests.symlink_support import symlink_or_skip
+from vntts import generation_database
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
     assert_authority_snapshot,
@@ -17,6 +18,25 @@ from vntts.document_identity import canonical_document_sha256
 
 
 class AuthoringAuthorityTest(unittest.TestCase):
+    def test_working_state_requires_sqlite_while_published_json_proofs_remain_explicit(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = {"queue_sha256": "a" * 64, "items": {}}
+            database = root / "generation-state.sqlite3"
+            generation_database.write_state(database, state)
+            current = capture_authority_file(database, "working state")
+            self.assertEqual(current.generation_state_document("working state"), state)
+            proof = root / "base-generation-state.json"
+            proof.write_text(json.dumps(state))
+            captured = capture_authority_file(proof, "published state proof")
+            self.assertEqual(
+                captured.generation_state_proof("published state proof"), state
+            )
+            with self.assertRaisesRegex(AuthoringAuthorityError, "snapshot header"):
+                captured.generation_state_document("working state")
+
     def test_canonical_document_hash_is_strict_with_explicit_legacy_nan(self):
         document = {"value": float("nan")}
         with self.assertRaises(ValueError):

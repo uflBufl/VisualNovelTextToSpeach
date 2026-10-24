@@ -1572,7 +1572,7 @@ def _assert_sources_unchanged(
         (directory / "workspace.json", workspace_sha256, "workspace"),
         (directory / "queue.jsonl", queue_sha256, "queue"),
         (
-            directory / "generated-audio/generation-state.json",
+            directory / "generated-audio/generation-state.sqlite3",
             state_sha256,
             "generation state",
         ),

@@ -15,7 +15,9 @@ from tests.authoring_fixtures import (
     current_carry_fields,
     write_legacy_fixture,
 )
+from tests.generation_state_fixtures import replace_generation_state
 from tests.symlink_support import symlink_or_skip
+from vntts import generation_database
 from vntts.authoring import cohort_review as cohort_review_module
 from vntts.authoring import workspace_inspection as inspection_module
 from vntts.authoring.bulk_generation import _canonical_sha256
@@ -41,7 +43,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             workspace, path, queue_id = self.create_pending_workspace(Path(directory))
             payload = path.read_bytes()
-            original_load = inspection_module._load_json_snapshot
+            original_load = inspection_module.load_generation_state_object_snapshot
             original_project = inspection_module._list_review_items_from_read
             state_reads = 0
 
@@ -50,11 +52,11 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                 if Path(candidate) == path:
                     state_reads += 1
                     if state_reads == 2:
-                        alternate = json.loads(payload)
+                        alternate = generation_database.read_snapshot(payload)
                         alternate["items"][queue_id].update(
                             status="approved", review_status="approved"
                         )
-                        path.write_text(json.dumps(alternate), encoding="utf-8")
+                        replace_generation_state(path, alternate)
                 return original_load(candidate, *arguments, **keywords)
 
             def restore_after_projection(*arguments, **keywords):
@@ -65,7 +67,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             with (
                 patch.object(
                     inspection_module,
-                    "_load_json_snapshot",
+                    "load_generation_state_object_snapshot",
                     side_effect=alternate_second_capture,
                 ),
                 patch.object(
@@ -75,6 +77,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                 ),
             ):
                 plan = build_cohort_review_plan(workspace)
+            self.assertEqual(state_reads, 1)
             self.assertEqual(plan.document["pending_item_count"], 1)
             self.assertEqual(
                 plan.document["state_sha256"], hashlib.sha256(payload).hexdigest()
@@ -87,11 +90,11 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                 ("generated", "pending_review"),
                 ("approved", "approved"),
             ):
-                state = json.loads(path.read_text())
+                state = generation_database.read_state(path)
                 state["items"][queue_id].update(
                     status=status, review_status=review_status
                 )
-                path.write_text(json.dumps(state), encoding="utf-8")
+                replace_generation_state(path, state)
                 snapshot = inspection_module.load_review_items_snapshot(workspace)
                 self.assertEqual(snapshot.state, state)
                 self.assertEqual(
@@ -111,17 +114,17 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                     plan.document["pending_item_count"], int(status == "generated")
                 )
 
-    def test_review_snapshot_keeps_active_and_legacy_review_supported(self):
+    def test_review_snapshot_keeps_active_review_and_rejects_old_schema(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             workspace, path, queue_id = self.create_pending_workspace(
                 root / "workspace"
             )
             fixture = write_legacy_fixture(root / "legacy")
-            active = json.loads(fixture["state"].read_text())["active"]
+            active = generation_database.read_state(fixture["state"])["active"]
             self.assertEqual(active["queue_id"], queue_id)
             queue_item = VoiceGenerationQueue.load(workspace / "queue.jsonl").items[0]
-            state = json.loads(path.read_text())
+            state = generation_database.read_state(path)
             result = state["items"][queue_id]
             result.update(
                 current_carry_fields(
@@ -129,15 +132,21 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                 )
             )
             result.update(status="generated", review_status="pending_review")
-            path.write_text(json.dumps(state), encoding="utf-8")
+            replace_generation_state(path, state)
             for schema in (
                 "vntts.authoring-generation-state",
                 "r1999.bulk-generation-state",
             ):
-                state = json.loads(path.read_text())
+                state = generation_database.read_state(path)
                 state["schema"] = schema
                 state["active"] = active
-                path.write_text(json.dumps(state), encoding="utf-8")
+                replace_generation_state(path, state)
+                if schema == "r1999.bulk-generation-state":
+                    with self.assertRaisesRegex(
+                        CohortReviewError, "Unsupported generation state schema"
+                    ):
+                        build_cohort_review_plan(workspace)
+                    continue
                 snapshot = inspection_module.load_review_items_snapshot(workspace)
                 self.assertEqual(snapshot.state["active"], active)
                 plan = build_cohort_review_plan(workspace)
@@ -447,7 +456,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                     projection = apply_cohort_review_decision(workspace, plan, decision)
                     self.assertEqual(projection.queue_ids, (queue_id,))
                     self.assertEqual(projection.review_status, expected)
-                    state = json.loads(state_path.read_text())
+                    state = generation_database.read_state(state_path)
                     self.assertEqual(
                         state["items"][queue_id]["review_status"], expected
                     )
@@ -558,11 +567,11 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             workspace, state_path, _queue_id = self.create_pending_workspace(
                 Path(directory)
             )
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state = generation_database.read_state(state_path)
             result = next(iter(state["items"].values()))
             result["status"] = "approved"
             result["review_status"] = "approved"
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
 
             plan = build_cohort_review_plan(workspace)
 
@@ -572,23 +581,15 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
     def test_incomplete_legacy_provenance_is_reported_not_guessed(self):
         with TemporaryDirectory() as directory:
-            workspace, state_path, queue_id = self.create_pending_workspace(
+            workspace, state_path, _queue_id = self.create_pending_workspace(
                 Path(directory)
             )
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state = generation_database.read_state(state_path)
             next(iter(state["items"].values())).pop("generation_profile")
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
 
-            plan = build_cohort_review_plan(workspace)
-
-        self.assertEqual(plan.document["cohort_count"], 0)
-        self.assertEqual(plan.document["pending_item_count"], 0)
-        self.assertEqual(plan.document["blocked_item_count"], 1)
-        self.assertEqual(plan.document["blocked_items"][0]["queue_id"], queue_id)
-        self.assertIn(
-            "Generation profile",
-            plan.document["blocked_items"][0]["reason"],
-        )
+            with self.assertRaisesRegex(CohortReviewError, "generation_profile"):
+                build_cohort_review_plan(workspace)
 
     def test_seed_change_creates_a_distinct_plan_and_cohort(self):
         with TemporaryDirectory() as directory:
@@ -596,9 +597,9 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                 Path(directory)
             )
             first = build_cohort_review_plan(workspace)
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state = generation_database.read_state(state_path)
             next(iter(state["items"].values()))["seed"] += 1
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
 
             second = build_cohort_review_plan(workspace)
 
@@ -615,11 +616,9 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             )
 
             def mutate(*_arguments, **_keywords):
-                state = json.loads(state_path.read_text(encoding="utf-8"))
+                state = generation_database.read_state(state_path)
                 state["active"] = {"phase": "changed"}
-                state_path.write_text(
-                    json.dumps(state, sort_keys=True), encoding="utf-8"
-                )
+                replace_generation_state(state_path, state)
                 return ()
 
             with (
@@ -1097,10 +1096,8 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             )
 
             result = apply_cohort_review_decision(workspace, plan, decision)
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            manifest = json.loads(
-                (state_path.parent / "manifest.json").read_text(encoding="utf-8")
-            )
+            state = generation_database.read_state(state_path)
+            manifest = json.loads((state_path.parent / "manifest.json").read_text())
 
         self.assertEqual(result.queue_ids, (queue_id,))
         self.assertEqual(result.review_status, "approved")
@@ -1132,7 +1129,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                 reviewed_queue_ids=[queue_id],
             )
             before = state_path.read_bytes()
-            state = json.loads(before.decode("utf-8"))
+            state = generation_database.read_snapshot(before)
             audio = state_path.parent / state["items"][queue_id]["path"]
             audio.write_bytes(audio.read_bytes() + b"changed")
 
@@ -1254,7 +1251,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             ):
                 apply_cohort_review_decision(workspace, plan, decision)
 
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state = generation_database.read_state(state_path)
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 state["items"][queue_id]["review_status"], "pending_review"
@@ -1277,7 +1274,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                 "accepted",
                 reviewed_queue_ids=[queue_id],
             )
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state = generation_database.read_state(state_path)
             audio = state_path.parent / state["items"][queue_id]["path"]
             state_before = state_path.read_bytes()
             manifest_path = state_path.parent / "manifest.json"
@@ -1345,7 +1342,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                         str(decision_path),
                     ]
                 )
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state = generation_database.read_state(state_path)
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(stdout.getvalue())["review_status"], "rejected")

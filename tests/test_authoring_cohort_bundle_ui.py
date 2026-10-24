@@ -13,6 +13,9 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from tests.generation_state_fixtures import replace_generation_state
+from vntts import generation_database
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
@@ -62,7 +65,7 @@ def create_multisample_bundle(root):
         metadata, template = (
             json.loads(line) for line in fixture["queue"].read_text().splitlines()
         )
-        state = json.loads(fixture["state"].read_text())
+        state = generation_database.read_state(fixture["state"])
         result = next(iter(state["items"].values()))
         manifest = json.loads(fixture["manifest"].read_text())
         entry = manifest["entries"][0]
@@ -91,8 +94,8 @@ def create_multisample_bundle(root):
             "\n".join(json.dumps(row) for row in [metadata, *items]) + "\n"
         )
         queue_sha256 = hashlib.sha256(fixture["queue"].read_bytes()).hexdigest()
-        state.update(items=results, queue_sha256=queue_sha256)
-        fixture["state"].write_text(json.dumps(state))
+        state.update(items=results, queue_sha256=queue_sha256, active=None)
+        replace_generation_state(fixture["state"], state)
         manifest.update(
             entries=entries, entry_count=len(entries), source_queue_sha256=queue_sha256
         )
@@ -153,7 +156,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             root / "second"
         )
         for state_path in (first_state, second_state):
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state = generation_database.read_state(state_path)
             result = next(iter(state["items"].values()))
             result.update(
                 {
@@ -162,17 +165,11 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                     "generation_profile": "stable",
                 }
             )
-            state_path.write_text(
-                json.dumps(state, sort_keys=True),
-                encoding="utf-8",
-            )
+            replace_generation_state(state_path, state)
         if mismatch:
-            state = json.loads(second_state.read_text(encoding="utf-8"))
+            state = generation_database.read_state(second_state)
             next(iter(state["items"].values()))["prompt_sha256"] = "c" * 64
-            second_state.write_text(
-                json.dumps(state, sort_keys=True),
-                encoding="utf-8",
-            )
+            replace_generation_state(second_state, state)
         plan = build_cohort_review_plan(first)
         decision = build_cohort_review_decision(
             plan,
@@ -656,7 +653,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                 lambda: not dialog._decision_active and not dialog._load_active
             )
 
-            state = json.loads(state_path.read_text())["items"]
+            state = generation_database.read_state(state_path)["items"]
             self.assertEqual(state[bad_id]["review_status"], "rejected")
             for queue_id in heard_ids - {bad_id}:
                 self.assertEqual(state[queue_id]["review_status"], "approved")
@@ -693,7 +690,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             decision, cohort, reviewed_count, bad_count = confirmer.call_args.args
             self.assertEqual((decision, reviewed_count, bad_count), ("rejected", 1, 0))
             self.assertEqual(cohort["item_count"], 4)
-            state = json.loads(state_path.read_text())["items"]
+            state = generation_database.read_state(state_path)["items"]
             self.assertEqual(len(state), 4)
             self.assertEqual(
                 {item["review_status"] for item in state.values()}, {"rejected"}
@@ -1395,8 +1392,8 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertNotEqual(
                 reopened._selected_sample().workspace_id, sample.workspace_id
             )
-            state = json.loads(
-                (workspace / "generated-audio/generation-state.json").read_text()
+            state = generation_database.read_state(
+                workspace / "generated-audio/generation-state.sqlite3"
             )
             self.assertEqual(
                 state["items"][sample.item.queue_id]["review_status"], "approved"

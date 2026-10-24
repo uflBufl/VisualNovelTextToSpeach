@@ -29,6 +29,7 @@ from vntts.authoring.generation_lease import (
     process_is_alive,
 )
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_state import write_generation_state
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
@@ -393,7 +394,7 @@ def _collect_outcome_merge_sources(
         collected.snapshots.extend(
             (
                 (
-                    source.directory / "generated-audio/generation-state.json",
+                    source.directory / "generated-audio/generation-state.sqlite3",
                     source.state_sha256,
                 ),
                 (source.directory / "workspace.json", source.workspace_sha256),
@@ -442,7 +443,7 @@ def _stage_outcome_merge_base(
     base_snapshots = [
         (base.directory / "workspace.json", base.workspace_sha256),
         (
-            base.directory / "generated-audio/generation-state.json",
+            base.directory / "generated-audio/generation-state.sqlite3",
             base.state_sha256,
         ),
     ]
@@ -537,7 +538,7 @@ def _write_outcome_merge_workspace(
     outcome_merge: JsonDocument,
     config_fingerprint: str,
 ) -> None:
-    atomic_write_json(output / "generation-state.json", target_state, sort_keys=True)
+    write_generation_state(output / "generation-state.sqlite3", target_state)
     workspace = copy.deepcopy(base.document)
     workspace.update(
         {

@@ -10,9 +10,11 @@ from vntts_artifacts.voice_manifest import load_voice_manifest
 
 import vntts.authoring.known_role_live_fallback as fallback_module
 import vntts.authoring.workspace_state as workspace_state_module
+from tests.generation_state_fixtures import replace_generation_state
 from tests.missing_voice_reuse_fixtures import (
     create_missing_voice_live_fallback_fixture,
 )
+from vntts import generation_database
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.known_role_live_fallback import (
@@ -73,8 +75,8 @@ class KnownRoleLiveFallbackTests(unittest.TestCase):
             voices=voices,
         )
         override_sha256 = queue_voice_overrides_sha256(overrides)
-        state_path = evidence / "generated-audio/generation-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state_path = evidence / "generated-audio/generation-state.sqlite3"
+        state = generation_database.read_state(state_path)
         state["items"][queue_id] = {
             "status": "failed",
             "attempts": 1,
@@ -122,7 +124,7 @@ class KnownRoleLiveFallbackTests(unittest.TestCase):
                 "queue_voice_overrides_sha256": override_sha256,
             },
         }
-        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        replace_generation_state(state_path, state)
         write_generated_manifest_from_state(
             state,
             evidence / "generated-audio",
@@ -164,7 +166,7 @@ class KnownRoleLiveFallbackTests(unittest.TestCase):
                 base, ((queue_id, evidence),), root / "workspaces"
             ).directory
             original = json.loads((created / "workspace.json").read_text())
-            state_path = created / "generated-audio/generation-state.json"
+            state_path = created / "generated-audio/generation-state.sqlite3"
             state_before = state_path.read_bytes()
             for version in (True, 1.0):
                 with self.subTest(version=version):
@@ -178,18 +180,18 @@ class KnownRoleLiveFallbackTests(unittest.TestCase):
                             if key != "batch_id"
                         }
                     )
-                    state = json.loads(state_before)
+                    state = generation_database.read_snapshot(state_before)
                     state["items"][queue_id]["live_fallback"]["evidence"][
                         "batch_id"
                     ] = batch["batch_id"]
-                    state_path.write_text(json.dumps(state))
+                    replace_generation_state(state_path, state)
                     with self.assertRaisesRegex(
                         AuthoringWorkbenchError, "batch is malformed"
                     ):
                         fallback_module.validate_known_role_live_fallback_workspace(
                             created, workspace
                         )
-                    self.assertEqual(json.loads(state_path.read_text()), state)
+                    self.assertEqual(generation_database.read_state(state_path), state)
             state_path.write_bytes(state_before)
             fallback_module.validate_known_role_live_fallback_workspace(
                 created, original
@@ -205,8 +207,8 @@ class KnownRoleLiveFallbackTests(unittest.TestCase):
             original_batch = json.loads((created / "workspace.json").read_text())[
                 "known_role_live_fallback"
             ]
-            original_state = json.loads(
-                (created / "generated-audio/generation-state.json").read_text()
+            original_state = generation_database.read_state(
+                created / "generated-audio/generation-state.sqlite3"
             )
             visits = {}
             for count in (1, 8):
@@ -287,9 +289,9 @@ class KnownRoleLiveFallbackTests(unittest.TestCase):
             base, evidence, queue_id = self._fixture(root)
             workspaces = root / "workspaces"
             directories_before = set(workspaces.iterdir())
-            base_state = base / "generated-audio/generation-state.json"
+            base_state = base / "generated-audio/generation-state.sqlite3"
             base_before = base_state.read_bytes()
-            evidence_state = evidence / "generated-audio/generation-state.json"
+            evidence_state = evidence / "generated-audio/generation-state.sqlite3"
             changed_evidence = evidence_state.read_bytes() + b"\n"
             original_validate = fallback_module._validate_staged_known_role_fallback
 
@@ -318,9 +320,11 @@ class KnownRoleLiveFallbackTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             base, evidence, queue_id = self._fixture(root)
-            base_before = (base / "generated-audio/generation-state.json").read_bytes()
+            base_before = (
+                base / "generated-audio/generation-state.sqlite3"
+            ).read_bytes()
             evidence_before = (
-                evidence / "generated-audio/generation-state.json"
+                evidence / "generated-audio/generation-state.sqlite3"
             ).read_bytes()
 
             first = create_known_role_live_fallback_workspace(
@@ -330,10 +334,8 @@ class KnownRoleLiveFallbackTests(unittest.TestCase):
                 base, ((queue_id, evidence),), root / "workspaces"
             )
             summary = inspect_workspace(first.directory)
-            state = json.loads(
-                (first.directory / "generated-audio/generation-state.json").read_text(
-                    encoding="utf-8"
-                )
+            state = generation_database.read_state(
+                first.directory / "generated-audio/generation-state.sqlite3"
             )
             item = state["items"][queue_id]
             decision = item["live_fallback"]
@@ -365,11 +367,11 @@ class KnownRoleLiveFallbackTests(unittest.TestCase):
                 next(iter(runtime.values())).requested_voice_character, "Rhiannon"
             )
             self.assertEqual(
-                (base / "generated-audio/generation-state.json").read_bytes(),
+                (base / "generated-audio/generation-state.sqlite3").read_bytes(),
                 base_before,
             )
             self.assertEqual(
-                (evidence / "generated-audio/generation-state.json").read_bytes(),
+                (evidence / "generated-audio/generation-state.sqlite3").read_bytes(),
                 evidence_before,
             )
 
@@ -389,10 +391,10 @@ class KnownRoleLiveFallbackTests(unittest.TestCase):
                     root / "workspaces",
                 )
 
-            state_path = result.directory / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = result.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
             state["items"][queue_id]["voice_character"] = "Centurion"
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             with self.assertRaises(AuthoringWorkbenchError):
                 inspect_workspace(result.directory)
 

@@ -1,9 +1,10 @@
-"""Transactional per-item working state; portable authoring snapshots stay JSON."""
+"""Transactional per-item working state and immutable SQLite review snapshots."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import stat
 from collections.abc import Iterator
@@ -68,17 +69,43 @@ class GenerationProgress:
 
 
 def state_path(output: Path) -> Path:
-    """Prefer SQLite authority; preserved JSON is an import-only snapshot."""
-    database = output / "generation-state.sqlite3"
-    return (
-        database
-        if database.exists() or database.is_symlink()
-        else output / "generation-state.json"
-    )
+    """Return the only working-state authority."""
+    return output / "generation-state.sqlite3"
 
 
-def is_database(path: Path) -> bool:
-    return path.suffix == ".sqlite3" or ".sqlite3." in path.name
+def require_registered_output(output: Path) -> None:
+    """Refuse unregistered saved work before a caller considers fresh synthesis."""
+    database = state_path(output)
+    validate_database_path(database)
+    if database.exists():
+        return
+    try:
+        contents = tuple(output.iterdir())
+    except FileNotFoundError:
+        return
+    bookkeeping = {
+        ".generation-lease.json",
+        ".generation-lease.guard",
+        "stdout.log",
+        "stderr.log",
+    }
+    for entry in contents:
+        info = entry.stat(follow_symlinks=False)
+        if entry.name in bookkeeping and stat.S_ISREG(info.st_mode):
+            continue
+        if entry.name == "interrupted" and stat.S_ISDIR(info.st_mode):
+            if all(
+                re.fullmatch(
+                    r"generation-lease-json-[0-9a-f]{12}(?:-[0-9]+)?\.json",
+                    archived.name,
+                )
+                and stat.S_ISREG(archived.stat(follow_symlinks=False).st_mode)
+                for archived in entry.iterdir()
+            ):
+                continue
+        raise ValueError(
+            "Generation SQLite state is missing for existing output; run the explicit storage upgrade"
+        )
 
 
 def _path(path: Path) -> Path:
@@ -280,16 +307,34 @@ def read_state(
         )
 
 
+def read_audio_paths(path: Path) -> tuple[str, ...]:
+    """Read all successful paths without decoding unselected item evidence."""
+    with _connection(path) as connection:
+        paths = tuple(
+            row[0]
+            for row in connection.execute(
+                "SELECT audio_path FROM items WHERE status IN ('generated','approved')"
+            )
+        )
+        if not all(isinstance(value, str) for value in paths):
+            raise ValueError("Generation database successful audio path is malformed")
+        return paths
+
+
 def read_progress(path: Path) -> GenerationProgress:
     """Read progress columns without loading completed evidence or controls."""
     with _connection(path) as connection:
         row = connection.execute(
             "SELECT queue_sha256, json_extract(metadata, '$.queue_sha256'), "
             "json_extract(metadata, '$.active'), json_type(metadata, '$.items'), "
-            "json_type(metadata, '$.synthesis_controls') FROM run WHERE id=1"
+            "json_type(metadata, '$.synthesis_controls'), json_extract(metadata, '$.schema'), "
+            "json_type(metadata, '$.schema_version'), json_extract(metadata, '$.schema_version') "
+            "FROM run WHERE id=1"
         ).fetchone()
         if row is None or row[0] != row[1] or row[3] is not None or row[4] is not None:
             raise ValueError("Generation database queue identity changed")
+        if row[5:] != ("vntts.authoring-generation-state", "integer", 1):
+            raise ValueError("Unsupported generation working-state schema")
         counts = _progress_counts(connection)
         ready = tuple(
             (line_id, text_sha256)
@@ -317,14 +362,19 @@ def _progress_counts(connection: sqlite3.Connection) -> tuple[int, int, int]:
             raise ValueError("Generation database item status is malformed")
         counts[status] = counts.get(status, 0) + count
     cancelled = 0
-    for kind, status, review, failure in connection.execute(
+    for kind, status, review, failure, marker in connection.execute(
         "SELECT json_type(payload), json_extract(payload, '$.status'), "
-        "json_extract(payload, '$.review_status'), json_extract(payload, '$.failure.kind') "
+        "json_extract(payload, '$.review_status'), json_extract(payload, '$.failure.kind'), "
+        "json_type(payload, '$.failure.attempt_counted') "
         "FROM items WHERE status='failed'"
     ):
         if kind != "object" or status != "failed" or review is not None:
             raise ValueError(
                 "Generation database failure differs from its progress index"
+            )
+        if failure == "cancelled" and marker != "false":
+            raise ValueError(
+                "Counted cancellation requires the explicit storage upgrade"
             )
         cancelled += failure == "cancelled"
     return (
@@ -530,4 +580,10 @@ def active_attempt(path: Path) -> object:
         state = _object(row[1])
         if state.get("queue_sha256") != row[0]:
             raise ValueError("Generation database queue identity changed")
+        if (
+            state.get("schema"),
+            type(state.get("schema_version")),
+            state.get("schema_version"),
+        ) != ("vntts.authoring-generation-state", int, 1):
+            raise ValueError("Unsupported generation working-state schema")
         return state.get("active")

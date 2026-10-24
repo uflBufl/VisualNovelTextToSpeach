@@ -3,6 +3,7 @@ import json
 import os
 import sqlite3
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
@@ -530,7 +531,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
         )
         return job, jobs, voice_plan, manifest
 
-    def test_generation_input_inventory_discovers_legacy_once_and_sees_new_sql_rows(
+    def test_generation_input_inventory_uses_sql_without_scans_and_sees_new_rows(
         self,
     ):
         with TemporaryDirectory() as directory:
@@ -583,7 +584,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     inspector = StoryAudioInspector(content, indexed)
                     self.assertEqual(inspector.inspect("selected").generated, 4)
                     self.assertEqual(inspector.inspect("selected").generated, 4)
-                    self.assertEqual(len(scans), 1)
+                    self.assertEqual(len(scans), 0)
                 before = load_generation_state(
                     generation_state_path(original.output_directory), original.queue
                 )
@@ -598,9 +599,109 @@ class PregenerationInputStoreTest(unittest.TestCase):
                         )
                     )
 
-    def test_unindexed_legacy_inventory_imports_valid_metadata_and_preserves_corruption(
+    def test_pending_sql_publication_recovers_before_or_after_directory_rename(self):
+        for renamed in (False, True):
+            with self.subTest(renamed=renamed), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                job, jobs, plan, _ = self.fixture(root)
+                store = PregenerationInputStore(jobs)
+                prepared = store.materialize(job, plan)
+                document = load_generation_input_metadata(prepared.directory)
+                staging = prepared.directory.with_name(".generation-input-interrupted")
+                if not renamed:
+                    prepared.directory.rename(staging)
+                jobs.catalog.save_input(
+                    job.job_id, document, prepared.directory, staging=staging
+                )
+                recovered = store.materialize(job, plan)
+                self.assertEqual(recovered, prepared)
+                self.assertIsNone(jobs.catalog.input_staging(prepared.directory))
+                self.assertFalse(staging.exists())
+                self.assertFalse((prepared.directory / "input.json").exists())
+                self.assertEqual(
+                    load_generation_input_metadata(prepared.directory), document
+                )
+
+    def test_pending_sql_publication_rejects_corrupt_or_missing_staged_assets(self):
+        for missing in (False, True):
+            with self.subTest(missing=missing), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                job, jobs, plan, _ = self.fixture(root)
+                prepared = PregenerationInputStore(jobs).materialize(job, plan)
+                document = load_generation_input_metadata(prepared.directory)
+                staging = prepared.directory.with_name(".generation-input-interrupted")
+                prepared.directory.rename(staging)
+                if missing:
+                    (staging / "queue.jsonl").unlink()
+                else:
+                    (staging / "queue.jsonl").write_bytes(b"changed queue")
+                jobs.catalog.save_input(
+                    job.job_id, document, prepared.directory, staging=staging
+                )
+                with self.assertRaises((OSError, ValueError)):
+                    load_generation_input_metadata(prepared.directory)
+                self.assertFalse(prepared.directory.exists())
+                self.assertEqual(
+                    jobs.catalog.input_staging(prepared.directory), staging.resolve()
+                )
+                self.assertTrue(staging.exists())
+
+    def test_pending_future_input_schema_is_rejected_without_publishing_or_rewriting(
         self,
     ):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            job, jobs, plan, _ = self.fixture(root)
+            prepared = PregenerationInputStore(jobs).materialize(job, plan)
+            document = load_generation_input_metadata(prepared.directory)
+            staging = prepared.directory.with_name(".generation-input-future")
+            prepared.directory.rename(staging)
+            jobs.catalog.save_input(
+                job.job_id, document, prepared.directory, staging=staging
+            )
+            document["schema_version"] = 99
+            with jobs.catalog._connection(write=True) as connection:
+                connection.execute(
+                    "UPDATE generation_inputs SET payload=? WHERE directory=?",
+                    (json.dumps(document), str(prepared.directory.resolve())),
+                )
+            before = jobs.catalog.path.read_bytes()
+            with self.assertRaisesRegex(
+                PregenerationQueueError, "Unsupported offline generation input schema"
+            ):
+                PregenerationInputStore(jobs).materialize(job, plan)
+            self.assertFalse(prepared.directory.exists())
+            self.assertTrue(staging.is_dir())
+            self.assertEqual(jobs.catalog.path.read_bytes(), before)
+            self.assertEqual(
+                jobs.catalog.input_staging(prepared.directory), staging.resolve()
+            )
+
+    def test_concurrent_same_input_publication_keeps_one_complete_sql_registration(
+        self,
+    ):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            job, jobs, plan, _ = self.fixture(root)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(
+                        PregenerationInputStore(jobs).materialize, job, plan
+                    )
+                    for _ in range(2)
+                ]
+                first, second = (future.result() for future in futures)
+            self.assertEqual(first, second)
+            self.assertIsNone(jobs.catalog.input_staging(first.directory))
+            self.assertEqual(
+                jobs.generation_input_directories(), (first.directory.resolve(),)
+            )
+            self.assertEqual(
+                load_generation_input_metadata(first.directory)["identity"],
+                first.identity,
+            )
+
+    def test_unindexed_metadata_is_not_admitted_and_expected_input_fails_closed(self):
         for corrupt in (False, True):
             with self.subTest(corrupt=corrupt), TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -608,10 +709,8 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     job, jobs, plan, _ = self.fixture(root)
                     original = PregenerationInputStore(jobs).materialize(job, plan)
                     generate_prepared(original, PocketRenderer())
-                    document = load_generation_input_metadata(
-                        original.directory.resolve()
-                    )
-                    legacy = original.directory.resolve() / "input.json"
+                    document = load_generation_input_metadata(original.directory)
+                    legacy = original.directory / "input.json"
                     legacy.write_text(
                         "broken legacy metadata" if corrupt else json.dumps(document)
                     )
@@ -619,48 +718,22 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     with jobs.catalog._connection(write=True) as connection:
                         connection.execute(
                             "DELETE FROM generation_inputs WHERE directory=?",
-                            (str(original.directory.resolve().resolve()),),
+                            (str(original.directory.resolve()),),
                         )
                     restarted = PregenerationJobStore(jobs.root)
-                    self.assertEqual(
-                        restarted.generation_input_directories(),
-                        (original.directory.resolve(),),
+                    self.assertEqual(restarted.generation_input_directories(), ())
+                    with self.assertRaisesRegex(
+                        ValueError, "explicit legacy migration"
+                    ):
+                        load_generation_input_metadata(original.directory)
+                    with self.assertRaisesRegex(
+                        PregenerationQueueError, "explicit legacy migration"
+                    ):
+                        PregenerationInputStore(restarted).materialize(job, plan)
+                    self.assertEqual(legacy.read_bytes(), payload)
+                    self.assertIsNone(
+                        restarted.catalog.input_document(original.directory)
                     )
-                    content = inspect_story_index(job.catalog_story_index)
-                    inspector = StoryAudioInspector(content, restarted)
-                    if corrupt:
-                        with self.assertRaises(OfflinePackError):
-                            inspector.inspect("selected")
-                        revised = replace(
-                            plan,
-                            groups=tuple(
-                                replace(group, control_sha256="e" * 64)
-                                for group in plan.groups
-                            ),
-                        )
-                        with self.assertRaises(PregenerationQueueError):
-                            PregenerationInputStore(restarted).materialize(job, revised)
-                        self.assertEqual(legacy.read_bytes(), payload)
-                        self.assertIsNone(
-                            restarted.catalog.input_document(
-                                original.directory.resolve()
-                            )
-                        )
-                    else:
-                        self.assertEqual(inspector.inspect("selected").generated, 4)
-                        self.assertFalse(legacy.exists())
-                        self.assertEqual(
-                            restarted.catalog.input_document(
-                                original.directory.resolve()
-                            ),
-                            document,
-                        )
-                        self.assertEqual(
-                            StoryAudioInspector(content, restarted)
-                            .inspect("selected")
-                            .generated,
-                            4,
-                        )
                     self.assertEqual(
                         len(list(original.output_directory.rglob("*.wav"))), 4
                     )
@@ -928,7 +1001,6 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 prepared,
                 PocketRenderer(),
                 include_characters=("Narrator", "Hotelier"),
-                state_storage="sqlite",
             )
             content = inspect_story_index(job.story_index)
             selection = content.selections[0].selection_id
@@ -942,7 +1014,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 self.assertIsNone(coverage.manifest)
                 self.assertEqual(inspector.inspect(selection), coverage)
                 self.assertEqual(loaded.call_count, 1)
-            generate_prepared(prepared, PocketRenderer(), state_storage="sqlite")
+            generate_prepared(prepared, PocketRenderer())
             coverage = inspector.inspect(selection)
             self.assertEqual((coverage.generated, coverage.missing), (4, 0))
             restarted = StoryAudioInspector(content, jobs)
@@ -983,7 +1055,6 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 prepared,
                 PocketRenderer(),
                 include_characters=("Narrator",),
-                state_storage="sqlite",
             )
             content = inspect_story_index(job.story_index)
             StoryAudioInspector(content, jobs).inspect(
@@ -1015,7 +1086,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             root = Path(directory)
             job, jobs, plan, _ = self.fixture(root)
             prepared = PregenerationInputStore(jobs).materialize(job, plan)
-            generate_prepared(prepared, PocketRenderer(), state_storage="sqlite")
+            generate_prepared(prepared, PocketRenderer())
             content = inspect_story_index(job.story_index)
             selection = content.selections[0].selection_id
             self.assertEqual(
@@ -1046,7 +1117,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                         sidecar.unlink()
             self.assertEqual(target.read_bytes(), b"keep this file")
 
-    def test_legacy_readiness_keeps_unselected_path_validation_on_restart(self):
+    def test_sql_readiness_keeps_unselected_path_validation_on_restart(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             original, jobs, _plan, manifest = self.fixture(root)
@@ -1062,11 +1133,10 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 manifest_path=manifest,
             )
             prepared = PregenerationInputStore(jobs).materialize(job, plan)
-            generate_prepared(prepared, PocketRenderer(), state_storage="json")
-            self.assertEqual(
-                StoryAudioInspector(content, jobs).inspect("selected").generated, 4
-            )
-            self.assertFalse((jobs.root / "recordings.sqlite3").exists())
+            generate_prepared(prepared, PocketRenderer())
+            inspector = StoryAudioInspector(content, jobs)
+            self.assertEqual(inspector.inspect("selected").generated, 4)
+            self.assertTrue((jobs.root / "recordings.sqlite3").exists())
             state = load_generation_state(
                 generation_state_path(prepared.output_directory), prepared.queue
             )
@@ -1080,6 +1150,10 @@ class PregenerationInputStoreTest(unittest.TestCase):
             target.write_bytes(audio.read_bytes())
             audio.unlink()
             audio.symlink_to(target)
+            with self.assertRaisesRegex(
+                OfflinePackError, "stay within generation output"
+            ):
+                inspector.inspect("selected")
             with self.assertRaisesRegex(
                 OfflinePackError, "stay within generation output"
             ):

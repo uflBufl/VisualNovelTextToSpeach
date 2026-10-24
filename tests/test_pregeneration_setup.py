@@ -160,8 +160,7 @@ class PregenerationSetupTest(unittest.TestCase):
             store = PregenerationJobStore(root / "jobs")
             document = job.to_document()
             document.pop("game_id")
-            store.directory_for(job.job_id).mkdir(parents=True)
-            write_versioned_json(store.path_for(job.job_id), 1, document)
+            store.catalog.save_job(document)
             legacy = store.load(job.job_id)
             self.assertIsNone(legacy.game_id)
             before = source.read_bytes()
@@ -498,7 +497,7 @@ class PregenerationSetupTest(unittest.TestCase):
             self.assertEqual(store.source_story_indexes(), ())
             first = store.create_or_resume(content, ("main-1",))
             store.create_or_resume(content, ("rhiannon",))
-            damaged = store.path_for("d" * 24)
+            damaged = store.directory_for("d" * 24) / "job.json"
             damaged.parent.mkdir()
             damaged.write_text("invalid job", encoding="utf-8")
             self.assertEqual(len(store.jobs_for_content(content)), 2)
@@ -1117,7 +1116,7 @@ class PregenerationSetupTest(unittest.TestCase):
             )
             self.assertEqual(store.latest_for_content(content), first)
             self.assertTrue(store.catalog.path.is_file())
-            self.assertFalse(store.path_for(first.job_id).exists())
+            self.assertFalse((store.directory_for(first.job_id) / "job.json").exists())
 
     def test_resumed_installed_game_job_uses_current_provider(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1188,7 +1187,7 @@ class PregenerationSetupTest(unittest.TestCase):
             content = inspect_story_index(write_story_index(root / "content"))
             store = PregenerationJobStore(root / "jobs")
             job = store.create_or_resume(content, ("main-1",))
-            packs = store.path_for(job.job_id).parent / "game-packs"
+            packs = store.directory_for(job.job_id) / "game-packs"
             valid = ("a" * 24, "B" * 24)
             invalid = (
                 "+" + "a" * 23,
@@ -1204,7 +1203,7 @@ class PregenerationSetupTest(unittest.TestCase):
                 manifest.write_text("{}", encoding="utf-8")
                 if identity in valid:
                     self.assertEqual(
-                        store.path_for(identity), store.root / identity / "job.json"
+                        store.directory_for(identity), store.root / identity
                     )
                     manifests.append(manifest)
                 else:
@@ -1212,7 +1211,7 @@ class PregenerationSetupTest(unittest.TestCase):
                         self.subTest(identity=identity),
                         self.assertRaisesRegex(PregenerationSetupError, "identity"),
                     ):
-                        store.path_for(identity)
+                        store.directory_for(identity)
             self.assertCountEqual(store.published_packs(job), manifests)
 
     def test_saved_job_rejects_non_text_selected_line_id(self):
@@ -1233,11 +1232,17 @@ class PregenerationSetupTest(unittest.TestCase):
             legacy.directory_for(job.job_id).mkdir(parents=True)
             document = job.to_document()
             document["selected_line_ids"] = [job.selected_line_ids[0], 7]
-            write_versioned_json(legacy.path_for(job.job_id), 1, document)
+            write_versioned_json(
+                (legacy.directory_for(job.job_id) / "job.json"), 1, document
+            )
+            with self.assertRaisesRegex(
+                PregenerationSetupError, "explicit legacy migration"
+            ):
+                legacy.load(job.job_id)
             with self.assertRaisesRegex(
                 PregenerationSetupError, "selected_line_ids must contain non-empty text"
             ):
-                legacy.load(job.job_id)
+                type(job).from_document(document)
 
     def test_prepared_story_coverage_accumulates_across_jobs(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1268,7 +1273,7 @@ class PregenerationSetupTest(unittest.TestCase):
             content = inspect_story_index(write_story_index(root / "content"))
             store = PregenerationJobStore(root / "jobs")
             job = store.create_or_resume(content, ("main-1",))
-            job_directory = store.path_for(job.job_id).parent
+            job_directory = store.directory_for(job.job_id)
             game_packs = job_directory / "game-packs"
             pack_directory = game_packs / f"pack-{'a' * 24}"
             manifest = pack_directory / "game-pack.json"
@@ -2293,7 +2298,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
             store = PregenerationJobStore(root / "jobs")
-            path = store._selection_path(content)
+            path = (
+                store.root / "selections" / f"{content.catalog_story_index_sha256}.json"
+            )
             write_versioned_json(path, 2, {"selected_story_ids": ["rhiannon"]})
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
@@ -2303,8 +2310,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.addCleanup(dialog.deleteLater)
             self.assertEqual(dialog.selected_story_ids(), ())
             self.assertIn("Unable to restore", dialog.selection_status.text())
+            self.assertIn("explicit legacy migration", dialog.selection_status.text())
+            self.assertFalse(dialog.continue_button.isEnabled())
+            self.assertFalse(dialog.prepare_again.isEnabled())
+            dialog._continue_requested()
+            self.assertFalse(store.catalog.path.exists())
             dialog.close()
-            with self.assertRaises(ValueError):
+            with self.assertRaises(PregenerationSetupError):
                 store.selection_for_content(content)
 
     def test_story_audio_check_runs_in_background_and_discards_old_selection(self):
@@ -3256,7 +3268,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             jobs = PregenerationJobStore(root / "jobs")
             job = jobs.create_or_resume(source, ("rhiannon",))
             published = (
-                jobs.path_for(job.job_id).parent
+                jobs.directory_for(job.job_id)
                 / "game-packs"
                 / f"pack-{'1' * 24}"
                 / "game-pack.json"

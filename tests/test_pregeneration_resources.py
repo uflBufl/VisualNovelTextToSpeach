@@ -10,6 +10,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import write_story_index_document
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
+from tests.generation_state_fixtures import replace_generation_state
 from tests.pregeneration_fixtures import fixture
 from tests.pregeneration_fixtures import item as pack_item
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
@@ -183,8 +184,10 @@ class PregenerationResourcesTest(unittest.TestCase):
             inputs = _inputs(Path(temporary_directory))
             output = inputs.directory.parent / "generation-output-aaaaaaaaaaaaaaaa"
             output.mkdir()
-            state = output / "generation-state.json"
-            state.write_text("{}", encoding="utf-8")
+            state = output / "generation-state.sqlite3"
+            replace_generation_state(
+                state, {"queue_sha256": inputs.queue_sha256, "items": {}}
+            )
             items = (
                 SimpleNamespace(queue_id="done", action="generate", text="Done."),
                 SimpleNamespace(
@@ -198,7 +201,11 @@ class PregenerationResourcesTest(unittest.TestCase):
                 ),
                 patch(
                     "vntts.pregeneration_setup.load_generation_state_from_snapshot",
-                    return_value={"items": {"done": {"status": "approved"}}},
+                    return_value={
+                        "items": {
+                            "done": {"status": "approved", "review_status": "approved"}
+                        }
+                    },
                 ),
             ):
                 estimate = estimate_generation_resources(inputs)

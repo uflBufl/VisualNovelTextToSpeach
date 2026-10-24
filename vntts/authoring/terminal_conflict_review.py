@@ -1240,7 +1240,9 @@ def _candidate_has_exact_cohort_approval(
             authority = source["review_authority"]
             if snapshot.sha256 != authority["state_sha256"]:
                 continue
-            state = snapshot.json_document("cohort-approved terminal conflict state")
+            state = snapshot.generation_state_document(
+                "cohort-approved terminal conflict state"
+            )
             items = state.get("items")
             if not isinstance(items, dict):
                 continue
@@ -1364,7 +1366,9 @@ def _assert_candidate_source_authority(
     workspace = Path(
         _text(workspace_record.get("workspace"), "Workspace path")
     ).resolve()
-    expected_state = (workspace / "generated-audio" / "generation-state.json").resolve()
+    expected_state = (
+        workspace / "generated-audio" / "generation-state.sqlite3"
+    ).resolve()
     expected_queue = (workspace / "queue.jsonl").resolve()
     state_path = Path(source["state"])
     queue_path = Path(source["queue"])

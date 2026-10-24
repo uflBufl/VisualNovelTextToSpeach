@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,14 +21,16 @@ from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_state import (
     load_generation_state,
     load_generation_state_from_snapshot,
+    load_generation_state_object_snapshot,
     load_stable_generation_queue,
+    read_generation_state_document,
+    write_generation_state,
 )
 from vntts.authoring.publication import generation_publication_leases
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     load_workspace_authority,
 )
-from vntts.authoring.workspace_foundation import load_json_object_snapshot
 from vntts.authoring.workspace_voice_runtime import (
     load_failure_reference_runtime_binding,
     load_workspace_queue_voice_overrides,
@@ -142,8 +143,8 @@ def carry_failed_controls(
             target_directory, target, target_workspace_sha256 = (
                 load_workspace_authority(target_directory)
             )
-            source_state_path = source_output / "generation-state.json"
-            target_state_path = target_output / "generation-state.json"
+            source_state_path = source_output / "generation-state.sqlite3"
+            target_state_path = target_output / "generation-state.sqlite3"
             capture = _capture_carry_controls(
                 source_queue,
                 target_queue,
@@ -181,7 +182,7 @@ def carry_failed_controls(
                 _validate_existing_report(report_path, report, proposal.state)
                 _assert_carry_controls_unchanged(capture)
                 return _result(target_directory, report_path, report, created=False)
-            atomic_write_json(target_state_path, proposal.state, sort_keys=True)
+            write_generation_state(target_state_path, proposal.state)
             load_generation_state(target_state_path, target_queue)
             atomic_write_json(report_path, report, sort_keys=True)
             _validate_existing_report(report_path, report, proposal.state)
@@ -308,11 +309,19 @@ def _capture_carry_controls(
         raise FailedControlCarryError(
             "Failed-control source queue changed during capture"
         )
-    source_state, source_sha256, _source_payload = load_json_object_snapshot(
-        source_state_path, "source generation state", error_type=FailedControlCarryError
+    source_state, source_sha256, _source_payload = (
+        load_generation_state_object_snapshot(
+            source_state_path,
+            "source generation state",
+            error_type=FailedControlCarryError,
+        )
     )
-    target_state, target_sha256, _target_payload = load_json_object_snapshot(
-        target_state_path, "target generation state", error_type=FailedControlCarryError
+    target_state, target_sha256, _target_payload = (
+        load_generation_state_object_snapshot(
+            target_state_path,
+            "target generation state",
+            error_type=FailedControlCarryError,
+        )
     )
     source_state = load_generation_state_from_snapshot(
         source_state_path, queue, queue_sha256, state_document=source_state
@@ -353,9 +362,9 @@ def _validate_existing_report(
 ) -> None:
     try:
         observed = decode_json(read_regular_text(report_path, encoding="utf-8"))
-        state_path = report_path.parent / "generation-state.json"
-        observed_state = decode_json(read_regular_text(state_path, encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        state_path = report_path.parent / "generation-state.sqlite3"
+        observed_state = read_generation_state_document(state_path)
+    except (OSError, UnicodeDecodeError, ValueError) as error:
         raise FailedControlCarryError(str(error)) from error
     if observed != expected:
         raise FailedControlCarryError("Existing failed-control carry report differs")

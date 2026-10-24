@@ -164,7 +164,7 @@ def review_workspace_item(
             _safe_relative(workspace["output"], "Output"),
             "Output",
         )
-        state_path = output / "generation-state.json"
+        state_path = output / "generation-state.sqlite3"
         if not state_path.is_file():
             raise AuthoringWorkbenchError("Workspace has no generation state to review")
     try:

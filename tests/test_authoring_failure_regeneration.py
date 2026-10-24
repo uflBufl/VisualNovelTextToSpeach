@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
+from tests.generation_state_fixtures import replace_generation_state
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_regeneration import (
     FailureRegenerationError,
@@ -57,8 +58,13 @@ class FailureRegenerationPlanTest(unittest.TestCase):
             (root / "generated-audio").mkdir()
             (root / "workspace.json").write_text(json.dumps(workspace))
             (root / "queue.jsonl").write_text("fixture queue")
-            state_path = root / "generated-audio/generation-state.json"
-            state_path.write_text(json.dumps(state))
+            state_path = root / "generated-audio/generation-state.sqlite3"
+            state.update(
+                schema="vntts.authoring-generation-state",
+                schema_version=1,
+                queue_sha256=sha256_file(root / "queue.jsonl"),
+            )
+            replace_generation_state(state_path, state)
             repair["queue_sha256"] = sha256_file(root / "queue.jsonl")
             repair["state_sha256"] = sha256_file(state_path)
             with (

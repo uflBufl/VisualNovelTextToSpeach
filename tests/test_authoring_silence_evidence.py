@@ -37,7 +37,7 @@ def evidence_metadata():
     return {
         "queue": "queue.jsonl",
         "queue_sha256": "a" * 64,
-        "state": "generation-state.json",
+        "state": "generation-state.sqlite3",
         "state_sha256": "b" * 64,
         "queue_id": "queue-id",
         "line_id": "line-id",

@@ -1,8 +1,10 @@
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import unittest
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,9 +18,11 @@ from vntts_artifacts.generated_audio import write_generated_audio_manifest
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.story_index import write_story_index_document
 
+from tests.generation_state_fixtures import replace_generation_state
 from tests.story_fixtures import write_story_index
 from vntts import generation_database, path_safety
 from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.authoring.generation_state import STATE_SCHEMA, STATE_VERSION
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
@@ -155,11 +159,23 @@ def cold_progress_inputs(root):
         ],
     )
     state = {
+        "schema": STATE_SCHEMA,
+        "schema_version": STATE_VERSION,
         "queue_sha256": inputs.queue_sha256,
-        "items": {"saved": {"status": "approved", "line_id": "saved"}},
+        "items": {
+            "saved": {
+                "status": "approved",
+                "review_status": "approved",
+                "line_id": "saved",
+                "text_sha256": text_sha256(text),
+            }
+        },
         "active": None,
     }
-    (output / "generation-state.json").write_text(json.dumps(state), encoding="utf-8")
+    replace_generation_state(
+        output / "generation-state.sqlite3",
+        state,
+    )
     return inputs, audio, state
 
 
@@ -215,7 +231,12 @@ class OfflineGenerationSessionTest(unittest.TestCase):
     def test_per_line_generate_and_repair_share_worker_until_session_exit(self):
         output = self.root / f"generation-output-{self.generation_input.identity[:16]}"
         result = OfflineGenerationResult(
-            output, output / "generation-state.json", output / "manifest.json", 3, 0, 0
+            output,
+            output / "generation-state.sqlite3",
+            output / "manifest.json",
+            3,
+            0,
+            0,
         )
         calls = []
 
@@ -448,8 +469,8 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                         "status": "failed",
                         "failure": {"kind": "backend_error"},
                     },
-                    "ready": {"status": "approved"},
-                    "omitted": {"status": "omitted"},
+                    "ready": {"status": "approved", "review_status": "approved"},
+                    "omitted": {"status": "omitted", "review_status": "omitted"},
                 },
             }
             with patch(
@@ -470,7 +491,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             output = inputs.output_directory
             result = OfflineGenerationResult(
                 output,
-                output / "generation-state.json",
+                output / "generation-state.sqlite3",
                 output / "manifest.json",
                 0,
                 0,
@@ -560,20 +581,43 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 f"generation-output-{inputs.identity[:16]}"
             )
             output.mkdir()
-            (output / "generation-state.json").write_text(
-                json.dumps(
+            replace_generation_state(
+                output / "generation-state.sqlite3",
+                {
+                    "schema": STATE_SCHEMA,
+                    "schema_version": STATE_VERSION,
+                    "queue_sha256": inputs.queue_sha256,
+                    "items": {
+                        "generated": {
+                            "status": "generated",
+                            "review_status": "pending_review",
+                            "line_id": "generated",
+                            "text_sha256": text_sha256("Prepared now."),
+                        }
+                    },
+                    "active": None,
+                },
+            )
+
+            audio = output / "generated.wav"
+            write_pcm16_wav(audio, [0.1, -0.1] * 60, 24000)
+            write_generated_audio_manifest(
+                output / "live-progress-manifest.json",
+                {
+                    "source_queue_sha256": inputs.queue_sha256,
+                    "vntts.runtime.progress": True,
+                },
+                [
                     {
-                        "queue_sha256": inputs.queue_sha256,
-                        "items": {
-                            "generated": {
-                                "status": "generated",
-                                "line_id": "generated",
-                            }
-                        },
-                        "active": None,
+                        "line_id": "generated",
+                        "text_sha256": text_sha256("Prepared now."),
+                        "audio": audio.name,
+                        "audio_format": PCM16_MONO_WAV_FORMAT,
+                        "audio_sha256": sha256_file(audio),
+                        "sample_rate": 24000,
+                        "sample_count": 120,
                     }
-                ),
-                encoding="utf-8",
+                ],
             )
 
             with patch(
@@ -614,9 +658,14 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     f"generation-output-{current.identity[:16]}"
                 )
                 output.mkdir()
-                (output / "generation-state.json").write_text(
-                    json.dumps({"queue_sha256": current.queue_sha256, "items": {}}),
-                    encoding="utf-8",
+                replace_generation_state(
+                    output / "generation-state.sqlite3",
+                    {
+                        "schema": STATE_SCHEMA,
+                        "schema_version": STATE_VERSION,
+                        "queue_sha256": current.queue_sha256,
+                        "items": {},
+                    },
                 )
                 self.assertEqual(
                     worker.inspect_progress(current).ready_line_ids, (line_id,)
@@ -784,15 +833,54 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 self.assertEqual(progress.generated, 1)
                 self.assertEqual(progress.ready_line_ids, ())
 
+    def test_invalid_sql_authority_refuses_models_and_retained_sessions_before_startup(
+        self,
+    ):
+        for damage in ("corrupt", "future-database", "future-state", "foreign-queue"):
+            with self.subTest(damage=damage), TemporaryDirectory() as directory:
+                root = Path(directory)
+                inputs, audio, state = cold_progress_inputs(root)
+                _other, plan = generation_inputs(root / "plan", backend="moss-tts")
+                path = inputs.output_directory / "generation-state.sqlite3"
+                if damage == "corrupt":
+                    path.write_bytes(b"corrupt saved authority")
+                elif damage == "future-database":
+                    with closing(sqlite3.connect(path)) as connection:
+                        connection.execute("PRAGMA user_version = 999")
+                else:
+                    state[
+                        "schema_version" if damage == "future-state" else "queue_sha256"
+                    ] = 999 if damage == "future-state" else "f" * 64
+                    replace_generation_state(path, state)
+                before, audio_before = path.read_bytes(), audio.read_bytes()
+                backend, process = Mock(), Mock()
+                worker = OfflineGenerationWorker(
+                    backend_factory=backend,
+                    popen_factory=process,
+                    retain_isolated_backend=True,
+                )
+                with self.assertRaises(OfflineGenerationError):
+                    worker.generate(inputs, plan)
+                with (
+                    self.assertRaises(OfflineGenerationError),
+                    worker.generation_session(inputs, plan),
+                ):
+                    self.fail("Invalid SQL authority admitted a retained model session")
+                backend.assert_not_called()
+                process.assert_not_called()
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(audio.read_bytes(), audio_before)
+
     def test_cold_progress_rejects_foreign_or_malformed_state(self):
         for failure in ("foreign", "malformed"):
             with self.subTest(failure=failure), TemporaryDirectory() as directory:
                 inputs, _audio, state = cold_progress_inputs(Path(directory))
                 state["queue_sha256"] = "f" * 64
-                path = inputs.output_directory / "generation-state.json"
-                path.write_text(
-                    "broken JSON" if failure == "malformed" else json.dumps(state)
-                )
+                path = inputs.output_directory / "generation-state.sqlite3"
+                if failure == "malformed":
+                    path.write_bytes(b"broken SQLite")
+                else:
+                    replace_generation_state(path, state)
                 with self.assertRaises(OfflineGenerationError):
                     OfflineGenerationWorker(backend_factory=Mock()).inspect_progress(
                         inputs
@@ -810,14 +898,15 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             )
             output = inputs.output_directory
             output.mkdir()
-            (output / "generation-state.json").write_text(
-                json.dumps(
-                    {
-                        "queue_sha256": inputs.queue_sha256,
-                        "items": {},
-                        "active": None,
-                    }
-                )
+            replace_generation_state(
+                output / "generation-state.sqlite3",
+                {
+                    "schema": STATE_SCHEMA,
+                    "schema_version": STATE_VERSION,
+                    "queue_sha256": inputs.queue_sha256,
+                    "items": {},
+                    "active": None,
+                },
             )
             progress = OfflineGenerationWorker(backend_factory=Mock()).inspect_progress(
                 inputs
@@ -830,7 +919,11 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             inputs, _audio, state = cold_progress_inputs(Path(directory))
             worker = OfflineGenerationWorker(backend_factory=Mock())
-            state["items"]["second"] = {"status": "approved", "line_id": "second"}
+            state["items"]["second"] = {
+                "status": "approved",
+                "review_status": "approved",
+                "line_id": "second",
+            }
 
             def callback(_inputs, _progress):
                 worker._record_progress(state, inputs)
@@ -852,23 +945,29 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             generation_input, _plan = generation_inputs(root)
             output = root / f"generation-output-{generation_input.identity[:16]}"
             output.mkdir()
-            (output / "generation-state.json").write_text(
-                json.dumps(
-                    {
-                        "queue_sha256": generation_input.queue_sha256,
-                        "items": {
-                            "one": {"status": "generated"},
-                            "two": {"status": "failed"},
-                            "three": {"status": "live_fallback"},
+            replace_generation_state(
+                output / "generation-state.sqlite3",
+                {
+                    "schema": STATE_SCHEMA,
+                    "schema_version": STATE_VERSION,
+                    "queue_sha256": generation_input.queue_sha256,
+                    "items": {
+                        "one": {
+                            "status": "generated",
+                            "review_status": "pending_review",
                         },
-                        "active": {
-                            "phase": "validating",
-                            "runtime_status": "GPU: RTX 2070 SUPER; auxiliary: CPU",
-                            "runtime_worker_pid": 12345,
+                        "two": {"status": "failed"},
+                        "three": {
+                            "status": "live_fallback",
+                            "review_status": "live_fallback",
                         },
-                    }
-                ),
-                encoding="utf-8",
+                    },
+                    "active": {
+                        "phase": "validating",
+                        "runtime_status": "GPU: RTX 2070 SUPER; auxiliary: CPU",
+                        "runtime_worker_pid": 12345,
+                    },
+                },
             )
 
             worker = OfflineGenerationWorker()
@@ -901,7 +1000,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             )
             state["items"]["cancelled"] = {
                 "status": "failed",
-                "failure": {"kind": "cancelled"},
+                "failure": {"kind": "cancelled", "attempt_counted": False},
             }
             state["items"]["failed"] = {"status": "failed"}
             state["active"] = {
@@ -914,7 +1013,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             before = path.read_bytes()
             worker = OfflineGenerationWorker()
             with patch(
-                "vntts.pregeneration_generation.read_generation_state_document",
+                "vntts.generation_database.read_state",
                 side_effect=AssertionError("Progress loaded full state evidence"),
             ):
                 progress = worker.inspect_progress(inputs)
@@ -973,7 +1072,15 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 f"generation-output-{generation_input.identity[:16]}"
             )
             output.mkdir()
-            (output / "generation-state.json").write_text("{}", encoding="utf-8")
+            replace_generation_state(
+                output / "generation-state.sqlite3",
+                {
+                    "schema": STATE_SCHEMA,
+                    "schema_version": STATE_VERSION,
+                    "queue_sha256": generation_input.queue_sha256,
+                    "items": {},
+                },
+            )
             (output / "manifest.json").write_text("{}", encoding="utf-8")
             popen = Mock(return_value=FinishedProcess())
             worker = OfflineGenerationWorker(
@@ -981,9 +1088,12 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             )
             state = {
                 "items": {
-                    "one": {"status": "generated"},
+                    "one": {"status": "generated", "review_status": "pending_review"},
                     "two": {"status": "failed"},
-                    "three": {"status": "live_fallback"},
+                    "three": {
+                        "status": "live_fallback",
+                        "review_status": "live_fallback",
+                    },
                 }
             }
 
@@ -992,12 +1102,8 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     "vntts.pregeneration_generation.load_generation_state",
                     side_effect=[{"items": {}}, state, state],
                 ),
-                patch(
-                    "vntts.pregeneration_generation._upgrade_legacy_generation_state"
-                ) as upgrade,
             ):
                 result = worker.generate(generation_input, plan)
-            upgrade.assert_called_once_with(generation_input)
 
         self.assertEqual(popen.call_count, 2)
         ordinary_arguments = popen.call_args_list[0].args[0]
@@ -1028,13 +1134,24 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 f"generation-output-{generation_input.identity[:16]}"
             )
             output.mkdir()
-            (output / "generation-state.json").write_text("{}", encoding="utf-8")
+            replace_generation_state(
+                output / "generation-state.sqlite3",
+                {
+                    "schema": STATE_SCHEMA,
+                    "schema_version": STATE_VERSION,
+                    "queue_sha256": generation_input.queue_sha256,
+                    "items": {},
+                },
+            )
             (output / "manifest.json").write_text("{}", encoding="utf-8")
             popen = Mock()
             state = {
                 "items": {
-                    "one": {"status": "approved"},
-                    "two": {"status": "live_fallback"},
+                    "one": {"status": "approved", "review_status": "approved"},
+                    "two": {
+                        "status": "live_fallback",
+                        "review_status": "live_fallback",
+                    },
                     "three": {"status": "failed"},
                 }
             }
@@ -1044,14 +1161,10 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     "vntts.pregeneration_generation.load_generation_state",
                     return_value=state,
                 ),
-                patch(
-                    "vntts.pregeneration_generation._upgrade_legacy_generation_state"
-                ) as upgrade,
             ):
                 result = OfflineGenerationWorker(
                     command=("worker",), popen_factory=popen
                 ).generate(generation_input, plan)
-            upgrade.assert_called_once_with(generation_input)
 
         popen.assert_not_called()
         self.assertEqual(result.total, generation_input.ready_items)
@@ -1089,7 +1202,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             output = root / f"generation-output-{generation_input.identity[:16]}"
             expected = OfflineGenerationResult(
                 output,
-                output / "generation-state.json",
+                output / "generation-state.sqlite3",
                 output / "manifest.json",
                 3,
                 0,
@@ -1108,7 +1221,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             open_text = path_safety.open_regular_text
 
             def reject_state_poll(path, *args, **kwargs):
-                if Path(path).name == "generation-state.json":
+                if Path(path).name == "generation-state.sqlite3":
                     raise AssertionError("disk poll")
                 return open_text(path, *args, **kwargs)
 
@@ -1121,7 +1234,13 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 progress = kwargs["progress_callback"]
                 state = {
                     "queue_sha256": generation_input.queue_sha256,
-                    "items": {"one": {"status": "approved", "line_id": "first"}},
+                    "items": {
+                        "one": {
+                            "status": "approved",
+                            "review_status": "approved",
+                            "line_id": "first",
+                        }
+                    },
                     "active": {
                         "phase": "publishing",
                         "runtime_status": "GPU: RTX 2070 SUPER",
@@ -1130,7 +1249,11 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 }
                 progress(state)
                 snapshots.append(worker.inspect_progress(generation_input))
-                state["items"]["two"] = {"status": "approved", "line_id": "second"}
+                state["items"]["two"] = {
+                    "status": "approved",
+                    "review_status": "approved",
+                    "line_id": "second",
+                }
                 snapshots.append(worker.inspect_progress(generation_input))
                 progress(state)
                 snapshots.append(worker.inspect_progress(generation_input))
@@ -1322,11 +1445,19 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 f"generation-output-{generation_input.identity[:16]}"
             )
             output.mkdir()
-            (output / "generation-state.json").write_text("{}", encoding="utf-8")
+            replace_generation_state(
+                output / "generation-state.sqlite3",
+                {
+                    "schema": STATE_SCHEMA,
+                    "schema_version": STATE_VERSION,
+                    "queue_sha256": generation_input.queue_sha256,
+                    "items": {},
+                },
+            )
             (output / "manifest.json").write_text("{}", encoding="utf-8")
             generation_result = OfflineGenerationResult(
                 output,
-                output / "generation-state.json",
+                output / "generation-state.sqlite3",
                 output / "manifest.json",
                 1,
                 2,
@@ -1334,7 +1465,11 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             )
             popen = Mock(return_value=FinishedProcess())
             worker = OfflineGenerationWorker(command=("worker",), popen_factory=popen)
-            state = {"items": {"one": {"status": "generated"}}}
+            state = {
+                "items": {
+                    "one": {"status": "generated", "review_status": "pending_review"}
+                }
+            }
 
             with patch(
                 "vntts.pregeneration_generation.load_generation_state",
@@ -1381,9 +1516,17 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             generation_input, plan = generation_inputs(root)
             output = root / f"generation-output-{generation_input.identity[:16]}"
             output.mkdir()
-            state = output / "generation-state.json"
+            state = output / "generation-state.sqlite3"
             manifest = output / "manifest.json"
-            state.write_text("{}", encoding="utf-8")
+            replace_generation_state(
+                state,
+                {
+                    "schema": STATE_SCHEMA,
+                    "schema_version": STATE_VERSION,
+                    "queue_sha256": generation_input.queue_sha256,
+                    "items": {},
+                },
+            )
             manifest.write_text("{}", encoding="utf-8")
             result = OfflineGenerationResult(output, state, manifest, 1, 2, 0)
             popen = Mock(return_value=FinishedProcess())
@@ -1391,7 +1534,11 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
 
             with patch(
                 "vntts.pregeneration_generation.load_generation_state",
-                return_value={"items": {"a": {"status": "generated"}}},
+                return_value={
+                    "items": {
+                        "a": {"status": "generated", "review_status": "pending_review"}
+                    }
+                },
             ):
                 worker.repair(
                     generation_input,

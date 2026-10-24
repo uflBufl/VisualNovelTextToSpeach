@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib
-import json
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -45,7 +44,10 @@ from vntts.authoring.failure_repair import (
     FailureRepairPolicy,
     FailureRepairPolicyError,
 )
-from vntts.authoring.generation_state import load_generation_state_from_snapshot
+from vntts.authoring.generation_state import (
+    decode_generation_state_snapshot,
+    load_generation_state_from_snapshot,
+)
 from vntts.authoring.offline_fallback_authority import (
     OfflineFallbackAuthority,
     OfflineFallbackAuthorityError,
@@ -92,7 +94,6 @@ from vntts.authoring.workspace_state import (
 )
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import sha256_file
-from vntts.json_types import decode_json
 from vntts.json_types import (
     has_schema_version as _has_exact_schema_version,
 )
@@ -169,7 +170,7 @@ def _load_workspace_scoped(workspace_directory: str | Path) -> WorkspaceLoad:
     )
     if (
         state_sha256 is not None
-        and sha256_file(directory / "generated-audio/generation-state.json")
+        and sha256_file(directory / "generated-audio/generation-state.sqlite3")
         != state_sha256
     ):
         raise AuthoringWorkbenchError("Workspace generation state changed while loaded")
@@ -350,7 +351,7 @@ def _load_workspace_validation_state(
         and type(carry.get("schema_version")) is int
         and carry.get("schema_version") in {2, 3, 4}
     ):
-        state_path = directory / "generated-audio/generation-state.json"
+        state_path = directory / "generated-audio/generation-state.sqlite3"
         payload = read_regular_file(
             state_path,
             "workspace generation state",
@@ -359,7 +360,7 @@ def _load_workspace_validation_state(
         state_sha256 = hashlib.sha256(payload).hexdigest()
         try:
             queue = _load_bound_workspace_queue(directory, workspace)
-            state_document = decode_json(payload.decode("utf-8"))
+            state_document = decode_generation_state_snapshot(payload)
             if not isinstance(state_document, dict):
                 raise BulkGenerationError("Generation state must be a JSON object")
             state = load_generation_state_from_snapshot(
@@ -376,7 +377,7 @@ def _load_workspace_validation_state(
             BulkGenerationError,
             OSError,
             UnicodeDecodeError,
-            json.JSONDecodeError,
+            ValueError,
         ) as error:
             raise AuthoringWorkbenchError(str(error)) from error
         share_workspace_generation_state(
@@ -732,7 +733,10 @@ def _validated_carry_forward_seed_binding(
         return None
     if not isinstance(seed, dict) or set(seed) != {"path", "sha256"}:
         raise AuthoringWorkbenchError("Workspace seed state binding is malformed")
-    if seed.get("path") != "provenance/seed-generation-state.json":
+    if seed.get("path") not in {
+        "provenance/seed-generation-state.sqlite3",
+        "provenance/seed-generation-state.json",
+    }:
         raise AuthoringWorkbenchError("Workspace seed state path was modified")
     seed_path = _within(
         directory,
@@ -1165,7 +1169,7 @@ def _validate_workspace_offline_fallback_state(
     ):
         return
     queue_path = directory / "queue.jsonl"
-    state_path = directory / "generated-audio" / "generation-state.json"
+    state_path = directory / "generated-audio" / "generation-state.sqlite3"
     state = _load_workspace_generation_state(state, state_path, queue_path)
     carry_items = carry.get("items")
     if not isinstance(carry_items, list):
@@ -1569,7 +1573,7 @@ def _validate_workspace_outcome_merge(
     )
     state = _load_workspace_generation_state(
         state,
-        directory / "generated-audio/generation-state.json",
+        directory / "generated-audio/generation-state.sqlite3",
         directory / "queue.jsonl",
     )
     queue_ids = []
@@ -1866,7 +1870,7 @@ def _validate_workspace_terminal_conflict_merge(
         )
     state = _load_workspace_generation_state(
         state,
-        directory / "generated-audio/generation-state.json",
+        directory / "generated-audio/generation-state.sqlite3",
         directory / "queue.jsonl",
     )
     queue_ids = []

@@ -144,12 +144,6 @@ from vntts.authoring.generation_state import (
     FAILURE_KINDS as FAILURE_KINDS,
 )
 from vntts.authoring.generation_state import (
-    LEGACY_STATE_SCHEMA as LEGACY_STATE_SCHEMA,
-)
-from vntts.authoring.generation_state import (
-    LEGACY_STATE_VERSION as LEGACY_STATE_VERSION,
-)
-from vntts.authoring.generation_state import (
     LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED as LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
 )
 from vntts.authoring.generation_state import (
@@ -295,6 +289,7 @@ from vntts.authoring.workspace_foundation import (
     load_json_object,
 )
 from vntts.document_identity import file_sha256, sha256_file
+from vntts.generation_database import require_registered_output
 from vntts.generation_database import state_path as generation_state_path
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
@@ -1129,7 +1124,6 @@ def _skip_existing_generation_item(
             existing,
             run.output_directory,
             item,
-            state_schema=run.state["schema"],
         )
         if not run.regenerate_existing:
             source = run.output_directory / str(existing["path"])
@@ -2355,7 +2349,6 @@ def run_bulk_generation(
     audio_event_spoken_projection_queue_ids: Sequence[object] | None = None,
     synthesis_cache_policy: object = SynthesisCachePolicy.BYPASS,
     audio_store_directory: str | Path | None = None,
-    state_storage: str = "json",
     approve_validated_audio: bool = False,
     progress_callback: Callable[[JsonDocument], None] | None = None,
 ) -> BulkGenerationResult:
@@ -2446,15 +2439,7 @@ def run_bulk_generation(
             ],
         }
     )
-    if state_storage not in {"json", "sqlite"}:
-        raise BulkGenerationError("Unsupported generation state storage")
-    state_path = output_directory / (
-        "generation-state.sqlite3"
-        if state_storage == "sqlite"
-        or (output_directory / "generation-state.sqlite3").exists()
-        or (output_directory / "generation-state.sqlite3").is_symlink()
-        else "generation-state.json"
-    )
+    state_path = generation_state_path(output_directory)
     manifest_path = output_directory / "manifest.json"
     output_directory.mkdir(parents=True, exist_ok=True)
 
@@ -2560,9 +2545,8 @@ def _run_generation_execution(
         _assert_generation_workspace_identity(
             workspace_output_identity, output_argument
         )
-        interrupted_job = _guard_job_process(
-            output_directory, process_checker or process_is_alive
-        )
+        lease.assert_owned()
+        interrupted_job = lease.interrupted_process
         state = _load_or_create_state(state_path, output_directory, queue, queue_sha256)
         _validate_failure_repair_selection(
             repair_policy, selected_queue_ids, state, queue, provider=provider
@@ -2657,8 +2641,6 @@ def _record_generation_controls(
     provenance_sha256: str,
     controls: list[JsonDocument],
 ) -> None:
-    if state["schema"] != STATE_SCHEMA:
-        return
     registry_value = state.get("synthesis_controls")
     if registry_value is None:
         registry: JsonDocument = {}
@@ -2707,7 +2689,7 @@ def _record_interrupted_generation_job(
         raise BulkGenerationError("Interrupted processes are malformed")
     if not any(
         isinstance(item, dict)
-        and item.get("job_sha256") == interrupted_job["job_sha256"]
+        and item.get("lease_sha256") == interrupted_job["lease_sha256"]
         for item in processes
     ):
         processes.append(interrupted_job)
@@ -2781,7 +2763,7 @@ def validate_terminal_conflict_publication_authority(
             workspace_path.parent
         )
         canonical_state_path = (
-            directory / "generated-audio" / "generation-state.json"
+            directory / "generated-audio" / "generation-state.sqlite3"
         ).resolve()
         if canonical_state_path != Path(state_path).resolve():
             raise BulkGenerationError(
@@ -2958,15 +2940,13 @@ def _load_or_create_state(
     queue: VoiceGenerationQueue,
     queue_sha256: str,
 ) -> JsonDocument:
+    try:
+        require_registered_output(output_directory)
+    except (OSError, ValueError) as error:
+        raise BulkGenerationError(str(error)) from error
     if state_path.is_file():
         state = read_generation_state_document(state_path)
         _validate_state_document(state, output_directory, queue, queue_sha256)
-        return state
-    legacy = state_path.with_name("generation-state.json")
-    if state_path.suffix == ".sqlite3" and legacy.is_file():
-        state = load_generation_state(legacy)
-        _validate_state_document(state, output_directory, queue, queue_sha256)
-        write_generation_state(state_path, state)
         return state
     state = {
         "schema": STATE_SCHEMA,
@@ -3290,29 +3270,6 @@ def generated_mono_pcm(pcm: object) -> NDArray[np.float32]:
 
 
 _generated_mono_pcm = generated_mono_pcm
-
-
-def _guard_job_process(
-    output_directory: Path, process_checker: Callable[[object], bool]
-) -> dict[str, object] | None:
-    job_path = output_directory.parent / "job.json"
-    if not job_path.is_file():
-        return None
-    job = _load_json(job_path, "pregeneration job")
-    if job.get("status") == "running" and process_checker(job.get("pid")):
-        raise BulkGenerationError(
-            f"Pregeneration job is active in another process with PID {job.get('pid')}"
-        )
-    if job.get("status") != "running":
-        return None
-    return {
-        "job": str(job_path.resolve()),
-        "job_sha256": sha256_file(job_path),
-        "pid": job.get("pid"),
-        "recorded_status": "running",
-        "detected_status": "interrupted",
-        "detected_at": _now(),
-    }
 
 
 def _audio_relative_path(voice: str, queue_id: str) -> Path:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -11,6 +10,7 @@ import numpy as np
 
 from tests.authoring_fixtures import create_carry_source_workspace
 from tests.bulk_generation_fixtures import SyntheticRenderer, audio_samples
+from tests.generation_state_fixtures import replace_generation_state
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
@@ -50,11 +50,11 @@ class AuthoringFailureAdmissionTest(unittest.TestCase):
             root, text="The gate is already open. We should leave before dawn."
         )
         queue = source.directory / "queue.jsonl"
-        state_path = source.directory / "generated-audio/generation-state.json"
+        state_path = source.directory / "generated-audio/generation-state.sqlite3"
         state = load_generation_state(state_path, queue)
         old = state["items"].pop(fixture["queue_id"])
         (state_path.parent / old["path"]).unlink()
-        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        replace_generation_state(state_path, state)
         publish_generated_manifest(state_path)
         self.generate(
             source.directory,
@@ -83,12 +83,12 @@ class AuthoringFailureAdmissionTest(unittest.TestCase):
             fixture, imported, source = self.failed_source(root)
             queue_id = fixture["queue_id"]
             queue = source.directory / "queue.jsonl"
-            state_path = source.directory / "generated-audio/generation-state.json"
+            state_path = source.directory / "generated-audio/generation-state.sqlite3"
             state = load_generation_state(state_path, queue)
             item = state["items"][queue_id]
             item["attempts"] = 3
             item["attempts_by_provider"] = {"legacy-unbound": 3}
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             persisted = load_generation_state(state_path, queue)["items"][queue_id]
             self.assertEqual(provider_attempts(persisted, 3).get("moss-tts", 0), 0)
             policy = FailureRepairPolicy(bounded_seed_retry_queue_ids=(queue_id,))
@@ -99,7 +99,7 @@ class AuthoringFailureAdmissionTest(unittest.TestCase):
             # Two earlier attempts also must not prove a current-provider failure.
             item["attempts"] = 2
             item["attempts_by_provider"] = {"legacy-unbound": 2}
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             before = state_path.read_bytes()
             target = root / "unsupported-provider-carry"
             with self.subTest(contract="successor requires a proven provider attempt"):
@@ -110,7 +110,7 @@ class AuthoringFailureAdmissionTest(unittest.TestCase):
 
             item["attempts"] = 3
             item["attempts_by_provider"] = {"legacy-unbound": 3}
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            replace_generation_state(state_path, state)
             renderer = self.moss_renderer()
             result = self.generate(source.directory, renderer, queue_id, policy)
             final = load_generation_state(result.state, queue)["items"][queue_id]

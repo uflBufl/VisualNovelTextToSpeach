@@ -40,8 +40,6 @@ from vntts.authoring.generation_manifest import (
 )
 from vntts.authoring.generation_state import (
     AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA,
-    LEGACY_STATE_SCHEMA,
-    LEGACY_STATE_VERSION,
     LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
     LIVE_FALLBACK_AUTOMATIC_RECOVERY_VERSION,
     LIVE_FALLBACK_EVIDENCE_SCHEMA,
@@ -52,6 +50,7 @@ from vntts.authoring.generation_state import (
     LIVE_FALLBACK_VERSION,
     STATE_SCHEMA,
     STATE_VERSION,
+    decode_generation_state_snapshot,
     generation_state_file,
     generation_state_snapshot,
     write_generation_state,
@@ -418,7 +417,7 @@ def _assert_live_fallback_commit_sources(
             raise BulkGenerationSourceChangedError(
                 "Live fallback evidence changed before commit"
             )
-        if path.name == "generation-state.json" and any(
+        if path.name == "generation-state.sqlite3" and any(
             path.parent.rglob("*.partial.wav")
         ):
             raise BulkGenerationSourceChangedError(
@@ -659,13 +658,13 @@ def _live_fallback_workspace_hypothesis(
 ) -> tuple[JsonDocument, tuple[tuple[Path, str], ...]]:
     workspace_path = directory / "workspace.json"
     source_queue_path = directory / "queue.jsonl"
-    source_state_path = directory / "generated-audio" / "generation-state.json"
+    source_state_path = directory / "generated-audio" / "generation-state.sqlite3"
     try:
         workspace_payload = read_regular_bytes(workspace_path)
         source_queue_payload = read_regular_bytes(source_queue_path)
         source_state_payload = read_regular_bytes(source_state_path)
         workspace = decode_json(workspace_payload.decode("utf-8"))
-        source_state = decode_json(source_state_payload.decode("utf-8"))
+        source_state = decode_generation_state_snapshot(source_state_payload)
     except (OSError, UnicodeDecodeError, ValueError) as error:
         raise BulkGenerationError(
             f"Unable to read live fallback evidence workspace {directory}: {error}"
@@ -690,10 +689,7 @@ def _live_fallback_workspace_hypothesis(
     if (
         type(source_state.get("schema_version")) is not int
         or (source_state.get("schema"), source_state.get("schema_version"))
-        not in {
-            (STATE_SCHEMA, STATE_VERSION),
-            (LEGACY_STATE_SCHEMA, LEGACY_STATE_VERSION),
-        }
+        != (STATE_SCHEMA, STATE_VERSION)
         or source_state.get("queue_sha256") != source_queue_sha256
         or not isinstance(source_state.get("items"), dict)
     ):

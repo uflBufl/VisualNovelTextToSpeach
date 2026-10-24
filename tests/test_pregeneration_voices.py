@@ -185,7 +185,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
             registry = CharacterVoiceRegistry.from_file(write_manifest(root / "voices"))
-            catalog_root = Path(jobs.path_for(job.job_id)).parent
+            catalog_root = jobs.directory_for(job.job_id)
             reads = 0
 
             def read_reference(voice, reference):
@@ -232,7 +232,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                     jobs, job, registry, cancellation=cancellation
                 )
 
-            catalog_root = Path(jobs.path_for(job.job_id)).parent
+            catalog_root = jobs.directory_for(job.job_id)
             self.assertEqual(list(catalog_root.glob("voice-catalog-*")), [])
             self.assertEqual(list(catalog_root.glob(".voice-catalog-*")), [])
 
@@ -874,7 +874,9 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             self.assertEqual(library.binding("Rhiannon").route, "narrator")
             self.assertEqual(library.binding("Concurrent").route, "live-fallback")
-            self.assertFalse(store.path_for(job).exists())
+            self.assertFalse(
+                (store.job_store.directory_for(job.job_id) / "voice-plan.json").exists()
+            )
 
     def test_character_defaults_apply_to_future_audio_with_manual_override_priority(
         self,
@@ -1743,7 +1745,9 @@ class VoicePlanStoreTest(unittest.TestCase):
             with self.assertRaisesRegex(PregenerationVoiceError, "changed"):
                 VoicePlanStore(jobs).create(job, AppSettings())
 
-            self.assertFalse(VoicePlanStore(jobs).path_for(job).exists())
+            self.assertFalse(
+                (jobs.directory_for(job.job_id) / "voice-plan.json").exists()
+            )
 
     def test_decision_lookup_rejects_malformed_hashes(self):
         with TemporaryDirectory() as directory:
@@ -1767,7 +1771,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                         decisions.choice_for(group_id, context)
             self.assertFalse(path.exists())
 
-    def test_legacy_plan_is_imported_once_and_new_plan_uses_catalog(self):
+    def test_legacy_plan_requires_explicit_migration_and_new_plan_uses_catalog(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
@@ -1778,10 +1782,18 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             imported_jobs = PregenerationJobStore(root / "legacy-jobs")
             store = VoicePlanStore(imported_jobs)
-            path = store.path_for(job)
+            path = store.job_store.directory_for(job.job_id) / "voice-plan.json"
             path.parent.mkdir(parents=True)
             write_versioned_json(path, 5, plan.to_document())
             original = path.read_bytes()
+            with self.assertRaisesRegex(
+                PregenerationVoiceError, "explicit legacy migration"
+            ):
+                store.saved_documents()
+            self.assertFalse(imported_jobs.catalog.path.exists())
+            migration = PreparationCatalog(imported_jobs.root)
+            migration.save_plan(plan.to_document(), 5)
+            migration.complete_upgrade()
             saved = store.saved_documents()
             self.assertEqual(saved[0]["groups"], plan.to_document()["groups"])
             self.assertEqual(
@@ -1794,9 +1806,11 @@ class VoicePlanStoreTest(unittest.TestCase):
                 restarted.saved_documents()[0]["created_at"], updated.created_at
             )
             self.assertEqual(path.read_bytes(), original)
-            self.assertFalse(VoicePlanStore(jobs).path_for(job).exists())
+            self.assertFalse(
+                (jobs.directory_for(job.job_id) / "voice-plan.json").exists()
+            )
 
-    def test_legacy_decisions_are_imported_and_preserved_after_new_choice(self):
+    def test_legacy_decisions_are_ignored_and_preserved_after_new_choice(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
@@ -1825,7 +1839,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             decisions = VoiceDecisionStore(path, catalog=jobs.catalog)
             self.assertEqual(
                 decisions.choice_for(group.group_id, group.decision_context_sha256),
-                group.source_id,
+                None,
             )
             decisions.remember(group, "default")
             restarted = VoiceDecisionStore(
@@ -2055,14 +2069,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             second_loaded = Event()
             release_first = Event()
             errors = []
-            original_load = VoiceDecisionStore._load_legacy
             original_write = PreparationCatalog.save_decisions
-
-            def observed_load(store):
-                decisions = original_load(store)
-                if current_thread().name == "second decision":
-                    second_loaded.set()
-                return decisions
 
             def observed_write(*args, **kwargs):
                 if current_thread().name == "first decision":
@@ -2082,7 +2089,6 @@ class VoicePlanStoreTest(unittest.TestCase):
                 target=remember, args=(second,), name="second decision"
             )
             with (
-                patch.object(VoiceDecisionStore, "_load_legacy", observed_load),
                 patch.object(PreparationCatalog, "save_decisions", observed_write),
             ):
                 first_thread.start()

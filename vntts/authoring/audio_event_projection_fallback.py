@@ -32,6 +32,7 @@ from vntts.authoring.generation_state import (
     AUDIO_EVENT_PROJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA,
     LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION,
     live_fallback_decision,
+    write_generation_state,
 )
 from vntts.authoring.publication import (
     publish_single_base_successor,
@@ -242,7 +243,7 @@ def _projection_identity(
         "base_workspace_id": base_document["workspace_id"],
         "base_workspace_path": "inputs/audio-event-projection/base-workspace.json",
         "base_workspace_sha256": selection.base_workspace_sha256,
-        "base_state_path": "inputs/audio-event-projection/base-generation-state.json",
+        "base_state_path": "inputs/audio-event-projection/base-generation-state.sqlite3",
         "base_state_sha256": selection.state_sha256,
         "queue_sha256": selection.queue_sha256,
         "provider": "pocket-tts",
@@ -291,7 +292,7 @@ def _stage_projection(
     snapshots = [
         (selection.base_directory / "workspace.json", selection.base_workspace_sha256),
         (
-            selection.base_directory / "generated-audio/generation-state.json",
+            selection.base_directory / "generated-audio/generation-state.sqlite3",
             selection.state_sha256,
         ),
         (selection.queue_path, selection.queue_sha256),
@@ -359,8 +360,8 @@ def _mutate_projection_state(
         projected["updated_at"] = decided_at
         target_items[queue_id] = projected
     staged.target_state["active"] = None
-    atomic_write_json(
-        staged.output / "generation-state.json", staged.target_state, sort_keys=True
+    write_generation_state(
+        staged.output / "generation-state.sqlite3", staged.target_state
     )
     write_generated_manifest_from_state(
         staged.target_state, staged.output, staged.output / "manifest.json"
@@ -388,7 +389,7 @@ def _validate_staged_projection(
     )
     validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
     load_generation_state(
-        staged.output / "generation-state.json", staging / "queue.jsonl"
+        staged.output / "generation-state.sqlite3", staging / "queue.jsonl"
     )
 
 
