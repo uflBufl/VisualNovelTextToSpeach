@@ -1303,7 +1303,7 @@ def _voice_audition_story(
     audition_service = dialog.audition_service
     assert isinstance(audition_service, Mock)
     editor = GameNarratorDialog(
-        dialog.settings,
+        dialog.settings.updated(pocket_gated_model_accepted=True),
         importer=dialog.importer,
         preview_service=audition_service,
         thread_pool=dialog.voice_runner.thread_pool,
@@ -1319,7 +1319,6 @@ def _voice_audition_story(
         character=dialog._voice_plan.groups[0].character,
         story_titles=("Chapter 7", "Chapter 8"),
     )
-    editor.consent.setChecked(True)
     editor.source.setCurrentIndex(editor.source.findData("game"))
     editor._source_changed()
     assert editor.source.currentData() == "game", editor.status.text()

@@ -11,7 +11,14 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QCoreApplication, QEvent
-from PySide6.QtWidgets import QApplication, QDialog, QFrame, QScrollArea
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QDialog,
+    QFrame,
+    QLabel,
+    QScrollArea,
+)
 from shiboken6 import isValid
 from vntts_artifacts.file_integrity import sha256_file
 
@@ -328,6 +335,26 @@ class GameNarratorTest(unittest.TestCase):
                 self.assertTrue(
                     box.rect().contains(button.mapTo(box, button.rect().bottomRight()))
                 )
+
+    def test_game_donor_name_is_shown_once_and_other_source_names_remain_visible(self):
+        plan, group, _manifest = ambiguous_fixture(self.root / "donor-label")
+        dialog = self.editor()
+        dialog.set_voice_context(plan, character=group.character)
+        self.drain()
+        panel = dialog.voice_panel
+        self.assertEqual(dialog.characters.currentText(), "Rhiannon")
+        self.assertEqual(panel.candidate_voice_label.text(), "Rhiannon")
+        self.assertTrue(panel.candidate_voice_label.isHidden())
+        for index in range(panel.voice_reference.count()):
+            panel.voice_reference.setCurrentIndex(index)
+            self.drain()
+            if panel.candidate_voice_label.text() == "Rhiannon":
+                self.assertTrue(panel.candidate_voice_label.isHidden())
+            else:
+                self.assertFalse(panel.candidate_voice_label.isHidden())
+        self.select(dialog, "catalog", source="character:centurion")
+        self.assertEqual(panel.candidate_voice_label.text(), "Centurion")
+        self.assertFalse(panel.candidate_voice_label.isHidden())
 
     def test_same_character_replacement_shows_both_reference_texts_and_keeps_saved_audio(
         self,
@@ -763,33 +790,55 @@ class GameNarratorTest(unittest.TestCase):
         self.assertFalse(dialog.voice_panel.isHidden())
         self.importer.prepare_voice_roles.assert_not_called()
 
-    def test_source_details_hides_accepted_terms_but_keeps_missing_consent_visible(
-        self,
-    ):
-        dialog = self.editor(
+    def test_pocket_acceptance_is_owned_by_settings_without_editor_terms_widgets(self):
+        for accepted in (False, True):
+            with self.subTest(accepted=accepted):
+                settings = self.settings.updated(
+                    speech_backend="pocket-tts", pocket_gated_model_accepted=accepted
+                )
+                dialog = self.editor(settings=settings)
+                self.select(dialog, "catalog", source="character:rhiannon")
+                dialog.source_setup.setChecked(True)
+                self.assertIs(dialog.settings_value, settings)
+                self.assertFalse(hasattr(dialog, "consent"))
+                self.assertFalse(hasattr(dialog, "terms"))
+                self.assertFalse(
+                    any(
+                        "Pocket" in widget.text()
+                        for widget in dialog.findChildren(QCheckBox)
+                    )
+                )
+                self.assertFalse(
+                    any(
+                        "model terms" in widget.text()
+                        for widget in dialog.findChildren(QLabel)
+                    )
+                )
+                self.assertEqual(self.backend.requests, [])
+
+    def test_pocket_save_uses_settings_acceptance_and_preserves_it(self):
+        before = self.library.bindings()
+        missing = self.editor(
             settings=self.settings.updated(speech_backend="pocket-tts")
         )
-        self.select(dialog, "catalog", source="character:rhiannon")
-        dialog.show()
-        self.application.processEvents()
-        self.assertFalse(dialog.source_setup.isChecked())
-        self.assertTrue(dialog.terms.isVisible())
-        self.assertTrue(dialog.consent.isVisible())
-        dialog.consent.setChecked(True)
-        self.drain()
-        self.assertTrue(dialog.terms.isHidden())
-        self.assertTrue(dialog.consent.isHidden())
-        self.assertTrue(dialog.source_setup.isVisible())
-        dialog.source_setup.setChecked(True)
-        self.assertTrue(dialog.terms.isVisible())
-        self.assertTrue(dialog.consent.isVisible())
-        dialog.consent.setChecked(False)
-        self.drain()
-        dialog.source_setup.setChecked(False)
-        self.assertTrue(dialog.terms.isVisible())
-        self.assertTrue(dialog.consent.isVisible())
-        self.assertFalse(dialog._settings().pocket_gated_model_accepted)
-        self.assertEqual(self.backend.requests, [])
+        self.select(missing, "catalog", source="character:rhiannon")
+        group = missing.voice_panel.current_group()
+        missing._capture_save(None)
+        with self.assertRaisesRegex(ValueError, "Accept Pocket's terms"):
+            missing.remember_many(((group, "character:rhiannon"),))
+        self.assertEqual(self.library.bindings(), before)
+        self.assertIsNone(missing.result_settings)
+        self.assertFalse(missing.settings_value.pocket_gated_model_accepted)
+        accepted = self.editor(
+            settings=self.settings.updated(
+                speech_backend="pocket-tts", pocket_gated_model_accepted=True
+            )
+        )
+        self.select(accepted, "catalog", source="character:rhiannon")
+        self.listen(accepted, original=True)
+        self.save(accepted)
+        self.assertTrue(accepted.result_settings.pocket_gated_model_accepted)
+        self.assertIsNotNone(self.library.binding("Narrator"))
 
     def test_source_details_preserves_candidate_phrase_and_donor_without_reloading(
         self,
@@ -817,7 +866,7 @@ class GameNarratorTest(unittest.TestCase):
         self.importer.prepare_voice_roles.assert_not_called()
         self.importer.narrator_characters.assert_not_called()
 
-    def test_source_details_follows_source_mode_without_changing_consent(self):
+    def test_source_details_only_exposes_game_maintenance_and_preserves_settings(self):
         self.bind_narrator()
         dialog = self.editor(
             settings=self.settings.updated(
@@ -830,14 +879,11 @@ class GameNarratorTest(unittest.TestCase):
         for mode in ("catalog", "saved", "game", "preset", "automatic"):
             with self.subTest(mode=mode):
                 self.select(dialog, mode)
-                reference = mode in {"catalog", "saved", "game"}
-                self.assertEqual(dialog.terms.isVisible(), reference)
-                self.assertEqual(dialog.consent.isVisible(), reference)
-                self.assertEqual(dialog.source_setup.isVisible(), reference)
+                self.assertEqual(dialog.source_setup.isVisible(), mode == "game")
                 self.assertEqual(
                     dialog.source_setup_controls.isVisible(), mode == "game"
                 )
-                self.assertTrue(dialog.consent.isChecked())
+                self.assertTrue(dialog.settings_value.pocket_gated_model_accepted)
 
     def test_opening_source_details_during_loading_keeps_actions_disabled(self):
         dialog = self.editor()
@@ -848,25 +894,11 @@ class GameNarratorTest(unittest.TestCase):
         self.application.processEvents()
         self.assertFalse(dialog.source_setup_controls.isHidden())
         for control in (
-            dialog.consent,
             dialog.folder_button,
             dialog.discover_button,
             dialog.characters,
         ):
             self.assertFalse(control.isEnabled())
-
-    def test_consent_change_keeps_the_selected_game_donor(self):
-        plan, group, _manifest = ambiguous_fixture(self.root / "story-donor")
-        dialog = self.editor()
-        dialog.set_voice_context(plan, character=group.character)
-        self.drain()
-        with patch.object(dialog, "_prepare") as prepare:
-            dialog.characters.addItem("Another donor")
-            dialog.characters.setCurrentText("Another donor")
-            prepare.reset_mock()
-            dialog.consent.setChecked(not dialog.consent.isChecked())
-            prepare.assert_called_once_with()
-            self.assertEqual(dialog.characters.currentText(), "Another donor")
 
     def test_empty_story_candidates_keep_source_choices_available(self):
         plan, group, _manifest = ambiguous_fixture(self.root / "story")

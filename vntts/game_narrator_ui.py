@@ -189,7 +189,6 @@ class GameNarratorDialog(QDialog):
         self.role.currentTextChanged.connect(self._role_changed)
         self.presets.currentIndexChanged.connect(self._source_changed)
         self.catalog_choice.currentIndexChanged.connect(self._source_changed)
-        self.consent.toggled.connect(self._consent_changed)
         self.decoderProgress.connect(self._set_status)
         self._initializing = True
         self.set_voice_context()
@@ -222,7 +221,6 @@ class GameNarratorDialog(QDialog):
         self.settings_value = (
             resolve_pregeneration_settings(settings) if use_offline_engine else settings
         )
-        self._initial_settings_value = self.settings_value
         self.result_settings: AppSettings | None = None
         self.voice_library = voice_library or application_voice_library()
         self._voice_binding_rollback = voice_binding_rollback
@@ -357,15 +355,6 @@ class GameNarratorDialog(QDialog):
             QTimer.singleShot(0, self, self._finish_close)
 
     def _build_game_reference_controls(self) -> None:
-        self.terms = QLabel(
-            "Game voice cloning with Pocket requires accepting the "
-            '<a href="https://huggingface.co/kyutai/pocket-tts">model terms</a> '
-            "and Hugging Face access. Built-in voices need neither."
-        )
-        self.terms.setWordWrap(True)
-        self.terms.setOpenExternalLinks(True)
-        self.consent = QCheckBox("I accepted Pocket's terms")
-        self.consent.setChecked(self.settings_value.pocket_gated_model_accepted)
         self.source_setup = QCheckBox("Source details")
         self.source_setup_controls = QWidget()
         setup_layout = QHBoxLayout(self.source_setup_controls)
@@ -395,24 +384,14 @@ class GameNarratorDialog(QDialog):
         self.source_details_actions = QHBoxLayout()
         self.source_details_actions.addWidget(self.source_setup)
         self.form.addRow(self.source_details_actions)
-        self.form.addRow(self.terms)
-        self.form.addRow(self.consent)
         self.form.addRow(self.source_setup_controls)
 
     def _refresh_source_details(self, *_args: object) -> None:
         mode = self.source.currentData()
-        pocket_reference = (
-            self.settings_value.speech_backend == "pocket-tts"
-            and mode in {"game", "catalog", "narrator", "saved"}
+        self.source_setup.setVisible(mode == "game")
+        self.source_setup_controls.setVisible(
+            mode == "game" and self.source_setup.isChecked()
         )
-        expanded = self.source_setup.isChecked()
-        show_terms = pocket_reference and (not self.consent.isChecked() or expanded)
-        self.terms.setVisible(show_terms)
-        self.consent.setVisible(show_terms)
-        self.source_setup.setVisible(
-            mode == "game" or (pocket_reference and self.consent.isChecked())
-        )
-        self.source_setup_controls.setVisible(mode == "game" and expanded)
 
     def _build_details_controls(self) -> None:
         panel_layout = self.voice_panel.layout()
@@ -715,11 +694,6 @@ class GameNarratorDialog(QDialog):
                 self.source.setCurrentIndex(self.source.findData("game"))
         self._source_changed()
 
-    def _consent_changed(self, *_args: object) -> None:
-        if not self._initializing:
-            self._load_current_voice()
-        self._source_changed()
-
     def _load_current_voice(self) -> None:
         role = self.role.currentText()
         binding, selected = self._saved_role_voice(role, is_narrator(role))
@@ -731,7 +705,7 @@ class GameNarratorDialog(QDialog):
         )
         request = partial(
             self._resolve_current_voice,
-            self._settings(),
+            self.settings_value,
             role,
             binding,
             selected,
@@ -895,13 +869,8 @@ class GameNarratorDialog(QDialog):
         label = voice_binding_label(binding) or self._source_label(selected)
         return f"{self._saving_role}: {label}"
 
-    def _settings(self) -> AppSettings:
-        return self.settings_value.updated(
-            pocket_gated_model_accepted=self.consent.isChecked()
-        )
-
     def _capture_save(self, _selections: object) -> None:
-        self._selection_settings = self._settings()
+        self._selection_settings = self.settings_value
         self._selection_manifest = self._candidate_manifest
         self._saving_role = self.role.currentText().strip()
         self._selection_engine_available = self._engine_available()
@@ -940,6 +909,7 @@ class GameNarratorDialog(QDialog):
             self.voice_panel.playback_guard = None
         if not self._initializing:
             self._settings_choice_changed()
+        self._update()
 
     def _selected_source(self) -> str | None:
         selection = (
@@ -977,11 +947,7 @@ class GameNarratorDialog(QDialog):
             source = saved
         if source == "automatic":
             source = None
-        changed = (
-            source != saved
-            or self.consent.isChecked()
-            != self._initial_settings_value.pocket_gated_model_accepted
-        )
+        changed = source != saved
         if changed != self._settings_dirty:
             self._settings_dirty = changed
             self.settingsChanged.emit(changed)
@@ -1046,7 +1012,7 @@ class GameNarratorDialog(QDialog):
                 "saved",
                 "Loading the saved voice reference...",
                 self._narrator_plan,
-                self._settings(),
+                self.settings_value,
                 self.role.currentText(),
             )
         else:
@@ -1092,7 +1058,7 @@ class GameNarratorDialog(QDialog):
     def _show_policy(self, source_id: str, label: str) -> None:
         self._candidate_manifest = None
         group = self._policy_group()
-        settings = self._settings()
+        settings = self.settings_value
         plan = VoicePlan(
             job_id="voice-policy",
             created_at="",
@@ -1115,7 +1081,7 @@ class GameNarratorDialog(QDialog):
     def _show_source(self, manifest: str | Path | None, source_id: str) -> None:
         try:
             plan = narrator_preview_plan(
-                self._settings(), manifest, source_id, COMPARISON_PREVIEW_TEXT
+                self.settings_value, manifest, source_id, COMPARISON_PREVIEW_TEXT
             )
             group = replace(
                 plan.groups[0],
@@ -1144,7 +1110,7 @@ class GameNarratorDialog(QDialog):
         self._narrator_binding = self.voice_library.binding("Narrator")
         try:
             source = pregeneration_narrator_source_id(
-                self._settings(), voice_library=self.voice_library
+                self.settings_value, voice_library=self.voice_library
             )
         except (ValueError, PregenerationVoiceError) as error:
             self._show_policy("default", "Use narrator's voice")
@@ -1153,7 +1119,7 @@ class GameNarratorDialog(QDialog):
         if source.startswith("preset:"):
             try:
                 plan = narrator_preview_plan(
-                    self._settings(), None, source, COMPARISON_PREVIEW_TEXT
+                    self.settings_value, None, source, COMPARISON_PREVIEW_TEXT
                 )
                 self._start_narrator_panel(plan)
             except ValueError as error:
@@ -1164,7 +1130,7 @@ class GameNarratorDialog(QDialog):
             "narrator",
             "Loading the saved narrator reference...",
             self._narrator_plan,
-            self._settings(),
+            self.settings_value,
         )
 
     def _narrator_plan(
@@ -1361,7 +1327,10 @@ class GameNarratorDialog(QDialog):
             )
             return
         plan = narrator_preview_plan(
-            self._settings(), manifest, candidates[0].source_id, COMPARISON_PREVIEW_TEXT
+            self.settings_value,
+            manifest,
+            candidates[0].source_id,
+            COMPARISON_PREVIEW_TEXT,
         )
         _binding, saved = self._saved_role_voice(
             self.role.currentText(), is_narrator(self.role.currentText())
@@ -1509,7 +1478,9 @@ class GameNarratorDialog(QDialog):
             settings.speech_backend == "pocket-tts"
             and not settings.pocket_gated_model_accepted
         ):
-            raise ValueError("Accept Pocket's terms before saving a game voice")
+            raise ValueError(
+                "Accept Pocket's terms in Settings before saving a game voice"
+            )
         if not self._selection_engine_available:
             raise ValueError(
                 "Choose an available engine and accept its model terms in Settings"
@@ -1622,6 +1593,11 @@ class GameNarratorDialog(QDialog):
         )
 
     def _update(self, *_args: object) -> None:
+        label = self.voice_panel.candidate_voice_label
+        if self.source.currentData() == "game" and normalize_character_name(
+            label.text()
+        ) == normalize_character_name(self.characters.currentText()):
+            label.hide()
         idle = not self.active and not self._closing
         self.progress.setVisible(self.runner.active)
         for control in (
@@ -1632,7 +1608,6 @@ class GameNarratorDialog(QDialog):
             self.characters,
             self.discover_button,
             self.folder_button,
-            self.consent,
         ):
             control.setEnabled(idle)
 

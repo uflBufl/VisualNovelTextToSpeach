@@ -504,7 +504,7 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self._size_transient_controls()
         self.setTitle("New voice")
-        self.setFlat(True)
+        self.setFlat(False)
         self.game_phrase_button.setText("Game phrase")
         self.a_box.setTitle("")
         self.a_box.setFlat(True)
@@ -567,7 +567,17 @@ class VoiceAuditionPanel(QGroupBox):
             compact_layout.setContentsMargins(0, 0, 0, 0)
             compact_layout.setSpacing(4)
         for box in (self.phrase_box, self.current_voice_box, self):
-            box.setFlat(True)
+            box.setFlat(False)
+            # Keep the group title weight from propagating to body controls.
+            for child in box.findChildren(
+                QWidget, options=Qt.FindChildOption.FindDirectChildrenOnly
+            ):
+                child_font = child.font()
+                child_font.setBold(child_font.bold())
+                child.setFont(child_font)
+            title_font = box.font()
+            title_font.setBold(True)
+            box.setFont(title_font)
             box_layout = box.layout()
             assert box_layout is not None
             box_layout.setContentsMargins(8, 6, 8, 6)
