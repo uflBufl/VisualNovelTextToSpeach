@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
 from vntts.macos import (
     get_macos_permission_status,
     request_accessibility_permission,
@@ -85,11 +86,15 @@ class MacOSPermissionsDialog(QDialog):
         )
         self.operation_status.installEventFilter(self)
         self.refresh_button = QPushButton("Refresh status")
+        set_action_icon(self.refresh_button, "refresh-cw")
+        self.refresh_button.setAccessibleName("Refresh macOS permission status")
+        self.refresh_button.setToolTip("Refresh macOS permission status")
         self.refresh_button.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
         )
         self.refresh_button.clicked.connect(self.refresh)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        set_action_icon(buttons.button(QDialogButtonBox.StandardButton.Close), "x")
         buttons.rejected.connect(self.close)
         footer = QHBoxLayout()
         footer.addWidget(self.refresh_button)
@@ -126,6 +131,15 @@ class MacOSPermissionsDialog(QDialog):
         self.open_accessibility_button.setAccessibleDescription(
             "Open accessibility permissions in System Settings"
         )
+        for button, icon in (
+            (self.request_screen_button, "key-round"),
+            (self.request_accessibility_button, "key-round"),
+            (self.open_screen_button, "settings"),
+            (self.open_accessibility_button, "settings"),
+        ):
+            set_action_icon(button, icon)
+            button.setAccessibleName(button.accessibleDescription())
+            button.setToolTip(button.accessibleDescription())
         self.request_screen_button.clicked.connect(self.request_screen)
         self.open_screen_button.clicked.connect(
             lambda: self.open_settings("screen_capture")

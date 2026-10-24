@@ -355,6 +355,9 @@ class ReadinessDialogTest(unittest.TestCase):
         self.assertFalse(dialog.remediation_button.isEnabled())
         dialog.table.selectRow(1)
         self.assertEqual(dialog.remediation_button.text(), "Open Settings")
+        self.assertEqual(
+            dialog.remediation_button.property("vnttsActionIcon"), "settings"
+        )
         self.assertTrue(dialog.remediation_button.isEnabled())
         dialog.remediation_button.click()
         self.assertEqual(settings_requests, [True])
@@ -366,6 +369,9 @@ class ReadinessDialogTest(unittest.TestCase):
         QTest.keyClick(dialog.table, Qt.Key.Key_Down)
         self.assertEqual(dialog.table.currentRow(), 2)
         self.assertEqual(dialog.remediation_button.text(), "Open Voices")
+        self.assertEqual(
+            dialog.remediation_button.property("vnttsActionIcon"), "audio-lines"
+        )
         dialog.remediation_button.setFocus()
         QTest.keyClick(dialog.remediation_button, Qt.Key.Key_Return)
         self.assertEqual(voice_requests, [True])
@@ -434,6 +440,9 @@ class ReadinessDialogTest(unittest.TestCase):
             "system's app search path (PATH)", dialog.remediation_reason.text()
         )
         self.assertEqual(dialog.remediation_button.text(), "Tesseract install guide")
+        self.assertEqual(
+            dialog.remediation_button.property("vnttsActionIcon"), "circle-help"
+        )
         self.assertTrue(dialog.remediation_button.isDefault())
         self.assertFalse(dialog.copy_selected.autoDefault())
         with patch(

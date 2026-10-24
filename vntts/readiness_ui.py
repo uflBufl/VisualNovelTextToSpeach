@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.onboarding import (
     DiagnosticResult,
@@ -132,19 +133,29 @@ class ReadinessDialog(QDialog):
         controls.addWidget(self.copy_selected)
         controls.addWidget(self.copy_all)
         controls.addStretch()
-        self.refresh_button = QPushButton("Run checks again")
+        self.refresh_button = QPushButton("Run checks")
+        set_action_icon(self.refresh_button, "refresh-cw")
+        self.refresh_button.setAccessibleName("Run readiness checks again")
+        self.refresh_button.setToolTip("Run readiness checks again")
         self.refresh_button.clicked.connect(self.refresh)
         controls.addWidget(self.refresh_button)
-        self.cancel_button = QPushButton("Cancel checks")
+        self.cancel_button = QPushButton("Cancel")
+        set_action_icon(self.cancel_button, "x")
+        self.cancel_button.setAccessibleName("Cancel readiness checks")
+        self.cancel_button.setToolTip("Cancel readiness checks")
         self.cancel_button.clicked.connect(self.cancel_checks)
         self.cancel_button.setEnabled(False)
         self.cancel_button.hide()
         controls.addWidget(self.cancel_button)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        set_action_icon(buttons.button(QDialogButtonBox.StandardButton.Close), "x")
         self.reading_button = buttons.addButton(
-            "Open Reading", QDialogButtonBox.ButtonRole.AcceptRole
+            "Reading", QDialogButtonBox.ButtonRole.AcceptRole
         )
+        set_action_icon(self.reading_button, "chevron-left")
+        self.reading_button.setAccessibleName("Open Reading")
+        self.reading_button.setToolTip("Open Reading")
         self.reading_button.clicked.connect(self._open_reading)
         reading_font = self.reading_button.font()
         reading_font.setBold(True)
@@ -343,6 +354,7 @@ class ReadinessDialog(QDialog):
                 "Restart VNTTS, then run checks again."
             )
             self.remediation_button.setText("Tesseract install guide")
+            set_action_icon(self.remediation_button, "circle-help")
             self.remediation_button.setAccessibleName("Open Tesseract install guide")
             self.remediation_button.setEnabled(True)
             self.remediation_button.setDefault(result.status == "error")
@@ -361,20 +373,22 @@ class ReadinessDialog(QDialog):
             )
             return
         actions = {
-            "settings": "Open Settings",
-            "permissions": "Open Permissions",
-            "calibration": "Open Calibration",
-            "voices": "Open Voices",
+            "settings": ("Open Settings", "settings"),
+            "permissions": ("Open Permissions", "key-round"),
+            "calibration": ("Open Calibration", "scan"),
+            "voices": ("Open Voices", "audio-lines"),
         }
         remediation = result.remediation
-        label = actions.get(remediation) if remediation is not None else None
-        if label is None:
+        action = actions.get(remediation) if remediation is not None else None
+        if action is None:
             self.remediation_reason.setText(
                 f"No automatic fix for {result.name}. Review the full details, "
                 "then run checks again; copy the report if you need support."
             )
             return
+        label, icon = action
         self.remediation_button.setText(label)
+        set_action_icon(self.remediation_button, icon)
         self.remediation_button.setAccessibleName(label)
         self.remediation_button.setEnabled(True)
         self.remediation_button.setDefault(result.status == "error")
