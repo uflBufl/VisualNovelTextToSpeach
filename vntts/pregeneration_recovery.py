@@ -34,6 +34,7 @@ from vntts.authoring.generation_state import (
     load_stable_generation_queue,
 )
 from vntts.document_identity import is_lowercase_sha256, sha256_file
+from vntts.generation_database import measure_generation_run
 from vntts.generation_database import state_path as generation_state_path
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
@@ -363,6 +364,7 @@ class OfflineRecoveryWorker:
                 (queue_id, next_batch.action) for queue_id in next_batch.queue_ids
             )
 
+    @measure_generation_run()
     def generate_and_recover(
         self,
         generation_input: PregenerationInput,

@@ -2,7 +2,7 @@
 
 Persistent witnesses are hints, not validation receipts. Each process admits the
 complete source and its semantic evidence once; later reads still hash the source.
-Only immutable metadata, row locations and canonical record hashes survive admission.
+Only immutable metadata, row locations and original row hashes survive admission.
 """
 
 from __future__ import annotations
@@ -207,15 +207,52 @@ def _admit_source(
     if receipt is None:
         document = load_story_index_snapshot(source, payload)
         _validate_source_semantics(source, document, evidence_payload)
-        receipt = _build_receipt(document, payload)
-        _assert_current(source, expected_sha256, evidence_sha256)
-        key = (str(source), expected_sha256, evidence_sha256)
-        with _receipt_lock:
-            _source_receipts[key] = receipt
-            _source_receipts.move_to_end(key)
-            if len(_source_receipts) > 8:
-                _source_receipts.popitem(last=False)
+        receipt = _remember_source_receipt(
+            document, payload, expected_sha256, evidence_sha256
+        )
     return payload, receipt, document
+
+
+def remember_parsed_story_source(
+    document: StoryIndexDocument, payload: bytes, expected_sha256: str
+) -> None:
+    """Seal a fresh strict parse before its mutable document escapes the loader."""
+    if "selection_origin" in document.metadata:
+        return
+    try:
+        evidence_payload = _evidence_payload(document.path)
+    except OSError:
+        if sha256_file(document.path) != expected_sha256:
+            _changed("Selected story origin checksum changed while read")
+        return
+    evidence_sha256 = _digest(evidence_payload)
+    if _cached_receipt(document.path, expected_sha256, evidence_sha256) is not None:
+        _assert_current(document.path, expected_sha256, evidence_sha256)
+        return
+    try:
+        _validate_source_semantics(document.path, document, evidence_payload)
+    except StoryIndexError:
+        # Portable inspection may lack evidence; later selection still requires it.
+        _assert_current(document.path, expected_sha256, evidence_sha256)
+        return
+    _remember_source_receipt(document, payload, expected_sha256, evidence_sha256)
+
+
+def _remember_source_receipt(
+    document: StoryIndexDocument,
+    payload: bytes,
+    expected_sha256: str,
+    evidence_sha256: str | None,
+) -> _SourceReceipt:
+    receipt = _build_receipt(document, payload)
+    _assert_current(document.path, expected_sha256, evidence_sha256)
+    key = (str(document.path), expected_sha256, evidence_sha256)
+    with _receipt_lock:
+        _source_receipts[key] = receipt
+        _source_receipts.move_to_end(key)
+        if len(_source_receipts) > 8:
+            _source_receipts.popitem(last=False)
+    return receipt
 
 
 def _cached_receipt(
@@ -258,7 +295,7 @@ def _build_receipt(document: StoryIndexDocument, payload: bytes) -> _SourceRecei
     offset = len(raw_rows[0])
     rows = {}
     for line, raw in zip(document.records, raw_rows[1:], strict=True):
-        rows[line.line_id] = (offset, len(raw), _record_digest(line.to_record()))
+        rows[line.line_id] = (offset, len(raw), hashlib.sha256(raw).hexdigest())
         offset += len(raw)
     return _SourceReceipt(raw_rows[0], MappingProxyType(rows), selections)
 
@@ -323,11 +360,18 @@ def _validate_records(
         json.loads(receipt.metadata), _PROJECTED_METADATA
     ):
         raise StoryIndexError("Selected story origin metadata changed")
-    for record in document.records:
-        if _record_digest(record.to_record()) != receipt.rows[record.line_id][2]:
-            raise StoryIndexError(
-                f"Selected story origin record changed: {record.line_id!r}"
-            )
+    # Compare only selected records; raw hashes bind each read to full admission.
+    with open_regular_binary(Path(str(origin["story_index"]))) as source:
+        for record in document.records:
+            offset, length, expected_sha256 = receipt.rows[record.line_id]
+            source.seek(offset)
+            raw = source.read(length)
+            if hashlib.sha256(raw).hexdigest() != expected_sha256:
+                _changed("Selected story origin checksum changed while reading a row")
+            if _record_digest(record.to_record()) != _record_digest(json.loads(raw)):
+                raise StoryIndexError(
+                    f"Selected story origin record changed: {record.line_id!r}"
+                )
 
 
 def _validate_selected_semantics(document: StoryIndexDocument) -> None:

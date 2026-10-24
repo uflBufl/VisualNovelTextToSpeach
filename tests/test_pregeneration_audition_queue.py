@@ -401,7 +401,6 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                 session.prefetch(plan, first, automatic=True)
                 self.assertTrue(cancelled.cancel.is_set())
                 with owner._lock:
-                    self.assertEqual(len(session._focus_keys), 1)
                     self.assertEqual(len(owner._pending), 1)
                     self.assertIsNot(owner._pending[0], cancelled)
                 self.assertEqual(
@@ -426,7 +425,7 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                 "not-prepared",
             )
 
-    def test_leaving_focus_keeps_ready_samples_until_actual_cache_eviction(self):
+    def test_leaving_focus_keeps_saved_samples_reusable_after_session_close(self):
         with TemporaryDirectory() as directory:
             plan, group, _, backend, owner = self.fixture(Path(directory))
             session = owner.session()
@@ -438,15 +437,14 @@ class VoiceAuditionQueueTest(unittest.TestCase):
             self.wait(owner)
             self.assertEqual(session.peek(plan, group, source), first)
             self.assertEqual(session.preparation_state(plan, group, source), "ready")
-            owner.max_cache_bytes = 0
-            owner._prune(set())
-            self.assertFalse(first.path.exists())
-            self.assertIsNone(session.peek(plan, group, source))
-            self.assertEqual(
-                session.preparation_state(plan, group, source), "not-prepared"
-            )
-            self.assertIsNotNone(
-                session.peek(plan, group, source, text=group.alternate_sample_text)
+            session.close()
+            reopened = owner.session()
+            self.assertTrue(first.path.exists())
+            self.assertTrue(reopened.generate(plan, group, source).reused)
+            self.assertTrue(
+                reopened.generate(
+                    plan, group, source, text=group.alternate_sample_text
+                ).reused
             )
             self.assertEqual(len(backend.requests), 2)
 
@@ -628,6 +626,45 @@ class VoiceAuditionQueueTest(unittest.TestCase):
             self.assertEqual(len(backend.requests), 1)
             owner.close()
 
+    def test_shared_link_rechecks_ready_once_and_rejects_late_input_changes(self):
+        for mutate in (False, True):
+            with self.subTest(mutate=mutate), TemporaryDirectory() as directory:
+                plan, group, manifest, backend, owner = self.fixture(Path(directory))
+                session = owner.session()
+                first = session.generate(plan, group, group.candidates[0].source_id)
+                second = session.generate(
+                    plan,
+                    group,
+                    group.candidates[0].source_id,
+                    text=group.alternate_sample_text,
+                )
+                self.assertTrue(first.path.samefile(second.path))
+                lookup = owner.service.lookup
+
+                def recheck(*args, **kwargs):
+                    result = lookup(*args, **kwargs)
+                    if mutate:
+                        manifest.write_bytes(manifest.read_bytes() + b"\n")
+                    return result
+
+                with (
+                    patch.object(
+                        owner.service, "lookup", side_effect=recheck
+                    ) as readmit,
+                    patch.object(
+                        owner.service,
+                        "_ensure_preview_backend",
+                        side_effect=AssertionError("ready recheck acquired model"),
+                    ),
+                ):
+                    for _ in range(2):
+                        self.assertEqual(
+                            session.peek(plan, group, group.candidates[0].source_id),
+                            None if mutate else first,
+                        )
+                    readmit.assert_called_once()
+                self.assertEqual(len(backend.requests), 2)
+
     def test_ready_audio_or_sidecar_mutation_invalidates_memory_preview(self):
         for suffix in (".wav", ".json"):
             with self.subTest(suffix=suffix), TemporaryDirectory() as directory:
@@ -732,21 +769,42 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                     session.generate(plan, group, group.candidates[0].source_id)
             owner.close()
 
-    def test_eviction_keeps_ready_audio_and_removes_only_disposable_previews(self):
+    def test_completed_work_keeps_generated_previews_and_identity_evidence(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            plan, group, _, _, owner = self.fixture(root)
+            plan, group, _, backend, owner = self.fixture(root)
             session = owner.session()
-            ready = session.generate(plan, group, group.candidates[0].source_id)
-            orphan = owner.service.root / ("e" * 64 + ".wav")
-            orphan.write_bytes(clean_wav_bytes())
-            orphan.with_suffix(".json").write_text("{}")
-            other = owner.service.root / "saved-voice.wav"
-            other.write_bytes(clean_wav_bytes())
-            owner.max_cache_bytes = 0
-            owner._prune(set())
-            self.assertTrue(ready.path.exists())
-            self.assertTrue(other.exists())
-            self.assertFalse(orphan.exists())
-            self.assertFalse(orphan.with_suffix(".json").exists())
+            first = session.generate(plan, group, group.candidates[0].source_id)
+            second = session.generate(
+                plan,
+                group,
+                group.candidates[0].source_id,
+                text=group.alternate_sample_text,
+            )
+            sidecars = {
+                preview.path.with_suffix(".json"): preview.path.with_suffix(
+                    ".json"
+                ).read_bytes()
+                for preview in (first, second)
+            }
+            session.close()
             owner.close()
+            self.assertTrue(first.path.samefile(second.path))
+            for sidecar, payload in sidecars.items():
+                self.assertEqual(sidecar.read_bytes(), payload)
+            restored = VoiceAuditionCoordinator(
+                VoiceAuditionPreviewService(
+                    owner.service.root,
+                    backend_factory=Mock(
+                        side_effect=AssertionError("regenerated saved audio")
+                    ),
+                )
+            )
+            self.addCleanup(restored.close)
+            for text in (None, group.alternate_sample_text):
+                self.assertTrue(
+                    restored.session()
+                    .generate(plan, group, group.candidates[0].source_id, text=text)
+                    .reused
+                )
+            self.assertEqual(len(backend.requests), 2)

@@ -1,5 +1,9 @@
+import subprocess
+import sys
+import textwrap
 import unittest
 from collections import OrderedDict
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread, current_thread
@@ -94,6 +98,76 @@ class BoundedCacheTest(unittest.TestCase):
 
 
 class PersistentAudioCacheTest(unittest.TestCase):
+    def test_worker_import_and_persistent_cache_work_without_soundfile(self):
+        code = textwrap.dedent("""            import sys
+            from io import BytesIO
+            from tempfile import TemporaryDirectory
+            import numpy as np
+            sys.path.insert(0, sys.argv[1])
+            sys.modules["soundfile"] = None
+            from vntts.audio_cache import PersistentAudioCache
+            from vntts.speech_worker import worker_main
+            assert worker_main(input_stream=BytesIO(), output_stream=BytesIO()) == 2
+            with TemporaryDirectory() as directory:
+                cache = PersistentAudioCache(directory, sample_rate=16000)
+                assert cache.put("saved-key", np.array([0.125, -0.125])) is not None
+                restored = PersistentAudioCache(directory, sample_rate=16000)
+                np.testing.assert_array_equal(restored.get("saved-key"), [0.125, -0.125])
+            """)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                code,
+                str(Path(__file__).resolve().parents[1]),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_pcm16_quantization_matches_existing_soundfile_encoding(self):
+        boundaries = np.array(
+            [
+                -2,
+                -1,
+                -0.9,
+                -1.5 / 32768,
+                -0.5 / 32768,
+                0,
+                0.5 / 32768,
+                1.5 / 32768,
+                0.9,
+                1,
+                2,
+            ],
+            dtype=np.float32,
+        )
+        random = (
+            np.random.default_rng(3)
+            .uniform(-1.1, 1.1, size=(1000, 2))
+            .astype(np.float32)
+        )
+        for audio in (boundaries, boundaries.reshape(-1, 1), random):
+            with self.subTest(shape=audio.shape), TemporaryDirectory() as directory:
+                reference = BytesIO()
+                sf.write(reference, audio, 16000, format="WAV", subtype="PCM_16")
+                reference.seek(0)
+                expected, _ = sf.read(reference, dtype="float32")
+                cache = PersistentAudioCache(directory, sample_rate=16000)
+                self.assertIsNotNone(cache.put("exact", audio))
+                np.testing.assert_array_equal(cache.get("exact"), expected)
+
+    def test_invalid_sample_rates_are_rejected_before_storage(self):
+        with TemporaryDirectory() as directory:
+            for rate in (0, -1, True, 16000.0, "16000", None):
+                with self.subTest(rate=rate), self.assertRaises(ValueError):
+                    PersistentAudioCache(directory, sample_rate=rate)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
     def test_key_includes_backend_model_voice_text_and_settings(self):
         with TemporaryDirectory() as directory:
             cache = PersistentAudioCache(directory, sample_rate=16_000)
@@ -105,6 +179,7 @@ class PersistentAudioCacheTest(unittest.TestCase):
                 "settings": {"speed": 1.0},
             }
             first = cache.key(**base)
+            self.assertEqual(first, "7097c9a017baff1dba82c00032f2ecd779d3bb5e84cee68c")
             self.assertEqual(first, cache.key(**{**base, "text": "Hello world."}))
             changed = {
                 cache.key(**{**base, "backend": "chatterbox"}),

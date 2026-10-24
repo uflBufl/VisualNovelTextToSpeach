@@ -20,11 +20,26 @@ Source = tuple[str, str, str]
 Recording = tuple[Path, str]
 Row = tuple[str, str, int, str | None, str | None]
 _APPLICATION_ID = 0x564E5249
-_VERSION = 1
+_VERSION = 2
+# Bucket receipts detect missing rows without reading unrelated queue lines.
+_BUCKET_COUNT = 256
 _SCHEMA = (
     "CREATE TABLE directories (directory TEXT PRIMARY KEY NOT NULL, "
     "queue_sha256 TEXT NOT NULL, state_sha256 TEXT NOT NULL, input_sha256 TEXT NOT NULL, "
     "receipt_sha256 TEXT NOT NULL) STRICT",
+    "CREATE TABLE buckets (directory TEXT NOT NULL REFERENCES directories(directory) "
+    "ON DELETE CASCADE, bucket INTEGER NOT NULL CHECK (bucket BETWEEN 0 AND 255), "
+    "receipt_sha256 TEXT NOT NULL, PRIMARY KEY(directory, bucket)) STRICT",
+    "CREATE TABLE lines (directory TEXT NOT NULL REFERENCES directories(directory) "
+    "ON DELETE CASCADE, bucket INTEGER NOT NULL CHECK (bucket BETWEEN 0 AND 255), "
+    "line_id TEXT NOT NULL, text_sha256 TEXT NOT NULL, "
+    "checked INTEGER NOT NULL CHECK (checked IN (0, 1)), audio_path TEXT, audio_sha256 TEXT, "
+    "PRIMARY KEY(directory, bucket, line_id), CHECK ((audio_path IS NULL AND audio_sha256 IS NULL) "
+    "OR (checked = 1 AND audio_path IS NOT NULL AND audio_sha256 IS NOT NULL))) STRICT",
+)
+# Only this exact obsolete derived schema may be discarded, never unknown objects.
+_OBSOLETE_SCHEMA = (
+    _SCHEMA[0],
     "CREATE TABLE lines (directory TEXT NOT NULL REFERENCES directories(directory) "
     "ON DELETE CASCADE, line_id TEXT NOT NULL, text_sha256 TEXT NOT NULL, "
     "checked INTEGER NOT NULL CHECK (checked IN (0, 1)), audio_path TEXT, audio_sha256 TEXT, "
@@ -38,6 +53,10 @@ class RecordingIndexError(ValueError):
 
 
 class _InvalidContents(ValueError):
+    pass
+
+
+class _ObsoleteIndex(RecordingIndexError):
     pass
 
 
@@ -64,9 +83,15 @@ def _directory(value: Path) -> str:
     return str(value.parent.resolve() / value.name)
 
 
-def _receipt(directory: str, source: Source, rows: list[Row]) -> str:
+def _bucket(line: str) -> int:
+    return hashlib.sha256(line.encode()).digest()[0]
+
+
+def _receipt(
+    directory: str, source: Source, rows: list[Row], bucket: int | None = None
+) -> str:
     digest = hashlib.sha256()
-    for value in ((directory, *source), *rows):
+    for value in ((directory, *source, bucket), *rows):
         digest.update(
             json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode()
         )
@@ -88,14 +113,18 @@ def _validate_row(value: tuple[object, ...]) -> Row:
 
 
 def _validate_schema(connection: sqlite3.Connection) -> None:
-    if connection.execute("PRAGMA user_version").fetchone() != (
-        _VERSION,
-    ) or connection.execute("PRAGMA application_id").fetchone() != (_APPLICATION_ID,):
-        raise RecordingIndexError("Unsupported recording index schema version")
+    if connection.execute("PRAGMA application_id").fetchone() != (_APPLICATION_ID,):
+        raise RecordingIndexError("Unsupported recording index application")
+    version = connection.execute("PRAGMA user_version").fetchone()
     actual = connection.execute(
         "SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
     ).fetchall()
-    if {row[0] for row in actual} != set(_SCHEMA):
+    statements = {row[0] for row in actual}
+    if version == (1,) and statements == set(_OBSOLETE_SCHEMA):
+        raise _ObsoleteIndex("Rebuild the derived recording index")
+    if version != (_VERSION,):
+        raise RecordingIndexError("Unsupported recording index schema version")
+    if statements != set(_SCHEMA):
         raise RecordingIndexError("Unsupported recording index schema")
 
 
@@ -190,7 +219,9 @@ class RecordingIndex:
 
     @staticmethod
     def _rows(
-        connection: sqlite3.Connection, directory: str
+        connection: sqlite3.Connection,
+        directory: str,
+        requested: Mapping[str, str] | None = None,
     ) -> tuple[Source, list[Row]] | None:
         saved = connection.execute(
             "SELECT queue_sha256, state_sha256, input_sha256, receipt_sha256 FROM directories WHERE directory = ?",
@@ -199,16 +230,38 @@ class RecordingIndex:
         if saved is None:
             return None
         source = _source(saved[:3])
-        rows = [
-            _validate_row(row)
-            for row in connection.execute(
-                "SELECT line_id, text_sha256, checked, audio_path, audio_sha256 FROM lines WHERE directory = ? ORDER BY line_id",
-                (directory,),
+        if _sha(saved[3]) != _receipt(directory, source, []):
+            raise _InvalidContents("Recording index source receipt changed")
+        selected = (
+            tuple(range(_BUCKET_COUNT))
+            if requested is None
+            else tuple(sorted({_bucket(line) for line in requested}))
+        )
+        if not selected:
+            return source, []
+        placeholders = ",".join("?" for _ in selected)
+        parameters = (directory, *selected)
+        receipts = dict(
+            connection.execute(
+                f"SELECT bucket, receipt_sha256 FROM buckets WHERE directory = ? AND bucket IN ({placeholders})",
+                parameters,
             )
-        ]
-        if _sha(saved[3]) != _receipt(directory, source, rows):
-            raise _InvalidContents("Recording index receipt changed")
-        return source, rows
+        )
+        if set(receipts) != set(selected):
+            raise _InvalidContents("Recording index bucket receipt is missing")
+        grouped: dict[int, list[Row]] = {bucket: [] for bucket in selected}
+        for bucket, *values in connection.execute(
+            f"SELECT bucket, line_id, text_sha256, checked, audio_path, audio_sha256 FROM lines WHERE directory = ? AND bucket IN ({placeholders}) ORDER BY bucket, line_id",
+            parameters,
+        ):
+            row = _validate_row(tuple(values))
+            if _bucket(row[0]) != bucket:
+                raise _InvalidContents("Recording index line moved between buckets")
+            grouped[bucket].append(row)
+        for bucket, rows in grouped.items():
+            if _sha(receipts[bucket]) != _receipt(directory, source, rows, bucket):
+                raise _InvalidContents("Recording index receipt changed")
+        return source, [row for rows in grouped.values() for row in rows]
 
     def load(
         self, directory: Path, source: Source, requested: Mapping[str, str]
@@ -219,7 +272,12 @@ class RecordingIndex:
             with self._connection() as connection:
                 if (
                     connection is None
-                    or (saved := self._rows(connection, _directory(directory))) is None
+                    or (
+                        saved := self._rows(
+                            connection, _directory(directory), requested
+                        )
+                    )
+                    is None
                 ):
                     return None
                 if saved[0] != source:
@@ -234,7 +292,7 @@ class RecordingIndex:
                     elif path is not None and checksum is not None:
                         recordings[line] = Path(path), checksum
                 return recordings, frozenset(unchecked)
-        except sqlite3.Error, _InvalidContents:
+        except sqlite3.Error, _InvalidContents, _ObsoleteIndex:
             return None
 
     def save(
@@ -274,10 +332,11 @@ class RecordingIndex:
                 observed = self._check_paths()
                 try:
                     self._save(directory_key, source, canonical, updates)
-                except sqlite3.DatabaseError as error:
-                    code = getattr(error, "sqlite_errorcode", 0) & 0xFF
-                    if code not in (sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB):
-                        raise
+                except (_ObsoleteIndex, sqlite3.DatabaseError) as error:
+                    if isinstance(error, sqlite3.DatabaseError):
+                        code = getattr(error, "sqlite_errorcode", 0) & 0xFF
+                        if code not in (sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB):
+                            raise
                     if any(
                         Path(str(self.path) + suffix).exists()
                         for suffix in ("-journal", "-wal", "-shm")
@@ -317,16 +376,33 @@ class RecordingIndex:
                     {row[0]: row for row in saved[1] if lines.get(row[0]) == row[1]}
                 )
             rows.update(updates)
-            ordered = [rows[line] for line in sorted(rows)]
+            grouped: dict[int, list[Row]] = {
+                bucket: [] for bucket in range(_BUCKET_COUNT)
+            }
+            for line in sorted(rows):
+                grouped[_bucket(line)].append(rows[line])
+            # Corrupt derived indexes can contain children left without their parent.
             connection.execute("DELETE FROM lines WHERE directory = ?", (directory,))
+            connection.execute("DELETE FROM buckets WHERE directory = ?", (directory,))
             connection.execute(
                 "DELETE FROM directories WHERE directory = ?", (directory,)
             )
             connection.execute(
                 "INSERT INTO directories VALUES (?, ?, ?, ?, ?)",
-                (directory, *source, _receipt(directory, source, ordered)),
+                (directory, *source, _receipt(directory, source, [])),
             )
             connection.executemany(
-                "INSERT INTO lines VALUES (?, ?, ?, ?, ?, ?)",
-                ((directory, *row) for row in ordered),
+                "INSERT INTO buckets VALUES (?, ?, ?)",
+                (
+                    (directory, bucket, _receipt(directory, source, values, bucket))
+                    for bucket, values in grouped.items()
+                ),
+            )
+            connection.executemany(
+                "INSERT INTO lines VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    (directory, bucket, *row)
+                    for bucket, values in grouped.items()
+                    for row in values
+                ),
             )

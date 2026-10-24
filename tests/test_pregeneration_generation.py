@@ -4,7 +4,7 @@ import sqlite3
 import subprocess
 import sys
 import unittest
-from contextlib import closing
+from contextlib import closing, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,9 +18,17 @@ from vntts_artifacts.generated_audio import write_generated_audio_manifest
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.story_index import write_story_index_document
 
+from tests.bulk_generation_fixtures import SyntheticRenderer, queue_item, write_queue
 from tests.generation_state_fixtures import replace_generation_state
 from tests.story_fixtures import write_story_index
+from tests.symlink_support import symlink_or_skip
 from vntts import generation_database, path_safety
+from vntts.authoring.bulk_generation import (
+    GenerationProgressEvent,
+    GenerationProgressItem,
+    _generation_progress_event,
+    run_bulk_generation,
+)
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_state import STATE_SCHEMA, STATE_VERSION
 from vntts.pregeneration_generation import (
@@ -474,9 +482,13 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 },
             }
             with patch(
-                "vntts.pregeneration_generation._ready_line_ids", return_value=()
+                "vntts.pregeneration_generation._static_ready_line_ids", return_value=()
             ):
-                progress = OfflineGenerationWorker()._progress_from_state(state, inputs)
+                worker = OfflineGenerationWorker(backend_factory=Mock())
+                worker._record_progress(
+                    _generation_progress_event(state, state["items"], None), inputs
+                )
+                progress = worker.inspect_progress(inputs)
         self.assertEqual(
             (progress.generated, progress.failed, progress.other_terminal), (1, 1, 1)
         )
@@ -926,7 +938,9 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             }
 
             def callback(_inputs, _progress):
-                worker._record_progress(state, inputs)
+                worker._record_progress(
+                    _generation_progress_event(state, state["items"], None), inputs
+                )
                 return ("saved",)
 
             with patch(
@@ -1231,7 +1245,8 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 if calls == 2:
                     snapshots.append(worker.inspect_progress(generation_input))
                     return
-                progress = kwargs["progress_callback"]
+                self.assertNotIn("progress_callback", kwargs)
+                progress = kwargs["progress_observer"]
                 state = {
                     "queue_sha256": generation_input.queue_sha256,
                     "items": {
@@ -1247,7 +1262,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                         "runtime_worker_pid": os.getpid(),
                     },
                 }
-                progress(state)
+                progress(_generation_progress_event(state, state["items"], None))
                 snapshots.append(worker.inspect_progress(generation_input))
                 state["items"]["two"] = {
                     "status": "approved",
@@ -1255,7 +1270,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     "line_id": "second",
                 }
                 snapshots.append(worker.inspect_progress(generation_input))
-                progress(state)
+                progress(_generation_progress_event(state, state["items"], ("two",)))
                 snapshots.append(worker.inspect_progress(generation_input))
 
             with (
@@ -1291,6 +1306,266 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         self.assertEqual(snapshots[0].active_phase, "publishing")
         self.assertIn("RTX 2070 SUPER", snapshots[0].runtime_status)
 
+    def test_in_process_generation_uses_incremental_events_without_state_conversion(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs, plan = generation_inputs(root, backend="moss-tts", model="model-id")
+            write_queue(inputs.queue, [queue_item(str(index)) for index in range(6)])
+            inputs = replace(
+                inputs,
+                queue_sha256=sha256_file(inputs.queue),
+                queue_items=6,
+                ready_items=6,
+            )
+            worker = OfflineGenerationWorker(backend_factory=Mock())
+            events = []
+            snapshots = []
+
+            def generate(_parsed, **options):
+                self.assertNotIn("progress_callback", options)
+                observer = options["progress_observer"]
+
+                def observe(event):
+                    events.append(event)
+                    observer(event)
+                    snapshots.append(worker.inspect_progress(inputs))
+
+                return run_bulk_generation(
+                    inputs.queue,
+                    inputs.output_directory,
+                    SyntheticRenderer(),
+                    provider="synthetic",
+                    model="synthetic-v1",
+                    progress_observer=observe,
+                )
+
+            with (
+                patch.object(worker, "inspect", side_effect=OfflineGenerationError),
+                patch("vntts.pregeneration_generation._ensure_remaining_disk_space"),
+                patch(
+                    "vntts.authoring.cli_generation.run_generation",
+                    side_effect=generate,
+                ),
+                patch("vntts.pregeneration_generation._load_result"),
+                patch(
+                    "vntts.pregeneration_generation._state_items",
+                    side_effect=AssertionError("full state conversion"),
+                ),
+                patch("vntts.pregeneration_generation.sys.platform", "darwin"),
+                patch(
+                    "vntts.pregeneration_generation._static_ready_line_ids",
+                    return_value=("source",),
+                ) as static_ready,
+            ):
+                worker.generate(inputs, plan)
+
+            static_ready.assert_called_once_with(
+                inputs.story_index, inputs.story_index_sha256
+            )
+            self.assertTrue(events[0].reset)
+            self.assertEqual(len(events), 1 + 4 * 6)
+            self.assertEqual(sum(len(event.items) for event in events), 6)
+            for previous, current, event in zip(
+                snapshots[:-1], snapshots[1:], events[1:], strict=True
+            ):
+                if not event.items:
+                    self.assertIs(previous.ready_line_ids, current.ready_line_ids)
+            self.assertEqual(snapshots[-1].generated, 6)
+            self.assertEqual(
+                snapshots[-1].ready_line_ids,
+                tuple(sorted(("source", *(f"line:{index}" for index in range(6))))),
+            )
+
+    def test_incremental_progress_retries_cancellation_duplicate_lines_and_reset(self):
+        with TemporaryDirectory() as directory:
+            inputs, _plan = generation_inputs(Path(directory))
+            worker = OfflineGenerationWorker(backend_factory=Mock())
+            queue_sha256 = inputs.queue_sha256
+            with patch(
+                "vntts.pregeneration_generation._static_ready_line_ids",
+                return_value=("source",),
+            ) as static_ready:
+                worker._record_progress(
+                    GenerationProgressEvent(
+                        queue_sha256,
+                        None,
+                        (
+                            GenerationProgressItem("one", "approved", "shared"),
+                            GenerationProgressItem("two", "generated", "shared"),
+                            GenerationProgressItem("failed", "failed", None),
+                            GenerationProgressItem("cancelled", "cancelled", None),
+                            GenerationProgressItem("omitted", "omitted", None),
+                        ),
+                        reset=True,
+                    ),
+                    inputs,
+                )
+                initial = worker.inspect_progress(inputs)
+                self.assertEqual(
+                    (initial.generated, initial.failed, initial.other_terminal),
+                    (2, 1, 1),
+                )
+                worker._record_progress(
+                    GenerationProgressEvent(
+                        queue_sha256,
+                        {"phase": "retrying"},
+                        (GenerationProgressItem("one", "failed", None),),
+                    ),
+                    inputs,
+                )
+                retrying = worker.inspect_progress(inputs)
+                self.assertEqual((retrying.generated, retrying.failed), (1, 2))
+                self.assertEqual(retrying.ready_line_ids, ("shared", "source"))
+                worker._record_progress(
+                    GenerationProgressEvent(
+                        queue_sha256,
+                        None,
+                        (GenerationProgressItem("two", "cancelled", None),),
+                    ),
+                    inputs,
+                )
+                cancelled = worker.inspect_progress(inputs)
+                self.assertEqual((cancelled.generated, cancelled.failed), (0, 2))
+                self.assertEqual(cancelled.ready_line_ids, ("source",))
+                worker._record_progress(
+                    GenerationProgressEvent(
+                        queue_sha256,
+                        None,
+                        (GenerationProgressItem("failed", "approved", "repaired"),),
+                    ),
+                    inputs,
+                )
+                recovered = worker.inspect_progress(inputs)
+                self.assertEqual((recovered.generated, recovered.failed), (1, 1))
+                self.assertEqual(recovered.ready_line_ids, ("repaired", "source"))
+                worker._record_progress(
+                    GenerationProgressEvent(
+                        queue_sha256,
+                        None,
+                        (GenerationProgressItem("cancelled", "cancelled", None),),
+                        reset=True,
+                    ),
+                    inputs,
+                )
+                reset = worker.inspect_progress(inputs)
+                self.assertEqual(reset.completed, 0)
+                self.assertEqual(reset.ready_line_ids, ("source",))
+            self.assertEqual(
+                static_ready.call_count, 5 if sys.platform == "win32" else 2
+            )
+
+    def test_incremental_static_readiness_rechecks_source_changes_and_windows(self):
+        for platform in ("darwin", "win32"):
+            for changed in ("story-index.jsonl", "source-audio-semantic-evidence.json"):
+                with (
+                    self.subTest(platform=platform, changed=changed),
+                    TemporaryDirectory() as directory,
+                ):
+                    inputs, _plan = generation_inputs(Path(directory))
+                    inputs.story_index.write_bytes(b"original")
+                    evidence = inputs.story_index.with_name(
+                        "source-audio-semantic-evidence.json"
+                    )
+                    evidence.write_bytes(b"original")
+                    target = inputs.story_index.with_name(changed)
+                    original = target.stat()
+                    worker = OfflineGenerationWorker(backend_factory=Mock())
+                    with (
+                        patch("vntts.pregeneration_generation.sys.platform", platform),
+                        (
+                            patch(
+                                "vntts.pregeneration_generation._progress_readiness_stamp",
+                                return_value=(),
+                            )
+                            if platform == "win32"
+                            else nullcontext()
+                        ),
+                        patch(
+                            "vntts.pregeneration_generation._static_ready_line_ids",
+                            side_effect=[("source",), ()],
+                        ) as static_ready,
+                    ):
+                        worker._record_progress(
+                            GenerationProgressEvent(
+                                inputs.queue_sha256, None, reset=True
+                            ),
+                            inputs,
+                        )
+                        self.assertEqual(
+                            worker.inspect_progress(inputs).ready_line_ids, ("source",)
+                        )
+                        target.write_bytes(b"modified")
+                        os.utime(
+                            target, ns=(original.st_atime_ns, original.st_mtime_ns)
+                        )
+                        worker._record_progress(
+                            GenerationProgressEvent(
+                                inputs.queue_sha256, {"phase": "validating"}
+                            ),
+                            inputs,
+                        )
+                        self.assertEqual(
+                            worker.inspect_progress(inputs).ready_line_ids, ()
+                        )
+                        self.assertEqual(static_ready.call_count, 2)
+
+    def test_incremental_static_readiness_checks_symlink_targets(self):
+        for filename in ("story-index.jsonl", "source-audio-semantic-evidence.json"):
+            with self.subTest(filename=filename), TemporaryDirectory() as directory:
+                inputs, _plan = generation_inputs(Path(directory))
+                inputs.story_index.write_bytes(b"original")
+                evidence = inputs.story_index.with_name(
+                    "source-audio-semantic-evidence.json"
+                )
+                evidence.write_bytes(b"original")
+                linked = inputs.story_index.with_name(filename)
+                target = linked.with_name("target-" + filename)
+                linked.replace(target)
+                symlink_or_skip(linked, target)
+                worker = OfflineGenerationWorker(backend_factory=Mock())
+                with (
+                    patch("vntts.pregeneration_generation.sys.platform", "darwin"),
+                    patch(
+                        "vntts.pregeneration_generation._static_ready_line_ids",
+                        side_effect=[("source",), ()],
+                    ) as static_ready,
+                ):
+                    worker._record_progress(
+                        GenerationProgressEvent(inputs.queue_sha256, None, reset=True),
+                        inputs,
+                    )
+                    target.write_bytes(b"modified")
+                    worker._record_progress(
+                        GenerationProgressEvent(
+                            inputs.queue_sha256, {"phase": "validating"}
+                        ),
+                        inputs,
+                    )
+                    self.assertEqual(worker.inspect_progress(inputs).ready_line_ids, ())
+                self.assertEqual(static_ready.call_count, 2)
+
+    def test_incremental_static_readiness_rejects_sources_changed_during_check(self):
+        with TemporaryDirectory() as directory:
+            inputs, _plan = generation_inputs(Path(directory))
+            inputs.story_index.write_bytes(b"original")
+            worker = OfflineGenerationWorker(backend_factory=Mock())
+
+            def changing_source(*_args):
+                inputs.story_index.write_bytes(b"changed during check")
+                return ("source",)
+
+            with patch(
+                "vntts.pregeneration_generation._static_ready_line_ids",
+                side_effect=changing_source,
+            ):
+                worker._record_progress(
+                    GenerationProgressEvent(inputs.queue_sha256, None, reset=True),
+                    inputs,
+                )
+            self.assertEqual(worker.inspect_progress(inputs).ready_line_ids, ())
+
     def test_stalled_second_retry_progress_callback_is_captured_until_cancel_settles(
         self,
     ):
@@ -1314,8 +1589,11 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 release.wait(3)
 
             def render(_parsed, **kwargs):
-                kwargs["progress_callback"](
-                    {"active": {"phase": "generating", "attempt": 2, "seed": 1}}
+                kwargs["progress_observer"](
+                    GenerationProgressEvent(
+                        inputs.queue_sha256,
+                        {"phase": "generating", "attempt": 2, "seed": 1},
+                    )
                 )
 
             def record(**details):

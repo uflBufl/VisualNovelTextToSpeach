@@ -102,6 +102,7 @@ from vntts.pregeneration_setup import (
     PregenerationJobStore,
     PregenerationSetupError,
     load_verified_story_index_document,
+    load_verified_story_records,
     story_game_id,
 )
 from vntts.recording_index import RecordingIndex
@@ -194,10 +195,12 @@ class StoryAudioInspector:
         job_store: PregenerationJobStore,
         *,
         cancel_event: Cancellation | None = None,
+        selection_ids: Iterable[str] = (),
     ) -> None:
         self.content = content
         self.job_store = job_store
         self.cancel_event = cancel_event
+        self._batch_selection_ids = frozenset(selection_ids)
         self._packs: dict[Path, _StoryAudioPack | Exception] = {}
         self._source: tuple[StoryIndexDocument, frozenset[str]] | None = None
         self._source_records: dict[str, StoryIndexRecord] = {}
@@ -206,22 +209,41 @@ class StoryAudioInspector:
             Path, tuple[dict[Path, tuple[int, ...]], tuple[str, str, str]]
         ] = {}
 
-    def _source_snapshot(self) -> tuple[StoryIndexDocument, frozenset[str]]:
-        if self._source is None:
+    def _source_snapshot(
+        self, line_ids: Iterable[str] = ()
+    ) -> tuple[StoryIndexDocument, frozenset[str]]:
+        requested = tuple(line_ids)
+        if self._source is None and self._batch_selection_ids:
+            # Admit one source snapshot for all requested stories in this UI batch.
+            batch_lines = (
+                line
+                for selection in self.content.selections
+                if selection.selection_id in self._batch_selection_ids
+                for line in selection.line_ids
+            )
+            requested = tuple(dict.fromkeys((*batch_lines, *requested)))
+        if self._source is None or any(
+            line not in self._source_records for line in requested
+        ):
             try:
-                source = load_verified_story_index_document(
-                    self.content.story_index, self.content.story_index_sha256
+                source = load_verified_story_records(
+                    self.content.story_index, self.content.story_index_sha256, requested
                 )
             except (OSError, StoryIndexError, ValueError) as error:
                 raise OfflinePackError(
                     "Story content changed. Refresh the story list and retry."
                 ) from error
             _raise_if_cancelled(self.cancel_event)
-            self._source = (
-                source,
-                _validated_source_audio_line_ids(self.content.story_index, source),
+            authorized = _validated_source_audio_line_ids(
+                self.content.story_index, source
             )
-            self._source_records = {record.line_id: record for record in source.records}
+            if self._source is None:
+                self._source = (source, authorized)
+            else:
+                self._source = (self._source[0], self._source[1] | authorized)
+            self._source_records.update(
+                (record.line_id, record) for record in source.records
+            )
         return self._source
 
     def _saved_generation_recordings(
@@ -429,7 +451,7 @@ class StoryAudioInspector:
         selection = next(
             value for value in content.selections if value.selection_id == selection_id
         )
-        source, source_audio_line_ids = self._source_snapshot()
+        source, source_audio_line_ids = self._source_snapshot(selection.line_ids)
         pack = _story_audio_pack(
             content,
             selection.line_ids,
@@ -1414,16 +1436,25 @@ def _load_incremental_base(
             job, selected_story
         ) or imported.pack.game_version != (job.game_version or "local"):
             return None, None
-        source_path = Path(job.catalog_story_index).expanduser().resolve()
-        try:
-            source = load_verified_story_index_document(
-                source_path, job.catalog_story_index_sha256
-            )
-        except ValueError as error:
-            raise OfflinePackError("Selected source story changed") from error
         base_story = load_verified_story_index_document(
             imported.story_index, imported.pack.story_index.sha256
         )
+        source_path = Path(job.catalog_story_index).expanduser().resolve()
+        try:
+            source = load_verified_story_records(
+                source_path,
+                job.catalog_story_index_sha256,
+                tuple(
+                    dict.fromkeys(
+                        record.line_id
+                        for document in (base_story, selected_story)
+                        for record in document.records
+                    )
+                ),
+                source_order=True,
+            )
+        except ValueError as error:
+            raise OfflinePackError("Selected source story changed") from error
     except (GamePackError, OSError, StoryIndexError, ValueError) as error:
         raise OfflinePackError(
             f"Unable to inspect the active offline pack: {error}"
@@ -1665,7 +1696,9 @@ def _write_cumulative_routes(
             _raise_if_cancelled(cancel_event)
             if sha256_file(record.audio) != record.audio_sha256:
                 raise OfflinePackError("Existing recording changed before publication")
-            canonical = audio_store.put(record.audio_sha256, record.audio)
+            canonical = audio_store.put(
+                record.audio_sha256, record.audio, expected_sha256=record.audio_sha256
+            )
             _link_verified_file(canonical, record.audio, record.audio_sha256)
             if record.line_id not in current_line_ids:
                 records.append(
@@ -1732,7 +1765,7 @@ def _portable_generated_record(
         if sha256_file(source) != digest:
             raise OfflinePackError("Generated recording changed before publication")
         if audio_store is not None:
-            canonical = audio_store.put(digest, source)
+            canonical = audio_store.put(digest, source, expected_sha256=digest)
             _link_verified_file(canonical, source, digest)
             source = canonical
         _link_verified_file(source, destination, digest)

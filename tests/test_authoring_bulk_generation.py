@@ -21,7 +21,9 @@ import vntts.authoring.bulk_generation as bulk_module
 import vntts.authoring.generation_failures as failure_module
 import vntts.authoring.generation_fallback as fallback_module
 import vntts.authoring.generation_lease as generation_lease_module
+import vntts.authoring.generation_manifest as manifest_module
 import vntts.authoring.generation_review as review_module
+import vntts.authoring.generation_state as state_module
 from tests.authoring_fixtures import tree_hashes
 from tests.bulk_generation_fixtures import (
     SyntheticRenderer,
@@ -65,6 +67,7 @@ from vntts.authoring.silence_evidence import (
     SilenceFailureEvidenceError,
     load_silence_failure_evidence,
 )
+from vntts.support import PerformanceLog
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisChunk,
@@ -150,6 +153,110 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             generation_profile="stable",
             **options,
         )
+
+    def test_generation_stage_measurements_are_bounded_and_keep_progress(self):
+        log = PerformanceLog()
+        events = []
+        with (
+            TemporaryDirectory() as directory,
+            patch("vntts.support.performance_log", log),
+        ):
+            root = Path(directory)
+            queue = write_queue(
+                root / "queue.jsonl", [queue_item("one"), queue_item("two")]
+            )
+            renderer = SyntheticRenderer(
+                inspect_state=lambda request: self.assertEqual(log.snapshot(), [])
+            )
+            result = self.run_generation(
+                queue, root / "output", renderer, progress_observer=events.append
+            )
+            self.assertEqual(result.generated, 2)
+            measurements = {event["operation"]: event for event in log.snapshot()}
+            for phase in (
+                "progress-manifest",
+                "wav-quality",
+                "wav-store",
+                "render-wait",
+            ):
+                self.assertEqual(measurements[f"bulk-generation-{phase}"]["count"], 2)
+            self.assertIn("bulk-generation-controls-validation", measurements)
+            self.assertIn("bulk-generation-state-validation", measurements)
+            self.assertEqual(measurements["bulk-generation-final-manifest"]["count"], 1)
+            self.assertIn("bulk-generation-database-read", measurements)
+            self.assertIn("bulk-generation-database-write", measurements)
+            self.assertEqual(len(log.snapshot()), len(measurements))
+            self.assertEqual(
+                len({event["operation_id"] for event in measurements.values()}), 1
+            )
+            self.assertGreater(
+                measurements["bulk-generation-progress-observer"]["count"], 2
+            )
+            self.assertEqual({item.status for item in events[-1].items}, {"generated"})
+
+    def test_generation_measurements_distinguish_render_wait_from_saved_wav_reuse(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = write_queue(root / "queue.jsonl", [queue_item()])
+            renderer = CacheAwareSyntheticRenderer(root / "backend-cache")
+            logs = []
+            for name in ("first", "second"):
+                log = PerformanceLog()
+                with patch("vntts.support.performance_log", log):
+                    run_bulk_generation(
+                        queue,
+                        root / name,
+                        renderer,
+                        provider=renderer.name,
+                        model=renderer.model_name,
+                        retries=0,
+                        synthesis_cache_policy=SynthesisCachePolicy.USE,
+                    )
+                logs.append({event["operation"]: event for event in log.snapshot()})
+            self.assertEqual(renderer.fresh_renders, 1)
+            self.assertEqual(logs[0]["bulk-generation-render-wait"]["count"], 1)
+            self.assertNotIn("bulk-generation-saved-wav-reuse", logs[0])
+            self.assertNotIn("bulk-generation-render-wait", logs[1])
+            self.assertEqual(logs[1]["bulk-generation-saved-wav-reuse"]["count"], 1)
+            self.assertTrue(
+                all(
+                    log["bulk-generation-cached-wav-lookup"]["count"] == 1
+                    for log in logs
+                )
+            )
+
+    def test_repeated_state_loads_reuse_numerical_quality_but_keep_authority_checks(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = write_queue(root / "queue.jsonl", [queue_item()])
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            manifest_module._audio_quality_cache.clear()
+            manifest_module._speech_quality_cache.clear()
+            with (
+                patch.object(
+                    manifest_module,
+                    "inspect_generated_wav_with_samples",
+                    wraps=manifest_module.inspect_generated_wav_with_samples,
+                ) as decode,
+                patch.object(
+                    manifest_module,
+                    "measure_generated_speech_samples",
+                    wraps=manifest_module.measure_generated_speech_samples,
+                ) as measure,
+                patch.object(
+                    state_module,
+                    "_validate_success_audio_event_composition",
+                    wraps=state_module._validate_success_audio_event_composition,
+                ) as composition,
+            ):
+                first = load_generation_state(result.state, queue)
+                second = load_generation_state(result.state, queue)
+                self.assertEqual(first, second)
+                self.assertEqual(decode.call_count, 1)
+                self.assertEqual(measure.call_count, 1)
+                self.assertEqual(composition.call_count, 2)
 
     def test_state_loader_uses_queue_bytes_from_one_snapshot(self):
         with TemporaryDirectory() as directory:
@@ -267,6 +374,193 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertIn(("validating", 0), snapshots)
         self.assertIn(("publishing", 0), snapshots)
         self.assertIn((None, 1), snapshots)
+
+    def test_execution_validation_and_control_writes_do_not_grow_per_item(self):
+        for failed in (False, True):
+            counts = []
+            for size in (2, 6):
+                with (
+                    self.subTest(failed=failed, size=size),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    queue = write_queue(
+                        root / "queue.jsonl",
+                        [queue_item(str(index)) for index in range(size)],
+                    )
+                    renderer = SyntheticRenderer(
+                        [RuntimeError("provider failed")] * size if failed else None
+                    )
+                    events = []
+                    with (
+                        patch.object(
+                            bulk_module, "_state_items", wraps=bulk_module._state_items
+                        ) as validate_items,
+                        patch.object(
+                            generation_database,
+                            "_write_controls",
+                            wraps=generation_database._write_controls,
+                        ) as write_controls,
+                    ):
+                        result = self.run_generation(
+                            queue,
+                            root / "output",
+                            renderer,
+                            retries=0,
+                            progress_observer=events.append,
+                        )
+                    self.assertEqual(
+                        result.failed if failed else result.generated, size
+                    )
+                    self.assertTrue(events[0].reset)
+                    self.assertFalse(any(event.reset for event in events[1:]))
+                    self.assertEqual(sum(len(event.items) for event in events), size)
+                    counts.append(
+                        (validate_items.call_count, write_controls.call_count)
+                    )
+            self.assertEqual(counts[0], counts[1])
+
+    def test_progress_observer_receives_detached_active_and_committed_retry_deltas(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            events = []
+
+            def observe(event):
+                events.append(event)
+                stored = generation_database.read_state(
+                    root / "output" / "generation-state.sqlite3"
+                )
+                for projection in event.items:
+                    self.assertEqual(
+                        projection.status,
+                        bulk_module.generation_item_status(
+                            stored["items"][projection.queue_id]
+                        ),
+                    )
+                if isinstance(event.active, dict):
+                    event.active["phase"] = "observer mutation"
+                    event.active["synthesis_configuration"]["observer mutation"] = True
+
+            result = self.run_generation(
+                queue,
+                root / "output",
+                SyntheticRenderer([RuntimeError("first attempt failed")]),
+                retries=1,
+                progress_observer=observe,
+            )
+            self.assertEqual(result.generated, 1)
+            self.assertEqual(
+                [projection.status for event in events for projection in event.items],
+                ["failed", "generated"],
+            )
+            stored = generation_database.read_state(result.state)
+            value = stored["items"][item["queue_id"]]
+            self.assertEqual(value["attempts"], 2)
+            self.assertNotIn("observer mutation", value["synthesis_configuration"])
+
+    def test_callback_path_keeps_two_item_validations_per_generated_item(self):
+        counts = []
+        for size in (2, 6):
+            with self.subTest(size=size), TemporaryDirectory() as directory:
+                root = Path(directory)
+                queue = write_queue(
+                    root / "queue.jsonl",
+                    [queue_item(str(index)) for index in range(size)],
+                )
+                with patch.object(
+                    bulk_module, "_state_items", wraps=bulk_module._state_items
+                ) as validate_items:
+                    self.run_generation(
+                        queue,
+                        root / "output",
+                        SyntheticRenderer(),
+                        progress_callback=lambda state: None,
+                    )
+                counts.append(validate_items.call_count)
+        self.assertEqual(counts[1] - counts[0], 2 * (6 - 2))
+
+    def test_progress_callback_replacement_items_are_used_for_later_writes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = write_queue(root / "queue.jsonl", [queue_item()])
+            replacements = []
+
+            def replace_items(state):
+                if state["active"] and state["active"]["phase"] == "publishing":
+                    state["items"] = dict(state["items"])
+                    replacements.append(state["items"])
+                    state["synthesis_controls"]["f" * 64] = []
+
+            result = self.run_generation(
+                queue,
+                root / "output",
+                SyntheticRenderer(),
+                progress_callback=replace_items,
+            )
+            persisted = generation_database.read_state(result.state)
+            self.assertEqual(len(replacements), 1)
+            self.assertEqual(replacements[0], persisted["items"])
+            self.assertEqual(len(replacements[0]), 1)
+            self.assertIn("f" * 64, persisted["synthesis_controls"])
+
+    def test_progress_callback_replacement_is_retained_when_callback_fails(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = write_queue(root / "queue.jsonl", [queue_item()])
+
+            def replace_then_fail(state):
+                if state["active"] and state["active"]["phase"] == "publishing":
+                    state["items"] = dict(state["items"])
+                    raise RuntimeError("callback failed")
+
+            events = []
+            result = self.run_generation(
+                queue,
+                root / "output",
+                SyntheticRenderer(),
+                retries=0,
+                progress_callback=replace_then_fail,
+                progress_observer=events.append,
+            )
+            persisted = generation_database.read_state(result.state)
+            self.assertEqual(result.failed, 1)
+            self.assertEqual(len(persisted["items"]), 1)
+            failure = next(iter(persisted["items"].values()))
+            self.assertEqual(failure["status"], "failed")
+            self.assertEqual(failure["last_error"], "callback failed")
+            self.assertTrue(all(event.reset for event in events))
+            self.assertEqual(events[-1].items[0].status, "failed")
+
+    def test_progress_callback_malformed_items_are_not_persisted(self):
+        for replace in (False, True):
+            with self.subTest(replace=replace), TemporaryDirectory() as directory:
+                root = Path(directory)
+                queue = write_queue(root / "queue.jsonl", [queue_item()])
+                renderer = SyntheticRenderer()
+
+                def corrupt_items(state):
+                    if state["active"]:
+                        if replace:
+                            state["items"] = []
+                        else:
+                            state["items"]["malformed"] = []
+
+                with self.assertRaisesRegex(BulkGenerationError, "items are malformed"):
+                    self.run_generation(
+                        queue,
+                        root / "output",
+                        renderer,
+                        progress_callback=corrupt_items,
+                    )
+                self.assertEqual(len(renderer.requests), 1)
+                persisted = generation_database.read_state(
+                    root / "output" / "generation-state.sqlite3"
+                )
+                self.assertEqual(persisted["items"], {})
 
     def test_persists_active_before_render_and_resumes_exact_wav(self):
         with TemporaryDirectory() as directory:

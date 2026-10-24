@@ -5,14 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from pathlib import Path
 from secrets import token_hex
-from stat import S_ISREG
 from threading import Event, Lock
 from time import monotonic
 
-from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
-from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.document_identity import canonical_document_sha256
 from vntts.pregeneration_audition import (
     ProgressReporter,
     VoiceAuditionCancelled,
@@ -83,11 +80,9 @@ class VoiceAuditionCoordinator:
         service: VoiceAuditionPreviewService,
         *,
         background_available: Callable[[], bool] = lambda: True,
-        max_cache_bytes: int = 128 * 1024 * 1024,
     ) -> None:
         self.service = service
         self.background_available = background_available
-        self.max_cache_bytes = max_cache_bytes
         self._lock = Lock()
         self._cache_lock = Lock()
         self._pool = ThreadPoolExecutor(
@@ -228,10 +223,6 @@ class VoiceAuditionCoordinator:
                     job.session._jobs.pop(job.key, None)
                 self._running = None
                 job.done.set()
-                protected = self._protected_preview_ids()
-                if job.preview is not None:
-                    protected.add(job.preview.identity)
-            self._prune(protected)
 
     def _run_job(self, job: _Job) -> tuple[tuple[object, ...], ...]:
         if job.cancel.is_set():
@@ -267,43 +258,6 @@ class VoiceAuditionCoordinator:
             raise VoiceAuditionError("Voice inputs changed during preview preparation")
         return stamp + self.service.audio_stamp(preview)
 
-    def _protected_preview_ids(self) -> set[str]:
-        return {
-            preview.identity
-            for session in self._sessions
-            for key, (preview, _stamp) in session._ready.items()
-            if key in session._focus_keys or key == session._manual_key
-        }
-
-    def _prune(self, protected: set[str]) -> None:
-        """Only audition WAVs are disposable; never follow aliases or touch voices."""
-        try:
-            if self.service.root.is_symlink() or self.service.root.is_junction():
-                return
-            entries: list[tuple[float, Path, int]] = []
-            for path in self.service.root.glob("*.wav"):
-                stat = path.stat(follow_symlinks=False)
-                if is_lowercase_sha256(path.stem) and S_ISREG(stat.st_mode):
-                    entries.append((stat.st_mtime, path, stat.st_size))
-            total = sum(size for _, _, size in entries)
-            for _, path, size in sorted(entries):
-                if total <= self.max_cache_bytes:
-                    break
-                if path.stem in protected:
-                    continue
-                try:
-                    with self._cache_lock, self._lock:
-                        if path.stem in self._protected_preview_ids():
-                            continue
-                        with exclusive_advisory_lock(path.with_suffix(".lock")):
-                            path.unlink(missing_ok=True)
-                            path.with_suffix(".json").unlink(missing_ok=True)
-                    total -= size
-                except AdvisoryLockBusyError:
-                    continue
-        except OSError, ValueError:
-            pass
-
 
 class VoiceAuditionSession:
     """A window can abandon its requests without closing the shared renderer."""
@@ -317,8 +271,6 @@ class VoiceAuditionSession:
             str, tuple[VoiceAuditionPreview, tuple[tuple[object, ...], ...]]
         ] = {}
         self._closed = False
-        self._focus_keys: set[str] = set()
-        self._manual_key: str | None = None
         self._failures: dict[str, str] = {}
 
     @property
@@ -375,7 +327,6 @@ class VoiceAuditionSession:
         stamp = self.owner.service.authorization_stamp(plan, group, candidate_source_id)
         if not automatic:
             with self.owner._lock:
-                self._manual_key = key
                 self._failures.pop(key, None)
         # Saved audio does not queue behind an unrelated model render.
         with self.owner._cache_lock:
@@ -442,6 +393,22 @@ class VoiceAuditionSession:
         try:
             if self.owner.service.authorization_unchanged(ready[1]):
                 return ready[0]
+            # Adding a shared WAV link changes ctime; re-admit once, without rendering.
+            stamp = self.owner.service.authorization_stamp(
+                plan, group, candidate_source_id
+            ) + self.owner.service.audio_stamp(ready[0])
+            checked = self.owner.service.lookup(
+                plan, group, candidate_source_id, text=text
+            )
+            if (
+                checked is not None
+                and checked.audio_sha256 == ready[0].audio_sha256
+                and self.owner.service.authorization_unchanged(stamp)
+            ):
+                with self.owner._lock:
+                    if not self._closed and self._ready.get(key) is ready:
+                        self._ready[key] = ready[0], stamp
+                        return ready[0]
         except OSError, ValueError, VoiceAuditionError:
             pass
         with self.owner._lock:
@@ -543,9 +510,6 @@ class VoiceAuditionSession:
         with self.owner._lock:
             if self._closed or self.owner._closed:
                 return
-            self._focus_keys = keys
-            if self._manual_key not in keys:
-                self._manual_key = None
             self._cancel_displaced_jobs(keys)
             if self.owner._suspended or not self.owner.background_available():
                 return

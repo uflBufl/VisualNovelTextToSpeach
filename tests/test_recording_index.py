@@ -10,7 +10,15 @@ from threading import Event, Thread, current_thread
 from unittest.mock import patch
 
 from tests.symlink_support import symlink_or_skip
-from vntts.recording_index import RecordingIndex, RecordingIndexError, _receipt
+from vntts.recording_index import (
+    _APPLICATION_ID,
+    _OBSOLETE_SCHEMA,
+    RecordingIndex,
+    RecordingIndexError,
+    _bucket,
+    _receipt,
+    _validate_row,
+)
 
 
 def sha(value):
@@ -115,6 +123,94 @@ class RecordingIndexTest(unittest.TestCase):
                     ({}, frozenset({"ready", "pending", "other"})),
                 )
 
+    def test_selected_lookup_validates_only_requested_buckets(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            index = RecordingIndex(root / "index")
+            lines = {f"line-{number}": sha(str(number)) for number in range(10_000)}
+            index.save(root / "input", SOURCE, lines, {"line-10": None})
+            selected = {"line-10": lines["line-10"], "absent": sha("absent")}
+            expected = sum(
+                _bucket(line) in {_bucket(key) for key in selected} for line in lines
+            )
+            with patch(
+                "vntts.recording_index._validate_row", wraps=_validate_row
+            ) as validate:
+                self.assertEqual(
+                    index.load(root / "input", SOURCE, selected), ({}, frozenset())
+                )
+            self.assertEqual(validate.call_count, expected)
+            self.assertLess(expected, 150)
+            with closing(sqlite3.connect(index.path)) as connection, connection:
+                connection.execute("DELETE FROM lines WHERE line_id='line-10'")
+            self.assertIsNone(index.load(root / "input", SOURCE, selected))
+
+    def test_missing_or_moved_bucket_cannot_hide_a_requested_line(self):
+        mutations = (
+            "DELETE FROM buckets WHERE bucket=?",
+            "UPDATE lines SET bucket=(bucket+1)%256 WHERE bucket=?",
+            "UPDATE buckets SET receipt_sha256='" + sha("forged") + "' WHERE bucket=?",
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), TemporaryDirectory() as directory:
+                root = Path(directory)
+                index = RecordingIndex(root / "index")
+                index.save(
+                    root / "input",
+                    SOURCE,
+                    LINES,
+                    {"ready": (root / "saved.wav", sha("audio"))},
+                )
+                with closing(sqlite3.connect(index.path)) as connection, connection:
+                    connection.execute(mutation, (_bucket("ready"),))
+                self.assertIsNone(
+                    index.load(root / "input", SOURCE, {"ready": LINES["ready"]})
+                )
+
+    def test_obsolete_derived_index_rebuilds_without_touching_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            index = RecordingIndex(root / "index")
+            recording = root / "saved.wav"
+            recording.write_bytes(b"consumer-owned audio")
+            index.root.mkdir()
+            with closing(sqlite3.connect(index.path)) as connection, connection:
+                for statement in _OBSOLETE_SCHEMA:
+                    connection.execute(statement)
+                connection.execute("PRAGMA user_version = 1")
+                connection.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
+            self.assertIsNone(index.load(root / "input", SOURCE, LINES))
+            index.save(
+                root / "input", SOURCE, LINES, {"ready": (recording, sha("audio"))}
+            )
+            self.assertEqual(
+                index.load(root / "input", SOURCE, {"ready": LINES["ready"]}),
+                ({"ready": (recording, sha("audio"))}, frozenset()),
+            )
+            with closing(sqlite3.connect(index.path)) as connection:
+                self.assertEqual(
+                    connection.execute("PRAGMA user_version").fetchone(), (2,)
+                )
+            self.assertEqual(recording.read_bytes(), b"consumer-owned audio")
+
+    def test_obsolete_version_with_unknown_schema_is_never_discarded(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            index = RecordingIndex(root / "index")
+            index.root.mkdir()
+            with closing(sqlite3.connect(index.path)) as connection, connection:
+                for statement in _OBSOLETE_SCHEMA:
+                    connection.execute(statement)
+                connection.execute("PRAGMA user_version = 1")
+                connection.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
+                connection.execute("CREATE VIEW unknown AS SELECT 1")
+            before = index.path.read_bytes()
+            with self.assertRaises(RecordingIndexError):
+                index.load(root / "input", SOURCE, LINES)
+            with self.assertRaises(RecordingIndexError):
+                index.save(root / "input", SOURCE, LINES, {})
+            self.assertEqual(index.path.read_bytes(), before)
+
     def test_corrupt_file_rebuild_does_not_touch_audio(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -139,7 +235,7 @@ class RecordingIndexTest(unittest.TestCase):
 
     def test_unsupported_version_application_and_schema_are_never_overwritten(self):
         for mutation in (
-            "PRAGMA user_version = 2",
+            "PRAGMA user_version = 3",
             "PRAGMA application_id = 1",
             "CREATE VIEW future AS SELECT 1",
             "CREATE TRIGGER changed AFTER INSERT ON lines BEGIN DELETE FROM directories; END",
@@ -242,7 +338,7 @@ RecordingIndex(root / "index").save(root / "input", SOURCE, LINES, {line: (root 
             reader = current_thread()
 
             def start_writer(*args):
-                if current_thread() is reader:
+                if current_thread() is reader and not started.is_set():
                     writer.start()
                     self.assertTrue(started.wait(2))
                 return _receipt(*args)
@@ -268,7 +364,7 @@ RecordingIndex(root / "index").save(root / "input", SOURCE, LINES, {line: (root 
             replacement = root / "future.sqlite3"
             replacement.write_bytes(index.path.read_bytes())
             with closing(sqlite3.connect(replacement)) as connection, connection:
-                connection.execute("PRAGMA user_version = 2")
+                connection.execute("PRAGMA user_version = 3")
             before = replacement.read_bytes()
             connect = sqlite3.connect
 

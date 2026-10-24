@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
@@ -19,6 +20,8 @@ from typing import Protocol, cast
 from vntts_artifacts.story_index import StoryIndexError
 
 from vntts.authoring.bulk_generation import (
+    GenerationProgressEvent,
+    GenerationProgressItem,
     _assert_control_files_unchanged,
     _GenerationControl,
     capture_generation_cancellation,
@@ -58,7 +61,7 @@ from vntts.pregeneration_contract import (
 from vntts.pregeneration_contract import (
     OfflineGenerationResult as OfflineGenerationResult,
 )
-from vntts.pregeneration_queue import PregenerationInput
+from vntts.pregeneration_queue import PregenerationInput, _recording_fingerprint
 from vntts.pregeneration_setup import (
     PregenerationSetupError,
     estimate_generation_resources,
@@ -88,6 +91,59 @@ class OfflineGenerationProgress:
     @property
     def completed(self) -> int:
         return self.generated + self.failed + self.other_terminal
+
+
+class _IncrementalGenerationProgress:
+    def __init__(self) -> None:
+        self.items: dict[str, GenerationProgressItem] = {}
+        self.counts: Counter[str] = Counter()
+        self.static_ready: frozenset[str] = frozenset()
+        self.source_stamp: tuple[tuple[int, ...] | None, ...] | None = None
+        self.ready: Counter[str] = Counter()
+        self._ready_line_ids: tuple[str, ...] | None = None
+
+    def update(self, item: GenerationProgressItem) -> None:
+        previous = self.items.get(item.queue_id)
+        if previous == item:
+            return
+        for value, delta in ((previous, -1), (item, 1)):
+            if value is None:
+                continue
+            kind = (
+                "generated"
+                if value.status in {"generated", "approved"}
+                else (
+                    "other"
+                    if value.status in {"live_fallback", "omitted", "not_reproducible"}
+                    else value.status
+                )
+            )
+            if kind is not None:
+                self.counts[kind] += delta
+            if kind == "generated" and value.line_id is not None:
+                line_id = value.line_id
+                was_ready = self.ready[line_id] > 0
+                self.ready[line_id] += delta
+                if self.ready[line_id] == 0:
+                    del self.ready[line_id]
+                if (
+                    was_ready != (self.ready[line_id] > 0)
+                    and line_id not in self.static_ready
+                ):
+                    self._ready_line_ids = None
+        self.items[item.queue_id] = item
+
+    def set_static_ready(self, values: tuple[str, ...]) -> None:
+        ready = frozenset(values)
+        if ready != self.static_ready:
+            self.static_ready = ready
+            self._ready_line_ids = None
+
+    @property
+    def ready_line_ids(self) -> tuple[str, ...]:
+        if self._ready_line_ids is None:
+            self._ready_line_ids = tuple(sorted(self.static_ready | self.ready.keys()))
+        return self._ready_line_ids
 
 
 class _GenerationBackendSession:
@@ -199,6 +255,9 @@ class OfflineGenerationWorker:
         self._progress_lock = Lock()
         self._memory_progress_enabled = backend_factory is not None
         self._live_progress: tuple[str, OfflineGenerationProgress] | None = None
+        self._incremental_progress: (
+            tuple[str, _IncrementalGenerationProgress] | None
+        ) = None
         self._disk_checked_inputs: set[str] = set()
         self._backend_session: _GenerationBackendSession | None = None
         self._backend_session_lock = Lock()
@@ -485,43 +544,6 @@ class OfflineGenerationWorker:
             ready_line_ids=tuple(sorted(ready)),
         )
 
-    def _progress_from_state(
-        self, state: object, generation_input: PregenerationInput
-    ) -> OfflineGenerationProgress:
-        if (
-            not isinstance(state, dict)
-            or state.get("queue_sha256") != generation_input.queue_sha256
-            or not isinstance(state.get("items"), dict)
-        ):
-            raise OfflineGenerationError("Offline generation progress is invalid")
-        generated = failed = other_terminal = 0
-        items = _state_items(state)
-        for item in items.values():
-            status = generation_item_status(item)
-            if status in {"generated", "approved"}:
-                generated += 1
-            elif status == "failed":
-                failed += 1
-            elif status in {"live_fallback", "omitted", "not_reproducible"}:
-                other_terminal += 1
-        active = state.get("active")
-        return OfflineGenerationProgress(
-            generated=generated,
-            failed=failed,
-            other_terminal=other_terminal,
-            runtime_status=self._runtime_status(active),
-            active_phase=(
-                str(active.get("phase"))
-                if isinstance(active, dict) and active.get("phase")
-                else None
-            ),
-            ready_line_ids=_ready_line_ids(
-                Path(generation_input.story_index),
-                generation_input.story_index_sha256,
-                items,
-            ),
-        )
-
     def _runtime_status(self, active: object) -> str | None:
         owner_pid = (
             active.get("generation_owner_pid", active.get("runtime_worker_pid"))
@@ -639,9 +661,9 @@ class OfflineGenerationWorker:
                     self._live_progress = None
             with GenerationStallWatchdog(cancel_event) as watchdog:
 
-                def record_progress(state: object) -> None:
-                    watchdog.progress(state)
-                    self._record_progress(state, generation_input)
+                def record_progress(event: GenerationProgressEvent) -> None:
+                    watchdog.progress({"active": event.active})
+                    self._record_progress(event, generation_input)
 
                 try:
                     run_generation(
@@ -649,7 +671,7 @@ class OfflineGenerationWorker:
                         backend_factory=backend_factory,
                         cancellation=cancel_event,
                         startup_progress=self._set_startup_status,
-                        progress_callback=record_progress,
+                        progress_observer=record_progress,
                     )
                 except Exception as error:
                     if cancel_event is not None and cancel_event.is_set():
@@ -765,9 +787,45 @@ class OfflineGenerationWorker:
                 self._startup_status = message.strip()[:2000]
 
     def _record_progress(
-        self, state: object, generation_input: PregenerationInput
+        self, event: GenerationProgressEvent, generation_input: PregenerationInput
     ) -> None:
-        progress = self._progress_from_state(state, generation_input)
+        if event.queue_sha256 != generation_input.queue_sha256:
+            raise OfflineGenerationError("Offline generation progress is invalid")
+        cached = self._incremental_progress
+        if event.reset:
+            accumulator = _IncrementalGenerationProgress()
+            self._incremental_progress = generation_input.identity, accumulator
+        elif cached is not None and cached[0] == generation_input.identity:
+            accumulator = cached[1]
+        else:
+            raise OfflineGenerationError(
+                "Offline generation progress was not initialized"
+            )
+        before = _progress_readiness_stamp(generation_input.story_index)
+        # Windows ctime is creation time; restored mtime cannot prove unchanged bytes.
+        if event.reset or sys.platform == "win32" or accumulator.source_stamp != before:
+            static_ready = _static_ready_line_ids(
+                generation_input.story_index, generation_input.story_index_sha256
+            )
+            if _progress_readiness_stamp(generation_input.story_index) != before:
+                static_ready = ()
+            accumulator.set_static_ready(static_ready)
+            accumulator.source_stamp = before
+        for item in event.items:
+            accumulator.update(item)
+        active = event.active
+        progress = OfflineGenerationProgress(
+            generated=accumulator.counts["generated"],
+            failed=accumulator.counts["failed"],
+            other_terminal=accumulator.counts["other"],
+            runtime_status=self._runtime_status(active),
+            active_phase=(
+                str(active.get("phase"))
+                if isinstance(active, dict) and active.get("phase")
+                else None
+            ),
+            ready_line_ids=accumulator.ready_line_ids,
+        )
         with self._progress_lock:
             self._live_progress = generation_input.identity, progress
 
@@ -843,6 +901,21 @@ def runtime_progress_manifest_path(generation_input: PregenerationInput) -> Path
     return _generation_output(generation_input) / str(RUNTIME_PROGRESS_MANIFEST_NAME)
 
 
+def _progress_readiness_stamp(story_index: Path) -> tuple[tuple[int, ...] | None, ...]:
+    evidence = (
+        story_index.expanduser()
+        .resolve()
+        .with_name("source-audio-semantic-evidence.json")
+    )
+    stamps: list[tuple[int, ...] | None] = []
+    for path in (story_index, evidence):
+        try:
+            stamps.append(_recording_fingerprint(path.resolve()))
+        except OSError:
+            stamps.append(None)
+    return tuple(stamps)
+
+
 def _static_ready_line_ids(
     story_index: Path, story_index_sha256: str
 ) -> tuple[str, ...]:
@@ -883,24 +956,6 @@ def _cached_static_ready_line_ids(
             )
         )
     )
-
-
-def _ready_line_ids(
-    story_index: Path,
-    story_index_sha256: str,
-    items: Mapping[str, Mapping[str, object]],
-) -> tuple[str, ...]:
-    ready_line_ids = set(_static_ready_line_ids(story_index, story_index_sha256))
-    for item in items.values():
-        if not isinstance(item, dict) or item.get("status") not in {
-            "generated",
-            "approved",
-        }:
-            continue
-        line_id = item.get("line_id")
-        if isinstance(line_id, str) and line_id:
-            ready_line_ids.add(line_id)
-    return tuple(sorted(ready_line_ids))
 
 
 def _durable_ready_line_ids(

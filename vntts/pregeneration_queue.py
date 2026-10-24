@@ -72,7 +72,7 @@ from vntts.pregeneration_setup import (
     PregenerationJob,
     PregenerationJobStore,
     PregenerationSetupError,
-    load_verified_story_index_document,
+    load_verified_story_records,
 )
 from vntts.pregeneration_voices import VoiceGroup, VoicePlan
 from vntts.preparation_catalog import PreparationCatalog
@@ -545,6 +545,7 @@ def _reuse_completed_audio(
                 canonical = store.put(
                     canonical_document_sha256({"legacy_completed_audio": result}),
                     source,
+                    expected_sha256=digest,
                 )
                 link_shared_audio(canonical, source, expected_sha256=digest)
                 relative = f"audio/{digest}.wav"
@@ -611,7 +612,9 @@ def _voice_content_identity(registry: CharacterVoiceRegistry, character: str) ->
 def _load_story(job: PregenerationJob) -> StoryIndexDocument:
     path = Path(job.story_index).expanduser().resolve()
     try:
-        return load_verified_story_index_document(path, job.story_index_sha256)
+        return load_verified_story_records(
+            path, job.story_index_sha256, job.selected_line_ids
+        )
     except PregenerationQueueError:
         raise
     except (OSError, StoryIndexError, ValueError) as error:

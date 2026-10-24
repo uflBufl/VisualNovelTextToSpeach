@@ -301,6 +301,141 @@ class OfflinePackPublisherTest(unittest.TestCase):
             self.assertEqual(sha256_file(reused), base_wav.sha256)
             self.assertTrue(reused.samefile(base_wav.path))
 
+    def test_incremental_source_reads_only_union_in_physical_catalog_order(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_job, base_input, base_result, _ = game_fixture(
+                root / "base", chapter="2"
+            )
+            base = OfflinePackPublisher().publish(base_job, base_input, base_result)
+            job, prepared, generated, _ = game_fixture(
+                root / "current", chapter="1", names=("next", "last")
+            )
+            base_story = load_story_index_document(base_input.story_index)
+            current_story = load_story_index_document(prepared.story_index)
+            records = [
+                current_story.records[0].to_record(),
+                base_story.records[0].to_record(),
+                current_story.records[1].to_record(),
+                base_story.records[1].to_record(),
+            ]
+            source = root / "catalog.jsonl"
+            write_story_index_document(
+                source,
+                current_story.metadata,
+                records
+                + [records[0] | {"line_id": "pack:unselected", "chapter": "other"}],
+            )
+            job = replace(
+                job, story_index=str(source), story_index_sha256=sha256_file(source)
+            )
+            full_loader = pack_module.load_verified_story_index_document
+
+            def refuse_full_catalog(path, checksum):
+                self.assertNotEqual(Path(path).resolve(), source.resolve())
+                return full_loader(path, checksum)
+
+            with (
+                patch("vntts.pregeneration_setup.story_catalog_minimum_bytes", 0),
+                patch(
+                    "vntts.pregeneration_setup._story_catalog_path",
+                    return_value=root / "catalog.sqlite3",
+                ),
+            ):
+                inspect_story_index(source)
+                _cached_story_index_document.cache_clear()
+                with (
+                    patch(
+                        "vntts.pregeneration_setup.load_verified_story_index_document",
+                        side_effect=refuse_full_catalog,
+                    ),
+                    patch.object(
+                        pack_module,
+                        "load_verified_story_index_document",
+                        side_effect=refuse_full_catalog,
+                    ),
+                    patch.object(
+                        pack_module,
+                        "load_verified_story_records",
+                        wraps=pack_module.load_verified_story_records,
+                    ) as selected_read,
+                ):
+                    imported, selected_source = _load_incremental_base(
+                        base.manifest, job, current_story
+                    )
+                    self.assertEqual(imported.pack.manifest_path, base.manifest)
+                    self.assertEqual(
+                        [record.line_id for record in selected_source.records],
+                        [record["line_id"] for record in records],
+                    )
+                    self.assertTrue(selected_read.call_args.kwargs["source_order"])
+                    published = OfflinePackPublisher(base_pack=base.manifest).publish(
+                        job, prepared, generated
+                    )
+            actual = load_story_index_document(published.imported.story_index)
+            self.assertEqual(
+                [record.line_id for record in actual.records],
+                [record["line_id"] for record in records],
+            )
+
+    def test_incremental_source_rejects_a_change_in_another_chapter(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_job, base_input, base_result, _ = game_fixture(root / "base")
+            base = OfflinePackPublisher().publish(base_job, base_input, base_result)
+            job, prepared, _generated, _ = game_fixture(
+                root / "current", chapter="2", names=("next", "last")
+            )
+            base_story = load_story_index_document(base_input.story_index)
+            current_story = load_story_index_document(prepared.story_index)
+            records = [
+                record.to_record()
+                for record in (*base_story.records, *current_story.records)
+            ]
+            unselected = records[0] | {
+                "line_id": "pack:unselected",
+                "chapter": "3",
+                "text": "Unselected text.",
+            }
+            unselected.pop("text_sha256", None)
+            records.append(unselected)
+            source = root / "catalog.jsonl"
+            write_story_index_document(source, current_story.metadata, records)
+            job = replace(
+                job, story_index=str(source), story_index_sha256=sha256_file(source)
+            )
+            with (
+                patch("vntts.pregeneration_setup.story_catalog_minimum_bytes", 0),
+                patch(
+                    "vntts.pregeneration_setup._story_catalog_path",
+                    return_value=root / "catalog.sqlite3",
+                ),
+            ):
+                inspect_story_index(source)
+                _cached_story_index_document.cache_clear()
+                saved = source.stat()
+                source.write_bytes(
+                    source.read_bytes().replace(
+                        b"Unselected text.", b"UNSELECTED text."
+                    )
+                )
+                os.utime(source, ns=(saved.st_atime_ns, saved.st_mtime_ns))
+                before = tree_hashes(base.directory)
+                with self.assertRaisesRegex(
+                    OfflinePackError, "Selected source story changed"
+                ):
+                    _load_incremental_base(base.manifest, job, current_story)
+                records[0]["text"] = "Changed text in the previously prepared chapter."
+                records[0].pop("text_sha256", None)
+                write_story_index_document(source, current_story.metadata, records)
+                updated = replace(job, story_index_sha256=sha256_file(source))
+                inspect_story_index(source)
+                self.assertEqual(
+                    _load_incremental_base(base.manifest, updated, current_story),
+                    (None, None),
+                )
+            self.assertEqual(tree_hashes(base.directory), before)
+
     def test_story_batch_reuses_each_pack_parse_but_new_batch_imports_again(self):
         with TemporaryDirectory() as directory:
             job, inputs, result, _items = fixture(Path(directory) / "source")
@@ -331,6 +466,10 @@ class OfflinePackPublisherTest(unittest.TestCase):
                     "vntts.pregeneration_pack.load_verified_story_index_document",
                     wraps=pack_module.load_verified_story_index_document,
                 ) as source,
+                patch(
+                    "vntts.pregeneration_pack.load_verified_story_records",
+                    wraps=pack_module.load_verified_story_records,
+                ) as selected_source,
             ):
                 inspector = StoryAudioInspector(content, store)
                 first = inspector.inspect("stage-0", manifest=published.manifest)
@@ -338,12 +477,14 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 self.assertEqual((first.generated, second.live), (1, 1))
                 self.assertEqual(imported.call_count, 1)
                 self.assertEqual(parsed.call_count, 1)
-                self.assertEqual(source.call_count, 2)  # Catalog and bound pack story.
+                self.assertEqual(source.call_count, 1)  # Bound pack story.
+                self.assertEqual(selected_source.call_count, 1)
                 StoryAudioInspector(content, store).inspect(
                     "stage-0", manifest=published.manifest
                 )
                 self.assertEqual(imported.call_count, 2)
-                self.assertEqual(source.call_count, 4)
+                self.assertEqual(source.call_count, 2)
+                self.assertEqual(selected_source.call_count, 2)
 
     def test_story_coverage_rejects_a_missing_selected_line(self):
         with TemporaryDirectory() as directory:

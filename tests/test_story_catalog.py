@@ -1,13 +1,18 @@
 import hashlib
 import sqlite3
 import unittest
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from vntts_artifacts.story_index import load_story_index_document
+
 from tests.story_fixtures import write_story_index
+from tests.symlink_support import symlink_or_skip
+from vntts import story_catalog
+from vntts.path_safety import open_regular_binary
 from vntts.pregeneration_setup import (
     PregenerationJobStore,
     StoryContentChanged,
@@ -185,6 +190,249 @@ class StoryCatalogTest(unittest.TestCase):
         sidecar.symlink_to(self.path)
         with self.assertRaises(StoryCatalogError):
             StoryCatalog(self.catalog).load("a", "b", 8)
+
+    def test_restart_fetches_only_requested_source_locations_in_requested_order(self):
+        storage, document = self.indexed_catalog()
+        statements = []
+        connect = sqlite3.connect
+
+        def traced_connection(*args, **kwargs):
+            connection = connect(*args, **kwargs)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        requested = ("reverse1999:3", "reverse1999:1", "reverse1999:3")
+        with (
+            patch("vntts.story_catalog.sqlite3.connect", side_effect=traced_connection),
+            patch(
+                "vntts.story_catalog.open_regular_binary",
+                side_effect=AssertionError("source read during SQL lookup"),
+            ),
+        ):
+            found = StoryCatalog(storage.path).record_locations(
+                document["source_story_index_sha256"],
+                document["source_audio_semantic_evidence_sha256"],
+                requested,
+            )
+        raw = self.path.read_bytes()
+        rows = raw.splitlines(keepends=True)
+        offset = len(rows[0])
+        expected = {}
+        for record, row in zip(
+            load_story_index_document(self.path).records, rows[1:], strict=True
+        ):
+            expected[record.line_id] = (
+                record.line_id,
+                offset,
+                len(row),
+                hashlib.sha256(row).hexdigest(),
+            )
+            offset += len(row)
+        self.assertEqual(found, tuple(expected[line_id] for line_id in requested))
+        queries = [value for value in statements if "FROM record_locations" in value]
+        self.assertEqual(len(queries), 1)
+        self.assertIn("WHERE line_id IN", queries[0])
+        self.assertNotIn("reverse1999:2", queries[0])
+        with closing(sqlite3.connect(storage.path)) as connection:
+            plan = connection.execute(
+                "EXPLAIN QUERY PLAN SELECT source_offset FROM record_locations WHERE line_id=?",
+                (requested[0],),
+            ).fetchall()
+            self.assertTrue(any("SEARCH" in row[3] for row in plan))
+
+    def test_record_locations_require_complete_matching_index_and_semantics(self):
+        storage = StoryCatalog(self.catalog)
+        document = self.document()
+        identity = (
+            document["source_story_index_sha256"],
+            document["source_audio_semantic_evidence_sha256"],
+        )
+        storage.save(document)
+        self.assertIsNone(storage.record_locations(*identity, ("reverse1999:3",)))
+        storage.save(
+            document,
+            story=load_story_index_document(self.path),
+            source_semantics_valid=False,
+        )
+        self.assertIsNone(storage.record_locations(*identity, ("reverse1999:3",)))
+        with closing(sqlite3.connect(storage.path)) as connection:
+            connection.execute("UPDATE record_source SET semantic_valid=1")
+            connection.commit()
+        with self.assertRaisesRegex(
+            StoryCatalogError, "record-source metadata changed"
+        ):
+            storage.record_locations(*identity, ("reverse1999:3",))
+        storage, _document = self.indexed_catalog()
+        self.assertEqual(storage.record_locations(*identity, ()), ())
+        self.assertIsNone(
+            storage.record_locations("changed", identity[1], ("reverse1999:3",))
+        )
+        self.assertIsNone(
+            storage.record_locations(identity[0], "changed", ("reverse1999:3",))
+        )
+        with closing(sqlite3.connect(storage.path)) as connection:
+            connection.execute(
+                "DELETE FROM record_locations WHERE line_id='reverse1999:3'"
+            )
+            connection.commit()
+        self.assertIsNone(storage.record_locations(*identity, ("reverse1999:3",)))
+
+    def test_record_locations_validate_bounds_digest_and_source_metadata(self):
+        statements = (
+            "UPDATE record_locations SET source_offset=-1 WHERE line_id='reverse1999:3'",
+            "UPDATE record_locations SET source_length=0 WHERE line_id='reverse1999:3'",
+            "UPDATE record_locations SET source_length=999999999 WHERE line_id='reverse1999:3'",
+            "UPDATE record_locations SET row_sha256='invalid' WHERE line_id='reverse1999:3'",
+            "UPDATE record_source SET header_length=0",
+            "UPDATE record_source SET header_sha256='invalid'",
+            "UPDATE record_source SET record_count=-1",
+            "UPDATE record_source SET record_count=record_count+1",
+            "UPDATE record_source SET source_size=source_size+1",
+            "UPDATE record_source SET receipt_sha256='invalid'",
+        )
+        for statement in statements:
+            with self.subTest(statement=statement):
+                storage, document = self.indexed_catalog()
+                with closing(sqlite3.connect(storage.path)) as connection:
+                    connection.execute(statement)
+                    connection.commit()
+                with self.assertRaises(StoryCatalogError):
+                    storage.record_locations(
+                        document["source_story_index_sha256"],
+                        document["source_audio_semantic_evidence_sha256"],
+                        ("reverse1999:3",),
+                    )
+
+    def test_index_build_requires_exact_source_sha_and_unpoisoned_parse(self):
+        for mutation in ("sha", "header", "record"):
+            with self.subTest(mutation=mutation):
+                original = self.catalog.read_bytes()
+                document = self.document()
+                story = load_story_index_document(self.path)
+                if mutation == "sha":
+                    document["source_story_index_sha256"] = "a" * 64
+                elif mutation == "header":
+                    story.metadata["game"] = "poisoned"
+                else:
+                    story.records[0].document["text"] = "poisoned"
+                with self.assertRaises(StoryCatalogError):
+                    StoryCatalog(self.catalog).save(document, story=story)
+                self.assertEqual(self.catalog.read_bytes(), original)
+                self.assertEqual(list(self.catalog.parent.glob(".story-catalog-*")), [])
+
+    def test_source_change_after_streaming_keeps_previous_complete_index(self):
+        storage, document = self.indexed_catalog()
+        original = storage.path.read_bytes()
+        story = load_story_index_document(self.path)
+
+        @contextmanager
+        def change_source_after_read(path):
+            with open_regular_binary(path) as stream:
+                yield stream
+            path.write_bytes(path.read_bytes() + b" ")
+
+        with patch("vntts.story_catalog.open_regular_binary", change_source_after_read):
+            with self.assertRaisesRegex(StoryCatalogError, "source changed"):
+                storage.save(document, story=story)
+        self.assertEqual(storage.path.read_bytes(), original)
+        self.assertEqual(list(self.catalog.parent.glob(".story-catalog-*")), [])
+
+    def test_source_symlink_is_rejected_without_replacing_catalog(self):
+        story = load_story_index_document(self.path)
+        original = self.catalog.read_bytes()
+        target = self.path.with_name("original.jsonl")
+        self.path.rename(target)
+        symlink_or_skip(self.path, target)
+        with self.assertRaises(StoryCatalogError):
+            StoryCatalog(self.catalog).save(self.document(), story=story)
+        self.assertEqual(self.catalog.read_bytes(), original)
+
+    def test_exact_v1_schema_is_a_miss_and_rebuilds_from_source(self):
+        self.legacy_catalog()
+        original = self.catalog.read_bytes()
+        storage = StoryCatalog(self.catalog)
+        document = self.document()
+        with patch.object(
+            StoryCatalog, "_selections", side_effect=AssertionError("legacy row read")
+        ):
+            self.assertIsNone(
+                storage.load(
+                    self.first.story_index_sha256,
+                    document["source_audio_semantic_evidence_sha256"],
+                    story_catalog_schema_version,
+                )
+            )
+            self.assertIsNone(
+                storage.record_locations(
+                    self.first.story_index_sha256,
+                    document["source_audio_semantic_evidence_sha256"],
+                    ("reverse1999:3",),
+                )
+            )
+        self.assertEqual(self.catalog.read_bytes(), original)
+        storage.save(document, story=load_story_index_document(self.path))
+        with closing(sqlite3.connect(self.catalog)) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertIsNotNone(
+            storage.record_locations(
+                self.first.story_index_sha256,
+                document["source_audio_semantic_evidence_sha256"],
+                ("reverse1999:3",),
+            )
+        )
+
+    def test_unknown_v1_schema_and_future_v1_cache_are_never_replaced(self):
+        for future in (False, True):
+            with self.subTest(future=future):
+                self.legacy_catalog(
+                    cache_version=99 if future else story_catalog_schema_version
+                )
+                if not future:
+                    with closing(sqlite3.connect(self.catalog)) as connection:
+                        connection.execute(
+                            "ALTER TABLE metadata ADD COLUMN unexpected TEXT"
+                        )
+                        connection.commit()
+                original = self.catalog.read_bytes()
+                with self.assertRaises(StoryCatalogError):
+                    StoryCatalog(self.catalog).save(
+                        self.document(), story=load_story_index_document(self.path)
+                    )
+                self.assertEqual(self.catalog.read_bytes(), original)
+
+    def test_record_lookup_rejects_linked_sql_sidecars(self):
+        storage, document = self.indexed_catalog()
+        for suffix in ("-journal", "-wal", "-shm"):
+            with self.subTest(suffix=suffix):
+                sidecar = self.catalog.with_name(self.catalog.name + suffix)
+                symlink_or_skip(sidecar, self.path)
+                try:
+                    with self.assertRaises(StoryCatalogError):
+                        storage.record_locations(
+                            document["source_story_index_sha256"],
+                            document["source_audio_semantic_evidence_sha256"],
+                            ("reverse1999:3",),
+                        )
+                finally:
+                    sidecar.unlink()
+
+    def indexed_catalog(self):
+        document = self.document()
+        storage = StoryCatalog(self.catalog)
+        storage.save(document, story=load_story_index_document(self.path))
+        return storage, document
+
+    def legacy_catalog(self, *, cache_version=story_catalog_schema_version):
+        self.catalog.unlink()
+        document = self.document()
+        document["schema_version"] = cache_version
+        with closing(sqlite3.connect(self.catalog)) as connection:
+            for statement in story_catalog._LEGACY_SCHEMA:
+                connection.execute(statement)
+            connection.execute(f"PRAGMA application_id={story_catalog._APPLICATION_ID}")
+            connection.execute("PRAGMA user_version=1")
+            StoryCatalog._write(connection, document)
+            connection.commit()
 
     def delete_lines(self, selection_id):
         with closing(sqlite3.connect(self.catalog)) as connection:

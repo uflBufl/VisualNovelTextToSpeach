@@ -31,6 +31,7 @@ from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.application_directories import get_local_data_directory
 from vntts.audio_cache import BoundedCache
+from vntts.audio_store import SharedAudioStore, link_shared_audio
 from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
     exclusive_advisory_lock,
@@ -379,6 +380,7 @@ class VoiceAuditionPreviewService:
                     preview_text,
                     lambda _message: None,
                 )
+                self._share_preview(preview.path, preview.path, preview.audio_sha256)
         except AdvisoryLockBusyError:
             return None
         _raise_if_cancelled(_CombinedCancellation(cancel_event))
@@ -480,6 +482,9 @@ class VoiceAuditionPreviewService:
                             candidate,
                             preview_text,
                             notify,
+                        )
+                        self._share_preview(
+                            preview.path, preview.path, preview.audio_sha256
                         )
                         (
                             telemetry.outcome,
@@ -781,8 +786,17 @@ class VoiceAuditionPreviewService:
                     primary_error=error,
                 )
                 raise
+            self._share_preview(target, target, audio_sha256)
             telemetry.cache_source = result.diagnostics.cache_source
             return audio_sha256
+
+    def _share_preview(self, source: Path, target: Path, audio_sha256: str) -> None:
+        store = SharedAudioStore(self.root.parent / "jobs" / "audio-store")
+        key = f"wav-{audio_sha256}"
+        saved = store.get(key)
+        if saved is None:
+            saved = store.put(key, source, expected_sha256=audio_sha256)
+        link_shared_audio(saved, target, audio_sha256)
 
     def cancel(self) -> None:
         self._cancel.set()

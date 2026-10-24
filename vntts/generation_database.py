@@ -9,9 +9,12 @@ import sqlite3
 import stat
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from time import perf_counter, process_time
+from uuid import uuid4
 
 from vntts.audio_store import _sync_directory, _sync_regular_file
 from vntts.json_types import decode_json
@@ -56,6 +59,72 @@ _REVIEWS: dict[str, set[str | None]] = {
     "omitted": {"omitted"},
 }
 _ITEM_COLUMNS = "queue_id,line_id,text_sha256,status,review_status,voice_character,audio_path,audio_sha256,attempts,payload"
+
+
+@dataclass
+class _PhaseMeasurement:
+    elapsed: float = 0.0
+    cpu: float = 0.0
+    count: int = 0
+    failed: bool = False
+
+
+_generation_measurements: ContextVar[dict[str, _PhaseMeasurement] | None] = ContextVar(
+    "generation_measurements", default=None
+)
+
+
+@contextmanager
+def measure_generation_phase(name: str) -> Iterator[None]:
+    """Aggregate repeated work without publishing a log event for each item."""
+    measurements = _generation_measurements.get()
+    if measurements is None:
+        yield
+        return
+    started, cpu_started = perf_counter(), process_time()
+    failed = False
+    try:
+        yield
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        phase = measurements.setdefault(name, _PhaseMeasurement())
+        phase.elapsed += perf_counter() - started
+        phase.cpu += process_time() - cpu_started
+        phase.count += 1
+        phase.failed |= failed
+
+
+@contextmanager
+def measure_generation_run() -> Iterator[None]:
+    """Flush bounded inclusive phase totals once, including failed executions."""
+    from vntts.support import performance_operation_id, record_background_operation
+
+    if _generation_measurements.get() is not None:
+        yield
+        return
+    measurements: dict[str, _PhaseMeasurement] = {}
+    token = _generation_measurements.set(measurements)
+    operation_id = uuid4().hex
+    operation_token = performance_operation_id.set(operation_id)
+    try:
+        with measure_generation_phase("total"):
+            yield
+    finally:
+        _generation_measurements.reset(token)
+        performance_operation_id.reset(operation_token)
+        for name, phase in measurements.items():
+            record_background_operation(
+                f"bulk-generation-{name}",
+                phase.elapsed * 1000,
+                "failed" if phase.failed else "complete",
+                cpu_ms=phase.cpu * 1000,
+                count=phase.count,
+                operation_id=operation_id,
+                parent_operation="bulk-generation-total" if name != "total" else None,
+                timing_scope="inclusive",
+            )
 
 
 @dataclass(frozen=True)
@@ -160,32 +229,35 @@ def _verify(connection: sqlite3.Connection, *, snapshot: bool = False) -> None:
 
 @contextmanager
 def _connection(path: Path, *, write: bool = False) -> Iterator[sqlite3.Connection]:
-    path = _path(path)
-    validate_database_path(path)
-    try:
-        with closing(
-            sqlite3.connect(
-                path.as_uri() + ("?mode=rw" if write else "?mode=ro"),
-                uri=True,
-                timeout=30,
-                isolation_level=None,
-            )
-        ) as connection:
-            connection.execute("PRAGMA trusted_schema=OFF")
-            if write:
-                connection.execute("PRAGMA synchronous=FULL")
-            else:
-                connection.execute("PRAGMA query_only=ON")
-            connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
-            try:
-                _verify(connection)
-                yield connection
-                connection.commit()
-            except BaseException:
-                connection.rollback()
-                raise
-    except sqlite3.Error as error:
-        raise ValueError(f"Unable to access generation database: {error}") from error
+    with measure_generation_phase("database-write" if write else "database-read"):
+        path = _path(path)
+        validate_database_path(path)
+        try:
+            with closing(
+                sqlite3.connect(
+                    path.as_uri() + ("?mode=rw" if write else "?mode=ro"),
+                    uri=True,
+                    timeout=30,
+                    isolation_level=None,
+                )
+            ) as connection:
+                connection.execute("PRAGMA trusted_schema=OFF")
+                if write:
+                    connection.execute("PRAGMA synchronous=FULL")
+                else:
+                    connection.execute("PRAGMA query_only=ON")
+                connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+                try:
+                    _verify(connection)
+                    yield connection
+                    connection.commit()
+                except BaseException:
+                    connection.rollback()
+                    raise
+        except sqlite3.Error as error:
+            raise ValueError(
+                f"Unable to access generation database: {error}"
+            ) from error
 
 
 def _object(payload: object) -> dict[str, object]:
@@ -384,6 +456,7 @@ def _progress_counts(connection: sqlite3.Connection) -> tuple[int, int, int]:
     )
 
 
+@measure_generation_phase("database-snapshot-read")
 def read_snapshot(payload: bytes) -> dict[str, object]:
     """Decode an immutable byte snapshot used by review authority checks."""
     if len(payload) < 100 or not payload.startswith(b"SQLite format 3\x00"):
@@ -421,6 +494,8 @@ def _write(
     connection: sqlite3.Connection,
     state: dict[str, object],
     changed_items: tuple[str, ...] | None,
+    *,
+    controls_unchanged: bool = False,
 ) -> None:
     items = state.get("items")
     controls = state.get("synthesis_controls")
@@ -446,15 +521,20 @@ def _write(
             if key not in {"items", "synthesis_controls"}
         }
     )
-    existing = connection.execute("SELECT queue_sha256 FROM run WHERE id=1").fetchone()
+    existing = connection.execute(
+        "SELECT queue_sha256,controls_kind FROM run WHERE id=1"
+    ).fetchone()
     if existing is not None and existing[0] != queue:
         raise ValueError("Generation database belongs to another queue")
+    if controls_unchanged and (existing is None or existing[1] != controls_kind):
+        raise ValueError("Generation database controls kind changed")
     connection.execute(
         "INSERT INTO run VALUES(1,?,?,1,?) ON CONFLICT(id) DO UPDATE SET metadata=excluded.metadata,revision=run.revision+1,controls_kind=excluded.controls_kind",
         (queue, encoded, controls_kind),
     )
     _write_items(connection, items, changed_items)
-    _write_controls(connection, controls)
+    if not controls_unchanged:
+        _write_controls(connection, controls)
 
 
 def _write_items(
@@ -510,6 +590,7 @@ def _write_controls(
             connection.execute("DELETE FROM controls WHERE identity=?", (key,))
 
 
+@measure_generation_phase("database-initialize")
 def _initialize(path: Path, state: dict[str, object]) -> bool:
     """Publish only a committed complete state, never an empty schema."""
     validate_database_path(path)
@@ -561,13 +642,15 @@ def write_state(
     state: dict[str, object],
     *,
     changed_items: tuple[str, ...] | None = None,
+    controls_unchanged: bool = False,
 ) -> None:
+    """Save state; skip controls only when the caller guarantees they are unchanged."""
     path = _path(path)
     validate_database_path(path)
     if not path.exists() and _initialize(path, state):
         return
     with _connection(path, write=True) as connection:
-        _write(connection, state, changed_items)
+        _write(connection, state, changed_items, controls_unchanged=controls_unchanged)
 
 
 def active_attempt(path: Path) -> object:

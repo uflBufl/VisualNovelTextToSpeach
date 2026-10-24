@@ -1,6 +1,8 @@
 import hashlib
+import io
 import json
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -20,6 +22,10 @@ from vntts.story_index_snapshot import load_story_index_snapshot
 
 class SelectedStorySnapshotTest(unittest.TestCase):
     def setUp(self):
+        from vntts.pregeneration_setup import _cached_story_index_document
+
+        _cached_story_index_document.cache_clear()
+        self.addCleanup(_cached_story_index_document.cache_clear)
         _source_receipts.clear()
         self.addCleanup(_source_receipts.clear)
         temporary = TemporaryDirectory()
@@ -151,6 +157,58 @@ class SelectedStorySnapshotTest(unittest.TestCase):
             self.load(selected)
         self.assertIsInstance(raised.exception.__cause__, StoryContentChanged)
 
+    def test_receipt_only_serializes_records_in_the_current_selection(self):
+        from vntts.selected_story_snapshot import _record_digest
+
+        with patch(
+            "vntts.selected_story_snapshot._record_digest", wraps=_record_digest
+        ) as digest:
+            selected = self.create()
+            self.load(selected)
+            self.assertEqual(
+                {call.args[0]["line_id"] for call in digest.call_args_list},
+                {"one", "two"},
+            )
+            digest.reset_mock()
+            later = create_selected_story_snapshot(
+                self.source,
+                self.checksum,
+                ("later",),
+                ("later",),
+                self.root / "later-selection",
+            )
+            self.load(later)
+            self.assertEqual(
+                {call.args[0]["line_id"] for call in digest.call_args_list}, {"later"}
+            )
+
+    def test_transient_selected_row_swap_cannot_replace_admitted_bytes(self):
+        from vntts.selected_story_snapshot import open_regular_binary
+
+        selected = self.create()
+        original = self.source.read_bytes()
+        forged = original.replace(b'"producer": [1]', b'"producer": [9]', 1)
+        self.assertNotEqual(forged, original)
+        self.assertEqual(len(forged), len(original))
+        self.change_snapshot(lambda rows: rows[1].update(context={"producer": [9]}))
+
+        @contextmanager
+        def transient_source(path):
+            if Path(path) == self.source:
+                with io.BytesIO(forged) as stream:
+                    yield stream
+            else:
+                with open_regular_binary(path) as stream:
+                    yield stream
+
+        with patch(
+            "vntts.selected_story_snapshot.open_regular_binary",
+            side_effect=transient_source,
+        ):
+            with self.assertRaisesRegex(StoryIndexError, "origin checksum changed"):
+                self.load(selected)
+        self.assertEqual(self.source.read_bytes(), original)
+
     def test_disk_witnesses_do_not_replace_cold_source_validation(self):
         selected = self.create()
         _source_receipts.clear()
@@ -171,6 +229,96 @@ class SelectedStorySnapshotTest(unittest.TestCase):
         document.records[0].document["text"] = "Changed mutable cache"
         document.metadata["selection_origin"]["records"][0]["offset"] = 0
         self.assertEqual(self.load(selected).records[0].text, "Exact text one.")
+
+    def test_inspection_seals_source_before_reusing_parse_for_selection(self):
+        from vntts_artifacts.story_index import load_story_index_document
+
+        from vntts.pregeneration_setup import (
+            inspect_story_index,
+            load_verified_story_index_document,
+        )
+
+        with patch(
+            "vntts.story_index_snapshot.load_story_index_document",
+            wraps=load_story_index_document,
+        ) as strict:
+            content = inspect_story_index(self.source)
+            self.assertEqual(strict.call_count, 1)
+            document = load_verified_story_index_document(self.source, self.checksum)
+            document.metadata["game"] = "Poisoned mutable metadata"
+            document.records[0].document["text"] = "Poisoned mutable record"
+            selected = self.create()
+            # Only the small selected source view requires another parse.
+            self.assertEqual(strict.call_count, 2)
+            actual = self.load(selected)
+        self.assertEqual(actual.game, content.game)
+        self.assertEqual(actual.records[0].text, "Exact text one.")
+
+    def test_portable_inspection_without_semantic_evidence_cannot_admit_selection(self):
+        from vntts.pregeneration_setup import inspect_story_index
+
+        write_verified_source_story(self.source)
+        self.source.with_name("source-audio-semantic-evidence.json").unlink()
+        self.checksum = sha256_file(self.source)
+        self.assertTrue(inspect_story_index(self.source).selections)
+        self.assertFalse(_source_receipts)
+        with self.assertRaisesRegex(StoryIndexError, "origin is invalid"):
+            create_selected_story_snapshot(
+                self.source,
+                self.checksum,
+                ("test:0",),
+                ("chapter:24006",),
+                self.directory,
+            )
+        self.assertFalse(self.directory.exists())
+
+    def test_portable_inspection_with_unreadable_evidence_does_not_admit_source(self):
+        from vntts.pregeneration_setup import inspect_story_index
+
+        write_verified_source_story(self.source)
+        evidence = self.source.with_name("source-audio-semantic-evidence.json")
+        evidence.unlink()
+        evidence.mkdir()
+        self.assertTrue(inspect_story_index(self.source).selections)
+        self.assertFalse(_source_receipts)
+
+    def test_inspection_receipt_rejects_late_source_or_evidence_mutation(self):
+        from vntts.pregeneration_setup import (
+            PregenerationSetupError,
+            StoryContentChanged,
+            _cached_story_index_document,
+            inspect_story_index,
+        )
+        from vntts.selected_story_snapshot import _build_receipt
+
+        for evidence_changed in (False, True):
+            with self.subTest(evidence_changed=evidence_changed):
+                write_verified_source_story(self.source)
+                self.checksum = sha256_file(self.source)
+                changed = (
+                    self.source.with_name("source-audio-semantic-evidence.json")
+                    if evidence_changed
+                    else self.source
+                )
+
+                def mutate_after_receipt(document, payload):
+                    receipt = _build_receipt(document, payload)
+                    changed.write_bytes(changed.read_bytes() + b"\n")
+                    return receipt
+
+                with patch(
+                    "vntts.selected_story_snapshot._build_receipt",
+                    side_effect=mutate_after_receipt,
+                ):
+                    with self.assertRaisesRegex(
+                        PregenerationSetupError, "changed while read"
+                    ) as caught:
+                        inspect_story_index(self.source)
+                self.assertIsInstance(
+                    caught.exception.__cause__.__cause__, StoryContentChanged
+                )
+                self.assertFalse(_source_receipts)
+                self.assertEqual(_cached_story_index_document.cache_info().currsize, 0)
 
     def test_warm_validation_and_factory_reuse_do_not_capture_whole_catalog(self):
         selected = self.create()
@@ -295,12 +443,16 @@ class SelectedStorySnapshotTest(unittest.TestCase):
             self.load(selected)
 
     def test_full_semantic_admission_checks_unselected_annotations(self):
+        from vntts.pregeneration_setup import inspect_story_index
+
         write_verified_source_story(self.source)
         rows = [json.loads(row) for row in self.source.read_text().splitlines()]
         rows.append(dict(rows[1], line_id="unselected", chapter="other"))
         rows[0]["line_count"] = 2
         self.source.write_text("".join(json.dumps(row) + "\n" for row in rows))
         self.checksum = sha256_file(self.source)
+        self.assertTrue(inspect_story_index(self.source).selections)
+        self.assertFalse(_source_receipts)
         with self.assertRaisesRegex(StoryIndexError, "semantic evidence changed"):
             create_selected_story_snapshot(
                 self.source,

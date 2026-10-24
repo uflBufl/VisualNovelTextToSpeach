@@ -22,7 +22,9 @@ from tests.bulk_generation_fixtures import SyntheticRenderer, audio_samples
 from tests.story_fixtures import semantic_evidence_document, semantic_evidence_entry
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.bulk_generation import BulkGenerationError, run_bulk_generation
-from vntts.authoring.generation_manifest import validate_success_file_with_samples
+from vntts.authoring.generation_manifest import (
+    validate_success_file_with_speech_quality,
+)
 from vntts.authoring.generation_state import (
     load_generation_state,
     load_generation_state_from_snapshot,
@@ -1207,8 +1209,8 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     )
                 inspector = StoryAudioInspector(content, jobs)
                 with patch(
-                    "vntts.authoring.generation_state.validate_success_file_with_samples",
-                    wraps=validate_success_file_with_samples,
+                    "vntts.authoring.generation_state.validate_success_file_with_speech_quality",
+                    wraps=validate_success_file_with_speech_quality,
                 ) as validated:
                     for _ in range(2):
                         self.assertEqual(inspector.inspect("selected").generated, 4)

@@ -289,7 +289,11 @@ from vntts.authoring.workspace_foundation import (
     load_json_object,
 )
 from vntts.document_identity import file_sha256, sha256_file
-from vntts.generation_database import require_registered_output
+from vntts.generation_database import (
+    measure_generation_phase,
+    measure_generation_run,
+    require_registered_output,
+)
 from vntts.generation_database import state_path as generation_state_path
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
@@ -429,9 +433,54 @@ class _GenerationAttempt:
 
 
 @dataclass(frozen=True)
+class GenerationProgressItem:
+    queue_id: str
+    status: str | None
+    line_id: str | None
+
+
+@dataclass(frozen=True)
+class GenerationProgressEvent:
+    """Detached progress data; reset replaces all prior terminal projections."""
+
+    queue_sha256: str
+    active: object
+    items: tuple[GenerationProgressItem, ...] = ()
+    reset: bool = False
+
+
+def _generation_progress_event(
+    state: JsonDocument,
+    items: StateItems,
+    changed_items: tuple[str, ...] | None,
+) -> GenerationProgressEvent:
+    projected = []
+    for queue_id in items if changed_items is None else changed_items:
+        item = items.get(queue_id, {})
+        status = generation_item_status(item)
+        line_id = item.get("line_id")
+        projected.append(
+            GenerationProgressItem(
+                queue_id,
+                status if isinstance(status, str) else None,
+                line_id if isinstance(line_id, str) and line_id else None,
+            )
+        )
+    queue_sha256 = state["queue_sha256"]
+    assert isinstance(queue_sha256, str)
+    return GenerationProgressEvent(
+        queue_sha256,
+        copy.deepcopy(state.get("active")),
+        tuple(projected),
+        reset=changed_items is None,
+    )
+
+
+@dataclass(frozen=True)
 class _GenerationExecutionContext:
     state_path: Path
     state: JsonDocument
+    _items: StateItems
     output_directory: Path
     output_argument: Path
     audio_store: SharedAudioStore
@@ -463,6 +512,14 @@ class _GenerationExecutionContext:
     regenerate_existing: bool
     approve_validated_audio: bool
     progress_callback: Callable[[JsonDocument], None] | None
+    progress_observer: Callable[[GenerationProgressEvent], None] | None
+
+    @property
+    def items(self) -> StateItems:
+        # Callbacks can retain, mutate or replace the live collection.
+        return (
+            self._items if self.progress_callback is None else _state_items(self.state)
+        )
 
 
 @dataclass(frozen=True)
@@ -1127,7 +1184,11 @@ def _skip_existing_generation_item(
         )
         if not run.regenerate_existing:
             source = run.output_directory / str(existing["path"])
-            stored = run.audio_store.put("wav-" + str(existing["file_sha256"]), source)
+            stored = run.audio_store.put(
+                "wav-" + str(existing["file_sha256"]),
+                source,
+                expected_sha256=str(existing["file_sha256"]),
+            )
             link_shared_audio(stored, source, str(existing["file_sha256"]))
             return True
         if existing.get("review_status") != "pending_review":
@@ -1258,7 +1319,7 @@ def _prepare_generation_item(
     run: _GenerationExecutionContext, item: VoiceGenerationQueueItem
 ) -> _PreparedGenerationItem | None:
     queue_id = item.queue_id
-    existing = _state_items(run.state).get(queue_id, {})
+    existing = run.items.get(queue_id, {})
     repair_strategy = run.repair_policy.strategy_for(queue_id)
     repair_document = _failure_repair_document(
         run.repair_policy, queue_id, item.text, existing=existing
@@ -1315,7 +1376,7 @@ def _prepare_generation_item(
 def _next_generation_request(
     run: _GenerationExecutionContext, candidate: VoiceGenerationQueueItem
 ) -> SynthesisRequest | None:
-    existing = _state_items(run.state).get(candidate.queue_id, {})
+    existing = run.items.get(candidate.queue_id, {})
     if existing.get("status") in {"generated", "approved", "live_fallback"}:
         return None
     requested = _required_text(
@@ -1414,10 +1475,15 @@ def _store_successful_generation_attempt(
         and carry_forward.get("mode") == "failed-outcome"
     ):
         value["carry_forward"] = copy.deepcopy(carry_forward)
-    _state_items(run.state)[plan.queue_id] = value
+    run.items[plan.queue_id] = value
     run.state["active"] = None
     run.lease.assert_owned()
-    write_generation_state(run.state_path, run.state, changed_items=(plan.queue_id,))
+    write_generation_state(
+        run.state_path,
+        run.state,
+        changed_items=(plan.queue_id,),
+        controls_unchanged=run.progress_callback is None,
+    )
 
 
 def _store_failed_generation_attempt(
@@ -1519,7 +1585,7 @@ def _store_failed_generation_attempt(
         and carry_forward.get("mode") == "failed-outcome"
     ):
         value["carry_forward"] = copy.deepcopy(carry_forward)
-    _state_items(run.state)[plan.queue_id] = value
+    run.items[plan.queue_id] = value
     if run_attempts < plan.attempt_limit and not is_cancelled:
         _write_active_phase(
             run.state_path,
@@ -1527,11 +1593,15 @@ def _store_failed_generation_attempt(
             "retrying",
             last_error=last_error,
             changed_items=(plan.queue_id,),
+            controls_unchanged=run.progress_callback is None,
         )
     else:
         run.state["active"] = None
         write_generation_state(
-            run.state_path, run.state, changed_items=(plan.queue_id,)
+            run.state_path,
+            run.state,
+            changed_items=(plan.queue_id,),
+            controls_unchanged=run.progress_callback is None,
         )
     captured: _CapturedSilenceFailure | None = None
     if captured_partial is not None:
@@ -1607,6 +1677,7 @@ def _begin_generation_attempt(
         seed_applied=request_seed is not None,
         started_at=_now(),
         last_error=last_error,
+        controls_unchanged=run.progress_callback is None,
     )
     _notify_progress(run)
     return _GenerationAttempt(
@@ -1715,32 +1786,36 @@ def _render_and_publish_generation_attempt(
     pipeline_enabled: bool,
 ) -> PrefetchedRender | None:
     final_key = _final_audio_key(run, attempt.request, plan.repair_document)
-    saved = (
-        run.audio_store.get(final_key)
-        if final_key is not None
-        and run.synthesis_cache_policy is SynthesisCachePolicy.USE
-        else None
-    )
+    saved = None
+    if final_key is not None and run.synthesis_cache_policy is SynthesisCachePolicy.USE:
+        with measure_generation_phase("cached-wav-lookup"):
+            saved = run.audio_store.get(final_key)
     if saved is not None:
-        attempt.rendered = _saved_audio_result(run, attempt.request, saved)
-        if prefetched_render is not None and prefetched_render[0] == plan.queue_id:
-            prefetched_render[2].result()
-            prefetched_render = None
-    elif prefetched_render is not None and prefetched_render[0] == plan.queue_id:
-        prefetched_request, future = prefetched_render[1:]
-        prefetched_render = None
-        if prefetched_request != attempt.request:
-            raise BulkGenerationError("OpenMOSS prefetched request identity changed")
-        attempt.rendered = future.result()
-    elif plan.repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
-        attempt.rendered = render_sentence_segments(
-            run.render,
-            attempt.request,
-            safe_sentence_segments(plan.synthesis_text),
-            pause_ms=run.repair_policy.segment_pause_ms,
-        )
+        with measure_generation_phase("saved-wav-reuse"):
+            attempt.rendered = _saved_audio_result(run, attempt.request, saved)
+            if prefetched_render is not None and prefetched_render[0] == plan.queue_id:
+                prefetched_render[2].result()
+                prefetched_render = None
     else:
-        attempt.rendered = run.render(attempt.request).collect()
+        # Prefetch can overlap publication; this measures caller wait, not GPU compute.
+        with measure_generation_phase("render-wait"):
+            if prefetched_render is not None and prefetched_render[0] == plan.queue_id:
+                prefetched_request, future = prefetched_render[1:]
+                prefetched_render = None
+                if prefetched_request != attempt.request:
+                    raise BulkGenerationError(
+                        "OpenMOSS prefetched request identity changed"
+                    )
+                attempt.rendered = future.result()
+            elif plan.repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+                attempt.rendered = render_sentence_segments(
+                    run.render,
+                    attempt.request,
+                    safe_sentence_segments(plan.synthesis_text),
+                    pause_ms=run.repair_policy.segment_pause_ms,
+                )
+            else:
+                attempt.rendered = run.render(attempt.request).collect()
     rendered = attempt.rendered
     worker_pid = _runtime_worker_pid(run.backend)
     record_diagnostic_event(
@@ -1768,39 +1843,50 @@ def _render_and_publish_generation_attempt(
             run.output_argument, run.workspace_output_identity
         )
     run.lease.assert_owned()
-    _write_active_phase(run.state_path, run.state, "validating")
+    _write_active_phase(
+        run.state_path,
+        run.state,
+        "validating",
+        controls_unchanged=run.progress_callback is None,
+    )
     _notify_progress(run)
     if pipeline_enabled:
         prefetched_render = _prefetch_next_generation(
             run, item_index, prefetched_render
         )
-    output_pcm = _generated_mono_pcm(attempt.rendered.pcm)
-    if plan.repair_strategy == EDGE_SILENCE_TRIM:
-        trimmed = trim_excess_edge_silence(
-            output_pcm,
-            attempt.rendered.sample_rate,
-            trigger_seconds=NOTABLE_SILENCE_SPAN_SECONDS,
+    with measure_generation_phase("wav-quality"):
+        output_pcm = _generated_mono_pcm(attempt.rendered.pcm)
+        if plan.repair_strategy == EDGE_SILENCE_TRIM:
+            trimmed = trim_excess_edge_silence(
+                output_pcm,
+                attempt.rendered.sample_rate,
+                trigger_seconds=NOTABLE_SILENCE_SPAN_SECONDS,
+            )
+            output_pcm = trimmed.pcm
+            attempt.attempt_repair = {
+                **(attempt.attempt_repair or {}),
+                "leading_trimmed_samples": trimmed.leading_trimmed_samples,
+                "trailing_trimmed_samples": trimmed.trailing_trimmed_samples,
+            }
+        if saved is None:
+            write_pcm16_wav(attempt.partial, output_pcm, attempt.rendered.sample_rate)
+        else:
+            link_shared_audio(saved, attempt.partial)
+        payload = read_regular_bytes(attempt.partial)
+        quality, samples = inspect_generated_wav_with_samples(io.BytesIO(payload))
+        speech_quality = inspect_generated_speech_samples(
+            samples,
+            sample_rate=quality.sample_rate,
+            duration_seconds=quality.sample_count / quality.sample_rate,
+            text=plan.synthesis_text,
         )
-        output_pcm = trimmed.pcm
-        attempt.attempt_repair = {
-            **(attempt.attempt_repair or {}),
-            "leading_trimmed_samples": trimmed.leading_trimmed_samples,
-            "trailing_trimmed_samples": trimmed.trailing_trimmed_samples,
-        }
-    if saved is None:
-        write_pcm16_wav(attempt.partial, output_pcm, attempt.rendered.sample_rate)
-    else:
-        link_shared_audio(saved, attempt.partial)
-    payload = read_regular_bytes(attempt.partial)
-    quality, samples = inspect_generated_wav_with_samples(io.BytesIO(payload))
-    speech_quality = inspect_generated_speech_samples(
-        samples,
-        sample_rate=quality.sample_rate,
-        duration_seconds=quality.sample_count / quality.sample_rate,
-        text=plan.synthesis_text,
+        file_sha256 = hashlib.sha256(payload).hexdigest()
+    _write_active_phase(
+        run.state_path,
+        run.state,
+        "publishing",
+        controls_unchanged=run.progress_callback is None,
     )
-    file_sha256 = hashlib.sha256(payload).hexdigest()
-    _write_active_phase(run.state_path, run.state, "publishing")
     _notify_progress(run)
     if run.workspace_output_identity is not None:
         _assert_workspace_output_identity(
@@ -1809,9 +1895,14 @@ def _render_and_publish_generation_attempt(
     if attempt.request.cancellation_requested():
         raise BulkGenerationError("Generation cancelled by user")
     run.lease.assert_owned()
-    stored = run.audio_store.put(final_key or "wav-" + file_sha256, attempt.partial)
-    link_shared_audio(stored, plan.destination, file_sha256)
-    attempt.partial.unlink()
+    with measure_generation_phase("wav-store"):
+        stored = run.audio_store.put(
+            final_key or "wav-" + file_sha256,
+            attempt.partial,
+            expected_sha256=file_sha256,
+        )
+        link_shared_audio(stored, plan.destination, file_sha256)
+        attempt.partial.unlink()
     _store_successful_generation_attempt(
         run,
         plan,
@@ -1836,22 +1927,36 @@ def _render_and_publish_generation_attempt(
     return prefetched_render
 
 
-def _publish_runtime_progress(run: _GenerationExecutionContext) -> None:
+def _publish_runtime_progress(
+    run: _GenerationExecutionContext, changed_items: tuple[str, ...]
+) -> None:
     run.lease.assert_owned()
-    write_runtime_progress_manifest_from_state(
-        run.state,
-        run.output_directory,
-        run.output_directory / RUNTIME_PROGRESS_MANIFEST_NAME,
-        # Every included WAV was validated before its atomic state update.
-        # Playback independently verifies the file hash before use.
-        validate_files=False,
-    )
-    _notify_progress(run)
+    with measure_generation_phase("progress-manifest"):
+        write_runtime_progress_manifest_from_state(
+            run.state,
+            run.output_directory,
+            run.output_directory / RUNTIME_PROGRESS_MANIFEST_NAME,
+            # Every included WAV was validated before its atomic state update.
+            # Playback independently verifies the file hash before use.
+            validate_files=False,
+        )
+    _notify_progress(run, changed_items=changed_items)
 
 
-def _notify_progress(run: _GenerationExecutionContext) -> None:
+@measure_generation_phase("progress-observer")
+def _notify_progress(
+    run: _GenerationExecutionContext, *, changed_items: tuple[str, ...] = ()
+) -> None:
     if run.progress_callback is not None:
         run.progress_callback(run.state)
+    if run.progress_observer is not None:
+        run.progress_observer(
+            _generation_progress_event(
+                run.state,
+                run.items,
+                None if run.progress_callback is not None else changed_items,
+            )
+        )
 
 
 def _execute_generation_item(
@@ -1924,7 +2029,7 @@ def _execute_generation_item(
             last_error = failure.last_error
             if failure.captured_silence_failure is not None:
                 captured_silence_failure = failure.captured_silence_failure
-            _publish_runtime_progress(run)
+            _publish_runtime_progress(run, (plan.queue_id,))
             if failure.cancelled:
                 return _GenerationItemExecutionResult(
                     generated=False,
@@ -1933,7 +2038,7 @@ def _execute_generation_item(
                     prefetched_render=prefetched_render,
                 )
         else:
-            _publish_runtime_progress(run)
+            _publish_runtime_progress(run, (plan.queue_id,))
             return _GenerationItemExecutionResult(
                 generated=True,
                 cancelled=False,
@@ -2010,9 +2115,10 @@ def _finalize_generation_run(
     if workspace_output_identity is not None:
         _assert_workspace_output_identity(output_argument, workspace_output_identity)
     lease.assert_owned()
-    publish_generated_manifest(
-        state_path, manifest_path=manifest_path, _lease_held=True
-    )
+    with measure_generation_phase("final-manifest"):
+        publish_generated_manifest(
+            state_path, manifest_path=manifest_path, _lease_held=True
+        )
     captured = execution.captured_silence_failure
     if captured is not None:
         if evidence_directory is None:
@@ -2351,6 +2457,7 @@ def run_bulk_generation(
     audio_store_directory: str | Path | None = None,
     approve_validated_audio: bool = False,
     progress_callback: Callable[[JsonDocument], None] | None = None,
+    progress_observer: Callable[[GenerationProgressEvent], None] | None = None,
 ) -> BulkGenerationResult:
     """Render selected queue items with no device playback and resumable state."""
     configuration = _prepare_generation_configuration(
@@ -2486,9 +2593,11 @@ def run_bulk_generation(
         manifest_path=manifest_path,
         approve_validated_audio=approve_validated_audio,
         progress_callback=progress_callback,
+        progress_observer=progress_observer,
     )
 
 
+@measure_generation_run()
 def _run_generation_execution(
     *,
     output_directory: Path,
@@ -2531,6 +2640,7 @@ def _run_generation_execution(
     manifest_path: Path,
     approve_validated_audio: bool,
     progress_callback: Callable[[JsonDocument], None] | None,
+    progress_observer: Callable[[GenerationProgressEvent], None] | None,
 ) -> BulkGenerationResult:
     with (
         _GenerationLease(
@@ -2556,8 +2666,13 @@ def _run_generation_execution(
         )
         _record_interrupted_generation_job(state, state_path, interrupted_job)
         _reconcile_interrupted_attempt(state_path, state, queue)
-        if progress_callback is not None:
-            progress_callback(state)
+        with measure_generation_phase("progress-observer"):
+            if progress_callback is not None:
+                progress_callback(state)
+            if progress_observer is not None:
+                progress_observer(
+                    _generation_progress_event(state, _state_items(state), None)
+                )
         state.setdefault("game", queue.metadata.get("game"))
         state.setdefault("language", queue.metadata.get("language"))
         candidates, skipped_actions, skipped_characters, skipped_items = (
@@ -2576,6 +2691,7 @@ def _run_generation_execution(
             _GenerationExecutionContext(
                 state_path=state_path,
                 state=state,
+                _items=_state_items(state),
                 output_directory=output_directory,
                 output_argument=output_argument,
                 audio_store=audio_store,
@@ -2607,6 +2723,7 @@ def _run_generation_execution(
                 regenerate_existing=regenerate_existing,
                 approve_validated_audio=approve_validated_audio,
                 progress_callback=progress_callback,
+                progress_observer=progress_observer,
             )
         )
         return _finalize_generation_run(
@@ -3167,6 +3284,7 @@ def _write_active(
     last_error: str | None,
     runtime_status: str | None = None,
     runtime_worker_pid: int | None = None,
+    controls_unchanged: bool = False,
 ) -> None:
     active: JsonDocument = {
         "queue_id": item.queue_id,
@@ -3212,7 +3330,9 @@ def _write_active(
         active["source_reference_binding"] = source_reference_binding
     if failure_repair is not None:
         active["failure_repair"] = failure_repair
-    write_generation_state(state_path, state, changed_items=())
+    write_generation_state(
+        state_path, state, changed_items=(), controls_unchanged=controls_unchanged
+    )
 
 
 def _write_active_phase(
@@ -3222,6 +3342,7 @@ def _write_active_phase(
     *,
     last_error: str | None = None,
     changed_items: tuple[str, ...] = (),
+    controls_unchanged: bool = False,
 ) -> None:
     active = state.get("active")
     if not _is_json_document(active):
@@ -3230,7 +3351,12 @@ def _write_active_phase(
     active["updated_at"] = _now()
     if last_error is not None:
         active["last_error"] = last_error
-    write_generation_state(state_path, state, changed_items=changed_items)
+    write_generation_state(
+        state_path,
+        state,
+        changed_items=changed_items,
+        controls_unchanged=controls_unchanged,
+    )
 
 
 def _validate_render_result(
@@ -3412,6 +3538,7 @@ def _assert_workspace_output_identity(
         )
 
 
+@measure_generation_phase("controls-validation")
 def _assert_control_files_unchanged(controls: Sequence[_GenerationControl]) -> None:
     for control in controls:
         try:

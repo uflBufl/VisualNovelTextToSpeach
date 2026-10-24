@@ -20,6 +20,7 @@ from tests.bulk_generation_fixtures import (
     write_queue,
 )
 from tests.symlink_support import symlink_or_skip
+from vntts import audio_store
 from vntts.audio_store import (
     AudioStorageUpgradeRequired,
     SharedAudioStore,
@@ -27,6 +28,7 @@ from vntts.audio_store import (
     link_shared_audio,
 )
 from vntts.authoring.bulk_generation import run_bulk_generation
+from vntts.path_safety import open_regular_binary
 from vntts.synthesis import SynthesisCompletion
 
 
@@ -52,6 +54,30 @@ class SharedAudioStoreTest(unittest.TestCase):
             first.unlink()
             source.unlink()
             self.assertEqual(second.read_bytes(), original)
+
+    def test_put_rejects_changed_expected_bytes_before_binding_or_linking(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.audio(root / "paid.wav")
+            original = source.read_bytes()
+            expected = hashlib.sha256(original).hexdigest()
+            store = SharedAudioStore(root / "store")
+            paid = store.put("paid", source, expected_sha256=expected)
+            source.unlink()
+            write_pcm16_wav(source, audio_samples() * 0.5, 16000)
+            changed = source.read_bytes()
+            for key in ("paid", "new-preview"):
+                with self.subTest(key=key), patch("vntts.audio_store.os.link") as link:
+                    with self.assertRaisesRegex(
+                        SharedAudioStoreError, "checksum changed"
+                    ):
+                        store.put(key, source, expected_sha256=expected)
+                    link.assert_not_called()
+            self.assertEqual(paid.read_bytes(), original)
+            self.assertEqual(store.get("paid").read_bytes(), original)
+            self.assertIsNone(store.get("new-preview"))
+            self.assertEqual(source.read_bytes(), changed)
+            self.assertEqual(len(tuple((store.directory / "objects").glob("*.wav"))), 1)
 
     def test_verified_legacy_copy_is_relinked_without_changing_bytes(self):
         with TemporaryDirectory() as directory:
@@ -93,6 +119,189 @@ class SharedAudioStoreTest(unittest.TestCase):
             self.assertEqual(target.read_bytes(), before)
             self.assertEqual(source.read_bytes(), before)
             self.assertEqual(list(root.glob("*.link")), [])
+
+    def test_publication_with_known_checksum_reads_wav_bytes_three_times(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.audio(root / "source.wav")
+            store = SharedAudioStore(root / "store")
+            destination = root / "published.wav"
+            with patch(
+                "vntts.audio_store.open_regular_binary", wraps=open_regular_binary
+            ) as opened:
+                saved = store.put("key", source)
+                link_shared_audio(saved, destination, saved.stem)
+            self.assertEqual(opened.call_count, 3)
+            self.assertTrue(destination.samefile(saved))
+
+    def test_link_rejects_corrupt_saved_object_with_known_checksum(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.audio(root / "source.wav")
+            saved = SharedAudioStore(root / "store").put("key", source)
+            payload = bytearray(saved.read_bytes())
+            payload[-1] ^= 1
+            saved.write_bytes(payload)
+            destination = root / "published.wav"
+            with self.assertRaisesRegex(SharedAudioStoreError, "checksum changed"):
+                link_shared_audio(saved, destination, saved.stem)
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(root.glob(".*.link")), [])
+
+    def test_link_rejects_mutation_during_link_with_or_without_checksum(self):
+        for known_checksum in (False, True):
+            with (
+                self.subTest(known_checksum=known_checksum),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                source = self.audio(root / "source.wav")
+                before = source.stat()
+                payload = bytearray(source.read_bytes())
+                digest = hashlib.sha256(payload).hexdigest()
+                destination = root / "published.wav"
+                link = os.link
+
+                def mutate_then_link(original, target):
+                    payload[-1] ^= 1
+                    source.write_bytes(payload)
+                    os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+                    link(original, target)
+
+                with patch("vntts.audio_store.os.link", side_effect=mutate_then_link):
+                    with self.assertRaisesRegex(
+                        SharedAudioStoreError, "checksum changed"
+                    ):
+                        link_shared_audio(
+                            source, destination, digest if known_checksum else None
+                        )
+                self.assertFalse(destination.exists())
+                self.assertEqual(list(root.glob(".*.link")), [])
+
+    @unittest.skipIf(
+        os.name == "nt",
+        "Requires POSIX metadata change time; Windows ctime is creation time",
+    )
+    def test_link_rejects_mutation_after_verification_with_restored_mtime(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.audio(root / "source.wav")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            destination = root / "published.wav"
+            read_digest = audio_store._digest
+
+            def mutate_after_read(path):
+                result = read_digest(path)
+                before = source.stat()
+                payload = bytearray(source.read_bytes())
+                payload[-1] ^= 1
+                source.write_bytes(payload)
+                os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+                return result
+
+            with patch("vntts.audio_store._digest", side_effect=mutate_after_read):
+                with self.assertRaisesRegex(
+                    SharedAudioStoreError, "changed while linking"
+                ):
+                    link_shared_audio(source, destination, digest)
+            self.assertFalse(destination.exists())
+
+    def test_link_preserves_destination_changed_during_verification(self):
+        for existed in (False, True):
+            with self.subTest(existed=existed), TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = self.audio(root / "source.wav")
+                payload = source.read_bytes()
+                digest = hashlib.sha256(payload).hexdigest()
+                destination = root / "published.wav"
+                if existed:
+                    destination.write_bytes(payload)
+                changed = bytearray(payload)
+                changed[-1] ^= 1
+                read_digest = audio_store._digest
+
+                def change_destination(path):
+                    result = read_digest(path)
+                    if path.name.endswith(".link"):
+                        before = destination.stat() if existed else None
+                        destination.write_bytes(changed)
+                        if before is not None:
+                            os.utime(
+                                destination, ns=(before.st_atime_ns, before.st_mtime_ns)
+                            )
+                    return result
+
+                with patch("vntts.audio_store._digest", side_effect=change_destination):
+                    with self.assertRaisesRegex(
+                        SharedAudioStoreError, "destination changed"
+                    ):
+                        link_shared_audio(source, destination, digest)
+                self.assertEqual(destination.read_bytes(), changed)
+                self.assertEqual(source.read_bytes(), payload)
+                self.assertEqual(list(root.glob(".*.link")), [])
+
+    def test_same_inode_link_still_verifies_expected_checksum(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.audio(root / "source.wav")
+            destination = root / "published.wav"
+            os.link(source, destination)
+            with self.assertRaisesRegex(SharedAudioStoreError, "checksum changed"):
+                link_shared_audio(source, destination, "0" * 64)
+
+    def test_windows_rechecks_existing_destination_without_relying_on_ctime(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.audio(root / "source.wav")
+            destination = root / "published.wav"
+            destination.write_bytes(source.read_bytes())
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            windows = Mock(wraps=os)
+            windows.name = "nt"
+            with (
+                patch("vntts.audio_store.os", windows),
+                patch("vntts.audio_store._digest", wraps=audio_store._digest) as hashed,
+            ):
+                link_shared_audio(source, destination, digest)
+            self.assertEqual(
+                [call.args[0] for call in hashed.call_args_list].count(
+                    destination.resolve()
+                ),
+                2,
+            )
+            self.assertTrue(destination.samefile(source))
+
+    def test_link_preserves_generic_verified_bytes_without_wav_admission(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.wav"
+            source.write_bytes(b"invalid WAV")
+            destination = root / "published.wav"
+            link_shared_audio(
+                source, destination, hashlib.sha256(source.read_bytes()).hexdigest()
+            )
+            self.assertTrue(destination.samefile(source))
+
+    def test_link_allows_concurrent_alias_creation_while_verifying_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.audio(root / "source.wav")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            destination = root / "published.wav"
+            read_digest = audio_store._digest
+
+            def create_alias_after_read(path):
+                result = read_digest(path)
+                alias = root / "concurrent.wav"
+                if not alias.exists():
+                    os.link(source, alias)
+                return result
+
+            with patch(
+                "vntts.audio_store._digest", side_effect=create_alias_after_read
+            ):
+                link_shared_audio(source, destination, digest)
+            self.assertTrue(destination.samefile(source))
 
     def test_sync_failure_does_not_publish_binding(self):
         with TemporaryDirectory() as directory:

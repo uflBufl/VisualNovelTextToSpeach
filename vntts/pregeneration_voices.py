@@ -55,7 +55,7 @@ from vntts.person_link_suggestions import (
 from vntts.pregeneration_setup import (
     PregenerationJob,
     PregenerationJobStore,
-    load_verified_story_index_document,
+    load_verified_story_records,
 )
 from vntts.preparation_catalog import PreparationCatalog, PreparationCatalogError
 from vntts.services.tts_engine import default_tts_profile, get_tts_profile
@@ -1414,7 +1414,9 @@ def _group_voice_discoveries(
 def _load_bound_story(job: PregenerationJob) -> StoryIndexDocument:
     path = Path(job.story_index).expanduser().resolve()
     try:
-        document = load_verified_story_index_document(path, job.story_index_sha256)
+        document = load_verified_story_records(
+            path, job.story_index_sha256, job.selected_line_ids
+        )
     except PregenerationVoiceError:
         raise
     except (OSError, StoryIndexError, ValueError) as error:

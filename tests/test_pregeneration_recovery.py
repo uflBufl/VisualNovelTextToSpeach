@@ -14,6 +14,7 @@ from tests.pregeneration_fixtures import fixture
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring import generation_state
 from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.generation_database import measure_generation_phase, measure_generation_run
 from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationResult,
@@ -31,6 +32,7 @@ from vntts.pregeneration_recovery import (
     plan_automatic_recovery,
 )
 from vntts.pregeneration_voices import VoicePlan
+from vntts.support import PerformanceLog
 
 
 def inputs(root):
@@ -453,6 +455,30 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
             self.assertIs(caught.exception, failure)
             self.assertTrue(scopes[0].closed)
             self.assertIsNone(generator._backend_session)
+
+    def test_whole_recovery_flushes_nested_generation_measurements_once(self):
+        log = PerformanceLog()
+        worker = OfflineRecoveryWorker(Mock())
+        sentinel = object()
+
+        def recover(*_args):
+            for _ in range(3):
+                with measure_generation_run():
+                    with measure_generation_phase("render-wait"):
+                        pass
+                self.assertEqual(log.snapshot(), [])
+            return sentinel
+
+        with (
+            patch("vntts.support.performance_log", log),
+            patch.object(worker, "_generate_and_recover", side_effect=recover),
+        ):
+            self.assertIs(worker.generate_and_recover(None, None), sentinel)
+        events = {event["operation"]: event for event in log.snapshot()}
+        self.assertEqual(len(log.snapshot()), 2)
+        self.assertEqual(events["bulk-generation-render-wait"]["count"], 3)
+        self.assertEqual(events["bulk-generation-total"]["count"], 1)
+        self.assertEqual(len({event["operation_id"] for event in events.values()}), 1)
 
     def test_custom_generation_session_closes_around_failure(self):
         events = []

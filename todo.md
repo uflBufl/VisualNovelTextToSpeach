@@ -4,6 +4,13 @@
 
 - [ ] Verify the affected Windows installation by ordinary launch/reproduction and a support ZIP with the new automatic logging. If legacy data requires migration, prepare a validated offline upgrade with a separate backup.
 
+## Active - Deliver owned-row parser optimization
+
+- [ ] Apply the measured owned-row change in an isolated library worktree based on pinned/current main; add permanent isolation regressions and run library release/style/consumer checks.
+- [ ] Commit the completed pending application optimization batch, integrate current origin/main without losing unrelated work, then pin the tested library revision and regenerate the lockfile.
+- [ ] Run the changed-test selector first after application code/dependency edits; add affected parser/queue/import/export checks, lint/types and independent review.
+- [ ] Repeat full application cold story preparation and activation using the integrated dependency; verify 32 ready/0 synthesis and preserved audio hashes/inodes, then state the concrete main-readiness or remaining gate. Remove completed steps.
+
 ## Active - Finish diagnostic-session native acceptance
 
 - [ ] Preserve usable diagnostics after process/OS interruption. A native run left
@@ -1293,7 +1300,7 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 
 - [ ] **P1 - Add a compact saved-voice overview.** Show a compact character/current-voice overview in Voices and a Play current voice action; distinguish saved binding, auditioned candidate and prepared story recordings. Gate: game/imported/built-in/narrator-fallback/automatic/missing-source cases have useful consistent labels; browsing/cancel never changes the saved-voice display or assignment.
 
-- [ ] **P2 - Qualify selective regeneration.** The separate selective-regeneration audit must qualify that changing one character preserves other characters' ready recordings, including partly generated stories, and that the Stories preparation UI communicates this scope.
+- [ ] **P2 - Qualify selective regeneration for partly generated stories.** Change one character in a partly prepared story and verify that other characters' ready recordings survive, missing lines are completed, and the Stories preparation UI reports the exact reuse/new-work scope across chapters.
 
 - [ ] **P2 - Make saved assignment changes recoverable.** Label saving with the target character and global scope, and provide an undo path for an already saved choice. Gate: undo restores that character's previous binding without changing other characters or prepared audio; deliberate keyboard save and cancellation remain accessible. Use copied data for verification.
 

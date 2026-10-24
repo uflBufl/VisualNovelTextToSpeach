@@ -3,7 +3,6 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from vntts_artifacts.file_integrity import sha256_file
@@ -163,11 +162,6 @@ class GenerationDiagnosticEvidenceTest(unittest.TestCase):
     def test_progress_uses_owner_identity_and_keeps_legacy_state_compatible(self):
         worker = OfflineGenerationWorker()
         worker._in_process_active = True
-        inputs = SimpleNamespace(
-            queue_sha256="queue-sha",
-            story_index="unused-story.jsonl",
-            story_index_sha256="story-sha",
-        )
         for identity, expected in (
             (
                 {"generation_owner_pid": os.getpid(), "runtime_worker_pid": 87654},
@@ -177,22 +171,12 @@ class GenerationDiagnosticEvidenceTest(unittest.TestCase):
             ({"generation_owner_pid": None, "runtime_worker_pid": os.getpid()}, None),
             ({"generation_owner_pid": 87654, "runtime_worker_pid": os.getpid()}, None),
         ):
-            with (
-                self.subTest(identity=identity),
-                patch(
-                    "vntts.pregeneration_generation._ready_line_ids", return_value=()
-                ),
-            ):
-                progress = worker._progress_from_state(
+            with self.subTest(identity=identity):
+                status = worker._runtime_status(
                     {
-                        "queue_sha256": "queue-sha",
-                        "items": {},
-                        "active": {
-                            "phase": "generating",
-                            "runtime_status": "GPU runtime",
-                            **identity,
-                        },
-                    },
-                    inputs,
+                        "phase": "generating",
+                        "runtime_status": "GPU runtime",
+                        **identity,
+                    }
                 )
-                self.assertEqual(progress.runtime_status, expected)
+                self.assertEqual(status, expected)

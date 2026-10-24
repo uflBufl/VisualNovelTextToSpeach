@@ -92,11 +92,12 @@ class AuthoringGenerationCleanupTest(unittest.TestCase):
                 )
                 expected = primary if primary is not None else cleanup_error
                 policy = Mock()
+                observer = Mock()
                 with (
                     patch(
                         "vntts.authoring.cli_generation.run_bulk_generation",
                         side_effect=primary,
-                    ),
+                    ) as generate,
                     self.assertRaises(type(expected)) as raised,
                 ):
                     _run_bulk_generation(
@@ -115,9 +116,11 @@ class AuthoringGenerationCleanupTest(unittest.TestCase):
                         policy,
                         policy,
                         None,
+                        progress_observer=observer,
                     )
                 self.assertIs(raised.exception, expected)
                 backend.shutdown.assert_called_once_with()
+                self.assertIs(generate.call_args.kwargs["progress_observer"], observer)
 
 
 class AuthoringGenerationVoiceInputTest(unittest.TestCase):

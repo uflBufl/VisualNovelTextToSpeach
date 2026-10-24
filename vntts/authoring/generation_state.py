@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 from typing import Callable, TypeAlias
@@ -34,10 +34,9 @@ from vntts.authoring.failure_repair import (
 )
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_manifest import (
-    AudioQuality,
     contained_generation_path,
     safe_generation_relative_path,
-    validate_success_file_with_samples,
+    validate_success_file_with_speech_quality,
 )
 from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
@@ -48,7 +47,6 @@ from vntts.authoring.speech_quality import (
     NOTABLE_SILENCE_SPAN_SECONDS,
     PAUSE_DIAGNOSIS_VERSION,
     SPEECH_QUALITY_ANALYSIS_VERSION,
-    measure_generated_speech_samples,
 )
 from vntts.authoring.terminal_conflict_records import (
     TerminalConflictRecordError,
@@ -240,9 +238,15 @@ def write_generation_state(
     state: StateObject,
     *,
     changed_items: tuple[str, ...] | None = None,
+    controls_unchanged: bool = False,
 ) -> None:
     try:
-        generation_database.write_state(state_path, state, changed_items=changed_items)
+        generation_database.write_state(
+            state_path,
+            state,
+            changed_items=changed_items,
+            controls_unchanged=controls_unchanged,
+        )
     except (OSError, ValueError) as error:
         raise BulkGenerationError(str(error)) from error
 
@@ -448,6 +452,7 @@ def _validate_render_review_fallback_evidence(
         )
 
 
+@generation_database.measure_generation_phase("state-validation")
 def _validate_state_document(
     state: StateObject,
     output_directory: Path,
@@ -2649,8 +2654,7 @@ def _validate_success_item(
     audio = contained_generation_path(output_directory, relative, "Generated WAV")
     if not validate_files:
         return
-    quality, samples = validate_success_file_with_samples(queue_id, result, audio)
-    _validate_success_speech_quality(result, queue_id, quality, samples)
+    _validate_success_speech_quality(result, queue_id, audio)
     _validate_success_audio_event_composition(result, queue_id, output_directory)
 
 
@@ -2683,7 +2687,7 @@ def _validate_current_success_item(result: StateObject, queue_id: str) -> None:
 
 
 def _validate_success_speech_quality(
-    result: StateObject, queue_id: str, quality: AudioQuality, samples: Sequence[int]
+    result: StateObject, queue_id: str, audio: Path
 ) -> None:
     stored = result.get("speech_quality")
     if not isinstance(stored, dict):
@@ -2700,14 +2704,10 @@ def _validate_success_speech_quality(
         raise BulkGenerationError(
             f"Generated WAV speech quality version is invalid for {queue_id!r}"
         )
-    actual = asdict(
-        measure_generated_speech_samples(
-            samples,
-            sample_rate=quality.sample_rate,
-            duration_seconds=quality.duration_seconds,
-            analysis_version=version,
-        )
+    _quality, speech = validate_success_file_with_speech_quality(
+        queue_id, result, audio, analysis_version=version
     )
+    actual = asdict(speech)
     if version == LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION:
         actual.pop("analysis_version")
     if stored != actual or any(isinstance(value, bool) for value in stored.values()):

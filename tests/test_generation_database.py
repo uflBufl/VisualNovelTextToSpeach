@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from tests.symlink_support import symlink_or_skip
 from vntts import generation_database as database
+from vntts.support import PerformanceLog, performance_operation_id
 
 
 def item(line="one", *, attempts=1):
@@ -53,6 +54,58 @@ def state():
 
 
 class GenerationDatabaseTest(unittest.TestCase):
+    def test_generation_measurements_aggregate_fast_transactions_until_completion(self):
+        log = PerformanceLog()
+        with (
+            TemporaryDirectory() as directory,
+            patch("vntts.support.performance_log", log),
+            patch.object(database, "perf_counter", return_value=10.0),
+        ):
+            path = Path(directory) / "generation-state.sqlite3"
+            with database.measure_generation_run():
+                operation_id = performance_operation_id.get()
+                database.write_state(path, state())
+                for _ in range(3):
+                    with database.measure_generation_run():
+                        self.assertEqual(performance_operation_id.get(), operation_id)
+                        database.read_progress(path)
+                        database.write_state(path, state())
+                    self.assertEqual(log.snapshot(), [])
+                self.assertEqual(log.snapshot(), [])
+            events = {event["operation"]: event for event in log.snapshot()}
+            self.assertEqual(events["bulk-generation-database-read"]["count"], 3)
+            self.assertEqual(events["bulk-generation-database-write"]["count"], 3)
+            self.assertEqual(events["bulk-generation-database-initialize"]["count"], 1)
+            self.assertEqual(events["bulk-generation-total"]["count"], 1)
+            self.assertTrue(all(event["elapsed_ms"] == 0 for event in events.values()))
+            self.assertTrue(
+                all(event["operation_id"] == operation_id for event in events.values())
+            )
+            self.assertTrue(
+                all(event["timing_scope"] == "inclusive" for event in events.values())
+            )
+            self.assertIsNone(performance_operation_id.get())
+
+    def test_generation_measurements_flush_failure_and_restore_outer_context(self):
+        log = PerformanceLog()
+        token = performance_operation_id.set("outer-operation")
+        try:
+            with patch("vntts.support.performance_log", log):
+                with self.assertRaisesRegex(RuntimeError, "failed work"):
+                    with database.measure_generation_run():
+                        with database.measure_generation_phase("example"):
+                            raise RuntimeError("failed work")
+                self.assertEqual(performance_operation_id.get(), "outer-operation")
+                before = log.snapshot()
+                with database.measure_generation_phase("outside-run"):
+                    pass
+                self.assertEqual(log.snapshot(), before)
+        finally:
+            performance_operation_id.reset(token)
+        self.assertEqual(len(before), 2)
+        self.assertTrue(all(event["outcome"] == "failed" for event in before))
+        self.assertEqual(len({event["operation_id"] for event in before}), 1)
+
     def test_unregistered_saved_output_requires_explicit_upgrade_without_legacy_reads(
         self,
     ):
@@ -410,6 +463,63 @@ class GenerationDatabaseTest(unittest.TestCase):
             expected["active"] = changed["active"]
             self.assertEqual(database.read_state(path), expected)
 
+    def test_unchanged_controls_save_has_constant_work_and_keeps_admission_checks(self):
+        for size in (1, 200):
+            with self.subTest(size=size), TemporaryDirectory() as directory:
+                path = Path(directory) / "generation-state.sqlite3"
+                original = state()
+                original["synthesis_controls"] = {
+                    f"{index:064x}": [{"registered": index}] for index in range(size)
+                }
+                database.write_state(path, original)
+                changed = copy.deepcopy(original)
+                changed["active"] = {"phase": "generating"}
+                changed["synthesis_controls"]["unvisited"] = object()
+                with (
+                    patch.object(database, "_write_controls") as write_controls,
+                    patch.object(database, "_encode", wraps=database._encode) as encode,
+                ):
+                    database.write_state(
+                        path, changed, changed_items=(), controls_unchanged=True
+                    )
+                write_controls.assert_not_called()
+                self.assertEqual(encode.call_count, 1)
+                expected = copy.deepcopy(original)
+                expected["active"] = changed["active"]
+                self.assertEqual(database.read_state(path), expected)
+                for replacement in (None, [], "invalid"):
+                    changed["synthesis_controls"] = replacement
+                    with self.assertRaises(ValueError):
+                        database.write_state(
+                            path, changed, changed_items=(), controls_unchanged=True
+                        )
+                    self.assertEqual(database.read_state(path), expected)
+                changed = copy.deepcopy(expected)
+                changed["queue_sha256"] = "f" * 64
+                with self.assertRaisesRegex(ValueError, "another queue"):
+                    database.write_state(
+                        path, changed, changed_items=(), controls_unchanged=True
+                    )
+                self.assertEqual(database.read_state(path), expected)
+
+    def test_unchanged_controls_initialization_still_writes_complete_state(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "generation-state.sqlite3"
+            database.write_state(
+                path, state(), changed_items=(), controls_unchanged=True
+            )
+            self.assertEqual(database.read_state(path), state())
+
+    def test_empty_item_delta_still_updates_controls_by_default(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "generation-state.sqlite3"
+            original = state()
+            database.write_state(path, original)
+            changed = copy.deepcopy(original)
+            changed["synthesis_controls"] = {"new": [{"registered": "replacement"}]}
+            database.write_state(path, changed, changed_items=())
+            self.assertEqual(database.read_state(path), changed)
+
     def test_failed_and_interrupted_items_without_line_identity_round_trip(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "generation-state.sqlite3"
@@ -517,6 +627,9 @@ class GenerationDatabaseTest(unittest.TestCase):
                 for operation in (
                     lambda: database.read_state(path),
                     lambda: database.write_state(path, state()),
+                    lambda: database.write_state(
+                        path, state(), changed_items=(), controls_unchanged=True
+                    ),
                     lambda: database.active_attempt(path),
                     lambda: database.read_snapshot(before),
                 ):
@@ -534,6 +647,9 @@ class GenerationDatabaseTest(unittest.TestCase):
             for operation in (
                 lambda: database.read_state(path),
                 lambda: database.write_state(path, state()),
+                lambda: database.write_state(
+                    path, state(), changed_items=(), controls_unchanged=True
+                ),
             ):
                 with self.assertRaisesRegex(ValueError, "no committed state"):
                     operation()
@@ -557,6 +673,9 @@ class GenerationDatabaseTest(unittest.TestCase):
                 for operation in (
                     lambda: database.read_state(path),
                     lambda: database.write_state(path, state()),
+                    lambda: database.write_state(
+                        path, state(), changed_items=(), controls_unchanged=True
+                    ),
                     lambda: database.read_snapshot(before),
                 ):
                     with self.assertRaisesRegex(ValueError, "schema objects"):
@@ -574,6 +693,9 @@ class GenerationDatabaseTest(unittest.TestCase):
                 for operation in (
                     lambda: database.read_state(path),
                     lambda: database.write_state(path, state()),
+                    lambda: database.write_state(
+                        path, state(), changed_items=(), controls_unchanged=True
+                    ),
                 ):
                     with self.assertRaises(ValueError):
                         operation()

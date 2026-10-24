@@ -1,5 +1,7 @@
 import json
 import os
+import struct
+import wave
 from collections import OrderedDict
 from contextlib import suppress
 from hashlib import blake2b
@@ -10,7 +12,6 @@ from threading import RLock
 from typing import Generic, TypeAlias, TypeVar
 
 import numpy as np
-import soundfile as sf
 from numpy.typing import NDArray
 
 from vntts.audio_store import AudioCatalogError, SharedAudioStore
@@ -124,17 +125,22 @@ class PersistentAudioCache:
         try:
             payload = self.store.get_bytes(key)
             if payload is not None:
-                with sf.SoundFile(BytesIO(payload)) as waveform:
+                with wave.open(BytesIO(payload), "rb") as waveform:
                     if (
-                        waveform.format != "WAV"
-                        or waveform.subtype != "PCM_16"
-                        or waveform.samplerate != self.sample_rate
+                        waveform.getcomptype() != "NONE"
+                        or waveform.getsampwidth() != 2
+                        or waveform.getnchannels() not in (1, 2)
+                        or waveform.getframerate() != self.sample_rate
                     ):
                         raise AudioCatalogError(
                             "Saved WAV format/sample rate differs from its synthesis request"
                         )
+                    samples = np.frombuffer(
+                        waveform.readframes(waveform.getnframes()), dtype="<i2"
+                    )
                     audio = _prepared_audio(
-                        waveform.read(dtype="float32", always_2d=True)
+                        samples.reshape(-1, waveform.getnchannels()).astype(np.float32)
+                        / 32768
                     )
                 if audio is None:
                     raise AudioCatalogError("Saved WAV contains invalid samples")
@@ -142,7 +148,7 @@ class PersistentAudioCache:
             return None
         except AudioCatalogError:
             raise
-        except (OSError, ValueError, TypeError, sf.LibsndfileError) as error:
+        except (OSError, ValueError, TypeError, wave.Error, EOFError) as error:
             raise AudioCatalogError(
                 f"Saved audio could not be decoded: {error}"
             ) from error
@@ -167,13 +173,17 @@ class PersistentAudioCache:
                 suffix=".wav", dir=self.directory, delete=False
             ) as output:
                 temporary = Path(output.name)
-            sf.write(
-                temporary, prepared, self.sample_rate, format="WAV", subtype="PCM_16"
-            )
+            # Match libsndfile's float-to-PCM16 floor/clamp so saved audio stays stable.
+            pcm = np.clip(np.floor(np.clip(prepared, -1, 1) * 32768), -32768, 32767)
+            with wave.open(str(temporary), "wb") as waveform:
+                waveform.setnchannels(1 if prepared.ndim == 1 else prepared.shape[1])
+                waveform.setsampwidth(2)
+                waveform.setframerate(self.sample_rate)
+                waveform.writeframes(pcm.astype("<i2").tobytes())
             return self.store.put(key, temporary)
         except AudioCatalogError:
             raise
-        except OSError, ValueError, TypeError, sf.LibsndfileError:
+        except OSError, ValueError, TypeError, wave.Error, struct.error, OverflowError:
             return None
         finally:
             if temporary is not None:

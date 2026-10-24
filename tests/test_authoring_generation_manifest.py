@@ -26,6 +26,85 @@ def pcm_wav(value=8192, sample_count=2400):
 
 
 class GeneratedWavSnapshotTest(unittest.TestCase):
+    def setUp(self):
+        manifest._audio_quality_cache.clear()
+        manifest._speech_quality_cache.clear()
+
+    def test_repeated_quality_checks_hash_each_capture_but_reuse_only_derived_metrics(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "audio.wav"
+            path.write_bytes(pcm_wav())
+            result = self.result(path)
+            with (
+                patch.object(
+                    manifest, "read_regular_bytes", wraps=manifest.read_regular_bytes
+                ) as capture,
+                patch.object(
+                    manifest,
+                    "inspect_generated_wav_with_samples",
+                    wraps=manifest.inspect_generated_wav_with_samples,
+                ) as decode,
+                patch.object(
+                    manifest,
+                    "measure_generated_speech_samples",
+                    wraps=manifest.measure_generated_speech_samples,
+                ) as measure,
+            ):
+                for version in (1, 1, 2, 2):
+                    quality, speech = (
+                        manifest.validate_success_file_with_speech_quality(
+                            "q", result, path, analysis_version=version
+                        )
+                    )
+                    self.assertEqual(speech.analysis_version, version)
+                    self.assertEqual(asdict(quality), result["quality"])
+                manifest.validate_success_file("q", result, path)
+            self.assertEqual(capture.call_count, 5)
+            self.assertEqual(decode.call_count, 2)
+            self.assertEqual(measure.call_count, 2)
+            for invalid in (True, 0, 3, "2"):
+                with (
+                    self.subTest(version=invalid),
+                    self.assertRaises(BulkGenerationError),
+                ):
+                    manifest.validate_success_file_with_speech_quality(
+                        "q", result, path, analysis_version=invalid
+                    )
+
+    def test_cached_quality_still_checks_current_bytes_metrics_and_truncation(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "audio.wav"
+            payload = pcm_wav()
+            path.write_bytes(payload)
+            result = self.result(path)
+            manifest.validate_success_file("q", result, path)
+            saved = path.stat()
+            path.write_bytes(pcm_wav(-8192))
+            os.utime(path, ns=(saved.st_atime_ns, saved.st_mtime_ns))
+            with self.assertRaisesRegex(BulkGenerationError, "checksum mismatch"):
+                manifest.validate_success_file("q", result, path)
+            result["file_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            with patch.object(
+                manifest,
+                "inspect_generated_wav_with_samples",
+                wraps=manifest.inspect_generated_wav_with_samples,
+            ) as decode:
+                manifest.validate_success_file("q", result, path)
+                decode.assert_called_once()
+            result["quality"]["peak"] = 0.125
+            with self.assertRaisesRegex(BulkGenerationError, "quality peak mismatch"):
+                manifest.validate_success_file("q", result, path)
+            result["quality"]["peak"] = 0.25
+            path.write_bytes(payload[:-2])
+            os.utime(path, ns=(saved.st_atime_ns, saved.st_mtime_ns))
+            result["file_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            with self.assertRaisesRegex(
+                BulkGenerationError, "not a readable PCM16 mono WAV"
+            ):
+                manifest.validate_success_file("q", result, path)
+
     def result(self, path, **options):
         return {
             "file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -162,6 +241,10 @@ class GeneratedWavSnapshotTest(unittest.TestCase):
             self.assertEqual(
                 manifest.validate_success_file("q", result, path).sample_count, 480
             )
+            result.pop("provider")
+            with self.assertRaisesRegex(BulkGenerationError, "duration is implausible"):
+                manifest.validate_success_file("q", result, path)
+            result["provider"] = "original-game-audio-event"
             result["quality"]["channels"] = True
             with self.assertRaisesRegex(
                 BulkGenerationError, "quality channels mismatch"

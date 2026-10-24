@@ -18,6 +18,7 @@ from vntts_artifacts.voice_manifest import VoiceManifestEntry
 from vntts import generation_database
 from vntts.authoring.bulk_generation import (
     BulkGenerationResult,
+    GenerationProgressEvent,
     audio_event_spoken_projection,
     is_spoken_queue_item,
     load_generation_state,
@@ -608,6 +609,7 @@ def _run_bulk_generation(
     missing_policy: MissingVoicePolicy,
     repair_policy: FailureRepairPolicy,
     progress_callback: Callable[[dict[str, object]], None] | None,
+    progress_observer: Callable[[GenerationProgressEvent], None] | None = None,
 ) -> BulkGenerationResult:
     cache_context = (
         nullcontext(arguments.cache_directory.expanduser().resolve())
@@ -687,6 +689,7 @@ def _run_bulk_generation(
                 cancellation=cancellation,
                 approve_validated_audio=arguments.approve_validated_audio,
                 progress_callback=progress_callback,
+                progress_observer=progress_observer,
             )
         except BaseException as error:
             primary_error = error
@@ -716,6 +719,7 @@ def run_generation(
     cancellation: SynthesisCancellation = None,
     startup_progress: object = None,
     progress_callback: Callable[[dict[str, object]], None] | None = None,
+    progress_observer: Callable[[GenerationProgressEvent], None] | None = None,
 ) -> BulkGenerationResult:
     _preflight_generation_output(arguments.output, arguments.queue)
     missing_policy = missing_voice_policy(arguments)
@@ -764,6 +768,7 @@ def run_generation(
         missing_policy,
         repair_policy,
         progress_callback,
+        progress_observer,
     )
 
 

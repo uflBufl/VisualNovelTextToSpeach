@@ -1,4 +1,5 @@
 import builtins
+import errno
 import io
 import json
 import os
@@ -15,11 +16,13 @@ from unittest.mock import ANY, Mock, call, patch
 
 import numpy as np
 import soundfile as sf
+from vntts_artifacts.audio import write_pcm16_wav
 
 import vntts.pregeneration_audition as audition_module
 from tests.pregeneration_fixtures import FakeBackend, ambiguous_fixture, clean_wav_bytes
 from tests.story_fixtures import write_content
 from tests.voice_manifest_fixtures import write_manifest
+from vntts.audio_store import SharedAudioStore
 from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.pregeneration_audition import (
     VoiceAuditionCancelled,
@@ -41,6 +44,122 @@ from vntts.synthesis import (
 
 
 class VoiceAuditionPreviewServiceTest(unittest.TestCase):
+    def test_preview_reuses_the_existing_story_audio_store_object(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            story_wav = root / "paid-story.wav"
+            write_pcm16_wav(story_wav, np.full(1600, 0.1, dtype=np.float32), 16000)
+            store = SharedAudioStore(root / "jobs/audio-store")
+            canonical = store.put("story-synthesis-key", story_wav)
+            original = canonical.read_bytes()
+            service = VoiceAuditionPreviewService(
+                root / "auditions",
+                backend_factory=lambda *_args, **_kwargs: FakeBackend("moss-tts"),
+            )
+            self.addCleanup(service.close)
+            preview = service.generate(plan, group, group.candidates[0].source_id)
+            self.assertTrue(preview.path.samefile(canonical))
+            self.assertEqual(preview.path.read_bytes(), original)
+            self.assertTrue(store.get("story-synthesis-key").samefile(preview.path))
+            self.assertEqual(len(tuple((store.directory / "objects").glob("*.wav"))), 1)
+            self.assertFalse((service.root / "audio-store").exists())
+
+    def test_distinct_preview_identities_share_identical_wav_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            backend = FakeBackend("moss-tts")
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=lambda *_args, **_kwargs: backend
+            )
+            self.addCleanup(service.close)
+            first = service.generate(plan, group, group.candidates[0].source_id)
+            second = service.generate(
+                plan,
+                group,
+                group.candidates[0].source_id,
+                text="A distinct preview phrase.",
+            )
+            self.assertNotEqual(first.identity, second.identity)
+            self.assertNotEqual(first.text, second.text)
+            self.assertEqual(first.audio_sha256, second.audio_sha256)
+            self.assertTrue(first.path.samefile(second.path))
+            self.assertEqual(
+                len(tuple((root / "jobs/audio-store/objects").glob("*.wav"))), 1
+            )
+            for preview in (first, second):
+                sidecar = json.loads(preview.path.with_suffix(".json").read_text())
+                self.assertEqual(sidecar["identity"], preview.identity)
+                self.assertEqual(sidecar["audio_sha256"], preview.audio_sha256)
+            self.assertEqual(len(backend.requests), 2)
+
+    def test_restart_adopts_existing_independent_previews_without_rendering(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            service = VoiceAuditionPreviewService(
+                root / "auditions",
+                backend_factory=lambda *_args, **_kwargs: FakeBackend("moss-tts"),
+            )
+            previews = [
+                service.generate(plan, group, group.candidates[0].source_id, text=text)
+                for text in (None, "A distinct preview phrase.")
+            ]
+            service.close()
+            sidecars = {}
+            for preview in previews:
+                payload = preview.path.read_bytes()
+                preview.path.unlink()
+                preview.path.write_bytes(payload)
+                sidecar = preview.path.with_suffix(".json")
+                sidecars[sidecar] = sidecar.read_bytes()
+            shutil.rmtree(root / "jobs/audio-store")
+            self.assertFalse(previews[0].path.samefile(previews[1].path))
+            restarted = VoiceAuditionPreviewService(
+                service.root,
+                backend_factory=Mock(
+                    side_effect=AssertionError("rendered existing preview")
+                ),
+            )
+            self.addCleanup(restarted.close)
+            first = restarted.lookup(plan, group, previews[0].candidate_source_id)
+            second = restarted.generate(
+                plan, group, previews[1].candidate_source_id, text=previews[1].text
+            )
+            self.assertTrue(first.reused)
+            self.assertTrue(second.reused)
+            self.assertTrue(first.path.samefile(second.path))
+            self.assertEqual(first.audio_sha256, previews[0].audio_sha256)
+            self.assertEqual(second.audio_sha256, previews[1].audio_sha256)
+            for sidecar, payload in sidecars.items():
+                self.assertEqual(sidecar.read_bytes(), payload)
+
+    def test_cached_preview_link_failure_preserves_audio_and_request_evidence(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            backend = FakeBackend("moss-tts")
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=lambda *_args, **_kwargs: backend
+            )
+            self.addCleanup(service.close)
+            preview = service.generate(plan, group, group.candidates[0].source_id)
+            payload = preview.path.read_bytes()
+            preview.path.unlink()
+            preview.path.write_bytes(payload)
+            sidecar = preview.path.with_suffix(".json")
+            metadata = sidecar.read_bytes()
+            with patch(
+                "vntts.audio_store.os.link",
+                side_effect=OSError(errno.EXDEV, "cross-device link"),
+            ):
+                with self.assertRaisesRegex(OSError, "same filesystem"):
+                    service.lookup(plan, group, preview.candidate_source_id)
+            self.assertEqual(preview.path.read_bytes(), payload)
+            self.assertEqual(sidecar.read_bytes(), metadata)
+            self.assertEqual(len(backend.requests), 1)
+
     def test_qwen_empty_transcript_clears_manifest_conditioning_and_cache_identity(
         self,
     ):
@@ -876,7 +995,7 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             self.assertTrue(cached.reused)
             self.assertEqual(cached.seed, 2)
 
-    def test_wav_publish_failure_leaves_no_cache_and_restart_reuses_retry(self):
+    def test_link_failure_keeps_committed_preview_and_restart_does_not_render(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             plan, group, _manifest = ambiguous_fixture(root)
@@ -885,36 +1004,62 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                 root / "auditions", backend_factory=lambda *_args, **_kwargs: backend
             )
             source_id = group.candidates[0].source_id
-            original_replace = os.replace
-
-            def fail_wav_publish(source, destination):
-                if Path(destination).suffix == ".wav":
-                    raise OSError("publish failed")
-                return original_replace(source, destination)
-
             with patch(
-                "vntts.pregeneration_audition.os.replace",
-                side_effect=fail_wav_publish,
+                "vntts.pregeneration_audition.link_shared_audio",
+                side_effect=OSError("link failed"),
             ):
-                with self.assertRaisesRegex(OSError, "publish failed"):
+                with self.assertRaisesRegex(OSError, "link failed"):
                     service.generate(plan, group, source_id)
-            self.assertFalse(tuple((root / "auditions").glob("*.wav")))
-            self.assertFalse(tuple((root / "auditions").glob("*.json")))
-
-            preview = service.generate(plan, group, source_id)
+            (target,) = (root / "auditions").glob("*.wav")
+            payload = target.read_bytes()
+            metadata = target.with_suffix(".json").read_bytes()
+            document = json.loads(metadata)
+            self.assertEqual(document["identity"], target.stem)
+            self.assertEqual(document["audio_sha256"], sha256_file(target))
+            self.assertEqual(len(backend.requests), 1)
             service.close()
             restarted = VoiceAuditionPreviewService(
                 root / "auditions",
                 backend_factory=lambda *_args, **_kwargs: self.fail(
-                    "A successful retry must remain cached"
+                    "A committed preview must not render after link failure"
                 ),
             )
             self.addCleanup(restarted.close)
             cached = restarted.generate(plan, group, source_id)
-
-            self.assertTrue(preview.path.is_file())
             self.assertTrue(cached.reused)
-            self.assertEqual(cached.seed, preview.seed)
+            self.assertEqual(cached.seed, document["seed"])
+            self.assertEqual(cached.path.read_bytes(), payload)
+            self.assertEqual(cached.path.with_suffix(".json").read_bytes(), metadata)
+            self.assertTrue(
+                cached.path.samefile(
+                    root / "jobs/audio-store/objects" / f"{cached.audio_sha256}.wav"
+                )
+            )
+            self.assertEqual(len(backend.requests), 1)
+
+    def test_wav_commit_failure_removes_unpublished_preview_and_sidecar(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            service = VoiceAuditionPreviewService(
+                root / "auditions",
+                backend_factory=lambda *_args, **_kwargs: FakeBackend("moss-tts"),
+            )
+            self.addCleanup(service.close)
+            original_replace = os.replace
+
+            def fail_wav_commit(source, destination):
+                if Path(destination).suffix == ".wav":
+                    raise OSError("commit failed")
+                return original_replace(source, destination)
+
+            with patch(
+                "vntts.pregeneration_audition.os.replace", side_effect=fail_wav_commit
+            ):
+                with self.assertRaisesRegex(OSError, "commit failed"):
+                    service.generate(plan, group, group.candidates[0].source_id)
+            self.assertFalse(tuple(service.root.glob("*.wav")))
+            self.assertFalse(tuple(service.root.glob("*.json")))
 
     def test_growing_cached_manifest_is_read_with_a_bound(self):
         with TemporaryDirectory() as directory:

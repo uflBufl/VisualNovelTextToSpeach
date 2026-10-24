@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import unittest
+import wave
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -200,12 +201,18 @@ class AudioSnapshotTest(unittest.TestCase):
                 patch(
                     "vntts.audio_store.open_regular_binary", wraps=open_regular_binary
                 ) as read,
-                patch("vntts.audio_cache.sf.SoundFile", wraps=sf.SoundFile) as decode,
+                patch("vntts.audio_cache.wave.open", wraps=wave.open) as decode,
             ):
                 np.testing.assert_array_equal(cache.get("key"), [0.125, 0.25])
             self.assertEqual(read.call_count, 1)
-            self.assertEqual(decode.call_count, 1)
-            self.assertIsInstance(decode.call_args.args[0], io.BytesIO)
+            # The shared decoder validates store bytes, then decodes that snapshot.
+            self.assertEqual(decode.call_count, 2)
+            for call in decode.call_args_list:
+                self.assertIsInstance(call.args[0], io.BytesIO)
+            self.assertEqual(
+                decode.call_args_list[0].args[0].getvalue(),
+                decode.call_args_list[1].args[0].getvalue(),
+            )
 
     def test_cache_decodes_verified_bytes_and_rechecks_replacement_next_time(self):
         with TemporaryDirectory() as directory:

@@ -39,10 +39,10 @@ from vntts.chapter_voice_preload import (
 from vntts.document_identity import is_sha256, sha256_file
 from vntts.generation_database import state_path as generation_state_path
 from vntts.json_types import decode_json
-from vntts.path_safety import open_regular_text, read_regular_bytes
+from vntts.path_safety import open_regular_binary, open_regular_text, read_regular_bytes
 from vntts.preparation_catalog import PreparationCatalog, PreparationCatalogError
 from vntts.settings import AppSettings
-from vntts.story_catalog import LazyLineIds, StoryCatalog
+from vntts.story_catalog import LazyLineIds, StoryCatalog, StoryCatalogError
 from vntts.story_index_snapshot import load_story_index_snapshot
 
 if TYPE_CHECKING:
@@ -361,7 +361,7 @@ def inspect_story_index(
                 else "miss"
             )
             if persistent_cache:
-                _save_story_catalog(content, evidence_sha256)
+                _save_story_catalog(content, evidence_sha256, document)
         content = _with_game_id(content, _adapter_game_id(content.game, provider_id))
         content = _with_game_id(content, game_id)
     except (OSError, StoryIndexError, ValueError, PregenerationSetupError) as error:
@@ -480,7 +480,11 @@ def _recover_story_catalog_line_ids(
     raise StoryContentChanged("Story selection changed; refresh story content")
 
 
-def _save_story_catalog(content: GameContent, evidence_sha256: str) -> None:
+def _save_story_catalog(
+    content: GameContent,
+    evidence_sha256: str,
+    story: StoryIndexDocument | None = None,
+) -> None:
     try:
         catalog = _story_catalog_path(content.story_index_sha256)
         catalog.parent.mkdir(parents=True, exist_ok=True)
@@ -494,6 +498,8 @@ def _save_story_catalog(content: GameContent, evidence_sha256: str) -> None:
                 "game_version": content.game_version,
                 "selections": [asdict(value) for value in content.selections],
             },
+            story=story,
+            source_semantics_valid=_story_semantics_valid(story, evidence_sha256),
         )
     except OSError, ValueError:
         logging.getLogger(__name__).warning(
@@ -501,6 +507,30 @@ def _save_story_catalog(content: GameContent, evidence_sha256: str) -> None:
             content.story_index,
             exc_info=True,
         )
+
+
+def _story_semantics_valid(
+    story: StoryIndexDocument | None, evidence_sha256: str
+) -> bool:
+    if story is None or "source_audio_semantics" not in story.metadata:
+        return True
+    from vntts.source_audio_semantics import (
+        SourceAudioSemanticEvidenceError,
+        load_source_audio_semantic_evidence,
+    )
+
+    payload = _source_audio_evidence_payload(story.path)
+    if hashlib.sha256(payload).hexdigest() != evidence_sha256:
+        return False
+    try:
+        load_source_audio_semantic_evidence(
+            story.path.with_name("source-audio-semantic-evidence.json"),
+            story,
+            payload=payload,
+        )
+    except OSError, ValueError, SourceAudioSemanticEvidenceError:
+        return False
+    return True
 
 
 def _cached_story_selection(document: object) -> StorySelection:
@@ -570,12 +600,15 @@ def _cached_story_selection(document: object) -> StorySelection:
 
 @lru_cache(maxsize=8)
 def _cached_story_index_document(path: str, expected_sha256: str) -> StoryIndexDocument:
+    from vntts.selected_story_snapshot import remember_parsed_story_source
+
     payload = read_regular_bytes(Path(path))
     if hashlib.sha256(payload).hexdigest() != expected_sha256:
         raise StoryContentChanged("Story content changed while it was being read")
     document = load_story_index_snapshot(path, payload)
     if sha256_file(path) != expected_sha256:
         raise StoryContentChanged("Story content changed while it was being read")
+    remember_parsed_story_source(document, payload, expected_sha256)
     return document
 
 
@@ -595,6 +628,127 @@ def load_verified_story_index_document(
             raise StoryContentChanged("Story content changed while it was being read")
         return document
     return _cached_story_index_document(str(path), expected_sha256)
+
+
+def load_verified_story_records(
+    path: PathInput,
+    expected_sha256: str,
+    line_ids: Iterable[str],
+    *,
+    source_order: bool = False,
+) -> StoryIndexDocument:
+    """Use SQL row locations as hints, parsing only original selected source bytes."""
+    path = Path(path).expanduser().resolve()
+    selected = tuple(line_ids)
+    if len(set(selected)) != len(selected):
+        raise StoryContentChanged("Selected dialogue contains duplicate identities")
+    if path.stat().st_size >= story_catalog_minimum_bytes and not _has_selection_origin(
+        path
+    ):
+        evidence = _source_audio_evidence_payload(path)
+        evidence_sha256 = hashlib.sha256(evidence).hexdigest()
+        try:
+            locations = StoryCatalog(
+                _story_catalog_path(expected_sha256)
+            ).record_locations(expected_sha256, evidence_sha256, selected)
+            if locations is not None:
+                if source_order:
+                    locations = tuple(sorted(locations, key=lambda row: row[1]))
+                document = _read_selected_story_rows(path, locations, expected_sha256)
+                observed = tuple(record.line_id for record in document.records)
+                if set(observed) != set(selected) or observed != (
+                    tuple(row[0] for row in locations) if source_order else selected
+                ):
+                    raise StoryCatalogError("Story catalog selected identities changed")
+                _assert_story_records_current(path, expected_sha256, evidence_sha256)
+                return document
+        except StoryContentChanged:
+            raise
+        except OSError, ValueError, StoryIndexError:
+            # A derived index never replaces canonical admission after a damaged hint.
+            pass
+        document = load_verified_story_index_document(path, expected_sha256)
+        _assert_story_records_current(path, expected_sha256, evidence_sha256)
+        content = inspect_story_index(path)
+        _save_story_catalog(content, evidence_sha256, document)
+        _assert_story_records_current(path, expected_sha256, evidence_sha256)
+        return document
+    return load_verified_story_index_document(path, expected_sha256)
+
+
+def _capture_story_rows(
+    path: Path,
+    locations: tuple[tuple[str, int, int, str], ...],
+    expected_sha256: str,
+) -> tuple[bytes, list[bytes]]:
+    captured = {}
+    selected_offsets = {offset for _line, offset, _length, _digest in locations}
+    with open_regular_binary(path) as stream:
+        header = stream.readline()
+        digest = hashlib.sha256(header)
+        offset = len(header)
+        for raw in stream:
+            digest.update(raw)
+            if offset in selected_offsets:
+                captured[offset] = raw
+            offset += len(raw)
+        if digest.hexdigest() != expected_sha256:
+            raise StoryContentChanged("Story content checksum changed")
+    rows = []
+    for _line, offset, length, row_digest in locations:
+        selected_raw = captured.get(offset)
+        if (
+            selected_raw is None
+            or len(selected_raw) != length
+            or hashlib.sha256(selected_raw).hexdigest() != row_digest
+        ):
+            raise StoryCatalogError("Story catalog source row changed")
+        rows.append(
+            selected_raw if selected_raw.endswith(b"\n") else selected_raw + b"\n"
+        )
+    return header, rows
+
+
+def _read_selected_story_rows(
+    path: Path,
+    locations: tuple[tuple[str, int, int, str], ...],
+    expected_sha256: str,
+) -> StoryIndexDocument:
+    header, rows = _capture_story_rows(path, locations, expected_sha256)
+    metadata = decode_json(header.decode("utf-8"))
+    if not isinstance(metadata, dict) or type(metadata.get("line_count")) is not int:
+        raise StoryCatalogError("Story catalog source metadata changed")
+    metadata["line_count"] = len(rows)
+    selected_payload = (
+        json.dumps(metadata, ensure_ascii=False, allow_nan=False) + "\n"
+    ).encode() + b"".join(rows)
+    document = load_story_index_snapshot(path, selected_payload)
+    binding = document.metadata.get("source_audio_semantics")
+    if isinstance(binding, dict):
+        count = sum(
+            record.document.get("source_audio_semantic_evidence_entry_id") is not None
+            for record in document.records
+        )
+        if count:
+            binding["applied_count"] = count
+        else:
+            document.metadata.pop("source_audio_semantics", None)
+            document.producer_metadata.pop("source_audio_semantics", None)
+    return document
+
+
+def _assert_story_records_current(
+    path: Path, expected_sha256: str, evidence_sha256: str
+) -> None:
+    if sha256_file(path) != expected_sha256:
+        raise StoryContentChanged("Story content changed while it was being read")
+    if (
+        hashlib.sha256(_source_audio_evidence_payload(path)).hexdigest()
+        != evidence_sha256
+    ):
+        raise StoryContentChanged(
+            "Story audio evidence changed while it was being read"
+        )
 
 
 def _has_selection_origin(path: Path) -> bool:

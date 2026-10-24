@@ -28,7 +28,14 @@ from vntts_artifacts.voice_manifest import (
     validate_voice_manifest,
 )
 
+from vntts.audio_cache import BoundedCache
 from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.authoring.speech_quality import (
+    LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION,
+    SPEECH_QUALITY_ANALYSIS_VERSION,
+    SpeechQuality,
+    measure_generated_speech_samples,
+)
 from vntts.document_identity import canonical_document_sha256
 from vntts.json_types import decode_json
 from vntts.path_safety import read_regular_bytes
@@ -42,6 +49,10 @@ class AudioQuality:
     channels: int
     sample_count: int
     peak: float
+
+
+_audio_quality_cache = BoundedCache[tuple[str, bool], AudioQuality](256)
+_speech_quality_cache = BoundedCache[tuple[str, bool, int], SpeechQuality](256)
 
 
 class GenerationControlSnapshot(TypedDict):
@@ -440,15 +451,75 @@ def _write_generated_manifest(
 def validate_success_file(
     queue_id: str, result: _GenerationResult, audio: Path
 ) -> AudioQuality:
-    """Validate one generated WAV against its authoritative state record."""
-    quality, _samples = validate_success_file_with_samples(queue_id, result, audio)
+    """Read/hash current bytes and validate their derived technical quality."""
+    quality, _speech = _validated_success_analysis(queue_id, result, audio)
     return quality
+
+
+def validate_success_file_with_speech_quality(
+    queue_id: str, result: _GenerationResult, audio: Path, *, analysis_version: int
+) -> tuple[AudioQuality, SpeechQuality]:
+    """Reuse only immutable measurements of these exact verified WAV bytes."""
+    if type(analysis_version) is not int or analysis_version not in {
+        LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION,
+        SPEECH_QUALITY_ANALYSIS_VERSION,
+    }:
+        raise BulkGenerationError("Generated speech analysis version is invalid")
+    quality, speech = _validated_success_analysis(
+        queue_id, result, audio, analysis_version=analysis_version
+    )
+    assert speech is not None
+    return quality, speech
+
+
+def _validated_success_analysis(
+    queue_id: str,
+    result: _GenerationResult,
+    audio: Path,
+    *,
+    analysis_version: int | None = None,
+) -> tuple[AudioQuality, SpeechQuality | None]:
+    payload, checksum = _verified_success_payload(queue_id, result, audio)
+    allow_short = result.get("provider") == "original-game-audio-event"
+    key = checksum, allow_short
+    quality = _audio_quality_cache.get(key)
+    speech = None
+    if analysis_version is not None:
+        speech = _speech_quality_cache.get((checksum, allow_short, analysis_version))
+    if quality is None or analysis_version is not None and speech is None:
+        quality, samples = inspect_generated_wav_with_samples(
+            io.BytesIO(payload), allow_short_audio_event=allow_short
+        )
+        _audio_quality_cache.put(key, quality)
+        if analysis_version is not None:
+            speech = measure_generated_speech_samples(
+                samples,
+                sample_rate=quality.sample_rate,
+                duration_seconds=quality.duration_seconds,
+                analysis_version=analysis_version,
+            )
+            _speech_quality_cache.put((checksum, allow_short, analysis_version), speech)
+    _validate_stored_quality(queue_id, result, quality)
+    return quality, speech
 
 
 def validate_success_file_with_samples(
     queue_id: str, result: _GenerationResult, audio: Path
 ) -> tuple[AudioQuality, Sequence[int]]:
     """Validate one WAV and retain its already-read samples for deeper checks."""
+    payload, checksum = _verified_success_payload(queue_id, result, audio)
+    allow_short = result.get("provider") == "original-game-audio-event"
+    quality, samples = inspect_generated_wav_with_samples(
+        io.BytesIO(payload), allow_short_audio_event=allow_short
+    )
+    _audio_quality_cache.put((checksum, allow_short), quality)
+    _validate_stored_quality(queue_id, result, quality)
+    return quality, samples
+
+
+def _verified_success_payload(
+    queue_id: str, result: _GenerationResult, audio: Path
+) -> tuple[bytes, str]:
     if not audio.is_file():
         raise BulkGenerationError(f"Generated WAV is missing for {queue_id!r}: {audio}")
     try:
@@ -457,26 +528,24 @@ def validate_success_file_with_samples(
         raise BulkGenerationError(
             f"Generated output is not a readable PCM16 mono WAV: {error}"
         ) from error
-    if hashlib.sha256(payload).hexdigest() != result.get("file_sha256"):
+    checksum = hashlib.sha256(payload).hexdigest()
+    if checksum != result.get("file_sha256"):
         raise BulkGenerationError(f"Generated WAV checksum mismatch for {queue_id!r}")
-    with io.BytesIO(payload) as source:
-        quality, samples = inspect_generated_wav_with_samples(
-            source,
-            allow_short_audio_event=(
-                result.get("provider") == "original-game-audio-event"
-            ),
-        )
+    return payload, checksum
+
+
+def _validate_stored_quality(
+    queue_id: str, result: _GenerationResult, quality: AudioQuality
+) -> None:
     stored = result.get("quality")
     if not isinstance(stored, dict):
         raise BulkGenerationError(f"Generated WAV quality is missing for {queue_id!r}")
-    expected = asdict(quality)
-    for field, value in expected.items():
+    for field, value in asdict(quality).items():
         stored_value = stored.get(field)
         if isinstance(stored_value, bool) or stored_value != value:
             raise BulkGenerationError(
                 f"Generated WAV quality {field} mismatch for {queue_id!r}"
             )
-    return quality, samples
 
 
 def safe_generation_relative_path(value: object, label: str) -> Path:
@@ -526,6 +595,7 @@ __all__ = [
     "runtime_progress_live_fallback_entries",
     "safe_generation_relative_path",
     "validate_success_file",
+    "validate_success_file_with_speech_quality",
     "write_generated_manifest_from_state",
     "write_runtime_progress_manifest_from_state",
 ]

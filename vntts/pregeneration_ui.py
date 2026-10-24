@@ -3474,7 +3474,10 @@ class OfflineAudioPreparationDialog(QDialog):
         cancel_event: Event,
     ) -> _StoryAudioBatch:
         inspector = StoryAudioInspector(
-            content, self.job_store, cancel_event=cancel_event
+            content,
+            self.job_store,
+            cancel_event=cancel_event,
+            selection_ids=(key[1] for key in keys),
         )
         results: list[tuple[StoryAudioKey, object, Exception | None]] = []
         for key in keys:
