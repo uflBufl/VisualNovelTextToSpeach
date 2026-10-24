@@ -67,7 +67,7 @@ from PySide6.QtWidgets import (
 )
 from shiboken6 import isValid
 
-from vntts.action_icons import action_icon, set_action_icon
+from vntts.action_icons import set_action_icon
 from vntts.asset_ui import AssetManagerDialog
 from vntts.async_ui import LatestTaskRunner
 from vntts.auto_advance_policy import (
@@ -2170,8 +2170,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             (self.settings_folder_action, "folder-open"),
             (self.quit_action, "log-out"),
         ):
-            action.setIcon(action_icon(icon))
-            action.setIconVisibleInMenu(True)
+            set_action_icon(action, icon)
 
     def _build_main_menu(self) -> None:
         self.read_action.setEnabled(False)
@@ -2196,8 +2195,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.menu.addAction(self.live_action)
         self.menu.addAction(self.pause_action)
         self.playback_menu = self.menu.addMenu("Reading")
-        self.playback_menu.setIcon(action_icon("volume-2"))
-        self.playback_menu.menuAction().setIconVisibleInMenu(True)
+        set_action_icon(self.playback_menu.menuAction(), "volume-2")
         self.playback_menu.addAction(self.sequence_resync_action)
         self.playback_menu.addAction(self.sequence_expected_action)
         self.playback_menu.addAction(self.auto_advance_action)
@@ -2206,8 +2204,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _build_setup_and_support_menus(self) -> None:
         self.setup_menu = self.menu.addMenu("Setup")
-        self.setup_menu.setIcon(action_icon("settings"))
-        self.setup_menu.menuAction().setIconVisibleInMenu(True)
+        set_action_icon(self.setup_menu.menuAction(), "settings")
         self.setup_menu.addAction(self.readiness_action)
         self.setup_menu.addAction(self.setup_action)
         self.setup_menu.addAction(self.pregeneration_action)
@@ -2222,8 +2219,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.setup_menu.addAction(self.corrections_action)
         self.setup_menu.addAction(self.ocr_review_action)
         self.support_menu = self.menu.addMenu("Support")
-        self.support_menu.setIcon(action_icon("circle-help"))
-        self.support_menu.menuAction().setIconVisibleInMenu(True)
+        set_action_icon(self.support_menu.menuAction(), "circle-help")
         self.support_menu.addAction(self.diagnostics_action)
         self.support_menu.addAction(self.support_action)
         self.support_menu.addAction(self.macos_permissions_action)
@@ -5171,7 +5167,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             action.setToolTip("" if enabled else state.reason_for(control))
         self.read_action.setText(state.read_label)
         self.pause_action.setText(state.pause_label)
-        self.pause_action.setIcon(action_icon("play" if state.paused else "pause"))
+        set_action_icon(self.pause_action, "play" if state.paused else "pause")
         if state.can_pause:
             self.pause_action.setToolTip(state.pause_description)
         if state.can_read:
@@ -5185,14 +5181,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if state.active
             else "Start reading"
         )
-        self.live_action.setIcon(
-            action_icon(
-                "x"
-                if state.transition == "starting"
-                else "square"
-                if state.active
-                else "play"
-            )
+        set_action_icon(
+            self.live_action,
+            "x"
+            if state.transition == "starting"
+            else "square"
+            if state.active
+            else "play",
         )
         self.sequence_resync_action.setEnabled(state.ready)
         self.dashboard.set_runtime_controls(state)
@@ -5366,7 +5361,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def set_live(self, running: bool) -> None:
         self._reported_live = bool(running)
         self.live_action.setText("Stop reading" if running else "Start reading")
-        self.live_action.setIcon(action_icon("square" if running else "play"))
+        set_action_icon(self.live_action, "square" if running else "play")
         self.dashboard.set_live(running)
         self.compact_controller.set_live(running)
         if running:

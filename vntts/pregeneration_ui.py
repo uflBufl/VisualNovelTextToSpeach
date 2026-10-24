@@ -948,7 +948,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.narrator_choice.setAccessibleName("Narrator voice for offline generation")
         self.narrator_choice.currentIndexChanged.connect(self._narrator_choice_changed)
         self.play_narrator_reference = QPushButton("Reference")
-        set_action_icon(self.play_narrator_reference, "audio-lines")
+        set_action_icon(self.play_narrator_reference, "play")
         self.play_narrator_reference.setAccessibleName(
             "Listen to original game reference"
         )

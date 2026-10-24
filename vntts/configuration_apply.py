@@ -9,7 +9,7 @@ from PySide6.QtCore import QObject, SignalInstance
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QDialog, QPushButton, QTabWidget
 
-from vntts.action_icons import action_icon
+from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.player_session import PlayerSessionOwner
 from vntts.settings import (
@@ -158,8 +158,7 @@ class ConfigurationApplyMixin:
         if not isinstance(self, QObject):
             raise TypeError("ConfigurationApplyMixin requires a QObject host")
         self.cancel_configuration_action = QAction("Cancel settings apply", self)
-        self.cancel_configuration_action.setIcon(action_icon("x"))
-        self.cancel_configuration_action.setIconVisibleInMenu(True)
+        set_action_icon(self.cancel_configuration_action, "x")
         self.cancel_configuration_action.setVisible(False)
         self.cancel_configuration_action.setEnabled(False)
         self.cancel_configuration_action.setStatusTip(

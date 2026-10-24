@@ -571,6 +571,14 @@ class DiagnosticsTest(unittest.TestCase):
         remediations = []
         dialog.remediation_requested.connect(remediations.append)
 
+        dialog.set_permission_warnings(
+            ["Screen Recording permission is missing."],
+            remediation=("macos-permissions", "Open macOS permissions"),
+        )
+        self.assertEqual(dialog.warning_action.property("vnttsActionIcon"), "key-round")
+        dialog.warning_action.click()
+        self.assertEqual(remediations, ["macos-permissions"])
+
         dialog.set_warning(
             "The selected game window is unavailable.",
             remediation=("settings", "Open Settings"),
@@ -578,8 +586,9 @@ class DiagnosticsTest(unittest.TestCase):
 
         self.assertFalse(dialog.warning_action.isHidden())
         self.assertEqual(dialog.warning_action.text(), "Open Settings")
+        self.assertEqual(dialog.warning_action.property("vnttsActionIcon"), "settings")
         dialog.warning_action.click()
-        self.assertEqual(remediations, ["settings"])
+        self.assertEqual(remediations, ["macos-permissions", "settings"])
 
         dialog.set_warning("Unclassified warning")
         self.assertTrue(dialog.warning_action.isHidden())

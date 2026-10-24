@@ -2,8 +2,8 @@
 
 from importlib.resources import files
 
-from PySide6.QtCore import QEvent, QObject, Qt
-from PySide6.QtGui import QIcon, QPainter, QPalette, QPixmap
+from PySide6.QtCore import QEvent, QObject, Qt, Slot
+from PySide6.QtGui import QAction, QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QAbstractButton, QApplication
 
@@ -43,6 +43,14 @@ def action_icon(name: str, palette: QPalette | None = None) -> QIcon:
 
 
 class _IconPaletteFilter(QObject):
+    @Slot(QPalette)
+    def update_action_palette(self, palette: QPalette) -> None:
+        action = self.parent()
+        if isinstance(action, QAction):
+            name = action.property("vnttsActionIcon")
+            if isinstance(name, str):
+                action.setIcon(action_icon(name, palette))
+
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.PaletteChange and isinstance(
             watched, QAbstractButton
@@ -53,8 +61,18 @@ class _IconPaletteFilter(QObject):
         return False
 
 
-def set_action_icon(button: QAbstractButton, name: str) -> None:
+def set_action_icon(button: QAbstractButton | QAction, name: str) -> None:
     if button.property("vnttsActionIcon") is None:
-        button.installEventFilter(_IconPaletteFilter(button))
+        observer = _IconPaletteFilter(button)
+        if isinstance(button, QAction):
+            application = QApplication.instance()
+            assert isinstance(application, QApplication)
+            application.paletteChanged.connect(observer.update_action_palette)
+        else:
+            button.installEventFilter(observer)
     button.setProperty("vnttsActionIcon", name)
-    button.setIcon(action_icon(name, button.palette()))
+    if isinstance(button, QAction):
+        button.setIconVisibleInMenu(True)
+        button.setIcon(action_icon(name))
+    else:
+        button.setIcon(action_icon(name, button.palette()))

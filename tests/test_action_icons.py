@@ -4,8 +4,8 @@ from importlib.resources import files
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSize  # noqa: E402
-from PySide6.QtGui import QColor, QIcon, QPalette  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEvent, QSize  # noqa: E402
+from PySide6.QtGui import QAction, QColor, QIcon, QPalette  # noqa: E402
 from PySide6.QtSvg import QSvgRenderer  # noqa: E402
 from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
 
@@ -73,6 +73,32 @@ class ActionIconsTest(unittest.TestCase):
                         }
                         self.assertEqual(colors, {expected})
         finally:
+            self.application.setPalette(original)
+
+    def test_menu_icons_follow_palette_and_latest_action_until_deleted(self):
+        original = self.application.palette()
+        action = QAction("Read")
+        set_action_icon(action, "play")
+        try:
+            self.assertTrue(action.isIconVisibleInMenu())
+            for icon, foreground in (("play", "#172839"), ("square", "#eef3fa")):
+                set_action_icon(action, icon)
+                palette = QPalette(original)
+                palette.setColor(QPalette.ColorRole.ButtonText, QColor(foreground))
+                self.application.setPalette(palette)
+                self.application.processEvents()
+                for mode in (
+                    QIcon.Mode.Normal,
+                    QIcon.Mode.Disabled,
+                    QIcon.Mode.Selected,
+                ):
+                    self.assertEqual(
+                        action.icon().pixmap(QSize(24, 24), mode).toImage(),
+                        action_icon(icon).pixmap(QSize(24, 24), mode).toImage(),
+                    )
+        finally:
+            action.deleteLater()
+            QCoreApplication.sendPostedEvents(action, QEvent.Type.DeferredDelete)
             self.application.setPalette(original)
 
     def test_icons_can_be_copied_and_modified_independently(self):
