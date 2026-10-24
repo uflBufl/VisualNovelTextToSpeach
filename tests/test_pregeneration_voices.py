@@ -1958,7 +1958,8 @@ class VoicePlanStoreTest(unittest.TestCase):
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
             plan = VoicePlanStore(jobs).create(
-                job, AppSettings(pocket_gated_model_accepted=True),
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
                 manifest_path=write_manifest(root / "voices"),
             )
             imported_jobs = PregenerationJobStore(root / "legacy-jobs")
@@ -1969,11 +1970,15 @@ class VoicePlanStoreTest(unittest.TestCase):
             original = path.read_bytes()
             saved = store.saved_documents()
             self.assertEqual(saved[0]["groups"], plan.to_document()["groups"])
-            self.assertEqual(saved[0]["synthesis_controls_sha256"], plan.synthesis_controls_sha256)
+            self.assertEqual(
+                saved[0]["synthesis_controls_sha256"], plan.synthesis_controls_sha256
+            )
             updated = replace(plan, created_at="2026-10-24T12:00:00+00:00")
             store._persist_plan(job, updated)
             restarted = VoicePlanStore(PregenerationJobStore(imported_jobs.root))
-            self.assertEqual(restarted.saved_documents()[0]["created_at"], updated.created_at)
+            self.assertEqual(
+                restarted.saved_documents()[0]["created_at"], updated.created_at
+            )
             self.assertEqual(path.read_bytes(), original)
             self.assertFalse(VoicePlanStore(jobs).path_for(job).exists())
 
@@ -1982,35 +1987,48 @@ class VoicePlanStoreTest(unittest.TestCase):
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
             plan = VoicePlanStore(jobs).create(
-                job, AppSettings(pocket_gated_model_accepted=True),
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
                 manifest_path=write_manifest(root / "voices"),
             )
             group = next(value for value in plan.groups if value.route == "voice")
             path = root / "legacy-decisions.json"
-            write_versioned_json(path, 1, {"decisions": {
-                _decision_key(group.group_id, group.decision_context_sha256): {
-                    "group_id": group.group_id,
-                    "decision_context_sha256": group.decision_context_sha256,
-                    "source_id": group.source_id,
-                    "decided_at": "2026-10-24T12:00:00+00:00",
+            write_versioned_json(
+                path,
+                1,
+                {
+                    "decisions": {
+                        _decision_key(group.group_id, group.decision_context_sha256): {
+                            "group_id": group.group_id,
+                            "decision_context_sha256": group.decision_context_sha256,
+                            "source_id": group.source_id,
+                            "decided_at": "2026-10-24T12:00:00+00:00",
+                        },
+                    }
                 },
-            }})
+            )
             original = path.read_bytes()
             decisions = VoiceDecisionStore(path, catalog=jobs.catalog)
             self.assertEqual(
-                decisions.choice_for(group.group_id, group.decision_context_sha256), group.source_id
+                decisions.choice_for(group.group_id, group.decision_context_sha256),
+                group.source_id,
             )
             decisions.remember(group, "default")
-            restarted = VoiceDecisionStore(path, catalog=PregenerationJobStore(jobs.root).catalog)
+            restarted = VoiceDecisionStore(
+                path, catalog=PregenerationJobStore(jobs.root).catalog
+            )
             self.assertEqual(
-                restarted.choice_for(group.group_id, group.decision_context_sha256), "default"
+                restarted.choice_for(group.group_id, group.decision_context_sha256),
+                "default",
             )
             self.assertEqual(path.read_bytes(), original)
             new_path = root / "new-decisions.json"
             VoiceDecisionStore(new_path).remember(group, "default")
             self.assertFalse(new_path.exists())
             independent = VoiceDecisionStore(root / "independent-decisions.json")
-            self.assertIsNone(independent.choice_for(group.group_id, group.decision_context_sha256))
+            self.assertIsNone(
+                independent.choice_for(group.group_id, group.decision_context_sha256)
+            )
 
     def test_decision_store_accepts_explicit_confirmation_of_automatic_route(self):
         with TemporaryDirectory() as temporary_directory:

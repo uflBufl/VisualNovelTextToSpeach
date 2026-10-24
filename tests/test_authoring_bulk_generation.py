@@ -877,9 +877,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
                 with (
                     self.subTest(capture=capture.__name__),
-                    patch.object(
-                        state_module, "read_regular_bytes", read_replacement
-                    ),
+                    patch.object(state_module, "read_regular_bytes", read_replacement),
                     self.assertRaisesRegex(
                         BulkGenerationError,
                         "Generation state changed while review authorities were captured",
@@ -1784,7 +1782,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module, "write_generation_state", side_effect=crash_after_replace
+                    bulk_module,
+                    "write_generation_state",
+                    side_effect=crash_after_replace,
                 ),
                 self.assertRaises(KeyboardInterrupt),
             ):
@@ -1828,7 +1828,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module, "write_generation_state", side_effect=fail_success_write
+                    bulk_module,
+                    "write_generation_state",
+                    side_effect=fail_success_write,
                 ),
                 self.assertRaisesRegex(OSError, "synthetic state write failure"),
             ):

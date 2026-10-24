@@ -106,6 +106,18 @@ class PreparationCatalogError(ValueError):
     """The local catalog is unsafe, unsupported, or invalid."""
 
 
+def _verify_catalog(connection: sqlite3.Connection) -> None:
+    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    application = connection.execute("PRAGMA application_id").fetchone()[0]
+    objects = connection.execute(
+        "SELECT name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    if version != _VERSION or application != _APPLICATION_ID:
+        raise PreparationCatalogError("Unsupported preparation catalog schema")
+    if {row["sql"] for row in objects} != set(_SCHEMA):
+        raise PreparationCatalogError("Preparation catalog schema changed")
+
+
 class PreparationCatalog:
     def __init__(self, root: Path, *, filename: str = "preparation.sqlite3") -> None:
         self.path = root / filename
@@ -114,7 +126,10 @@ class PreparationCatalog:
         temporary = None
         try:
             with NamedTemporaryFile(
-                dir=self.path.parent, prefix=".preparation-", suffix=".sqlite3", delete=False
+                dir=self.path.parent,
+                prefix=".preparation-",
+                suffix=".sqlite3",
+                delete=False,
             ) as stream:
                 temporary = Path(stream.name)
             with closing(sqlite3.connect(temporary)) as connection:
@@ -167,18 +182,7 @@ class PreparationCatalog:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
-            version = connection.execute("PRAGMA user_version").fetchone()[0]
-            application = connection.execute("PRAGMA application_id").fetchone()[0]
-            objects = connection.execute(
-                "SELECT name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
-            ).fetchall()
-            if version != _VERSION or application != _APPLICATION_ID:
-                raise PreparationCatalogError(
-                    "Unsupported preparation catalog schema"
-                )
-            actual = {row["sql"] for row in objects}
-            if actual != set(_SCHEMA):
-                raise PreparationCatalogError("Preparation catalog schema changed")
+            _verify_catalog(connection)
             yield connection
             if write:
                 connection.commit()

@@ -831,27 +831,10 @@ def _write_reference_wav(path: Path, payload: bytes, character: str) -> None:
     probe_pcm16_mono_wav(path)
 
 
-def load_generation_input_metadata(directory: Path) -> dict[str, object]:
-    """Admit an immutable legacy/publication snapshot once, then query its SQL row."""
-    catalog = PreparationCatalog(directory.parent.parent)
-    document = catalog.input_document(directory)
-    if document is not None:
-        return document
-    legacy = directory / "input.json"
-    try:
-        original = legacy.stat(follow_symlinks=False)
-        document = read_versioned_json(
-            legacy,
-            schema_version=generation_input_schema_version,
-            document_name="offline generation input",
-        )
-    except FileNotFoundError:
-        # Another process may have committed and retired the snapshot after our miss.
-        admitted = catalog.input_document(directory)
-        if admitted is not None:
-            return admitted
-        raise
-    if legacy.is_symlink():
+def _validate_legacy_generation_input(
+    directory: Path, document: dict[str, object]
+) -> str:
+    if (directory / "input.json").is_symlink():
         raise ValueError("Generation input metadata must not be a symbolic link")
     identity = _required_text(document.get("identity"), "Generation input identity")
     if directory.name != f"generation-input-{identity[:16]}":
@@ -874,6 +857,30 @@ def load_generation_input_metadata(directory: Path) -> dict[str, object]:
         not isinstance(role, str) or not role.strip() for role in roles
     ):
         raise ValueError("Generation input narrator roles are malformed")
+    return job_id
+
+
+def load_generation_input_metadata(directory: Path) -> dict[str, object]:
+    """Admit an immutable legacy/publication snapshot once, then query its SQL row."""
+    catalog = PreparationCatalog(directory.parent.parent)
+    document = catalog.input_document(directory)
+    if document is not None:
+        return document
+    legacy = directory / "input.json"
+    try:
+        original = legacy.stat(follow_symlinks=False)
+        document = read_versioned_json(
+            legacy,
+            schema_version=generation_input_schema_version,
+            document_name="offline generation input",
+        )
+    except FileNotFoundError:
+        # Another process may have committed and retired the snapshot after our miss.
+        admitted = catalog.input_document(directory)
+        if admitted is not None:
+            return admitted
+        raise
+    job_id = _validate_legacy_generation_input(directory, document)
     catalog.save_input(job_id, document, directory)
     if catalog.input_document(directory) != document:
         raise ValueError("Generation input SQLite readback differs")

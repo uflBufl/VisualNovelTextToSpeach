@@ -178,6 +178,23 @@ class SharedAudioStore:
                     f"Audio catalog must be a regular file: {candidate}"
                 )
 
+    def _read_legacy_binding(self, binding: Path) -> tuple[str, str]:
+        self._validate_key(binding.stem)
+        if binding.suffix != ".json" or binding.is_symlink():
+            raise ValueError("Not a regular legacy synthesis binding")
+        payload = read_regular_text(binding, encoding="utf-8")
+        record = json.loads(payload)
+        if (
+            not isinstance(record, dict)
+            or set(record) != {"schema_version", "audio_sha256"}
+            or type(record["schema_version"]) is not int
+            or record["schema_version"] != 1
+        ):
+            raise ValueError("Unsupported legacy audio binding schema")
+        digest = record["audio_sha256"]
+        self._object(digest)
+        return payload, digest
+
     def _initialize_catalog(self) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
         temporary = self._directory(f".audio-catalog.{uuid4().hex}.sqlite3")
@@ -195,20 +212,7 @@ class SharedAudioStore:
                     )
                 for binding in sorted(legacy.iterdir()) if legacy.exists() else ():
                     try:
-                        self._validate_key(binding.stem)
-                        if binding.suffix != ".json" or binding.is_symlink():
-                            raise ValueError("Not a regular legacy synthesis binding")
-                        payload = read_regular_text(binding, encoding="utf-8")
-                        record = json.loads(payload)
-                        if (
-                            not isinstance(record, dict)
-                            or set(record) != {"schema_version", "audio_sha256"}
-                            or type(record["schema_version"]) is not int
-                            or record["schema_version"] != 1
-                        ):
-                            raise ValueError("Unsupported legacy audio binding schema")
-                        digest = record["audio_sha256"]
-                        self._object(digest)
+                        payload, digest = self._read_legacy_binding(binding)
                         connection.execute(
                             "INSERT INTO bindings VALUES (?, ?)", (binding.stem, digest)
                         )

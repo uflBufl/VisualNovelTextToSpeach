@@ -171,24 +171,10 @@ def _item_index(item: dict[str, object]) -> tuple[object, ...]:
     )
 
 
-def _read(
+def _validate_item_headers(
     connection: sqlite3.Connection,
-    *,
-    selected_line_ids: frozenset[str] | None = None,
-    allowed_queue_ids: frozenset[str] | None = None,
-) -> dict[str, object]:
-    row = connection.execute(
-        "SELECT queue_sha256, metadata, controls_kind FROM run WHERE id=1"
-    ).fetchone()
-    if row is None:
-        raise ValueError("Generation database has no committed state")
-    state = _object(row[1])
-    if (
-        state.get("queue_sha256") != row[0]
-        or "items" in state
-        or "synthesis_controls" in state
-    ):
-        raise ValueError("Generation database metadata differs from its indexes")
+    allowed_queue_ids: frozenset[str] | None,
+) -> None:
     for key, status, review in connection.execute(
         "SELECT queue_id,status,review_status FROM items"
     ):
@@ -200,9 +186,14 @@ def _read(
             raise ValueError(
                 "Generation database contains unknown queue IDs or invalid item status"
             )
+
+
+def _read_items(
+    connection: sqlite3.Connection, selected_line_ids: frozenset[str] | None
+) -> dict[str, object]:
     items: dict[str, object] = {}
     queries: list[tuple[str, tuple[str, ...]]]
-    if selected_line_ids is None or "reviewed_waveform_publication" in state:
+    if selected_line_ids is None:
         queries = [(f"SELECT {_ITEM_COLUMNS} FROM items", ())]
     else:
         # Failed/interrupted legacy records can omit line identity; retain their evidence.
@@ -224,7 +215,32 @@ def _read(
                     "Generation database item index differs from its evidence"
                 )
             items[key] = item
-    state["items"] = items
+    return items
+
+
+def _read(
+    connection: sqlite3.Connection,
+    *,
+    selected_line_ids: frozenset[str] | None = None,
+    allowed_queue_ids: frozenset[str] | None = None,
+) -> dict[str, object]:
+    row = connection.execute(
+        "SELECT queue_sha256, metadata, controls_kind FROM run WHERE id=1"
+    ).fetchone()
+    if row is None:
+        raise ValueError("Generation database has no committed state")
+    state = _object(row[1])
+    if (
+        state.get("queue_sha256") != row[0]
+        or "items" in state
+        or "synthesis_controls" in state
+    ):
+        raise ValueError("Generation database metadata differs from its indexes")
+    _validate_item_headers(connection, allowed_queue_ids)
+    state["items"] = _read_items(
+        connection,
+        None if "reviewed_waveform_publication" in state else selected_line_ids,
+    )
     controls = {
         key: decode_json(payload)
         for key, payload in connection.execute("SELECT identity,payload FROM controls")
@@ -321,6 +337,15 @@ def _write(
         "INSERT INTO run VALUES(1,?,?,1,?) ON CONFLICT(id) DO UPDATE SET metadata=excluded.metadata,revision=run.revision+1,controls_kind=excluded.controls_kind",
         (queue, encoded, controls_kind),
     )
+    _write_items(connection, items, changed_items)
+    _write_controls(connection, controls)
+
+
+def _write_items(
+    connection: sqlite3.Connection,
+    items: dict[str, object],
+    changed_items: tuple[str, ...] | None,
+) -> None:
     selected = tuple(items) if changed_items is None else changed_items
     for key in selected:
         if not isinstance(key, str):
@@ -352,6 +377,11 @@ def _write(
         for (key,) in connection.execute("SELECT queue_id FROM items").fetchall():
             if key not in items:
                 connection.execute("DELETE FROM items WHERE queue_id=?", (key,))
+
+
+def _write_controls(
+    connection: sqlite3.Connection, controls: dict[str, object]
+) -> None:
     for key, value in controls.items():
         if not isinstance(key, str):
             raise ValueError("Generation database control identity is malformed")

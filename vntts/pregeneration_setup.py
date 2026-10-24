@@ -776,7 +776,9 @@ class PregenerationJobStore:
         return self.root / "selections" / f"{checksum}.json"
 
     def selection_for_content(self, content: GameContent) -> tuple[str, ...] | None:
-        saved = self._catalog_call(self.catalog.selection, content.catalog_story_index_sha256)
+        saved = self._catalog_call(
+            self.catalog.selection, content.catalog_story_index_sha256
+        )
         if saved is not None:
             return _normalized_selection_ids(content, saved) if saved else ()
         path = self._selection_path(content)
@@ -798,8 +800,10 @@ class PregenerationJobStore:
                 )
             )
             self._catalog_call(
-                self.catalog.save_selection, content.catalog_story_index_sha256,
-                selected, replace=False,
+                self.catalog.save_selection,
+                content.catalog_story_index_sha256,
+                selected,
+                replace=False,
             )
             return self._catalog_call(
                 self.catalog.selection, content.catalog_story_index_sha256

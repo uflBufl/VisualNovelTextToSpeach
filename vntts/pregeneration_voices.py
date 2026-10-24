@@ -999,7 +999,9 @@ class VoicePlanStore:
     def _persist_plan(self, job: PregenerationJob, plan: VoicePlan) -> VoicePlan:
         phase_started, cpu_started = perf_counter(), process_time()
         _voice_catalog_call(
-            self.job_store.catalog.save_plan, plan.to_document(), voice_plan_schema_version
+            self.job_store.catalog.save_plan,
+            plan.to_document(),
+            voice_plan_schema_version,
         )
         _record_plan_phase(
             "write",
@@ -1068,27 +1070,42 @@ class VoicePlanStore:
 
     def saved_documents(self) -> tuple[JsonObject, ...]:
         """Read saved plans, admitting valid legacy files without replacing catalog rows."""
-        paths = () if self._legacy_plans_imported else self.job_store.root.glob("*/voice-plan.json")
+        paths = (
+            ()
+            if self._legacy_plans_imported
+            else self.job_store.root.glob("*/voice-plan.json")
+        )
         for path in paths:
             if _voice_catalog_call(self.job_store.catalog.has_plan, path.parent.name):
                 continue
             try:
                 document = read_versioned_json(
-                    path, schema_version=voice_plan_schema_version,
+                    path,
+                    schema_version=voice_plan_schema_version,
                     document_name="offline voice plan",
                 )
                 if document.get("job_id") != path.parent.name:
                     continue
                 self.job_store.directory_for(path.parent.name)
                 _voice_catalog_call(
-                    self.job_store.catalog.save_plan, document,
-                    voice_plan_schema_version, replace=False,
+                    self.job_store.catalog.save_plan,
+                    document,
+                    voice_plan_schema_version,
+                    replace=False,
                 )
-            except (OSError, ValueError, PregenerationSetupError, PregenerationVoiceError):
+            except (
+                OSError,
+                ValueError,
+                PregenerationSetupError,
+                PregenerationVoiceError,
+            ):
                 continue
         self._legacy_plans_imported = True
         documents = _voice_catalog_call(self.job_store.catalog.plan_documents)
-        if any(document.get("schema_version") != voice_plan_schema_version for document in documents):
+        if any(
+            document.get("schema_version") != voice_plan_schema_version
+            for document in documents
+        ):
             raise PregenerationVoiceError("Unsupported saved voice plan schema")
         return documents
 

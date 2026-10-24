@@ -50,7 +50,9 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         )
         catalog.path.write_bytes(b"damaged database")
         unused = self._candidate("unused")
-        self.assertEqual(prune_obsolete_voice_candidate_caches(self.root, self.jobs), ())
+        self.assertEqual(
+            prune_obsolete_voice_candidate_caches(self.root, self.jobs), ()
+        )
         self.assertTrue(kept.is_dir())
         self.assertTrue(unused.is_dir())
 
