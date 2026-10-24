@@ -41,7 +41,7 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 139
+      "maximum": 133
     },
     {
       "code": "C901",
@@ -979,7 +979,7 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 632
+      "maximum": 589
     },
     {
       "code": "PLR0915",
@@ -987,13 +987,6 @@
       "scope": "_render_stories.offline_preparation",
       "count": 1,
       "maximum": 88
-    },
-    {
-      "code": "PLR0915",
-      "path": "scripts/render_ui_catalog.py",
-      "scope": "_render_stories.voice_editor",
-      "count": 1,
-      "maximum": 57
     },
     {
       "code": "PLR0915",
@@ -1083,13 +1076,6 @@
       "code": "PLR0915",
       "path": "tests/test_game_content_importer.py",
       "scope": "Reverse1999GameImporterTest.test_narrator_upgrade_reuses_previously_imported_custom_installation",
-      "count": 1,
-      "maximum": 52
-    },
-    {
-      "code": "PLR0915",
-      "path": "tests/test_game_narrator.py",
-      "scope": "GameNarratorTest.test_main_and_preparation_persist_only_an_accepted_selection",
       "count": 1,
       "maximum": 52
     },
@@ -1336,7 +1322,7 @@
       "path": "vntts/pregeneration_audition_ui.py",
       "scope": "VoiceAuditionPanel.__init__",
       "count": 1,
-      "maximum": 102
+      "maximum": 96
     },
     {
       "code": "PLR0915",

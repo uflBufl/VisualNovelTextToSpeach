@@ -481,6 +481,39 @@ class GameNarratorTest(unittest.TestCase):
         self.assertTrue(hasattr(panel, "reference_transcript"))
         self.assertFalse(hasattr(dialog, "exact_transcript"))
 
+    def test_missing_manifest_cannot_be_saved_after_listening(self):
+        dialog = self.editor()
+        self.select(dialog, "catalog", role="Aderyn", source="character:rhiannon")
+        self.listen(dialog, original=True)
+        dialog._candidate_manifest = None
+
+        dialog.voice_panel.a_use.click()
+        self.drain()
+
+        self.assertIn("checked voice manifest", dialog.voice_panel.status.toPlainText())
+        self.assertIsNone(self.library.binding("Aderyn"))
+        self.assertIsNone(dialog.result_settings)
+
+    def test_inherited_variant_without_optional_metadata_keeps_defaults(self):
+        dialog = self.editor()
+        dialog._character = "Rhiannon"
+        registry = CharacterVoiceRegistry.from_file(self.manifest)
+        variants = ({"character": "Rhiannon", "voice_character": "rhiannon"},)
+        with patch(
+            "vntts.game_narrator_ui.validated_player_voice_candidates",
+            return_value=(registry, variants),
+        ):
+            dialog._show_character_candidates(self.manifest)
+        self.drain()
+
+        candidate = dialog.voice_panel.current_group().candidate_inventory[0]
+        self.assertIsNone(candidate.reference_duration_seconds)
+        self.assertIsNone(candidate.source_bank)
+        self.assertIsNone(candidate.candidate_origin)
+        self.assertEqual(candidate.source_line_ids, ())
+        self.assertEqual(candidate.source_voice_ids, ())
+        self.assertEqual(candidate.source_excerpts, ())
+
     def test_story_context_reuses_all_candidates_without_import(self):
         plan, group, _manifest = ambiguous_fixture(self.root / "story")
         dialog = self.editor()

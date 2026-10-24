@@ -109,6 +109,98 @@ class GameNarratorDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Narrator and character voices")
         self.resize(900, 680)
+        self._initialize_state(
+            settings,
+            importer,
+            thread_pool,
+            binder,
+            voice_library,
+            voice_binding_rollback,
+            use_offline_engine,
+        )
+        self.status = QLabel()
+        self.status.hide()
+        self.status.setWordWrap(True)
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.hide()
+        self.controls = QWidget()
+        content = QVBoxLayout(self.controls)
+        content.setAlignment(Qt.AlignmentFlag.AlignTop)
+        content.setContentsMargins(8, 8, 8, 8)
+        content.setSpacing(8)
+        self._build_voice_sources(content)
+        self.voice_panel = VoiceAuditionPanel(
+            self,
+            preview_service=preview_service
+            or VoiceAuditionPreviewService(
+                backend_factory=partial(
+                    create_backend, terms_accepted=settings.xtts_terms_accepted
+                )
+            ),
+            thread_pool=thread_pool,
+            player=player,
+            parent=self,
+        )
+        self.voice_panel.completed.connect(self._saved)
+        self.voice_panel.cancelled.connect(self._panel_finished)
+        self.voice_panel.activeChanged.connect(self._activity_changed)
+        self.voice_panel.selectionChanged.connect(self._selection_changed)
+        self.voice_panel.beforeSave.connect(self._capture_save)
+        panel_layout = self.voice_panel.layout()
+        assert panel_layout is not None
+        panel_layout.removeWidget(self.voice_panel.phrase_box)
+        content.addWidget(self.voice_panel.phrase_box)
+        content.addWidget(self.new_voice_box)
+        panel_layout.removeWidget(self.voice_panel.current_voice_box)
+        content.addWidget(self.voice_panel.current_voice_box)
+        self.form.addRow(self.voice_panel)
+        self._build_editor_actions(content)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.controls)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.status)
+        layout.addWidget(self.progress)
+        layout.addWidget(scroll, 1)
+        self._connect_voice_controls()
+
+    def _connect_voice_controls(self) -> None:
+        self.source.currentIndexChanged.connect(self._source_changed)
+        self.role.currentTextChanged.connect(self._role_changed)
+        self.presets.currentIndexChanged.connect(self._source_changed)
+        self.catalog_choice.currentIndexChanged.connect(self._source_changed)
+        self.consent.toggled.connect(self._consent_changed)
+        self.decoderProgress.connect(self._set_status)
+        self._initializing = True
+        self.set_voice_context()
+        self._initializing = False
+        for combo in (
+            self.role,
+            self.source,
+            self.presets,
+            self.catalog_choice,
+            self.characters,
+        ):
+            combo.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            combo.setMinimumContentsLength(10)
+            combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        make_text_copyable(self)
+        QTimer.singleShot(0, self, self._role_changed)
+
+    def _initialize_state(
+        self,
+        settings: AppSettings,
+        importer: Reverse1999GameImporter | None,
+        thread_pool: QThreadPool | None,
+        binder: Binder,
+        voice_library: VoiceLibrary | None,
+        voice_binding_rollback: VoiceBindingRollback | None,
+        use_offline_engine: bool,
+    ) -> None:
         self.settings_value = (
             resolve_pregeneration_settings(settings) if use_offline_engine else settings
         )
@@ -148,18 +240,8 @@ class GameNarratorDialog(QDialog):
         self._recovery_resume_live = self._suppress_auto_discovery = False
         self._candidate_manifest: Path | str | None = None
         self._narrator_directory = TemporaryDirectory(prefix="vntts-narrator-editor-")
-        self.status = QLabel()
-        self.status.hide()
-        self.status.setWordWrap(True)
-        self.status.setTextFormat(Qt.TextFormat.PlainText)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 0)
-        self.progress.hide()
-        self.controls = QWidget()
-        content = QVBoxLayout(self.controls)
-        content.setAlignment(Qt.AlignmentFlag.AlignTop)
-        content.setContentsMargins(8, 8, 8, 8)
-        content.setSpacing(8)
+
+    def _build_voice_sources(self, content: QVBoxLayout) -> None:
         self.new_voice_box = QGroupBox("New voice")
         self.new_voice_box.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
@@ -207,29 +289,8 @@ class GameNarratorDialog(QDialog):
         self.catalog_choice.setAccessibleName("Imported character voice candidate")
         self.form.addRow("Voice", self.catalog_choice)
         self._build_game_reference_controls()
-        self.voice_panel = VoiceAuditionPanel(
-            self,
-            preview_service=preview_service
-            or VoiceAuditionPreviewService(
-                backend_factory=partial(
-                    create_backend, terms_accepted=settings.xtts_terms_accepted
-                )
-            ),
-            thread_pool=thread_pool,
-            player=player,
-            parent=self,
-        )
-        self.voice_panel.completed.connect(self._saved)
-        self.voice_panel.cancelled.connect(self._panel_finished)
-        self.voice_panel.activeChanged.connect(self._activity_changed)
-        self.voice_panel.selectionChanged.connect(self._selection_changed)
-        self.voice_panel.beforeSave.connect(self._capture_save)
-        self.voice_panel.layout().removeWidget(self.voice_panel.phrase_box)
-        content.addWidget(self.voice_panel.phrase_box)
-        content.addWidget(self.new_voice_box)
-        self.voice_panel.layout().removeWidget(self.voice_panel.current_voice_box)
-        content.addWidget(self.voice_panel.current_voice_box)
-        self.form.addRow(self.voice_panel)
+
+    def _build_editor_actions(self, content: QVBoxLayout) -> None:
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.reject)
         self.copy_details = copy_text_button(
@@ -250,38 +311,10 @@ class GameNarratorDialog(QDialog):
         self.voice_panel.a_use.setText("Save")
         self.voice_panel.outcome_actions.removeWidget(self.voice_panel.a_use)
         actions.addWidget(self.voice_panel.a_use)
-        self.voice_panel.layout().removeItem(self.voice_panel.outcome_actions)
+        panel_layout = self.voice_panel.layout()
+        assert panel_layout is not None
+        panel_layout.removeItem(self.voice_panel.outcome_actions)
         content.addLayout(actions)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.controls)
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.status)
-        layout.addWidget(self.progress)
-        layout.addWidget(scroll, 1)
-        self.source.currentIndexChanged.connect(self._source_changed)
-        self.role.currentTextChanged.connect(self._role_changed)
-        self.presets.currentIndexChanged.connect(self._source_changed)
-        self.catalog_choice.currentIndexChanged.connect(self._source_changed)
-        self.consent.toggled.connect(self._consent_changed)
-        self.decoderProgress.connect(self._set_status)
-        self._initializing = True
-        self.set_voice_context()
-        self._initializing = False
-        for combo in (
-            self.role,
-            self.source,
-            self.presets,
-            self.catalog_choice,
-            self.characters,
-        ):
-            combo.setSizeAdjustPolicy(
-                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
-            )
-            combo.setMinimumContentsLength(10)
-            combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        make_text_copyable(self)
-        QTimer.singleShot(0, self, self._role_changed)
 
     @property
     def active(self) -> bool:
@@ -349,9 +382,9 @@ class GameNarratorDialog(QDialog):
         self.form.addRow(self.game_controls)
 
     def _build_details_controls(self) -> None:
-        self.voice_panel.layout().removeWidget(
-            self.voice_panel.reference_details_toggle
-        )
+        panel_layout = self.voice_panel.layout()
+        assert panel_layout is not None
+        panel_layout.removeWidget(self.voice_panel.reference_details_toggle)
         tools = QHBoxLayout()
         tools.addWidget(self.voice_panel.reference_details_toggle)
         tools.addWidget(self.copy_details)
@@ -437,7 +470,7 @@ class GameNarratorDialog(QDialog):
             ),
             selected,
         }
-        display_roles = {}
+        display_roles: dict[str, str] = {}
         for role in available:
             identity = normalize_character_name(role)
             if identity and not is_narrator(role):
@@ -687,7 +720,7 @@ class GameNarratorDialog(QDialog):
         manifest: str | Path | None,
         registry: CharacterVoiceRegistry,
     ) -> CurrentVoice:
-        authorities = ((role, binding),)
+        authorities: tuple[tuple[str, VoiceBinding | None], ...] = ((role, binding),)
         label = voice_binding_label(binding) or selected or "Automatic"
         plan: VoicePlan | None = None
         if binding is not None and binding.source_sha256s:
@@ -697,37 +730,9 @@ class GameNarratorDialog(QDialog):
                 settings, manifest, selected, COMPARISON_PREVIEW_TEXT
             )
         elif selected is None and story_plan is not None and story_group is not None:
-            if story_group.route == "voice":
-                candidate = next(
-                    (
-                        value
-                        for value in (
-                            *story_group.candidates,
-                            *story_group.candidate_inventory,
-                        )
-                        if value.source_id == story_group.source_id
-                    ),
-                    None,
-                )
-                if candidate is None:
-                    raise ValueError(
-                        "The current story voice reference is unavailable."
-                    )
-                group = replace(
-                    story_group,
-                    candidates=(candidate,),
-                    candidate_inventory=(candidate,),
-                    narrator_candidate=None,
-                )
-                plan = replace(story_plan, groups=(group,))
-                label = f"Automatic: {voice_source_label(candidate.source_character)}"
-            elif story_group.route == "narrator":
+            plan, label = self._current_story_voice(story_plan, story_group)
+            if plan is None:
                 selected = "default"
-            else:
-                raise ValueError(
-                    "No single current voice is assigned to this story character. "
-                    "Choose a voice above."
-                )
         elif selected is None:
             voice = registry.resolve(role)
             if voice is not None and voice.references:
@@ -761,6 +766,42 @@ class GameNarratorDialog(QDialog):
         if selected and selected.startswith("preset:"):
             label = self._source_label(selected)
         return plan, label, authorities
+
+    @staticmethod
+    def _current_story_voice(
+        story_plan: VoicePlan, story_group: VoiceGroup
+    ) -> tuple[VoicePlan | None, str]:
+        if story_group.route == "voice":
+            candidate = next(
+                (
+                    value
+                    for value in (
+                        *story_group.candidates,
+                        *story_group.candidate_inventory,
+                    )
+                    if value.source_id == story_group.source_id
+                ),
+                None,
+            )
+            if candidate is None:
+                raise ValueError("The current story voice reference is unavailable.")
+            group = replace(
+                story_group,
+                candidates=(candidate,),
+                candidate_inventory=(candidate,),
+                narrator_candidate=None,
+            )
+            return (
+                replace(story_plan, groups=(group,)),
+                f"Automatic: {voice_source_label(candidate.source_character)}",
+            )
+        elif story_group.route == "narrator":
+            return None, ""
+        else:
+            raise ValueError(
+                "No single current voice is assigned to this story character. "
+                "Choose a voice above."
+            )
 
     def _check_current_voice_authority(
         self, authorities: tuple[tuple[str, VoiceBinding | None], ...]
@@ -1228,7 +1269,7 @@ class GameNarratorDialog(QDialog):
 
     def _show_character_candidates(self, manifest: Path | str) -> None:
         registry, variants = validated_player_voice_candidates(
-            manifest, speech_backend=self.settings_value.speech_backend
+            Path(manifest), speech_backend=self.settings_value.speech_backend
         )
         candidates = []
         for variant in variants:
@@ -1240,7 +1281,9 @@ class GameNarratorDialog(QDialog):
             voice = registry.resolve_source(source)
             if voice is None:
                 continue
-            excerpts = variant.get("source_excerpts", ())
+            excerpts = cast(
+                Sequence[dict[str, object]], variant.get("source_excerpts", ())
+            )
             candidates.append(
                 VoiceCandidate(
                     source_id=source,
@@ -1249,14 +1292,20 @@ class GameNarratorDialog(QDialog):
                     reference_sha256s=tuple(
                         sha256_file(path) for path in voice.references
                     ),
-                    reference_duration_seconds=variant.get("duration_seconds"),
-                    source_bank=variant.get("source_bank"),
-                    source_line_ids=tuple(variant.get("source_line_ids", ())),
-                    source_voice_ids=tuple(variant.get("source_voice_ids", ())),
+                    reference_duration_seconds=cast(
+                        float | None, variant.get("duration_seconds")
+                    ),
+                    source_bank=cast(str | None, variant.get("source_bank")),
+                    source_line_ids=tuple(
+                        cast(Sequence[str], variant.get("source_line_ids", ()))
+                    ),
+                    source_voice_ids=tuple(
+                        cast(Sequence[str], variant.get("source_voice_ids", ()))
+                    ),
                     source_excerpts=tuple(
                         str(value.get("text", "")) for value in excerpts
                     ),
-                    candidate_origin=variant.get("candidate_origin"),
+                    candidate_origin=cast(str | None, variant.get("candidate_origin")),
                     reference_transcript=voice.reference_transcript,
                 )
             )
@@ -1303,36 +1352,12 @@ class GameNarratorDialog(QDialog):
             return
         operation = self._operation
         self._operation = None
-        if error is None:
-            self._set_status("")
         if error is not None:
-            if isinstance(error, DecoderSetupRequired) and confirm_decoder_setup(
-                self, error
-            ):
-                self.importer.allow_decoder_homebrew = True
-                self._prepare()
-                return
-            if operation == "narrator":
-                self._show_policy("default", "Use narrator's voice")
-            self._set_status(f"{error}\nRetry or cancel. Nothing was assigned.")
-        elif operation == "discover":
-            if not isinstance(result, tuple) or not all(
-                isinstance(value, str) for value in result
-            ):
-                self._set_status("Game importer returned invalid character names")
-            else:
-                with QSignalBlocker(self.characters):
-                    self.characters.addItems(result)
-                    index = self.characters.findText(self.role.currentText())
-                    if index >= 0:
-                        self.characters.setCurrentIndex(index)
-                self._show_known_installation()
-                if result:
-                    self._prepare()
-                else:
-                    self._set_status(
-                        "No voiced characters found. Choose the game folder to reimport."
-                    )
+            self._operation_failed(operation, error)
+            return
+        self._set_status("")
+        if operation == "discover":
+            self._discovery_finished(result)
         elif operation == "prepare" and self.source.currentData() == "game":
             try:
                 if not isinstance(result, (Path, str)):
@@ -1355,6 +1380,37 @@ class GameNarratorDialog(QDialog):
                 replace(result, groups=(group,)), group_id=group.group_id
             )
         self._update()
+
+    def _operation_failed(self, operation: str | None, error: Exception) -> None:
+        if isinstance(error, DecoderSetupRequired) and confirm_decoder_setup(
+            self, error
+        ):
+            self.importer.allow_decoder_homebrew = True
+            self._prepare()
+            return
+        if operation == "narrator":
+            self._show_policy("default", "Use narrator's voice")
+        self._set_status(f"{error}\nRetry or cancel. Nothing was assigned.")
+        self._update()
+
+    def _discovery_finished(self, result: object) -> None:
+        if not isinstance(result, tuple) or not all(
+            isinstance(value, str) for value in result
+        ):
+            self._set_status("Game importer returned invalid character names")
+            return
+        with QSignalBlocker(self.characters):
+            self.characters.addItems(result)
+            index = self.characters.findText(self.role.currentText())
+            if index >= 0:
+                self.characters.setCurrentIndex(index)
+        self._show_known_installation()
+        if result:
+            self._prepare()
+        else:
+            self._set_status(
+                "No voiced characters found. Choose the game folder to reimport."
+            )
 
     def remember_many(self, selections: tuple[tuple[VoiceGroup, str], ...]) -> None:
         if len(selections) != 1:
@@ -1422,6 +1478,15 @@ class GameNarratorDialog(QDialog):
         )
         if candidate is None:
             raise ValueError("Choose a checked voice candidate")
+        self._bind_voice_candidate(settings, role, source_id, candidate)
+
+    def _bind_voice_candidate(
+        self,
+        settings: AppSettings,
+        role: str,
+        source_id: str,
+        candidate: VoiceCandidate,
+    ) -> None:
         context: dict[str, object] = {}
         if (
             self.binder is bind_voice_library_selection
@@ -1434,7 +1499,10 @@ class GameNarratorDialog(QDialog):
             )
         if not is_narrator(role):
             context["target_character"] = role
-        registry = CharacterVoiceRegistry.from_file(self._selection_manifest)
+        manifest = self._selection_manifest
+        if manifest is None:
+            raise ValueError("Choose a checked voice manifest")
+        registry = CharacterVoiceRegistry.from_file(manifest)
         selected = registry.resolve_source(source_id)
         if (
             selected is None
@@ -1446,7 +1514,7 @@ class GameNarratorDialog(QDialog):
             )
         self.result_settings = self.binder(
             settings,
-            self._selection_manifest,
+            manifest,
             source_id,
             candidate.source_character,
             **context,
