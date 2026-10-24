@@ -414,7 +414,7 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self.preview_text.textChanged.connect(self._preview_text_edited)
         self.game_phrase_button = QPushButton("Game phrase")
-        set_action_icon(self.game_phrase_button, "file-text")
+        set_action_icon(self.game_phrase_button, "refresh-cw")
         self.game_phrase_button.setAutoDefault(False)
         self.game_phrase_button.setAccessibleName("Insert next game phrase")
         self.game_phrase_button.setToolTip("Insert the next game phrase for preview")
