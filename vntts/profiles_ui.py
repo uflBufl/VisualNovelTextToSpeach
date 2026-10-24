@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 from vntts_artifacts.game_pack import GamePackError
 
+from vntts.action_icons import set_action_icon
 from vntts.ocr import get_dialog_region, get_ocr_regions
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.profiles import GameProfile, GameProfileStore
@@ -66,15 +67,20 @@ class GameProfilesDialog(QDialog):
         )
         self.profiles.setAccessibleName("Selected game profile")
         self.profiles.currentIndexChanged.connect(self.update_summary)
-        self.create_button = QPushButton("Save current setup...")
+        self.create_button = QPushButton("Save setup...")
+        set_action_icon(self.create_button, "save")
         self.duplicate_button = QPushButton("Duplicate...")
+        set_action_icon(self.duplicate_button, "copy")
         self.rename_button = QPushButton("Rename...")
+        set_action_icon(self.rename_button, "pencil")
         self.remove_button = QPushButton("Remove")
+        set_action_icon(self.remove_button, "trash-2")
         self.create_button.clicked.connect(self.create_profile)
         self.duplicate_button.clicked.connect(self.duplicate_profile)
         self.rename_button.clicked.connect(self.rename_profile)
         self.remove_button.clicked.connect(self.remove_profile)
         self.create_button.setAccessibleName("Save current setup as a game profile")
+        self.create_button.setToolTip("Save current setup as a game profile")
         self.duplicate_button.setAccessibleName("Duplicate selected game profile")
         self.rename_button.setAccessibleName("Rename selected game profile")
         self.remove_button.setAccessibleName("Remove selected game profile")
@@ -127,15 +133,17 @@ class GameProfilesDialog(QDialog):
     def _create_footer(self) -> QDialogButtonBox:
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         self.use_button = buttons.addButton(
-            "Use selected profile",
+            "Use profile",
             QDialogButtonBox.ButtonRole.AcceptRole,
         )
+        set_action_icon(self.use_button, "check")
         self.use_button.setAccessibleName("Activate selected game profile")
         buttons.accepted.connect(self.use_profile)
         buttons.rejected.connect(self.reject)
         self.persistence_note = QLabel("Profile changes are saved immediately.")
         self.persistence_note.setWordWrap(True)
         self.close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
+        set_action_icon(self.close_button, "x")
         for button in (
             self.create_button,
             self.duplicate_button,
@@ -325,7 +333,7 @@ class GameProfilesDialog(QDialog):
         )
         self.use_button.setEnabled(profile is not None and not selected_is_active)
         self.use_button.setText(
-            "Already active" if selected_is_active else "Use selected profile"
+            "Already active" if selected_is_active else "Use profile"
         )
         self.use_button.setToolTip(
             "This profile is already active"

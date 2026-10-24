@@ -770,7 +770,7 @@ class GameProfilesDialogTest(unittest.TestCase):
             self.assertIn("Character voices:", summary)
             self.assertTrue(dialog.use_button.isDefault())
             self.assertTrue(dialog.use_button.isEnabled())
-            self.assertEqual(dialog.use_button.text(), "Use selected profile")
+            self.assertEqual(dialog.use_button.text(), "Use profile")
             self.assertTrue(dialog.remove_button.isEnabled())
             self.assertEqual(
                 dialog.use_button.accessibleName(),
@@ -792,7 +792,7 @@ class GameProfilesDialogTest(unittest.TestCase):
             self.assertTrue(dialog.create_button.isEnabled())
             self.assertEqual(
                 dialog.create_button.text(),
-                "Save current setup...",
+                "Save setup...",
             )
             self.assertTrue(
                 any(
