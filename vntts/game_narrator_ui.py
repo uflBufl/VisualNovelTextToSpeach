@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from functools import partial
+from html import escape
 from pathlib import Path
 from tempfile import TemporaryDirectory, mkdtemp
 from threading import Event
@@ -173,9 +174,9 @@ class GameNarratorDialog(QDialog):
         content.addWidget(self.voice_panel.phrase_box)
         self.tts_model_label = QLabel()
         self.tts_model_label.setWordWrap(True)
-        self.tts_model_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.tts_model_label.setTextFormat(Qt.TextFormat.RichText)
         phrase_layout = cast(QVBoxLayout, self.voice_panel.phrase_box.layout())
-        phrase_layout.insertWidget(1, self.tts_model_label)
+        phrase_layout.insertWidget(0, self.tts_model_label)
         self._build_editor_actions(content)
         self.content_scroll = QScrollArea()
         self.content_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -1553,7 +1554,8 @@ class GameNarratorDialog(QDialog):
                 self.settings_value.pocket_gated_model_accepted,
             )
         self.tts_model_label.setText(
-            "TTS model: " + speech_model_label(backend, model, pocket_cloning=cloning)
+            "<b>TTS model:</b> "
+            + escape(speech_model_label(backend, model, pocket_cloning=cloning))
         )
         self.tts_model_label.setToolTip(
             engine_model_label(backend, model, pocket_cloning=cloning)
