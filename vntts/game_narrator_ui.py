@@ -1608,9 +1608,13 @@ class GameNarratorDialog(QDialog):
 
     def _update(self, *_args: object) -> None:
         label = self.voice_panel.candidate_voice_label
-        if self.source.currentData() == "game" and normalize_character_name(
+        donor = {
+            "game": self.characters,
+            "catalog": self.catalog_choice,
+        }.get(self.source.currentData())
+        if donor is not None and normalize_character_name(
             label.text()
-        ) == normalize_character_name(self.characters.currentText()):
+        ) == normalize_character_name(donor.currentText()):
             label.hide()
         idle = not self.active and not self._closing
         self.progress.setVisible(self.runner.active)

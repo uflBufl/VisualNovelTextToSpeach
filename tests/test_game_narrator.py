@@ -338,7 +338,9 @@ class GameNarratorTest(unittest.TestCase):
                     box.rect().contains(button.mapTo(box, button.rect().bottomRight()))
                 )
 
-    def test_game_donor_name_is_shown_once_and_other_source_names_remain_visible(self):
+    def test_donor_name_is_shown_once_and_different_candidate_names_remain_visible(
+        self,
+    ):
         plan, group, _manifest = ambiguous_fixture(self.root / "donor-label")
         dialog = self.editor()
         dialog.set_voice_context(plan, character=group.character)
@@ -356,6 +358,8 @@ class GameNarratorTest(unittest.TestCase):
                 self.assertFalse(panel.candidate_voice_label.isHidden())
         self.select(dialog, "catalog", source="character:centurion")
         self.assertEqual(panel.candidate_voice_label.text(), "Centurion")
+        self.assertTrue(panel.candidate_voice_label.isHidden())
+        self.select(dialog, "automatic")
         self.assertFalse(panel.candidate_voice_label.isHidden())
 
     def test_same_character_replacement_shows_both_reference_texts_and_keeps_saved_audio(
