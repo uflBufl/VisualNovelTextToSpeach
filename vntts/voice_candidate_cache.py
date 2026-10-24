@@ -247,9 +247,11 @@ def _references_in_jobs(root: Path, jobs: Path) -> set[str] | None:
         return set()
     if not jobs.is_dir():
         return None
-    references: set[str] = set()
     directories = _bounded_directory_entries(jobs, _MAX_JOBS)
     if directories is None:
+        return None
+    references = _references_in_catalog(root, jobs)
+    if references is None:
         return None
     for directory in directories:
         if _unsafe(directory):
@@ -260,6 +262,27 @@ def _references_in_jobs(root: Path, jobs: Path) -> set[str] | None:
         if found is None:
             return None
         references.update(found)
+    return references
+
+
+def _references_in_catalog(root: Path, jobs: Path) -> set[str] | None:
+    from vntts.preparation_catalog import PreparationCatalog
+
+    references: set[str] = set()
+    try:
+        plans = PreparationCatalog(jobs).plan_documents()
+        for document in plans:
+            job_id = document.get("job_id")
+            if not isinstance(job_id, str) or _JOB_ID.fullmatch(job_id) is None:
+                return None
+            for value in _strings(document):
+                candidate = _candidate_for_path(
+                    root, Path(value).expanduser(), base=jobs / job_id
+                )
+                if candidate is not None:
+                    references.add(candidate)
+    except OSError, ValueError:
+        return None
     return references
 
 

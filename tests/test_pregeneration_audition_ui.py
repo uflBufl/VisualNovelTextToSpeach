@@ -7,7 +7,7 @@ from unittest.mock import ANY, Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QKeySequence, QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QLabel,
     QMessageBox,
 )
+from shiboken6 import isValid  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
 from tests.pregeneration_fixtures import (  # noqa: E402
@@ -162,6 +163,33 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             decisions.remember_many.assert_not_called()
             panel._set_decision_actions(False)
             self.assertFalse(panel.a_play.isEnabled())
+
+    def test_comparison_layout_invalidates_replaced_widget_items(self):
+        panel = VoiceAuditionPanel(Mock(), preview_service=Mock(), player=Mock())
+        self.addCleanup(
+            QCoreApplication.sendPostedEvents, panel, QEvent.Type.DeferredDelete
+        )
+        self.addCleanup(panel.deleteLater)
+        self.addCleanup(panel.shutdown)
+        original_row = panel.a_box.layout().itemAt(0).layout()
+        preview_row = panel.preview_box.layout().itemAt(0).layout()
+        owners = (
+            (original_row, panel.a_original),
+            (preview_row, panel.a_play),
+            (panel.preview_box.layout(), panel.recommendation),
+        )
+        previous_items = [
+            layout.itemAt(layout.indexOf(widget)) for layout, widget in owners
+        ]
+        self.assertTrue(all(isValid(item) for item in previous_items))
+
+        panel.set_current_voice(None, "No saved voice")
+
+        self.assertFalse(any(isValid(item) for item in previous_items))
+        self.assertTrue(all(isValid(widget) for _layout, widget in owners))
+        self.assertEqual(panel.a_original.parentWidget(), panel.a_box)
+        self.assertEqual(panel.a_play.parentWidget(), panel.a_box)
+        self.assertEqual(panel.recommendation.parentWidget(), panel)
 
     def test_preview_actions_fit_compact_width_with_larger_font(self):
         with TemporaryDirectory() as directory:

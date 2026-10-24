@@ -13,7 +13,6 @@ from typing import Protocol, TypeAlias, TypedDict
 
 import numpy as np
 import soundfile as sf
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
@@ -38,6 +37,8 @@ from vntts.authoring.generation_state import (
     generation_state_items,
     load_generation_state_from_snapshot,
     load_stable_generation_queue,
+    read_generation_state_document,
+    write_generation_state,
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
@@ -49,14 +50,22 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     publish_generation_queue,
 )
-from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import canonical_document_sha256, sha256_file
+from vntts.generation_database import (
+    is_database,
+    read_state,
+)
+from vntts.generation_database import (
+    state_path as generation_state_path,
+)
 from vntts.pregeneration_setup import (
     PregenerationJob,
     PregenerationJobStore,
+    PregenerationSetupError,
     load_verified_story_index_document,
 )
 from vntts.pregeneration_voices import VoiceGroup, VoicePlan
+from vntts.preparation_catalog import PreparationCatalog
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
@@ -136,12 +145,12 @@ class PregenerationInputStore:
         effective = _effective_voice_routes(plan, registry)
         identity = _generation_input_identity(job, plan)
         _record_input_phase("identity", phase_started, cpu_started)
-        destination = self.job_store.path_for(job.job_id).parent / (
+        destination = self.job_store.directory_for(job.job_id) / (
             f"generation-input-{identity[:16]}"
         )
         if destination.is_dir():
             result = self._reused_input(destination, identity, effective)
-            _reuse_completed_audio(result, plan)
+            _reuse_completed_audio(result, plan, self.job_store)
             return result
         root = destination.parent
         root.mkdir(parents=True, exist_ok=True)
@@ -248,19 +257,18 @@ class PregenerationInputStore:
                         return _load_existing(destination, identity, effective)
                     raise
                 result = _load_existing(destination, identity, effective)
-                _reuse_completed_audio(result, plan)
+                _reuse_completed_audio(result, plan, self.job_store)
                 _record_input_phase(
                     "publish",
                     phase_started,
                     cpu_started,
-                    files_examined=4,
+                    files_examined=3,
                     bytes_examined=sum(
                         _file_size(destination / name)
                         for name in (
                             "story-index.jsonl",
                             "voice-manifest.json",
                             "queue.jsonl",
-                            "input.json",
                         )
                     ),
                 )
@@ -315,9 +323,11 @@ def _validate_plan_for_job(job: PregenerationJob, plan: VoicePlan) -> None:
         raise PregenerationQueueError("Voice plan dialogue identity changed")
 
 
-def _reuse_completed_audio(current: PregenerationInput, plan: VoicePlan) -> None:
+def _reuse_completed_audio(
+    current: PregenerationInput, plan: VoicePlan, job_store: PregenerationJobStore
+) -> None:
     """Carry verified completed lines across voice-plan revisions without rendering."""
-    state_path = current.output_directory / "generation-state.json"
+    state_path = generation_state_path(current.output_directory)
     queue, queue_sha256 = load_stable_generation_queue(current.queue)
     existing = (
         load_generation_state_from_snapshot(state_path, queue, queue_sha256)
@@ -335,27 +345,27 @@ def _reuse_completed_audio(current: PregenerationInput, plan: VoicePlan) -> None
     saved: dict[str, dict[str, object]] = {}
     controls: dict[str, object] = {}
     sources: dict[str, Path] = {}
-    previous_inputs = set(current.directory.parent.glob("generation-input-*"))
-    previous_inputs.update(current.directory.parent.parent.glob("*/generation-input-*"))
-    for previous in sorted(previous_inputs):
+    try:
+        previous_inputs = job_store.generation_input_directories()
+    except PregenerationSetupError as error:
+        raise PregenerationQueueError(
+            f"Unable to find saved offline audio: {error}"
+        ) from error
+    current_directory = current.directory.resolve()
+    for previous in previous_inputs:
         if len(protected) + len(saved) == len(current_items):
             break
-        if previous == current.directory or not previous.is_dir():
+        if previous == current_directory or not previous.is_dir():
             continue
-        previous_state = (
+        previous_state = generation_state_path(
             previous.with_name(
                 previous.name.replace("generation-input-", "generation-output-", 1)
             )
-            / "generation-state.json"
         )
         if not previous_state.is_file():
             continue
         try:
-            document = read_versioned_json(
-                previous / "input.json",
-                schema_version=generation_input_schema_version,
-                document_name="offline generation input",
-            )
+            document = load_generation_input_metadata(previous)
             if (
                 document.get("voice_plan_controls_sha256")
                 != plan.synthesis_controls_sha256
@@ -384,8 +394,18 @@ def _reuse_completed_audio(current: PregenerationInput, plan: VoicePlan) -> None
             ):
                 if sha256_file(previous / suffix) != document.get(f"{name}_sha256"):
                     raise ValueError(f"Previous {name} changed")
-            state = load_json_object(
-                previous_state, "generation state", error_type=BulkGenerationError
+            state = (
+                read_state(
+                    previous_state,
+                    selected_line_ids=frozenset(
+                        item.line_id for item in current_items.values()
+                    ),
+                    allowed_queue_ids=frozenset(
+                        item.queue_id for item in old_queue.items
+                    ),
+                )
+                if is_database(previous_state)
+                else read_generation_state_document(previous_state)
             )
             old_items = generation_state_items(state)
             old_voices = CharacterVoiceRegistry.from_file(
@@ -487,9 +507,9 @@ def _reuse_completed_audio(current: PregenerationInput, plan: VoicePlan) -> None
                 "active": None,
                 "synthesis_controls": controls,
             }
-            atomic_write_json(staging / "generation-state.json", state, sort_keys=True)
+            write_generation_state(staging / "generation-state.sqlite3", state)
             load_generation_state_from_snapshot(
-                staging / "generation-state.json", queue, queue_sha256
+                staging / "generation-state.sqlite3", queue, queue_sha256
             )
             if existing is None:
                 rename_directory_no_replace(staging, current.output_directory)
@@ -517,7 +537,7 @@ def _reuse_completed_audio(current: PregenerationInput, plan: VoicePlan) -> None
                     latest_controls = latest.setdefault("synthesis_controls", {})
                     if isinstance(latest_controls, dict):
                         latest_controls.update(controls)
-                    atomic_write_json(state_path, latest, sort_keys=True)
+                    write_generation_state(state_path, latest)
     except (AtomicPublicationError, BulkGenerationError, OSError, ValueError) as error:
         raise PregenerationQueueError(
             f"Unable to reuse saved offline audio: {error}"
@@ -811,15 +831,76 @@ def _write_reference_wav(path: Path, payload: bytes, character: str) -> None:
     probe_pcm16_mono_wav(path)
 
 
+def _validate_legacy_generation_input(
+    directory: Path, document: dict[str, object]
+) -> str:
+    if (directory / "input.json").is_symlink():
+        raise ValueError("Generation input metadata must not be a symbolic link")
+    identity = _required_text(document.get("identity"), "Generation input identity")
+    if directory.name != f"generation-input-{identity[:16]}":
+        raise ValueError("Generation input directory identity changed")
+    job_id = _required_text(document.get("job_id"), "Generation input job")
+    if directory.parent.name != job_id:
+        raise ValueError("Generation input job directory changed")
+    for name in ("story_index", "voice_manifest", "queue"):
+        suffix = {
+            "story_index": "story-index.jsonl",
+            "voice_manifest": "voice-manifest.json",
+            "queue": "queue.jsonl",
+        }[name]
+        if sha256_file(directory / suffix) != document.get(f"{name}_sha256"):
+            raise ValueError(f"Generation input {name} changed")
+    for name in ("queue_items", "ready_items"):
+        _nonnegative_int(document.get(name), name)
+    roles = document.get("narrator_fallback_roles")
+    if not isinstance(roles, list) or any(
+        not isinstance(role, str) or not role.strip() for role in roles
+    ):
+        raise ValueError("Generation input narrator roles are malformed")
+    return job_id
+
+
+def load_generation_input_metadata(directory: Path) -> dict[str, object]:
+    """Admit an immutable legacy/publication snapshot once, then query its SQL row."""
+    catalog = PreparationCatalog(directory.parent.parent)
+    document = catalog.input_document(directory)
+    if document is not None:
+        return document
+    legacy = directory / "input.json"
+    try:
+        original = legacy.stat(follow_symlinks=False)
+        document = read_versioned_json(
+            legacy,
+            schema_version=generation_input_schema_version,
+            document_name="offline generation input",
+        )
+    except FileNotFoundError:
+        # Another process may have committed and retired the snapshot after our miss.
+        admitted = catalog.input_document(directory)
+        if admitted is not None:
+            return admitted
+        raise
+    job_id = _validate_legacy_generation_input(directory, document)
+    catalog.save_input(job_id, document, directory)
+    if catalog.input_document(directory) != document:
+        raise ValueError("Generation input SQLite readback differs")
+    try:
+        current = legacy.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return document
+    if all(
+        getattr(original, field) == getattr(current, field)
+        for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+    ):
+        legacy.unlink()
+    return document
+
+
 def _load_existing(
     directory: Path, identity: str, effective: EffectiveVoiceRoutes
 ) -> PregenerationInput:
     try:
-        document = read_versioned_json(
-            directory / "input.json",
-            schema_version=generation_input_schema_version,
-            document_name="offline generation input",
-        )
+        document = load_generation_input_metadata(directory)
         if document.get("identity") != identity:
             raise ValueError("generation input identity changed")
         paths = {

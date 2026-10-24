@@ -302,10 +302,10 @@ class GameNarratorDialog(QDialog):
             self.copy_details.setVisible
         )
         self._build_details_controls()
-        actions.addWidget(self.voice_panel.retry_save_button)
         self.voice_panel.outcome_actions.removeWidget(
             self.voice_panel.retry_save_button
         )
+        actions.addWidget(self.voice_panel.retry_save_button)
         actions.addStretch()
         actions.addWidget(self.cancel_button)
         self.voice_panel.a_use.setText("Save")

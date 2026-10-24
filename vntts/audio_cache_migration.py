@@ -31,6 +31,7 @@ from vntts.audio_cache import (
     _prepared_audio,
     _read_cached_array,
 )
+from vntts.audio_store import SharedAudioStore
 from vntts.path_safety import open_regular_binary, read_regular_text
 
 _BACKENDS = {"chatterbox-nano", "pocket-tts", "moss-tts", "qwen-tts"}
@@ -175,8 +176,14 @@ def migrate_legacy_cache(
             "key_provenance must map synthesis keys to model/rate evidence records"
         )
     entries: list[dict[str, object]] = []
+    store = SharedAudioStore(root)
     legacy_keys: set[str] = set()
     for path in sorted(root.iterdir()):
+        if path.name in {
+            store.catalog_path.name + suffix
+            for suffix in ("", "-journal", "-wal", "-shm")
+        }:
+            continue
         if (
             path.name in {"objects", "bindings"}
             and path.is_dir()
@@ -265,53 +272,64 @@ def migrate_legacy_cache(
             sf.LibsndfileError,
         ) as error:
             entry.update(status="preserved_error", reason=str(error))
-    bindings = root / "bindings"
-    if bindings.is_symlink():
+    try:
+        saved_bindings = list(store.iter_bindings())
+        issues = list(store.iter_legacy_issues())
+    except (OSError, ValueError) as error:
         entries.append(
-            dict(path=str(bindings), status="preserved_error", reason="Symlink")
-        )
-    elif bindings.is_dir():
-        for path in sorted(bindings.iterdir()):
-            if path.stem in legacy_keys:
-                continue
-            entry = {"path": str(path), "key": path.stem}
-            entries.append(entry)
-            provenance = (
-                proof if key_provenance is None else key_provenance.get(path.stem, {})
+            dict(
+                path=str(store.catalog_path),
+                status="preserved_error",
+                reason=str(error),
             )
-            cache = _cache_with_provenance(root, provenance)
-            entry["provenance"] = provenance
-            if path.suffix != ".json" or _KEY.fullmatch(path.stem) is None:
-                entry["status"] = "preserved_unknown"
-            elif cache is None:
-                entry.update(
-                    status="preserved_unproven", reason="Missing model/rate evidence"
+        )
+        saved_bindings, issues = [], []
+    for path, reason in issues:
+        if path.stem not in legacy_keys:
+            entries.append(
+                dict(
+                    path=str(path),
+                    key=path.stem,
+                    status="preserved_error",
+                    reason=reason,
                 )
-            elif cache.get_existing(path.stem) is None:
+            )
+    for key, _digest in saved_bindings:
+        if key in legacy_keys:
+            continue
+        entry = {"path": str(store.catalog_path), "key": key}
+        entries.append(entry)
+        provenance = proof if key_provenance is None else key_provenance.get(key, {})
+        cache = _cache_with_provenance(root, provenance)
+        entry["provenance"] = provenance
+        if _KEY.fullmatch(key) is None:
+            entry["status"] = "preserved_unknown"
+        elif cache is None:
+            entry.update(
+                status="preserved_unproven", reason="Missing model/rate evidence"
+            )
+        elif cache.get_existing(key) is None:
+            entry.update(
+                status="preserved_error", reason="Saved WAV verification failed"
+            )
+        else:
+            saved = cache.store.get(key)
+            if saved is None:
                 entry.update(
-                    status="preserved_error", reason="Saved WAV verification failed"
+                    status="preserved_error", reason="Saved WAV binding disappeared"
                 )
-            else:
-                saved = cache.store.get(path.stem)
-                if saved is None:
+                continue
+            completed = provenance.get("completed_wav")
+            if completed is not None:
+                with open_regular_binary(saved) as source:
+                    actual = file_digest(source, "sha256").hexdigest()
+                if not isinstance(completed, dict) or completed.get("sha256") != actual:
                     entry.update(
-                        status="preserved_error", reason="Saved WAV binding disappeared"
+                        status="preserved_error",
+                        reason="Saved WAV conflicts with completed recording evidence",
                     )
                     continue
-                completed = provenance.get("completed_wav")
-                if completed is not None:
-                    with open_regular_binary(saved) as source:
-                        actual = file_digest(source, "sha256").hexdigest()
-                    if (
-                        not isinstance(completed, dict)
-                        or completed.get("sha256") != actual
-                    ):
-                        entry.update(
-                            status="preserved_error",
-                            reason="Saved WAV conflicts with completed recording evidence",
-                        )
-                        continue
-                entry.update(status="already_wav", wav=str(saved))
+            entry.update(status="already_wav", wav=str(saved))
     return MigrationReport(
         directory=str(root),
         backend=backend,

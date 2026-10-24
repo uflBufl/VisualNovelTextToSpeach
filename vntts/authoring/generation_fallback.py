@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import os
 import secrets
 from collections.abc import Sequence
@@ -12,7 +11,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypeAlias, TypeGuard
 
-from durable_file import atomic_write_json
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueItem,
@@ -54,6 +52,9 @@ from vntts.authoring.generation_state import (
     LIVE_FALLBACK_VERSION,
     STATE_SCHEMA,
     STATE_VERSION,
+    generation_state_file,
+    generation_state_snapshot,
+    write_generation_state,
 )
 from vntts.authoring.generation_state import generation_state_items as _state_items
 from vntts.authoring.generation_state import (
@@ -128,7 +129,7 @@ def authorize_live_fallback(
     provider, model, generation_profile = _live_fallback_backend(
         reason, provider, model, generation_profile
     )
-    state_path = Path(state_path).expanduser().resolve()
+    state_path = generation_state_file(state_path)
     queue_path = Path(queue_path).expanduser().resolve()
     queue, queue_sha256 = _load_stable_queue(queue_path)
     queue_by_id = {item.queue_id: item for item in queue.items}
@@ -255,15 +256,14 @@ def _live_fallback_backend(
 
 def _live_fallback_state(path: Path) -> tuple[JsonDocument, str]:
     try:
-        payload = read_regular_bytes(path)
-        state = decode_json(payload.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        state, digest, _payload = generation_state_snapshot(path)
+    except (OSError, UnicodeDecodeError, ValueError) as error:
         raise BulkGenerationError(
             f"Unable to read generation state {path}: {error}"
         ) from error
     if not _is_json_document(state):
         raise BulkGenerationError("Generation state must be a JSON object")
-    return state, hashlib.sha256(payload).hexdigest()
+    return state, digest
 
 
 def _live_fallback_evidence(
@@ -370,7 +370,7 @@ def _commit_live_fallback(
     entries: list[dict[str, object]],
 ) -> None:
     try:
-        atomic_write_json(staged_state, proposed, sort_keys=True)
+        write_generation_state(staged_state, proposed)
         _write_generated_manifest_from_state(
             proposed, state_path.parent, staged_manifest, entries=entries
         )
@@ -597,7 +597,7 @@ def _capture_live_fallback_evidence(
     try:
         base_workspace_payload = read_regular_bytes(base_workspace_path)
         base_workspace = decode_json(base_workspace_payload.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, ValueError) as error:
         raise BulkGenerationError(
             f"Unable to read live fallback base workspace: {error}"
         ) from error
@@ -666,7 +666,7 @@ def _live_fallback_workspace_hypothesis(
         source_state_payload = read_regular_bytes(source_state_path)
         workspace = decode_json(workspace_payload.decode("utf-8"))
         source_state = decode_json(source_state_payload.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, ValueError) as error:
         raise BulkGenerationError(
             f"Unable to read live fallback evidence workspace {directory}: {error}"
         ) from error

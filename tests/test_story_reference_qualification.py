@@ -105,15 +105,15 @@ class StoryReferenceQualificationTest(unittest.TestCase):
 
     def test_cold_plan_qualifies_before_publication_and_saves_automatic_source(self):
         library = VoiceLibrary(self.root / "library")
-        path = VoicePlanStore(self.jobs).path_for(self.job)
-        prior_plan = path.read_bytes()
+        store = VoicePlanStore(self.jobs)
+        prior_plan = store.saved_documents()
 
         def qualify(plan):
             self.assertIsNone(library.binding("Rhiannon"))
-            self.assertEqual(path.read_bytes(), prior_plan)
+            self.assertEqual(store.saved_documents(), prior_plan)
             result = self.qualify(plan)
             self.assertIsNone(library.binding("Rhiannon"))
-            self.assertEqual(path.read_bytes(), prior_plan)
+            self.assertEqual(store.saved_documents(), prior_plan)
             return result
 
         plan = self.create(library=library, qualifier=qualify)
@@ -124,7 +124,7 @@ class StoryReferenceQualificationTest(unittest.TestCase):
         self.assertEqual(binding.source_sha256s, self.alternative.reference_sha256s)
         self.assertEqual(binding.provenance["method"], "automatic")
         self.assertEqual(binding.provenance["algorithm"], "voice-plan-v3-qualified")
-        saved = json.loads(path.read_text())
+        saved = store.saved_documents()[0]
         saved_group = next(
             g for g in saved["groups"] if g["group_id"] == group.group_id
         )
@@ -159,13 +159,13 @@ class StoryReferenceQualificationTest(unittest.TestCase):
 
     def test_cancellation_rolls_back_and_leaves_existing_plan_unchanged(self):
         library = VoiceLibrary(self.root / "library")
-        path = VoicePlanStore(self.jobs).path_for(self.job)
-        prior_plan = path.read_bytes()
+        store = VoicePlanStore(self.jobs)
+        prior_plan = store.saved_documents()
         self.backend.on_render = self.cancellation.set
         with self.assertRaises(PregenerationVoiceCancelled):
             self.create(library=library)
         self.assertIsNone(library.binding("Rhiannon"))
-        self.assertEqual(path.read_bytes(), prior_plan)
+        self.assertEqual(store.saved_documents(), prior_plan)
         self.assertEqual(self.transcribe.call_count, 0)
 
     def test_saved_manual_and_automatic_choices_do_not_get_requalified(self):

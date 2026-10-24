@@ -1319,12 +1319,17 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
       removing the parser and compatibility tests. The 542 proven arrays are
       already migrated; other machines still require their own explicit inventory.
 
-## Finish current voice editor integration
-
-- [ ] Preserve the compact shared editor and current main audio reuse behavior together; resolve integration conflicts and run affected tests.
-- [ ] Correct editor type-check and complexity regressions without widening allowances, then verify the final commit before pushing main.
-
 ## Restore pre-existing repository quality gates
 
 - [ ] Fix the existing mypy errors in `vntts/diagnostic_recording.py`, `vntts/reading_diagnostics_analysis.py` and the preview backend factory contract in `vntts/app.py`; format the existing `vntts/moss_runtime.py` signature. These failures also reproduce on main before the unified-editor integration. Gate: the full configured mypy and Ruff format checks pass without suppressing diagnostics.
 - [ ] Bring the existing Reading, recording, generation and saved-audio complexity findings back within `tests/fixtures/ruff-complexity-v2.json`. Run `scripts/check_ruff_complexity.py` for the current scope inventory; refactor coherent responsibilities without increasing allowances, preserve lifecycle/error handling and run affected tests. Gate: the full complexity ratchet passes, with obsolete allowances removed or reduced.
+
+## Remaining - Legacy audio metadata import
+
+- [ ] Retain JSON readers for old synthesis bindings, jobs, selections, voice
+      plans/decisions, generation inputs and offline generation state until the
+      supported upgrade window excludes JSON-only app versions and inventories
+      show no unimported metadata. Keep unknown/corrupt originals recoverable;
+      remove these readers and their compatibility tests together after that gate.
+      Portable authoring proof snapshots and published pack/queue/voice manifests
+      remain JSON contracts and are outside this removal.

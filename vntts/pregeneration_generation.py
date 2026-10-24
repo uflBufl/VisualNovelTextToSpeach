@@ -26,11 +26,20 @@ from vntts.authoring.bulk_generation import (
     reconcile_generation_cancellation,
     snapshot_generation_control_files,
 )
-from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.authoring.generation_lease import (
+    BulkGenerationError,
+    GenerationLease,
+    process_is_alive,
+)
 from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
 from vntts.authoring.generation_state import (
     generation_item_status,
+    generation_state_snapshot,
     load_generation_state,
+    load_generation_state_from_snapshot,
+    load_stable_generation_queue,
+    read_generation_state_document,
+    write_generation_state,
 )
 from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
@@ -40,10 +49,9 @@ from vntts.chapter_voice_preload import (
 from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import sha256_file
 from vntts.generated_audio import GeneratedAudioLibrary
+from vntts.generation_database import state_path as generation_state_path
 from vntts.generation_stall import GenerationStallWatchdog
-from vntts.json_types import decode_json
 from vntts.moss_cpp_backend import moss_cpp_requested
-from vntts.path_safety import read_regular_text
 from vntts.pregeneration_contract import (
     OfflineGenerationCancelled as OfflineGenerationCancelled,
 )
@@ -255,6 +263,7 @@ class OfflineGenerationWorker:
         queue_ids: object = None,
     ) -> OfflineGenerationResult:
         self._check_generation_session(generation_input, voice_plan)
+        _upgrade_legacy_generation_state(generation_input)
         if queue_ids is None:
             with suppress(OfflineGenerationError):
                 current = self.inspect(generation_input)
@@ -403,14 +412,19 @@ class OfflineGenerationWorker:
             ):
                 return self._live_progress[1]
         output = _generation_output(generation_input)
-        state_path = output / "generation-state.json"
+        state_path = generation_state_path(output)
         if not state_path.is_file():
             return OfflineGenerationProgress(
                 available=False, runtime_status=startup_status
             )
         try:
-            state = decode_json(read_regular_text(state_path, encoding="utf-8"))
-        except (json.JSONDecodeError, OSError, UnicodeError) as error:
+            state = read_generation_state_document(state_path)
+        except (
+            json.JSONDecodeError,
+            OSError,
+            UnicodeError,
+            BulkGenerationError,
+        ) as error:
             raise OfflineGenerationError(
                 f"Unable to inspect offline generation progress: {error}"
             ) from error
@@ -514,6 +528,8 @@ class OfflineGenerationWorker:
             str(generation_input.queue),
             "--output",
             str(output),
+            "--state-storage",
+            "sqlite",
             "--cache-directory",
             str(_synthesis_cache_directory(generation_input)),
             "--voice-manifest",
@@ -720,11 +736,17 @@ class OfflineGenerationWorker:
         with self._progress_lock:
             if not self._memory_progress_enabled:
                 return
-        state_path = _generation_output(generation_input) / "generation-state.json"
+        state_path = generation_state_path(_generation_output(generation_input))
         try:
-            state = decode_json(read_regular_text(state_path, encoding="utf-8"))
+            state = read_generation_state_document(state_path)
             self._record_progress(state, generation_input)
-        except OSError, UnicodeError, json.JSONDecodeError, OfflineGenerationError:
+        except (
+            OSError,
+            UnicodeError,
+            ValueError,
+            BulkGenerationError,
+            OfflineGenerationError,
+        ):
             pass
 
 
@@ -755,6 +777,48 @@ def _generation_output(generation_input: PregenerationInput) -> Path:
     if not isinstance(generation_input, PregenerationInput):
         raise OfflineGenerationError("Offline generation input is invalid")
     return generation_input.output_directory
+
+
+def _upgrade_legacy_generation_state(generation_input: PregenerationInput) -> None:
+    """Upgrade saved work on Prepare without starting a model or rewriting JSON."""
+    output = _generation_output(generation_input)
+    database = output / "generation-state.sqlite3"
+    legacy = output / "generation-state.json"
+    if (
+        database.exists()
+        or database.is_symlink()
+        or not (legacy.exists() or legacy.is_symlink())
+    ):
+        return
+    try:
+        if legacy.is_symlink() or legacy.is_junction():
+            raise ValueError("Saved generation state must not be a link")
+        with GenerationLease(
+            output, generation_input.queue_sha256, process_checker=process_is_alive
+        ) as lease:
+            if database.exists() or database.is_symlink():
+                return
+            queue, checksum = load_stable_generation_queue(generation_input.queue)
+            if checksum != generation_input.queue_sha256:
+                raise ValueError("Saved generation queue identity changed")
+            state, state_sha256, _payload = generation_state_snapshot(legacy)
+            load_generation_state_from_snapshot(
+                legacy, queue, checksum, state_document=state
+            )
+            if (
+                sha256_file(legacy) != state_sha256
+                or sha256_file(generation_input.queue) != checksum
+            ):
+                raise ValueError(
+                    "Saved generation state or queue changed during upgrade"
+                )
+            lease.assert_owned()
+            write_generation_state(database, state)
+            lease.mark_committed()
+    except (BulkGenerationError, OSError, ValueError) as error:
+        raise OfflineGenerationError(
+            f"Unable to upgrade saved offline generation state: {error}"
+        ) from error
 
 
 def runtime_progress_manifest_path(generation_input: PregenerationInput) -> Path:
@@ -889,7 +953,7 @@ def _synthesis_cache_directory(generation_input: PregenerationInput) -> Path:
 def _load_result(
     output: Path, generation_input: PregenerationInput
 ) -> OfflineGenerationResult:
-    state_path = output / "generation-state.json"
+    state_path = generation_state_path(output)
     manifest_path = output / "manifest.json"
     if not state_path.is_file() or not manifest_path.is_file():
         raise OfflineGenerationError(

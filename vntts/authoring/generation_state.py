@@ -17,6 +17,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 from vntts_artifacts.voice_manifest import normalize_character_name
 
+from vntts import generation_database
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.failure_repair import (
@@ -180,11 +181,22 @@ def load_stable_generation_queue(
     return queue, digest
 
 
+def generation_state_file(path: str | Path) -> Path:
+    requested = Path(path).expanduser()
+    if generation_database.is_database(requested) and (
+        requested.is_symlink() or requested.is_junction()
+    ):
+        raise BulkGenerationError(
+            f"Generation database must not be a link: {requested}"
+        )
+    return requested.parent.resolve() / requested.name
+
+
 def load_generation_state(
     state_path: str | Path, queue_path: str | Path | None = None
 ) -> StateObject:
     """Load either VNTTS-owned or preserved legacy state and verify its files."""
-    state_path = Path(state_path).expanduser().resolve()
+    state_path = generation_state_file(state_path)
     state = _read_generation_state(state_path)
     queue = None
     stored_queue_sha256 = state.get("queue_sha256")
@@ -205,10 +217,26 @@ def load_generation_state_from_snapshot(
     selected_line_ids: frozenset[str] | None = None,
 ) -> StateObject:
     """Validate captured queue authority and optionally only selected lines' WAVs."""
-    state_path = Path(state_path).expanduser().resolve()
-    state = (
-        _read_generation_state(state_path) if state_document is None else state_document
-    )
+    state_path = generation_state_file(state_path)
+    if (
+        state_document is None
+        and selected_line_ids is not None
+        and generation_database.is_database(state_path)
+    ):
+        try:
+            state = generation_database.read_state(
+                state_path,
+                selected_line_ids=selected_line_ids,
+                allowed_queue_ids=frozenset(item.queue_id for item in queue.items),
+            )
+        except (OSError, ValueError) as error:
+            raise BulkGenerationError(str(error)) from error
+    else:
+        state = (
+            _read_generation_state(state_path)
+            if state_document is None
+            else state_document
+        )
     _validate_state_document(
         state,
         state_path.parent,
@@ -220,12 +248,73 @@ def load_generation_state_from_snapshot(
 
 
 def _read_generation_state(state_path: Path) -> StateObject:
+    if generation_database.is_database(state_path):
+        try:
+            return generation_database.read_state(state_path)
+        except (OSError, ValueError) as error:
+            raise BulkGenerationError(str(error)) from error
     return load_json_object(
         state_path,
         "generation state",
         error_type=BulkGenerationError,
         object_label="Generation state",
     )
+
+
+def write_generation_state(
+    state_path: Path,
+    state: StateObject,
+    *,
+    changed_items: tuple[str, ...] | None = None,
+) -> None:
+    if generation_database.is_database(state_path):
+        try:
+            generation_database.write_state(
+                state_path, state, changed_items=changed_items
+            )
+        except (OSError, ValueError) as error:
+            raise BulkGenerationError(str(error)) from error
+    else:
+        from durable_file import atomic_write_json
+
+        atomic_write_json(state_path, state, sort_keys=True)
+
+
+def read_generation_state_document(state_path: Path) -> StateObject:
+    """Read working state without expensive WAV validation, e.g. progress."""
+    return _read_generation_state(state_path)
+
+
+def decode_generation_state_snapshot(payload: bytes) -> StateObject:
+    if payload.startswith(b"SQLite format 3\x00"):
+        return generation_database.read_snapshot(payload)
+    from vntts.json_types import decode_json
+
+    value = decode_json(payload.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise BulkGenerationError("Generation state must be an object")
+    return value
+
+
+def generation_state_snapshot(state_path: Path) -> tuple[StateObject, str, bytes]:
+    try:
+        payload = read_generation_state_payload(state_path)
+        state = decode_generation_state_snapshot(payload)
+        return state, hashlib.sha256(payload).hexdigest(), payload
+    except (OSError, UnicodeError, ValueError) as error:
+        raise BulkGenerationError(
+            f"Unable to read generation state {state_path}: {error}"
+        ) from error
+
+
+def read_generation_state_payload(state_path: Path) -> bytes:
+    state_path = generation_state_file(state_path)
+    if generation_database.is_database(state_path):
+        try:
+            return generation_database.snapshot_file(state_path)
+        except (OSError, ValueError) as error:
+            raise BulkGenerationError(str(error)) from error
+    return read_regular_bytes(state_path)
 
 
 def _validate_live_fallback_evidence(

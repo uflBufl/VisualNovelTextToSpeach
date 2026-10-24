@@ -99,6 +99,7 @@ def _configure_generate_parser(
     )
     generate.add_argument("--queue", type=Path, required=True)
     generate.add_argument("--output", type=Path, required=True)
+    generate.add_argument("--state-storage", choices=("json", "sqlite"), default="json")
     generate.add_argument(
         "--workspace",
         type=Path,
@@ -683,6 +684,7 @@ def _run_bulk_generation(
                     "refresh" if arguments.regenerate_existing else "use"
                 ),
                 cancellation=cancellation,
+                state_storage=arguments.state_storage,
                 approve_validated_audio=arguments.approve_validated_audio,
                 progress_callback=progress_callback,
             )

@@ -145,7 +145,7 @@ class LegacyAudioMigrationTest(unittest.TestCase):
             root = self.make_root(directory)
             cache = PersistentAudioCache(root, sample_rate=48_000)
             saved = cache.put(_KEY, [0.25])
-            binding = (root / "bindings" / f"{_KEY}.json").read_bytes()
+            binding = list(SharedAudioStore(root).iter_bindings())
             legacy = root / f"{_KEY}.npy"
             np.save(legacy, np.array([0.125]))
             before = legacy.read_bytes()
@@ -154,7 +154,7 @@ class LegacyAudioMigrationTest(unittest.TestCase):
             report = migrate_legacy_cache(root, **_PROVENANCE, apply=True)
             self.assertEqual(report["counts"], {"preserved_error": 1})
             self.assertEqual(legacy.read_bytes(), before)
-            self.assertEqual((root / "bindings" / f"{_KEY}.json").read_bytes(), binding)
+            self.assertEqual(list(SharedAudioStore(root).iter_bindings()), binding)
             self.assertEqual(cache.store.get(_KEY), saved)
             np.testing.assert_array_equal(cache.get_existing(_KEY), [0.25])
 
@@ -332,7 +332,7 @@ class LegacyAudioMigrationTest(unittest.TestCase):
                 binding = None
                 if damage == "conflict":
                     PersistentAudioCache(root, sample_rate=48_000).put(_KEY, [0.5])
-                    binding = (root / "bindings" / f"{_KEY}.json").read_bytes()
+                    binding = list(SharedAudioStore(root).iter_bindings())
                 proof = {
                     _KEY: _PROVENANCE
                     | {
@@ -352,7 +352,7 @@ class LegacyAudioMigrationTest(unittest.TestCase):
                     self.assertFalse((root / "objects").exists())
                 else:
                     self.assertEqual(
-                        (root / "bindings" / f"{_KEY}.json").read_bytes(), binding
+                        list(SharedAudioStore(root).iter_bindings()), binding
                     )
 
     def test_stereo_legacy_reuses_exact_final_generation_downmix(self):

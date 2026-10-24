@@ -10,7 +10,9 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QDialog
+from shiboken6 import isValid
 from vntts_artifacts.file_integrity import sha256_file
 
 from tests.pregeneration_fixtures import FakeBackend, ambiguous_fixture, clean_wav_bytes
@@ -98,11 +100,18 @@ class GameNarratorTest(unittest.TestCase):
             use_offline_engine=False,
             binder=binder,
         )
-        self.addCleanup(dialog.deleteLater)
-        self.addCleanup(lambda: (dialog.reject(), self.drain()))
+        self.addCleanup(self.close_editor, dialog)
         self.application.processEvents()
         self.drain()
         return dialog
+
+    def close_editor(self, dialog):
+        dialog.reject()
+        self.drain()
+        self.assertFalse(dialog.active)
+        dialog.deleteLater()
+        QCoreApplication.sendPostedEvents(dialog, QEvent.Type.DeferredDelete)
+        self.assertFalse(isValid(dialog))
 
     def select(self, dialog, mode, *, role="Narrator", source=None):
         dialog.select_role(role)
@@ -151,6 +160,25 @@ class GameNarratorTest(unittest.TestCase):
             "exact_transcript",
         ):
             self.assertFalse(hasattr(dialog, old_widget), old_widget)
+
+    def test_footer_transfer_retires_original_layout_items(self):
+        build_actions = GameNarratorDialog._build_editor_actions
+        valid_after_transfer = []
+
+        def capture_items(dialog, content):
+            panel = dialog.voice_panel
+            old_items = tuple(
+                panel.outcome_actions.itemAt(panel.outcome_actions.indexOf(widget))
+                for widget in (panel.retry_save_button, panel.a_use)
+            )
+            self.assertTrue(all(item is not None for item in old_items))
+            build_actions(dialog, content)
+            valid_after_transfer.extend(isValid(item) for item in old_items)
+
+        with patch.object(GameNarratorDialog, "_build_editor_actions", capture_items):
+            self.editor()
+
+        self.assertEqual(valid_after_transfer, [False, False])
 
     def test_saved_label_stays_separate_from_story_plan_and_current_audition(self):
         plan, group, _manifest = ambiguous_fixture(self.root / "saved-story")
@@ -544,8 +572,7 @@ class GameNarratorTest(unittest.TestCase):
             voice_library=self.library,
             use_offline_engine=False,
         )
-        self.addCleanup(dialog.deleteLater)
-        self.addCleanup(lambda: (dialog.reject(), self.drain()))
+        self.addCleanup(self.close_editor, dialog)
         dialog.set_voice_context(plan, character=group.character)
         self.drain()
         self.assertEqual(dialog.source.currentData(), "game")
@@ -748,8 +775,7 @@ class GameNarratorTest(unittest.TestCase):
             player=self.player,
             voice_library=self.library,
         )
-        self.addCleanup(dialog.deleteLater)
-        self.addCleanup(lambda: (dialog.reject(), self.drain()))
+        self.addCleanup(self.close_editor, dialog)
         self.assertEqual(dialog.settings_value.speech_backend, "qwen-tts")
         self.assertIsNone(dialog.settings_value.tts_model)
         self.assertEqual(dialog.settings_value.tts_profile, "stable")

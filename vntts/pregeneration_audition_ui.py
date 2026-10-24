@@ -377,10 +377,12 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_original.setAccessibleName("Play original reference")
         self.a_original.clicked.connect(self._play_original)
         candidate_layout = QVBoxLayout(box)
-        original_row = QHBoxLayout()
-        original_row.addWidget(self.a_reason, 1)
-        original_row.addWidget(self.a_original, alignment=Qt.AlignmentFlag.AlignTop)
-        candidate_layout.addLayout(original_row)
+        self._original_row = QHBoxLayout()
+        self._original_row.addWidget(self.a_reason, 1)
+        self._original_row.addWidget(
+            self.a_original, alignment=Qt.AlignmentFlag.AlignTop
+        )
+        candidate_layout.addLayout(self._original_row)
         self.reference_transcript = QLineEdit()
         self.reference_transcript.setAccessibleName(
             "Exact reference transcript for Qwen"
@@ -414,13 +416,13 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_play.setMinimumWidth(self.a_play.sizeHint().width())
         self.a_play.setAccessibleName("Play voice preview")
         self.a_play.clicked.connect(self.play_a)
-        preview_row = QHBoxLayout()
-        preview_row.addStretch()
-        preview_row.addWidget(self.a_play)
+        self._preview_row = QHBoxLayout()
+        self._preview_row.addStretch()
+        self._preview_row.addWidget(self.a_play)
         preview_box = QGroupBox("Generated preview")
         preview_layout = QVBoxLayout(preview_box)
         preview_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        preview_layout.addLayout(preview_row)
+        preview_layout.addLayout(self._preview_row)
         self.phrase_box = QGroupBox("Preview phrase")
         self.phrase_box.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
@@ -536,6 +538,7 @@ class VoiceAuditionPanel(QGroupBox):
         layout = cast(QVBoxLayout, self.layout())
         layout.removeItem(self.summary_row)
         layout.removeWidget(self.preview_box)
+        cast(QVBoxLayout, self.preview_box.layout()).removeWidget(self.recommendation)
         layout.insertWidget(layout.indexOf(self.status), self.recommendation)
         self.preview_box.hide()
         for compact_layout in (layout, self.a_box.layout()):
@@ -549,6 +552,9 @@ class VoiceAuditionPanel(QGroupBox):
             box_layout.setSpacing(4)
         actions = QHBoxLayout()
         actions.addStretch()
+        # Remove from the owning layouts before Qt reparents their widget items.
+        self._original_row.removeWidget(self.a_original)
+        self._preview_row.removeWidget(self.a_play)
         actions.addWidget(self.a_original)
         actions.addWidget(self.a_play)
         cast(QVBoxLayout, self.a_box.layout()).addLayout(actions)

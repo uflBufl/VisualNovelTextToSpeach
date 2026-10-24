@@ -920,11 +920,17 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 }
             }
 
-            with patch(
-                "vntts.pregeneration_generation.load_generation_state",
-                side_effect=[{"items": {}}, state, state],
+            with (
+                patch(
+                    "vntts.pregeneration_generation.load_generation_state",
+                    side_effect=[{"items": {}}, state, state],
+                ),
+                patch(
+                    "vntts.pregeneration_generation._upgrade_legacy_generation_state"
+                ) as upgrade,
             ):
                 result = worker.generate(generation_input, plan)
+            upgrade.assert_called_once_with(generation_input)
 
         self.assertEqual(popen.call_count, 2)
         ordinary_arguments = popen.call_args_list[0].args[0]
@@ -966,13 +972,19 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 }
             }
 
-            with patch(
-                "vntts.pregeneration_generation.load_generation_state",
-                return_value=state,
+            with (
+                patch(
+                    "vntts.pregeneration_generation.load_generation_state",
+                    return_value=state,
+                ),
+                patch(
+                    "vntts.pregeneration_generation._upgrade_legacy_generation_state"
+                ) as upgrade,
             ):
                 result = OfflineGenerationWorker(
                     command=("worker",), popen_factory=popen
                 ).generate(generation_input, plan)
+            upgrade.assert_called_once_with(generation_input)
 
         popen.assert_not_called()
         self.assertEqual(result.total, generation_input.ready_items)

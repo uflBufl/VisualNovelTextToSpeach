@@ -54,6 +54,7 @@ from vntts.game_content_importer import (
     Reverse1999GameImporter,
 )
 from vntts.game_narrator import load_original_reference, narrator_preview_plan
+from vntts.generation_database import state_path as generation_state_path
 from vntts.person_link_suggestions import PersonLinkSuggestion
 from vntts.pregeneration_audition import COMPARISON_PREVIEW_TEXT
 from vntts.pregeneration_audition_ui import (
@@ -304,6 +305,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_decisions = voice_decisions or VoiceDecisionStore(
             get_local_data_directory() / "pregeneration" / "voice-decisions.json",
             voice_library=self.voice_library,
+            catalog=self.job_store.catalog,
         )
         self.voice_plan_store = voice_plan_store or VoicePlanStore(
             self.job_store,
@@ -2963,8 +2965,8 @@ class OfflineAudioPreparationDialog(QDialog):
         from vntts.support import record_pregeneration_failure
 
         state_path = (
-            runtime_progress_manifest_path(self._generation_input).with_name(
-                "generation-state.json"
+            generation_state_path(
+                runtime_progress_manifest_path(self._generation_input).parent
             )
             if isinstance(self._generation_input, PregenerationInput)
             else None
