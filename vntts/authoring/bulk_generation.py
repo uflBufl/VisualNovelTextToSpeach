@@ -36,6 +36,7 @@ from vntts_artifacts.voice_manifest import (
     normalize_character_name,
 )
 
+from vntts.audio_store import SharedAudioStore, SharedAudioStoreError, link_shared_audio
 from vntts.authoring.audio_events import (
     audio_event_plan_for_record,
     requires_audio_event_composition,
@@ -302,8 +303,11 @@ from vntts.synthesis import (
     SynthesisCancellation,
     SynthesisChunkStream,
     SynthesisCompletion,
+    SynthesisDiagnostics,
+    SynthesisLimits,
     SynthesisRequest,
     SynthesisResult,
+    SynthesisTiming,
 )
 from vntts.synthesis import (
     normalize_short_trailing_ellipsis as normalize_short_trailing_ellipsis,
@@ -432,6 +436,7 @@ class _GenerationExecutionContext:
     state: JsonDocument
     output_directory: Path
     output_argument: Path
+    audio_store: SharedAudioStore
     workspace_output_identity: object
     candidates: Sequence[VoiceGenerationQueueItem]
     queue_voice_overrides: dict[str, str]
@@ -1124,6 +1129,9 @@ def _skip_existing_generation_item(
             state_schema=run.state["schema"],
         )
         if not run.regenerate_existing:
+            source = run.output_directory / str(existing["path"])
+            stored = run.audio_store.put("wav-" + str(existing["file_sha256"]), source)
+            link_shared_audio(stored, source, str(existing["file_sha256"]))
             return True
         if existing.get("review_status") != "pending_review":
             raise BulkGenerationError(
@@ -1618,6 +1626,50 @@ def _begin_generation_attempt(
     )
 
 
+def _final_audio_key(
+    run: _GenerationExecutionContext,
+    request: SynthesisRequest,
+    repair: JsonDocument | None = None,
+) -> str | None:
+    identity = getattr(run.backend, "synthesis_key", None)
+    if not callable(identity):
+        return None
+    synthesis_key = identity(request)
+    if synthesis_key is None:
+        return None
+    if not isinstance(synthesis_key, str) or not synthesis_key:
+        raise BulkGenerationProvenanceError("Invalid synthesis identity")
+    return _canonical_sha256(
+        {
+            "final_wav_version": 1,
+            "synthesis_key": synthesis_key,
+            "text_transform": run.text_transform_id,
+            "repair": repair,
+        }
+    )
+
+
+def _saved_audio_result(
+    run: _GenerationExecutionContext, request: SynthesisRequest, source: Path
+) -> SynthesisResult:
+    quality, samples = inspect_generated_wav_with_samples(source)
+    return SynthesisResult(
+        pcm=np.asarray(samples, dtype=np.float32) / 32768.0,
+        sample_rate=quality.sample_rate,
+        completion=SynthesisCompletion.COMPLETE,
+        limits=SynthesisLimits(None, None),
+        timing=SynthesisTiming(0.0, 0.0),
+        diagnostics=SynthesisDiagnostics(
+            backend=run.provider,
+            cache_source="shared-wav",
+            generation_profile=request.generation_profile,
+            seed=request.seed,
+            chunk_count=1,
+            sample_count=quality.sample_count,
+        ),
+    )
+
+
 def _prefetch_next_generation(
     run: _GenerationExecutionContext,
     item_index: int,
@@ -1637,6 +1689,11 @@ def _prefetch_next_generation(
     def collect_prefetched(
         request: SynthesisRequest = prepared_next,
     ) -> SynthesisResult:
+        key = _final_audio_key(run, request)
+        if key is not None and run.synthesis_cache_policy is SynthesisCachePolicy.USE:
+            saved = run.audio_store.get(key)
+            if saved is not None:
+                return _saved_audio_result(run, request, saved)
         return run.render(request).collect()
 
     return (
@@ -1654,7 +1711,19 @@ def _render_and_publish_generation_attempt(
     prefetched_render: PrefetchedRender | None,
     pipeline_enabled: bool,
 ) -> PrefetchedRender | None:
-    if prefetched_render is not None and prefetched_render[0] == plan.queue_id:
+    final_key = _final_audio_key(run, attempt.request, plan.repair_document)
+    saved = (
+        run.audio_store.get(final_key)
+        if final_key is not None
+        and run.synthesis_cache_policy is SynthesisCachePolicy.USE
+        else None
+    )
+    if saved is not None:
+        attempt.rendered = _saved_audio_result(run, attempt.request, saved)
+        if prefetched_render is not None and prefetched_render[0] == plan.queue_id:
+            prefetched_render[2].result()
+            prefetched_render = None
+    elif prefetched_render is not None and prefetched_render[0] == plan.queue_id:
         prefetched_request, future = prefetched_render[1:]
         prefetched_render = None
         if prefetched_request != attempt.request:
@@ -1715,7 +1784,10 @@ def _render_and_publish_generation_attempt(
             "leading_trimmed_samples": trimmed.leading_trimmed_samples,
             "trailing_trimmed_samples": trimmed.trailing_trimmed_samples,
         }
-    write_pcm16_wav(attempt.partial, output_pcm, attempt.rendered.sample_rate)
+    if saved is None:
+        write_pcm16_wav(attempt.partial, output_pcm, attempt.rendered.sample_rate)
+    else:
+        link_shared_audio(saved, attempt.partial)
     payload = read_regular_bytes(attempt.partial)
     quality, samples = inspect_generated_wav_with_samples(io.BytesIO(payload))
     speech_quality = inspect_generated_speech_samples(
@@ -1731,8 +1803,12 @@ def _render_and_publish_generation_attempt(
         _assert_workspace_output_identity(
             run.output_argument, run.workspace_output_identity
         )
+    if attempt.request.cancellation_requested():
+        raise BulkGenerationError("Generation cancelled by user")
     run.lease.assert_owned()
-    os.replace(attempt.partial, plan.destination)
+    stored = run.audio_store.put(final_key or "wav-" + file_sha256, attempt.partial)
+    link_shared_audio(stored, plan.destination, file_sha256)
+    attempt.partial.unlink()
     _store_successful_generation_attempt(
         run,
         plan,
@@ -1812,6 +1888,7 @@ def _execute_generation_item(
         except (
             BulkGenerationSourceChangedError,
             BulkGenerationProvenanceError,
+            SharedAudioStoreError,
         ):
             attempt.partial.unlink(missing_ok=True)
             raise
@@ -2268,6 +2345,7 @@ def run_bulk_generation(
     silence_failure_evidence: object = None,
     audio_event_spoken_projection_queue_ids: Sequence[object] | None = None,
     synthesis_cache_policy: object = SynthesisCachePolicy.BYPASS,
+    audio_store_directory: str | Path | None = None,
     approve_validated_audio: bool = False,
     progress_callback: Callable[[JsonDocument], None] | None = None,
 ) -> BulkGenerationResult:
@@ -2369,6 +2447,9 @@ def run_bulk_generation(
         workspace_output_identity=workspace_output_identity,
         output_argument=output_argument,
         state_path=state_path,
+        audio_store=SharedAudioStore(
+            audio_store_directory or output_directory.parent / "audio-store"
+        ),
         queue=queue,
         repair_policy=repair_policy,
         selected_queue_ids=selected_queue_ids,
@@ -2413,6 +2494,7 @@ def _run_generation_execution(
     workspace_output_identity: object,
     output_argument: Path,
     state_path: Path,
+    audio_store: SharedAudioStore,
     queue: VoiceGenerationQueue,
     repair_policy: FailureRepairPolicy,
     selected_queue_ids: set[str] | None,
@@ -2494,6 +2576,7 @@ def _run_generation_execution(
                 state=state,
                 output_directory=output_directory,
                 output_argument=output_argument,
+                audio_store=audio_store,
                 workspace_output_identity=workspace_output_identity,
                 candidates=candidates,
                 queue_voice_overrides=queue_voice_overrides,

@@ -515,6 +515,15 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
             "generation_profile": "default",
         }
 
+        backend.persistent_audio_cache.max_entries = 0
+        disabled_request = SynthesisRequest(
+            **{**base, "text": "Memory cache without durable storage."}
+        )
+        with patch.object(backend, "_persistent_cache_key", side_effect=AssertionError):
+            disabled = backend.render(disabled_request).collect()
+            disabled_memory = backend.render(disabled_request).collect()
+        self.assertFalse(backend.persistent_audio_cache.directory.exists())
+        backend.persistent_audio_cache.max_entries = 256
         fresh = backend.render(SynthesisRequest(**base)).collect()
         memory = backend.render(SynthesisRequest(**base)).collect()
         refreshed = backend.render(
@@ -524,12 +533,6 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
             bypassed = backend.render(
                 SynthesisRequest(**base, cache_policy=SynthesisCachePolicy.BYPASS)
             ).collect()
-            backend.persistent_audio_cache.max_entries = 0
-            disabled_request = SynthesisRequest(
-                **{**base, "text": "Memory cache without durable storage."}
-            )
-            disabled = backend.render(disabled_request).collect()
-            disabled_memory = backend.render(disabled_request).collect()
 
         self.assertEqual(fresh.diagnostics.cache_source, "fresh-generation")
         self.assertEqual(memory.diagnostics.cache_source, "memory-cache")
@@ -538,6 +541,44 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
         self.assertEqual(disabled.diagnostics.cache_source, "fresh-generation")
         self.assertEqual(disabled_memory.diagnostics.cache_source, "memory-cache")
         self.assertEqual(len(model.generated), 4)
+
+    def test_zero_persistence_reuses_existing_wav_without_generation_or_disk_writes(
+        self,
+    ):
+        backend, model = self.create_backend(CharacterVoiceRegistry())
+        request = SynthesisRequest(
+            voice="Narrator", text="Saved expensive work.", generation_profile="default"
+        )
+        original = backend.render(request).collect()
+        cache = backend.persistent_audio_cache
+        saved_files = {
+            path: path.read_bytes()
+            for path in cache.directory.rglob("*")
+            if path.is_file()
+        }
+        cache.max_entries = 0
+        backend.audio_cache.clear()
+        with (
+            patch.object(
+                model, "generate", side_effect=AssertionError("Must reuse saved WAV")
+            ),
+            patch.object(
+                cache.store,
+                "put",
+                side_effect=AssertionError("Persistence is disabled"),
+            ),
+        ):
+            restored = backend.render(request).collect()
+        self.assertEqual(restored.diagnostics.cache_source, "persistent-cache")
+        np.testing.assert_allclose(restored.pcm, original.pcm, atol=1 / 32768)
+        self.assertEqual(
+            saved_files,
+            {
+                path: path.read_bytes()
+                for path in cache.directory.rglob("*")
+                if path.is_file()
+            },
+        )
 
     def test_cancelled_generation_is_not_returned_or_cached(self):
         cancelled = Event()
@@ -984,6 +1025,15 @@ class PocketTTSBackendTest(unittest.TestCase):
             "generation_profile": "default",
         }
 
+        backend.persistent_audio_cache.max_entries = 0
+        disabled_request = SynthesisRequest(
+            **{**base, "text": "Memory cache without durable storage."}
+        )
+        with patch.object(backend, "_persistent_cache_key", side_effect=AssertionError):
+            disabled = backend.render(disabled_request).collect()
+            disabled_memory = backend.render(disabled_request).collect()
+        self.assertFalse(backend.persistent_audio_cache.directory.exists())
+        backend.persistent_audio_cache.max_entries = 256
         fresh = backend.render(SynthesisRequest(**base)).collect()
         memory = backend.render(SynthesisRequest(**base)).collect()
         refreshed = backend.render(
@@ -993,12 +1043,6 @@ class PocketTTSBackendTest(unittest.TestCase):
             bypassed = backend.render(
                 SynthesisRequest(**base, cache_policy=SynthesisCachePolicy.BYPASS)
             ).collect()
-            backend.persistent_audio_cache.max_entries = 0
-            disabled_request = SynthesisRequest(
-                **{**base, "text": "Memory cache without durable storage."}
-            )
-            disabled = backend.render(disabled_request).collect()
-            disabled_memory = backend.render(disabled_request).collect()
 
         self.assertEqual(fresh.diagnostics.cache_source, "fresh-generation")
         self.assertEqual(memory.diagnostics.cache_source, "memory-cache")
@@ -1007,6 +1051,46 @@ class PocketTTSBackendTest(unittest.TestCase):
         self.assertEqual(disabled.diagnostics.cache_source, "fresh-generation")
         self.assertEqual(disabled_memory.diagnostics.cache_source, "memory-cache")
         self.assertEqual(len(model.stream_calls), 4)
+
+    def test_zero_persistence_reuses_existing_wav_without_generation_or_disk_writes(
+        self,
+    ):
+        backend, model, _audio_output = self.create_backend()
+        request = SynthesisRequest(
+            voice="Narrator", text="Saved expensive work.", generation_profile="default"
+        )
+        original = backend.render(request).collect()
+        cache = backend.persistent_audio_cache
+        saved_files = {
+            path: path.read_bytes()
+            for path in cache.directory.rglob("*")
+            if path.is_file()
+        }
+        cache.max_entries = 0
+        backend.audio_cache.clear()
+        with (
+            patch.object(
+                model,
+                "generate_audio_stream",
+                side_effect=AssertionError("Must reuse saved WAV"),
+            ),
+            patch.object(
+                cache.store,
+                "put",
+                side_effect=AssertionError("Persistence is disabled"),
+            ),
+        ):
+            restored = backend.render(request).collect()
+        self.assertEqual(restored.diagnostics.cache_source, "persistent-cache")
+        np.testing.assert_allclose(restored.pcm, original.pcm, atol=1 / 32768)
+        self.assertEqual(
+            saved_files,
+            {
+                path: path.read_bytes()
+                for path in cache.directory.rglob("*")
+                if path.is_file()
+            },
+        )
 
     def test_seeded_pocket_render_is_rejected_instead_of_silently_ignored(self):
         backend, _model, _audio_output = self.create_backend()

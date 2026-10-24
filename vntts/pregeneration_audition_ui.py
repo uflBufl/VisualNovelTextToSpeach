@@ -204,6 +204,8 @@ def _candidate_name(candidate: VoiceCandidate) -> str:
 
 
 class VoiceAuditionPanel(QGroupBox):
+    _queued_preview_request: _PreviewRequest | None
+
     completed = Signal()
     cancelled = Signal()
     saveFailed = Signal()
@@ -317,6 +319,20 @@ class VoiceAuditionPanel(QGroupBox):
         self.status.viewport().setAutoFillBackground(False)
         self.status.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
 
+        self._build_layout(voice_reference_row)
+        self.runtime_timer = QTimer(self)
+        self.runtime_timer.setInterval(500)
+        self.runtime_timer.timeout.connect(self._refresh_runtime)
+        self.preview_runner.activeChanged.connect(self._refresh_runtime)
+        self._refresh_runtime()
+        self._connect_player()
+        for runner in (self.preview_runner, self.original_runner, self.decision_runner):
+            runner.activeChanged.connect(
+                lambda _active: self.activeChanged.emit(self.active)
+            )
+        self.setVisible(False)
+
+    def _build_layout(self, voice_reference_row: QHBoxLayout) -> None:
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.addLayout(self.summary_row)
@@ -344,17 +360,6 @@ class VoiceAuditionPanel(QGroupBox):
         ):
             widget.installEventFilter(self)
         self._size_transient_controls()
-        self.runtime_timer = QTimer(self)
-        self.runtime_timer.setInterval(500)
-        self.runtime_timer.timeout.connect(self._refresh_runtime)
-        self.preview_runner.activeChanged.connect(self._refresh_runtime)
-        self._refresh_runtime()
-        self._connect_player()
-        for runner in (self.preview_runner, self.original_runner, self.decision_runner):
-            runner.activeChanged.connect(
-                lambda _active: self.activeChanged.emit(self.active)
-            )
-        self.setVisible(False)
 
     def _build_original_reference(self) -> QGroupBox:
         box = QGroupBox()
@@ -474,22 +479,7 @@ class VoiceAuditionPanel(QGroupBox):
         error: str | None = None,
     ) -> None:
         if not self._comparison_mode:
-            layout = cast(QVBoxLayout, self.layout())
-            layout.removeItem(self.summary_row)
-            layout.removeWidget(self.preview_box)
-            layout.insertWidget(layout.indexOf(self.status), self.recommendation)
-            self.preview_box.hide()
-            for compact_layout in (layout, self.a_box.layout()):
-                compact_layout.setContentsMargins(0, 0, 0, 0)
-                compact_layout.setSpacing(4)
-            for box in (self.phrase_box, self.current_voice_box):
-                box.layout().setContentsMargins(8, 6, 8, 6)
-                box.layout().setSpacing(4)
-            actions = QHBoxLayout()
-            actions.addStretch()
-            actions.addWidget(self.a_original)
-            actions.addWidget(self.a_play)
-            cast(QVBoxLayout, self.a_box.layout()).addLayout(actions)
+            self._build_comparison_layout()
         self._comparison_mode = True
         self._size_transient_controls()
         self.setFlat(True)
@@ -541,6 +531,27 @@ class VoiceAuditionPanel(QGroupBox):
             )
         self.current_voice_box.show()
         self._refresh_current_actions()
+
+    def _build_comparison_layout(self) -> None:
+        layout = cast(QVBoxLayout, self.layout())
+        layout.removeItem(self.summary_row)
+        layout.removeWidget(self.preview_box)
+        layout.insertWidget(layout.indexOf(self.status), self.recommendation)
+        self.preview_box.hide()
+        for compact_layout in (layout, self.a_box.layout()):
+            assert compact_layout is not None
+            compact_layout.setContentsMargins(0, 0, 0, 0)
+            compact_layout.setSpacing(4)
+        for box in (self.phrase_box, self.current_voice_box):
+            box_layout = box.layout()
+            assert box_layout is not None
+            box_layout.setContentsMargins(8, 6, 8, 6)
+            box_layout.setSpacing(4)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        actions.addWidget(self.a_original)
+        actions.addWidget(self.a_play)
+        cast(QVBoxLayout, self.a_box.layout()).addLayout(actions)
 
     def _refresh_current_actions(self) -> None:
         enabled = bool(self._current_voice) and not (
@@ -705,7 +716,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._preview_errors: dict[PreviewKey, str] = {}
         self._auditioned: dict[PreviewKey, str] = {}
         self._preview_request: _PreviewRequest | None = None
-        self._queued_preview_request: _PreviewRequest | None = None
+        self._queued_preview_request = None
 
     def _refresh_runtime(self) -> None:
         background_preparing = getattr(self.preview_service, "preparing", False) is True
@@ -1062,6 +1073,44 @@ class VoiceAuditionPanel(QGroupBox):
         self._advice_unavailable = False
         self._advice_error = None
         self._focus_index = 0
+        self._populate_reference_choices()
+        self._show_group_scope(group)
+        self._show_preview_text(group)
+        self._restore_cached_previews()
+        self.voice_reference.setToolTip(
+            self.voice_reference.currentData(Qt.ItemDataRole.ToolTipRole)
+            or self.voice_reference.currentText()
+        )
+        self.voice_reference.setEnabled(len(self._candidate_entries) > 1)
+        self.choose_all_button.setEnabled(True)
+        self._show_current_candidate()
+
+    def _show_group_scope(self, group: VoiceGroup) -> None:
+        self.summary.setText(
+            "Review the suggested voices, or keep every automatic choice."
+            if self._inspection_mode
+            else f"Voice sample {self._group_index + 1} of {len(self._groups)}."
+        )
+        self.character.setText(group.character)
+        self._show_portrait(group)
+        identity = normalize_character_name(group.character)
+        count = len(
+            {
+                line_id
+                for item in self._require_plan().groups
+                if normalize_character_name(item.character) == identity
+                for line_id in item.line_ids
+            }
+        )
+        self.scope.setText(
+            f"Used for {count} selected line{'s' if count != 1 else ''}."
+        )
+        self.scope.setToolTip(
+            "Saving changes this character's voice for future speech and preparation; "
+            "existing prepared audio is unchanged."
+        )
+
+    def _populate_reference_choices(self) -> None:
         with QSignalBlocker(self.voice_reference):
             self.voice_reference.clear()
             for index, (candidate, _choice, narrator) in enumerate(
@@ -1098,38 +1147,6 @@ class VoiceAuditionPanel(QGroupBox):
                     Qt.ItemDataRole.ToolTipRole,
                 )
             self.voice_reference.setCurrentIndex(0)
-        self.summary.setText(
-            "Review the suggested voices, or keep every automatic choice."
-            if self._inspection_mode
-            else f"Voice sample {self._group_index + 1} of {len(self._groups)}."
-        )
-        self.character.setText(group.character)
-        self._show_portrait(group)
-        identity = normalize_character_name(group.character)
-        count = len(
-            {
-                line_id
-                for item in self._require_plan().groups
-                if normalize_character_name(item.character) == identity
-                for line_id in item.line_ids
-            }
-        )
-        self.scope.setText(
-            f"Used for {count} selected line{'s' if count != 1 else ''}."
-        )
-        self.scope.setToolTip(
-            "Saving changes this character's voice for future speech and preparation; "
-            "existing prepared audio is unchanged."
-        )
-        self._show_preview_text(group)
-        self._restore_cached_previews()
-        self.voice_reference.setToolTip(
-            self.voice_reference.currentData(Qt.ItemDataRole.ToolTipRole)
-            or self.voice_reference.currentText()
-        )
-        self.voice_reference.setEnabled(len(self._candidate_entries) > 1)
-        self.choose_all_button.setEnabled(True)
-        self._show_current_candidate()
 
     def _show_preview_text(self, group: VoiceGroup) -> None:
         phrases = [group.sample_text, group.alternate_sample_text]
@@ -2025,6 +2042,15 @@ class VoiceAuditionPanel(QGroupBox):
             )
             record_game_import("voice-original-playback", outcome="unavailable")
             return
+        self._play_original_reference(reference, candidate, current_voice=current_voice)
+
+    def _play_original_reference(
+        self,
+        reference: VoiceAuditionReference,
+        candidate: VoiceCandidate,
+        *,
+        current_voice: bool,
+    ) -> None:
         player = self._ensure_player()
         self._set_playback_status(
             f"Starting the original reference for {_candidate_name(candidate)}...",

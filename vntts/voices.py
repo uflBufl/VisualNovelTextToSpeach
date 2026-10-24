@@ -268,6 +268,7 @@ def application_voice_library() -> VoiceLibrary:
 
 
 def voice_source_label(name: str) -> str:
+    """Display the donor name without generated catalog identifiers."""
     name = name.strip()
     generated = re.fullmatch(r"Player candidate (.+) [0-9a-f]{12}", name)
     return generated.group(1) if generated else name

@@ -685,9 +685,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
             "story",
             "voice-manifest",
             "reference",
-            "generated",
             "reused-reference",
-            "reused-audio",
         ):
             with self.subTest(phase=phase), TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
@@ -712,23 +710,9 @@ class OfflinePackPublisherTest(unittest.TestCase):
                     refused.append(caught.exception)
                     raise caught.exception
 
-                def link_fallback(original, target, digest):
-                    if phase != "reused-audio":
-                        return _link_verified_file(original, target, digest)
-                    with patch.object(
-                        pack_module.os, "link", side_effect=OSError("no links")
-                    ) as link:
-                        try:
-                            return _link_verified_file(original, target, digest)
-                        finally:
-                            link.assert_called_once_with(
-                                Path(original).resolve(), target
-                            )
-
                 output = prepared.directory.parent / "game-packs"
-                with patch.object(pack_module, "_link_verified_file", link_fallback):
+                with patch.object(pack_module, "copy_regular_file", copy):
                     with (
-                        patch.object(pack_module, "copy_regular_file", copy),
                         self.assertRaisesRegex(
                             OfflinePackError, "regular file"
                         ) as caught,
@@ -738,23 +722,12 @@ class OfflinePackPublisherTest(unittest.TestCase):
                     self.assertIs(caught.exception.__cause__, refused[0])
                     self.assertEqual(tree_hashes(root), before)
                     self.assertEqual(list(output.iterdir()), [])
-                    recovered = publisher.publish(job, prepared, generated)
+                recovered = publisher.publish(job, prepared, generated)
                 self.assertEqual(source.read_bytes(), source_bytes)
                 recovered_tree = tree_hashes(root)
                 self.assertEqual(publisher.publish(job, prepared, generated), recovered)
                 self.assertEqual(tree_hashes(root), recovered_tree)
                 self.assertEqual(load_saved_pack(recovered.manifest), recovered)
-                if phase == "reused-audio":
-                    records = load_generated_audio_document(
-                        recovered.imported.generated_audio_manifest
-                    ).records
-                    reused = next(
-                        record.audio
-                        for record in records
-                        if record.line_id == "pack:preserved"
-                    )
-                    self.assertEqual(reused.read_bytes(), source_bytes)
-                    self.assertFalse(source.samefile(reused))
 
     def test_saved_and_reused_packs_reject_noninteger_counts(self):
         with TemporaryDirectory() as directory:
@@ -1091,10 +1064,10 @@ class OfflinePackPublisherTest(unittest.TestCase):
             manifest = root / "staging" / "manifest.json"
             digest = sha256_file(source)
             record = {"audio_sha256": digest}
-            _portable_generated_record(record, source, manifest, reuse=True)
+            _portable_generated_record(record, source, manifest)
             destination = manifest.parent / f"audio/{digest}.wav"
 
-            with self.assertRaisesRegex(OfflinePackError, "destination conflicts"):
+            with self.assertRaisesRegex(OfflinePackError, "changed before publication"):
                 _portable_generated_record(record, changed, manifest)
 
             self.assertEqual(source.read_bytes(), b"published audio")
@@ -1166,6 +1139,87 @@ class OfflinePackPublisherTest(unittest.TestCase):
 
             self.assertTrue(source.samefile(destination))
             self.assertEqual(destination.read_bytes(), b"verified audio")
+
+    def test_audio_link_failure_preserves_source_without_copy_fallback(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.wav"
+            source.write_bytes(b"verified audio")
+            destination = root / "pack" / "audio.wav"
+            with patch("vntts.audio_store.os.link", side_effect=OSError("no links")):
+                with self.assertRaisesRegex(OfflinePackError, "hard-link"):
+                    _link_verified_file(source, destination, sha256_file(source))
+            self.assertEqual(source.read_bytes(), b"verified audio")
+            self.assertFalse(destination.exists())
+
+    def test_published_current_audio_shares_inode_with_completed_output(self):
+        with TemporaryDirectory() as directory:
+            job, prepared, generated, _ = fixture(Path(directory))
+            state = json.loads(generated.state.read_text())
+            approved = next(
+                value
+                for value in state["items"].values()
+                if value["status"] == "approved"
+            )
+            source = generated.output / approved["path"]
+            digest = sha256_file(source)
+            published = OfflinePackPublisher().publish(job, prepared, generated)
+            audio = (
+                load_generated_audio_document(
+                    published.imported.generated_audio_manifest
+                )
+                .records[0]
+                .audio
+            )
+            self.assertTrue(source.samefile(audio))
+            self.assertEqual(sha256_file(audio), digest)
+            self.assertFalse(audio.is_symlink())
+
+    def test_selected_legacy_base_and_outputs_deduplicate_without_changing_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_job, base_input, base_result, _ = game_fixture(root / "base")
+            base = OfflinePackPublisher().publish(base_job, base_input, base_result)
+            base_audio = (
+                load_generated_audio_document(base.imported.generated_audio_manifest)
+                .records[0]
+                .audio
+            )
+            base_state = json.loads(base_result.state.read_text())
+            approved = next(
+                value
+                for value in base_state["items"].values()
+                if value["status"] == "approved"
+            )
+            base_output = base_result.output / approved["path"]
+            for alias in (base_audio, base_output):
+                detached = alias.with_suffix(".detached")
+                detached.write_bytes(alias.read_bytes())
+                detached.replace(alias)
+            self.assertFalse(base_audio.samefile(base_output))
+            before = tree_hashes(base.directory)
+            output_before = tree_hashes(base_result.output)
+            job, prepared, generated, _ = game_fixture(root / "current")
+            successor = OfflinePackPublisher(base_pack=base.manifest).publish(
+                job, prepared, generated
+            )
+            audio = (
+                load_generated_audio_document(
+                    successor.imported.generated_audio_manifest
+                )
+                .records[0]
+                .audio
+            )
+            self.assertTrue(base_audio.samefile(audio))
+            current_state = json.loads(generated.state.read_text())
+            current = next(
+                value
+                for value in current_state["items"].values()
+                if value["status"] == "approved"
+            )
+            self.assertTrue((generated.output / current["path"]).samefile(audio))
+            self.assertEqual(tree_hashes(base.directory), before)
+            self.assertEqual(tree_hashes(base_result.output), output_before)
 
     def test_original_readiness_requires_full_valid_declared_source_duration(self):
         with TemporaryDirectory() as directory:
@@ -1490,7 +1544,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 item for item in state["items"].values() if item["status"] == "approved"
             )
             (result.output / saved["path"]).write_bytes(b"broken")
-            with self.assertRaises(BulkGenerationError):
+            with self.assertRaises((BulkGenerationError, OfflinePackError)):
                 publisher.inspect_changes(job, inputs)
 
     def test_publishes_and_reuses_portable_generated_and_live_routes(self):
@@ -1730,7 +1784,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
                     "vntts.pregeneration_pack._ensure_pack_disk_space",
                     side_effect=change_after_preflight,
                 ),
-                self.assertRaisesRegex(OfflinePackError, "hash does not match"),
+                self.assertRaisesRegex(OfflinePackError, "changed before publication"),
             ):
                 OfflinePackPublisher().publish(job, generation_input, generation_result)
 

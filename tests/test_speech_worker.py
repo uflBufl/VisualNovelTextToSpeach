@@ -38,6 +38,7 @@ from vntts.speech_worker import (
     worker_main,
 )
 from vntts.synthesis import (
+    SynthesisCachePolicy,
     SynthesisChunk,
     SynthesisChunkStream,
     SynthesisCompletion,
@@ -1045,6 +1046,80 @@ print("worker-import-ready")
         )
         self.assertEqual(frames[3][0]["result"]["completion"], "complete")
 
+    def test_worker_protocol_returns_underlying_identity_without_rendering(self):
+        for supported in (False, True):
+            with self.subTest(supported=supported):
+                registry = CharacterVoiceRegistry()
+                backend = FakeWorkerBackend(registry)
+                backend.render = MagicMock(
+                    side_effect=AssertionError("unexpected render")
+                )
+                if supported:
+                    backend.synthesis_key = MagicMock(
+                        return_value="exact-loaded-model-key"
+                    )
+                input_stream, output_stream = BytesIO(), BytesIO()
+                _write_frame(
+                    input_stream,
+                    {
+                        "type": "initialize",
+                        "backend": "fake",
+                        "runtime_site": "/isolated/site-packages",
+                        "registry": _serialize_registry(registry),
+                        "options": {},
+                    },
+                )
+                _write_frame(
+                    input_stream,
+                    {
+                        "type": "synthesis-key",
+                        "request_id": "identity-1",
+                        "voice": "Narrator",
+                        "text": " A line. ",
+                        "seed": 17,
+                        "generation_profile": "stable",
+                        "cache_policy": "bypass",
+                        "registry": _serialize_registry(registry),
+                        "narrator_reference": "/references/narrator.wav",
+                    },
+                )
+                _write_frame(input_stream, {"type": "shutdown"})
+                input_stream.seek(0)
+                self.assertEqual(
+                    worker_main(
+                        input_stream=input_stream,
+                        output_stream=output_stream,
+                        backend_classes={"fake": lambda _registry: backend},
+                        required_modules={"fake": ()},
+                    ),
+                    0,
+                )
+                output_stream.seek(0)
+                self.assertEqual(_read_frame(output_stream)[0]["type"], "health")
+                document, payload = _read_frame(output_stream)
+                self.assertEqual(
+                    document,
+                    {
+                        "type": "synthesis-key",
+                        "request_id": "identity-1",
+                        "value": "exact-loaded-model-key" if supported else None,
+                    },
+                )
+                self.assertEqual(payload, b"")
+                self.assertIsNone(_read_frame(output_stream))
+                self.assertEqual(backend.narrator_reference, "/references/narrator.wav")
+                backend.render.assert_not_called()
+                if supported:
+                    backend.synthesis_key.assert_called_once_with(
+                        SynthesisRequest(
+                            voice="Narrator",
+                            text=" A line. ",
+                            seed=17,
+                            generation_profile="stable",
+                            cache_policy=SynthesisCachePolicy.BYPASS,
+                        )
+                    )
+
     def test_module_provenance_rejects_dependency_outside_runtime(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -1545,6 +1620,108 @@ print("worker-import-ready")
         ):
             uuid4.return_value.hex = "request-1"
             self.assertTrue(backend.prime("Narrator"))
+
+    def test_parent_identity_uses_bounded_scalar_protocol_and_validates_results(self):
+        for response_value in ("exact-loaded-model-key", None, 3, ""):
+            with self.subTest(value=response_value):
+                with (
+                    patch.object(IsolatedSpeechBackend, "_start_worker"),
+                    patch(
+                        "vntts.speech_worker._runtime_paths",
+                        return_value=(
+                            Path("/runtime"),
+                            Path("/runtime/python"),
+                            Path("/site"),
+                        ),
+                    ),
+                ):
+                    backend = IsolatedSpeechBackend(
+                        "moss-tts", CharacterVoiceRegistry()
+                    )
+                process = FakeProcess(None)
+                request = SynthesisRequest(
+                    "Narrator",
+                    " A line. ",
+                    seed=7,
+                    generation_profile="stable",
+                    cache_policy=SynthesisCachePolicy.REFRESH,
+                )
+                response = (
+                    {
+                        "type": "synthesis-key",
+                        "request_id": "identity-1",
+                        "value": response_value,
+                    },
+                    b"",
+                )
+                with (
+                    patch.object(backend, "_ensure_worker", return_value=process),
+                    patch.object(backend, "_send") as send,
+                    patch.object(
+                        backend, "_next_frame", side_effect=(queue.Empty(), response)
+                    ),
+                    patch("vntts.speech_worker.uuid.uuid4") as uuid4,
+                ):
+                    uuid4.return_value.hex = "identity-1"
+                    if (
+                        response_value is None
+                        or isinstance(response_value, str)
+                        and response_value
+                    ):
+                        self.assertEqual(backend.synthesis_key(request), response_value)
+                    else:
+                        with self.assertRaisesRegex(
+                            TTSConfigurationError, "synthesis key is malformed"
+                        ):
+                            backend.synthesis_key(request)
+                command = send.call_args.args[1]
+                self.assertEqual(command["type"], "synthesis-key")
+                self.assertEqual(command["voice"], request.voice)
+                self.assertEqual(command["text"], request.text)
+                self.assertEqual(command["seed"], request.seed)
+                self.assertEqual(command["cache_policy"], "refresh")
+                self.assertIsNone(process.returncode)
+
+    def test_parent_identity_cancellation_and_timeout_terminate_worker(self):
+        for cancelled in (False, True):
+            with self.subTest(cancelled=cancelled):
+                with (
+                    patch.object(IsolatedSpeechBackend, "_start_worker"),
+                    patch(
+                        "vntts.speech_worker._runtime_paths",
+                        return_value=(
+                            Path("/runtime"),
+                            Path("/runtime/python"),
+                            Path("/site"),
+                        ),
+                    ),
+                ):
+                    backend = IsolatedSpeechBackend(
+                        "moss-tts", CharacterVoiceRegistry(), request_timeout=0.001
+                    )
+                process = FakeProcess(None)
+                cancellation = Event()
+
+                def wait_for_response(*arguments, **options):
+                    if cancelled:
+                        cancellation.set()
+                    raise queue.Empty
+
+                with (
+                    patch.object(backend, "_ensure_worker", return_value=process),
+                    patch.object(backend, "_send"),
+                    patch.object(backend, "_next_frame", side_effect=wait_for_response),
+                    self.assertRaisesRegex(
+                        TTSSynthesisError,
+                        "cancelled" if cancelled else "did not answer 'synthesis-key'",
+                    ),
+                ):
+                    backend.synthesis_key(
+                        SynthesisRequest(
+                            "Narrator", "A line.", cancellation=cancellation
+                        )
+                    )
+                self.assertEqual(process.returncode, -15)
 
     def test_scalar_worker_request_times_out_and_terminates_worker(self):
         backend = object.__new__(IsolatedSpeechBackend)

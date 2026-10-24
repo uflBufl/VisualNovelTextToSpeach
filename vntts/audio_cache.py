@@ -2,20 +2,21 @@ import json
 import os
 from collections import OrderedDict
 from collections.abc import Callable
-from hashlib import blake2b
+from contextlib import suppress
+from hashlib import blake2b, file_digest
 from math import prod
 from pathlib import Path
-from stat import S_ISREG
+from tempfile import NamedTemporaryFile
 from threading import RLock
-from time import time_ns
 from tokenize import TokenError
 from typing import BinaryIO, Generic, TypeAlias, TypeVar
 
 import numpy as np
+import soundfile as sf
 from numpy.lib import _format_impl as npy_format
 from numpy.typing import NDArray
-from vntts_artifacts.atomic_io import atomic_output_path
 
+from vntts.audio_store import SharedAudioStore
 from vntts.path_safety import open_regular_binary
 
 PathInput: TypeAlias = str | os.PathLike[str]
@@ -90,8 +91,19 @@ class BoundedCache(Generic[CacheKey, CacheValue]):
 
 
 class PersistentAudioCache:
-    def __init__(self, directory: PathInput, *, max_entries: int = 256) -> None:
-        self.directory = Path(directory).expanduser().resolve()
+    def __init__(
+        self, directory: PathInput, *, sample_rate: int, max_entries: int = 256
+    ) -> None:
+        if (
+            isinstance(sample_rate, bool)
+            or not isinstance(sample_rate, int)
+            or sample_rate < 1
+        ):
+            raise ValueError("sample_rate must be a positive integer")
+        self.store = SharedAudioStore(Path(directory))
+        self.directory = self.store.directory
+        self.sample_rate = sample_rate
+        # Disk waveforms are durable; the old limit now only disables persistence.
         self.max_entries = max(0, int(max_entries))
 
     def key(
@@ -119,40 +131,122 @@ class PersistentAudioCache:
     def get(self, key: object) -> AudioArray | None:
         if self.max_entries == 0:
             return None
+        return self._get(key, migrate=True)
+
+    def get_existing(self, key: object) -> AudioArray | None:
+        """Read a verified saved WAV even when new persistence is disabled."""
+        return self._get(key, migrate=False)
+
+    def _get(self, key: object, *, migrate: bool) -> AudioArray | None:
+        if not isinstance(key, str) or self._path_for_key(key) is None:
+            return None
+        try:
+            path = self.store.get(key)
+            if path is not None:
+                with (
+                    open_regular_binary(path) as source,
+                    sf.SoundFile(source) as waveform,
+                ):
+                    if (
+                        waveform.format != "WAV"
+                        or waveform.subtype != "PCM_16"
+                        or waveform.samplerate != self.sample_rate
+                    ):
+                        return None
+                    audio = _prepared_audio(
+                        waveform.read(dtype="float32", always_2d=True)
+                    )
+                if audio is None:
+                    return None
+                return audio[:, 0] if audio.shape[1] == 1 else audio
+            return self._migrate_legacy(key) if migrate else None
+        except OSError, ValueError, TypeError, sf.LibsndfileError:
+            return None
+
+    def put(self, key: object, audio: object) -> Path | None:
+        if (
+            self.max_entries == 0
+            or not isinstance(key, str)
+            or self._path_for_key(key) is None
+        ):
+            return None
+        prepared = _prepared_audio(audio)
+        if prepared is None:
+            return None
+        return self._put_prepared(key, prepared)
+
+    def _put_prepared(
+        self, key: str, prepared: AudioArray, *, preserve_existing: bool = False
+    ) -> Path | None:
+        temporary = None
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            with NamedTemporaryFile(
+                suffix=".wav", dir=self.directory, delete=False
+            ) as output:
+                temporary = Path(output.name)
+            sf.write(
+                temporary, prepared, self.sample_rate, format="WAV", subtype="PCM_16"
+            )
+            if preserve_existing and (existing := self.store.get(key)) is not None:
+                with (
+                    open_regular_binary(existing) as saved,
+                    open_regular_binary(temporary) as candidate,
+                ):
+                    if (
+                        file_digest(saved, "sha256").digest()
+                        != file_digest(candidate, "sha256").digest()
+                    ):
+                        return None
+                return existing
+            return self.store.put(key, temporary)
+        except OSError, ValueError, TypeError, sf.LibsndfileError:
+            return None
+        finally:
+            if temporary is not None:
+                with suppress(OSError):
+                    temporary.unlink(missing_ok=True)
+
+    def _migrate_legacy(self, key: str) -> AudioArray | None:
         path = self._path_for_key(key)
         if path is None or path.is_symlink():
             return None
         try:
             with open_regular_binary(path) as source:
-                loaded = _read_cached_array(source)
-            audio = _prepared_audio(loaded)
-            if audio is None:
+                original = os.fstat(source.fileno())
+                if not self._same_legacy_file(
+                    original, path.stat(follow_symlinks=False)
+                ):
+                    return None
+                audio = _prepared_audio(_read_cached_array(source))
+            if (
+                audio is None
+                or self._put_prepared(key, audio, preserve_existing=True) is None
+            ):
                 return None
-            self._touch_newest(path)
-            return audio
+            restored = self.get_existing(key)
+            if restored is None:
+                return None
+            # Never remove a substituted legacy entry after publication.
+            if self._same_legacy_file(original, path.stat(follow_symlinks=False)):
+                path.unlink()
+            return restored
         except OSError, ValueError, TypeError, EOFError, OverflowError, TokenError:
             return None
 
-    def put(self, key: object, audio: object) -> Path | None:
-        if self.max_entries == 0:
-            return None
-        prepared = _prepared_audio(audio)
-        if prepared is None:
-            return None
-        path = self._path_for_key(key)
-        if path is None:
-            return None
-        try:
-            with (
-                atomic_output_path(path) as temporary,
-                temporary.open("wb") as destination,
-            ):
-                np.save(destination, prepared, allow_pickle=False)
-            self._touch_newest(path)
-            self._prune()
-        except OSError:
-            return None
-        return path
+    @staticmethod
+    def _same_legacy_file(original: os.stat_result, current: os.stat_result) -> bool:
+        return all(
+            getattr(original, field) == getattr(current, field)
+            for field in (
+                "st_dev",
+                "st_ino",
+                "st_mode",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+            )
+        )
 
     def _path_for_key(self, key: object) -> Path | None:
         if (
@@ -162,34 +256,3 @@ class PersistentAudioCache:
         ):
             return None
         return self.directory / f"{key}.npy"
-
-    def _touch_newest(self, path: Path) -> None:
-        newest = max((recency[0] for _, recency in self._regular_files()), default=0)
-        timestamp = max(time_ns(), newest + 1_000_000)
-        try:
-            os.utime(path, ns=(timestamp, timestamp), follow_symlinks=False)
-        except OSError, NotImplementedError:
-            # Recency metadata must not turn a valid cache entry into a miss.
-            # Pruning can fall back to its existing timestamps.
-            pass
-
-    def _prune(self) -> None:
-        files = sorted(self._regular_files(), key=lambda item: item[1], reverse=True)
-        for path, _ in files[self.max_entries :]:
-            try:
-                path.unlink()
-            except OSError:
-                pass
-
-    def _regular_files(self) -> list[tuple[Path, tuple[int, int, str]]]:
-        files: list[tuple[Path, tuple[int, int, str]]] = []
-        for path in self.directory.glob("*.npy"):
-            try:
-                metadata = path.stat(follow_symlinks=False)
-            except OSError:
-                continue
-            if S_ISREG(metadata.st_mode):
-                files.append(
-                    (path, (metadata.st_mtime_ns, metadata.st_ctime_ns, path.name))
-                )
-        return files

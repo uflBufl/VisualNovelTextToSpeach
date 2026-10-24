@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from vntts.pregeneration_queue import PregenerationInput
     from vntts.pregeneration_setup import GameContent, PregenerationJob
     from vntts.pregeneration_ui import OfflineAudioPreparationDialog
+    from vntts.pregeneration_voices import VoicePlan
     from vntts.support import RuntimeSupportLog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -1179,7 +1180,9 @@ def _prepare_voice_audition_screenshot(
             if story_id.endswith(("failure", "waiting"))
             else widget.voice_panel.preview_box
         )
-        widget.findChild(QScrollArea).ensureWidgetVisible(target)
+        scroll = widget.findChild(QScrollArea)
+        assert scroll is not None
+        scroll.ensureWidgetVisible(target)
         app.processEvents()
 
 
@@ -1265,6 +1268,20 @@ def _compact_voice_audition(dialog: OfflineAudioPreparationDialog) -> None:
     dialog.resize(620, 440)
 
 
+def _anonymous_voice_plan(plan: VoicePlan) -> VoicePlan:
+    group = plan.groups[0]
+    candidate = replace(
+        group.candidate_inventory[0],
+        source_character="Player candidate Rhiannon abcdef123456",
+    )
+    group = replace(
+        group,
+        candidate_inventory=(candidate, *group.candidate_inventory[1:]),
+        candidates=(candidate, *group.candidates[1:]),
+    )
+    return replace(plan, groups=(group, *plan.groups[1:]))
+
+
 def _voice_audition_story(
     state: str,
     dialog: OfflineAudioPreparationDialog,
@@ -1278,24 +1295,14 @@ def _voice_audition_story(
         state = state.removeprefix("compact-")
     if state == "anonymous-source":
         assert dialog._voice_plan is not None
-        group = dialog._voice_plan.groups[0]
-        candidate = replace(
-            group.candidate_inventory[0],
-            source_character="Player candidate Rhiannon abcdef123456",
-        )
-        group = replace(
-            group,
-            candidate_inventory=(candidate, *group.candidate_inventory[1:]),
-            candidates=(candidate, *group.candidates[1:]),
-        )
-        dialog._voice_plan = replace(
-            dialog._voice_plan, groups=(group, *dialog._voice_plan.groups[1:])
-        )
+        dialog._voice_plan = _anonymous_voice_plan(dialog._voice_plan)
     assert dialog._voice_plan is not None
+    audition_service = dialog.audition_service
+    assert isinstance(audition_service, Mock)
     editor = GameNarratorDialog(
         dialog.settings,
         importer=dialog.importer,
-        preview_service=dialog.audition_service,
+        preview_service=audition_service,
         thread_pool=dialog.voice_runner.thread_pool,
         player=dialog._narrator_player,
         voice_library=dialog.voice_library,
@@ -1322,11 +1329,11 @@ def _voice_audition_story(
     panel = editor.voice_panel
     assert editor.source.currentData() == "game", editor.status.text()
     assert panel._candidate_entries, editor.status.text()
+    alternate_phrase = panel.current_group().alternate_sample_text
+    assert alternate_phrase is not None
     actions = {
         "alternate": lambda: panel.voice_reference.setCurrentIndex(1),
-        "alternate-phrase": lambda: panel.preview_text.setPlainText(
-            panel.current_group().alternate_sample_text
-        ),
+        "alternate-phrase": lambda: panel.preview_text.setPlainText(alternate_phrase),
         "original-playing": lambda: _voice_original_playback_story(panel),
         "preview-generating": panel.a_play.click,
         "details": lambda: panel.reference_details_toggle.setChecked(True),
@@ -1469,6 +1476,27 @@ def _catalog_support_log(state: str) -> RuntimeSupportLog:
             )
     recorded_at = datetime(2026, 9, 22, 13, 0, tzinfo=timezone.utc)
     return events
+
+
+def _catalog_voice_manifest(root: Path, original_reference: Path) -> Path:
+    from vntts_artifacts.voice_manifest import write_voice_manifest
+
+    manifest = root / "voice-manifest.json"
+    write_voice_manifest(
+        manifest,
+        {
+            "version": 2,
+            "voices": [
+                {
+                    "character": name,
+                    "speaker": name.casefold().replace(" ", "-"),
+                    "references": [original_reference.name],
+                }
+                for name in ("Centurion", "A Knight")
+            ],
+        },
+    )
+    return manifest
 
 
 def _catalog_offline_content(root: Path) -> GameContent:
@@ -3215,32 +3243,15 @@ def _render_stories(
         voice_library.select(
             "Narrator", route="voice", source_id="preset:alba", method="manual"
         )
-        audition_service = Mock()
-        audition_service.backend = SimpleNamespace(
-            runtime_status="Apple GPU - model loaded"
+        audition_service = Mock(
+            backend=SimpleNamespace(runtime_status="Apple GPU - model loaded")
         )
         original_reference = root / "original-reference.wav"
         write_silent_wav(original_reference)
         audition_service.reference_audio.return_value = VoiceAuditionReference(
             original_reference, original_reference.read_bytes()
         )
-        from vntts_artifacts.voice_manifest import write_voice_manifest
-
-        manifest = root / "voice-manifest.json"
-        write_voice_manifest(
-            manifest,
-            {
-                "version": 2,
-                "voices": [
-                    {
-                        "character": name,
-                        "speaker": name.casefold().replace(" ", "-"),
-                        "references": [original_reference.name],
-                    }
-                    for name in ("Centurion", "A Knight")
-                ],
-            },
-        )
+        manifest = _catalog_voice_manifest(root, original_reference)
         dialog = OfflineAudioPreparationDialog(
             offline_settings,
             discovery=discovery,

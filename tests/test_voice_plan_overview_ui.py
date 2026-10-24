@@ -87,6 +87,30 @@ class VoicePlanOverviewTest(unittest.TestCase):
             **changes,
         )
 
+    def test_imported_voice_names_remain_distinct_in_confirmation(self):
+        for name in ("Zuzanna", "Everecho"):
+            with self.subTest(name=name):
+                group = replace(
+                    self.saved_group(),
+                    source_character=f"Player candidate {name} abcdef123456",
+                )
+                self.show_plan((group,))
+                self.assertIn(name, self.row_values()[1])
+                self.assertNotIn("abcdef123456", self.row_values()[1])
+                self.assertNotEqual(self.row_values()[1], "Game voice")
+
+    def test_saved_voice_immediately_rechecks_ready_recordings(self):
+        self.dialog._job = Mock(job_id=self.plan.job_id)
+        self.dialog._changes_rows = (
+            ("Reuse", "120 recordings"),
+            ("To generate", "200 lines"),
+        )
+        self.dialog._fast_voice_choice_pending = True
+        with patch.object(self.dialog, "_start_generation_input") as start:
+            self.dialog._voice_plan_finished(self.plan, None)
+        start.assert_called_once_with(self.plan)
+        self.assertIn(("Reuse", "120 recordings"), self.dialog._changes_rows)
+
     def test_routine_routes_do_not_repeat_summary_or_assignment_explanation(self):
         group = self.saved_group()
         self.show_plan((group,))

@@ -1306,3 +1306,25 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 ## Qualify game-phrase preview silence rejection
 
 - [ ] Reproduce the real MOSS local v1.5 MLX Centurion preview rejection: choose Narrator > Game character voice > Centurion, first 12.5 s reference beginning "Morning ... Huh?", then Use game phrase for "Ooh, it's you, Jefe? Wanna go on an adventure? There are over 261.6 places that have been rated as dangerous. Murder scenes or cliffs, it's your call." The generated WAV failed objective preflight with 1.60 s internal silence. Preserve model/text/reference/seed and inspect audio before deciding whether synthesis failed or the pause gate rejected an acceptable pause; do not loosen the gate from one example. Require a useful retry outcome and visible reason, with unchanged saved voice assignments.
+
+## Remaining - Shared audio storage
+
+- [ ] Qualify shared WAV hard links on the supported Windows filesystem and in
+      packaged builds. Keep explicit same-filesystem/link errors and existing audio
+      intact; do not add a silent copy fallback. Controlled Mac UI runs and unit
+      tests do not qualify these platforms or neural-model/hardware behavior.
+- [ ] Retain the legacy NPY reader until proven sample-rate/model provenance is recovered for
+      the 16 remaining local synthesis arrays (5 Pocket, 2 MOSS live, 9 offline).
+      Keep those originals recoverable; migrate and verify restart lookup before
+      removing the parser and compatibility tests. The 542 proven arrays are
+      already migrated; other machines still require their own explicit inventory.
+
+## Finish current voice editor integration
+
+- [ ] Preserve the compact shared editor and current main audio reuse behavior together; resolve integration conflicts and run affected tests.
+- [ ] Correct editor type-check and complexity regressions without widening allowances, then verify the final commit before pushing main.
+
+## Restore pre-existing repository quality gates
+
+- [ ] Fix the existing mypy errors in `vntts/diagnostic_recording.py`, `vntts/reading_diagnostics_analysis.py` and the preview backend factory contract in `vntts/app.py`; format the existing `vntts/moss_runtime.py` signature. These failures also reproduce on main before the unified-editor integration. Gate: the full configured mypy and Ruff format checks pass without suppressing diagnostics.
+- [ ] Bring the existing Reading, recording, generation and saved-audio complexity findings back within `tests/fixtures/ruff-complexity-v2.json`. Run `scripts/check_ruff_complexity.py` for the current scope inventory; refactor coherent responsibilities without increasing allowances, preserve lifecycle/error handling and run affected tests. Gate: the full complexity ratchet passes, with obsolete allowances removed or reduced.

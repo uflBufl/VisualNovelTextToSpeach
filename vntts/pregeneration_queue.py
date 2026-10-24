@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 from collections.abc import Mapping, Sequence
@@ -12,6 +13,7 @@ from typing import Protocol, TypeAlias, TypedDict
 
 import numpy as np
 import soundfile as sf
+from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
@@ -26,9 +28,15 @@ from vntts_artifacts.voice_manifest import (
     write_voice_manifest,
 )
 
+from vntts.audio_store import SharedAudioStore, link_shared_audio
 from vntts.authoring.audio_events import audio_event_plan_for_record
+from vntts.authoring.generation_lease import GenerationLease, process_is_alive
 from vntts.authoring.generation_state import (
+    STATE_SCHEMA,
+    STATE_VERSION,
     BulkGenerationError,
+    generation_state_items,
+    load_generation_state_from_snapshot,
     load_stable_generation_queue,
 )
 from vntts.authoring.publication import (
@@ -41,6 +49,7 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     publish_generation_queue,
 )
+from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.pregeneration_setup import (
     PregenerationJob,
@@ -131,7 +140,9 @@ class PregenerationInputStore:
             f"generation-input-{identity[:16]}"
         )
         if destination.is_dir():
-            return self._reused_input(destination, identity, effective)
+            result = self._reused_input(destination, identity, effective)
+            _reuse_completed_audio(result, plan)
+            return result
         root = destination.parent
         root.mkdir(parents=True, exist_ok=True)
         try:
@@ -237,6 +248,7 @@ class PregenerationInputStore:
                         return _load_existing(destination, identity, effective)
                     raise
                 result = _load_existing(destination, identity, effective)
+                _reuse_completed_audio(result, plan)
                 _record_input_phase(
                     "publish",
                     phase_started,
@@ -301,6 +313,226 @@ def _validate_plan_for_job(job: PregenerationJob, plan: VoicePlan) -> None:
         raise PregenerationQueueError("Voice plan does not belong to this preparation")
     if plan.story_index_sha256 != job.story_index_sha256:
         raise PregenerationQueueError("Voice plan dialogue identity changed")
+
+
+def _reuse_completed_audio(current: PregenerationInput, plan: VoicePlan) -> None:
+    """Carry verified completed lines across voice-plan revisions without rendering."""
+    state_path = current.output_directory / "generation-state.json"
+    queue, queue_sha256 = load_stable_generation_queue(current.queue)
+    existing = (
+        load_generation_state_from_snapshot(state_path, queue, queue_sha256)
+        if state_path.exists()
+        else None
+    )
+    protected = {} if existing is None else generation_state_items(existing)
+    if existing is not None and (
+        existing.get("active") is not None or len(protected) == len(queue.items)
+    ):
+        return
+    voices = CharacterVoiceRegistry.from_file(current.voice_manifest)
+    current_items = {item.queue_id: item for item in queue.items}
+    voice_identities: dict[str, object] = {}
+    saved: dict[str, dict[str, object]] = {}
+    controls: dict[str, object] = {}
+    sources: dict[str, Path] = {}
+    previous_inputs = set(current.directory.parent.glob("generation-input-*"))
+    previous_inputs.update(current.directory.parent.parent.glob("*/generation-input-*"))
+    for previous in sorted(previous_inputs):
+        if len(protected) + len(saved) == len(current_items):
+            break
+        if previous == current.directory or not previous.is_dir():
+            continue
+        previous_state = (
+            previous.with_name(
+                previous.name.replace("generation-input-", "generation-output-", 1)
+            )
+            / "generation-state.json"
+        )
+        if not previous_state.is_file():
+            continue
+        try:
+            document = read_versioned_json(
+                previous / "input.json",
+                schema_version=generation_input_schema_version,
+                document_name="offline generation input",
+            )
+            if (
+                document.get("voice_plan_controls_sha256")
+                != plan.synthesis_controls_sha256
+            ):
+                continue
+            old_queue, old_sha256 = load_stable_generation_queue(
+                previous / "queue.jsonl"
+            )
+            if any(
+                old_queue.metadata.get(field) != queue.metadata.get(field)
+                for field in ("game", "game_id", "language")
+            ):
+                continue
+            if not any(
+                item.queue_id not in protected
+                and item.queue_id not in saved
+                and item.queue_id in current_items
+                and item.document == current_items[item.queue_id].document
+                for item in old_queue.items
+            ):
+                continue
+            for name, suffix in (
+                ("story_index", "story-index.jsonl"),
+                ("voice_manifest", "voice-manifest.json"),
+                ("queue", "queue.jsonl"),
+            ):
+                if sha256_file(previous / suffix) != document.get(f"{name}_sha256"):
+                    raise ValueError(f"Previous {name} changed")
+            state = load_json_object(
+                previous_state, "generation state", error_type=BulkGenerationError
+            )
+            old_items = generation_state_items(state)
+            old_voices = CharacterVoiceRegistry.from_file(
+                previous / "voice-manifest.json"
+            )
+            old_roles = document.get("narrator_fallback_roles")
+            if not isinstance(old_roles, list):
+                raise ValueError("Previous narrator roles are invalid")
+            eligible: list[str] = []
+            old_identities: dict[str, object] = {}
+            for item in old_queue.items:
+                target = current_items.get(item.queue_id)
+                result = old_items.get(item.queue_id)
+                if (
+                    target is None
+                    or item.queue_id in protected
+                    or item.queue_id in saved
+                    or target.document != item.document
+                    or not isinstance(result, dict)
+                    or result.get("status") not in {"generated", "approved"}
+                    or "audio_event_composition" in result
+                    or result.get("provider") != plan.synthesis_backend
+                ):
+                    continue
+                requested = synthesis_character_for_line(
+                    item.speaker, item.voice_character
+                )
+                old_character = "Narrator" if requested in old_roles else requested
+                current_character = (
+                    "Narrator"
+                    if requested in current.narrator_fallback_roles
+                    else requested
+                )
+                if (
+                    old_character != current_character
+                    or result.get("voice_character") != old_character
+                ):
+                    continue
+                if current_character not in voice_identities:
+                    voice_identities[current_character] = _voice_content_identity(
+                        voices, current_character
+                    )
+                if old_character not in old_identities:
+                    old_identities[old_character] = _voice_content_identity(
+                        old_voices, old_character
+                    )
+                identity = voice_identities[current_character]
+                if identity is not None and old_identities[old_character] == identity:
+                    eligible.append(item.queue_id)
+            if not eligible:
+                continue
+            state = load_generation_state_from_snapshot(
+                previous_state,
+                old_queue,
+                old_sha256,
+                state_document=state,
+                selected_line_ids=frozenset(
+                    current_items[queue_id].line_id for queue_id in eligible
+                ),
+            )
+            for queue_id in eligible:
+                result = old_items[queue_id]
+                saved[queue_id] = copy.deepcopy(result)
+                sources[queue_id] = previous_state.parent / str(result["path"])
+            registry = state.get("synthesis_controls")
+            if isinstance(registry, dict):
+                controls.update(registry)
+        except (BulkGenerationError, OSError, ValueError, VoiceManifestError) as error:
+            raise PregenerationQueueError(
+                f"Unable to reuse saved offline audio: {error}"
+            ) from error
+    if not saved:
+        return
+    try:
+        store = SharedAudioStore(current.directory.parent.parent / "audio-store")
+        with staged_directory(
+            current.directory.parent, prefix=".generation-reuse-"
+        ) as staging:
+            for queue_id, result in saved.items():
+                digest = str(result["file_sha256"])
+                source = sources[queue_id]
+                if sha256_file(source) != digest:
+                    raise ValueError("Saved recording changed before reuse")
+                canonical = store.put(
+                    canonical_document_sha256({"legacy_completed_audio": result}),
+                    source,
+                )
+                link_shared_audio(canonical, source, expected_sha256=digest)
+                relative = f"audio/{digest}.wav"
+                link_shared_audio(canonical, staging / relative, expected_sha256=digest)
+                result["path"] = relative
+            state = {
+                "schema": STATE_SCHEMA,
+                "schema_version": STATE_VERSION,
+                "queue_sha256": queue_sha256,
+                "game": queue.metadata.get("game"),
+                "language": queue.metadata.get("language"),
+                "items": saved,
+                "active": None,
+                "synthesis_controls": controls,
+            }
+            atomic_write_json(staging / "generation-state.json", state, sort_keys=True)
+            load_generation_state_from_snapshot(
+                staging / "generation-state.json", queue, queue_sha256
+            )
+            if existing is None:
+                rename_directory_no_replace(staging, current.output_directory)
+            else:
+                with GenerationLease(
+                    current.output_directory,
+                    queue_sha256,
+                    process_checker=process_is_alive,
+                ):
+                    latest = load_generation_state_from_snapshot(
+                        state_path, queue, queue_sha256
+                    )
+                    if latest.get("active") is not None:
+                        return
+                    latest_items = generation_state_items(latest)
+                    for queue_id, result in saved.items():
+                        if queue_id not in latest_items:
+                            relative = str(result["path"])
+                            link_shared_audio(
+                                staging / relative,
+                                current.output_directory / relative,
+                                expected_sha256=str(result["file_sha256"]),
+                            )
+                            latest_items[queue_id] = result
+                    latest_controls = latest.setdefault("synthesis_controls", {})
+                    if isinstance(latest_controls, dict):
+                        latest_controls.update(controls)
+                    atomic_write_json(state_path, latest, sort_keys=True)
+    except (AtomicPublicationError, BulkGenerationError, OSError, ValueError) as error:
+        raise PregenerationQueueError(
+            f"Unable to reuse saved offline audio: {error}"
+        ) from error
+
+
+def _voice_content_identity(registry: CharacterVoiceRegistry, character: str) -> object:
+    voice = registry.resolve(character)
+    if voice is None:
+        return None
+    return (
+        voice.speaker,
+        voice.reference_transcript,
+        tuple(sha256_file(path) for path in voice.references),
+    )
 
 
 def _load_story(job: PregenerationJob) -> StoryIndexDocument:

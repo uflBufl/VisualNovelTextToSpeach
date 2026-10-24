@@ -603,7 +603,10 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             plan, group, _manifest = ambiguous_fixture(Path(directory))
             service = Mock(backend=Mock(runtime_status="GPU model loaded"))
             panel = VoiceAuditionPanel(
-                Mock(), preview_service=service, thread_pool=ManualThreadPool()
+                Mock(),
+                preview_service=service,
+                player=Mock(),
+                thread_pool=ManualThreadPool(),
             )
             self.addCleanup(panel.deleteLater)
             panel.start(plan, group_id=group.group_id)
@@ -944,7 +947,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             plan, _group = with_second_candidate(plan, group)
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
-                VoiceDecisionStore(root / "decisions.json"), thread_pool=pool
+                VoiceDecisionStore(root / "decisions.json"),
+                player=Mock(),
+                thread_pool=pool,
             )
             previous = panel.preview_service
             self.assertFalse(panel.runtime_timer.isActive())
@@ -2466,8 +2471,11 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
             self.assertEqual(voice_plan_store.create.call_count, 2)
+            self.assertFalse(dialog._awaiting_voice_confirmation)
             self.assertTrue(dialog.preparing_inputs)
             self.assertEqual(len(pool.tasks), 1)
+            self.assertTrue(dialog.input_runner.active)
+            self.assertIn("Checking", dialog.resume_status.text())
 
     def test_deferred_input_check_recovers_a_changed_story(self):
         with TemporaryDirectory() as temporary_directory:

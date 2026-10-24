@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import os
 import shutil
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
@@ -42,6 +41,7 @@ from vntts_artifacts.voice_manifest import (
     write_voice_manifest,
 )
 
+from vntts.audio_store import SharedAudioStore, link_shared_audio
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_manifest import approved_manifest_entries
@@ -84,6 +84,7 @@ from vntts.pregeneration_generation import (
 )
 from vntts.pregeneration_queue import (
     PregenerationInput,
+    generation_input_schema_version,
 )
 from vntts.pregeneration_setup import (
     GameContent,
@@ -101,6 +102,7 @@ from vntts.source_audio_semantics import (
     source_audio_semantics_need_migration,
 )
 from vntts.support import record_background_operation
+from vntts.versioned_json import read_versioned_json
 from vntts.voices import load_voice_manifest
 
 JsonObject = dict[str, object]
@@ -163,6 +165,16 @@ class _StoryAudioPack:
     library: GeneratedAudioLibrary | None
 
 
+@dataclass
+class _SavedGenerationInput:
+    files: dict[Path, tuple[int, ...]]
+    queue: VoiceGenerationQueue
+    queue_sha256: str
+    state: JsonObject | None = None
+    recordings: dict[str, list[tuple[Path, str]]] = field(default_factory=dict)
+    validated_line_ids: set[str] = field(default_factory=set)
+
+
 class StoryAudioInspector:
     """Reuse validated pack metadata only within one background inspection batch."""
 
@@ -179,6 +191,7 @@ class StoryAudioInspector:
         self._packs: dict[Path, _StoryAudioPack | Exception] = {}
         self._source: tuple[StoryIndexDocument, frozenset[str]] | None = None
         self._source_records: dict[str, StoryIndexRecord] = {}
+        self._saved_generation_inputs: dict[Path, _SavedGenerationInput] = {}
 
     def _source_snapshot(self) -> tuple[StoryIndexDocument, frozenset[str]]:
         if self._source is None:
@@ -197,6 +210,116 @@ class StoryAudioInspector:
             )
             self._source_records = {record.line_id: record for record in source.records}
         return self._source
+
+    def _saved_generation_recordings(
+        self, line_ids: Iterable[str]
+    ) -> dict[str, list[tuple[Path, str]]]:
+        selected = set(line_ids)
+        recordings: dict[str, list[tuple[Path, str]]] = {}
+        for job in self.job_store.jobs_for_content(self.content):
+            root = self.job_store.path_for(job.job_id).parent
+            for directory in sorted(root.glob("generation-input-*")):
+                _raise_if_cancelled(self.cancel_event)
+                state_path = (
+                    directory.with_name(
+                        directory.name.replace(
+                            "generation-input-", "generation-output-", 1
+                        )
+                    )
+                    / "generation-state.json"
+                )
+                if not state_path.is_file():
+                    continue
+                metadata = directory / "input.json"
+                queue_path = directory / "queue.jsonl"
+                if not metadata.is_file() or not queue_path.is_file():
+                    continue
+                paths = (metadata, queue_path, state_path)
+                before = {path: _file_fingerprint(path) for path in paths}
+                cached = self._saved_generation_inputs.get(directory)
+                if cached is None or cached.files != before:
+                    document = read_versioned_json(
+                        metadata,
+                        schema_version=generation_input_schema_version,
+                        document_name="offline generation input",
+                    )
+                    if (
+                        document.get("source_story_index_sha256")
+                        != job.story_index_sha256
+                    ):
+                        raise OfflinePackError(
+                            "Saved generation input belongs to changed dialogue"
+                        )
+                    queue, digest = load_stable_generation_queue(queue_path)
+                    if digest != document.get("queue_sha256"):
+                        raise OfflinePackError("Saved generation queue changed")
+                    source = self._source_snapshot()[0]
+                    if any(
+                        queue.metadata.get(field) != source.metadata.get(field)
+                        for field in ("game", "language")
+                    ):
+                        raise OfflinePackError(
+                            "Saved generation queue belongs to different content"
+                        )
+                    cached = _SavedGenerationInput(before, queue, digest)
+                    self._saved_generation_inputs[directory] = cached
+                relevant = {
+                    item.queue_id
+                    for item in cached.queue.items
+                    if item.line_id in self._source_records
+                    and self._source_records[item.line_id].text_sha256
+                    == item.text_sha256
+                }
+                requested = (
+                    frozenset(
+                        item.line_id
+                        for item in cached.queue.items
+                        if item.queue_id in relevant and item.line_id in selected
+                    )
+                    - cached.validated_line_ids
+                )
+                if requested:
+                    state = load_generation_state_from_snapshot(
+                        state_path,
+                        cached.queue,
+                        cached.queue_sha256,
+                        state_document=cached.state,
+                        selected_line_ids=frozenset(requested),
+                    )
+                    if any(
+                        _file_fingerprint(path) != value
+                        for path, value in before.items()
+                    ):
+                        raise OfflinePackError(
+                            "Saved generation state changed while inspected"
+                        )
+                    state_items = _state_items(state)
+                    for item in cached.queue.items:
+                        if (
+                            item.line_id not in requested
+                            or item.queue_id not in relevant
+                        ):
+                            continue
+                        result = state_items.get(item.queue_id)
+                        if result is not None and result.get("status") in {
+                            "generated",
+                            "approved",
+                        }:
+                            cached.recordings.setdefault(
+                                str(result["line_id"]), []
+                            ).append(
+                                (
+                                    state_path.parent / str(result["path"]),
+                                    str(result["file_sha256"]),
+                                )
+                            )
+                    cached.state = state
+                    cached.validated_line_ids.update(requested)
+                for line_id in selected:
+                    recordings.setdefault(line_id, []).extend(
+                        cached.recordings.get(line_id, ())
+                    )
+        return recordings
 
     def inspect(
         self,
@@ -230,6 +353,8 @@ class StoryAudioInspector:
             non_spoken=0,
             missing=0,
         )
+        saved_recordings: dict[str, list[tuple[Path, str]]] | None = None
+        unpublished_recordings = False
         for line_id in selection.line_ids:
             _raise_if_cancelled(cancel_event)
             record = self._source_records.get(line_id)
@@ -245,9 +370,42 @@ class StoryAudioInspector:
             route = _story_audio_route(
                 record, saved, source, source_audio_line_ids, pack
             )
+            if route == "missing" and not pack.explicit:
+                try:
+                    if saved_recordings is None:
+                        saved_recordings = self._saved_generation_recordings(
+                            selection.line_ids
+                        )
+                    recordings = saved_recordings.get(line_id, ())
+                    for audio, digest in recordings:
+                        if sha256_file(audio) != digest:
+                            raise OfflinePackError(
+                                f"Saved recording changed for {line_id}"
+                            )
+                    if recordings:
+                        route = "generated"
+                        unpublished_recordings = True
+                except (BulkGenerationError, OSError, ValueError) as error:
+                    raise OfflinePackError(
+                        f"Unable to inspect saved recordings: {error}"
+                    ) from error
             counts[route] += 1
         _raise_if_cancelled(cancel_event)
-        return StoryAudioCoverage(selection.title, pack.manifest, **counts)
+        return StoryAudioCoverage(
+            selection.title, None if unpublished_recordings else pack.manifest, **counts
+        )
+
+
+def _file_fingerprint(path: Path) -> tuple[int, ...]:
+    value = path.stat(follow_symlinks=False)
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
 
 
 def inspect_story_audio(
@@ -644,6 +802,12 @@ class OfflinePackPublisher:
                     generated_copy,
                     current_omissions,
                     cancel_event=cancel_event,
+                    audio_store_directory=(
+                        generation_input.directory.parent.parent
+                        if generation_input.directory.parent.name == job.job_id
+                        else generation_input.directory.parent
+                    )
+                    / "audio-store",
                 )
                 _raise_if_cancelled(cancel_event)
                 _write_route_manifest(
@@ -838,13 +1002,6 @@ def _pack_staging_bytes(
     voices: tuple[VoiceManifestEntry, ...],
 ) -> int:
     copies: dict[str, Path] = {}
-    for record in approved_manifest_entries(
-        state, generation_result.output, validate_files=False
-    ):
-        relative = _safe_relative(record["audio"], "Generated WAV")
-        copies[f"audio/{record['audio_sha256']}.wav"] = generation_result.output / Path(
-            *relative.parts
-        )
     metadata = [generation_input.story_index, generation_input.voice_manifest]
     if generation_input.source_audio_semantic_evidence is not None:
         metadata.append(generation_input.source_audio_semantic_evidence)
@@ -871,13 +1028,6 @@ def _pack_staging_bytes(
             base_voices,
             portable=True,
         )
-        if base.generated_audio_manifest is not None:
-            current_line_ids = {record.line_id for record in story.records}
-            for record in load_generated_audio_document(
-                base.generated_audio_manifest
-            ).records:
-                if record.line_id not in current_line_ids:
-                    copies[f"audio/{record.audio_sha256}.wav"] = record.audio
     return int(
         1_048_576
         + sum(path.stat().st_size for path in copies.values())
@@ -1400,24 +1550,32 @@ def _write_cumulative_routes(
     current_omissions: JsonRecords,
     *,
     cancel_event: Cancellation | None,
+    audio_store_directory: Path | None = None,
 ) -> tuple[JsonRecords, JsonRecords, JsonRecords]:
     current_line_ids = {record.line_id for record in current_story.records}
     records: JsonRecords = []
     live_fallbacks: JsonRecords = []
     omissions: JsonRecords = []
+    audio_store = SharedAudioStore(
+        audio_store_directory or generation_result.output.parent / "audio-store"
+    )
     if base is not None:
         if base.generated_audio_manifest is None:
             raise OfflinePackError("Active self-service pack has no audio routes")
         base_generated = load_generated_audio_document(base.generated_audio_manifest)
         for record in base_generated.records:
             _raise_if_cancelled(cancel_event)
+            if sha256_file(record.audio) != record.audio_sha256:
+                raise OfflinePackError("Existing recording changed before publication")
+            canonical = audio_store.put(record.audio_sha256, record.audio)
+            _link_verified_file(canonical, record.audio, record.audio_sha256)
             if record.line_id not in current_line_ids:
                 records.append(
                     _portable_generated_record(
                         record.to_record(),
                         record.audio,
                         generated_copy,
-                        reuse=True,
+                        audio_store=audio_store,
                     )
                 )
         live_fallbacks.extend(
@@ -1448,6 +1606,7 @@ def _write_cumulative_routes(
                 record,
                 generation_result.output / Path(*relative.parts),
                 generated_copy,
+                audio_store=audio_store,
             )
         )
     live_fallbacks.extend(_live_fallback_records(state))
@@ -1463,18 +1622,26 @@ def _portable_generated_record(
     source: Path,
     generated_copy: Path,
     *,
-    reuse: bool = False,
+    audio_store: SharedAudioStore | None = None,
 ) -> JsonObject:
     candidate = copy.deepcopy(record)
     portable = f"audio/{candidate['audio_sha256']}.wav"
     destination = generated_copy.parent / portable
-    if reuse:
-        digest = candidate.get("audio_sha256")
-        if not isinstance(digest, str):
-            raise OfflinePackError("Generated audio digest is invalid")
+    digest = candidate.get("audio_sha256")
+    if not isinstance(digest, str):
+        raise OfflinePackError("Generated audio digest is invalid")
+    try:
+        if sha256_file(source) != digest:
+            raise OfflinePackError("Generated recording changed before publication")
+        if audio_store is not None:
+            canonical = audio_store.put(digest, source)
+            _link_verified_file(canonical, source, digest)
+            source = canonical
         _link_verified_file(source, destination, digest)
-    else:
-        _copy_file(source, destination)
+    except (OSError, ValueError) as error:
+        raise OfflinePackError(
+            f"Unable to link generated recording: {error}"
+        ) from error
     candidate["audio"] = portable
     return candidate
 
@@ -1680,22 +1847,10 @@ def _copy_file(source: str | Path, destination: Path) -> str:
 def _link_verified_file(
     source: str | Path, destination: Path, expected_sha256: str
 ) -> None:
-    source = Path(source)
-    if not source.is_file() or source.is_symlink():
-        raise OfflinePackError(f"Offline pack source is unsafe: {source}")
-    source = source.resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.is_file():
-        if sha256_file(destination) == expected_sha256:
-            return
-        raise OfflinePackError(f"Offline pack destination conflicts: {destination}")
     try:
-        os.link(source, destination)
-    except OSError:
-        _copy_file(source, destination)
-        return
-    if sha256_file(destination) != expected_sha256:
-        raise OfflinePackError(f"Offline pack source changed: {source}")
+        link_shared_audio(Path(source), destination, expected_sha256=expected_sha256)
+    except (OSError, ValueError) as error:
+        raise OfflinePackError(f"Unable to link offline pack audio: {error}") from error
 
 
 def _safe_relative(value: object, label: str) -> PurePosixPath:
