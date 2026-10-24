@@ -763,6 +763,98 @@ class GameNarratorTest(unittest.TestCase):
         self.assertFalse(dialog.voice_panel.isHidden())
         self.importer.prepare_voice_roles.assert_not_called()
 
+    def test_source_details_hides_accepted_terms_but_keeps_missing_consent_visible(
+        self,
+    ):
+        dialog = self.editor(
+            settings=self.settings.updated(speech_backend="pocket-tts")
+        )
+        self.select(dialog, "catalog", source="character:rhiannon")
+        dialog.show()
+        self.application.processEvents()
+        self.assertFalse(dialog.source_setup.isChecked())
+        self.assertTrue(dialog.terms.isVisible())
+        self.assertTrue(dialog.consent.isVisible())
+        dialog.consent.setChecked(True)
+        self.drain()
+        self.assertTrue(dialog.terms.isHidden())
+        self.assertTrue(dialog.consent.isHidden())
+        self.assertTrue(dialog.source_setup.isVisible())
+        dialog.source_setup.setChecked(True)
+        self.assertTrue(dialog.terms.isVisible())
+        self.assertTrue(dialog.consent.isVisible())
+        dialog.consent.setChecked(False)
+        self.drain()
+        dialog.source_setup.setChecked(False)
+        self.assertTrue(dialog.terms.isVisible())
+        self.assertTrue(dialog.consent.isVisible())
+        self.assertFalse(dialog._settings().pocket_gated_model_accepted)
+        self.assertEqual(self.backend.requests, [])
+
+    def test_source_details_preserves_candidate_phrase_and_donor_without_reloading(
+        self,
+    ):
+        plan, group, _manifest = ambiguous_fixture(self.root / "details-donor")
+        dialog = self.editor()
+        dialog.set_voice_context(plan, character=group.character)
+        self.drain()
+        panel = dialog.voice_panel
+        panel.preview_text.setPlainText("Keep my comparison phrase.")
+        selected, donor = panel.current_selection, dialog.characters.currentText()
+        dirty, bindings = dialog._settings_dirty, self.library.bindings()
+        self.importer.reset_mock()
+        for expanded in (True, False):
+            dialog.source_setup.setChecked(expanded)
+            self.assertEqual(dialog.source_setup_controls.isHidden(), not expanded)
+            self.assertEqual(panel.current_selection, selected)
+            self.assertEqual(dialog.characters.currentText(), donor)
+            self.assertEqual(
+                panel.preview_text.toPlainText(), "Keep my comparison phrase."
+            )
+            self.assertEqual(dialog._settings_dirty, dirty)
+            self.assertEqual(self.library.bindings(), bindings)
+            self.assertFalse(dialog.runner.active)
+        self.importer.prepare_voice_roles.assert_not_called()
+        self.importer.narrator_characters.assert_not_called()
+
+    def test_source_details_follows_source_mode_without_changing_consent(self):
+        self.bind_narrator()
+        dialog = self.editor(
+            settings=self.settings.updated(
+                speech_backend="pocket-tts", pocket_gated_model_accepted=True
+            )
+        )
+        dialog.show()
+        self.application.processEvents()
+        dialog.source_setup.setChecked(True)
+        for mode in ("catalog", "saved", "game", "preset", "automatic"):
+            with self.subTest(mode=mode):
+                self.select(dialog, mode)
+                reference = mode in {"catalog", "saved", "game"}
+                self.assertEqual(dialog.terms.isVisible(), reference)
+                self.assertEqual(dialog.consent.isVisible(), reference)
+                self.assertEqual(dialog.source_setup.isVisible(), reference)
+                self.assertEqual(
+                    dialog.source_setup_controls.isVisible(), mode == "game"
+                )
+                self.assertTrue(dialog.consent.isChecked())
+
+    def test_opening_source_details_during_loading_keeps_actions_disabled(self):
+        dialog = self.editor()
+        self.select(dialog, "game")
+        dialog.discover()
+        self.assertTrue(dialog.runner.active)
+        dialog.source_setup.setChecked(True)
+        self.application.processEvents()
+        self.assertFalse(dialog.source_setup_controls.isHidden())
+        for control in (
+            dialog.consent,
+            dialog.folder_button,
+            dialog.discover_button,
+            dialog.characters,
+        ):
+            self.assertFalse(control.isEnabled())
+
     def test_consent_change_keeps_the_selected_game_donor(self):
         plan, group, _manifest = ambiguous_fixture(self.root / "story-donor")
         dialog = self.editor()

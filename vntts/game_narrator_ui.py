@@ -175,6 +175,7 @@ class GameNarratorDialog(QDialog):
         content.addWidget(self.voice_panel.phrase_box)
         self._build_editor_actions(content)
         self.content_scroll = QScrollArea()
+        self.content_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.content_scroll.setWidgetResizable(True)
         self.content_scroll.setWidget(self.controls)
         layout = QVBoxLayout(self)
@@ -365,17 +366,9 @@ class GameNarratorDialog(QDialog):
         self.terms.setOpenExternalLinks(True)
         self.consent = QCheckBox("I accepted Pocket's terms")
         self.consent.setChecked(self.settings_value.pocket_gated_model_accepted)
-        self.form.addRow(self.terms)
-        self.form.addRow(self.consent)
-        self.game_controls = QWidget()
-        game_form = QFormLayout(self.game_controls)
-        game_form.setContentsMargins(0, 0, 0, 0)
-        game_form.setFieldGrowthPolicy(
-            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
-        )
-        self.source_setup = QCheckBox("Game source setup")
-        setup = QWidget()
-        setup_layout = QHBoxLayout(setup)
+        self.source_setup = QCheckBox("Source details")
+        self.source_setup_controls = QWidget()
+        setup_layout = QHBoxLayout(self.source_setup_controls)
         setup_layout.setContentsMargins(0, 0, 0, 0)
         self.game_installation = QLineEdit("Automatically detected")
         self.game_installation.setReadOnly(True)
@@ -393,27 +386,42 @@ class GameNarratorDialog(QDialog):
         setup_layout.addWidget(self.game_installation, 1)
         setup_layout.addWidget(self.folder_button)
         setup_layout.addWidget(self.discover_button)
-        setup.hide()
-        self.source_setup.toggled.connect(setup.setVisible)
+        self.source_setup_controls.hide()
+        self.source_setup.toggled.connect(self._refresh_source_details)
         self.characters = QComboBox()
         self.characters.setAccessibleName("Game voice donor")
         self.characters.currentIndexChanged.connect(self._character_changed)
-        donor = QHBoxLayout()
-        donor.addWidget(self.characters, 1)
-        donor.addWidget(self.source_setup)
-        game_form.addRow("Donor", donor)
-        game_form.addRow(setup)
-        self.form.addRow(self.game_controls)
+        self.form.addRow("Donor", self.characters)
+        self.source_details_actions = QHBoxLayout()
+        self.source_details_actions.addWidget(self.source_setup)
+        self.form.addRow(self.source_details_actions)
+        self.form.addRow(self.terms)
+        self.form.addRow(self.consent)
+        self.form.addRow(self.source_setup_controls)
+
+    def _refresh_source_details(self, *_args: object) -> None:
+        mode = self.source.currentData()
+        pocket_reference = (
+            self.settings_value.speech_backend == "pocket-tts"
+            and mode in {"game", "catalog", "narrator", "saved"}
+        )
+        expanded = self.source_setup.isChecked()
+        show_terms = pocket_reference and (not self.consent.isChecked() or expanded)
+        self.terms.setVisible(show_terms)
+        self.consent.setVisible(show_terms)
+        self.source_setup.setVisible(
+            mode == "game" or (pocket_reference and self.consent.isChecked())
+        )
+        self.source_setup_controls.setVisible(mode == "game" and expanded)
 
     def _build_details_controls(self) -> None:
         panel_layout = self.voice_panel.layout()
         assert panel_layout is not None
         panel_layout.removeWidget(self.voice_panel.reference_details_toggle)
-        tools = QHBoxLayout()
+        tools = self.source_details_actions
         tools.addWidget(self.voice_panel.reference_details_toggle)
         tools.addWidget(self.copy_details)
         tools.addStretch()
-        self.form.addRow(tools)
 
     def select_role(self, role: str) -> bool:
         """Select a trusted application-provided role without enabling free-form UI."""
@@ -986,12 +994,8 @@ class GameNarratorDialog(QDialog):
         self.voice_panel.playback_guard = None
         self.form.setRowVisible(self.presets, mode == "preset")
         self.form.setRowVisible(self.catalog_choice, mode == "catalog")
-        self.form.setRowVisible(self.game_controls, mode == "game")
-        pocket = self.settings_value.speech_backend == "pocket-tts"
-        self.terms.setVisible(
-            pocket and mode in {"game", "catalog", "narrator", "saved"}
-        )
-        self.consent.setVisible(self.terms.isVisibleTo(self.controls))
+        self.form.setRowVisible(self.characters, mode == "game")
+        self._refresh_source_details()
         if mode == "game":
             group = self._story_group()
             if (

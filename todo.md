@@ -6,7 +6,7 @@
 
 ## UI improvements - one item at a time
 
-- [ ] 2. Simplify the voice editor: reduce nested frames and move accepted terms/source maintenance into contextual details without weakening consent or readiness checks. Retain the accepted voice layout, clear reference selection and preview actions.
+- [ ] 2. Review the native before/after trial of the simplified voice editor: borderless current/new/preview groups and Source details for accepted Pocket terms and game source maintenance. Confirm the visual result before item 3.
 - [ ] 3. Separate Settings from Tools: give the disclosure/menu of maintenance actions a distinct name and keep the actual Settings entry unambiguous. Start after item 2.
 - [ ] 4. Add action feedback and keyboard affordances: confirm clipboard copies, include existing shortcuts in tooltips, and provide native clear buttons in search fields. Start after item 3; preserve existing keyboard dispatch and accessibility.
 
