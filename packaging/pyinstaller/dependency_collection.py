@@ -1,7 +1,12 @@
-from PyInstaller.utils.hooks import collect_all, copy_metadata
+from PyInstaller.utils.hooks import collect_all, collect_data_files, copy_metadata
 
 
 def collect_packaged_dependencies(datas, binaries, hidden_imports):
+    datas.extend(
+        collect_data_files(
+            "vntts", includes=["icons/lucide/*.svg", "icons/lucide/LICENSE"]
+        )
+    )
     provider_datas, provider_binaries, provider_imports = collect_all("r1999extractor")
     datas.extend(provider_datas)
     binaries.extend(provider_binaries)

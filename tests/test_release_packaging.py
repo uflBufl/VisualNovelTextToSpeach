@@ -1,4 +1,5 @@
 import importlib.util
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import call, patch
@@ -15,6 +16,14 @@ dependency_collection_spec.loader.exec_module(dependency_collection)
 
 
 class ReleasePackagingTest(unittest.TestCase):
+    def test_icons_are_package_data_for_wheel_and_source_distribution(self):
+        project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())
+
+        self.assertEqual(
+            project["tool"]["setuptools"]["package-data"]["vntts"],
+            ["icons/lucide/*.svg", "icons/lucide/LICENSE"],
+        )
+
     def test_decoder_is_staged_with_native_libraries_and_licenses(self):
         for platform, suffix in (("macos", "sh"), ("windows", "ps1")):
             script = (PROJECT_ROOT / f"scripts/build-{platform}.{suffix}").read_text()
@@ -65,6 +74,11 @@ class ReleasePackagingTest(unittest.TestCase):
         with (
             patch.object(
                 dependency_collection,
+                "collect_data_files",
+                return_value=[("vntts/icons/lucide/play.svg", "vntts/icons/lucide")],
+            ) as collect_data_files,
+            patch.object(
+                dependency_collection,
                 "collect_all",
                 side_effect=lambda package: (
                     [(f"{package}-data", "data")],
@@ -82,6 +96,9 @@ class ReleasePackagingTest(unittest.TestCase):
                 datas, binaries, hidden_imports
             )
 
+        collect_data_files.assert_called_once_with(
+            "vntts", includes=["icons/lucide/*.svg", "icons/lucide/LICENSE"]
+        )
         self.assertEqual(
             collect_all.call_args_list, [call(package) for package in packages]
         )
@@ -90,7 +107,8 @@ class ReleasePackagingTest(unittest.TestCase):
         )
         self.assertEqual(
             datas,
-            [(f"{name}-data", "data") for name in packages]
+            [("vntts/icons/lucide/play.svg", "vntts/icons/lucide")]
+            + [(f"{name}-data", "data") for name in packages]
             + [
                 (f"{name}-metadata", "metadata")
                 for name in distributions

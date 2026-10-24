@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
+
 
 def add_composite_form_row(
     form: QFormLayout, label_text: str, field: QWidget, field_layout: QLayout
@@ -75,6 +77,7 @@ def copy_text_button(
     parent: QWidget | None = None,
 ) -> QPushButton:
     button = QPushButton(label, parent)
+    set_action_icon(button, "copy")
     button.clicked.connect(lambda: QApplication.clipboard().setText(text_provider()))
     button.setToolTip(
         "Copy the full text, including details that do not fit on screen."

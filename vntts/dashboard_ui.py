@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
 from vntts.auto_advance_policy import auto_advance_control_state
 from vntts.settings import AppSettings, is_live_sequence_audio_mode, main_sections
 from vntts.speech_presentation import (
@@ -152,6 +153,7 @@ def _apply_reading_capabilities(
     read_button.setAccessibleName(state.read_label)
     read_button.setAccessibleDescription(state.read_tooltip)
     read_button.setEnabled(state.can_read)
+    set_action_icon(pause_button, "play" if state.paused else "pause")
     pause_button.setText(state.pause_label)
     pause_button.setAccessibleName(state.pause_label)
     pause_button.setEnabled(state.can_pause)
@@ -164,6 +166,9 @@ def _apply_reading_capabilities(
     _set_live_button_presentation(live_button, state.active)
     live_button.setToolTip("" if state.can_toggle_live else state.reason_for("live"))
     if state.transition is not None:
+        set_action_icon(
+            live_button, "x" if state.transition == "starting" else "square"
+        )
         live_button.setText(
             "Cancel start" if state.transition == "starting" else "Stopping reading..."
         )
@@ -183,6 +188,7 @@ def _apply_reading_capabilities(
 
 
 def _set_live_button_presentation(button: QPushButton, running: bool) -> None:
+    set_action_icon(button, "square" if running else "play")
     button.setText("Stop reading" if running else "Start reading")
     button.setDefault(True)
     button.setAccessibleDescription(
@@ -347,6 +353,7 @@ class ControlDashboard(QMainWindow):
         self.details_layout.addWidget(self.speech_details)
         self.details_layout.addWidget(self.playback_details)
         self.details_toggle = QPushButton("Show technical details")
+        set_action_icon(self.details_toggle, "list")
         self.details_toggle.setCheckable(True)
         self.details_toggle.setAccessibleDescription(
             "Show or hide voice, audio source, OCR, latency and configuration details"
@@ -358,10 +365,15 @@ class ControlDashboard(QMainWindow):
 
     def _build_action_buttons(self) -> QHBoxLayout:
         self.read_button = QPushButton("Read current dialogue")
+        set_action_icon(self.read_button, "volume-2")
         self.live_button = QPushButton("Start reading")
+        set_action_icon(self.live_button, "play")
         self.pause_button = QPushButton("Pause speech")
+        set_action_icon(self.pause_button, "pause")
         self.sequence_resync_button = QPushButton("Set story position / resync")
+        set_action_icon(self.sequence_resync_button, "locate-fixed")
         self.sequence_expected_button = QPushButton("Use expected next line")
+        set_action_icon(self.sequence_expected_button, "skip-forward")
         self.auto_advance_check = QCheckBox()
         self.auto_advance_check.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
@@ -389,6 +401,7 @@ class ControlDashboard(QMainWindow):
         reading_actions.addWidget(self.pause_button)
         reading_actions.addWidget(self.read_button)
         self.prepare_reading_button = QPushButton("Set up reading")
+        set_action_icon(self.prepare_reading_button, "settings")
         self.prepare_reading_button.clicked.connect(
             lambda: (
                 self.settings_requested.emit()
@@ -399,6 +412,7 @@ class ControlDashboard(QMainWindow):
             )
         )
         self.prepare_audio_button = QPushButton("Prepare offline audio...")
+        set_action_icon(self.prepare_audio_button, "audio-lines")
         self.prepare_audio_button.setAccessibleDescription(
             "Choose stories and prepare their voices locally with guided defaults"
         )
@@ -441,6 +455,7 @@ class ControlDashboard(QMainWindow):
         setup.setContentsMargins(0, 0, 0, 0)
         setup_primary = QHBoxLayout()
         self.setup_primary_button = QPushButton("Check readiness")
+        set_action_icon(self.setup_primary_button, "circle-check")
         self.setup_primary_button.setAccessibleDescription(
             "Check readiness and open the direct fix for any setup problem"
         )
@@ -448,6 +463,7 @@ class ControlDashboard(QMainWindow):
         setup_primary.addWidget(self.setup_primary_button)
         self.loading_blocked_buttons.append(self.setup_primary_button)
         self.setup_more_button = QPushButton("Settings and more")
+        set_action_icon(self.setup_more_button, "settings")
         self.setup_more_button.setCheckable(True)
         self.setup_more_button.setAccessibleDescription(
             "Show or hide calibration, voice, support and settings shortcuts"
@@ -459,13 +475,14 @@ class ControlDashboard(QMainWindow):
         setup_secondary = QHBoxLayout(self.setup_secondary_content)
         setup_secondary.setContentsMargins(0, 0, 0, 0)
         self.setup_buttons = [self.setup_primary_button, self.setup_more_button]
-        for label, signal in (
-            ("Calibrate capture", self.calibration_requested),
-            ("Narrator voice", self.voices_requested),
-            ("Support and logs", self.diagnostics_requested),
-            ("Settings", self.settings_requested),
+        for label, icon, signal in (
+            ("Calibrate capture", "locate-fixed", self.calibration_requested),
+            ("Narrator voice", "audio-lines", self.voices_requested),
+            ("Support and logs", "circle-help", self.diagnostics_requested),
+            ("Settings", "settings", self.settings_requested),
         ):
             button = QPushButton(label)
+            set_action_icon(button, icon)
             button.clicked.connect(signal.emit)
             if label != "Narrator voice":
                 setup_secondary.addWidget(button)
@@ -479,6 +496,7 @@ class ControlDashboard(QMainWindow):
             elif label == "Settings":
                 self.settings_button = button
         self.quit_button = QPushButton("Quit VNTTS")
+        set_action_icon(self.quit_button, "log-out")
         self.quit_button.clicked.connect(self.request_quit)
         setup_secondary.addWidget(self.quit_button)
         setup_secondary.addStretch()
@@ -537,6 +555,7 @@ class ControlDashboard(QMainWindow):
         layout = QVBoxLayout(reading_content)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.compact_button = QPushButton("Compact controls")
+        set_action_icon(self.compact_button, "shrink")
         self.compact_button.clicked.connect(self.compact_requested.emit)
         self.reading_defaults = QLabel()
         self.reading_defaults.setWordWrap(True)
@@ -546,6 +565,7 @@ class ControlDashboard(QMainWindow):
         self.speech_runtime.setTextFormat(Qt.TextFormat.PlainText)
         self.speech_runtime.setAccessibleName("Live speech compute device")
         self.moss_runtime_button = QPushButton("Load OpenMOSS")
+        set_action_icon(self.moss_runtime_button, "audio-lines")
         self.moss_runtime_button.setAccessibleName("Load or unload OpenMOSS model")
         self.moss_runtime_button.clicked.connect(self.moss_runtime_requested.emit)
         layout.addWidget(card)
@@ -676,6 +696,7 @@ class ControlDashboard(QMainWindow):
         shell_layout.addLayout(status_row)
         shell_layout.addWidget(self.loading_panel)
         self.voice_edit_status = QPushButton("Voices: unsaved selection - Show")
+        set_action_icon(self.voice_edit_status, "audio-lines")
         self.voice_edit_status.setAccessibleName("Pending voice selection")
         self.voice_edit_status.clicked.connect(self.show_voices)
         self.voice_edit_status.hide()
@@ -1294,11 +1315,16 @@ class CompactController(QWidget):
 
     def _build_buttons(self) -> None:
         self.live_button = QPushButton("Start reading")
+        set_action_icon(self.live_button, "play")
         self.pause_button = QPushButton("Pause speech")
+        set_action_icon(self.pause_button, "pause")
         self.read_button = QPushButton("Read once")
+        set_action_icon(self.read_button, "volume-2")
         self.sequence_expected_button = QPushButton("Use expected next line")
+        set_action_icon(self.sequence_expected_button, "skip-forward")
         self.sequence_expected_button.setVisible(False)
         self.full_button = QPushButton("Full controls")
+        set_action_icon(self.full_button, "expand")
         self.live_button.setDefault(True)
         self.live_button.setAccessibleDescription(
             "Start reading or immediately stop reading and speech"

@@ -31,13 +31,13 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
-    QStyle,
     QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
 )
 from vntts_artifacts.voice_manifest import normalize_character_name
 
+from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.pcm_playback import PcmPlaybackError
 from vntts.document_identity import sha256_file
@@ -263,6 +263,7 @@ class VoiceAuditionPanel(QGroupBox):
         self.summary.setAccessibleName("Voice choice estimate")
         self.summary.setWordWrap(True)
         self.choose_all_button = QPushButton("Choose all automatically")
+        set_action_icon(self.choose_all_button, "wand-sparkles")
         self.choose_all_button.clicked.connect(self.choose_all_automatically)
         self.summary_row = QHBoxLayout()
         self.summary_row.addWidget(self.summary, 1)
@@ -298,13 +299,16 @@ class VoiceAuditionPanel(QGroupBox):
         self.current_voice_box = self._build_current_voice()
         self._initialize_advice(content_advisor, thread_pool)
         self.a_use = QPushButton("Use this voice")
+        set_action_icon(self.a_use, "check")
         self.a_use.setAccessibleName("Use selected character voice")
         self.a_use.setAutoDefault(False)
         self.a_use.clicked.connect(self.use_a)
         self.auto_button = QPushButton("Choose for me")
+        set_action_icon(self.auto_button, "wand-sparkles")
         self.auto_button.setToolTip("Opt out of verifying this sample yourself")
         self.auto_button.clicked.connect(self.choose_for_me)
         self.retry_save_button = QPushButton("Retry saving choices")
+        set_action_icon(self.retry_save_button, "refresh-cw")
         self.retry_save_button.clicked.connect(self._start_save)
         self.retry_save_button.setVisible(False)
         self.outcome_actions = QHBoxLayout()
@@ -374,6 +378,7 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self.a_reason.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.a_original = QPushButton("Play original reference")
+        set_action_icon(self.a_original, "play")
         self.a_original.setAccessibleName("Play original reference")
         self.a_original.clicked.connect(self._play_original)
         candidate_layout = QVBoxLayout(box)
@@ -409,10 +414,12 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self.preview_text.textChanged.connect(self._preview_text_edited)
         self.game_phrase_button = QPushButton("Use game phrase")
+        set_action_icon(self.game_phrase_button, "file-text")
         self.game_phrase_button.setAutoDefault(False)
         self.game_phrase_button.setAccessibleName("Insert next game phrase")
         self.game_phrase_button.clicked.connect(self._insert_game_phrase)
         self.a_play = QPushButton("Play preview")
+        set_action_icon(self.a_play, "play")
         self.a_play.setMinimumWidth(self.a_play.sizeHint().width())
         self.a_play.setAccessibleName("Play voice preview")
         self.a_play.clicked.connect(self.play_a)
@@ -450,11 +457,13 @@ class VoiceAuditionPanel(QGroupBox):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.current_original = QPushButton("Play original reference")
+        set_action_icon(self.current_original, "play")
         self.current_original.setAccessibleName("Play current voice original reference")
         self.current_original.clicked.connect(
             lambda: self._play_original(current_voice=True)
         )
         self.current_play = QPushButton("Play preview")
+        set_action_icon(self.current_play, "play")
         self.current_play.setAccessibleName("Play current voice preview")
         self.current_play.clicked.connect(self.play_current)
         layout.addWidget(self.current_voice_label)
@@ -2331,13 +2340,7 @@ class VoiceAuditionPanel(QGroupBox):
             (self.current_original, source == "current-original" or preparing_current),
             (self.current_play, source == "current-preview"),
         ):
-            button.setIcon(
-                self.style().standardIcon(
-                    QStyle.StandardPixmap.SP_MediaStop
-                    if playing
-                    else QStyle.StandardPixmap.SP_MediaPlay
-                )
-            )
+            set_action_icon(button, "square" if playing else "play")
 
     def _stop_player(self) -> None:
         self.original_runner.cancel()

@@ -24,6 +24,7 @@ from tests.pregeneration_fixtures import (  # noqa: E402
 )
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import write_story_index  # noqa: E402
+from vntts.action_icons import action_icon  # noqa: E402
 from vntts.game_content_importer import Reverse1999GameImporter  # noqa: E402
 from vntts.person_link_suggestions import PersonLinkSuggestion  # noqa: E402
 from vntts.pregeneration_audition import (  # noqa: E402
@@ -102,6 +103,33 @@ class VoiceAuditionPanelTest(unittest.TestCase):
     def finish_task(self, task):
         task.run()
         self.application.processEvents()
+
+    def test_icons_identify_the_active_playback_control(self):
+        panel = VoiceAuditionPanel(Mock(), preview_service=Mock(), player=Mock())
+        self.addCleanup(panel.deleteLater)
+        self.addCleanup(panel.shutdown)
+        controls = (
+            ("original", panel.a_original),
+            ("preview", panel.a_play),
+            ("current-original", panel.current_original),
+            ("current-preview", panel.current_play),
+        )
+        for source in (
+            None,
+            "original",
+            "preview",
+            "current-original",
+            "current-preview",
+            None,
+        ):
+            panel._set_playing_source(source)
+            for target, button in controls:
+                with self.subTest(source=source, target=target):
+                    expected = action_icon("square" if source == target else "play")
+                    self.assertEqual(
+                        button.icon().pixmap(24).toImage(),
+                        expected.pixmap(24).toImage(),
+                    )
 
     def test_one_play_click_generates_if_needed_and_starts_playback(self):
         for cached in (False, True):

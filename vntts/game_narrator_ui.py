@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
+from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.document_identity import sha256_file
 from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
@@ -292,6 +293,7 @@ class GameNarratorDialog(QDialog):
 
     def _build_editor_actions(self, content: QVBoxLayout) -> None:
         self.cancel_button = QPushButton("Cancel")
+        set_action_icon(self.cancel_button, "x")
         self.cancel_button.clicked.connect(self.reject)
         self.copy_details = copy_text_button(
             "Copy diagnostics", self._copy_details, self
@@ -363,8 +365,10 @@ class GameNarratorDialog(QDialog):
         self.game_installation.setReadOnly(True)
         self._show_known_installation()
         self.discover_button = QPushButton("Refresh voices")
+        set_action_icon(self.discover_button, "refresh-cw")
         self.discover_button.clicked.connect(lambda: self.discover())
         self.folder_button = QPushButton("Change folder...")
+        set_action_icon(self.folder_button, "folder-open")
         self.folder_button.clicked.connect(self._choose_folder)
         setup_layout.addWidget(self.game_installation, 1)
         setup_layout.addWidget(self.folder_button)
@@ -648,6 +652,7 @@ class GameNarratorDialog(QDialog):
             else f"Choose a voice for {role} to change future speech. Reading stays stopped."
         )
         self.context_note.show()
+        set_action_icon(self.cancel_button, "chevron-left" if resume_live else "x")
         self.cancel_button.setText(
             "Back to recovery choices" if resume_live else "Cancel"
         )
