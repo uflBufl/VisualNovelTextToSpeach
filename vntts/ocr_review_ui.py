@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.ocr_review import OCRReviewSample, OCRReviewStore
@@ -76,7 +77,10 @@ class OCRReviewDialog(CloseGuardedDialog):
         self.progress.setAccessibleName("OCR review progress")
 
         self.preview = self._create_preview()
-        self.zoom_button = QPushButton("Enlarge screenshot")
+        self.zoom_button = QPushButton("Enlarge")
+        set_action_icon(self.zoom_button, "expand")
+        self.zoom_button.setAccessibleName("Enlarge captured screenshot")
+        self.zoom_button.setToolTip("Enlarge captured screenshot")
         self.zoom_button.setAutoDefault(False)
         self.zoom_button.clicked.connect(self.enlarge_screenshot)
         form = self.form = self._create_correction_form(profile_name)
@@ -85,6 +89,7 @@ class OCRReviewDialog(CloseGuardedDialog):
         self.impact.setWordWrap(True)
         self.impact.setTextFormat(Qt.TextFormat.PlainText)
         self.save_button = QPushButton("Save rule")
+        set_action_icon(self.save_button, "save")
         self.save_button.setDefault(True)
         self.save_button.setAccessibleDescription(
             "Enabled after the detected speaker or dialogue text is corrected"
@@ -93,6 +98,10 @@ class OCRReviewDialog(CloseGuardedDialog):
             "Change the detected speaker or text before saving a correction."
         )
         self.resolve_button = QPushButton("Dismiss without rule")
+        set_action_icon(self.resolve_button, "skip-forward")
+        self.resolve_button.setToolTip(
+            "Dismiss the selected line without saving a new OCR rule"
+        )
         self.resolve_button.setAutoDefault(False)
         self.save_button.clicked.connect(self.save_correction)
         self.resolve_button.clicked.connect(self.resolve_without_correction)
@@ -137,6 +146,7 @@ class OCRReviewDialog(CloseGuardedDialog):
         content.addWidget(self.empty_message, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        set_action_icon(buttons.button(QDialogButtonBox.StandardButton.Close), "x")
         buttons.addButton(self.resolve_button, QDialogButtonBox.ButtonRole.ActionRole)
         buttons.addButton(self.save_button, QDialogButtonBox.ButtonRole.AcceptRole)
         buttons.button(QDialogButtonBox.StandardButton.Close).setAutoDefault(False)
@@ -448,6 +458,7 @@ class OCRReviewDialog(CloseGuardedDialog):
         scroll = QScrollArea()
         scroll.setWidget(image)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        set_action_icon(buttons.button(QDialogButtonBox.StandardButton.Close), "x")
         buttons.rejected.connect(dialog.close)
         layout = QVBoxLayout(dialog)
         layout.addWidget(scroll)

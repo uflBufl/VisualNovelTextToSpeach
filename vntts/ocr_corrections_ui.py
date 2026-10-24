@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.versioned_json import StaleDocumentError
@@ -100,7 +101,9 @@ class OCRCorrectionsDialog(QDialog):
         self.buttons.accepted.connect(self.save)
         self.buttons.rejected.connect(self.reject)
         self.save_button = self.buttons.button(QDialogButtonBox.StandardButton.Save)
+        set_action_icon(self.save_button, "save")
         self.cancel_button = self.buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        set_action_icon(self.cancel_button, "x")
         self.status = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
         self.status.setAccessibleName("OCR correction save status")
         self.status.setFrameShape(QFrame.Shape.NoFrame)
@@ -109,6 +112,7 @@ class OCRCorrectionsDialog(QDialog):
         self.status.setFixedHeight(self.status.fontMetrics().lineSpacing() * 3 + 12)
         self.status.installEventFilter(self)
         self.copy_button = QPushButton("Copy rules")
+        set_action_icon(self.copy_button, "copy")
         self.copy_button.setToolTip(
             "Copy all edited rules from both scopes, including unsaved changes"
         )
@@ -219,7 +223,9 @@ class OCRCorrectionsDialog(QDialog):
     def _create_table_page(self, table: QTableWidget, description: str) -> QWidget:
         page = QWidget()
         add_button = QPushButton("Add")
+        set_action_icon(add_button, "plus")
         remove_button = QPushButton("Remove selected")
+        set_action_icon(remove_button, "trash-2")
         remove_button.setEnabled(False)
         add_button.setAccessibleDescription("Add a new OCR correction row (Insert)")
         remove_button.setAccessibleDescription(
