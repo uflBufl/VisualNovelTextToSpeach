@@ -158,10 +158,17 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         self.assertEqual(dialog.details.accessibleName(), "Selected dialogue details")
         self.assertEqual(dialog.details_label.buddy(), dialog.details)
         self.assertFalse(dialog.replay_button.isEnabled())
-        self.assertEqual(dialog.replay_button.text(), "Speak with current voice")
-        self.assertEqual(dialog.stop_button.text(), "Stop speaking")
+        self.assertEqual(dialog.replay_button.text(), "Current voice")
+        self.assertEqual(
+            dialog.replay_button.accessibleName(),
+            "Speak selected line with current voice",
+        )
+        self.assertEqual(dialog.stop_button.text(), "Stop")
         self.assertEqual(dialog.stop_button.accessibleName(), "Stop current speech")
-        self.assertEqual(dialog.export_button.text(), "Export history...")
+        self.assertEqual(dialog.export_button.text(), "Export...")
+        self.assertEqual(
+            dialog.export_button.accessibleName(), "Export dialogue history"
+        )
         self.assertFalse(dialog.export_button.isEnabled())
         self.assertIn("No dialogue has been captured", dialog.empty_message.text())
         self.assertEqual(dialog.status.toPlainText(), "")

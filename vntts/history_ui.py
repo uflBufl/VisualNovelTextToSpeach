@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.history import DialogueHistory, DialogueHistoryEntry
 from vntts.qt_dialogs import CloseGuardedDialog
@@ -87,16 +88,22 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         self.details_label.setBuddy(self.details)
 
     def _create_speech_controls(self) -> None:
-        self.replay_button = QPushButton("Speak with current voice")
+        self.replay_button = QPushButton("Current voice")
+        set_action_icon(self.replay_button, "play")
+        self.replay_button.setAccessibleName("Speak selected line with current voice")
         self.replay_button.setEnabled(False)
         self.replay_button.setToolTip(
             "Speak the selected text using its current voice assignment. "
             "This does not replay the original audio."
         )
-        self.stop_button = QPushButton("Stop speaking")
+        self.stop_button = QPushButton("Stop")
+        set_action_icon(self.stop_button, "square")
+        self.stop_button.setToolTip("Stop current speech")
         self.stop_button.setAccessibleName("Stop current speech")
         self.stop_button.setEnabled(False)
-        self.export_button = QPushButton("Export history...")
+        self.export_button = QPushButton("Export...")
+        set_action_icon(self.export_button, "download")
+        self.export_button.setAccessibleName("Export dialogue history")
         self.export_button.setToolTip(
             "Export all retained lines, including those hidden by search."
         )
@@ -129,6 +136,7 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         content.addLayout(entries_layout, 1)
         content.addLayout(details_layout, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        set_action_icon(buttons.button(QDialogButtonBox.StandardButton.Close), "x")
         buttons.rejected.connect(self.close)
         footer = QHBoxLayout()
         footer.addWidget(self.export_button)
