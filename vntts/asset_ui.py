@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.action_icons import set_action_icon
 from vntts.asset_integrity import ModelIntegrityError
 from vntts.async_ui import LatestTaskRunner
 from vntts.document_identity import file_sha256
@@ -114,6 +115,7 @@ class VoiceImportDialog(QDialog):
         self.reference_files.installEventFilter(self)
         self.reference_files.setAccessibleName("Selected audio references")
         self.choose_button = QPushButton("Choose audio files...")
+        set_action_icon(self.choose_button, "folder-open")
         self.choose_button.clicked.connect(self.choose_references)
 
         form = QFormLayout()
@@ -141,6 +143,8 @@ class VoiceImportDialog(QDialog):
         )
         self.add_button = buttons.button(QDialogButtonBox.StandardButton.Save)
         self.add_button.setText("Add voice")
+        set_action_icon(self.add_button, "check")
+        set_action_icon(buttons.button(QDialogButtonBox.StandardButton.Cancel), "x")
         self.add_button.setEnabled(False)
         self.character.textChanged.connect(self._update_add_button)
         self.aliases.textChanged.connect(self._update_add_button)
@@ -292,6 +296,12 @@ class AssetManagerDialog(QDialog):
         self.buttons.button(QDialogButtonBox.StandardButton.Save).setText(
             "Save selection"
         )
+        set_action_icon(
+            self.buttons.button(QDialogButtonBox.StandardButton.Save), "check"
+        )
+        set_action_icon(
+            self.buttons.button(QDialogButtonBox.StandardButton.Cancel), "x"
+        )
         self.buttons.accepted.connect(self.accept_settings)
         self.buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -348,9 +358,12 @@ class AssetManagerDialog(QDialog):
         self.progress.setValue(0)
         self.progress.hide()
         self.download_button = QPushButton("Download model")
+        set_action_icon(self.download_button, "download")
         self.cancel_button = QPushButton("Cancel download")
+        set_action_icon(self.cancel_button, "x")
         self.cancel_button.hide()
         self.verify_button = QPushButton("Verify checksums")
+        set_action_icon(self.verify_button, "circle-check")
         self.cancel_button.setEnabled(False)
         self.download_button.clicked.connect(self.download_model)
         self.cancel_button.clicked.connect(self.cancel_download)
@@ -406,9 +419,13 @@ class AssetManagerDialog(QDialog):
         self.voice_progress.setValue(0)
         self.voice_progress.hide()
         self.import_pack_button = QPushButton("Import library...")
+        set_action_icon(self.import_pack_button, "folder-open")
         self.add_voice_button = QPushButton("Add voice from audio...")
+        set_action_icon(self.add_voice_button, "audio-lines")
         self.browse_manifest_button = QPushButton("Choose existing...")
+        set_action_icon(self.browse_manifest_button, "folder-open")
         self.validate_manifest_button = QPushButton("Verify files")
+        set_action_icon(self.validate_manifest_button, "circle-check")
         self.browse_manifest_button.setAccessibleName("Browse for a voice library")
         self.browse_manifest_button.setAccessibleDescription(
             "Choose an existing voice manifest JSON file"
