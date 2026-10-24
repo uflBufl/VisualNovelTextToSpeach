@@ -896,12 +896,13 @@ class GameNarratorTest(unittest.TestCase):
             dialog.tts_model_label.text(), "TTS model: selected-preview-model"
         )
         self.assertIn("Model: selected-preview-model", dialog.tts_model_label.toolTip())
+        self.assertIs(dialog.tts_model_label.parentWidget(), panel.phrase_box)
+        self.assertEqual(dialog.tts_model_label.x(), panel.preview_text.x())
         self.assertLess(
-            dialog.role.mapTo(dialog.controls, dialog.role.rect().bottomLeft()).y(),
-            dialog.tts_model_label.y(),
+            panel.preview_text.geometry().bottom(), dialog.tts_model_label.y()
         )
         self.assertLess(
-            dialog.tts_model_label.geometry().bottom(), panel.current_voice_box.y()
+            dialog.tts_model_label.geometry().bottom(), panel.game_phrase_button.y()
         )
         self.backend.name = plan.synthesis_backend
         self.listen(dialog)
