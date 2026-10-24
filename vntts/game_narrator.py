@@ -1,6 +1,7 @@
 """Local, explicit narrator selection without changing existing character routes."""
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -156,6 +157,7 @@ def bind_voice_library_selection(
     target_character: str = "Narrator",
     rollback: VoiceBindingRollback | None = None,
     reference_transcript: str | None = None,
+    source_excerpts: Sequence[str] = (),
 ) -> AppSettings:
     """Save a role once in the authoritative library, not another manifest."""
     del additional_manifest
@@ -190,6 +192,7 @@ def bind_voice_library_selection(
         method="manual",
         evidence={"selected_character": character},
         reference_transcript=reference_transcript,
+        source_excerpts=source_excerpts,
         algorithm="voice-picker-v1",
         rollback=rollback,
     )

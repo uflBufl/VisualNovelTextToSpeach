@@ -500,6 +500,8 @@ def _voice_library_selection(
                 "speaker": selected.source_speaker,
             }
         )
+        if selected.source_excerpts:
+            evidence["source_excerpts"] = list(selected.source_excerpts)
     references = selected.reference_sha256s if selected is not None else ()
     return VoiceSelection(
         role=group.character,
@@ -866,6 +868,7 @@ class VoicePlanStore:
                     variant_key=group.variant_key,
                     method="automatic",
                     evidence={"resolution": resolution},
+                    source_excerpts=candidate.source_excerpts,
                     algorithm="voice-plan-v3-qualified",
                     only_if_unbound=True,
                     rollback=rollback,
@@ -1315,6 +1318,7 @@ class VoicePlanStore:
                     variant_key=variant_key,
                     method="automatic",
                     evidence={"resolution": resolution},
+                    source_excerpts=eligible_candidates[0].source_excerpts,
                     algorithm="voice-plan-v2-advisory",
                     only_if_unbound=True,
                     rollback=rollback,

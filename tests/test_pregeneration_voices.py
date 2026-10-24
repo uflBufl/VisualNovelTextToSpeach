@@ -236,6 +236,46 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(list(catalog_root.glob("voice-catalog-*")), [])
             self.assertEqual(list(catalog_root.glob(".voice-catalog-*")), [])
 
+    def test_automatic_reference_choices_preserve_display_excerpts(self):
+        for qualified in (False, True):
+            with self.subTest(qualified=qualified), TemporaryDirectory() as directory:
+                root = Path(directory)
+                job, jobs = self.create_fixture(root)
+                manifest = write_player_candidate_manifest(
+                    root / "voices", job.story_index_sha256
+                )
+                library = VoiceLibrary(root / "library")
+
+                def qualify(plan):
+                    group = next(
+                        value for value in plan.groups if value.character == "Rhiannon"
+                    )
+                    return {group.group_id: group.candidates[-1].source_id}
+
+                plan = VoicePlanStore(jobs, voice_library=library).create(
+                    job,
+                    AppSettings(pocket_gated_model_accepted=True),
+                    manifest_path=manifest,
+                    reference_qualifier=qualify if qualified else None,
+                )
+                group = next(
+                    value for value in plan.groups if value.character == "Rhiannon"
+                )
+                candidate = next(
+                    value
+                    for value in group.candidates
+                    if value.source_id == group.source_id
+                )
+                self.assertTrue(candidate.source_excerpts)
+                self.assertIsNone(candidate.reference_transcript)
+                binding = VoiceLibrary(library.root).binding(group.character)
+                self.assertEqual(binding.source_sha256s, candidate.reference_sha256s)
+                evidence = binding.provenance["evidence"]
+                self.assertEqual(
+                    evidence["source_excerpts"], list(candidate.source_excerpts)
+                )
+                self.assertNotIn("reference_transcript", evidence)
+
     def test_planning_persists_one_automatic_voice_binding(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1914,6 +1954,49 @@ class VoicePlanStoreTest(unittest.TestCase):
                 reloaded.choice_for(group.group_id, group.decision_context_sha256),
                 "default",
             )
+
+    def test_decision_store_preserves_reference_excerpts_without_conditioning_text(
+        self,
+    ):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            library = VoiceLibrary(root / "library")
+            plan = VoicePlanStore(jobs, voice_library=library).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=write_manifest(root / "voices"),
+            )
+            group = next(
+                value for value in plan.groups if value.character == "Rhiannon"
+            )
+            decisions = VoiceDecisionStore(
+                root / "decisions.json", voice_library=library
+            )
+            for transcript in (None, ""):
+                for excerpts in (("The original spoken phrase.",), ()):
+                    with self.subTest(transcript=transcript, excerpts=excerpts):
+                        candidate = replace(
+                            group.candidates[0],
+                            source_excerpts=excerpts,
+                            reference_transcript=transcript,
+                        )
+                        selected = replace(
+                            group,
+                            candidates=(candidate,),
+                            candidate_inventory=(candidate,),
+                        )
+                        decisions.remember(selected, candidate.source_id)
+                        binding = VoiceLibrary(library.root).binding(group.character)
+                        evidence = binding.provenance["evidence"]
+                        if excerpts:
+                            self.assertEqual(
+                                evidence["source_excerpts"], list(excerpts)
+                            )
+                        else:
+                            self.assertNotIn("source_excerpts", evidence)
+                        self.assertNotIn("reference_transcript", evidence)
+                        self.assertEqual(candidate.reference_transcript, transcript)
 
     def test_decision_store_validates_batch_before_updating_voice_library(self):
         with TemporaryDirectory() as temporary_directory:

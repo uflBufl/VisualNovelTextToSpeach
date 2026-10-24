@@ -379,6 +379,7 @@ def remember_voice_binding(
     method: Literal["automatic", "manual"] = "manual",
     evidence: object | None = None,
     reference_transcript: str | None = None,
+    source_excerpts: Sequence[str] = (),
     algorithm: str | None = None,
     only_if_unbound: bool = False,
     rollback: VoiceBindingRollback | None = None,
@@ -427,6 +428,8 @@ def remember_voice_binding(
         "speaker": voice.speaker,
         "evidence": evidence,
     }
+    if source_excerpts:
+        source_evidence["source_excerpts"] = list(source_excerpts)
     if reference_transcript is not None:
         source_evidence["reference_transcript"] = reference_transcript.strip()
     elif voice.reference_transcript:

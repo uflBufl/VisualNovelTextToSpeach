@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QCoreApplication, QEvent
-from PySide6.QtWidgets import QApplication, QBoxLayout, QDialog, QScrollArea
+from PySide6.QtWidgets import QApplication, QDialog, QScrollArea
 from shiboken6 import isValid
 from vntts_artifacts.file_integrity import sha256_file
 
@@ -252,7 +252,7 @@ class GameNarratorTest(unittest.TestCase):
         self.assertTrue(dialog.voice_panel.current_reason.text())
         self.listen(dialog, original=True)
 
-    def test_voice_comparison_has_shared_phrase_and_side_by_side_sections(self):
+    def test_voice_replacement_keeps_current_above_settings_and_candidate(self):
         dialog = self.editor()
         self.assertEqual(dialog.voice_panel.title(), "New voice")
         self.assertEqual(dialog.voice_panel.current_voice_box.title(), "Current voice")
@@ -272,13 +272,16 @@ class GameNarratorTest(unittest.TestCase):
         self.application.processEvents()
         current = dialog.voice_panel.current_voice_box.geometry()
         candidate = dialog.voice_panel.geometry()
-        self.assertEqual(
-            dialog.voice_comparison.direction(), QBoxLayout.Direction.LeftToRight
+        self.assertLess(current.bottom(), dialog.source_controls.geometry().top())
+        self.assertLess(
+            dialog.source_controls.geometry().bottom(),
+            dialog.voice_panel.phrase_box.geometry().top(),
         )
-        self.assertEqual(current.top(), candidate.top())
-        self.assertLess(current.right(), candidate.left())
+        self.assertLess(
+            dialog.voice_panel.phrase_box.geometry().bottom(), candidate.top()
+        )
 
-    def test_voice_comparison_stacks_when_playback_controls_need_more_width(self):
+    def test_voice_replacement_remains_vertical_with_reachable_playback_controls(self):
         dialog = self.editor()
         self.select(dialog, "catalog", source="character:centurion")
         font = dialog.font()
@@ -287,23 +290,20 @@ class GameNarratorTest(unittest.TestCase):
         dialog.resize(480, 540)
         dialog.show()
         self.application.processEvents()
-        self.assertEqual(
-            dialog.voice_comparison.direction(), QBoxLayout.Direction.TopToBottom
-        )
         scroll = dialog.findChild(QScrollArea)
         self.assertIsNotNone(scroll)
-        self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
-        dialog.resize(1060, 720)
-        self.application.processEvents()
-        self.assertEqual(
-            dialog.voice_comparison.direction(), QBoxLayout.Direction.LeftToRight
-        )
-        dialog.resize(480, 540)
-        self.application.processEvents()
-        self.assertEqual(
-            dialog.voice_comparison.direction(), QBoxLayout.Direction.TopToBottom
-        )
-        self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
+        for width, height in ((480, 540), (1060, 720), (480, 540)):
+            dialog.resize(width, height)
+            self.application.processEvents()
+            self.assertLess(
+                dialog.voice_panel.current_voice_box.geometry().bottom(),
+                dialog.source_controls.geometry().top(),
+            )
+            self.assertLess(
+                dialog.voice_panel.phrase_box.geometry().bottom(),
+                dialog.voice_panel.geometry().top(),
+            )
+            self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
         for box, buttons in (
             (
                 dialog.voice_panel.current_voice_box,
@@ -318,6 +318,112 @@ class GameNarratorTest(unittest.TestCase):
                 self.assertTrue(
                     box.rect().contains(button.mapTo(box, button.rect().bottomRight()))
                 )
+
+    def test_same_character_replacement_shows_both_reference_texts_and_keeps_saved_audio(
+        self,
+    ):
+        old_text = "Good morning, traveller."
+        new_text = "The storm has passed."
+        original = (self.manifest.parent / "references" / "rhiannon.wav").read_bytes()
+        self.settings = bind_voice_library_selection(
+            self.settings,
+            self.manifest,
+            "character:rhiannon",
+            "Rhiannon",
+            reference_transcript=old_text,
+        )
+        (self.manifest.parent / "references" / "rhiannon.wav").write_bytes(
+            clean_wav_bytes(amplitude=0.2)
+        )
+        document = json.loads(self.manifest.read_text())
+        document["voices"][0]["vntts.reference_transcript"] = new_text
+        self.manifest.write_text(json.dumps(document))
+        before = self.library.bindings()
+        dialog = self.editor()
+        self.select(dialog, "catalog", source="character:rhiannon")
+        dialog.show()
+        self.application.processEvents()
+        panel = dialog.voice_panel
+        self.assertIn("Rhiannon", panel.current_voice_label.text())
+        self.assertEqual(panel.candidate_voice_label.text(), "Rhiannon")
+        self.assertEqual(panel.current_reason.text(), old_text)
+        self.assertEqual(panel.a_reason.text(), new_text)
+        self.assertTrue(panel.current_reason.isVisible())
+        self.assertTrue(panel.a_reason.isVisible())
+        self.assertNotEqual(
+            panel._current_voice[2].reference_sha256s,
+            panel.current_selection[1].candidates[0].reference_sha256s,
+        )
+        panel.current_original.click()
+        self.drain()
+        self.assertEqual(self.player.play_bytes.call_args.args[0], original)
+        self.assertFalse(panel.a_use.isEnabled())
+        self.assertEqual(self.library.bindings(), before)
+
+    def test_game_reference_excerpt_survives_save_and_reopen_without_becoming_transcript(
+        self,
+    ):
+        old_text = "Good morning, traveller."
+        new_text = "The storm has passed."
+        plan, group, _manifest = ambiguous_fixture(self.root / "game-reference")
+        candidate = replace(
+            group.candidate_inventory[0],
+            source_excerpts=(old_text,),
+            reference_transcript=None,
+        )
+        group = replace(
+            group, candidates=(candidate,), candidate_inventory=(candidate,)
+        )
+        plan = replace(plan, groups=(group,))
+        dialog = self.editor()
+        dialog.set_voice_context(plan, character=group.character)
+        self.drain()
+        self.assertEqual(dialog.voice_panel.a_reason.text(), old_text)
+        self.listen(dialog, original=True)
+        self.save(dialog)
+        binding = self.library.binding(group.character)
+        self.assertEqual(binding.provenance["evidence"]["source_excerpts"], [old_text])
+        self.assertNotIn("reference_transcript", binding.provenance["evidence"])
+        document = json.loads(self.manifest.read_text())
+        document["voices"][0]["vntts.reference_transcript"] = new_text
+        self.manifest.write_text(json.dumps(document))
+        reopened = self.editor()
+        self.select(
+            reopened, "catalog", role=group.character, source="character:rhiannon"
+        )
+        panel = reopened.voice_panel
+        self.assertIn("Rhiannon", panel.current_voice_label.text())
+        self.assertEqual(panel.candidate_voice_label.text(), "Rhiannon")
+        self.assertEqual(panel.current_reason.text(), old_text)
+        self.assertEqual(panel.a_reason.text(), new_text)
+        self.assertIsNone(panel._current_voice[2].reference_transcript)
+
+    def test_current_reference_stays_visible_while_candidate_loads_or_is_unavailable(
+        self,
+    ):
+        self.bind_narrator()
+        dialog = self.editor()
+        self.select(dialog, "catalog", source="character:centurion")
+        dialog.show()
+        self.application.processEvents()
+        panel = dialog.voice_panel
+        dialog.source.setCurrentIndex(dialog.source.findData("saved"))
+        self.assertTrue(dialog.runner.active)
+        self.assertTrue(panel.isHidden())
+        self.assertTrue(panel.current_voice_box.isVisible())
+        self.assertTrue(panel.current_reason.isVisible())
+        self.assertTrue(panel.current_original.isEnabled())
+        self.assertTrue(panel.current_play.isEnabled())
+        self.drain()
+        dialog.source.setCurrentIndex(dialog.source.findData("catalog"))
+        dialog.catalog_choice.clear()
+        self.application.processEvents()
+        self.assertTrue(panel.isHidden())
+        self.assertTrue(panel.current_voice_box.isVisible())
+        self.assertTrue(panel.current_reason.isVisible())
+        self.assertTrue(panel.current_original.isEnabled())
+        self.assertTrue(panel.current_play.isEnabled())
+        self.assertFalse(panel.a_use.isEnabled())
 
     def test_saved_game_voice_label_uses_library_without_the_catalog(self):
         self.bind_narrator()

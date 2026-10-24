@@ -12,8 +12,6 @@ from threading import Event
 from typing import cast
 
 from PySide6.QtCore import (
-    QEvent,
-    QObject,
     QSignalBlocker,
     Qt,
     QThreadPool,
@@ -22,7 +20,6 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QCloseEvent, QPixmap, QStandardItemModel
 from PySide6.QtWidgets import (
-    QBoxLayout,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -161,54 +158,21 @@ class GameNarratorDialog(QDialog):
         self.voice_panel.beforeSave.connect(self._capture_save)
         panel_layout = self.voice_panel.layout()
         assert panel_layout is not None
+        panel_layout.removeWidget(self.voice_panel.current_voice_box)
+        content.addWidget(self.voice_panel.current_voice_box)
+        content.addWidget(self.source_controls)
         panel_layout.removeWidget(self.voice_panel.phrase_box)
         content.addWidget(self.voice_panel.phrase_box)
-        content.addWidget(self.source_controls)
-        panel_layout.removeWidget(self.voice_panel.current_voice_box)
-        self.voice_comparison = QHBoxLayout()
-        for box in (self.voice_panel.current_voice_box, self.voice_panel):
-            box.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
-            )
-            self.voice_comparison.addWidget(box, 1)
-        content.addLayout(self.voice_comparison)
+        content.addWidget(self.voice_panel)
         self._build_editor_actions(content)
         self.content_scroll = QScrollArea()
         self.content_scroll.setWidgetResizable(True)
         self.content_scroll.setWidget(self.controls)
-        self.controls.installEventFilter(self)
-        self.content_scroll.viewport().installEventFilter(self)
         layout = QVBoxLayout(self)
         layout.addWidget(self.status)
         layout.addWidget(self.progress)
         layout.addWidget(self.content_scroll, 1)
         self._connect_voice_controls()
-
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if event.type() in (
-            QEvent.Type.Resize,
-            QEvent.Type.LayoutRequest,
-        ) and watched in (
-            self.controls,
-            self.content_scroll.viewport(),
-        ):
-            margins = self.controls.layout().contentsMargins()
-            available = (
-                self.content_scroll.viewport().width()
-                - margins.left()
-                - margins.right()
-            )
-            required = (
-                self.voice_panel.current_voice_box.minimumSizeHint().width()
-                + self.voice_panel.minimumSizeHint().width()
-                + self.voice_comparison.spacing()
-            )
-            self.voice_comparison.setDirection(
-                QBoxLayout.Direction.LeftToRight
-                if available >= required
-                else QBoxLayout.Direction.TopToBottom
-            )
-        return super().eventFilter(watched, event)
 
     def _connect_voice_controls(self) -> None:
         self.source.currentIndexChanged.connect(self._source_changed)
@@ -1230,13 +1194,26 @@ class GameNarratorDialog(QDialog):
                 ],
             },
         )
-        return narrator_preview_plan(
+        plan = narrator_preview_plan(
             settings,
             manifest,
             f"character:{normalize_character_name(voice.character)}",
             COMPARISON_PREVIEW_TEXT,
             voice.reference_transcript,
         )
+        evidence = binding.provenance.get("evidence") if binding is not None else None
+        excerpts = (
+            evidence.get("source_excerpts") if isinstance(evidence, dict) else None
+        )
+        if (
+            isinstance(excerpts, list)
+            and excerpts
+            and all(isinstance(value, str) for value in excerpts)
+        ):
+            group = plan.groups[0]
+            candidate = replace(group.candidates[0], source_excerpts=tuple(excerpts))
+            plan = replace(plan, groups=(replace(group, candidates=(candidate,)),))
+        return plan
 
     def _start_narrator_panel(self, plan: VoicePlan) -> None:
         candidate = plan.groups[0].candidates[0]
@@ -1552,6 +1529,7 @@ class GameNarratorDialog(QDialog):
                 root=self.voice_library.root,
                 rollback=self._voice_binding_rollback,
                 reference_transcript=candidate.reference_transcript,
+                source_excerpts=candidate.source_excerpts,
             )
         if not is_narrator(role):
             context["target_character"] = role
