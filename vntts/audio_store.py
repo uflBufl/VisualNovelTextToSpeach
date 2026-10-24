@@ -28,10 +28,6 @@ class AudioCatalogError(SharedAudioStoreError):
     """Saved key authority is unavailable; generating again would lose reuse."""
 
 
-class AudioStorageUpgradeRequired(AudioCatalogError):
-    """An existing store must complete its explicit upgrade before use."""
-
-
 def _regular(path: Path) -> Path:
     path = path.expanduser().parent.resolve() / path.name
     if path.is_symlink() or not path.is_file():
@@ -283,7 +279,7 @@ class SharedAudioStore:
         self.directory.mkdir(parents=True, exist_ok=True)
         try:
             self._require_empty_store()
-        except AudioStorageUpgradeRequired:
+        except AudioCatalogError:
             if not self.catalog_path.exists():
                 raise
             # A competing fresh-store initializer published first; validate it below.
@@ -312,9 +308,9 @@ class SharedAudioStore:
             and not path.name.startswith(".audio-catalog.")
             for path in self.directory.iterdir()
         ):
-            raise AudioStorageUpgradeRequired(
+            raise AudioCatalogError(
                 f"Saved audio catalog is missing: {self.catalog_path}. "
-                "Run the explicit storage upgrade or restore its backup before generating."
+                "Clear saved preparation data to generate it again."
             )
 
     def initialize(self) -> None:
@@ -349,10 +345,6 @@ class SharedAudioStore:
     @staticmethod
     def _validate_catalog(connection: sqlite3.Connection) -> None:
         version = connection.execute("PRAGMA user_version").fetchone()
-        if version == (1,):
-            raise AudioStorageUpgradeRequired(
-                "Audio catalog requires the explicit storage upgrade"
-            )
         if version != (2,):
             raise AudioCatalogError("Unsupported audio catalog schema version")
         actual = dict(

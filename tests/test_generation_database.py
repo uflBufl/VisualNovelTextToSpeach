@@ -106,7 +106,7 @@ class GenerationDatabaseTest(unittest.TestCase):
         self.assertTrue(all(event["outcome"] == "failed" for event in before))
         self.assertEqual(len({event["operation_id"] for event in before}), 1)
 
-    def test_unregistered_saved_output_requires_explicit_upgrade_without_legacy_reads(
+    def test_unregistered_saved_output_is_refused_without_reading_recordings(
         self,
     ):
         with TemporaryDirectory() as directory:
@@ -121,7 +121,7 @@ class GenerationDatabaseTest(unittest.TestCase):
                 "read_regular_bytes",
                 side_effect=AssertionError("opened saved work"),
             ):
-                with self.assertRaisesRegex(ValueError, "explicit storage upgrade"):
+                with self.assertRaisesRegex(ValueError, "clear saved preparation data"):
                     database.require_registered_output(output)
             database.write_state(database.state_path(output), state())
             database.require_registered_output(output)
@@ -219,7 +219,9 @@ class GenerationDatabaseTest(unittest.TestCase):
                     }
                 }
                 database.write_state(path, value)
-                with self.assertRaisesRegex(ValueError, "explicit storage upgrade"):
+                with self.assertRaisesRegex(
+                    ValueError, "Invalid cancellation attempt count"
+                ):
                     database.read_progress(path)
 
     def test_progress_rejects_malformed_failed_evidence(self):

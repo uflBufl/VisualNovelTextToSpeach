@@ -1675,100 +1675,83 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
     def test_cancelled_last_bounded_attempt_resumes_same_seed_without_touching_approved_audio(
         self,
     ):
-        for legacy in (False, True):
-            with self.subTest(legacy=legacy), TemporaryDirectory() as directory:
-                root = Path(directory)
-                protected, item = queue_item("protected"), queue_item("pending")
-                queue = write_queue(root / "queue.jsonl", [protected, item])
-                output = root / "output"
-                initial = self.run_generation(
-                    queue,
-                    output,
-                    SyntheticRenderer(),
-                    include_queue_ids=[protected["queue_id"]],
-                )
-                review_generation_item(initial.state, protected["queue_id"], "approved")
-                protected_record = load_generation_state(initial.state, queue)["items"][
-                    protected["queue_id"]
-                ]
-                protected_audio = (output / protected_record["path"]).read_bytes()
-                self.run_generation(
-                    queue,
-                    output,
-                    SyntheticRenderer(
-                        [SynthesisCompletion.LIMITED, SynthesisCompletion.LIMITED]
-                    ),
-                    retries=1,
-                    seed=0,
-                    include_queue_ids=[item["queue_id"]],
-                )
-                policy = FailureRepairPolicy(
-                    bounded_seed_retry_queue_ids=(item["queue_id"],)
-                )
-                cancelled = self.run_generation(
-                    queue,
-                    output,
-                    SyntheticRenderer([SynthesisCompletion.CANCELLED]),
-                    retries=0,
-                    seed=0,
-                    include_queue_ids=[item["queue_id"]],
-                    failure_repair_policy=policy,
-                )
-                state = load_generation_state(cancelled.state, queue)
-                record = state["items"][item["queue_id"]]
-                self.assertTrue(cancelled.cancelled)
-                self.assertEqual(cancelled.failed, 0)
-                self.assertEqual(record["attempts"], 2)
-                self.assertEqual(record["attempts_by_provider"], {"synthetic": 2})
-                self.assertEqual(
-                    record["failure"]["previous_failure"]["failure"]["kind"],
-                    "missed_eos_audio_limit",
-                )
-                self.assertFalse(record["failure"]["attempt_counted"])
-                if legacy:
-                    record["failure"].pop("attempt_counted")
-                    record["attempts"] = 3
-                    record["attempts_by_provider"] = {"synthetic": 3}
-                    replace_generation_state(cancelled.state, state)
-                    with self.assertRaisesRegex(
-                        BulkGenerationError, "explicit storage upgrade"
-                    ):
-                        load_generation_state(cancelled.state, queue)
-                    from vntts.storage_upgrade import _normalize_cancellations
-
-                    replace_generation_state(
-                        cancelled.state, _normalize_cancellations(state)
-                    )
-                report = generation_failure_report(cancelled.state, queue)
-                self.assertEqual(report["records"][0]["attempts"], 2)
-                self.assertEqual(
-                    report["records"][0]["attempts_by_provider"], {"synthetic": 2}
-                )
-                self.assertEqual(
-                    generation_failure_repair_plan(cancelled.state, queue)["records"][
-                        0
-                    ]["action"],
-                    "safe_resume",
-                )
-                renderer = SyntheticRenderer()
-                resumed = self.run_generation(
-                    queue,
-                    output,
-                    renderer,
-                    retries=2,
-                    seed=0,
-                    include_queue_ids=[item["queue_id"]],
-                    failure_repair_policy=policy,
-                )
-                after = load_generation_state(resumed.state, queue)
-                self.assertEqual([request.seed for request in renderer.requests], [2])
-                self.assertEqual(after["items"][item["queue_id"]]["attempts"], 3)
-                self.assertEqual(
-                    after["items"][protected["queue_id"]], protected_record
-                )
-                self.assertEqual(
-                    (output / protected_record["path"]).read_bytes(), protected_audio
-                )
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            protected, item = queue_item("protected"), queue_item("pending")
+            queue = write_queue(root / "queue.jsonl", [protected, item])
+            output = root / "output"
+            initial = self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer(),
+                include_queue_ids=[protected["queue_id"]],
+            )
+            review_generation_item(initial.state, protected["queue_id"], "approved")
+            protected_record = load_generation_state(initial.state, queue)["items"][
+                protected["queue_id"]
+            ]
+            protected_audio = (output / protected_record["path"]).read_bytes()
+            self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer(
+                    [SynthesisCompletion.LIMITED, SynthesisCompletion.LIMITED]
+                ),
+                retries=1,
+                seed=0,
+                include_queue_ids=[item["queue_id"]],
+            )
+            policy = FailureRepairPolicy(
+                bounded_seed_retry_queue_ids=(item["queue_id"],)
+            )
+            cancelled = self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer([SynthesisCompletion.CANCELLED]),
+                retries=0,
+                seed=0,
+                include_queue_ids=[item["queue_id"]],
+                failure_repair_policy=policy,
+            )
+            state = load_generation_state(cancelled.state, queue)
+            record = state["items"][item["queue_id"]]
+            self.assertTrue(cancelled.cancelled)
+            self.assertEqual(cancelled.failed, 0)
+            self.assertEqual(record["attempts"], 2)
+            self.assertEqual(record["attempts_by_provider"], {"synthetic": 2})
+            self.assertEqual(
+                record["failure"]["previous_failure"]["failure"]["kind"],
+                "missed_eos_audio_limit",
+            )
+            self.assertFalse(record["failure"]["attempt_counted"])
+            report = generation_failure_report(cancelled.state, queue)
+            self.assertEqual(report["records"][0]["attempts"], 2)
+            self.assertEqual(
+                report["records"][0]["attempts_by_provider"], {"synthetic": 2}
+            )
+            self.assertEqual(
+                generation_failure_repair_plan(cancelled.state, queue)["records"][0][
+                    "action"
+                ],
+                "safe_resume",
+            )
+            renderer = SyntheticRenderer()
+            resumed = self.run_generation(
+                queue,
+                output,
+                renderer,
+                retries=2,
+                seed=0,
+                include_queue_ids=[item["queue_id"]],
+                failure_repair_policy=policy,
+            )
+            after = load_generation_state(resumed.state, queue)
+            self.assertEqual([request.seed for request in renderer.requests], [2])
+            self.assertEqual(after["items"][item["queue_id"]]["attempts"], 3)
+            self.assertEqual(after["items"][protected["queue_id"]], protected_record)
+            self.assertEqual(
+                (output / protected_record["path"]).read_bytes(), protected_audio
+            )
 
     def test_cancelled_sentence_repair_stays_resumable_and_validates_attempt_marker(
         self,

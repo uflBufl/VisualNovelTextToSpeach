@@ -608,7 +608,7 @@ def _validate_cancellation_marker(failure: StateObject, queue_id: str) -> None:
         and failure.get("attempt_counted") is not False
     ):
         raise BulkGenerationError(
-            f"State item {queue_id!r} counted cancellation requires the explicit storage upgrade"
+            f"State item {queue_id!r} has an invalid cancellation attempt count"
         )
 
 

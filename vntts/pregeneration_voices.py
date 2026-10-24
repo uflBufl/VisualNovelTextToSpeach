@@ -375,7 +375,6 @@ class VoiceDecisionStore:
         self.catalog = catalog or PreparationCatalog(
             self.path.parent,
             filename=f"{self.path.name}.sqlite3",
-            require_complete=True,
         )
         self.voice_library: VoiceLibrary | None = voice_library
         self.clock: Callable[[], datetime] = clock or (
@@ -387,7 +386,7 @@ class VoiceDecisionStore:
             self.path.exists() or self.catalog.required_marker.exists()
         ):
             raise PregenerationVoiceError(
-                "Voice decision catalog is missing; run the explicit legacy migration"
+                "Voice decision catalog is missing; clear saved preparation data"
             )
 
     def choice_for(self, group_id: str, decision_context_sha256: str) -> str | None:

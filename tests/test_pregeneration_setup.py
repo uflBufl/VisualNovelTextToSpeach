@@ -1235,9 +1235,7 @@ class PregenerationSetupTest(unittest.TestCase):
             write_versioned_json(
                 (legacy.directory_for(job.job_id) / "job.json"), 1, document
             )
-            with self.assertRaisesRegex(
-                PregenerationSetupError, "explicit legacy migration"
-            ):
+            with self.assertRaisesRegex(PregenerationSetupError, "manually clear"):
                 legacy.load(job.job_id)
             with self.assertRaisesRegex(
                 PregenerationSetupError, "selected_line_ids must contain non-empty text"
@@ -2404,7 +2402,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.selected_story_ids(), ())
             self.assertEqual(dialog.stories.count(), len(content.selections))
             self.assertIn("Unable to restore", dialog.selection_status.text())
-            self.assertIn("explicit legacy migration", dialog.selection_status.text())
+            self.assertIn("manually clear", dialog.selection_status.text())
             self.assertFalse(dialog.continue_button.isEnabled())
             self.assertFalse(dialog.prepare_again.isEnabled())
             dialog._continue_requested()

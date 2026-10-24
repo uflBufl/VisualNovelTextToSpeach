@@ -1771,7 +1771,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                         decisions.choice_for(group_id, context)
             self.assertFalse(path.exists())
 
-    def test_legacy_plan_requires_explicit_migration_and_new_plan_uses_catalog(self):
+    def test_uncataloged_plan_is_refused_and_current_plan_uses_catalog(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
@@ -1786,14 +1786,10 @@ class VoicePlanStoreTest(unittest.TestCase):
             path.parent.mkdir(parents=True)
             write_versioned_json(path, 5, plan.to_document())
             original = path.read_bytes()
-            with self.assertRaisesRegex(
-                PregenerationVoiceError, "explicit legacy migration"
-            ):
+            with self.assertRaisesRegex(PregenerationVoiceError, "manually clear"):
                 store.saved_documents()
             self.assertFalse(imported_jobs.catalog.path.exists())
-            migration = PreparationCatalog(imported_jobs.root)
-            migration.save_plan(plan.to_document(), 5)
-            migration.complete_upgrade()
+            store = VoicePlanStore(jobs)
             saved = store.saved_documents()
             self.assertEqual(saved[0]["groups"], plan.to_document()["groups"])
             self.assertEqual(
@@ -1801,7 +1797,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             updated = replace(plan, created_at="2026-10-24T12:00:00+00:00")
             store._persist_plan(job, updated)
-            restarted = VoicePlanStore(PregenerationJobStore(imported_jobs.root))
+            restarted = VoicePlanStore(PregenerationJobStore(jobs.root))
             self.assertEqual(
                 restarted.saved_documents()[0]["created_at"], updated.created_at
             )

@@ -1,4 +1,4 @@
-"""Durability, explicit migration boundaries, and atomic preparation updates."""
+"""Durability, current-schema boundaries, and atomic preparation updates."""
 
 import sqlite3
 import unittest
@@ -19,29 +19,26 @@ from vntts.pregeneration_setup import (
 from vntts.preparation_catalog import (
     PreparationCatalog,
     PreparationCatalogError,
-    PreparationCatalogUpgradeRequired,
 )
 from vntts.versioned_json import write_versioned_json
 
 
 class PreparationCatalogTest(unittest.TestCase):
-    def test_upgrade_required_distinguishes_legacy_authority_from_lost_catalog(self):
+    def test_nonempty_jobs_without_catalog_require_manual_recreation(self):
         with TemporaryDirectory() as temporary:
             catalog = PreparationCatalog(Path(temporary) / "jobs", owned_root=True)
             legacy = catalog.path.parent / ("a" * 24) / "job.json"
             legacy.parent.mkdir(parents=True)
             legacy.write_bytes(b"legacy job authority")
-            with self.assertRaises(PreparationCatalogUpgradeRequired):
+            with self.assertRaisesRegex(PreparationCatalogError, "manually clear"):
                 catalog.jobs()
             self.assertFalse(catalog.path.exists())
             catalog.required_marker.touch()
             with self.assertRaises(PreparationCatalogError) as caught:
                 catalog.jobs()
-            self.assertNotIsInstance(
-                caught.exception, PreparationCatalogUpgradeRequired
-            )
             self.assertIn("restore", str(caught.exception))
             self.assertFalse(catalog.path.exists())
+            self.assertEqual(legacy.read_bytes(), b"legacy job authority")
 
     def test_interrupted_schema_creation_never_publishes_empty_database(self):
         with TemporaryDirectory() as temporary:
@@ -107,13 +104,16 @@ class PreparationCatalogTest(unittest.TestCase):
                 }
                 self.assertNotIn("document", columns)
                 self.assertEqual(
+                    connection.execute("PRAGMA user_version").fetchone(), (3,)
+                )
+                self.assertEqual(
                     connection.execute(
                         "SELECT line_id FROM job_lines ORDER BY ordinal"
                     ).fetchall(),
                     [(line,) for line in job.selected_line_ids],
                 )
 
-    def test_existing_json_requires_explicit_migration_and_never_overwrites_sql(self):
+    def test_existing_json_is_refused_without_reading_or_changing_it(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             content = inspect_story_index(write_story_index(root))
@@ -139,21 +139,16 @@ class PreparationCatalogTest(unittest.TestCase):
                 },
             )
             original = path.read_bytes(), selection_path.read_bytes()
-            with self.assertRaisesRegex(
-                PregenerationSetupError, "explicit legacy migration"
+            with (
+                patch.object(
+                    catalog_module.json,
+                    "loads",
+                    side_effect=AssertionError("old JSON was read"),
+                ),
+                self.assertRaisesRegex(PregenerationSetupError, "manually clear"),
             ):
                 legacy.jobs_for_content(content)
             self.assertFalse(legacy.catalog.path.exists())
-            catalog = PreparationCatalog(legacy.root)
-            catalog.save_job(job.to_document())
-            catalog.save_selection(content.catalog_story_index_sha256, selected)
-            catalog.complete_upgrade()
-            self.assertEqual(legacy.jobs_for_content(content), (job,))
-            self.assertEqual(legacy.selection_for_content(content), selected)
-            prepared = legacy.mark_prepared(job)
-            legacy.save_selection(content, ())
-            self.assertEqual(legacy.jobs_for_content(content), (prepared,))
-            self.assertEqual(legacy.selection_for_content(content), ())
             self.assertEqual((path.read_bytes(), selection_path.read_bytes()), original)
 
     def test_invalid_legacy_job_is_preserved_and_not_imported(self):
@@ -182,7 +177,7 @@ class PreparationCatalogTest(unittest.TestCase):
                 store.catalog.save_job(invalid)
             self.assertEqual(store.load(job.job_id), job)
 
-    def test_concurrent_insert_only_import_does_not_replace_existing_job(self):
+    def test_concurrent_insert_only_save_does_not_replace_existing_job(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             content = inspect_story_index(write_story_index(root))
@@ -190,7 +185,7 @@ class PreparationCatalogTest(unittest.TestCase):
             job = store.create_or_resume(content, (content.selections[0].selection_id,))
             prepared = replace(job, status="prepared")
 
-            def import_old():
+            def insert_existing():
                 PreparationCatalog(store.root).save_job(
                     job.to_document(), replace=False
                 )
@@ -199,13 +194,13 @@ class PreparationCatalogTest(unittest.TestCase):
                 PreparationCatalog(store.root).save_job(prepared.to_document())
 
             with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = [executor.submit(import_old) for _ in range(8)]
+                futures = [executor.submit(insert_existing) for _ in range(8)]
                 futures.append(executor.submit(save_new))
                 for future in futures:
                     future.result()
             self.assertEqual(store.load(job.job_id), prepared)
 
-    def test_concurrent_fresh_jobs_share_one_initialized_complete_catalog(self):
+    def test_concurrent_fresh_jobs_share_one_initialized_catalog(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             content = inspect_story_index(write_story_index(root / "content"))
@@ -238,42 +233,27 @@ class PreparationCatalogTest(unittest.TestCase):
                 )
             self.assertFalse(store.catalog.path.exists())
 
-    def test_v1_upgrade_preserves_sql_and_requires_complete_explicit_inventory(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            content = inspect_story_index(write_story_index(root / "content"))
-            store = PregenerationJobStore(root / "jobs")
-            selected = (content.selections[0].selection_id,)
-            job = store.create_or_resume(content, selected)
-            store.save_selection(content, selected)
-            with closing(sqlite3.connect(store.catalog.path)) as connection:
-                connection.execute("DROP TABLE input_publications")
-                connection.execute("DROP TABLE catalog_state")
-                connection.execute("PRAGMA user_version = 1")
-            with self.assertRaisesRegex(
-                PregenerationSetupError, "explicit legacy migration"
-            ):
-                store.load(job.job_id)
-            migration = PreparationCatalog(store.root)
-            self.assertEqual(migration.load_job(job.job_id), job.to_document())
-            migration.begin_upgrade()
-            with self.assertRaisesRegex(
-                PregenerationSetupError, "explicit legacy migration"
-            ):
-                store.selection_for_content(content)
-            self.assertEqual(
-                migration.selection(content.catalog_story_index_sha256), selected
-            )
-            migration.complete_upgrade()
-            self.assertEqual(store.load(job.job_id), job)
-            self.assertEqual(store.selection_for_content(content), selected)
-            migration.begin_upgrade()
-            with self.assertRaisesRegex(
-                PregenerationSetupError, "explicit legacy migration"
-            ):
-                store.create_or_resume(content, selected)
-            migration.complete_upgrade()
-            self.assertEqual(store.create_or_resume(content, selected), job)
+    def test_unsupported_versions_are_refused_without_mutating_original_bytes(self):
+        for version in (1, 2, 99):
+            with self.subTest(version=version), TemporaryDirectory() as temporary:
+                catalog = PreparationCatalog(Path(temporary), owned_root=True)
+                catalog.initialize()
+                with closing(sqlite3.connect(catalog.path)) as connection:
+                    connection.execute(f"PRAGMA user_version = {version}")
+                    connection.commit()
+                original = catalog.path.read_bytes()
+                for operation in (
+                    catalog.jobs,
+                    lambda: catalog.input_staging(catalog.path.parent / "input"),
+                    lambda: catalog.save_selection("a" * 64, ()),
+                ):
+                    with self.assertRaisesRegex(
+                        PreparationCatalogError,
+                        "Unsupported preparation catalog schema",
+                    ):
+                        operation()
+                    self.assertEqual(catalog.path.read_bytes(), original)
+                self.assertTrue(catalog.required_marker.is_file())
 
     def test_catalog_rejects_corrupt_future_and_linked_database(self):
         with TemporaryDirectory() as temporary:
@@ -312,9 +292,12 @@ class PreparationCatalogTest(unittest.TestCase):
                 "source_story_index_sha256": job.story_index_sha256,
                 "ready_items": 2,
             }
-            store.catalog.save_input(job.job_id, document, directory)
-            store.catalog.save_input(job.job_id, dict(document), directory)
+            staging = directory.with_name(".generation-input-staging")
+            store.catalog.save_input(job.job_id, document, directory, staging=staging)
             restarted = PreparationCatalog(store.root)
+            self.assertEqual(restarted.input_staging(directory), staging.resolve())
+            restarted.save_input(job.job_id, dict(document), directory)
+            self.assertIsNone(store.catalog.input_staging(directory))
             self.assertEqual(restarted.input_document(directory), document)
             self.assertEqual(
                 restarted.input_directories(content.catalog_story_index_sha256),

@@ -2,7 +2,7 @@
 
 ## Active - Windows story import and persistence
 
-- [ ] Verify the affected Windows installation by ordinary launch/reproduction and a support ZIP after the update.
+- [ ] Verify the affected Windows installation after the user's manual cleanup and regeneration.
 
 ## Active - Finish diagnostic-session native acceptance
 
@@ -1325,7 +1325,7 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 
 ## Qualify SQLite-only storage
 
-- [ ] Qualify the SQLite-only publication, interrupted upgrade/retry, hard links
+- [ ] Qualify the SQLite-only publication, interrupted publication/retry, hard links
       and catalog-loss refusal in Windows and packaged builds. Keep current
       immutable authoring proof files and portable manifests intact; those are
       supported contracts, not working-state fallbacks.

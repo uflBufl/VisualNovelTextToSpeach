@@ -725,11 +725,11 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     restarted = PregenerationJobStore(jobs.root)
                     self.assertEqual(restarted.generation_input_directories(), ())
                     with self.assertRaisesRegex(
-                        ValueError, "explicit legacy migration"
+                        ValueError, "clear saved preparation data"
                     ):
                         load_generation_input_metadata(original.directory)
                     with self.assertRaisesRegex(
-                        PregenerationQueueError, "explicit legacy migration"
+                        PregenerationQueueError, "clear saved preparation data"
                     ):
                         PregenerationInputStore(restarted).materialize(job, plan)
                     self.assertEqual(legacy.read_bytes(), payload)

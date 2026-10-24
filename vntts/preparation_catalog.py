@@ -14,7 +14,7 @@ from vntts.audio_store import _sync_directory, _sync_regular_file
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 
 _APPLICATION_ID = 0x564E5043
-_VERSION = 2
+_VERSION = 3
 _JOB_FIELDS = (
     "job_id",
     "created_at",
@@ -101,43 +101,28 @@ _SCHEMA: tuple[str, ...] = (
     "CREATE INDEX generation_inputs_job ON generation_inputs(job_id)",
     "CREATE INDEX generation_inputs_content ON generation_inputs(catalog_story_index_sha256)",
 )
-_SCHEMA_V1 = _SCHEMA
 _PENDING_SCHEMA = (
     "CREATE TABLE input_publications (directory TEXT PRIMARY KEY REFERENCES "
     "generation_inputs(directory) ON DELETE CASCADE, staging TEXT NOT NULL) STRICT"
 )
-_UPGRADE_SCHEMA = (
-    "CREATE TABLE catalog_state (id INTEGER PRIMARY KEY CHECK(id=1), "
-    "migration_complete INTEGER NOT NULL CHECK(migration_complete IN (0, 1))) STRICT"
-)
-_SCHEMA = (*_SCHEMA, _PENDING_SCHEMA, _UPGRADE_SCHEMA)
+_SCHEMA = (*_SCHEMA, _PENDING_SCHEMA)
 
 
 class PreparationCatalogError(ValueError):
     """The local catalog is unsafe, unsupported, or invalid."""
 
 
-class PreparationCatalogUpgradeRequired(PreparationCatalogError):
-    """Legacy preparation authority requires the explicit offline upgrade."""
-
-
-def _verify_catalog(connection: sqlite3.Connection, *, upgrade: bool = False) -> None:
+def _verify_catalog(connection: sqlite3.Connection) -> None:
     version = connection.execute("PRAGMA user_version").fetchone()[0]
     application = connection.execute("PRAGMA application_id").fetchone()[0]
     objects = connection.execute(
         "SELECT name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
     ).fetchall()
-    if version == 1 and application == _APPLICATION_ID:
-        if {row["sql"] for row in objects} != set(_SCHEMA_V1):
-            raise PreparationCatalogError("Preparation catalog schema changed")
-        if upgrade:
-            connection.execute(_PENDING_SCHEMA)
-            connection.execute(_UPGRADE_SCHEMA)
-            connection.execute("INSERT INTO catalog_state VALUES (1, 0)")
-            connection.execute(f"PRAGMA user_version = {_VERSION}")
-        return
     if version != _VERSION or application != _APPLICATION_ID:
-        raise PreparationCatalogError("Unsupported preparation catalog schema")
+        raise PreparationCatalogError(
+            "Unsupported preparation catalog schema; manually clear the preparation "
+            "data directory and recreate it with this version"
+        )
     if {row["sql"] for row in objects} != set(_SCHEMA):
         raise PreparationCatalogError("Preparation catalog schema changed")
 
@@ -149,13 +134,9 @@ class PreparationCatalog:
         *,
         filename: str = "preparation.sqlite3",
         owned_root: bool = False,
-        require_complete: bool | None = None,
     ) -> None:
         self.path = root / filename
         self.owned_root = owned_root
-        self.require_complete = (
-            owned_root if require_complete is None else require_complete
-        )
 
     @property
     def required_marker(self) -> Path:
@@ -179,11 +160,12 @@ class PreparationCatalog:
             if self.required_marker.exists():
                 raise PreparationCatalogError(
                     "Previously initialized preparation catalog is missing; restore "
-                    "preparation.sqlite3 from its verified backup before continuing"
+                    "preparation.sqlite3 from its verified backup or manually clear "
+                    "the preparation data directory before recreating it"
                 )
-            raise PreparationCatalogUpgradeRequired(
+            raise PreparationCatalogError(
                 "Preparation catalog is missing from an existing jobs directory; "
-                "restore preparation.sqlite3 or run the explicit legacy migration"
+                "manually clear the preparation data directory and recreate it"
             )
 
     def _initialize(self) -> None:
@@ -201,10 +183,6 @@ class PreparationCatalog:
                 connection.execute("BEGIN IMMEDIATE")
                 for statement in _SCHEMA:
                     connection.execute(statement)
-                connection.execute(
-                    "INSERT INTO catalog_state VALUES (1, ?)",
-                    (int(self.require_complete),),
-                )
                 connection.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
                 connection.execute(f"PRAGMA user_version = {_VERSION}")
                 connection.commit()
@@ -232,23 +210,6 @@ class PreparationCatalog:
                     self._initialize()
         else:
             self._initialize()
-
-    def _check_runtime_ready(self, connection: sqlite3.Connection) -> None:
-        if not self.require_complete:
-            return
-        version = connection.execute("PRAGMA user_version").fetchone()[0]
-        complete = (
-            connection.execute(
-                "SELECT migration_complete FROM catalog_state WHERE id=1"
-            ).fetchone()
-            if version == _VERSION
-            else None
-        )
-        if complete is None or complete[0] != 1:
-            raise PreparationCatalogUpgradeRequired(
-                "Preparation catalog requires the explicit legacy migration "
-                "to finish before offline preparation can resume"
-            )
 
     @contextmanager
     def _connection(
@@ -284,8 +245,7 @@ class PreparationCatalog:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
-            _verify_catalog(connection, upgrade=write)
-            self._check_runtime_ready(connection)
+            _verify_catalog(connection)
             yield connection
             if write:
                 connection.commit()
@@ -300,25 +260,6 @@ class PreparationCatalog:
     def initialize(self) -> None:
         with self._connection(write=True):
             pass
-
-    def begin_upgrade(self) -> None:
-        """Block normal readers until an explicit complete inventory is verified."""
-        with self._connection(write=True) as connection:
-            assert connection is not None
-            connection.execute(
-                "UPDATE catalog_state SET migration_complete = 0 WHERE id=1"
-            )
-
-    def complete_upgrade(self) -> None:
-        with self._connection(write=True) as connection:
-            assert connection is not None
-            connection.execute(
-                "UPDATE catalog_state SET migration_complete = 1 WHERE id=1"
-            )
-            with self.required_marker.open("a", encoding="utf-8") as stream:
-                stream.flush()
-                os.fsync(stream.fileno())
-            _sync_directory(self.path.parent)
 
     def load_job(self, job_id: str) -> dict[str, object] | None:
         with self._connection() as connection:
@@ -438,17 +379,13 @@ class PreparationCatalog:
                 )
             )
 
-    def save_selection(
-        self, checksum: str, stories: Sequence[str], *, replace: bool = True
-    ) -> None:
+    def save_selection(self, checksum: str, stories: Sequence[str]) -> None:
         with self._connection(write=True) as connection:
             assert connection is not None
-            cursor = connection.execute(
+            connection.execute(
                 "INSERT INTO content_selections VALUES (?) ON CONFLICT DO NOTHING",
                 (checksum,),
             )
-            if not replace and not cursor.rowcount:
-                return
             connection.execute(
                 "DELETE FROM content_selection_stories WHERE catalog_story_index_sha256 = ?",
                 (checksum,),
@@ -462,8 +399,6 @@ class PreparationCatalog:
         self,
         document: Mapping[str, object],
         schema_version: int,
-        *,
-        replace: bool = True,
     ) -> None:
         groups = document.get("groups")
         suggestions = document.get("person_link_suggestions", [])
@@ -482,23 +417,15 @@ class PreparationCatalog:
         fields = (*_PLAN_FIELDS, "schema_version")
         with self._connection(write=True) as connection:
             assert connection is not None
-            cursor = connection.execute(
+            connection.execute(
                 f"INSERT INTO voice_plans ({', '.join(fields)}) "
                 f"VALUES ({', '.join('?' for _ in fields)}) "
-                + (
-                    "ON CONFLICT(job_id) DO UPDATE SET "
-                    + ", ".join(
-                        f"{name} = excluded.{name}"
-                        for name in fields
-                        if name != "job_id"
-                    )
-                    if replace
-                    else "ON CONFLICT(job_id) DO NOTHING"
+                "ON CONFLICT(job_id) DO UPDATE SET "
+                + ", ".join(
+                    f"{name} = excluded.{name}" for name in fields if name != "job_id"
                 ),
                 (*values, schema_version),
             )
-            if not cursor.rowcount:
-                return
             connection.execute(
                 "DELETE FROM voice_groups WHERE job_id = ?", (document["job_id"],)
             )
@@ -594,19 +521,13 @@ class PreparationCatalog:
             ).fetchone()
             return None if row is None else str(row[0])
 
-    def save_decisions(
-        self, decisions: Mapping[str, Mapping[str, object]], *, replace: bool = True
-    ) -> None:
+    def save_decisions(self, decisions: Mapping[str, Mapping[str, object]]) -> None:
         with self._connection(write=True) as connection:
             assert connection is not None
             connection.executemany(
                 "INSERT INTO voice_decisions VALUES (?, ?, ?, ?, ?) "
-                + (
-                    "ON CONFLICT(decision_key) DO UPDATE SET source_id = excluded.source_id, "
-                    "decided_at = excluded.decided_at"
-                    if replace
-                    else "ON CONFLICT DO NOTHING"
-                ),
+                "ON CONFLICT(decision_key) DO UPDATE SET source_id = excluded.source_id, "
+                "decided_at = excluded.decided_at",
                 (
                     (
                         key,
@@ -677,10 +598,7 @@ class PreparationCatalog:
 
     def input_staging(self, directory: Path) -> Path | None:
         with self._connection() as connection:
-            if (
-                connection is None
-                or connection.execute("PRAGMA user_version").fetchone()[0] == 1
-            ):
+            if connection is None:
                 return None
             row = connection.execute(
                 "SELECT staging FROM input_publications WHERE directory = ?",

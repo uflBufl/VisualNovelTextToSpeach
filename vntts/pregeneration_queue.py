@@ -1032,7 +1032,7 @@ def load_generation_input_metadata(directory: Path) -> dict[str, object]:
     if document is None:
         raise ValueError(
             "Generation input metadata is missing from preparation.sqlite3; "
-            "restore the catalog or run the explicit legacy migration"
+            "restore the catalog or clear saved preparation data"
         )
     if document.get("schema_version") != generation_input_schema_version:
         raise ValueError("Unsupported offline generation input schema")

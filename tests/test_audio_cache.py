@@ -14,7 +14,7 @@ import soundfile as sf
 
 from tests.symlink_support import symlink_or_skip
 from vntts.audio_cache import BoundedCache, PersistentAudioCache
-from vntts.audio_store import AudioCatalogError, AudioStorageUpgradeRequired
+from vntts.audio_store import AudioCatalogError
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
     MossTTSVoiceRouterBackend,
@@ -309,9 +309,9 @@ class PersistentAudioCacheTest(unittest.TestCase):
             saved.write_bytes(b"preserve original samples")
             cache = PersistentAudioCache(directory, sample_rate=16_000)
             with patch("numpy.load", side_effect=AssertionError("legacy read")):
-                with self.assertRaises(AudioStorageUpgradeRequired):
+                with self.assertRaises(AudioCatalogError):
                     cache.get("paid")
-                with self.assertRaises(AudioStorageUpgradeRequired):
+                with self.assertRaises(AudioCatalogError):
                     cache.put("other", [0.125])
             self.assertEqual(saved.read_bytes(), b"preserve original samples")
 

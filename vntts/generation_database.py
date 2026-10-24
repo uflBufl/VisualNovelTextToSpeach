@@ -173,7 +173,7 @@ def require_registered_output(output: Path) -> None:
             ):
                 continue
         raise ValueError(
-            "Generation SQLite state is missing for existing output; run the explicit storage upgrade"
+            "Generation SQLite state is missing for existing output; clear saved preparation data"
         )
 
 
@@ -307,7 +307,7 @@ def _read_items(
     if selected_line_ids is None:
         queries = [(f"SELECT {_ITEM_COLUMNS} FROM items", ())]
     else:
-        # Failed/interrupted legacy records can omit line identity; retain their evidence.
+        # Failed/interrupted attempts can omit line identity; retain their evidence.
         queries = [(f"SELECT {_ITEM_COLUMNS} FROM items WHERE line_id IS NULL", ())]
         selected = sorted(selected_line_ids)
         for start in range(0, len(selected), 900):
@@ -446,7 +446,7 @@ def _progress_counts(connection: sqlite3.Connection) -> tuple[int, int, int]:
             )
         if failure == "cancelled" and marker != "false":
             raise ValueError(
-                "Counted cancellation requires the explicit storage upgrade"
+                "Invalid cancellation attempt count; clear saved preparation data"
             )
         cancelled += failure == "cancelled"
     return (

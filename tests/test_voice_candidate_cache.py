@@ -1,11 +1,12 @@
 import hashlib
 import json
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -330,12 +331,13 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         self.assertEqual(removed, (old.resolve(),))
         self.assertTrue(saved.exists())
 
-    def test_incomplete_catalog_defers_cleanup_without_reading_old_plan_files(self):
+    def test_unsupported_catalog_defers_cleanup_without_reading_plan_files(self):
         old = self._candidate("old")
         job = self.jobs / ("a" * 24)
         job.mkdir()
         (job / "voice-plan.json").write_text("{}", encoding="utf-8")
-        PreparationCatalog(self.jobs).begin_upgrade()
+        with closing(sqlite3.connect(PreparationCatalog(self.jobs).path)) as connection:
+            connection.execute("PRAGMA user_version=99")
         with patch.object(
             cache,
             "_references_in_document",

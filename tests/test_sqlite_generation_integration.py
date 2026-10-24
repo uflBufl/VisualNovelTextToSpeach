@@ -154,7 +154,7 @@ class SqliteGenerationIntegrationTest(unittest.TestCase):
             for phase in ("generating", "validating", "publishing", None):
                 self.assertIn(phase, snapshots)
 
-    def test_completed_and_partial_json_outputs_require_explicit_upgrade_without_rendering(
+    def test_uncataloged_outputs_are_refused_without_rendering(
         self,
     ):
         for partial in (False, True):

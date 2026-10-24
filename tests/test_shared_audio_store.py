@@ -22,7 +22,7 @@ from tests.bulk_generation_fixtures import (
 from tests.symlink_support import symlink_or_skip
 from vntts import audio_store
 from vntts.audio_store import (
-    AudioStorageUpgradeRequired,
+    AudioCatalogError,
     SharedAudioStore,
     SharedAudioStoreError,
     link_shared_audio,
@@ -390,14 +390,14 @@ class SharedAudioStoreTest(unittest.TestCase):
             self.assertFalse(store.has_saved_entries())
             self.assertFalse(store.directory.exists())
 
-    def test_json_only_store_requires_upgrade_and_preserves_originals(self):
+    def test_uncataloged_store_is_refused_without_changing_originals(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             store = SharedAudioStore(root / "store")
             source = self.audio(root / "source.wav")
             binding, saved = self.legacy_binding(store, "paid", source)
             original = binding.read_bytes()
-            with self.assertRaises(AudioStorageUpgradeRequired):
+            with self.assertRaises(AudioCatalogError):
                 store.get("paid")
             self.assertEqual(binding.read_bytes(), original)
             self.assertTrue(saved.samefile(source))
