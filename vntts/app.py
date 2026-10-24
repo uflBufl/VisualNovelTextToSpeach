@@ -67,6 +67,7 @@ from PySide6.QtWidgets import (
 )
 from shiboken6 import isValid
 
+from vntts.action_icons import set_action_icon
 from vntts.asset_ui import AssetManagerDialog
 from vntts.async_ui import LatestTaskRunner
 from vntts.auto_advance_policy import (
@@ -477,7 +478,9 @@ class SettingsDialog(QDialog):
         if settings.game_window_title:
             self.game_window.addItem(settings.game_window_title)
             self.game_window.setCurrentText(settings.game_window_title)
-        refresh_windows_button = QPushButton("Refresh...")
+        refresh_windows_button = QPushButton("Refresh")
+        set_action_icon(refresh_windows_button, "refresh-cw")
+        refresh_windows_button.setToolTip("Refresh game windows")
         refresh_windows_button.setAccessibleName("Refresh game windows")
         refresh_windows_button.setAccessibleDescription(
             "Reload the list of capturable game windows"
@@ -596,6 +599,7 @@ class SettingsDialog(QDialog):
         )
         self.speech_rate.setAccessibleDescription(self.speech_rate.toolTip())
         self.reset_speech_rate = QPushButton("Reset to 100%")
+        set_action_icon(self.reset_speech_rate, "refresh-cw")
         self.reset_speech_rate.setAutoDefault(False)
         self.reset_speech_rate.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
@@ -815,7 +819,9 @@ class SettingsDialog(QDialog):
         self.narrator_voice = QLabel()
         self.narrator_voice.setWordWrap(True)
         self.narrator_voice.setAccessibleName("Selected narrator voice")
-        self.choose_narrator_button = QPushButton("Choose narrator...")
+        self.choose_narrator_button = QPushButton("Narrator...")
+        set_action_icon(self.choose_narrator_button, "audio-lines")
+        self.choose_narrator_button.setToolTip("Choose narrator voice")
         self.choose_narrator_button.setAccessibleName("Choose narrator voice")
         self.choose_narrator_button.setAccessibleDescription(
             "Listen to game or built-in voices and save a narrator"
@@ -1009,6 +1015,8 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.validate_and_accept)
         buttons.rejected.connect(self.reject)
         self.save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        set_action_icon(self.save_button, "save")
+        set_action_icon(buttons.button(QDialogButtonBox.StandardButton.Cancel), "x")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -1121,6 +1129,7 @@ class SettingsDialog(QDialog):
         field.setAccessibleName(name)
         field.setAccessibleDescription(description)
         button = QPushButton("Browse...")
+        set_action_icon(button, "folder-open")
         button.setAccessibleName(f"Browse for {name.casefold()}")
         button.setAccessibleDescription(description)
         button.clicked.connect(
