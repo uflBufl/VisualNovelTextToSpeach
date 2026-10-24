@@ -4,13 +4,6 @@
 
 - [ ] Verify the affected Windows installation by ordinary launch/reproduction and a support ZIP with the new automatic logging. If legacy data requires migration, prepare a validated offline upgrade with a separate backup.
 
-## Active - Deliver owned-row parser optimization
-
-- [ ] Apply the measured owned-row change in an isolated library worktree based on pinned/current main; add permanent isolation regressions and run library release/style/consumer checks.
-- [ ] Commit the completed pending application optimization batch, integrate current origin/main without losing unrelated work, then pin the tested library revision and regenerate the lockfile.
-- [ ] Run the changed-test selector first after application code/dependency edits; add affected parser/queue/import/export checks, lint/types and independent review.
-- [ ] Repeat full application cold story preparation and activation using the integrated dependency; verify 32 ready/0 synthesis and preserved audio hashes/inodes, then state the concrete main-readiness or remaining gate. Remove completed steps.
-
 ## Active - Finish diagnostic-session native acceptance
 
 - [ ] Preserve usable diagnostics after process/OS interruption. A native run left
