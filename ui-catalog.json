@@ -432,7 +432,6 @@
         {"id": "voice-audition.anonymous-source", "title": "Unidentified game voice", "state": "A game source without a confirmed character name keeps internal candidate identifiers out of ordinary reference information"},
         {"id": "voice-audition.reference", "title": "Choose voice and phrase", "state": "Voice reference is selectable and the complete preview phrase is always editable before any change"},
         {"id": "voice-audition.content-warning", "title": "Possible speech mismatch", "state": "A prepared preview can have a word warning independently of its readiness; listening and manual choice remain available"},
-        {"id": "voice-audition.content-details", "title": "Speech and source details", "state": "One technical disclosure reveals the selected source and recognized speech without listing unrelated references"},
         {"id": "voice-audition.alternate", "title": "Select another voice", "state": "An alternate voice can be selected directly and changed back without cycling"},
         {"id": "voice-audition.alternate-phrase", "title": "Edit the preview phrase", "state": "The complete phrase can be edited directly or replaced with the next available game phrase"},
         {"id": "voice-audition.preview-ready", "title": "Generated preview ready", "state": "After stopping playback the preview remains replayable; the explicit voice choice is saved with the same Save voice action used by Voices"},
@@ -441,14 +440,13 @@
         {"id": "voice-audition.preview-failure", "title": "Preview generation failure", "state": "Failure keeps original playback and every safe recovery path available"},
         {"id": "voice-audition.save-failure", "title": "Choice save failure", "state": "The selected decision remains retryable without returning to the beginning"},
         {"id": "voice-audition.original-playing", "title": "Original reference playing", "state": "The original playback action becomes Stop without hiding the chosen voice or preview phrase"},
-        {"id": "voice-audition.preview-generating", "title": "Preparing generated preview", "state": "Preparing a preview preserves browsing and the return action while technical device details stay secondary"},
+        {"id": "voice-audition.preview-generating", "title": "Preparing generated preview", "state": "Preparing a preview preserves browsing, the return action and the visible TTS model"},
         {"id": "voice-audition.saving", "title": "Saving selected voice", "state": "The choice is being saved globally; returning waits for persistence instead of promising to discard it"},
         {"id": "voice-audition.compact-preview-playing", "title": "Compact active preview and save", "state": "After scrolling at doubled text, playback has a Stop action and saving remains enabled in the shared editor"},
         {"id": "voice-audition.compact-preview-failure", "title": "Compact preview failure", "state": "After scrolling at doubled text, the failure and available recovery controls remain readable"},
         {"id": "voice-audition.compact-save-waiting", "title": "Compact return during save", "state": "After scrolling at doubled text, waiting feedback explains why returning waits for persistence"},
         {"id": "voice-audition.compact-save-failure", "title": "Compact save failure", "state": "After scrolling at doubled text, the save error is readable and Retry remains available"},
         {"id": "voice-audition.compact", "title": "Long audition text at doubled font", "state": "Full original and generated preview texts remain readable at compact width; actions are reachable by scrolling"},
-        {"id": "voice-audition.compact-details", "title": "Compact technical details", "state": "Technical source details remain readable and copyable at doubled font"},
         {"id": "voice-audition.compact-preview", "title": "Compact full preview text and actions", "state": "After scrolling at doubled font, the full generated phrase and its controls remain readable and reachable"}
       ]
     },

@@ -601,7 +601,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertIn("Playable line", tooltip)
             self.assertIn("Morning", tooltip)
             self.assertNotIn("abcdef123456", panel.voice_reference.currentText())
-            self.assertIn("Name: Rhiannon", panel.reference_details.toPlainText())
             self.assertNotIn("abcdef123456", panel.a_reason.text())
             self.assertEqual(panel.a_reason.text(), "Good morning, traveller.")
             self.assertNotIn("Greeting:", panel.a_reason.text())
@@ -654,26 +653,18 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
             panel.cancel()
 
-    def test_preview_runtime_is_only_visible_in_expanded_technical_details(self):
-        with TemporaryDirectory() as directory:
-            plan, group, _manifest = ambiguous_fixture(Path(directory))
-            service = Mock(backend=Mock(runtime_status="GPU model loaded"))
-            panel = VoiceAuditionPanel(
-                Mock(),
-                preview_service=service,
-                player=Mock(),
-                thread_pool=ManualThreadPool(),
-            )
-            self.addCleanup(panel.deleteLater)
-            panel.start(plan, group_id=group.group_id)
-            panel.a_play.click()
-            self.assertTrue(panel.preview_runner.active)
-            self.assertFalse(panel.runtime.isVisibleTo(panel))
-            panel.reference_details_toggle.click()
-            self.assertTrue(panel.runtime.isVisibleTo(panel))
-            panel.reference_details_toggle.click()
-            self.assertFalse(panel.runtime.isVisibleTo(panel))
-            panel.shutdown()
+    def test_editor_has_no_technical_reference_or_speech_check_panes(self):
+        panel = VoiceAuditionPanel(Mock(), preview_service=Mock(), player=Mock())
+        self.addCleanup(panel.deleteLater)
+        self.addCleanup(panel.shutdown)
+        for name in (
+            "reference_details_toggle",
+            "reference_details",
+            "advice_details",
+            "runtime",
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(panel, name))
 
     def test_multiple_references_name_the_first_playback_sample(self):
         with TemporaryDirectory() as directory:
@@ -771,7 +762,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 panel.voice_reference.currentData(Qt.ItemDataRole.ToolTipRole),
             )
             self.assertIn("spoken text unknown", panel.a_reason.text())
-            self.assertIn("spoken text unknown", panel.reference_details.toPlainText())
             panel.cancel()
 
     def test_shutdown_waits_for_save_without_emitting_terminal_signals(self):
@@ -1079,17 +1069,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertIn("Reference 1 - 1.2 s", panel.voice_reference.currentText())
             self.assertIn("text unavailable", panel.voice_reference.toolTip())
             self.assertTrue(panel.auto_button.isHidden())
-            self.assertIn(
-                "Original references: 1", panel.reference_details.toPlainText()
-            )
-            self.assertIn(
-                "Reference duration: 1.2 s", panel.reference_details.toPlainText()
-            )
             self.assertIn("future speech and preparation", panel.scope.toolTip())
-            panel.reference_details_toggle.setChecked(True)
-            self.assertIn(
-                candidate.reference_sha256s[0], panel.reference_details.toPlainText()
-            )
             alternative = unresolved.candidate_inventory[1]
             panel.voice_reference.setCurrentIndex(1)
             self.assertIn("Reference 2", panel.voice_reference.currentText())
@@ -1335,7 +1315,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
             self.assertIn("Preparation failed", panel.voice_reference.currentText())
             self.assertNotIn("Preparing", panel.voice_reference.currentText())
-            self.assertIn("engine unavailable", panel.reference_details.toPlainText())
+            self.assertIn("engine unavailable", panel.status.toPlainText())
             self.assertTrue(panel.a_original.isEnabled())
             panel.a_original.click()
             self.finish_task(pool.tasks.pop())
@@ -1348,7 +1328,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertEqual(panel.a_play.text(), "Preview")
             self.assertTrue(panel.a_use.isEnabled())
 
-    def test_keyboard_can_read_preview_and_copy_complete_technical_details(self):
+    def test_keyboard_can_move_from_preview_text_to_game_phrase(self):
         with TemporaryDirectory() as directory:
             plan, group, _manifest = ambiguous_fixture(Path(directory))
             panel = VoiceAuditionPanel(Mock(), preview_service=Mock())
@@ -1362,25 +1342,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertIs(self.application.focusWidget(), panel.preview_text)
             QTest.keyClick(panel.preview_text, Qt.Key.Key_Tab)
             self.assertIs(self.application.focusWidget(), panel.game_phrase_button)
-            panel.reference_details_toggle.click()
-            panel.reference_details.setFocus()
-            QTest.keySequence(
-                panel.reference_details,
-                QKeySequence(QKeySequence.StandardKey.SelectAll),
-            )
-            QTest.keySequence(
-                panel.reference_details, QKeySequence(QKeySequence.StandardKey.Copy)
-            )
-            self.assertEqual(
-                self.application.clipboard().text(),
-                panel.reference_details.toPlainText(),
-            )
-            self.assertIn(
-                group.candidates[0].reference_sha256s[0],
-                self.application.clipboard().text(),
-            )
-            QTest.keyClick(panel.reference_details, Qt.Key.Key_Tab)
-            self.assertIsNot(self.application.focusWidget(), panel.reference_details)
 
     def test_long_status_is_copyable_scrollable_and_scales_with_font(self):
         with TemporaryDirectory() as directory:
@@ -1588,7 +1549,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             previews.reference_audio.return_value = VoiceAuditionReference(
                 reference, reference.read_bytes()
             )
-            previews.backend.runtime_status = "GPU: RTX 2070 SUPER <8 GB>"
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
                 decisions, preview_service=previews, thread_pool=pool, player=Mock()
@@ -1607,8 +1567,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertTrue(panel.a_use.isEnabled())
             self.assertEqual(pool.tasks, [])
             panel.a_play.click()
-            self.assertEqual(panel.runtime.textFormat(), Qt.TextFormat.PlainText)
-            self.assertIn("GPU: RTX 2070 SUPER", panel.runtime.text())
             self.finish_task(pool.tasks.pop())
             self.assertEqual(pool.tasks, [])
             panel.voice_reference.setCurrentIndex(1)

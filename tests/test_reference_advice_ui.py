@@ -273,13 +273,11 @@ class ReferenceAdviceUITest(unittest.TestCase):
             self.assertIn(
                 "Possible extra or missing words", f.panel.recommendation.text()
             )
-            self.assertIn(
-                "ASR device unavailable", f.panel.advice_details.toPlainText()
-            )
+            self.assertIn("ASR device unavailable", f.panel._advice_error)
+            self.assertTrue(f.panel._advice_unavailable)
             f.panel._refresh_runtime()
-            self.assertIn(
-                "ASR device unavailable", f.panel.advice_details.toPlainText()
-            )
+            self.assertIn("ASR device unavailable", f.panel._advice_error)
+            self.assertTrue(f.panel._advice_unavailable)
             f.player.play_bytes.assert_not_called()
             f.decisions.remember_many.assert_not_called()
 
@@ -370,7 +368,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f.player.play_bytes.assert_not_called()
             f.decisions.remember_many.assert_not_called()
 
-    def test_runtime_and_status_changes_keep_compact_geometry(self):
+    def test_background_preparation_and_status_keep_compact_geometry(self):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))
             f.panel.start(f.plan)
@@ -379,7 +377,6 @@ class ReferenceAdviceUITest(unittest.TestCase):
             before = (
                 f.panel.sizeHint(),
                 f.panel.a_play.geometry(),
-                f.panel.runtime.geometry(),
             )
             f.service.preparing = True
             f.panel._refresh_runtime()
@@ -392,12 +389,9 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 (
                     f.panel.sizeHint(),
                     f.panel.a_play.geometry(),
-                    f.panel.runtime.geometry(),
                 ),
             )
-            self.assertTrue(f.panel.runtime.isHidden())
             self.assertLess(f.panel.sizeHint().width(), 900)
-            self.assertFalse(f.panel.reference_details.isVisible())
 
     def test_background_content_check_preserves_manual_play_and_stop(self):
         for original in (False, True):
@@ -550,7 +544,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             )
             f.ready.clear()
             f.panel._refresh_runtime()
-            self.assertNotIn("No text mismatch", f.panel.advice_details.toPlainText())
+            self.assertTrue(f.panel.recommendation.isHidden())
 
     def test_cancelled_phrase_check_can_run_when_returning_to_original_phrase(self):
         with TemporaryDirectory() as directory:
@@ -582,7 +576,9 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 check, seed=check.seed + 1
             )
             f.panel._refresh_reference_advice()
-            self.assertIn("Content not checked", f.panel.advice_details.toPlainText())
+            self.assertNotIn(
+                "Check words by ear", f.panel.voice_reference.currentText()
+            )
             self.assertTrue(f.panel.recommendation.isHidden())
 
     def test_background_failure_shows_reason_without_playing_or_saving(self):
@@ -603,9 +599,6 @@ class ReferenceAdviceUITest(unittest.TestCase):
             self.assertFalse(f.panel.status.isHidden())
             self.assertIn("Model assets are missing", message)
             self.assertIn("retry", message)
-            self.assertIn(
-                "Model assets are missing", f.panel.reference_details.toPlainText()
-            )
             f.panel.status.selectAll()
             f.panel.status.copy()
             self.assertEqual(self.application.clipboard().text(), message)
@@ -620,9 +613,6 @@ class ReferenceAdviceUITest(unittest.TestCase):
             failed.clear()
             f.panel._refresh_runtime()
             self.assertTrue(f.panel.status.isHidden())
-            self.assertNotIn(
-                "Model assets are missing", f.panel.reference_details.toPlainText()
-            )
             f.service.generate.assert_not_called()
             f.player.play_bytes.assert_not_called()
             f.decisions.remember_many.assert_not_called()

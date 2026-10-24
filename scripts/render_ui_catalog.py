@@ -1169,7 +1169,6 @@ def _prepare_voice_audition_screenshot(
 
     if story_id in {
         "voice-audition.compact-preview",
-        "voice-audition.compact-details",
         "voice-audition.compact-preview-playing",
         "voice-audition.compact-preview-failure",
         "voice-audition.compact-save-waiting",
@@ -1177,9 +1176,7 @@ def _prepare_voice_audition_screenshot(
     }:
         assert isinstance(widget, GameNarratorDialog)
         target = (
-            widget.voice_panel.reference_details
-            if story_id.endswith("details")
-            else widget.voice_panel.status
+            widget.voice_panel.status
             if story_id.endswith(("failure", "waiting"))
             else widget.voice_panel.a_play
         )
@@ -1338,13 +1335,12 @@ def _voice_audition_story(
         "alternate-phrase": lambda: panel.preview_text.setPlainText(alternate_phrase),
         "original-playing": lambda: _voice_original_playback_story(panel),
         "preview-generating": panel.a_play.click,
-        "details": lambda: panel.reference_details_toggle.setChecked(True),
     }
     if action := actions.get(state):
         action()
     elif state in {"preview-ready", "preview-playing"}:
         _voice_preview_playback_story(panel, state, resources, write_sample)
-    elif state in {"content-warning", "content-details"}:
+    elif state == "content-warning":
         _voice_content_check_story(panel, state, resources, write_sample)
     elif state == "preview-failure":
         panel.a_play.click()
@@ -1460,8 +1456,6 @@ def _voice_content_check_story(
         advice=assess_speech_content(text, text + " Wait."),
     )
     panel._show_current_candidate()
-    if state == "content-details":
-        panel.reference_details_toggle.setChecked(True)
 
 
 def _catalog_support_log(state: str) -> RuntimeSupportLog:
@@ -4367,7 +4361,6 @@ def _render_stories(
         "offline-preparation.completed": lambda: offline_preparation("completed"),
         "voice-audition.reference": lambda: voice_audition("reference"),
         "voice-audition.content-warning": lambda: voice_audition("content-warning"),
-        "voice-audition.content-details": lambda: voice_audition("content-details"),
         "voice-audition.anonymous-source": lambda: voice_audition("anonymous-source"),
         "voice-audition.original-playing": lambda: voice_audition("original-playing"),
         "voice-audition.preview-generating": lambda: voice_audition(
@@ -4390,7 +4383,6 @@ def _render_stories(
             "compact-save-failure"
         ),
         "voice-audition.compact-preview": lambda: voice_audition("compact-preview"),
-        "voice-audition.compact-details": lambda: voice_audition("compact-details"),
         "voice-audition.alternate": lambda: voice_audition("alternate"),
         "voice-audition.alternate-phrase": lambda: voice_audition("alternate-phrase"),
         "voice-audition.preview-ready": lambda: voice_audition("preview-ready"),

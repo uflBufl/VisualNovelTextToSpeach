@@ -323,7 +323,6 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.assertNotIn(
             "Content not checked", self.panel.voice_reference.currentText()
         )
-        self.assertIn("Content not checked", self.panel.advice_details.toPlainText())
         self.panel._set_status("Unable to play original reference: file missing")
         self.assertFalse(self.panel.status.isHidden())
         self.panel.start(self.plan, group_id=self.group.group_id)
@@ -345,9 +344,6 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.assertEqual(self.panel.a_reason.text(), "The verified original line.")
         self.panel.a_reason.setSelection(0, len(self.panel.a_reason.text()))
         self.assertEqual(self.panel.a_reason.selectedText(), self.panel.a_reason.text())
-        self.assertIn(
-            "Original references:", self.panel.reference_details.toPlainText()
-        )
 
     def test_custom_text_invalidates_heard_choice_and_empty_text_cannot_generate(self):
         self.panel.start(self.plan, group_id=self.group.group_id)

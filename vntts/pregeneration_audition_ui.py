@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QStyledItemDelegate,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -70,7 +69,6 @@ from vntts.reference_recommendation import (
     cached_reference_checks,
     recommended_reference,
 )
-from vntts.speech_presentation import speech_runtime_label
 from vntts.voices import default_voice_choice_id, voice_source_label
 
 
@@ -185,7 +183,6 @@ class _PreviewPlayer(Protocol):
 _preview_service_factory: Callable[[], _VoiceAuditionPreviewer] = (
     VoiceAuditionPreviewService
 )
-_speech_runtime_label: Callable[[object | None], str] = speech_runtime_label
 
 
 class VoiceAuditionUIError(RuntimeError):
@@ -284,10 +281,6 @@ class VoiceAuditionPanel(QGroupBox):
         self.scope.setTextFormat(Qt.TextFormat.PlainText)
         self.scope.setAccessibleName("Voice choice scope")
         self.scope.setWordWrap(True)
-        self.runtime = QLabel()
-        self.runtime.setWordWrap(True)
-        self.runtime.setTextFormat(Qt.TextFormat.PlainText)
-        self.runtime.setAccessibleName("Character voice preview compute device")
         self.candidate_voice_label = QLabel()
         self.candidate_voice_label.setTextFormat(Qt.TextFormat.PlainText)
         self.candidate_voice_label.setWordWrap(True)
@@ -356,11 +349,6 @@ class VoiceAuditionPanel(QGroupBox):
         layout.addWidget(self.current_voice_box)
         layout.addLayout(self.outcome_actions)
         layout.addWidget(self.status)
-        layout.addWidget(self.reference_details_toggle)
-        layout.addWidget(self.reference_details)
-        layout.addWidget(self.advice_details)
-        layout.addWidget(self.runtime)
-        self.reference_details_toggle.toggled.connect(self._refresh_runtime)
         for widget in (
             self.status,
             self.recommendation,
@@ -698,36 +686,11 @@ class VoiceAuditionPanel(QGroupBox):
         self._create_advice_widgets()
 
     def _create_advice_widgets(self) -> None:
-        self.reference_details_toggle = QToolButton(
-            text="Diagnostics",
-            checkable=True,
-            toolButtonStyle=Qt.ToolButtonStyle.ToolButtonTextBesideIcon,
-            arrowType=Qt.ArrowType.RightArrow,
-        )
-        self.reference_details_toggle.setAccessibleName("Reference diagnostics")
-        self.reference_details_toggle.setToolTip(
-            "Show reference identifiers, checksums, preview errors and speech checks"
-        )
-        self.reference_details_toggle.toggled.connect(
-            lambda expanded: self.reference_details_toggle.setArrowType(
-                Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
-            )
-        )
-        self.reference_details = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
-        self.reference_details.setAccessibleName("Technical voice reference details")
-        self.reference_details.setWordWrapMode(QTextOption.WrapMode.WrapAnywhere)
-        self.reference_details.hide()
-        self.reference_details_toggle.toggled.connect(self.reference_details.setVisible)
         self.recommendation = QLabel()
         self.recommendation.setAccessibleName("Generated speech content check")
         self.recommendation.setWordWrap(True)
         self.recommendation.setTextFormat(Qt.TextFormat.PlainText)
         cast(QVBoxLayout, self.preview_box.layout()).addWidget(self.recommendation)
-        self.advice_details = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
-        self.advice_details.setAccessibleName("Speech check details")
-        self.advice_details.setWordWrapMode(QTextOption.WrapMode.WrapAnywhere)
-        self.advice_details.hide()
-        self.reference_details_toggle.toggled.connect(self.advice_details.setVisible)
 
     def _size_transient_controls(self) -> None:
         self.preview_text.setFixedHeight(
@@ -765,7 +728,6 @@ class VoiceAuditionPanel(QGroupBox):
         self._queued_preview_request = None
 
     def _refresh_runtime(self) -> None:
-        background_preparing = getattr(self.preview_service, "preparing", False) is True
         if (
             self._plan is not None
             and self._candidate_entries
@@ -780,24 +742,7 @@ class VoiceAuditionPanel(QGroupBox):
             self._set_playing_source(self._playing_source)
             self.a_play.setEnabled(True)
             candidate = self._current_entry()[0]
-            if self._preview_errors.pop(self._preview_key(candidate), None) is not None:
-                self._show_reference_details(candidate)
-        if self.preview_runner.active and self._shutdown_requested:
-            message = "Stopping voice preview preparation..."
-        elif self.preview_runner.active:
-            message = "Preparing voice samples. " + _speech_runtime_label(
-                self.preview_service.backend
-            )
-        elif background_preparing:
-            message = "Preparing voice samples in the background. You can browse and play ready samples."
-        else:
-            message = "No preview generation. Saved previews play without TTS."
-        self.runtime.setText(message)
-        self.runtime.setVisible(
-            self.reference_details_toggle.isChecked()
-            and (self.preview_runner.active or self._shutdown_requested)
-        )
-        self.runtime.setToolTip(message)
+            self._preview_errors.pop(self._preview_key(candidate), None)
         if (
             self._candidate_entries
             and self._group_index < len(self._groups)
@@ -939,7 +884,6 @@ class VoiceAuditionPanel(QGroupBox):
     def _launch_preview_request(self, request: _PreviewRequest) -> None:
         if not request.current_voice:
             self._preview_errors.pop((request.candidate.source_id, request.text), None)
-            self._show_reference_details(request.candidate)
         self._stop_player()
         if not request.current_voice:
             self._accepted_choice = None
@@ -1073,7 +1017,6 @@ class VoiceAuditionPanel(QGroupBox):
         self._previews = {}
         self._auditioned.clear()
         self._accepted_choice = None
-        self.reference_details_toggle.setChecked(False)
         group = self.current_group()
         self.character.setText(group.character)
         self._show_portrait(group)
@@ -1084,7 +1027,6 @@ class VoiceAuditionPanel(QGroupBox):
         self.phrase_box.setVisible(self._policy_choice is None or self._comparison_mode)
         self.voice_reference.setVisible(self._policy_choice is None)
         self.voice_reference_label.setVisible(self._policy_choice is None)
-        self.reference_details_toggle.setVisible(self._policy_choice is None)
         if self._policy_choice is not None:
             self._candidate_entries = ()
             self.a_box.hide()
@@ -1350,7 +1292,6 @@ class VoiceAuditionPanel(QGroupBox):
             )
         )
         self.a_reason.setText(transcript)
-        self._show_reference_details(candidate)
         preview = self._ready_preview(candidate)
         self.a_play.setEnabled(bool(self._sample_text))
         self.a_original.setEnabled(bool(candidate.reference_sha256s))
@@ -1387,13 +1328,15 @@ class VoiceAuditionPanel(QGroupBox):
         self._refresh_reference_advice()
         if preview is not None and heard:
             self._accepted_choice = self._current_entry()[1]
+        preview_error = self._preview_errors.get(self._preview_key(candidate))
         self._set_status(
-            (
-                "Preview failed. Listen to the original reference or retry."
+            f"Preview failed. {preview_error}\n"
+            + (
+                "Listen to the original reference or retry."
                 if candidate.reference_sha256s
-                else "Preview failed. Retry or choose another voice."
+                else "Retry or choose another voice."
             )
-            if self._preview_key(candidate) in self._preview_errors
+            if preview_error is not None
             else ""
         )
 
@@ -1433,36 +1376,6 @@ class VoiceAuditionPanel(QGroupBox):
         if error or current.startswith("Background preview failed:"):
             if current != message:
                 self._set_status(message)
-                self._show_reference_details(candidate)
-
-    def _show_reference_details(self, candidate: VoiceCandidate) -> None:
-        details = [
-            f"Name: {_candidate_name(candidate)}",
-            f"Speaker: {candidate.source_speaker}",
-            f"Source ID: {candidate.source_id}",
-            f"Original references: {len(candidate.reference_sha256s)}",
-            candidate.recommendation,
-        ]
-        if candidate.reference_duration_seconds is not None:
-            details.append(
-                f"Reference duration: {candidate.reference_duration_seconds:.1f} s"
-            )
-        if candidate.candidate_origin == UNLINKED_BANK_MEDIA:
-            details.append(UNLINKED_BANK_LABEL)
-        error = self._preview_errors.get(
-            self._preview_key(candidate)
-        ) or self._preparation_error(candidate)
-        if error is not None:
-            details.append(f"Preview error: {error}")
-        details.extend(
-            f"{index}. SHA-256 {checksum}"
-            for index, checksum in enumerate(candidate.reference_sha256s, 1)
-        )
-        if candidate.source_line_ids:
-            details.append("Source lines: " + ", ".join(candidate.source_line_ids))
-        self.reference_details.setPlainText(
-            "\n".join(details) if details else "No recorded reference files."
-        )
 
     def _preview_finished(
         self, preview: _PreviewAudio | None, error: Exception | None
@@ -1528,12 +1441,14 @@ class VoiceAuditionPanel(QGroupBox):
         self.auto_button.setEnabled(True)
         self._preview_errors[self._preview_key(candidate)] = str(error)
         self._set_status(
-            "Preview failed. Listen to the original reference or retry."
-            if candidate.reference_sha256s
-            else "Preview failed. Retry or choose another voice."
+            f"Preview failed. {error}\n"
+            + (
+                "Listen to the original reference or retry."
+                if candidate.reference_sha256s
+                else "Retry or choose another voice."
+            )
         )
         self._refresh_reference_advice()
-        self._show_reference_details(candidate)
 
     def _completed_preview_request(
         self, error: Exception | None
@@ -1772,7 +1687,6 @@ class VoiceAuditionPanel(QGroupBox):
             "uncertain_recognition": "Recognition uncertain",
             "review_possible_content_mismatch": "Check words by ear",
         }
-        details = []
         with QSignalBlocker(self.voice_reference):
             for index, (candidate, _choice, narrator) in enumerate(
                 self._candidate_entries
@@ -1806,11 +1720,6 @@ class VoiceAuditionPanel(QGroupBox):
                         if part
                     ),
                 )
-                if (
-                    check is not None
-                    and candidate.source_id == self._current_entry()[0].source_id
-                ):
-                    details.append(f"Recognized speech: {check.advice.observed_text}")
         current = checks.get(self._current_entry()[0].source_id)
         message = (
             messages[current.advice.status]
@@ -1830,25 +1739,6 @@ class VoiceAuditionPanel(QGroupBox):
         self.recommendation.setText(message)
         self.recommendation.setVisible(bool(message))
         self.recommendation.setToolTip(message)
-        candidate = self._current_entry()[0]
-        details.insert(0, "Preview: " + self._availability(candidate))
-        details.insert(
-            1,
-            "Content check: "
-            + (
-                messages[current.advice.status]
-                if current
-                else self._unchecked_content_state(candidate)
-            ),
-        )
-        if self._advice_error is not None:
-            details.append(f"Speech check error: {self._advice_error}")
-        self.advice_details.setPlainText(
-            "\n\n".join(details)
-            + ("\n\n" if details else "")
-            + "Checks describe generated words, not voice quality. Recognition can mishear names. "
-            "Only prepared samples near the browsing focus are checked."
-        )
 
     def _check_ready_previews(self) -> None:
         if (

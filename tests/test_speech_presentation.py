@@ -15,12 +15,25 @@ from vntts.speech_presentation import (
     readable_model_name,
     reading_policy_label,
     speech_configuration_label,
+    speech_model_label,
     speech_runtime_label,
 )
 from vntts.voice_library import VoiceLibrary
 
 
 class SpeechPresentationTest(unittest.TestCase):
+    def test_model_only_label_uses_model_identity_without_backend_recommendations(self):
+        self.assertEqual(
+            speech_model_label("pocket-tts", "unused-model", pocket_cloning=True),
+            "Pocket TTS with voice cloning",
+        )
+        self.assertEqual(speech_model_label("pocket-tts"), "Pocket TTS preset-only")
+        self.assertEqual(
+            speech_model_label("moss-tts", "moss-tts-local-v1.5-mlx-int8"),
+            "MOSS Local v1.5 · 8-bit MLX",
+        )
+        self.assertEqual(speech_model_label("moss-tts", "custom/model"), "model")
+
     def test_compact_compute_retains_device_and_cpu_fallback_warning(self):
         raw = (
             "Compute: GPU: RTX 2070 SUPER (37 GPU layers); audio model/codec: CPU; "

@@ -22,17 +22,14 @@ from PySide6.QtGui import QCloseEvent, QPixmap, QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
-    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -62,8 +59,9 @@ from vntts.pregeneration_voices import (
 from vntts.qt_audio import QtPcmPlayer
 from vntts.release_backends import speech_backend_options
 from vntts.settings import AppSettings
+from vntts.speech_presentation import engine_model_label, speech_model_label
 from vntts.tts_benchmark import create_backend
-from vntts.ui_text import copy_text_button, make_text_copyable
+from vntts.ui_text import make_text_copyable
 from vntts.voice_library import VoiceBinding, VoiceBindingRollback, VoiceLibrary
 from vntts.voices import (
     CharacterVoiceRegistry,
@@ -284,6 +282,10 @@ class GameNarratorDialog(QDialog):
         row.addWidget(self.portrait)
         row.addWidget(self.role, 1)
         content.addLayout(row)
+        self.tts_model_label = QLabel()
+        self.tts_model_label.setWordWrap(True)
+        self.tts_model_label.setTextFormat(Qt.TextFormat.PlainText)
+        content.addWidget(self.tts_model_label)
         self.source = QComboBox()
         self.source.setAccessibleName("Voice source")
         for label, mode in (
@@ -310,15 +312,7 @@ class GameNarratorDialog(QDialog):
         self.cancel_button = QPushButton("Cancel")
         set_action_icon(self.cancel_button, "x")
         self.cancel_button.clicked.connect(self.reject)
-        self.copy_details = copy_text_button(
-            "Copy diagnostics", self._copy_details, self
-        )
         actions = QHBoxLayout()
-        self.copy_details.hide()
-        self.voice_panel.reference_details_toggle.toggled.connect(
-            self.copy_details.setVisible
-        )
-        self._build_details_controls()
         self.voice_panel.outcome_actions.removeWidget(
             self.voice_panel.retry_save_button
         )
@@ -355,66 +349,11 @@ class GameNarratorDialog(QDialog):
             QTimer.singleShot(0, self, self._finish_close)
 
     def _build_game_reference_controls(self) -> None:
-        self.source_setup = QToolButton(
-            text="Game files",
-            checkable=True,
-            toolButtonStyle=Qt.ToolButtonStyle.ToolButtonTextBesideIcon,
-            arrowType=Qt.ArrowType.RightArrow,
-        )
-        self.source_setup.setToolTip(
-            "Show the game folder and refresh imported references"
-        )
-        self.source_setup.setAccessibleName("Game files")
-        self.source_setup_controls = QWidget()
-        setup_layout = QHBoxLayout(self.source_setup_controls)
-        setup_layout.setContentsMargins(0, 0, 0, 0)
-        self.game_installation = QLineEdit("Automatically detected")
-        self.game_installation.setReadOnly(True)
-        self._show_known_installation()
-        self.discover_button = QPushButton("Refresh")
-        self.discover_button.setAccessibleName("Refresh voices")
-        self.discover_button.setToolTip("Refresh voices")
-        set_action_icon(self.discover_button, "refresh-cw")
-        self.discover_button.clicked.connect(lambda: self.discover())
-        self.folder_button = QPushButton("Folder...")
-        self.folder_button.setAccessibleName("Change folder...")
-        self.folder_button.setToolTip("Change folder...")
-        set_action_icon(self.folder_button, "folder-open")
-        self.folder_button.clicked.connect(self._choose_folder)
-        setup_layout.addWidget(self.game_installation, 1)
-        setup_layout.addWidget(self.folder_button)
-        setup_layout.addWidget(self.discover_button)
-        self.source_setup_controls.hide()
-        self.source_setup.toggled.connect(self._refresh_source_details)
+        self._remember_known_installation()
         self.characters = QComboBox()
         self.characters.setAccessibleName("Game voice donor")
         self.characters.currentIndexChanged.connect(self._character_changed)
         self.form.addRow("Donor", self.characters)
-        self.source_details_actions = QHBoxLayout()
-        self.source_details_actions.addWidget(self.source_setup)
-        self.form.addRow(self.source_details_actions)
-        self.form.addRow(self.source_setup_controls)
-
-    def _refresh_source_details(self, *_args: object) -> None:
-        self.source_setup.setArrowType(
-            Qt.ArrowType.DownArrow
-            if self.source_setup.isChecked()
-            else Qt.ArrowType.RightArrow
-        )
-        mode = self.source.currentData()
-        self.source_setup.setVisible(mode == "game")
-        self.source_setup_controls.setVisible(
-            mode == "game" and self.source_setup.isChecked()
-        )
-
-    def _build_details_controls(self) -> None:
-        panel_layout = self.voice_panel.layout()
-        assert panel_layout is not None
-        panel_layout.removeWidget(self.voice_panel.reference_details_toggle)
-        tools = self.source_details_actions
-        tools.addWidget(self.voice_panel.reference_details_toggle)
-        tools.addWidget(self.copy_details)
-        tools.addStretch()
 
     def select_role(self, role: str) -> bool:
         """Select a trusted application-provided role without enabling free-form UI."""
@@ -648,21 +587,12 @@ class GameNarratorDialog(QDialog):
         with QSignalBlocker(self.source):
             self.source.setCurrentIndex(self.source.findData(mode))
 
-    def _show_known_installation(self) -> None:
+    def _remember_known_installation(self) -> None:
         selected = getattr(self.importer, "selected_installation_root", None)
         root = selected() if callable(selected) else None
         if not isinstance(root, (str, Path)):
             return
         self._installation_root = Path(root)
-        self.game_installation.setText(str(self._installation_root))
-        self.game_installation.setToolTip(str(self._installation_root))
-
-    def _choose_folder(self) -> None:
-        path = QFileDialog.getExistingDirectory(
-            self, "Choose installed Reverse: 1999 folder"
-        )
-        if path:
-            self.discover(Path(path))
 
     def set_recovery_context(self, role: str, *, resume_live: bool) -> None:
         self._recovery_role = normalize_character_name(role)
@@ -975,7 +905,6 @@ class GameNarratorDialog(QDialog):
         self.form.setRowVisible(self.presets, mode == "preset")
         self.form.setRowVisible(self.catalog_choice, mode == "catalog")
         self.form.setRowVisible(self.characters, mode == "game")
-        self._refresh_source_details()
         if mode == "game":
             group = self._story_group()
             if (
@@ -1263,7 +1192,6 @@ class GameNarratorDialog(QDialog):
             return
         if installation_root is not None:
             self._installation_root = installation_root
-            self.game_installation.setText(str(installation_root))
         with QSignalBlocker(self.characters):
             self.characters.clear()
         self.voice_panel.hide()
@@ -1393,7 +1321,7 @@ class GameNarratorDialog(QDialog):
                     raise ValueError("Game importer returned an invalid voice manifest")
                 self._show_character_candidates(result)
             except (OSError, ValueError, PregenerationVoiceError) as failure:
-                self._set_status(f"{failure}\nRetry or choose another game folder.")
+                self._set_status(f"{failure}\nChoose another voice source.")
         elif operation == "narrator":
             if isinstance(result, VoicePlan):
                 self._start_narrator_panel(result)
@@ -1433,12 +1361,12 @@ class GameNarratorDialog(QDialog):
             index = self.characters.findText(self.role.currentText())
             if index >= 0:
                 self.characters.setCurrentIndex(index)
-        self._show_known_installation()
+        self._remember_known_installation()
         if result:
             self._prepare()
         else:
             self._set_status(
-                "No voiced characters found. Choose the game folder to reimport."
+                "No voiced characters found. Choose an imported or built-in voice."
             )
 
     def remember_many(self, selections: tuple[tuple[VoiceGroup, str], ...]) -> None:
@@ -1607,6 +1535,28 @@ class GameNarratorDialog(QDialog):
         )
 
     def _update(self, *_args: object) -> None:
+        selection = (
+            None if self.voice_panel.isHidden() else self.voice_panel.current_selection
+        )
+        if selection is not None:
+            plan = selection[0]
+            backend, model, cloning = (
+                plan.synthesis_backend,
+                plan.synthesis_model,
+                plan.pocket_voice_cloning,
+            )
+        else:
+            backend, model, cloning = (
+                self.settings_value.speech_backend,
+                self.settings_value.tts_model,
+                self.settings_value.pocket_gated_model_accepted,
+            )
+        self.tts_model_label.setText(
+            "TTS model: " + speech_model_label(backend, model, pocket_cloning=cloning)
+        )
+        self.tts_model_label.setToolTip(
+            engine_model_label(backend, model, pocket_cloning=cloning)
+        )
         label = self.voice_panel.candidate_voice_label
         donor = {
             "game": self.characters,
@@ -1624,16 +1574,5 @@ class GameNarratorDialog(QDialog):
             self.presets,
             self.catalog_choice,
             self.characters,
-            self.discover_button,
-            self.folder_button,
         ):
             control.setEnabled(idle)
-
-    def _copy_details(self) -> str:
-        return "\n".join(
-            (
-                self.saved_assignment_summary(),
-                self.status.text(),
-                self.voice_panel.status.toPlainText(),
-            )
-        )

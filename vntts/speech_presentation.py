@@ -89,6 +89,16 @@ def engine_model_label(
     return f"Engine: {engine}\nModel: {model}"
 
 
+def speech_model_label(
+    backend: str, model: str | None = None, *, pocket_cloning: bool = False
+) -> str:
+    _, model = _engine_model_identity(backend, model, pocket_cloning=pocket_cloning)
+    name = readable_model_name(model)
+    return (
+        f"MOSS {name}" if backend == "moss-tts" and name.startswith("Local ") else name
+    )
+
+
 def speech_configuration_rows(
     settings: AppSettings, *, narrator: object | None = None
 ) -> tuple[tuple[str, str], ...]:

@@ -10,8 +10,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QEvent, Qt
-from PySide6.QtTest import QTest
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -19,7 +18,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QLabel,
     QScrollArea,
-    QToolButton,
 )
 from shiboken6 import isValid
 from vntts_artifacts.file_integrity import sha256_file
@@ -804,7 +802,6 @@ class GameNarratorTest(unittest.TestCase):
                 )
                 dialog = self.editor(settings=settings)
                 self.select(dialog, "catalog", source="character:rhiannon")
-                dialog.source_setup.setChecked(True)
                 self.assertIs(dialog.settings_value, settings)
                 self.assertFalse(hasattr(dialog, "consent"))
                 self.assertFalse(hasattr(dialog, "terms"))
@@ -846,95 +843,144 @@ class GameNarratorTest(unittest.TestCase):
         self.assertTrue(accepted.result_settings.pocket_gated_model_accepted)
         self.assertIsNotNone(self.library.binding("Narrator"))
 
-    def test_files_and_diagnostics_disclosures_toggle_independently_with_keyboard(self):
-        plan, group, _manifest = ambiguous_fixture(self.root / "disclosures")
-        dialog = self.editor()
-        dialog.set_voice_context(plan, character=group.character)
-        self.drain()
-        dialog.show()
-        self.application.processEvents()
-        panel = dialog.voice_panel
-        files, diagnostics = dialog.source_setup, panel.reference_details_toggle
-        for button in (files, diagnostics):
-            self.assertIsInstance(button, QToolButton)
-            self.assertEqual(button.arrowType(), Qt.ArrowType.RightArrow)
-        QTest.keyClick(files, Qt.Key.Key_Space)
-        self.assertTrue(dialog.source_setup_controls.isVisible())
-        self.assertEqual(files.arrowType(), Qt.ArrowType.DownArrow)
-        self.assertFalse(panel.reference_details.isVisible())
-        QTest.keyClick(diagnostics, Qt.Key.Key_Space)
-        self.assertTrue(panel.reference_details.isVisible())
-        self.assertTrue(dialog.copy_details.isVisible())
-        self.assertEqual(diagnostics.arrowType(), Qt.ArrowType.DownArrow)
-        self.assertTrue(dialog.source_setup_controls.isVisible())
-        QTest.keyClick(files, Qt.Key.Key_Space)
-        self.assertFalse(dialog.source_setup_controls.isVisible())
-        self.assertTrue(panel.reference_details.isVisible())
-        self.select(dialog, "automatic")
-        self.assertFalse(diagnostics.isChecked())
-        self.assertEqual(diagnostics.arrowType(), Qt.ArrowType.RightArrow)
-        self.assertFalse(dialog.copy_details.isVisible())
-        self.assertFalse(files.isVisible())
-
-    def test_source_details_preserves_candidate_phrase_and_donor_without_reloading(
+    def test_editor_has_no_maintenance_actions_and_keeps_model_visible_for_every_source(
         self,
     ):
-        plan, group, _manifest = ambiguous_fixture(self.root / "details-donor")
-        dialog = self.editor()
-        dialog.set_voice_context(plan, character=group.character)
-        self.drain()
-        panel = dialog.voice_panel
-        panel.preview_text.setPlainText("Keep my comparison phrase.")
-        selected, donor = panel.current_selection, dialog.characters.currentText()
-        dirty, bindings = dialog._settings_dirty, self.library.bindings()
-        self.importer.reset_mock()
-        for expanded in (True, False):
-            dialog.source_setup.setChecked(expanded)
-            self.assertEqual(dialog.source_setup_controls.isHidden(), not expanded)
-            self.assertEqual(panel.current_selection, selected)
-            self.assertEqual(dialog.characters.currentText(), donor)
-            self.assertEqual(
-                panel.preview_text.toPlainText(), "Keep my comparison phrase."
-            )
-            self.assertEqual(dialog._settings_dirty, dirty)
-            self.assertEqual(self.library.bindings(), bindings)
-            self.assertFalse(dialog.runner.active)
-        self.importer.prepare_voice_roles.assert_not_called()
-        self.importer.narrator_characters.assert_not_called()
-
-    def test_source_details_only_exposes_game_maintenance_and_preserves_settings(self):
         self.bind_narrator()
         dialog = self.editor(
             settings=self.settings.updated(
                 speech_backend="pocket-tts", pocket_gated_model_accepted=True
             )
         )
+        for name in (
+            "source_setup",
+            "source_setup_controls",
+            "game_installation",
+            "folder_button",
+            "discover_button",
+            "copy_details",
+        ):
+            self.assertFalse(hasattr(dialog, name), name)
         dialog.show()
-        self.application.processEvents()
-        dialog.source_setup.setChecked(True)
+        panel = dialog.voice_panel
         for mode in ("catalog", "saved", "game", "preset", "automatic"):
             with self.subTest(mode=mode):
                 self.select(dialog, mode)
-                self.assertEqual(dialog.source_setup.isVisible(), mode == "game")
-                self.assertEqual(
-                    dialog.source_setup_controls.isVisible(), mode == "game"
-                )
+                self.assertTrue(dialog.tts_model_label.isVisible())
+                for name in (
+                    "reference_details_toggle",
+                    "reference_details",
+                    "advice_details",
+                    "runtime",
+                ):
+                    self.assertFalse(hasattr(panel, name), name)
                 self.assertTrue(dialog.settings_value.pocket_gated_model_accepted)
+        self.assertEqual(self.backend.requests, [])
 
-    def test_opening_source_details_during_loading_keeps_actions_disabled(self):
-        dialog = self.editor()
-        self.select(dialog, "game")
+    def test_model_matches_actual_preview_plan_without_reloading_or_changing_current_voice(
+        self,
+    ):
+        plan, group, _manifest = ambiguous_fixture(self.root / "model-preview")
+        plan = replace(plan, synthesis_model="selected-preview-model")
+        dialog = self.editor(
+            settings=self.settings.updated(speech_backend="pocket-tts")
+        )
+        self.service.backend_factory = Mock(return_value=self.backend)
+        dialog.set_voice_context(plan, character=group.character)
+        self.drain()
+        dialog.show()
+        self.application.processEvents()
+        panel = dialog.voice_panel
+        self.assertEqual(panel.current_selection[0], plan)
+        self.assertEqual(
+            dialog.tts_model_label.text(), "TTS model: selected-preview-model"
+        )
+        self.assertIn("Model: selected-preview-model", dialog.tts_model_label.toolTip())
+        self.assertLess(
+            dialog.role.mapTo(dialog.controls, dialog.role.rect().bottomLeft()).y(),
+            dialog.tts_model_label.y(),
+        )
+        self.assertLess(
+            dialog.tts_model_label.geometry().bottom(), panel.current_voice_box.y()
+        )
+        self.backend.name = plan.synthesis_backend
+        self.listen(dialog)
+        self.assertEqual(
+            self.service.backend_factory.call_args.args[0], plan.synthesis_backend
+        )
+        self.assertEqual(
+            self.service.backend_factory.call_args.kwargs["model_name"],
+            plan.synthesis_model,
+        )
+        panel.preview_text.setPlainText("Keep my comparison phrase.")
+        self.drain()
+        selected, donor = panel.current_selection, dialog.characters.currentText()
+        current, dirty, bindings = (
+            panel._current_voice,
+            dialog._settings_dirty,
+            self.library.bindings(),
+        )
+        requests = len(self.backend.requests)
+        self.importer.reset_mock()
+        dialog._update()
+        dialog._update()
+        self.assertEqual(panel.current_selection, selected)
+        self.assertEqual(panel._current_voice, current)
+        self.assertEqual(dialog.characters.currentText(), donor)
+        self.assertEqual(panel.preview_text.toPlainText(), "Keep my comparison phrase.")
+        self.assertEqual(dialog._settings_dirty, dirty)
+        self.assertEqual(self.library.bindings(), bindings)
+        self.assertEqual(len(self.backend.requests), requests)
+        self.importer.prepare_voice_roles.assert_not_called()
+        self.importer.narrator_characters.assert_not_called()
+
+    def test_model_follows_new_source_context_and_pocket_cloning_configuration(self):
+        plan, group, _manifest = ambiguous_fixture(self.root / "model-context")
+        dialog = self.editor(
+            settings=self.settings.updated(
+                speech_backend="pocket-tts", pocket_gated_model_accepted=True
+            )
+        )
+        dialog.set_voice_context(
+            replace(plan, synthesis_model="story-model"), character=group.character
+        )
+        self.drain()
+        self.assertIn("story-model", dialog.tts_model_label.text())
+        self.select(dialog, "preset", role=group.character, source="preset:alba")
+        selected_plan = dialog.voice_panel.current_selection[0]
+        self.assertEqual(selected_plan.synthesis_backend, "pocket-tts")
+        self.assertFalse(selected_plan.pocket_voice_cloning)
+        self.assertIn("Pocket TTS preset-only", dialog.tts_model_label.text())
+        self.assertNotIn("story-model", dialog.tts_model_label.toolTip())
+        self.select(dialog, "automatic", role=group.character)
+        self.assertTrue(dialog.voice_panel.a_use.isEnabled())
+        self.assertIn("Pocket TTS with voice cloning", dialog.tts_model_label.text())
+        self.assertEqual(self.backend.requests, [])
+
+    def test_loading_uses_resolved_model_and_preserves_known_installation(self):
+        installation = self.root / "installed-game"
+        self.importer.selected_installation_root.return_value = installation
+        dialog = self.editor(
+            settings=self.settings.updated(tts_model="configured-model")
+        )
+        plan, group, _manifest = ambiguous_fixture(self.root / "loading-model")
+        dialog.set_voice_context(
+            replace(plan, synthesis_model="story-model"), character=group.character
+        )
+        self.drain()
+        dialog.show()
         dialog.discover()
         self.assertTrue(dialog.runner.active)
-        dialog.source_setup.setChecked(True)
-        self.application.processEvents()
-        self.assertFalse(dialog.source_setup_controls.isHidden())
-        for control in (
-            dialog.folder_button,
-            dialog.discover_button,
-            dialog.characters,
-        ):
-            self.assertFalse(control.isEnabled())
+        self.assertEqual(dialog._installation_root, installation)
+        self.assertTrue(dialog.voice_panel.isHidden())
+        self.assertTrue(dialog.tts_model_label.isVisible())
+        self.assertIn("configured-model", dialog.tts_model_label.text())
+        self.assertNotIn("story-model", dialog.tts_model_label.toolTip())
+        self.assertFalse(dialog.characters.isEnabled())
+        self.drain()
+        self.assertEqual(dialog._installation_root, installation)
+        self.importer.narrator_characters.assert_called_with(dialog.cancellation, None)
+        self.assertIn("No voiced characters", dialog.status.text())
 
     def test_empty_story_candidates_keep_source_choices_available(self):
         plan, group, _manifest = ambiguous_fixture(self.root / "story")
@@ -1124,6 +1170,13 @@ class GameNarratorTest(unittest.TestCase):
         self.assertEqual(dialog.settings_value.tts_profile, "stable")
         self.assertEqual(settings.speech_backend, "moss-tts")
         self.assertEqual(settings.tts_model, "live-model")
+        dialog.show()
+        self.application.processEvents()
+        self.assertTrue(dialog.tts_model_label.isVisible())
+        self.assertIn("Qwen", dialog.tts_model_label.text())
+        self.assertNotIn("live-model", dialog.tts_model_label.toolTip())
+        self.assertNotIn("offline-model", dialog.tts_model_label.toolTip())
+        self.assertEqual(self.backend.requests, [])
 
     def test_imported_alias_preview_identity_uses_authoritative_source_character(self):
         document = json.loads(self.manifest.read_text())
