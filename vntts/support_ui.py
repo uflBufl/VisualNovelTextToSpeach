@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from vntts import support
+from vntts.action_icons import set_action_icon
 
 
 class SupportCenterDialog(QDialog):
@@ -50,7 +51,9 @@ class SupportCenterDialog(QDialog):
         self.events.setPlaceholderText("No runtime events recorded yet.")
         self._rendered_lines: list[str] = []
         self.pending_event_count = 0
-        self.new_events_button = QPushButton("Show new events")
+        self.new_events_button = QPushButton("New events")
+        set_action_icon(self.new_events_button, "arrow-down-to-line")
+        self.new_events_button.setToolTip("Scroll to the newest log events")
         self.new_events_button.setAccessibleName("Show new runtime log events")
         self.new_events_button.clicked.connect(self.show_new_events)
         policy = self.new_events_button.sizePolicy()
@@ -69,9 +72,15 @@ class SupportCenterDialog(QDialog):
         self.privacy_note.setAccessibleDescription(self.privacy_note.toolTip())
         self.privacy_note.setWordWrap(True)
         actions = QHBoxLayout()
-        self.diagnostics_button = QPushButton("Live diagnostics")
-        self.export_button = QPushButton("Export support report")
-        self.settings_button = QPushButton("Open settings folder")
+        self.diagnostics_button = QPushButton("Diagnostics")
+        set_action_icon(self.diagnostics_button, "scan")
+        self.diagnostics_button.setToolTip("Open live diagnostics")
+        self.export_button = QPushButton("Export report")
+        set_action_icon(self.export_button, "download")
+        self.export_button.setToolTip("Export support report")
+        self.settings_button = QPushButton("Settings folder")
+        set_action_icon(self.settings_button, "folder-open")
+        self.settings_button.setToolTip("Open application settings folder")
         self.diagnostics_button.setAccessibleName("Open live diagnostics")
         self.diagnostics_button.setAccessibleDescription(
             "Open the latest capture, OCR, routing and latency diagnostics"
@@ -115,10 +124,10 @@ class SupportCenterDialog(QDialog):
         self.reading_seconds.setValue(600)
         self.reading_seconds.setSuffix(" s")
         self.reading_seconds.setAccessibleName("Diagnostic session duration limit")
-        self.reading_start = QPushButton("Start diagnostic session")
-        self.reading_stop = QPushButton("Stop session")
-        self.reading_export = QPushButton("Export diagnostic session")
-        self.reading_folder = QPushButton("Open sessions folder")
+        self.reading_start = QPushButton("Start session")
+        self.reading_stop = QPushButton("Stop")
+        self.reading_export = QPushButton("Export session")
+        self.reading_folder = QPushButton("Sessions folder")
         self.reading_status = QLabel(
             "No session. Logs exclude dialogue text. Media requires the checkbox above."
         )
@@ -132,12 +141,15 @@ class SupportCenterDialog(QDialog):
         self.reading_stop.clicked.connect(self.reading_stop_requested.emit)
         self.reading_export.clicked.connect(self.reading_export_requested.emit)
         self.reading_folder.clicked.connect(self.reading_folder_requested.emit)
-        for button in (
-            self.reading_start,
-            self.reading_stop,
-            self.reading_export,
-            self.reading_folder,
+        for button, icon, action in (
+            (self.reading_start, "play", "Start diagnostic session"),
+            (self.reading_stop, "square", "Stop diagnostic session"),
+            (self.reading_export, "download", "Export diagnostic session"),
+            (self.reading_folder, "folder-open", "Open diagnostic sessions folder"),
         ):
+            set_action_icon(button, icon)
+            button.setAccessibleName(action)
+            button.setToolTip(action)
             button.setAutoDefault(False)
         self.reading_stop.setEnabled(False)
         self.reading_export.setEnabled(False)
@@ -148,6 +160,7 @@ class SupportCenterDialog(QDialog):
 
     def _create_layout(self, actions: QHBoxLayout) -> None:
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        set_action_icon(buttons.button(QDialogButtonBox.StandardButton.Close), "x")
         buttons.rejected.connect(self.close)
         footer = QHBoxLayout()
         footer.addWidget(self.export_button)
@@ -347,7 +360,7 @@ class SupportCenterDialog(QDialog):
         scroll_bar.setValue(min(saved_scroll, scroll_bar.maximum()))
         self.pending_event_count += max(new_count, 0)
         self.new_events_button.setText(
-            f"Show {self.pending_event_count} new event"
+            f"{self.pending_event_count} new event"
             f"{'s' if self.pending_event_count != 1 else ''}"
         )
         self.new_events_button.show()
@@ -382,7 +395,7 @@ class SupportCenterDialog(QDialog):
         elif successful is False:
             self._export_status = (
                 f"Support report export failed: {message}. "
-                "Select Export support report to retry."
+                "Select Export report to retry."
             )
         else:
             self._export_status = message or "Support report export cancelled."
