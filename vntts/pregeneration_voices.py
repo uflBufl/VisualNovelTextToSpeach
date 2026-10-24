@@ -55,12 +55,14 @@ from vntts.person_link_suggestions import (
 from vntts.pregeneration_setup import (
     PregenerationJob,
     PregenerationJobStore,
+    PregenerationSetupError,
     load_verified_story_index_document,
 )
+from vntts.preparation_catalog import PreparationCatalog, PreparationCatalogError
 from vntts.services.tts_engine import default_tts_profile, get_tts_profile
 from vntts.settings import AppSettings
 from vntts.support import performance_operation_id, record_background_operation
-from vntts.versioned_json import read_versioned_json, write_versioned_json
+from vntts.versioned_json import read_versioned_json
 from vntts.voice_library import (
     VoiceBinding,
     VoiceBindingRollback,
@@ -150,6 +152,15 @@ class PregenerationVoiceError(RuntimeError):
 
 class PregenerationVoiceCancelled(PregenerationVoiceError):
     """The player cancelled voice planning before publication."""
+
+
+def _voice_catalog_call[**P, T](
+    operation: Callable[P, T], *args: P.args, **kwargs: P.kwargs
+) -> T:
+    try:
+        return operation(*args, **kwargs)
+    except PreparationCatalogError as error:
+        raise PregenerationVoiceError(str(error)) from error
 
 
 def _rollback_voice_bindings(
@@ -360,19 +371,23 @@ class VoiceDecisionStore:
         *,
         voice_library: VoiceLibrary | None = None,
         clock: Callable[[], datetime] | None = None,
+        catalog: PreparationCatalog | None = None,
     ) -> None:
         self.path = Path(path).expanduser()
+        self.catalog = catalog or PreparationCatalog(
+            self.path.parent, filename=f"{self.path.name}.sqlite3"
+        )
+        self._legacy_imported = False
         self.voice_library: VoiceLibrary | None = voice_library
         self.clock: Callable[[], datetime] = clock or (
             lambda: datetime.now(timezone.utc)
         )
 
     def choice_for(self, group_id: str, decision_context_sha256: str) -> str | None:
-        decision = self._load().get(_decision_key(group_id, decision_context_sha256))
-        if decision is None:
-            return None
-        source_id = decision.get("source_id")
-        return source_id if isinstance(source_id, str) else None
+        self._import_legacy()
+        return _voice_catalog_call(
+            self.catalog.decision, _decision_key(group_id, decision_context_sha256)
+        )
 
     def remember(self, group: VoiceGroup, source_id: str) -> None:
         self.remember_many(((group, source_id),))
@@ -387,7 +402,8 @@ class VoiceDecisionStore:
         library_selections = self._library_selections(validated_selections, decided_at)
         lock_path = self.path.with_name(f"{self.path.name}.lock")
         with exclusive_advisory_lock(lock_path, blocking=True):
-            decisions = self._load()
+            self._import_legacy()
+            decisions: dict[str, JsonObject] = {}
             for group, source_id in validated_selections:
                 decisions[
                     _decision_key(group.group_id, group.decision_context_sha256)
@@ -405,11 +421,7 @@ class VoiceDecisionStore:
             if self.voice_library is not None:
                 self.voice_library.select_many(library_selections, rollback=rollback)
             try:
-                write_versioned_json(
-                    self.path,
-                    voice_decisions_schema_version,
-                    {"decisions": decisions},
-                )
+                _voice_catalog_call(self.catalog.save_decisions, decisions)
             except Exception as error:
                 if self.voice_library is not None and rollback is not None:
                     _rollback_voice_bindings(
@@ -430,7 +442,15 @@ class VoiceDecisionStore:
             for group, source_id in selections
         ]
 
-    def _load(self) -> dict[str, JsonObject]:
+    def _import_legacy(self) -> None:
+        if self._legacy_imported:
+            return
+        decisions = self._load_legacy()
+        if decisions:
+            _voice_catalog_call(self.catalog.save_decisions, decisions, replace=False)
+        self._legacy_imported = True
+
+    def _load_legacy(self) -> dict[str, JsonObject]:
         if not self.path.is_file():
             return {}
         try:
@@ -541,6 +561,7 @@ class VoicePlanStore:
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.job_store = job_store
+        self._legacy_plans_imported = False
         self.decisions = decisions
         self.voice_library: VoiceLibrary | None = voice_library
         self.clock: Callable[[], datetime] = clock or (
@@ -977,15 +998,15 @@ class VoicePlanStore:
 
     def _persist_plan(self, job: PregenerationJob, plan: VoicePlan) -> VoicePlan:
         phase_started, cpu_started = perf_counter(), process_time()
-        path = self.path_for(job)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        write_versioned_json(path, voice_plan_schema_version, plan.to_document())
+        _voice_catalog_call(
+            self.job_store.catalog.save_plan, plan.to_document(), voice_plan_schema_version
+        )
         _record_plan_phase(
             "write",
             phase_started,
             cpu_started,
             files_examined=1,
-            bytes_examined=_file_size(path),
+            bytes_examined=_file_size(self.job_store.catalog.path),
         )
         return plan
 
@@ -1042,7 +1063,34 @@ class VoicePlanStore:
         return registry_with_voice_library(registry, snapshot), snapshot
 
     def path_for(self, job: PregenerationJob) -> Path:
-        return Path(self.job_store.path_for(job.job_id)).parent / "voice-plan.json"
+        """Legacy import location; active plans live in the preparation catalog."""
+        return self.job_store.directory_for(job.job_id) / "voice-plan.json"
+
+    def saved_documents(self) -> tuple[JsonObject, ...]:
+        """Read saved plans, admitting valid legacy files without replacing catalog rows."""
+        paths = () if self._legacy_plans_imported else self.job_store.root.glob("*/voice-plan.json")
+        for path in paths:
+            if _voice_catalog_call(self.job_store.catalog.has_plan, path.parent.name):
+                continue
+            try:
+                document = read_versioned_json(
+                    path, schema_version=voice_plan_schema_version,
+                    document_name="offline voice plan",
+                )
+                if document.get("job_id") != path.parent.name:
+                    continue
+                self.job_store.directory_for(path.parent.name)
+                _voice_catalog_call(
+                    self.job_store.catalog.save_plan, document,
+                    voice_plan_schema_version, replace=False,
+                )
+            except (OSError, ValueError, PregenerationSetupError, PregenerationVoiceError):
+                continue
+        self._legacy_plans_imported = True
+        documents = _voice_catalog_call(self.job_store.catalog.plan_documents)
+        if any(document.get("schema_version") != voice_plan_schema_version for document in documents):
+            raise PregenerationVoiceError("Unsupported saved voice plan schema")
+        return documents
 
     def apply_saved_choice(
         self,
@@ -1155,15 +1203,7 @@ class VoicePlanStore:
         if self.decisions is None:
             return ()
         groups: list[JsonObject] = []
-        for path in self.job_store.root.glob("*/voice-plan.json"):
-            try:
-                plan = read_versioned_json(
-                    path,
-                    schema_version=voice_plan_schema_version,
-                    document_name="offline voice plan",
-                )
-            except OSError, ValueError:
-                continue
+        for plan in self.saved_documents():
             if (
                 plan.get("synthesis_backend") != controls["backend"]
                 or plan.get("synthesis_model") != controls["model"]

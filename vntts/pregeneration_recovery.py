@@ -34,6 +34,7 @@ from vntts.authoring.generation_state import (
     load_stable_generation_queue,
 )
 from vntts.document_identity import is_lowercase_sha256, sha256_file
+from vntts.generation_database import state_path as generation_state_path
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
@@ -582,7 +583,7 @@ def _saved_generation_state(
     generation_input: PregenerationInput,
 ) -> tuple[OfflineGenerationResult | None, dict[str, str]]:
     output = runtime_progress_manifest_path(generation_input).parent
-    state_path = output / "generation-state.json"
+    state_path = generation_state_path(output)
     if not state_path.is_file():
         return None, {}
     try:

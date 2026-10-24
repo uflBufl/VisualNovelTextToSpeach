@@ -724,7 +724,7 @@ class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
             if cache_policy is not SynthesisCachePolicy.BYPASS
             and (
                 self.persistent_audio_cache.max_entries > 0
-                or (self.persistent_audio_cache.directory / "bindings").is_dir()
+                or self.persistent_audio_cache.store.has_saved_entries()
             )
             else None
         )
@@ -1270,7 +1270,7 @@ class PocketTTSVoiceRouterBackend:
             if cache_policy is not SynthesisCachePolicy.BYPASS
             and (
                 self.persistent_audio_cache.max_entries > 0
-                or (self.persistent_audio_cache.directory / "bindings").is_dir()
+                or self.persistent_audio_cache.store.has_saved_entries()
             )
             else None
         )
@@ -2031,7 +2031,7 @@ class MossTTSVoiceRouterBackend:
             if cache_policy is not SynthesisCachePolicy.BYPASS
             and (
                 self.persistent_audio_cache.max_entries > 0
-                or (self.persistent_audio_cache.directory / "bindings").is_dir()
+                or self.persistent_audio_cache.store.has_saved_entries()
             )
             else None
         )

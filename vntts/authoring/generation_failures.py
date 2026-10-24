@@ -21,6 +21,8 @@ from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_state import (
     FAILURE_KINDS,
     completed_generation_attempts,
+    generation_state_file,
+    generation_state_snapshot,
     load_stable_generation_queue,
 )
 from vntts.authoring.generation_state import generation_state_items as _state_items
@@ -43,7 +45,6 @@ from vntts.authoring.speech_quality import (
 from vntts.authoring.speech_quality import (
     text_failure_features as _text_failure_features,
 )
-from vntts.authoring.workspace_foundation import load_json_object_snapshot
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.numeric_values import optional_finite_number
@@ -204,12 +205,10 @@ def generation_failure_report(
     state_path: str | Path, queue_path: str | Path
 ) -> _GenerationFailureReport:
     """Project current and legacy failures into stable, actionable cohorts."""
-    state_path = Path(state_path).expanduser().resolve()
+    state_path = generation_state_file(state_path)
     queue_path = Path(queue_path).expanduser().resolve()
     queue, queue_sha256 = load_stable_generation_queue(queue_path)
-    state_document, state_sha256, _payload = load_json_object_snapshot(
-        state_path, "generation state", error_type=BulkGenerationError
-    )
+    state_document, state_sha256, _payload = generation_state_snapshot(state_path)
     state = _validate_state_document(
         state_document, state_path.parent, queue, queue_sha256
     )

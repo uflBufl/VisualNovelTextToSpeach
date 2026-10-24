@@ -1,6 +1,9 @@
 import hashlib
 import json
+import os
+import sqlite3
 import unittest
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -25,6 +28,7 @@ from vntts.authoring.generation_state import (
     load_stable_generation_queue,
 )
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
+from vntts.generation_database import state_path as generation_state_path
 from vntts.pregeneration_pack import (
     OfflinePackError,
     OfflinePackPublisher,
@@ -34,6 +38,7 @@ from vntts.pregeneration_queue import (
     PregenerationInputStore,
     PregenerationQueueError,
     _voice_content_identity,
+    load_generation_input_metadata,
 )
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
 from vntts.pregeneration_voices import VoicePlanStore
@@ -524,6 +529,201 @@ class PregenerationInputStoreTest(unittest.TestCase):
         )
         return job, jobs, voice_plan, manifest
 
+    def test_generation_input_inventory_discovers_legacy_once_and_sees_new_sql_rows(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.dict(os.environ, {"HOME": str(root / "home")}):
+                job, jobs, plan, _ = self.fixture(root)
+                original = PregenerationInputStore(jobs).materialize(job, plan)
+                generate_prepared(original, PocketRenderer())
+                indexed = PregenerationJobStore(jobs.root)
+                glob = Path.glob
+                scans = []
+
+                def counted_glob(path, pattern, *args, **kwargs):
+                    if "generation-input-" in pattern:
+                        scans.append((path, pattern))
+                    return glob(path, pattern, *args, **kwargs)
+
+                with patch.object(Path, "glob", counted_glob):
+                    self.assertEqual(
+                        indexed.generation_input_directories(),
+                        (original.directory.resolve(),),
+                    )
+                    revised = replace(
+                        plan,
+                        groups=tuple(
+                            replace(group, control_sha256="e" * 64)
+                            for group in plan.groups
+                        ),
+                    )
+                    current = PregenerationInputStore(indexed).materialize(job, revised)
+                    self.assertNotEqual(
+                        current.directory.resolve(), original.directory.resolve()
+                    )
+                    self.assertFalse(
+                        (current.directory.resolve() / "input.json").exists()
+                    )
+                    self.assertEqual(
+                        set(indexed.generation_input_directories()),
+                        {original.directory.resolve(), current.directory.resolve()},
+                    )
+                    self.assertEqual(
+                        set(
+                            indexed.generation_input_directories(
+                                job.catalog_story_index_sha256
+                            )
+                        ),
+                        {original.directory.resolve(), current.directory.resolve()},
+                    )
+                    content = inspect_story_index(job.catalog_story_index)
+                    inspector = StoryAudioInspector(content, indexed)
+                    self.assertEqual(inspector.inspect("selected").generated, 4)
+                    self.assertEqual(inspector.inspect("selected").generated, 4)
+                    self.assertEqual(len(scans), 1)
+                before = load_generation_state(
+                    generation_state_path(original.output_directory), original.queue
+                )
+                after = load_generation_state(
+                    generation_state_path(current.output_directory), current.queue
+                )
+                self.assertEqual(len(after["items"]), 4)
+                for key, value in after["items"].items():
+                    self.assertTrue(
+                        (current.output_directory / value["path"]).samefile(
+                            original.output_directory / before["items"][key]["path"]
+                        )
+                    )
+
+    def test_unindexed_legacy_inventory_imports_valid_metadata_and_preserves_corruption(
+        self,
+    ):
+        for corrupt in (False, True):
+            with self.subTest(corrupt=corrupt), TemporaryDirectory() as directory:
+                root = Path(directory)
+                with patch.dict(os.environ, {"HOME": str(root / "home")}):
+                    job, jobs, plan, _ = self.fixture(root)
+                    original = PregenerationInputStore(jobs).materialize(job, plan)
+                    generate_prepared(original, PocketRenderer())
+                    document = load_generation_input_metadata(
+                        original.directory.resolve()
+                    )
+                    legacy = original.directory.resolve() / "input.json"
+                    legacy.write_text(
+                        "broken legacy metadata" if corrupt else json.dumps(document)
+                    )
+                    payload = legacy.read_bytes()
+                    with jobs.catalog._connection(write=True) as connection:
+                        connection.execute(
+                            "DELETE FROM generation_inputs WHERE directory=?",
+                            (str(original.directory.resolve().resolve()),),
+                        )
+                    restarted = PregenerationJobStore(jobs.root)
+                    self.assertEqual(
+                        restarted.generation_input_directories(),
+                        (original.directory.resolve(),),
+                    )
+                    content = inspect_story_index(job.catalog_story_index)
+                    inspector = StoryAudioInspector(content, restarted)
+                    if corrupt:
+                        with self.assertRaises(OfflinePackError):
+                            inspector.inspect("selected")
+                        revised = replace(
+                            plan,
+                            groups=tuple(
+                                replace(group, control_sha256="e" * 64)
+                                for group in plan.groups
+                            ),
+                        )
+                        with self.assertRaises(PregenerationQueueError):
+                            PregenerationInputStore(restarted).materialize(job, revised)
+                        self.assertEqual(legacy.read_bytes(), payload)
+                        self.assertIsNone(
+                            restarted.catalog.input_document(
+                                original.directory.resolve()
+                            )
+                        )
+                    else:
+                        self.assertEqual(inspector.inspect("selected").generated, 4)
+                        self.assertFalse(legacy.exists())
+                        self.assertEqual(
+                            restarted.catalog.input_document(
+                                original.directory.resolve()
+                            ),
+                            document,
+                        )
+                        self.assertEqual(
+                            StoryAudioInspector(content, restarted)
+                            .inspect("selected")
+                            .generated,
+                            4,
+                        )
+                    self.assertEqual(
+                        len(list(original.output_directory.rglob("*.wav"))), 4
+                    )
+
+    def test_indexed_inventory_reuses_unchanged_selected_lines_across_content_revisions(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.dict(os.environ, {"HOME": str(root / "home")}):
+                job, jobs, plan, manifest = self.fixture(root)
+                store = PregenerationInputStore(jobs)
+                original = store.materialize(job, plan)
+                generate_prepared(original, PocketRenderer())
+                before = load_generation_state(
+                    generation_state_path(original.output_directory), original.queue
+                )
+                story = load_story_index_document(job.story_index)
+                records = [record.to_record() for record in story.records]
+                for record in records:
+                    if record["line_id"] == "not-selected":
+                        record["text"] = "Revised unrelated chapter."
+                        record.pop("text_sha256", None)
+                write_story_index_document(job.story_index, story.metadata, records)
+                content = inspect_story_index(job.story_index)
+                updated_job = jobs.create_or_resume(content, ("selected",))
+                self.assertNotEqual(
+                    updated_job.catalog_story_index_sha256,
+                    job.catalog_story_index_sha256,
+                )
+                updated_plan = VoicePlanStore(
+                    jobs, voice_library=VoiceLibrary(root / "library")
+                ).create(
+                    updated_job,
+                    AppSettings(
+                        speech_backend="pocket-tts", pocket_gated_model_accepted=True
+                    ),
+                    manifest_path=manifest,
+                )
+                current = store.materialize(updated_job, updated_plan)
+                after = load_generation_state(
+                    generation_state_path(current.output_directory), current.queue
+                )
+                self.assertEqual(len(after["items"]), 4)
+                self.assertNotIn(
+                    original.directory.resolve(),
+                    jobs.catalog.input_directories(
+                        updated_job.catalog_story_index_sha256
+                    ),
+                )
+                self.assertIn(
+                    original.directory.resolve(), jobs.generation_input_directories()
+                )
+                for key, value in after["items"].items():
+                    audio = current.output_directory / value["path"]
+                    previous = original.output_directory / before["items"][key]["path"]
+                    self.assertTrue(audio.samefile(previous))
+                    self.assertEqual(
+                        sha256_file(audio), before["items"][key]["file_sha256"]
+                    )
+                renderer = PocketRenderer()
+                generate_prepared(current, renderer)
+                self.assertEqual(renderer.requests, [])
+
     def test_materializes_selected_story_effective_voices_and_queue(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -570,7 +770,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     include_characters=("Narrator", "Hotelier") if partial else None,
                 )
                 before = load_generation_state(
-                    original.output_directory / "generation-state.json", original.queue
+                    generation_state_path(original.output_directory), original.queue
                 )
                 old_files = {
                     key: original.output_directory / value["path"]
@@ -606,7 +806,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     job = replace(job, job_id=revised.job_id)
                 current = store.materialize(job, revised)
                 state = load_generation_state(
-                    current.output_directory / "generation-state.json", current.queue
+                    generation_state_path(current.output_directory), current.queue
                 )
                 self.assertEqual(
                     {value["line_id"] for value in state["items"].values()},
@@ -744,7 +944,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             restarted = StoryAudioInspector(content, jobs)
             self.assertEqual(restarted.inspect(selection), coverage)
             state = load_generation_state(
-                prepared.output_directory / "generation-state.json", prepared.queue
+                generation_state_path(prepared.output_directory), prepared.queue
             )
             audio = (
                 prepared.output_directory / next(iter(state["items"].values()))["path"]
@@ -811,7 +1011,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                         self.assertEqual(inspector.inspect("later").generated, 1)
                     self.assertEqual(validated.call_count, 5)
                 state = load_generation_state(
-                    other.output_directory / "generation-state.json", other.queue
+                    generation_state_path(other.output_directory), other.queue
                 )
                 saved = next(
                     value
@@ -856,7 +1056,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                         changed["items"]["unknown-queue"] = saved
                     with self.assertRaises(BulkGenerationError):
                         load_generation_state_from_snapshot(
-                            other.output_directory / "generation-state.json",
+                            generation_state_path(other.output_directory),
                             queue,
                             digest,
                             state_document=changed,
@@ -884,7 +1084,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 include_characters=("Rhiannon",),
             )
             before = load_generation_state(
-                current.output_directory / "generation-state.json", current.queue
+                generation_state_path(current.output_directory), current.queue
             )
             generate_prepared(
                 original, PocketRenderer(), include_characters=("Narrator", "Hotelier")
@@ -893,7 +1093,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 PregenerationInputStore(jobs).materialize(job, revised), current
             )
             after = load_generation_state(
-                current.output_directory / "generation-state.json", current.queue
+                generation_state_path(current.output_directory), current.queue
             )
             self.assertEqual(len(after["items"]), 4)
             for queue_id, result in before["items"].items():
@@ -907,7 +1107,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             original = store.materialize(job, plan)
             generate_prepared(original, PocketRenderer())
             state = load_generation_state(
-                original.output_directory / "generation-state.json", original.queue
+                generation_state_path(original.output_directory), original.queue
             )
             source = (
                 original.output_directory / next(iter(state["items"].values()))["path"]
@@ -1075,8 +1275,20 @@ class PregenerationInputStoreTest(unittest.TestCase):
             self.assertEqual(parse_events.call_count, 2 * result.queue_items)
             queue = VoiceGenerationQueue.load(result.queue)
             queue_by_line = {item.line_id: item.queue_id for item in queue.items}
-            input_path = result.directory / "input.json"
-            original = json.loads(input_path.read_text(encoding="utf-8"))
+            original = jobs.catalog.input_document(result.directory)
+            self.assertIsNotNone(original)
+
+            def replace_metadata(document):
+                with (
+                    closing(sqlite3.connect(jobs.catalog.path)) as connection,
+                    connection,
+                ):
+                    updated = connection.execute(
+                        "UPDATE generation_inputs SET payload = ? WHERE directory = ?",
+                        (json.dumps(document), str(result.directory.resolve())),
+                    )
+                    self.assertEqual(updated.rowcount, 1)
+
             for field, value, error in (
                 (
                     "audio_event_projection_queue_ids",
@@ -1117,10 +1329,10 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 ("ready_items", -1, "ready items must be"),
             ):
                 with self.subTest(field=field, value=value):
-                    atomic_write_json(input_path, {**original, field: value})
+                    replace_metadata({**original, field: value})
                     with self.assertRaisesRegex(PregenerationQueueError, error):
                         PregenerationInputStore(jobs).materialize(job, plan)
-            atomic_write_json(input_path, original)
+            replace_metadata(original)
             self.assertEqual(
                 PregenerationInputStore(jobs).materialize(job, plan), result
             )

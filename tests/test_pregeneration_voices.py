@@ -32,6 +32,7 @@ from vntts.pregeneration_voices import (
     PregenerationVoiceError,
     VoiceDecisionStore,
     VoicePlanStore,
+    _decision_key,
     _load_registry,
     _materialize_voice_catalog,
     _reference_duration_seconds,
@@ -39,6 +40,7 @@ from vntts.pregeneration_voices import (
     resolve_pregeneration_settings,
     validated_player_voice_candidates,
 )
+from vntts.preparation_catalog import PreparationCatalog
 from vntts.settings import AppSettings
 from vntts.versioned_json import write_versioned_json
 from vntts.voice_library import VoiceLibrary
@@ -546,7 +548,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             self.assertEqual(rhiannon.alternate_sample_text, "Short.")
             self.assertNotIn("line:original", rhiannon.line_ids)
-            self.assertTrue(VoicePlanStore(jobs).path_for(job).is_file())
+            self.assertTrue(jobs.catalog.has_plan(job.job_id))
 
     def test_explicit_person_link_groups_story_names_without_portrait_inference(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1680,7 +1682,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                     value for value in before.groups if value.group_id != group.group_id
                 ),
             )
-            self.assertTrue(store.path_for(job).is_file())
+            self.assertTrue(jobs.catalog.has_plan(job.job_id))
             replanned = store.create(job, settings, manifest_path=manifest)
             persisted = next(
                 value for value in replanned.groups if value.group_id == group.group_id
@@ -1741,12 +1743,12 @@ class VoicePlanStoreTest(unittest.TestCase):
                 plan.voice_manifest
             ).resolve_source(choice)
             assert selected is not None
-            before = store.path_for(job).read_bytes()
+            before = store.saved_documents()
             write_reference(selected.references[0], b"changed")
 
             with self.assertRaisesRegex(PregenerationVoiceError, "reference changed"):
                 store.apply_saved_choice(job, plan, settings, (group, choice))
-            self.assertEqual(store.path_for(job).read_bytes(), before)
+            self.assertEqual(store.saved_documents(), before)
 
     def test_saved_inspection_choice_defers_but_preserves_input_validation(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1951,6 +1953,65 @@ class VoicePlanStoreTest(unittest.TestCase):
                         decisions.choice_for(group_id, context)
             self.assertFalse(path.exists())
 
+    def test_legacy_plan_is_imported_once_and_new_plan_uses_catalog(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            plan = VoicePlanStore(jobs).create(
+                job, AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=write_manifest(root / "voices"),
+            )
+            imported_jobs = PregenerationJobStore(root / "legacy-jobs")
+            store = VoicePlanStore(imported_jobs)
+            path = store.path_for(job)
+            path.parent.mkdir(parents=True)
+            write_versioned_json(path, 5, plan.to_document())
+            original = path.read_bytes()
+            saved = store.saved_documents()
+            self.assertEqual(saved[0]["groups"], plan.to_document()["groups"])
+            self.assertEqual(saved[0]["synthesis_controls_sha256"], plan.synthesis_controls_sha256)
+            updated = replace(plan, created_at="2026-10-24T12:00:00+00:00")
+            store._persist_plan(job, updated)
+            restarted = VoicePlanStore(PregenerationJobStore(imported_jobs.root))
+            self.assertEqual(restarted.saved_documents()[0]["created_at"], updated.created_at)
+            self.assertEqual(path.read_bytes(), original)
+            self.assertFalse(VoicePlanStore(jobs).path_for(job).exists())
+
+    def test_legacy_decisions_are_imported_and_preserved_after_new_choice(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            plan = VoicePlanStore(jobs).create(
+                job, AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=write_manifest(root / "voices"),
+            )
+            group = next(value for value in plan.groups if value.route == "voice")
+            path = root / "legacy-decisions.json"
+            write_versioned_json(path, 1, {"decisions": {
+                _decision_key(group.group_id, group.decision_context_sha256): {
+                    "group_id": group.group_id,
+                    "decision_context_sha256": group.decision_context_sha256,
+                    "source_id": group.source_id,
+                    "decided_at": "2026-10-24T12:00:00+00:00",
+                },
+            }})
+            original = path.read_bytes()
+            decisions = VoiceDecisionStore(path, catalog=jobs.catalog)
+            self.assertEqual(
+                decisions.choice_for(group.group_id, group.decision_context_sha256), group.source_id
+            )
+            decisions.remember(group, "default")
+            restarted = VoiceDecisionStore(path, catalog=PregenerationJobStore(jobs.root).catalog)
+            self.assertEqual(
+                restarted.choice_for(group.group_id, group.decision_context_sha256), "default"
+            )
+            self.assertEqual(path.read_bytes(), original)
+            new_path = root / "new-decisions.json"
+            VoiceDecisionStore(new_path).remember(group, "default")
+            self.assertFalse(new_path.exists())
+            independent = VoiceDecisionStore(root / "independent-decisions.json")
+            self.assertIsNone(independent.choice_for(group.group_id, group.decision_context_sha256))
+
     def test_decision_store_accepts_explicit_confirmation_of_automatic_route(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -2058,7 +2119,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.pregeneration_voices.write_versioned_json",
+                    "vntts.pregeneration_voices.PreparationCatalog.save_decisions",
                     side_effect=failed_decision_write,
                 ),
                 self.assertRaisesRegex(OSError, "disk unavailable"),
@@ -2098,7 +2159,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.pregeneration_voices.write_versioned_json",
+                    "vntts.pregeneration_voices.PreparationCatalog.save_decisions",
                     side_effect=decision_error,
                 ),
                 patch.object(
@@ -2162,7 +2223,8 @@ class VoicePlanStoreTest(unittest.TestCase):
             second_loaded = Event()
             release_first = Event()
             errors = []
-            original_load = VoiceDecisionStore._load
+            original_load = VoiceDecisionStore._load_legacy
+            original_write = PreparationCatalog.save_decisions
 
             def observed_load(store):
                 decisions = original_load(store)
@@ -2175,7 +2237,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                     first_at_write.set()
                     if not release_first.wait(5):
                         raise TimeoutError("First decision was not released")
-                return write_versioned_json(*args, **kwargs)
+                return original_write(*args, **kwargs)
 
             def remember(group):
                 try:
@@ -2188,11 +2250,8 @@ class VoicePlanStoreTest(unittest.TestCase):
                 target=remember, args=(second,), name="second decision"
             )
             with (
-                patch.object(VoiceDecisionStore, "_load", observed_load),
-                patch(
-                    "vntts.pregeneration_voices.write_versioned_json",
-                    side_effect=observed_write,
-                ),
+                patch.object(VoiceDecisionStore, "_load_legacy", observed_load),
+                patch.object(PreparationCatalog, "save_decisions", observed_write),
             ):
                 first_thread.start()
                 try:

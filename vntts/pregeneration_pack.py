@@ -50,6 +50,7 @@ from vntts.authoring.generation_state import (
     AUDIO_EVENT_OMISSION_SCHEMA,
     AUDIO_EVENT_OMISSION_VERSION,
     generation_item_status,
+    generation_state_snapshot,
     load_generation_state_from_snapshot,
     load_stable_generation_queue,
 )
@@ -58,7 +59,6 @@ from vntts.authoring.publication import (
     rename_directory_no_replace,
     staged_directory,
 )
-from vntts.authoring.workspace_foundation import load_json_object_snapshot
 from vntts.chapter_voice_preload import (
     _source_audio_covers_full_line,
     _validated_source_audio_line_ids,
@@ -70,6 +70,8 @@ from vntts.document_identity import (
 )
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
+from vntts.generation_database import is_database
+from vntts.generation_database import state_path as generation_state_path
 from vntts.json_types import decode_json
 from vntts.live_sequence import load_live_sequence_snapshot
 from vntts.path_safety import copy_regular_file, read_regular_bytes, safe_relative_path
@@ -84,7 +86,7 @@ from vntts.pregeneration_generation import (
 )
 from vntts.pregeneration_queue import (
     PregenerationInput,
-    generation_input_schema_version,
+    load_generation_input_metadata,
 )
 from vntts.pregeneration_setup import (
     GameContent,
@@ -102,7 +104,6 @@ from vntts.source_audio_semantics import (
     source_audio_semantics_need_migration,
 )
 from vntts.support import record_background_operation
-from vntts.versioned_json import read_versioned_json
 from vntts.voices import load_voice_manifest
 
 JsonObject = dict[str, object]
@@ -216,109 +217,104 @@ class StoryAudioInspector:
     ) -> dict[str, list[tuple[Path, str]]]:
         selected = set(line_ids)
         recordings: dict[str, list[tuple[Path, str]]] = {}
-        for job in self.job_store.jobs_for_content(self.content):
-            root = self.job_store.path_for(job.job_id).parent
-            for directory in sorted(root.glob("generation-input-*")):
-                _raise_if_cancelled(self.cancel_event)
-                state_path = (
-                    directory.with_name(
-                        directory.name.replace(
-                            "generation-input-", "generation-output-", 1
-                        )
-                    )
-                    / "generation-state.json"
+        jobs = {
+            job.job_id: job for job in self.job_store.jobs_for_content(self.content)
+        }
+        for directory in self.job_store.generation_input_directories(
+            self.content.catalog_story_index_sha256
+        ):
+            job = jobs.get(directory.parent.name)
+            if job is None:
+                continue
+            _raise_if_cancelled(self.cancel_event)
+            state_path = generation_state_path(
+                directory.with_name(
+                    directory.name.replace("generation-input-", "generation-output-", 1)
                 )
-                if not state_path.is_file():
-                    continue
-                metadata = directory / "input.json"
-                queue_path = directory / "queue.jsonl"
-                if not metadata.is_file() or not queue_path.is_file():
-                    continue
-                paths = (metadata, queue_path, state_path)
-                before = {path: _file_fingerprint(path) for path in paths}
-                cached = self._saved_generation_inputs.get(directory)
-                if cached is None or cached.files != before:
-                    document = read_versioned_json(
-                        metadata,
-                        schema_version=generation_input_schema_version,
-                        document_name="offline generation input",
+            )
+            if not state_path.is_file():
+                continue
+            queue_path = directory / "queue.jsonl"
+            if not queue_path.is_file():
+                continue
+            try:
+                document = load_generation_input_metadata(directory)
+            except FileNotFoundError:
+                continue
+            metadata = self.job_store.catalog.path
+            paths = (queue_path, state_path)
+            before = {path: _file_fingerprint(path) for path in paths}
+            before[metadata] = tuple(bytes.fromhex(canonical_document_sha256(document)))
+            cached = self._saved_generation_inputs.get(directory)
+            if cached is None or cached.files != before:
+                if document.get("source_story_index_sha256") != job.story_index_sha256:
+                    raise OfflinePackError(
+                        "Saved generation input belongs to changed dialogue"
                     )
-                    if (
-                        document.get("source_story_index_sha256")
-                        != job.story_index_sha256
-                    ):
-                        raise OfflinePackError(
-                            "Saved generation input belongs to changed dialogue"
-                        )
-                    queue, digest = load_stable_generation_queue(queue_path)
-                    if digest != document.get("queue_sha256"):
-                        raise OfflinePackError("Saved generation queue changed")
-                    source = self._source_snapshot()[0]
-                    if any(
-                        queue.metadata.get(field) != source.metadata.get(field)
-                        for field in ("game", "language")
-                    ):
-                        raise OfflinePackError(
-                            "Saved generation queue belongs to different content"
-                        )
-                    cached = _SavedGenerationInput(before, queue, digest)
-                    self._saved_generation_inputs[directory] = cached
-                relevant = {
-                    item.queue_id
+                queue, digest = load_stable_generation_queue(queue_path)
+                if digest != document.get("queue_sha256"):
+                    raise OfflinePackError("Saved generation queue changed")
+                source = self._source_snapshot()[0]
+                if any(
+                    queue.metadata.get(field) != source.metadata.get(field)
+                    for field in ("game", "language")
+                ):
+                    raise OfflinePackError(
+                        "Saved generation queue belongs to different content"
+                    )
+                cached = _SavedGenerationInput(before, queue, digest)
+                self._saved_generation_inputs[directory] = cached
+            relevant = {
+                item.queue_id
+                for item in cached.queue.items
+                if item.line_id in self._source_records
+                and self._source_records[item.line_id].text_sha256 == item.text_sha256
+            }
+            requested = (
+                frozenset(
+                    item.line_id
                     for item in cached.queue.items
-                    if item.line_id in self._source_records
-                    and self._source_records[item.line_id].text_sha256
-                    == item.text_sha256
-                }
-                requested = (
-                    frozenset(
-                        item.line_id
-                        for item in cached.queue.items
-                        if item.queue_id in relevant and item.line_id in selected
-                    )
-                    - cached.validated_line_ids
+                    if item.queue_id in relevant and item.line_id in selected
                 )
-                if requested:
-                    state = load_generation_state_from_snapshot(
-                        state_path,
-                        cached.queue,
-                        cached.queue_sha256,
-                        state_document=cached.state,
-                        selected_line_ids=frozenset(requested),
+                - cached.validated_line_ids
+            )
+            if requested:
+                state = load_generation_state_from_snapshot(
+                    state_path,
+                    cached.queue,
+                    cached.queue_sha256,
+                    state_document=None if is_database(state_path) else cached.state,
+                    selected_line_ids=frozenset(requested),
+                )
+                if any(
+                    _file_fingerprint(path) != before[path] for path in paths
+                ) or canonical_document_sha256(
+                    load_generation_input_metadata(directory)
+                ) != canonical_document_sha256(document):
+                    raise OfflinePackError(
+                        "Saved generation state changed while inspected"
                     )
-                    if any(
-                        _file_fingerprint(path) != value
-                        for path, value in before.items()
-                    ):
-                        raise OfflinePackError(
-                            "Saved generation state changed while inspected"
-                        )
-                    state_items = _state_items(state)
-                    for item in cached.queue.items:
-                        if (
-                            item.line_id not in requested
-                            or item.queue_id not in relevant
-                        ):
-                            continue
-                        result = state_items.get(item.queue_id)
-                        if result is not None and result.get("status") in {
-                            "generated",
-                            "approved",
-                        }:
-                            cached.recordings.setdefault(
-                                str(result["line_id"]), []
-                            ).append(
-                                (
-                                    state_path.parent / str(result["path"]),
-                                    str(result["file_sha256"]),
-                                )
+                state_items = _state_items(state)
+                for item in cached.queue.items:
+                    if item.line_id not in requested or item.queue_id not in relevant:
+                        continue
+                    result = state_items.get(item.queue_id)
+                    if result is not None and result.get("status") in {
+                        "generated",
+                        "approved",
+                    }:
+                        cached.recordings.setdefault(str(result["line_id"]), []).append(
+                            (
+                                state_path.parent / str(result["path"]),
+                                str(result["file_sha256"]),
                             )
-                    cached.state = state
-                    cached.validated_line_ids.update(requested)
-                for line_id in selected:
-                    recordings.setdefault(line_id, []).extend(
-                        cached.recordings.get(line_id, ())
-                    )
+                        )
+                cached.state = state
+                cached.validated_line_ids.update(requested)
+            for line_id in selected:
+                recordings.setdefault(line_id, []).extend(
+                    cached.recordings.get(line_id, ())
+                )
         return recordings
 
     def inspect(
@@ -385,7 +381,12 @@ class StoryAudioInspector:
                     if recordings:
                         route = "generated"
                         unpublished_recordings = True
-                except (BulkGenerationError, OSError, ValueError) as error:
+                except (
+                    BulkGenerationError,
+                    OSError,
+                    ValueError,
+                    PregenerationSetupError,
+                ) as error:
                     raise OfflinePackError(
                         f"Unable to inspect saved recordings: {error}"
                     ) from error
@@ -543,10 +544,8 @@ def _load_publication_sources(
         story = load_verified_story_index_document(
             generation_input.story_index, generation_input.story_index_sha256
         )
-        state_document, state_sha256, state_payload = load_json_object_snapshot(
-            generation_result.state,
-            "generation state",
-            error_type=BulkGenerationError,
+        state_document, state_sha256, state_payload = generation_state_snapshot(
+            generation_result.state
         )
         del state_payload
     except (
@@ -584,7 +583,7 @@ class OfflinePackPublisher:
         queue, queue_sha256 = load_stable_generation_queue(generation_input.queue)
         if queue_sha256 != generation_input.queue_sha256:
             raise OfflinePackError("Generation queue changed before confirmation")
-        state_path = _generation_output(generation_input) / "generation-state.json"
+        state_path = generation_state_path(_generation_output(generation_input))
         state = (
             load_generation_state_from_snapshot(state_path, queue, queue_sha256)
             if state_path.exists()

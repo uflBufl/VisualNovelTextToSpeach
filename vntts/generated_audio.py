@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import io
-import json
 import wave
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -25,6 +24,7 @@ from vntts_artifacts.generated_audio import (
     load_generated_audio_document,
 )
 
+from vntts import generation_database
 from vntts.audio_cache import BoundedCache
 from vntts.audio_output import (
     PlaybackAudioOutput,
@@ -531,17 +531,20 @@ class GeneratedAudioLibrary:
     def progress_description(self, line_id: str, text_sha256: str) -> str | None:
         if not self.runtime_progress:
             return None
-        state_path = self.manifest_path.parent / "generation-state.json"
+        state_path = generation_database.state_path(self.manifest_path.parent)
         signature = _manifest_signature(state_path)
         if signature != self.progress_state_signature:
             try:
-                state = decode_json(read_regular_text(state_path, encoding="utf-8"))
-            except OSError, UnicodeError, json.JSONDecodeError:
+                active: object
+                if generation_database.is_database(state_path):
+                    active = generation_database.active_attempt(state_path)
+                else:
+                    state = decode_json(read_regular_text(state_path, encoding="utf-8"))
+                    active = state.get("active") if isinstance(state, dict) else None
+            except OSError, UnicodeError, ValueError:
                 return None
             self.progress_state_signature = signature
-            self.progress_active = (
-                state.get("active") if isinstance(state, dict) else None
-            )
+            self.progress_active = active if isinstance(active, dict) else None
         active = self.progress_active
         if not isinstance(active, dict):
             return "Preparing this line - choosing the next safe attempt."

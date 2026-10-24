@@ -26,6 +26,34 @@ class VoiceCandidateCacheTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_sqlite_plan_protects_references_and_corrupt_catalog_blocks_cleanup(self):
+        from tests.test_sqlite_generation_integration import prepared_input
+        from vntts.pregeneration_voices import voice_plan_schema_version
+        from vntts.preparation_catalog import PreparationCatalog
+
+        _prepared, plan, _job = prepared_input(Path(self.temporary.name))
+        kept = self._candidate("kept").resolve()
+        obsolete = self._candidate("obsolete").resolve()
+        catalog = PreparationCatalog(self.jobs)
+        catalog.save_plan(
+            {
+                **plan.to_document(),
+                "voice_manifest": str(kept / "manifest.json"),
+                "voice_manifest_sha256": hashlib.sha256(
+                    (kept / "manifest.json").read_bytes()
+                ).hexdigest(),
+            },
+            voice_plan_schema_version,
+        )
+        self.assertEqual(
+            prune_obsolete_voice_candidate_caches(self.root, self.jobs), (obsolete,)
+        )
+        catalog.path.write_bytes(b"damaged database")
+        unused = self._candidate("unused")
+        self.assertEqual(prune_obsolete_voice_candidate_caches(self.root, self.jobs), ())
+        self.assertTrue(kept.is_dir())
+        self.assertTrue(unused.is_dir())
+
     def test_directory_replacement_during_inspection_defers_all_deletions(self) -> None:
         for phase in ("tree", "references"):
             with self.subTest(phase=phase):

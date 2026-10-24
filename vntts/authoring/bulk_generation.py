@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import TypeAlias, TypedDict, TypeGuard
 
 import numpy as np
-from durable_file import atomic_write_json
 from numpy.typing import NDArray
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.text_utils import slugify
@@ -193,7 +192,10 @@ from vntts.authoring.generation_state import StateItems as StateItems
 from vntts.authoring.generation_state import (
     completed_generation_attempts,
     generation_item_status,
+    generation_state_file,
     load_stable_generation_queue,
+    read_generation_state_document,
+    write_generation_state,
 )
 from vntts.authoring.generation_state import (
     contained_state_path as _within,
@@ -293,6 +295,7 @@ from vntts.authoring.workspace_foundation import (
     load_json_object,
 )
 from vntts.document_identity import file_sha256, sha256_file
+from vntts.generation_database import state_path as generation_state_path
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import read_regular_bytes
@@ -1420,7 +1423,7 @@ def _store_successful_generation_attempt(
     _state_items(run.state)[plan.queue_id] = value
     run.state["active"] = None
     run.lease.assert_owned()
-    atomic_write_json(run.state_path, run.state, sort_keys=True)
+    write_generation_state(run.state_path, run.state, changed_items=(plan.queue_id,))
 
 
 def _store_failed_generation_attempt(
@@ -1525,11 +1528,17 @@ def _store_failed_generation_attempt(
     _state_items(run.state)[plan.queue_id] = value
     if run_attempts < plan.attempt_limit and not is_cancelled:
         _write_active_phase(
-            run.state_path, run.state, "retrying", last_error=last_error
+            run.state_path,
+            run.state,
+            "retrying",
+            last_error=last_error,
+            changed_items=(plan.queue_id,),
         )
     else:
         run.state["active"] = None
-        atomic_write_json(run.state_path, run.state, sort_keys=True)
+        write_generation_state(
+            run.state_path, run.state, changed_items=(plan.queue_id,)
+        )
     captured: _CapturedSilenceFailure | None = None
     if captured_partial is not None:
         captured = {
@@ -2346,6 +2355,7 @@ def run_bulk_generation(
     audio_event_spoken_projection_queue_ids: Sequence[object] | None = None,
     synthesis_cache_policy: object = SynthesisCachePolicy.BYPASS,
     audio_store_directory: str | Path | None = None,
+    state_storage: str = "json",
     approve_validated_audio: bool = False,
     progress_callback: Callable[[JsonDocument], None] | None = None,
 ) -> BulkGenerationResult:
@@ -2436,7 +2446,15 @@ def run_bulk_generation(
             ],
         }
     )
-    state_path = output_directory / "generation-state.json"
+    if state_storage not in {"json", "sqlite"}:
+        raise BulkGenerationError("Unsupported generation state storage")
+    state_path = output_directory / (
+        "generation-state.sqlite3"
+        if state_storage == "sqlite"
+        or (output_directory / "generation-state.sqlite3").exists()
+        or (output_directory / "generation-state.sqlite3").is_symlink()
+        else "generation-state.json"
+    )
     manifest_path = output_directory / "manifest.json"
     output_directory.mkdir(parents=True, exist_ok=True)
 
@@ -2653,12 +2671,25 @@ def _record_generation_controls(
         )
     existing = registry.get(provenance_sha256)
     if existing is not None and existing != controls:
-        raise BulkGenerationProvenanceError(
-            "Stored synthesis controls conflict with this run"
-        )
+        # Relocated inputs retain their content identity and original evidence paths.
+        if (
+            not isinstance(existing, list)
+            or any(not isinstance(control, dict) for control in existing)
+            or [
+                {key: value for key, value in control.items() if key != "path"}
+                for control in existing
+            ]
+            != [
+                {key: value for key, value in control.items() if key != "path"}
+                for control in controls
+            ]
+        ):
+            raise BulkGenerationProvenanceError(
+                "Stored synthesis controls conflict with this run"
+            )
     if existing is None:
         registry[provenance_sha256] = controls
-        atomic_write_json(state_path, state, sort_keys=True)
+        write_generation_state(state_path, state)
 
 
 def _record_interrupted_generation_job(
@@ -2680,7 +2711,7 @@ def _record_interrupted_generation_job(
         for item in processes
     ):
         processes.append(interrupted_job)
-        atomic_write_json(state_path, state, sort_keys=True)
+        write_generation_state(state_path, state)
 
 
 def publish_generated_manifest(
@@ -2690,7 +2721,7 @@ def publish_generated_manifest(
     _lease_held: bool = False,
 ) -> Path:
     """Rebuild the approved-only manifest from authoritative state."""
-    state_path = Path(state_path).expanduser().resolve()
+    state_path = generation_state_file(state_path)
     output_directory = state_path.parent
     workspace_queue = state_path.parent.parent / "queue.jsonl"
     workspace_ledger = state_path.parent.parent / "workspace.json"
@@ -2738,7 +2769,7 @@ def validate_terminal_conflict_publication_authority(
     )
     if not marked:
         return
-    state_path = Path(state_path).expanduser().resolve()
+    state_path = generation_state_file(state_path)
     workspace_path = state_path.parent.parent / "workspace.json"
     if workspace_path.is_symlink() or not workspace_path.is_file():
         raise BulkGenerationError(
@@ -2875,7 +2906,7 @@ def reconcile_generation_cancellation(
         queue, queue_sha256 = load_stable_generation_queue(witness.queue)
         if queue_sha256 != witness.queue_sha256:
             raise BulkGenerationError("Cancelled generation queue changed")
-        state_path = witness.output / "generation-state.json"
+        state_path = generation_state_path(witness.output)
         state = load_generation_state(state_path, witness.queue)
         lease.assert_owned()
         _assert_sources_unchanged(witness.queue, witness.queue_sha256, ())
@@ -2928,8 +2959,14 @@ def _load_or_create_state(
     queue_sha256: str,
 ) -> JsonDocument:
     if state_path.is_file():
-        state = _load_json(state_path, "generation state")
+        state = read_generation_state_document(state_path)
         _validate_state_document(state, output_directory, queue, queue_sha256)
+        return state
+    legacy = state_path.with_name("generation-state.json")
+    if state_path.suffix == ".sqlite3" and legacy.is_file():
+        state = load_generation_state(legacy)
+        _validate_state_document(state, output_directory, queue, queue_sha256)
+        write_generation_state(state_path, state)
         return state
     state = {
         "schema": STATE_SCHEMA,
@@ -2941,7 +2978,7 @@ def _load_or_create_state(
         "active": None,
         "synthesis_controls": {},
     }
-    atomic_write_json(state_path, state, sort_keys=True)
+    write_generation_state(state_path, state)
     return state
 
 
@@ -3001,7 +3038,7 @@ def _reconcile_interrupted_attempt(
                 "Retrying cancellation has no matching completed failure"
             )
         state["active"] = None
-        atomic_write_json(state_path, state, sort_keys=True)
+        write_generation_state(state_path, state)
         return
     if existing.get("status") not in {"generated", "approved"}:
         attempts = max(
@@ -3103,7 +3140,7 @@ def _reconcile_interrupted_attempt(
             )
         items[queue_id] = interrupted_result
     state["active"] = None
-    atomic_write_json(state_path, state, sort_keys=True)
+    write_generation_state(state_path, state)
 
 
 def _runtime_worker_pid(backend: object) -> int | None:
@@ -3195,7 +3232,7 @@ def _write_active(
         active["source_reference_binding"] = source_reference_binding
     if failure_repair is not None:
         active["failure_repair"] = failure_repair
-    atomic_write_json(state_path, state, sort_keys=True)
+    write_generation_state(state_path, state, changed_items=())
 
 
 def _write_active_phase(
@@ -3204,6 +3241,7 @@ def _write_active_phase(
     phase: str,
     *,
     last_error: str | None = None,
+    changed_items: tuple[str, ...] = (),
 ) -> None:
     active = state.get("active")
     if not _is_json_document(active):
@@ -3212,7 +3250,7 @@ def _write_active_phase(
     active["updated_at"] = _now()
     if last_error is not None:
         active["last_error"] = last_error
-    atomic_write_json(state_path, state, sort_keys=True)
+    write_generation_state(state_path, state, changed_items=changed_items)
 
 
 def _validate_render_result(

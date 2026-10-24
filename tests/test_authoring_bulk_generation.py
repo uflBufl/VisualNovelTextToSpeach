@@ -22,7 +22,7 @@ import vntts.authoring.generation_failures as failure_module
 import vntts.authoring.generation_fallback as fallback_module
 import vntts.authoring.generation_lease as generation_lease_module
 import vntts.authoring.generation_review as review_module
-import vntts.authoring.workspace_foundation as foundation_module
+import vntts.authoring.generation_state as state_module
 from tests.authoring_fixtures import tree_hashes
 from tests.bulk_generation_fixtures import (
     SyntheticRenderer,
@@ -857,7 +857,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             result.state.write_bytes(foreign)
             load_generation_state(result.state, queue)
             result.state.write_bytes(original)
-            original_read = foundation_module.read_regular_bytes
+            original_read = state_module.read_regular_bytes
             for capture, selection in (
                 (generation_review_authority, item["queue_id"]),
                 (generation_review_authorities, [item["queue_id"]]),
@@ -878,7 +878,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 with (
                     self.subTest(capture=capture.__name__),
                     patch.object(
-                        foundation_module, "read_regular_bytes", read_replacement
+                        state_module, "read_regular_bytes", read_replacement
                     ),
                     self.assertRaisesRegex(
                         BulkGenerationError,
@@ -1768,7 +1768,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             item = queue_item()
             queue = write_queue(root / "queue.jsonl", [item])
             output = root / "output"
-            original_atomic_write = bulk_module.atomic_write_json
+            original_state_write = bulk_module.write_generation_state
 
             def crash_after_replace(path, document, **options):
                 if (
@@ -1780,11 +1780,11 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     == "generated"
                 ):
                     raise KeyboardInterrupt()
-                return original_atomic_write(path, document, **options)
+                return original_state_write(path, document, **options)
 
             with (
                 patch.object(
-                    bulk_module, "atomic_write_json", side_effect=crash_after_replace
+                    bulk_module, "write_generation_state", side_effect=crash_after_replace
                 ),
                 self.assertRaises(KeyboardInterrupt),
             ):
@@ -1812,7 +1812,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             item = queue_item()
             queue = write_queue(root / "queue.jsonl", [item])
             output = root / "output"
-            original_write = bulk_module.atomic_write_json
+            original_write = bulk_module.write_generation_state
 
             def fail_success_write(path, document, **options):
                 if (
@@ -1828,7 +1828,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module, "atomic_write_json", side_effect=fail_success_write
+                    bulk_module, "write_generation_state", side_effect=fail_success_write
                 ),
                 self.assertRaisesRegex(OSError, "synthetic state write failure"),
             ):
@@ -2033,7 +2033,10 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 reads.append(Path(path).resolve())
                 return real_read_bytes(path)
 
-            with patch.object(review_module, "read_regular_bytes", tracked_read_bytes):
+            with (
+                patch.object(review_module, "read_regular_bytes", tracked_read_bytes),
+                patch.object(state_module, "read_regular_bytes", tracked_read_bytes),
+            ):
                 state, snapshots = review_module.assert_review_authorities(
                     state_path, authorities, queue
                 )

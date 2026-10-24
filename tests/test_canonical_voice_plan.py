@@ -220,7 +220,7 @@ class CanonicalVoicePlanTest(unittest.TestCase):
                 self.assertEqual(value.reference_sha256s, candidate.reference_sha256s)
             self.assertEqual(updated.groups[-1], unrelated)
             self.assertEqual(
-                json.loads(store.path_for(job).read_text())["groups"],
+                store.saved_documents()[0]["groups"],
                 [group.to_document() for group in updated.groups],
             )
 
@@ -241,7 +241,7 @@ class CanonicalVoicePlanTest(unittest.TestCase):
             )
             registry = CharacterVoiceRegistry.from_file(plan.voice_manifest)
             reference = registry.resolve_source(candidate.source_id).references[0]
-            before_plan = store.path_for(job).read_bytes()
+            before_plan = store.saved_documents()
             before_bindings = library.bindings()
             write_reference(reference, b"changed after preview")
 
@@ -250,7 +250,7 @@ class CanonicalVoicePlanTest(unittest.TestCase):
                     job, plan, settings, (group, candidate.source_id)
                 )
 
-            self.assertEqual(store.path_for(job).read_bytes(), before_plan)
+            self.assertEqual(store.saved_documents(), before_plan)
             self.assertEqual(library.bindings(), before_bindings)
 
     def test_unavailable_archived_source_is_optional_but_selected_source_is_strict(

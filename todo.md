@@ -1296,3 +1296,13 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
       Keep those originals recoverable; migrate and verify restart lookup before
       removing the parser and compatibility tests. The 542 proven arrays are
       already migrated; other machines still require their own explicit inventory.
+
+## Remaining - Legacy audio metadata import
+
+- [ ] Retain JSON readers for old synthesis bindings, jobs, selections, voice
+      plans/decisions, generation inputs and offline generation state until the
+      supported upgrade window excludes JSON-only app versions and inventories
+      show no unimported metadata. Keep unknown/corrupt originals recoverable;
+      remove these readers and their compatibility tests together after that gate.
+      Portable authoring proof snapshots and published pack/queue/voice manifests
+      remain JSON contracts and are outside this removal.

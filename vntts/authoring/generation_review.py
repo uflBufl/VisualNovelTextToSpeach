@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import os
 import secrets
 from collections.abc import Mapping, Sequence
@@ -12,8 +11,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypeAlias, TypeGuard
-
-from durable_file import atomic_write_json
 
 from vntts.authoring.authority import canonical_document_sha256 as _canonical_sha256
 from vntts.authoring.generation_lease import (
@@ -33,17 +30,20 @@ from vntts.authoring.generation_manifest import (
 )
 from vntts.authoring.generation_state import (
     StateItems,
+    decode_generation_state_snapshot,
+    generation_state_file,
+    generation_state_snapshot,
     load_generation_state,
+    read_generation_state_payload,
     validate_generation_state_document,
+    write_generation_state,
 )
 from vntts.authoring.generation_state import contained_state_path as _within
 from vntts.authoring.generation_state import generation_state_items as _state_items
 from vntts.authoring.generation_state import required_state_text as _generation_text
 from vntts.authoring.generation_state import safe_state_relative_path as _safe_relative
 from vntts.authoring.publication import publication_errors
-from vntts.authoring.workspace_foundation import load_json_object_snapshot
 from vntts.document_identity import sha256_file
-from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import read_regular_bytes
 
@@ -107,15 +107,13 @@ def generation_review_authorities(
     state_path: str | Path, queue_ids: Sequence[object]
 ) -> dict[str, ReviewAuthority]:
     """Snapshot several generated WAV authorities from one immutable state read."""
-    state_path = Path(state_path).expanduser().resolve()
+    state_path = generation_state_file(state_path)
     selected_queue_ids = tuple(
         sorted({_generation_text(value, "Queue ID") for value in queue_ids})
     )
     if not selected_queue_ids:
         return {}
-    document, state_sha256, _payload = load_json_object_snapshot(
-        state_path, "generation state", error_type=BulkGenerationError
-    )
+    document, state_sha256, _payload = generation_state_snapshot(state_path)
     state = validate_generation_state_document(document, state_path.parent, None, None)
     items = _state_items(state)
     authorities: dict[str, ReviewAuthority] = {}
@@ -181,7 +179,7 @@ def assert_review_authorities(
     if not _is_review_authorities(authorities):
         raise BulkGenerationError("Cohort review authorities must be a non-empty map")
     state_sha256, queue_sha256 = _cohort_review_snapshot(authorities)
-    state_path = Path(state_path).expanduser().resolve()
+    state_path = generation_state_file(state_path)
     queue_path = Path(queue_path).expanduser().resolve()
     state = _read_review_state(state_path, queue_path, state_sha256, queue_sha256)
     snapshots, audio_paths = _cohort_review_audio_snapshots(
@@ -209,7 +207,7 @@ def _read_review_state(
     state_path: Path, queue_path: Path, state_sha256: str, queue_sha256: str
 ) -> JsonDocument:
     try:
-        state_payload = read_regular_bytes(state_path)
+        state_payload = read_generation_state_payload(state_path)
         queue_payload = read_regular_bytes(queue_path)
     except OSError as error:
         raise BulkGenerationError(
@@ -230,8 +228,8 @@ def _review_state_document(
     payload: bytes, state_path: Path, queue_sha256: str
 ) -> JsonDocument:
     try:
-        state = decode_json(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        state = decode_generation_state_snapshot(payload)
+    except (UnicodeDecodeError, ValueError) as error:
         raise BulkGenerationError(
             f"Unable to read generation state {state_path}: {error}"
         ) from error
@@ -327,7 +325,7 @@ def _load_review_snapshot(
     """Revalidate only the exact state/item/WAV snapshot displayed by the UI."""
     if not isinstance(expected_authority, ReviewAuthority):
         raise BulkGenerationError("Review authority snapshot is invalid")
-    state_path = Path(state_path).expanduser().resolve()
+    state_path = generation_state_file(state_path)
     queue_path = None if queue_path is None else Path(queue_path).expanduser().resolve()
     state = _load_displayed_review_state(state_path, queue_path, expected_authority)
     item = _review_snapshot_item(_state_items(state), queue_id, expected_authority)
@@ -341,7 +339,7 @@ def _load_displayed_review_state(
     state_path: Path, queue_path: Path | None, authority: ReviewAuthority
 ) -> JsonDocument:
     try:
-        payload = read_regular_bytes(state_path)
+        payload = read_generation_state_payload(state_path)
     except OSError as error:
         raise BulkGenerationError(
             f"Unable to read generation state {state_path}: {error}"
@@ -386,7 +384,7 @@ def review_generation_item(
     """Commit review with manifest revocation before rejected state."""
     if decision not in {"approved", "rejected"}:
         raise BulkGenerationError("Review decision must be approved or rejected")
-    state_path = Path(state_path).expanduser().resolve()
+    state_path = generation_state_file(state_path)
     if expected_authority is None:
         initial = load_generation_state(state_path)
     else:
@@ -425,7 +423,7 @@ def review_generation_cohort(
         raise BulkGenerationError("Cohort review authorities must be a non-empty map")
     decisions = _cohort_review_decisions(authorities, decision)
     provenance = _cohort_review_provenance(provenance)
-    state_path = Path(state_path).expanduser().resolve()
+    state_path = generation_state_file(state_path)
     queue_path = Path(queue_path).expanduser().resolve()
     authority_values = _cohort_review_authority_values(authorities)
     return _commit_review_generation_cohort(
@@ -509,7 +507,7 @@ def _commit_review_generation_cohort(
         )
         is_mixed = len(set(decisions.values())) > 1
         try:
-            atomic_write_json(staged_state, proposed, sort_keys=True)
+            write_generation_state(staged_state, proposed)
             proposed_state_sha256 = sha256_file(staged_state)
             _write_generated_manifest_from_state(
                 proposed,
@@ -938,7 +936,7 @@ def _write_review_item_transaction(
     lease: GenerationLease | None,
 ) -> None:
     try:
-        atomic_write_json(staged_state, proposed, sort_keys=True)
+        write_generation_state(staged_state, proposed)
         _write_generated_manifest_from_state(
             proposed,
             state_path.parent,

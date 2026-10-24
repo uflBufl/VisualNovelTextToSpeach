@@ -18,6 +18,7 @@ import vntts.support as support_module
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.diagnostics import DiagnosticSnapshot
+from vntts.generation_database import write_state as write_generation_database
 from vntts.settings import AppSettings
 from vntts.support import (
     AudioLifecycleLog,
@@ -259,6 +260,91 @@ class PregenerationSupportSummaryTest(unittest.TestCase):
             [f"failed-{index:02d}" for index in range(64)],
         )
         self.assertEqual(summarize.call_count, 64)
+
+    def test_sqlite_snapshot_preserves_bounded_failure_summary_and_redaction(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            private_model = str(Path.home() / "private-model")
+            items = {
+                f"failed-{index:02d}": {
+                    "status": "failed",
+                    "line_id": str(index),
+                    "attempts": 3,
+                    "attempts_by_provider": {"moss-tts": 2, "pocket-tts": 1},
+                    "model": private_model,
+                    "text": "PRIVATE dialogue text",
+                    "prompt": "PRIVATE synthesis prompt",
+                    "last_error": "PRIVATE exception details",
+                    "failure": {
+                        "kind": "speech_silence",
+                        "error_type": "SpeechQualityError",
+                    },
+                }
+                for index in reversed(range(70))
+            }
+            items["approved"] = {"status": "approved", "review_status": "approved"}
+            state = {"queue_sha256": "f" * 64, "items": items, "active": None}
+            database = root / "generation-state.sqlite3"
+            legacy = root / "generation-state.json"
+            write_generation_database(database, state)
+            legacy.write_text(json.dumps(state))
+            original = database.read_bytes()
+            result = support_module._pregeneration_state_summary(database)
+            json_result = support_module._pregeneration_state_summary(legacy)
+            self.assertTrue(result["available"])
+            self.assertEqual(
+                result["state_sha256"], hashlib.sha256(original).hexdigest()
+            )
+            self.assertEqual(database.read_bytes(), original)
+            self.assertEqual(result["status_counts"], {"approved": 1, "failed": 70})
+            self.assertEqual(result["failed_items_truncated"], 6)
+            self.assertEqual(len(result["failed_items"]), 64)
+            self.assertEqual(result["failed_items"], json_result["failed_items"])
+            self.assertEqual(
+                result["failed_items"][0]["attempts_by_provider"],
+                {"moss-tts": 2, "pocket-tts": 1},
+            )
+            self.assertNotIn("PRIVATE", json.dumps(result))
+            self.assertNotIn(str(Path.home()), json.dumps(result))
+
+    def test_sqlite_snapshot_admission_retains_read_limit_and_symlink_protection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "generation-state.sqlite3"
+            write_generation_database(database, {"queue_sha256": "f" * 64, "items": {}})
+            alias = root / "alias.sqlite3"
+            symlink_or_skip(alias, database)
+            self.assertEqual(
+                support_module._pregeneration_state_summary(alias),
+                {"available": False, "reason": "state path is unsafe"},
+            )
+            with database.open("r+b") as source:
+                source.truncate(32 * 1024 * 1024 + 1)
+            with patch(
+                "vntts.generation_database.read_snapshot",
+                side_effect=AssertionError("oversized state was decoded"),
+            ):
+                self.assertEqual(
+                    support_module._pregeneration_state_summary(database),
+                    {"available": False, "reason": "state exceeds support read limit"},
+                )
+
+    def test_corrupt_and_future_sqlite_snapshots_are_unavailable_without_mutation(self):
+        for damage in ("corrupt", "future"):
+            with self.subTest(damage=damage), TemporaryDirectory() as directory:
+                path = Path(directory) / "generation-state.sqlite3"
+                write_generation_database(path, {"queue_sha256": "f" * 64, "items": {}})
+                payload = bytearray(path.read_bytes())
+                if damage == "future":
+                    payload[60:64] = (999).to_bytes(4, "big")
+                else:
+                    payload[100:110] = b"corruption"
+                path.write_bytes(payload)
+                self.assertEqual(
+                    support_module._pregeneration_state_summary(path),
+                    {"available": False, "reason": "state could not be read"},
+                )
+                self.assertEqual(path.read_bytes(), payload)
 
 
 class GenerationTimelineLogTest(unittest.TestCase):

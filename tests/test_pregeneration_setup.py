@@ -1,6 +1,7 @@
-import json
 import os
+import sqlite3
 import unittest
+from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -154,13 +155,13 @@ class PregenerationSetupTest(unittest.TestCase):
             root = Path(directory)
             source = write_story_index(root / "content")
             content = inspect_story_index(source, provider_id="reverse1999")
+            source_store = PregenerationJobStore(root / "source-jobs")
+            job = source_store.create_or_resume(content, ("main-1",))
             store = PregenerationJobStore(root / "jobs")
-            job = store.create_or_resume(content, ("main-1",))
-            document = json.loads(store.path_for(job.job_id).read_bytes())
+            document = job.to_document()
             document.pop("game_id")
-            store.path_for(job.job_id).write_text(
-                json.dumps(document), encoding="utf-8"
-            )
+            store.directory_for(job.job_id).mkdir(parents=True)
+            write_versioned_json(store.path_for(job.job_id), 1, document)
             legacy = store.load(job.job_id)
             self.assertIsNone(legacy.game_id)
             before = source.read_bytes()
@@ -1114,7 +1115,8 @@ class PregenerationSetupTest(unittest.TestCase):
                 ("reverse1999:1", "reverse1999:2", "reverse1999:3"),
             )
             self.assertEqual(store.latest_for_content(content), first)
-            self.assertTrue(store.path_for(first.job_id).is_file())
+            self.assertTrue(store.catalog.path.is_file())
+            self.assertFalse(store.path_for(first.job_id).exists())
 
     def test_resumed_installed_game_job_uses_current_provider(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1152,10 +1154,13 @@ class PregenerationSetupTest(unittest.TestCase):
             content = inspect_story_index(write_story_index(root / "content"))
             store = PregenerationJobStore(root / "jobs")
             job = store.create_or_resume(content, ("main-1",))
-            path = store.path_for(job.job_id)
             for digest in ("a" * 64, "A" * 64):
-                document = {**job.to_document(), "story_index_sha256": digest}
-                write_versioned_json(path, 1, document)
+                with closing(sqlite3.connect(store.catalog.path)) as connection:
+                    connection.execute(
+                        "UPDATE jobs SET story_index_sha256 = ?, catalog_story_index_sha256 = ? WHERE job_id = ?",
+                        (digest, digest, job.job_id),
+                    )
+                    connection.commit()
                 self.assertEqual(store.load(job.job_id).story_index_sha256, digest)
             for digest in (
                 "+" + "a" * 63,
@@ -1164,9 +1169,12 @@ class PregenerationSetupTest(unittest.TestCase):
                 "a_" + "b" * 62,
                 "０" * 64,
             ):
-                write_versioned_json(
-                    path, 1, {**job.to_document(), "story_index_sha256": digest}
-                )
+                with closing(sqlite3.connect(store.catalog.path)) as connection:
+                    connection.execute(
+                        "UPDATE jobs SET story_index_sha256 = ?, catalog_story_index_sha256 = ? WHERE job_id = ?",
+                        (digest, digest, job.job_id),
+                    )
+                    connection.commit()
                 with (
                     self.subTest(digest=digest),
                     self.assertRaisesRegex(PregenerationSetupError, "SHA-256"),
@@ -1212,14 +1220,23 @@ class PregenerationSetupTest(unittest.TestCase):
             content = inspect_story_index(write_story_index(root / "content"))
             store = PregenerationJobStore(root / "jobs")
             job = store.create_or_resume(content, ("main-1",))
+            with closing(sqlite3.connect(store.catalog.path)) as connection:
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        "UPDATE job_lines SET line_id = ? WHERE job_id = ?",
+                        (sqlite3.Binary(b"non-text"), job.job_id),
+                    )
+            self.assertEqual(store.load(job.job_id), job)
+
+            legacy = PregenerationJobStore(root / "legacy")
+            legacy.directory_for(job.job_id).mkdir(parents=True)
             document = job.to_document()
             document["selected_line_ids"] = [job.selected_line_ids[0], 7]
-            write_versioned_json(store.path_for(job.job_id), 1, document)
-
+            write_versioned_json(legacy.path_for(job.job_id), 1, document)
             with self.assertRaisesRegex(
                 PregenerationSetupError, "selected_line_ids must contain non-empty text"
             ):
-                store.load(job.job_id)
+                legacy.load(job.job_id)
 
     def test_prepared_story_coverage_accumulates_across_jobs(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1298,8 +1315,19 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         )
         self._voice_library_patch.start()
         self._importer_patch.start()
+        self._data_directory_patches = [
+            patch(
+                f"vntts.{module}.get_local_data_directory",
+                return_value=Path(self._voice_library_directory.name) / "app-data",
+            )
+            for module in ("pregeneration_setup", "pregeneration_ui")
+        ]
+        for data_directory_patch in self._data_directory_patches:
+            data_directory_patch.start()
 
     def tearDown(self):
+        for data_directory_patch in reversed(self._data_directory_patches):
+            data_directory_patch.stop()
         self._importer_patch.stop()
         self._voice_library_patch.stop()
         self._voice_library_directory.cleanup()
@@ -2264,7 +2292,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
             store = PregenerationJobStore(root / "jobs")
-            store.save_selection(content, ())
             path = store._selection_path(content)
             write_versioned_json(path, 2, {"selected_story_ids": ["rhiannon"]})
             dialog = OfflineAudioPreparationDialog(
@@ -2921,7 +2948,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertFalse(dialog.progress_panel.isVisibleTo(dialog))
             self.assertIsNone(dialog.generation_input())
             self.assertEqual(dialog.job().job_id, saved_job)
-            self.assertTrue(dialog.job_store.path_for(saved_job).exists())
+            self.assertEqual(dialog.job_store.load(saved_job).job_id, saved_job)
             dialog.close()
 
     def test_progress_story_totals_include_only_selected_chapters(self):
@@ -3395,12 +3422,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertFalse(dialog.generating)
             self.assertFalse(dialog.publishing_pack)
             self.assertIs(dialog.pack_result(), pack_result)
-            self.assertTrue(store.path_for(dialog.job().job_id).is_file())
-            self.assertTrue(
-                (
-                    store.path_for(dialog.job().job_id).parent / "voice-plan.json"
-                ).is_file()
-            )
+            self.assertEqual(store.load(dialog.job().job_id), dialog.job())
+            self.assertTrue(store.catalog.has_plan(dialog.job().job_id))
             dialog.deleteLater()
 
     def test_app_import_and_story_selection_restore_after_restart(self):
@@ -3584,7 +3607,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             template = content.selections[0]
             selections = tuple(
                 replace(
-                    template, selection_id=f"story-{i}", title=f"Story {i}", order=i
+                    template,
+                    selection_id=f"story-{i}",
+                    title=f"Story {i}",
+                    order=i,
+                    line_ids=tuple(f"{i}:{line_id}" for line_id in template.line_ids),
                 )
                 for i in range(8)
             )
@@ -3606,7 +3633,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._start_generation_progress()
             dialog.progress_timer.stop()
             progress = OfflineGenerationProgress(
-                generated=12, ready_line_ids=template.line_ids[:1]
+                generated=12, ready_line_ids=selections[0].line_ids[:1]
             )
             dialog._render_generation_progress(progress)
             dialog.resize(620, 440)
