@@ -11,6 +11,7 @@ import stat
 import wave
 from collections.abc import Iterator
 from contextlib import contextmanager
+from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
@@ -37,25 +38,41 @@ def _digest(path: Path) -> str:
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def _verify_wav(path: Path) -> None:
-    with open_regular_binary(_regular(path)) as source:
-        try:
-            with wave.open(source, "rb") as audio:
-                channels = audio.getnchannels()
-                frames = audio.getnframes()
-                if (
-                    audio.getcomptype() != "NONE"
-                    or audio.getsampwidth() != 2
-                    or channels not in (1, 2)
-                    or audio.getframerate() < 1
-                    or frames < 1
-                    or frames * channels * 2
-                    > os.fstat(source.fileno()).st_size - source.tell()
-                    or len(audio.readframes(frames)) != frames * channels * 2
-                ):
-                    raise SharedAudioStoreError(f"Invalid PCM16 WAV: {path}")
-        except (wave.Error, EOFError) as error:
-            raise SharedAudioStoreError(f"Invalid PCM16 WAV: {path}") from error
+def _read_wav(path: Path, expected_sha256: str | None = None) -> tuple[bytes, str]:
+    path = _regular(path)
+    with open_regular_binary(path) as source:
+        before = os.fstat(source.fileno())
+        payload = source.read()
+        after = os.fstat(source.fileno())
+    current = path.stat(follow_symlinks=False)
+    fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns")
+    if len(payload) != before.st_size or any(
+        getattr(before, field) != getattr(info, field)
+        for info in (after, current)
+        for field in fields
+    ):
+        raise SharedAudioStoreError(f"Audio changed while reading: {path}")
+    digest = hashlib.sha256(payload).hexdigest()
+    if expected_sha256 is not None and digest != expected_sha256:
+        raise SharedAudioStoreError(f"Saved audio checksum changed: {path}")
+    source_bytes = BytesIO(payload)
+    try:
+        with wave.open(source_bytes, "rb") as audio:
+            channels = audio.getnchannels()
+            frames = audio.getnframes()
+            if (
+                audio.getcomptype() != "NONE"
+                or audio.getsampwidth() != 2
+                or channels not in (1, 2)
+                or audio.getframerate() < 1
+                or frames < 1
+                or frames * channels * 2 > len(payload) - source_bytes.tell()
+                or len(audio.readframes(frames)) != frames * channels * 2
+            ):
+                raise SharedAudioStoreError(f"Invalid PCM16 WAV: {path}")
+    except (wave.Error, EOFError) as error:
+        raise SharedAudioStoreError(f"Invalid PCM16 WAV: {path}") from error
+    return payload, digest
 
 
 def _sync_directory(path: Path) -> None:
@@ -155,9 +172,7 @@ class SharedAudioStore:
         if not isinstance(digest, str) or re.fullmatch(r"[a-f0-9]{64}", digest) is None:
             raise SharedAudioStoreError("Invalid audio object digest")
         path = self._directory("objects") / f"{digest}.wav"
-        if _digest(path) != digest:
-            raise SharedAudioStoreError(f"Saved audio checksum changed: {path}")
-        _verify_wav(path)
+        _read_wav(path, digest)
         return path
 
     def _check_catalog_paths(self, path: Path) -> None:
@@ -344,7 +359,7 @@ class SharedAudioStore:
         objects = self._directory("objects")
         return objects.exists() and next(objects.iterdir(), None) is not None
 
-    def get(self, key: str) -> Path | None:
+    def _binding_digest(self, key: str) -> str | None:
         self._validate_key(key)
         with self._catalog() as connection:
             if connection is None:
@@ -361,13 +376,27 @@ class SharedAudioStore:
                         f"Invalid legacy audio binding for {key}: {error[0]}"
                     )
                 return None
-        return self._object(row[0])
+        digest = row[0]
+        if not isinstance(digest, str) or re.fullmatch(r"[a-f0-9]{64}", digest) is None:
+            raise SharedAudioStoreError("Invalid audio object digest")
+        return digest
+
+    def get(self, key: str) -> Path | None:
+        digest = self._binding_digest(key)
+        return self._object(digest) if digest is not None else None
+
+    def get_bytes(self, key: str) -> bytes | None:
+        """Return the exact verified snapshot without requiring a second file read."""
+        digest = self._binding_digest(key)
+        if digest is None:
+            return None
+        payload, _ = _read_wav(self._directory("objects") / f"{digest}.wav", digest)
+        return payload
 
     def put(self, key: str, source: str | Path) -> Path:
         self._validate_key(key)
         source = _regular(Path(source))
-        _verify_wav(source)
-        digest = _digest(source)
+        digest = _read_wav(source)[1]
         objects = self._directory("objects")
         objects.mkdir(parents=True, exist_ok=True)
         destination = objects / f"{digest}.wav"
@@ -384,9 +413,7 @@ class SharedAudioStore:
                 raise SharedAudioStoreError(
                     "The shared WAV store and audio source must support hard links on the same filesystem"
                 ) from error
-        if _digest(destination) != digest:
-            raise SharedAudioStoreError(f"Saved audio checksum changed: {destination}")
-        _verify_wav(destination)
+        _read_wav(destination, digest)
         _sync_regular_file(destination)
         _sync_directory(objects)
         with self._catalog(create=True) as connection:

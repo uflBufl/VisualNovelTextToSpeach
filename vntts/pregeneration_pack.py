@@ -44,12 +44,16 @@ from vntts_artifacts.voice_manifest import (
 from vntts.audio_store import SharedAudioStore, link_shared_audio
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.generation_lease import BulkGenerationError
-from vntts.authoring.generation_manifest import approved_manifest_entries
+from vntts.authoring.generation_manifest import (
+    approved_manifest_entries,
+    contained_generation_path,
+)
 from vntts.authoring.generation_state import (
     AUDIO_EVENT_OMISSION_REASON,
     AUDIO_EVENT_OMISSION_SCHEMA,
     AUDIO_EVENT_OMISSION_VERSION,
     generation_item_status,
+    generation_state_file,
     generation_state_snapshot,
     load_generation_state_from_snapshot,
     load_stable_generation_queue,
@@ -70,7 +74,7 @@ from vntts.document_identity import (
 )
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
-from vntts.generation_database import is_database
+from vntts.generation_database import is_database, validate_database_path
 from vntts.generation_database import state_path as generation_state_path
 from vntts.json_types import decode_json
 from vntts.live_sequence import load_live_sequence_snapshot
@@ -96,6 +100,7 @@ from vntts.pregeneration_setup import (
     load_verified_story_index_document,
     story_game_id,
 )
+from vntts.recording_index import RecordingIndex
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidence,
     SourceAudioSemanticEvidenceError,
@@ -174,10 +179,11 @@ class _SavedGenerationInput:
     state: JsonObject | None = None
     recordings: dict[str, list[tuple[Path, str]]] = field(default_factory=dict)
     validated_line_ids: set[str] = field(default_factory=set)
+    uncacheable_line_ids: set[str] = field(default_factory=set)
 
 
 class StoryAudioInspector:
-    """Reuse validated pack metadata only within one background inspection batch."""
+    """Inspect source and durable recording receipts, rechecking WAV bytes on use."""
 
     def __init__(
         self,
@@ -193,6 +199,9 @@ class StoryAudioInspector:
         self._source: tuple[StoryIndexDocument, frozenset[str]] | None = None
         self._source_records: dict[str, StoryIndexRecord] = {}
         self._saved_generation_inputs: dict[Path, _SavedGenerationInput] = {}
+        self._recording_sources: dict[
+            Path, tuple[dict[Path, tuple[int, ...]], tuple[str, str, str]]
+        ] = {}
 
     def _source_snapshot(self) -> tuple[StoryIndexDocument, frozenset[str]]:
         if self._source is None:
@@ -241,81 +250,171 @@ class StoryAudioInspector:
                 document = load_generation_input_metadata(directory)
             except FileNotFoundError:
                 continue
-            metadata = self.job_store.catalog.path
-            paths = (queue_path, state_path)
-            before = {path: _file_fingerprint(path) for path in paths}
-            before[metadata] = tuple(bytes.fromhex(canonical_document_sha256(document)))
-            cached = self._saved_generation_inputs.get(directory)
-            if cached is None or cached.files != before:
-                if document.get("source_story_index_sha256") != job.story_index_sha256:
-                    raise OfflinePackError(
-                        "Saved generation input belongs to changed dialogue"
-                    )
-                queue, digest = load_stable_generation_queue(queue_path)
-                if digest != document.get("queue_sha256"):
-                    raise OfflinePackError("Saved generation queue changed")
-                source = self._source_snapshot()[0]
-                if any(
-                    queue.metadata.get(field) != source.metadata.get(field)
-                    for field in ("game", "language")
-                ):
-                    raise OfflinePackError(
-                        "Saved generation queue belongs to different content"
-                    )
-                cached = _SavedGenerationInput(before, queue, digest)
-                self._saved_generation_inputs[directory] = cached
-            relevant = {
-                item.queue_id
-                for item in cached.queue.items
-                if item.line_id in self._source_records
-                and self._source_records[item.line_id].text_sha256 == item.text_sha256
-            }
-            requested = (
-                frozenset(
-                    item.line_id
-                    for item in cached.queue.items
-                    if item.queue_id in relevant and item.line_id in selected
-                )
-                - cached.validated_line_ids
+            indexed = self._saved_input_recordings(
+                directory, job, document, selected, queue_path, state_path
             )
-            if requested:
-                state = load_generation_state_from_snapshot(
-                    state_path,
-                    cached.queue,
-                    cached.queue_sha256,
-                    state_document=None if is_database(state_path) else cached.state,
-                    selected_line_ids=frozenset(requested),
-                )
-                if any(
-                    _file_fingerprint(path) != before[path] for path in paths
-                ) or canonical_document_sha256(
-                    load_generation_input_metadata(directory)
-                ) != canonical_document_sha256(document):
-                    raise OfflinePackError(
-                        "Saved generation state changed while inspected"
-                    )
-                state_items = _state_items(state)
-                for item in cached.queue.items:
-                    if item.line_id not in requested or item.queue_id not in relevant:
-                        continue
-                    result = state_items.get(item.queue_id)
-                    if result is not None and result.get("status") in {
-                        "generated",
-                        "approved",
-                    }:
-                        cached.recordings.setdefault(str(result["line_id"]), []).append(
-                            (
-                                state_path.parent / str(result["path"]),
-                                str(result["file_sha256"]),
-                            )
-                        )
-                cached.state = state
-                cached.validated_line_ids.update(requested)
-            for line_id in selected:
-                recordings.setdefault(line_id, []).extend(
-                    cached.recordings.get(line_id, ())
-                )
+            for line_id, values in indexed.items():
+                recordings.setdefault(line_id, []).extend(values)
         return recordings
+
+    def _recording_source(
+        self,
+        directory: Path,
+        document: JsonObject,
+        paths: tuple[Path, Path],
+        before: dict[Path, tuple[int, ...]],
+    ) -> tuple[str, str, str]:
+        previous = self._recording_sources.get(directory)
+        if previous is not None and previous[0] == before:
+            return previous[1]
+        source = (
+            sha256_file(paths[0]),
+            sha256_file(paths[1]),
+            canonical_document_sha256(document),
+        )
+        self._check_saved_input(directory, document, paths, before)
+        self._recording_sources[directory] = (before, source)
+        return source
+
+    @staticmethod
+    def _check_saved_input(
+        directory: Path,
+        document: JsonObject,
+        paths: tuple[Path, Path],
+        before: dict[Path, tuple[int, ...]],
+    ) -> None:
+        if is_database(paths[1]):
+            validate_database_path(paths[1])
+        if any(
+            _file_fingerprint(path) != before[path] for path in paths
+        ) or canonical_document_sha256(
+            load_generation_input_metadata(directory)
+        ) != canonical_document_sha256(document):
+            raise OfflinePackError("Saved generation state changed while inspected")
+
+    def _saved_input_recordings(
+        self,
+        directory: Path,
+        job: PregenerationJob,
+        document: JsonObject,
+        selected: set[str],
+        queue_path: Path,
+        state_path: Path,
+    ) -> dict[str, list[tuple[Path, str]]]:
+        if document.get("source_story_index_sha256") != job.story_index_sha256:
+            raise OfflinePackError("Saved generation input belongs to changed dialogue")
+        generation_state_file(state_path)
+        if is_database(state_path):
+            validate_database_path(state_path)
+        paths = (queue_path, state_path)
+        before = {path: _file_fingerprint(path) for path in paths}
+        before[self.job_store.catalog.path] = tuple(
+            bytes.fromhex(canonical_document_sha256(document))
+        )
+        # Legacy JSON validates unselected path metadata in full on each new batch.
+        source = (
+            self._recording_source(directory, document, paths, before)
+            if is_database(state_path)
+            else None
+        )
+        requested = {
+            line_id: self._source_records[line_id].text_sha256
+            for line_id in selected
+            if line_id in self._source_records
+        }
+        index = RecordingIndex(self.job_store.catalog.path.parent)
+        indexed = (
+            index.load(directory, source, requested) if source is not None else None
+        )
+        if indexed is not None and not indexed[1]:
+            self._check_saved_input(directory, document, paths, before)
+            return {
+                line_id: [
+                    (
+                        contained_generation_path(
+                            state_path.parent,
+                            audio.relative_to(state_path.parent),
+                            "Saved recording",
+                        ),
+                        digest,
+                    )
+                ]
+                for line_id, (audio, digest) in indexed[0].items()
+            }
+        cached = self._saved_generation_inputs.get(directory)
+        if cached is None or cached.files != before:
+            queue, digest = load_stable_generation_queue(queue_path)
+            if digest != document.get("queue_sha256"):
+                raise OfflinePackError("Saved generation queue changed")
+            story = self._source_snapshot()[0]
+            if any(
+                queue.metadata.get(field) != story.metadata.get(field)
+                for field in ("game", "language")
+            ):
+                raise OfflinePackError(
+                    "Saved generation queue belongs to different content"
+                )
+            cached = _SavedGenerationInput(before, queue, digest)
+            self._saved_generation_inputs[directory] = cached
+        relevant = frozenset(
+            item.line_id
+            for item in cached.queue.items
+            if requested.get(item.line_id) == item.text_sha256
+        )
+        unchecked = relevant - cached.validated_line_ids
+        if unchecked:
+            self._validate_saved_recordings(
+                directory, document, paths, before, cached, unchecked
+            )
+        if source is not None:
+            index.save(
+                directory,
+                source,
+                {item.line_id: item.text_sha256 for item in cached.queue.items},
+                {
+                    line_id: next(iter(cached.recordings.get(line_id, ())), None)
+                    for line_id in cached.validated_line_ids
+                    - cached.uncacheable_line_ids
+                },
+            )
+        self._check_saved_input(directory, document, paths, before)
+        return {line_id: cached.recordings.get(line_id, []) for line_id in relevant}
+
+    def _validate_saved_recordings(
+        self,
+        directory: Path,
+        document: JsonObject,
+        paths: tuple[Path, Path],
+        before: dict[Path, tuple[int, ...]],
+        cached: _SavedGenerationInput,
+        requested: frozenset[str],
+    ) -> None:
+        state_path = paths[1]
+        state = load_generation_state_from_snapshot(
+            state_path,
+            cached.queue,
+            cached.queue_sha256,
+            state_document=None if is_database(state_path) else cached.state,
+            selected_line_ids=requested,
+        )
+        self._check_saved_input(directory, document, paths, before)
+        state_items = _state_items(state)
+        for item in cached.queue.items:
+            if item.line_id not in requested:
+                continue
+            result = state_items.get(item.queue_id)
+            if result is not None and "audio_event_composition" in result:
+                # Composition dependencies require their original validator on restart.
+                cached.uncacheable_line_ids.add(item.line_id)
+            if result is not None and result.get("status") in {"generated", "approved"}:
+                cached.recordings.setdefault(item.line_id, []).append(
+                    (
+                        state_path.parent / str(result["path"]),
+                        str(result["file_sha256"]),
+                    )
+                )
+        cached.state = state
+        cached.validated_line_ids.update(requested)
 
     def inspect(
         self,

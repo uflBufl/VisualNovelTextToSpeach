@@ -53,6 +53,112 @@ def state():
 
 
 class GenerationDatabaseTest(unittest.TestCase):
+    def test_progress_reads_counts_and_line_identity_without_completed_evidence(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "generation-state.sqlite3"
+            value = state()
+            value["items"]["cancelled"] = {
+                "status": "failed",
+                "failure": {"kind": "cancelled"},
+            }
+            value["items"]["failed"] = {
+                "status": "failed",
+                "failure": {"kind": "backend_error"},
+            }
+            for status in ("live_fallback", "omitted"):
+                value["items"][status] = {"status": status, "review_status": status}
+            value["active"] = {"phase": "rendering", "generation_owner_pid": 42}
+            database.write_state(path, value)
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute(
+                    "UPDATE items SET payload = 'not JSON' WHERE status = 'generated'"
+                )
+                connection.execute("UPDATE controls SET payload = 'not JSON'")
+                connection.commit()
+            before = path.read_bytes()
+            with patch.object(
+                database, "decode_json", wraps=database.decode_json
+            ) as decode:
+                progress = database.read_progress(path)
+            self.assertEqual(
+                (progress.generated, progress.failed, progress.other_terminal),
+                (2, 1, 2),
+            )
+            self.assertEqual(progress.queue_sha256, value["queue_sha256"])
+            self.assertEqual(progress.active, value["active"])
+            self.assertEqual(
+                progress.ready_lines, (("line:one", "b" * 64), ("line:two", "b" * 64))
+            )
+            self.assertEqual(decode.call_count, 1)
+            self.assertEqual(path.read_bytes(), before)
+            with self.assertRaises(ValueError):
+                database.read_state(path)
+
+    def test_progress_rejects_malformed_failed_evidence(self):
+        for payload in ("not JSON", "[]", '{"status":"approved"}'):
+            with self.subTest(payload=payload), TemporaryDirectory() as directory:
+                path = Path(directory) / "generation-state.sqlite3"
+                value = state()
+                value["items"]["failed"] = {"status": "failed"}
+                database.write_state(path, value)
+                with closing(sqlite3.connect(path)) as connection:
+                    connection.execute(
+                        "UPDATE items SET payload = ? WHERE status = 'failed'",
+                        (payload,),
+                    )
+                    connection.commit()
+                before = path.read_bytes()
+                with self.assertRaises(ValueError):
+                    database.read_progress(path)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_progress_is_one_snapshot_during_concurrent_update(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "generation-state.sqlite3"
+            original = state()
+            original["active"] = {"phase": "initial"}
+            database.write_state(path, original)
+            changed = copy.deepcopy(original)
+            changed["active"] = {"phase": "updated"}
+            changed["items"]["one"].update(status="failed", review_status=None)
+            updated = threading.Event()
+            finished = threading.Event()
+            errors = []
+            write = database._write
+            counts = database._progress_counts
+
+            def notified(*args, **kwargs):
+                write(*args, **kwargs)
+                updated.set()
+
+            def writer():
+                try:
+                    database.write_state(path, changed, changed_items=("one",))
+                except BaseException as error:
+                    errors.append(error)
+                finally:
+                    finished.set()
+
+            thread = threading.Thread(target=writer)
+
+            def read_counts(connection):
+                thread.start()
+                self.assertTrue(updated.wait(10))
+                self.assertFalse(finished.wait(0.1))
+                return counts(connection)
+
+            with (
+                patch.object(database, "_write", side_effect=notified),
+                patch.object(database, "_progress_counts", side_effect=read_counts),
+            ):
+                progress = database.read_progress(path)
+                thread.join(10)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(progress.active, original["active"])
+            self.assertEqual((progress.generated, progress.failed), (2, 0))
+            self.assertEqual(database.read_progress(path).active, changed["active"])
+
     def test_complete_initial_state_is_published_atomically_and_round_trips(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -126,6 +232,7 @@ class GenerationDatabaseTest(unittest.TestCase):
             self.assertEqual(database.state_path(root), root / "generation-state.json")
             for operation in (
                 lambda: database.read_state(path),
+                lambda: database.read_progress(path),
                 lambda: database.active_attempt(path),
             ):
                 with self.assertRaises(ValueError):

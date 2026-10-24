@@ -249,7 +249,7 @@ def _build_receipt(document: StoryIndexDocument, payload: bytes) -> _SourceRecei
     from vntts.pregeneration_setup import _story_selections
 
     selections = tuple(
-        (selection.selection_id, selection.line_ids)
+        (selection.selection_id, tuple(selection.line_ids))
         for selection in _story_selections(document)
     )
     raw_rows = payload.splitlines(keepends=True)

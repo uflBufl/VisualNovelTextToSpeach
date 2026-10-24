@@ -8,19 +8,23 @@ import io
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from time import perf_counter, process_time
 from typing import Protocol, TypeAlias, TypedDict
 
 import numpy as np
 import soundfile as sf
-from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
+from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
     StoryIndexRecord,
     write_story_index_document,
 )
-from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
+from vntts_artifacts.voice_generation_queue import (
+    VoiceGenerationQueue,
+    VoiceGenerationQueueItem,
+)
 from vntts_artifacts.voice_manifest import (
     VoiceManifestError,
     normalize_character_name,
@@ -28,12 +32,14 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.audio_store import SharedAudioStore, link_shared_audio
+from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.generation_lease import GenerationLease, process_is_alive
 from vntts.authoring.generation_state import (
     STATE_SCHEMA,
     STATE_VERSION,
     BulkGenerationError,
+    generation_state_file,
     generation_state_items,
     load_generation_state_from_snapshot,
     load_stable_generation_queue,
@@ -54,6 +60,7 @@ from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.generation_database import (
     is_database,
     read_state,
+    validate_database_path,
 )
 from vntts.generation_database import (
     state_path as generation_state_path,
@@ -66,6 +73,7 @@ from vntts.pregeneration_setup import (
 )
 from vntts.pregeneration_voices import VoiceGroup, VoicePlan
 from vntts.preparation_catalog import PreparationCatalog
+from vntts.recording_index import RecordingIndex
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
@@ -323,6 +331,53 @@ def _validate_plan_for_job(job: PregenerationJob, plan: VoicePlan) -> None:
         raise PregenerationQueueError("Voice plan dialogue identity changed")
 
 
+def _may_have_saved_recordings(
+    job_store: PregenerationJobStore,
+    directory: Path,
+    state: Path,
+    document: dict[str, object],
+    current: dict[str, VoiceGenerationQueueItem],
+    controls_sha256: str,
+) -> bool:
+    if document.get("voice_plan_controls_sha256") != controls_sha256:
+        return False
+    index = RecordingIndex(job_store.catalog.path.parent)
+    if not is_database(state) or (
+        not index.path.exists() and not index.path.is_symlink()
+    ):
+        return True
+    generation_state_file(state)
+    if is_database(state):
+        validate_database_path(state)
+    paths = (directory / "queue.jsonl", state)
+    before = tuple(_recording_fingerprint(path) for path in paths)
+    source = (
+        sha256_file(paths[0]),
+        sha256_file(state),
+        canonical_document_sha256(document),
+    )
+    indexed = index.load(
+        directory, source, {item.line_id: item.text_sha256 for item in current.values()}
+    )
+    if is_database(state):
+        validate_database_path(state)
+    if tuple(_recording_fingerprint(path) for path in paths) != before:
+        raise PregenerationQueueError("Saved generation state changed while inspected")
+    return indexed is None or bool(indexed[0] or indexed[1])
+
+
+def _recording_fingerprint(path: Path) -> tuple[int, ...]:
+    info = path.stat(follow_symlinks=False)
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
 def _reuse_completed_audio(
     current: PregenerationInput, plan: VoicePlan, job_store: PregenerationJobStore
 ) -> None:
@@ -366,9 +421,13 @@ def _reuse_completed_audio(
             continue
         try:
             document = load_generation_input_metadata(previous)
-            if (
-                document.get("voice_plan_controls_sha256")
-                != plan.synthesis_controls_sha256
+            if not _may_have_saved_recordings(
+                job_store,
+                previous,
+                previous_state,
+                document,
+                current_items,
+                plan.synthesis_controls_sha256,
             ):
                 continue
             old_queue, old_sha256 = load_stable_generation_queue(
@@ -738,6 +797,7 @@ def _write_effective_voices(
     references = staging / "references"
     references.mkdir()
     copied: dict[str, str] = {}
+    store = SharedAudioStore(staging.parent.parent / "audio-store")
     entries: list[dict[str, object]] = []
     for character, (voice, expected_hashes, speaker) in sorted(
         effective["routes"].items(), key=lambda item: item[0].casefold()
@@ -758,7 +818,13 @@ def _write_effective_voices(
             relative = copied.get(expected)
             if relative is None:
                 relative = f"references/{expected}.wav"
-                _write_reference_wav(staging / relative, payload, character)
+                _write_reference_wav(
+                    staging / relative,
+                    payload,
+                    character,
+                    store=store,
+                    raw_sha256=expected,
+                )
                 copied[expected] = relative
             relative_references.append(relative)
         entry: dict[str, object] = {
@@ -813,7 +879,34 @@ def _generation_queue_routes(
     return tuple(sorted(projections)), tuple(sorted(omissions)), ready_items
 
 
-def _write_reference_wav(path: Path, payload: bytes, character: str) -> None:
+def _write_reference_wav(
+    path: Path,
+    payload: bytes,
+    character: str,
+    *,
+    store: SharedAudioStore,
+    raw_sha256: str,
+) -> None:
+    key = f"reference-pcm16-v1-{raw_sha256}"
+    store.directory.mkdir(parents=True, exist_ok=True)
+    with exclusive_advisory_lock(
+        store.directory / ".reference-normalization.guard", blocking=True
+    ):
+        saved = store.get(key)
+        if saved is None:
+            with NamedTemporaryFile(
+                suffix=".wav", dir=store.directory, delete=False
+            ) as output:
+                temporary = Path(output.name)
+            try:
+                _normalize_reference_wav(temporary, payload, character)
+                saved = store.put(key, temporary)
+            finally:
+                temporary.unlink(missing_ok=True)
+    link_shared_audio(saved, path)
+
+
+def _normalize_reference_wav(path: Path, payload: bytes, character: str) -> None:
     try:
         samples, sample_rate = sf.read(
             io.BytesIO(payload), dtype="float32", always_2d=True
@@ -828,7 +921,6 @@ def _write_reference_wav(path: Path, payload: bytes, character: str) -> None:
         )
     mono = samples.mean(axis=1, dtype=np.float64)
     write_pcm16_wav(path, mono, int(sample_rate))
-    probe_pcm16_mono_wav(path)
 
 
 def _validate_legacy_generation_input(

@@ -41,8 +41,9 @@ from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_text, read_regular_bytes
 from vntts.preparation_catalog import PreparationCatalog, PreparationCatalogError
 from vntts.settings import AppSettings
+from vntts.story_catalog import LazyLineIds, StoryCatalog
 from vntts.story_index_snapshot import load_story_index_snapshot
-from vntts.versioned_json import read_versioned_json, write_versioned_json
+from vntts.versioned_json import read_versioned_json
 
 if TYPE_CHECKING:
     from vntts.pregeneration_queue import PregenerationInput
@@ -71,7 +72,7 @@ class StorySelection:
     title: str
     kind: str
     order: int
-    line_ids: tuple[str, ...]
+    line_ids: Sequence[str]
     line_count: int
     speakable_lines: int
     original_audio_lines: int
@@ -385,7 +386,7 @@ def _story_catalog_path(checksum: str) -> Path:
         Path(get_local_data_directory())
         / "pregeneration"
         / "story-catalogs"
-        / f"{checksum}.json"
+        / f"{checksum}.sqlite3"
     )
 
 
@@ -393,14 +394,17 @@ def _load_story_catalog(
     path: Path, checksum: str, provider_id: str, evidence_sha256: str
 ) -> GameContent | None:
     catalog = _story_catalog_path(checksum)
-    if not catalog.is_file():
-        return None
     try:
-        document = read_versioned_json(
-            catalog,
-            schema_version=story_catalog_schema_version,
-            document_name="story catalog cache",
+        document = StoryCatalog(catalog).load(
+            checksum, evidence_sha256, story_catalog_schema_version
         )
+        legacy = document is None
+        if document is None:
+            document = read_versioned_json(
+                catalog.with_suffix(".json"),
+                schema_version=story_catalog_schema_version,
+                document_name="story catalog cache",
+            )
         if (
             set(document)
             != {
@@ -422,7 +426,16 @@ def _load_story_catalog(
         selections = tuple(_cached_story_selection(value) for value in raw_selections)
         if len({value.selection_id for value in selections}) != len(selections):
             raise ValueError("story catalog cache selection identities overlap")
-        return GameContent(
+        for selection in selections:
+            if isinstance(selection.line_ids, LazyLineIds):
+                selection.line_ids.recover = (
+                    lambda selection_id=selection.selection_id: (
+                        _recover_story_catalog_line_ids(
+                            path, checksum, evidence_sha256, selection_id
+                        )
+                    )
+                )
+        content = GameContent(
             provider_id=provider_id,
             game=_required_text(document, "game"),
             game_id=_required_text(document, "game_id")
@@ -433,18 +446,41 @@ def _load_story_catalog(
             story_index_sha256=checksum,
             selections=selections,
         )
+        if legacy:
+            _save_story_catalog(content, evidence_sha256)
+        return content
     except OSError, KeyError, TypeError, ValueError:
         return None
+
+
+def _recover_story_catalog_line_ids(
+    path: Path, checksum: str, evidence_sha256: str, selection_id: str
+) -> tuple[str, ...]:
+    evidence_payload = _source_audio_evidence_payload(path)
+    if hashlib.sha256(evidence_payload).hexdigest() != evidence_sha256:
+        raise StoryContentChanged(
+            "Source audio evidence changed; refresh story content"
+        )
+    document = load_verified_story_index_document(path, checksum)
+    selections = _story_selections(
+        document,
+        _validated_source_audio_line_ids(
+            path, document, evidence_payload=evidence_payload
+        ),
+    )
+    for selection in selections:
+        if selection.selection_id == selection_id:
+            return tuple(selection.line_ids)
+    raise StoryContentChanged("Story selection changed; refresh story content")
 
 
 def _save_story_catalog(content: GameContent, evidence_sha256: str) -> None:
     try:
         catalog = _story_catalog_path(content.story_index_sha256)
         catalog.parent.mkdir(parents=True, exist_ok=True)
-        write_versioned_json(
-            catalog,
-            story_catalog_schema_version,
+        StoryCatalog(catalog).save(
             {
+                "schema_version": story_catalog_schema_version,
                 "source_story_index_sha256": content.story_index_sha256,
                 "source_audio_semantic_evidence_sha256": evidence_sha256,
                 "game": content.game,
@@ -453,7 +489,7 @@ def _save_story_catalog(content: GameContent, evidence_sha256: str) -> None:
                 "selections": [asdict(value) for value in content.selections],
             },
         )
-    except OSError:
+    except OSError, ValueError:
         pass
 
 
@@ -482,7 +518,12 @@ def _cached_story_selection(document: object) -> StorySelection:
     document = _string_mapping(document)
     if set(document) != fields:
         raise ValueError("story catalog cache selection is malformed")
-    line_ids = _text_tuple(document, "line_ids")
+    raw_line_ids = document["line_ids"]
+    line_ids = (
+        raw_line_ids
+        if isinstance(raw_line_ids, LazyLineIds)
+        else _text_tuple(document, "line_ids")
+    )
     speakers = _text_tuple(document, "speakers", allow_empty=True)
     selection = StorySelection(
         selection_id=_required_text(document, "selection_id"),

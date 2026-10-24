@@ -37,6 +37,7 @@ from vntts.pregeneration_pack import (
 from vntts.pregeneration_queue import (
     PregenerationInputStore,
     PregenerationQueueError,
+    _may_have_saved_recordings,
     _voice_content_identity,
     load_generation_input_metadata,
 )
@@ -924,7 +925,10 @@ class PregenerationInputStoreTest(unittest.TestCase):
             job, jobs, plan, _manifest = self.fixture(root)
             prepared = PregenerationInputStore(jobs).materialize(job, plan)
             generate_prepared(
-                prepared, PocketRenderer(), include_characters=("Narrator", "Hotelier")
+                prepared,
+                PocketRenderer(),
+                include_characters=("Narrator", "Hotelier"),
+                state_storage="sqlite",
             )
             content = inspect_story_index(job.story_index)
             selection = content.selections[0].selection_id
@@ -938,22 +942,148 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 self.assertIsNone(coverage.manifest)
                 self.assertEqual(inspector.inspect(selection), coverage)
                 self.assertEqual(loaded.call_count, 1)
-            generate_prepared(prepared, PocketRenderer())
+            generate_prepared(prepared, PocketRenderer(), state_storage="sqlite")
             coverage = inspector.inspect(selection)
             self.assertEqual((coverage.generated, coverage.missing), (4, 0))
             restarted = StoryAudioInspector(content, jobs)
-            self.assertEqual(restarted.inspect(selection), coverage)
+            with (
+                patch(
+                    "vntts.pregeneration_pack.load_stable_generation_queue"
+                ) as parsed,
+                patch(
+                    "vntts.pregeneration_pack.load_generation_state_from_snapshot"
+                ) as validated,
+            ):
+                self.assertEqual(restarted.inspect(selection), coverage)
+                parsed.assert_not_called()
+                validated.assert_not_called()
             state = load_generation_state(
                 generation_state_path(prepared.output_directory), prepared.queue
             )
             audio = (
                 prepared.output_directory / next(iter(state["items"].values()))["path"]
             )
-            audio.write_bytes(b"corrupt saved recording")
+            before = audio.stat()
+            payload = audio.read_bytes()
+            audio.write_bytes(payload[:-1] + bytes([payload[-1] ^ 1]))
+            os.utime(audio, ns=(before.st_atime_ns, before.st_mtime_ns))
             with self.assertRaises(OfflinePackError):
                 inspector.inspect(selection)
             with self.assertRaises(OfflinePackError):
                 restarted.inspect(selection)
+            with self.assertRaises(OfflinePackError):
+                StoryAudioInspector(content, jobs).inspect(selection)
+
+    def test_recording_index_skips_unrelated_inputs_but_rechecks_changed_state(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs, plan, _ = self.fixture(root)
+            prepared = PregenerationInputStore(jobs).materialize(job, plan)
+            generate_prepared(
+                prepared,
+                PocketRenderer(),
+                include_characters=("Narrator",),
+                state_storage="sqlite",
+            )
+            content = inspect_story_index(job.story_index)
+            StoryAudioInspector(content, jobs).inspect(
+                content.selections[0].selection_id
+            )
+            queue = VoiceGenerationQueue.load(prepared.queue)
+            unrelated = replace(queue.items[0], line_id="unrelated-line")
+            document = load_generation_input_metadata(prepared.directory)
+            state_path = generation_state_path(prepared.output_directory)
+            arguments = (
+                jobs,
+                prepared.directory,
+                state_path,
+                document,
+                {unrelated.queue_id: unrelated},
+                plan.synthesis_controls_sha256,
+            )
+            self.assertFalse(_may_have_saved_recordings(*arguments))
+            original = state_path.read_bytes()
+            try:
+                state_path.write_bytes(original + b"changed")
+                self.assertTrue(_may_have_saved_recordings(*arguments))
+            finally:
+                state_path.write_bytes(original)
+            self.assertFalse(_may_have_saved_recordings(*arguments))
+
+    def test_recording_index_keeps_sqlite_sidecar_admission_on_restart(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs, plan, _ = self.fixture(root)
+            prepared = PregenerationInputStore(jobs).materialize(job, plan)
+            generate_prepared(prepared, PocketRenderer(), state_storage="sqlite")
+            content = inspect_story_index(job.story_index)
+            selection = content.selections[0].selection_id
+            self.assertEqual(
+                StoryAudioInspector(content, jobs).inspect(selection).generated, 4
+            )
+            queue = VoiceGenerationQueue.load(prepared.queue)
+            unrelated = replace(queue.items[0], line_id="unrelated-line")
+            state = generation_state_path(prepared.output_directory)
+            target = root / "unrelated"
+            target.write_bytes(b"keep this file")
+            for suffix in ("-journal", "-wal", "-shm"):
+                with self.subTest(suffix=suffix):
+                    sidecar = state.with_name(state.name + suffix)
+                    sidecar.symlink_to(target)
+                    try:
+                        with self.assertRaisesRegex(OfflinePackError, "regular file"):
+                            StoryAudioInspector(content, jobs).inspect(selection)
+                        with self.assertRaisesRegex(ValueError, "regular file"):
+                            _may_have_saved_recordings(
+                                jobs,
+                                prepared.directory,
+                                state,
+                                load_generation_input_metadata(prepared.directory),
+                                {unrelated.queue_id: unrelated},
+                                plan.synthesis_controls_sha256,
+                            )
+                    finally:
+                        sidecar.unlink()
+            self.assertEqual(target.read_bytes(), b"keep this file")
+
+    def test_legacy_readiness_keeps_unselected_path_validation_on_restart(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            original, jobs, _plan, manifest = self.fixture(root)
+            content = inspect_story_index(original.catalog_story_index)
+            job = jobs.create_or_resume(content, ("selected", "later"))
+            plan = VoicePlanStore(
+                jobs, voice_library=VoiceLibrary(root / "library")
+            ).create(
+                job,
+                AppSettings(
+                    speech_backend="pocket-tts", pocket_gated_model_accepted=True
+                ),
+                manifest_path=manifest,
+            )
+            prepared = PregenerationInputStore(jobs).materialize(job, plan)
+            generate_prepared(prepared, PocketRenderer(), state_storage="json")
+            self.assertEqual(
+                StoryAudioInspector(content, jobs).inspect("selected").generated, 4
+            )
+            self.assertFalse((jobs.root / "recordings.sqlite3").exists())
+            state = load_generation_state(
+                generation_state_path(prepared.output_directory), prepared.queue
+            )
+            saved = next(
+                value
+                for value in state["items"].values()
+                if value["line_id"] == "not-selected"
+            )
+            audio = prepared.output_directory / saved["path"]
+            target = root / "outside.wav"
+            target.write_bytes(audio.read_bytes())
+            audio.unlink()
+            audio.symlink_to(target)
+            with self.assertRaisesRegex(
+                OfflinePackError, "stay within generation output"
+            ):
+                StoryAudioInspector(content, jobs).inspect("selected")
 
     def test_story_coverage_checks_only_selected_wavs_and_reuses_batch_validation(self):
         for shared_state in (False, True):

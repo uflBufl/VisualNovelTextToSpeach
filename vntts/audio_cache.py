@@ -4,6 +4,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import suppress
 from hashlib import blake2b, file_digest
+from io import BytesIO
 from math import prod
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -141,12 +142,9 @@ class PersistentAudioCache:
         if not isinstance(key, str) or self._path_for_key(key) is None:
             return None
         try:
-            path = self.store.get(key)
-            if path is not None:
-                with (
-                    open_regular_binary(path) as source,
-                    sf.SoundFile(source) as waveform,
-                ):
+            payload = self.store.get_bytes(key)
+            if payload is not None:
+                with sf.SoundFile(BytesIO(payload)) as waveform:
                     if (
                         waveform.format != "WAV"
                         or waveform.subtype != "PCM_16"

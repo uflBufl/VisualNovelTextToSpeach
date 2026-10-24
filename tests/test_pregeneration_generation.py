@@ -17,7 +17,7 @@ from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.story_index import write_story_index_document
 
 from tests.story_fixtures import write_story_index
-from vntts import path_safety
+from vntts import generation_database, path_safety
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
@@ -891,6 +891,73 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         self.assertEqual(progress.failed, 1)
         self.assertEqual(progress.other_terminal, 1)
         self.assertEqual(progress.active_phase, "validating")
+
+    def test_sqlite_progress_uses_indexed_projection_and_owned_runtime_status(self):
+        with TemporaryDirectory() as directory:
+            inputs, _audio, state = cold_progress_inputs(Path(directory))
+            state["items"]["saved"].update(
+                review_status="approved",
+                text_sha256=text_sha256("Previously prepared dialogue."),
+            )
+            state["items"]["cancelled"] = {
+                "status": "failed",
+                "failure": {"kind": "cancelled"},
+            }
+            state["items"]["failed"] = {"status": "failed"}
+            state["active"] = {
+                "phase": "validating",
+                "generation_owner_pid": 12345,
+                "runtime_status": "GPU: owned worker",
+            }
+            path = inputs.output_directory / "generation-state.sqlite3"
+            generation_database.write_state(path, state)
+            before = path.read_bytes()
+            worker = OfflineGenerationWorker()
+            with patch(
+                "vntts.pregeneration_generation.read_generation_state_document",
+                side_effect=AssertionError("Progress loaded full state evidence"),
+            ):
+                progress = worker.inspect_progress(inputs)
+                self.assertEqual((progress.generated, progress.failed), (1, 1))
+                self.assertEqual(progress.ready_line_ids, ("saved",))
+                self.assertEqual(progress.active_phase, "validating")
+                self.assertIsNone(progress.runtime_status)
+                worker._process = Mock(pid=12345)
+                worker._process.poll.return_value = None
+                self.assertEqual(
+                    worker.inspect_progress(inputs).runtime_status, "GPU: owned worker"
+                )
+                worker._process.pid = 999
+                self.assertIsNone(worker.inspect_progress(inputs).runtime_status)
+                worker._process.pid = 12345
+                worker._process.poll.return_value = 0
+                self.assertIsNone(worker.inspect_progress(inputs).runtime_status)
+                with self.assertRaises(OfflineGenerationError):
+                    worker.inspect_progress(replace(inputs, queue_sha256="f" * 64))
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_sqlite_cold_progress_keeps_manifest_admission_and_exact_text_identity(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            inputs, audio, state = cold_progress_inputs(Path(directory))
+            state["items"]["saved"].update(
+                review_status="approved",
+                text_sha256=text_sha256("Previously prepared dialogue."),
+            )
+            path = inputs.output_directory / "generation-state.sqlite3"
+            generation_database.write_state(path, state)
+            worker = OfflineGenerationWorker(backend_factory=Mock())
+            self.assertEqual(worker.inspect_progress(inputs).ready_line_ids, ("saved",))
+            state["items"]["saved"]["text_sha256"] = "f" * 64
+            generation_database.write_state(path, state)
+            self.assertEqual(worker.inspect_progress(inputs).ready_line_ids, ())
+            state["items"]["saved"]["text_sha256"] = text_sha256(
+                "Previously prepared dialogue."
+            )
+            generation_database.write_state(path, state)
+            audio.write_bytes(b"corrupt audio")
+            self.assertEqual(worker.inspect_progress(inputs).ready_line_ids, ())
 
     def test_runs_exact_private_inputs_and_reports_terminal_counts(self):
         with TemporaryDirectory() as temporary_directory:

@@ -1,6 +1,6 @@
 """Guided player UI for selecting content to prepare for offline speech."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
@@ -3563,9 +3563,7 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.story_audio_status.setToolTip(str(coverage.manifest or ""))
 
-    def _story_readiness_counts(
-        self, line_ids: tuple[str, ...]
-    ) -> tuple[int, int, int]:
+    def _story_readiness_counts(self, line_ids: Sequence[str]) -> tuple[int, int, int]:
         ready = set(getattr(self._progress_snapshot, "ready_line_ids", ()))
         ready_count = sum(line_id in ready for line_id in line_ids)
         ready_prefix = 0

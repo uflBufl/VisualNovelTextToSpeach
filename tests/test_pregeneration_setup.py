@@ -180,7 +180,7 @@ class PregenerationSetupTest(unittest.TestCase):
                 patch("vntts.pregeneration_setup.story_catalog_minimum_bytes", 0),
                 patch(
                     "vntts.pregeneration_setup._story_catalog_path",
-                    return_value=root / "catalog.json",
+                    return_value=root / "catalog.sqlite3",
                 ),
             ):
                 adapter = inspect_story_index(source, provider_id="reverse1999")
@@ -210,7 +210,7 @@ class PregenerationSetupTest(unittest.TestCase):
                 patch("vntts.pregeneration_setup.story_catalog_minimum_bytes", 0),
                 patch(
                     "vntts.pregeneration_setup._story_catalog_path",
-                    return_value=root / "catalog.json",
+                    return_value=root / "catalog.sqlite3",
                 ),
             ):
                 first = inspect_story_index(source)
@@ -282,7 +282,7 @@ class PregenerationSetupTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             path = write_story_index(root / "content")
-            catalog = root / "cache" / "catalog.json"
+            catalog = root / "cache" / "catalog.sqlite3"
             _cached_story_index_document.cache_clear()
             with (
                 patch("vntts.pregeneration_setup.story_catalog_minimum_bytes", 0),
@@ -298,12 +298,13 @@ class PregenerationSetupTest(unittest.TestCase):
                     side_effect=AssertionError("source catalog was parsed again"),
                 ):
                     second = inspect_story_index(path, provider_id="second")
-                catalog.write_text("{}", encoding="utf-8")
+                self.assertNotIn(b"Generate me.", catalog.read_bytes())
+                catalog.write_bytes(b"invalid cache")
                 _cached_story_index_document.cache_clear()
                 rebuilt = inspect_story_index(path, provider_id="rebuilt")
 
             self.assertTrue(catalog.is_file())
-            self.assertNotIn("Generate me.", catalog.read_text(encoding="utf-8"))
+            self.assertEqual(catalog.read_bytes(), b"invalid cache")
             self.assertEqual(first.selections, second.selections)
             self.assertEqual(first.selections, rebuilt.selections)
             self.assertEqual(second.provider_id, "second")

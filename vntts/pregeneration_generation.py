@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import shutil
 import subprocess
@@ -49,6 +48,7 @@ from vntts.chapter_voice_preload import (
 from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import sha256_file
 from vntts.generated_audio import GeneratedAudioLibrary
+from vntts.generation_database import GenerationProgress, is_database, read_progress
 from vntts.generation_database import state_path as generation_state_path
 from vntts.generation_stall import GenerationStallWatchdog
 from vntts.moss_cpp_backend import moss_cpp_requested
@@ -418,9 +418,9 @@ class OfflineGenerationWorker:
                 available=False, runtime_status=startup_status
             )
         try:
-            state = read_generation_state_document(state_path)
+            progress = self._read_progress(state_path, generation_input)
         except (
-            json.JSONDecodeError,
+            ValueError,
             OSError,
             UnicodeError,
             BulkGenerationError,
@@ -428,7 +428,6 @@ class OfflineGenerationWorker:
             raise OfflineGenerationError(
                 f"Unable to inspect offline generation progress: {error}"
             ) from error
-        progress = self._progress_from_state(state, generation_input)
         if not memory_progress:
             return progress
         progress = replace(
@@ -444,6 +443,55 @@ class OfflineGenerationWorker:
             ):
                 return self._live_progress[1]
         return progress
+
+    def _read_progress(
+        self, state_path: Path, generation_input: PregenerationInput
+    ) -> OfflineGenerationProgress:
+        if is_database(state_path):
+            return self._progress_from_database(
+                read_progress(state_path), generation_input
+            )
+        return self._progress_from_state(
+            read_generation_state_document(state_path), generation_input
+        )
+
+    def _progress_from_database(
+        self, snapshot: GenerationProgress, generation_input: PregenerationInput
+    ) -> OfflineGenerationProgress:
+        if snapshot.queue_sha256 != generation_input.queue_sha256:
+            raise OfflineGenerationError("Offline generation progress is invalid")
+        ready = set(
+            _static_ready_line_ids(
+                generation_input.story_index, generation_input.story_index_sha256
+            )
+        )
+        if snapshot.ready_lines:
+            try:
+                story = load_verified_story_index_document(
+                    generation_input.story_index, generation_input.story_index_sha256
+                )
+            except OSError, StoryIndexError, ValueError:
+                pass
+            else:
+                candidates = set(snapshot.ready_lines)
+                ready.update(
+                    record.line_id
+                    for record in story.records
+                    if (record.line_id, record.text_sha256) in candidates
+                )
+        active = snapshot.active
+        return OfflineGenerationProgress(
+            generated=snapshot.generated,
+            failed=snapshot.failed,
+            other_terminal=snapshot.other_terminal,
+            runtime_status=self._runtime_status(active),
+            active_phase=(
+                str(active.get("phase"))
+                if isinstance(active, dict) and active.get("phase")
+                else None
+            ),
+            ready_line_ids=tuple(sorted(ready)),
+        )
 
     def _progress_from_state(
         self, state: object, generation_input: PregenerationInput
@@ -465,7 +513,24 @@ class OfflineGenerationWorker:
             elif status in {"live_fallback", "omitted", "not_reproducible"}:
                 other_terminal += 1
         active = state.get("active")
-        runtime_status = None
+        return OfflineGenerationProgress(
+            generated=generated,
+            failed=failed,
+            other_terminal=other_terminal,
+            runtime_status=self._runtime_status(active),
+            active_phase=(
+                str(active.get("phase"))
+                if isinstance(active, dict) and active.get("phase")
+                else None
+            ),
+            ready_line_ids=_ready_line_ids(
+                Path(generation_input.story_index),
+                generation_input.story_index_sha256,
+                items,
+            ),
+        )
+
+    def _runtime_status(self, active: object) -> str | None:
         owner_pid = (
             active.get("generation_owner_pid", active.get("runtime_worker_pid"))
             if isinstance(active, dict)
@@ -482,23 +547,8 @@ class OfflineGenerationWorker:
         ):
             reported = active.get("runtime_status")
             if isinstance(reported, str) and reported.strip():
-                runtime_status = reported[:2000]
-        return OfflineGenerationProgress(
-            generated=generated,
-            failed=failed,
-            other_terminal=other_terminal,
-            runtime_status=runtime_status,
-            active_phase=(
-                str(active.get("phase"))
-                if isinstance(active, dict) and active.get("phase")
-                else None
-            ),
-            ready_line_ids=_ready_line_ids(
-                Path(generation_input.story_index),
-                generation_input.story_index_sha256,
-                items,
-            ),
-        )
+                return reported[:2000]
+        return None
 
     def _base_arguments(
         self,
@@ -738,8 +788,9 @@ class OfflineGenerationWorker:
                 return
         state_path = generation_state_path(_generation_output(generation_input))
         try:
-            state = read_generation_state_document(state_path)
-            self._record_progress(state, generation_input)
+            progress = self._read_progress(state_path, generation_input)
+            with self._progress_lock:
+                self._live_progress = generation_input.identity, progress
         except (
             OSError,
             UnicodeError,

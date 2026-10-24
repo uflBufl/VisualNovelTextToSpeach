@@ -211,7 +211,7 @@ class LegacyAudioMigrationTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = self.make_root(directory)
             saved = PersistentAudioCache(root, sample_rate=48_000).put(_KEY, [0.125])
-            with patch.object(SharedAudioStore, "get", side_effect=[saved, None]):
+            with patch.object(SharedAudioStore, "get", return_value=None):
                 report = migrate_legacy_cache(root, **_PROVENANCE)
             self.assertEqual(report["counts"], {"preserved_error": 1})
             self.assertTrue(saved.exists())

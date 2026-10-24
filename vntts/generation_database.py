@@ -8,6 +8,7 @@ import sqlite3
 import stat
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -56,6 +57,16 @@ _REVIEWS: dict[str, set[str | None]] = {
 _ITEM_COLUMNS = "queue_id,line_id,text_sha256,status,review_status,voice_character,audio_path,audio_sha256,attempts,payload"
 
 
+@dataclass(frozen=True)
+class GenerationProgress:
+    queue_sha256: str
+    generated: int
+    failed: int
+    other_terminal: int
+    active: object
+    ready_lines: tuple[tuple[str, str], ...]
+
+
 def state_path(output: Path) -> Path:
     """Prefer SQLite authority; preserved JSON is an import-only snapshot."""
     database = output / "generation-state.sqlite3"
@@ -79,7 +90,8 @@ def _path(path: Path) -> Path:
     return path.parent.resolve() / path.name
 
 
-def _safe_path(path: Path) -> None:
+def validate_database_path(path: Path) -> None:
+    """Admit the database and SQLite sidecars without reading item evidence."""
     if path.parent.is_symlink():
         raise ValueError(
             f"Generation database directory is a symbolic link: {path.parent}"
@@ -122,7 +134,7 @@ def _verify(connection: sqlite3.Connection, *, snapshot: bool = False) -> None:
 @contextmanager
 def _connection(path: Path, *, write: bool = False) -> Iterator[sqlite3.Connection]:
     path = _path(path)
-    _safe_path(path)
+    validate_database_path(path)
     try:
         with closing(
             sqlite3.connect(
@@ -268,6 +280,60 @@ def read_state(
         )
 
 
+def read_progress(path: Path) -> GenerationProgress:
+    """Read progress columns without loading completed evidence or controls."""
+    with _connection(path) as connection:
+        row = connection.execute(
+            "SELECT queue_sha256, json_extract(metadata, '$.queue_sha256'), "
+            "json_extract(metadata, '$.active'), json_type(metadata, '$.items'), "
+            "json_type(metadata, '$.synthesis_controls') FROM run WHERE id=1"
+        ).fetchone()
+        if row is None or row[0] != row[1] or row[3] is not None or row[4] is not None:
+            raise ValueError("Generation database queue identity changed")
+        counts = _progress_counts(connection)
+        ready = tuple(
+            (line_id, text_sha256)
+            for line_id, text_sha256 in connection.execute(
+                "SELECT line_id, text_sha256 FROM items WHERE status IN ('generated','approved') "
+                "AND line_id IS NOT NULL AND text_sha256 IS NOT NULL ORDER BY line_id, text_sha256"
+            )
+        )
+        return GenerationProgress(
+            queue_sha256=row[0],
+            generated=counts[0],
+            failed=counts[1],
+            other_terminal=counts[2],
+            active=None if row[2] is None else _object(row[2]),
+            ready_lines=ready,
+        )
+
+
+def _progress_counts(connection: sqlite3.Connection) -> tuple[int, int, int]:
+    counts: dict[str, int] = {}
+    for status, review, count in connection.execute(
+        "SELECT status, review_status, count(*) FROM items GROUP BY status, review_status"
+    ):
+        if status not in _REVIEWS or review not in _REVIEWS[status]:
+            raise ValueError("Generation database item status is malformed")
+        counts[status] = counts.get(status, 0) + count
+    cancelled = 0
+    for kind, status, review, failure in connection.execute(
+        "SELECT json_type(payload), json_extract(payload, '$.status'), "
+        "json_extract(payload, '$.review_status'), json_extract(payload, '$.failure.kind') "
+        "FROM items WHERE status='failed'"
+    ):
+        if kind != "object" or status != "failed" or review is not None:
+            raise ValueError(
+                "Generation database failure differs from its progress index"
+            )
+        cancelled += failure == "cancelled"
+    return (
+        counts.get("generated", 0) + counts.get("approved", 0),
+        counts.get("failed", 0) - cancelled,
+        counts.get("live_fallback", 0) + counts.get("omitted", 0),
+    )
+
+
 def read_snapshot(payload: bytes) -> dict[str, object]:
     """Decode an immutable byte snapshot used by review authority checks."""
     if len(payload) < 100 or not payload.startswith(b"SQLite format 3\x00"):
@@ -396,7 +462,7 @@ def _write_controls(
 
 def _initialize(path: Path, state: dict[str, object]) -> bool:
     """Publish only a committed complete state, never an empty schema."""
-    _safe_path(path)
+    validate_database_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
@@ -428,7 +494,7 @@ def _initialize(path: Path, state: dict[str, object]) -> bool:
                 f"Unable to initialize generation database: {error}"
             ) from error
         _sync_regular_file(temporary)
-        _safe_path(path)
+        validate_database_path(path)
         try:
             os.link(temporary, path)
         except FileExistsError:
@@ -447,7 +513,7 @@ def write_state(
     changed_items: tuple[str, ...] | None = None,
 ) -> None:
     path = _path(path)
-    _safe_path(path)
+    validate_database_path(path)
     if not path.exists() and _initialize(path, state):
         return
     with _connection(path, write=True) as connection:
