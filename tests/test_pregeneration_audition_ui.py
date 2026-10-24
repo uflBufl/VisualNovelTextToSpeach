@@ -148,7 +148,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 self.addCleanup(panel.deleteLater)
                 self.addCleanup(panel.shutdown)
                 panel.start(plan, group_id=group.group_id)
-                self.assertEqual(panel.a_play.text(), "Play preview")
+                self.assertEqual(panel.a_play.text(), "Preview")
                 panel.a_play.click()
                 if not cached:
                     player.play_bytes.assert_not_called()
@@ -159,7 +159,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 else:
                     service.generate.assert_not_called()
                 player.play_bytes.assert_called_once()
-                self.assertEqual(panel.a_play.text(), "Stop preview")
+                self.assertEqual(panel.a_play.text(), "Preview")
                 self.assertTrue(panel.a_use.isEnabled())
                 decisions.remember_many.assert_not_called()
 
@@ -186,7 +186,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.a_play.click()
             self.assertEqual(player.play_bytes.call_count, 2)
             panel._stop_playback()
-            self.assertEqual(panel.a_play.text(), "Play preview")
+            self.assertEqual(panel.a_play.text(), "Preview")
             service.generate.assert_not_called()
             decisions.remember_many.assert_not_called()
             panel._set_decision_actions(False)
@@ -286,7 +286,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.voice_reference.setCurrentIndex(1)
             service.peek.return_value = generated_preview(root)
             panel._refresh_runtime()
-            self.assertEqual(panel.a_play.text(), "Play preview")
+            self.assertEqual(panel.a_play.text(), "Preview")
             self.assertEqual(panel.a_play.accessibleName(), "Play voice preview")
             self.assertFalse(panel.a_use.isEnabled())
             panel.play_a()
@@ -690,12 +690,12 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel = VoiceAuditionPanel(Mock(), preview_service=Mock(), player=Mock())
             self.addCleanup(panel.deleteLater)
             panel.start(plan, group_id=group.group_id)
-            self.assertEqual(panel.a_original.text(), "Play first reference")
+            self.assertEqual(panel.a_original.text(), "Original")
             self.assertIn("first original reference", panel.a_original.toolTip())
             panel._set_playing_source("original")
-            self.assertEqual(panel.a_original.text(), "Stop original")
+            self.assertEqual(panel.a_original.text(), "Original")
             panel._set_playing_source(None)
-            self.assertEqual(panel.a_original.text(), "Play first reference")
+            self.assertEqual(panel.a_original.text(), "Original")
             panel.cancel()
 
     def test_inspection_keeps_selected_story_voice_then_shows_menu_references(self):
@@ -856,7 +856,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 self.assertEqual(pool.tasks, [])
                 if failure != "unplayable":
                     player.play_bytes.assert_not_called()
-                    self.assertEqual(panel.a_play.text(), "Play preview")
+                    self.assertEqual(panel.a_play.text(), "Preview")
                 else:
                     player.play_bytes.return_value = object()
                     panel.a_play.click()
@@ -927,7 +927,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertEqual(
                 panel.status.toPlainText(), "Preparing original reference..."
             )
-            self.assertEqual(panel.a_original.text(), "Stop original")
+            self.assertEqual(panel.a_original.text(), "Original")
             pool.run_next()
             self.application.processEvents()
             player.play_bytes.assert_called_once_with(
@@ -964,7 +964,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 panel.start(plan)
                 panel.a_original.click()
                 self.assertTrue(panel.original_runner.active)
-                self.assertEqual(panel.a_original.text(), "Stop original")
+                self.assertEqual(panel.a_original.text(), "Original")
                 self.assertFalse(panel.a_use.isEnabled())
                 service.reference_audio.assert_not_called()
                 # UI actions remain usable while the disk task has not finished.
@@ -992,7 +992,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                     self.application.processEvents()
                 if action == "preview":
                     player.play_bytes.assert_called_once()
-                    self.assertEqual(panel.a_play.text(), "Stop preview")
+                    self.assertEqual(panel.a_play.text(), "Preview")
                 else:
                     player.play_bytes.assert_not_called()
 
@@ -1073,7 +1073,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.start(plan, group_id=group.group_id)
 
             self.assertTrue(panel.choose_all_button.isHidden())
-            self.assertEqual(panel.a_play.text(), "Play preview")
+            self.assertEqual(panel.a_play.text(), "Preview")
             self.assertEqual(panel.a_use.text(), "Use this voice")
             self.assertEqual(panel.voice_reference.count(), 2)
             self.assertIn("Reference 1 - 1.2 s", panel.voice_reference.currentText())
@@ -1145,7 +1145,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertIn("Reference 1", panel.voice_reference.currentText())
             self.assertEqual(preview_service.generate.call_count, 1)
             panel.a_play.click()
-            self.assertEqual(panel.a_play.text(), "Play preview")
+            self.assertEqual(panel.a_play.text(), "Preview")
             panel.a_play.click()
             self.assertIn("Starting", panel.status.toPlainText())
             panel._playback_state_changed(QtPcmPlayer.PlaybackState.PlayingState)
@@ -1296,7 +1296,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 self.assertIsNone(panel._playing_source)
                 self.assertFalse(panel.a_use.isEnabled())
                 self.assertIn("worker protocol mismatch", panel.status.toPlainText())
-                self.assertEqual(panel.a_play.text(), "Play preview")
+                self.assertEqual(panel.a_play.text(), "Preview")
                 self.assertNotIn("Stop", panel.a_original.text())
 
     def test_failed_preview_can_recover_through_original_or_preview_retry(self):
@@ -1343,9 +1343,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.a_play.click()
             self.finish_task(pool.tasks.pop())
             self.assertTrue(panel.a_use.isEnabled())
-            self.assertEqual(panel.a_play.text(), "Stop preview")
+            self.assertEqual(panel.a_play.text(), "Preview")
             panel.a_play.click()
-            self.assertEqual(panel.a_play.text(), "Play preview")
+            self.assertEqual(panel.a_play.text(), "Preview")
             self.assertTrue(panel.a_use.isEnabled())
 
     def test_keyboard_can_read_preview_and_copy_complete_technical_details(self):

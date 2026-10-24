@@ -1,11 +1,5 @@
 # TODO
 
-## Compact action labels and main rebase
-
-- [ ] Rebase the current voice-editor and icon changes onto fetched main, preserving new audio-readiness behavior.
-- [ ] Shorten icon-button labels, keep full dynamic actions in tooltips and accessible names, and update affected assertions.
-- [ ] Run changed unit tests first, inspect actual Qt output, and remove these completed items.
-
 ## Active - Finish diagnostic-session native acceptance
 
 - [ ] Preserve usable diagnostics after process/OS interruption. A native run left

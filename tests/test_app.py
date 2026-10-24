@@ -905,8 +905,12 @@ class TrayApplicationTest(unittest.TestCase):
                     )
                     self.assertEqual(snapshot["paused"], paused)
                     label = "Resume speech" if paused else "Pause speech"
-                    self.assertEqual(tray.dashboard.pause_button.text(), label)
-                    self.assertEqual(tray.compact_controller.pause_button.text(), label)
+                    self.assertEqual(
+                        tray.dashboard.pause_button.accessibleName(), label
+                    )
+                    self.assertEqual(
+                        tray.compact_controller.pause_button.accessibleName(), label
+                    )
                     self.assertEqual(tray.pause_action.text(), label)
         snapshot["paused"] = True
         tray._controller_ready = False
@@ -956,7 +960,13 @@ class TrayApplicationTest(unittest.TestCase):
             tray.compact_controller.pause_button,
         ):
             self.assertFalse(control.isEnabled())
-            self.assertEqual(control.text(), "Pause speech")
+        self.assertEqual(tray.pause_action.text(), "Pause speech")
+        for button in (
+            tray.dashboard.pause_button,
+            tray.compact_controller.pause_button,
+        ):
+            self.assertEqual(button.accessibleName(), "Pause speech")
+            self.assertEqual(button.text(), "")
         controller.toggle_live.assert_not_called()
         tray.shutdown()
 
@@ -3281,7 +3291,9 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertFalse(tray.toggle_live())
         self.assertTrue(tray.live_stop_runner.active)
-        self.assertEqual(tray.dashboard.live_button.text(), "Stopping reading...")
+        self.assertEqual(
+            tray.dashboard.live_button.accessibleName(), "Stopping reading..."
+        )
         for control in (
             tray.live_action,
             tray.dashboard.live_button,
@@ -3299,7 +3311,7 @@ class TrayApplicationTest(unittest.TestCase):
         release.set()
         self.wait_until(lambda: not tray.live_stop_runner.active)
         self.assertTrue(tray.dashboard.live_button.isEnabled())
-        self.assertEqual(tray.dashboard.live_button.text(), "Start reading")
+        self.assertEqual(tray.dashboard.live_button.accessibleName(), "Start reading")
         tray.shutdown()
 
     def test_voice_mapping_resumes_live_mode_after_assignment(self):
@@ -6680,9 +6692,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertTrue(tray.read_action.isEnabled())
             self.assertTrue(tray.dashboard.read_button.isEnabled())
             self.assertTrue(tray.compact_controller.read_button.isEnabled())
-            self.assertEqual(
-                tray.dashboard.read_button.text(), "Read indexed current line"
-            )
+            self.assertEqual(tray.dashboard.read_button.text(), "Indexed line")
             with patch.object(tray, "choose_sequence_position") as picker:
                 tray.read_once()
             controller.read_indexed_current_dialogue.assert_called_once_with()
@@ -7009,12 +7019,18 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application.set_live(True)
         tray_application.set_speech_paused(True)
-        self.assertEqual(tray_application.dashboard.live_button.text(), "Stop reading")
+        self.assertEqual(
+            tray_application.dashboard.live_button.accessibleName(), "Stop reading"
+        )
 
         tray_application.set_live(False)
-        self.assertEqual(tray_application.dashboard.live_button.text(), "Start reading")
+        self.assertEqual(
+            tray_application.dashboard.live_button.accessibleName(), "Start reading"
+        )
         tray_application.set_live(True)
-        self.assertEqual(tray_application.dashboard.live_button.text(), "Stop reading")
+        self.assertEqual(
+            tray_application.dashboard.live_button.accessibleName(), "Stop reading"
+        )
         tray_application.shutdown()
 
     def test_quit_during_initial_start_forces_late_controller_cleanup(self):
@@ -8657,7 +8673,7 @@ class TrayApplicationTest(unittest.TestCase):
                 )
 
                 self.assertIs(tray.dashboard.focusWidget(), tray.dashboard.live_button)
-                self.assertIn("click Start reading", tray.status_action.text())
+                self.assertIn("click Read", tray.status_action.text())
                 controller.toggle_live.assert_not_called()
                 tray.shutdown()
 
@@ -8815,7 +8831,9 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertFalse(tray.compact_controller.isVisible())
             self.assertIn("Reading setup saved", saved_status)
             self.assertEqual(tray.dashboard.status.text(), saved_status)
-            self.assertEqual(tray.dashboard.live_button.text(), "Start reading")
+            self.assertEqual(
+                tray.dashboard.live_button.accessibleName(), "Start reading"
+            )
             self.assertTrue(tray.dashboard.live_button.isEnabled())
             self.assertEqual(
                 load_app_settings(tray._settings_path, environment={}), tray.settings

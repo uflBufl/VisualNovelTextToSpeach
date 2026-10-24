@@ -652,7 +652,7 @@ class GameNarratorTest(unittest.TestCase):
             1,
         )
         self.assertIn("paused", dialog.context_note.text())
-        self.assertEqual(dialog.cancel_button.text(), "Back to recovery choices")
+        self.assertEqual(dialog.cancel_button.text(), "Back")
 
     def new_service(self):
         self.service = VoiceAuditionPreviewService(

@@ -247,7 +247,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f.ready.update(f.previews)
             f.panel.start(f.plan)
             self.assertIn("Ready", f.panel.voice_reference.currentText())
-            self.assertEqual(f.panel.a_play.text(), "Play preview")
+            self.assertEqual(f.panel.a_play.text(), "Preview")
             f.panel.a_play.click()
             f.service.generate.assert_not_called()
             f.player.play_bytes.assert_called_once()
@@ -415,8 +415,10 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 self.assertTrue(f.panel.a_use.isEnabled())
                 self.assertEqual(f.panel._accepted_choice, f.candidates[0].source_id)
                 self.assertEqual(
-                    f.panel.a_original.text() if original else f.panel.a_play.text(),
-                    "Stop original" if original else "Stop preview",
+                    f.panel.a_original.accessibleName()
+                    if original
+                    else f.panel.a_play.accessibleName(),
+                    "Stop original reference" if original else "Stop voice preview",
                 )
                 action()
                 self.assertGreater(f.player.stop.call_count, stops)

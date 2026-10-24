@@ -149,12 +149,12 @@ def _apply_reading_capabilities(
     live_button: QPushButton,
     pause_button: QPushButton,
 ) -> None:
-    read_button.setText(state.read_label)
+    read_button.setText("Indexed line" if state.indexed_current else "Dialogue")
     read_button.setAccessibleName(state.read_label)
     read_button.setAccessibleDescription(state.read_tooltip)
     read_button.setEnabled(state.can_read)
     set_action_icon(pause_button, "play" if state.paused else "pause")
-    pause_button.setText(state.pause_label)
+    pause_button.setText("")
     pause_button.setAccessibleName(state.pause_label)
     pause_button.setEnabled(state.can_pause)
     pause_reason = (
@@ -164,12 +164,19 @@ def _apply_reading_capabilities(
     pause_button.setAccessibleDescription(pause_reason)
     live_button.setEnabled(state.can_toggle_live)
     _set_live_button_presentation(live_button, state.active)
-    live_button.setToolTip("" if state.can_toggle_live else state.reason_for("live"))
+    live_button.setToolTip(
+        live_button.accessibleName()
+        if state.can_toggle_live
+        else state.reason_for("live")
+    )
     if state.transition is not None:
         set_action_icon(
             live_button, "x" if state.transition == "starting" else "square"
         )
         live_button.setText(
+            "Cancel" if state.transition == "starting" else "Stopping..."
+        )
+        live_button.setAccessibleName(
             "Cancel start" if state.transition == "starting" else "Stopping reading..."
         )
         live_button.setAccessibleDescription(
@@ -183,13 +190,17 @@ def _apply_reading_capabilities(
             else "Wait for reading and speech to stop"
         )
     read_button.setToolTip(
-        state.read_tooltip if state.can_read else state.reason_for("read")
+        (state.read_tooltip or state.read_label)
+        if state.can_read
+        else state.reason_for("read")
     )
 
 
 def _set_live_button_presentation(button: QPushButton, running: bool) -> None:
     set_action_icon(button, "square" if running else "play")
-    button.setText("Stop reading" if running else "Start reading")
+    button.setText("Stop" if running else "Read")
+    button.setAccessibleName("Stop reading" if running else "Start reading")
+    button.setToolTip(button.accessibleName())
     button.setDefault(True)
     button.setAccessibleDescription(
         "Primary action: immediately stop reading, current speech, queued speech and auto advance"
@@ -352,7 +363,7 @@ class ControlDashboard(QMainWindow):
         self.speech_details.setTextFormat(Qt.TextFormat.PlainText)
         self.details_layout.addWidget(self.speech_details)
         self.details_layout.addWidget(self.playback_details)
-        self.details_toggle = QPushButton("Show technical details")
+        self.details_toggle = QPushButton("Details")
         set_action_icon(self.details_toggle, "list")
         self.details_toggle.setCheckable(True)
         self.details_toggle.setAccessibleDescription(
@@ -364,11 +375,11 @@ class ControlDashboard(QMainWindow):
         self.details_toggle.toggled.connect(self._set_details_expanded)
 
     def _build_action_buttons(self) -> QHBoxLayout:
-        self.read_button = QPushButton("Read current dialogue")
+        self.read_button = QPushButton("Dialogue")
         set_action_icon(self.read_button, "volume-2")
-        self.live_button = QPushButton("Start reading")
+        self.live_button = QPushButton("Read")
         set_action_icon(self.live_button, "play")
-        self.pause_button = QPushButton("Pause speech")
+        self.pause_button = QPushButton("")
         set_action_icon(self.pause_button, "pause")
         self.sequence_resync_button = QPushButton("Set story position / resync")
         set_action_icon(self.sequence_resync_button, "locate-fixed")
@@ -462,7 +473,7 @@ class ControlDashboard(QMainWindow):
         self.setup_primary_button.clicked.connect(self.readiness_requested.emit)
         setup_primary.addWidget(self.setup_primary_button)
         self.loading_blocked_buttons.append(self.setup_primary_button)
-        self.setup_more_button = QPushButton("Settings and more")
+        self.setup_more_button = QPushButton("Settings")
         set_action_icon(self.setup_more_button, "settings")
         self.setup_more_button.setCheckable(True)
         self.setup_more_button.setAccessibleDescription(
@@ -554,7 +565,7 @@ class ControlDashboard(QMainWindow):
         reading_content = QWidget()
         layout = QVBoxLayout(reading_content)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.compact_button = QPushButton("Compact controls")
+        self.compact_button = QPushButton("Compact")
         set_action_icon(self.compact_button, "shrink")
         self.compact_button.clicked.connect(self.compact_requested.emit)
         self.reading_defaults = QLabel()
@@ -692,6 +703,9 @@ class ControlDashboard(QMainWindow):
         self.copy_status_button = copy_text_button(
             "Copy status", lambda: self.status.toolTip() or self.status.text()
         )
+        self.copy_status_button.setAccessibleName("Copy status")
+        self.copy_status_button.setToolTip("Copy status")
+        self.copy_status_button.setText("")
         status_row.addWidget(self.copy_status_button)
         shell_layout.addLayout(status_row)
         shell_layout.addWidget(self.loading_panel)
@@ -815,9 +829,11 @@ class ControlDashboard(QMainWindow):
         expanded = bool(expanded)
         self.details_toggle.blockSignals(True)
         self.details_toggle.setChecked(expanded)
-        self.details_toggle.setText(
+        self.details_toggle.setText("Details")
+        self.details_toggle.setAccessibleName(
             "Hide technical details" if expanded else "Show technical details"
         )
+        self.details_toggle.setToolTip(self.details_toggle.accessibleName())
         self.details_toggle.blockSignals(False)
         self.details_content.setVisible(expanded)
 
@@ -825,9 +841,11 @@ class ControlDashboard(QMainWindow):
         expanded = bool(expanded)
         self.setup_more_button.blockSignals(True)
         self.setup_more_button.setChecked(expanded)
-        self.setup_more_button.setText(
+        self.setup_more_button.setText("Settings")
+        self.setup_more_button.setAccessibleName(
             "Hide settings and more" if expanded else "Settings and more"
         )
+        self.setup_more_button.setToolTip(self.setup_more_button.accessibleName())
         self.setup_more_button.blockSignals(False)
         self.setup_secondary_content.setVisible(expanded)
 
@@ -1314,16 +1332,16 @@ class CompactController(QWidget):
         return super().eventFilter(watched, event)
 
     def _build_buttons(self) -> None:
-        self.live_button = QPushButton("Start reading")
+        self.live_button = QPushButton("Read")
         set_action_icon(self.live_button, "play")
-        self.pause_button = QPushButton("Pause speech")
+        self.pause_button = QPushButton("")
         set_action_icon(self.pause_button, "pause")
-        self.read_button = QPushButton("Read once")
+        self.read_button = QPushButton("Dialogue")
         set_action_icon(self.read_button, "volume-2")
         self.sequence_expected_button = QPushButton("Use expected next line")
         set_action_icon(self.sequence_expected_button, "skip-forward")
         self.sequence_expected_button.setVisible(False)
-        self.full_button = QPushButton("Full controls")
+        self.full_button = QPushButton("Expand")
         set_action_icon(self.full_button, "expand")
         self.live_button.setDefault(True)
         self.live_button.setAccessibleDescription(

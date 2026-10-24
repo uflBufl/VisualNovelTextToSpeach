@@ -516,8 +516,10 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.copy_narrator_details.setAccessibleName("Copy narrator configuration")
         narrator_row.addWidget(self.copy_narrator_details)
-        self.game_narrator_button = QPushButton("Edit in Voices...")
+        self.game_narrator_button = QPushButton("Voices...")
         set_action_icon(self.game_narrator_button, "settings")
+        self.game_narrator_button.setAccessibleName("Edit narrator voice")
+        self.game_narrator_button.setToolTip("Edit narrator voice settings.")
         self.game_narrator_button.setAccessibleDescription(
             "Choose a narrator voice; the generation engine is selected above"
         )
@@ -569,8 +571,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.browse_button = QPushButton("Extracted content...")
         set_action_icon(self.browse_button, "folder-open")
         self.browse_button.clicked.connect(self.browse)
-        self.import_button = QPushButton("Find installed Reverse: 1999")
+        self.import_button = QPushButton("Find game")
         set_action_icon(self.import_button, "locate-fixed")
+        self.import_button.setAccessibleName("Find installed Reverse: 1999")
         self.import_button.clicked.connect(self.import_installed_game)
         self.game_folder_button = QPushButton("Game folder...")
         set_action_icon(self.game_folder_button, "folder-open")
@@ -696,8 +699,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.summary = QLabel("Select game content to continue.")
         self.summary.setWordWrap(True)
         self.summary.setAccessibleName("Offline preparation estimate")
-        self.prepare_again = QPushButton("Prepare selected stories again")
+        self.prepare_again = QPushButton("Prepare again")
         set_action_icon(self.prepare_again, "wand-sparkles")
+        self.prepare_again.setAccessibleName("Prepare selected stories again")
         self.prepare_again.setAccessibleDescription(
             "Apply current voice defaults only to checked stories, reusing matching recordings and saved voice choices"
         )
@@ -771,11 +775,13 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_coverage.setAccessibleName("Final offline audio coverage")
         self.progress_coverage.setWordWrap(True)
         self._build_progress_story_readiness()
-        self.play_ready_button = QPushButton("Start reading")
+        self.play_ready_button = QPushButton("Read")
         set_action_icon(self.play_ready_button, "play")
+        self.play_ready_button.setAccessibleName("Start reading selected story")
         self.play_ready_button.setAccessibleDescription(
             "Start the selected story while preparation continues in the background"
         )
+        self.play_ready_button.setToolTip("Start reading the selected story.")
         self.play_ready_button.clicked.connect(self.readingRequested.emit)
         self._layout_progress_panel()
 
@@ -882,8 +888,10 @@ class OfflineAudioPreparationDialog(QDialog):
         self.confirmed_narrator.setWordWrap(True)
         self.confirmed_narrator.setAccessibleName("Narrator for prepared audio")
         self.edit_confirmed_narrator = QPushButton("Change narrator...")
-        self.play_summary_narrator = QPushButton("Play narrator")
+        self.play_summary_narrator = QPushButton("Narrator")
         set_action_icon(self.play_summary_narrator, "play")
+        self.play_summary_narrator.setAccessibleName("Play narrator preview")
+        self.play_summary_narrator.setToolTip("Play the narrator preview.")
         self.play_summary_narrator.clicked.connect(self._play_summary_narrator)
         self.edit_confirmed_narrator.clicked.connect(self._choose_game_narrator)
         self.edit_confirmed_narrator.setVisible(game_narrator_chooser is not None)
@@ -928,8 +936,11 @@ class OfflineAudioPreparationDialog(QDialog):
         self.narrator_choice = QComboBox()
         self.narrator_choice.setAccessibleName("Narrator voice for offline generation")
         self.narrator_choice.currentIndexChanged.connect(self._narrator_choice_changed)
-        self.play_narrator_reference = QPushButton("Listen to reference")
+        self.play_narrator_reference = QPushButton("Reference")
         set_action_icon(self.play_narrator_reference, "audio-lines")
+        self.play_narrator_reference.setAccessibleName(
+            "Listen to original game reference"
+        )
         self.play_narrator_reference.setToolTip(
             "Play the original game recording, not a generated preview."
         )
@@ -972,8 +983,10 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.inspect_character_voice.setEnabled(False)
         self.inspect_character_voice.clicked.connect(self._choose_character_voice)
-        self.play_selected_voice = QPushButton("Play selected voice")
+        self.play_selected_voice = QPushButton("Selected voice")
         set_action_icon(self.play_selected_voice, "play")
+        self.play_selected_voice.setAccessibleName("Play selected voice")
+        self.play_selected_voice.setToolTip("Play the selected voice preview.")
         self.play_selected_voice.setAccessibleDescription(
             "Preview the voice this role will actually use, without changing its choice."
         )
@@ -995,8 +1008,10 @@ class OfflineAudioPreparationDialog(QDialog):
             lambda _item, _previous: self._update_voice_route_actions()
         )
         self._build_more_voice_actions()
-        self.back_to_story_selection = QPushButton("Back to stories")
+        self.back_to_story_selection = QPushButton("Stories")
         set_action_icon(self.back_to_story_selection, "chevron-left")
+        self.back_to_story_selection.setAccessibleName("Back to stories")
+        self.back_to_story_selection.setToolTip("Back to story selection.")
         self.back_to_story_selection.clicked.connect(self._return_to_story_selection)
         self.show_all_voice_routes = QCheckBox("Substitutions only")
         self.show_all_voice_routes.setToolTip(
@@ -1097,8 +1112,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.discovery_progress.setRange(0, 0)
         self.discovery_progress.setTextVisible(False)
         self.discovery_progress.setAccessibleName("Finding local game content")
-        self.discovery_import_button = QPushButton("Find installed Reverse: 1999")
+        self.discovery_import_button = QPushButton("Find game")
         set_action_icon(self.discovery_import_button, "locate-fixed")
+        self.discovery_import_button.setAccessibleName("Find installed Reverse: 1999")
         self.discovery_import_button.clicked.connect(self.import_installed_game)
         self.discovery_game_folder_button = QPushButton("Choose game folder...")
         set_action_icon(self.discovery_game_folder_button, "folder-open")
@@ -1290,25 +1306,35 @@ class OfflineAudioPreparationDialog(QDialog):
     def _summary_preview_changed(self, active: bool) -> None:
         if not active:
             self._summary_preview_target = None
-        self.play_selected_voice.setText(
-            "Stop preview"
-            if active and self._summary_preview_target == "role"
+        selected_voice_active = active and self._summary_preview_target == "role"
+        narrator_active = active and self._summary_preview_target == "narrator"
+        self.play_selected_voice.setText("Selected voice")
+        self.play_selected_voice.setAccessibleName(
+            "Stop selected voice preview"
+            if selected_voice_active
             else "Play selected voice"
         )
-        self.play_summary_narrator.setText(
-            "Stop preview"
-            if active and self._summary_preview_target == "narrator"
-            else "Play narrator"
+        self.play_selected_voice.setToolTip(
+            "Stop the selected voice preview."
+            if selected_voice_active
+            else "Play the selected voice preview."
+        )
+        self.play_summary_narrator.setText("Narrator")
+        self.play_summary_narrator.setAccessibleName(
+            "Stop narrator preview" if narrator_active else "Play narrator preview"
+        )
+        self.play_summary_narrator.setToolTip(
+            "Stop the narrator preview."
+            if narrator_active
+            else "Play the narrator preview."
         )
         set_action_icon(
             self.play_selected_voice,
-            "square" if active and self._summary_preview_target == "role" else "play",
+            "square" if selected_voice_active else "play",
         )
         set_action_icon(
             self.play_summary_narrator,
-            "square"
-            if active and self._summary_preview_target == "narrator"
-            else "play",
+            "square" if narrator_active else "play",
         )
 
     def _stop_summary_preview(self) -> None:
@@ -2279,7 +2305,7 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.play_summary_narrator.setEnabled(can_preview)
         self.play_summary_narrator.setToolTip(
-            "Play generated speech with the narrator shown here."
+            "Play the narrator preview shown here."
             if can_preview
             else "Choose a supported narrator reference or Pocket built-in voice in Voices."
         )

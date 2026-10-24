@@ -467,7 +467,7 @@ class ControlDashboardTest(unittest.TestCase):
                 self.assertFalse(dashboard.read_button.isEnabled())
                 self.assertIn("Stop reading", dashboard.read_button.toolTip())
             if state.speaking:
-                self.assertEqual(dashboard.live_button.text(), "Stop reading")
+                self.assertEqual(dashboard.live_button.accessibleName(), "Stop reading")
         dashboard.set_live(True)
         self.assertIn("current speech", dashboard.live_button.accessibleDescription())
         self.assertTrue(dashboard.live_button.isDefault())
@@ -681,7 +681,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertTrue(controls.isAncestorOf(dashboard.live_button))
         self.assertTrue(controls.isAncestorOf(dashboard.read_button))
         self.assertFalse(dashboard.details_content.isVisibleTo(dashboard))
-        self.assertEqual(dashboard.details_toggle.text(), "Show technical details")
+        self.assertEqual(dashboard.details_toggle.text(), "Details")
         self.assertEqual(
             dashboard.details_toggle.sizePolicy().horizontalPolicy(),
             QSizePolicy.Policy.Fixed,
@@ -695,7 +695,7 @@ class ControlDashboardTest(unittest.TestCase):
 
         self.assertTrue(dashboard.details_content.isVisibleTo(dashboard))
         self.assertTrue(dashboard.configuration.isVisibleTo(dashboard))
-        self.assertEqual(dashboard.details_toggle.text(), "Hide technical details")
+        self.assertEqual(dashboard.details_toggle.text(), "Details")
         dashboard.close()
         dashboard.deleteLater()
 
@@ -709,7 +709,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertTrue(dashboard.setup_primary_button.isVisibleTo(dashboard))
         self.assertEqual(dashboard.setup_primary_button.text(), "Check readiness")
         self.assertTrue(dashboard.setup_more_button.isVisibleTo(dashboard))
-        self.assertEqual(dashboard.setup_more_button.text(), "Settings and more")
+        self.assertEqual(dashboard.setup_more_button.text(), "Settings")
         self.assertLess(dashboard.setup_primary_button.width(), dashboard.width() / 2)
         self.assertFalse(dashboard.setup_secondary_content.isVisibleTo(dashboard))
 
@@ -718,7 +718,7 @@ class ControlDashboardTest(unittest.TestCase):
 
         self.assertEqual(requests, ["readiness"])
         self.assertTrue(dashboard.setup_secondary_content.isVisibleTo(dashboard))
-        self.assertEqual(dashboard.setup_more_button.text(), "Hide settings and more")
+        self.assertEqual(dashboard.setup_more_button.text(), "Settings")
         dashboard.close()
         dashboard.deleteLater()
 
@@ -957,8 +957,8 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(requests, ["live"])
         self.assertEqual(controller.speaker.toPlainText(), "Selone")
         self.assertEqual(controller.mode.text(), "Paused")
-        self.assertEqual(controller.live_button.text(), "Stop reading")
-        self.assertEqual(controller.full_button.text(), "Full controls")
+        self.assertEqual(controller.live_button.accessibleName(), "Stop reading")
+        self.assertEqual(controller.full_button.text(), "Expand")
         self.assertTrue(controller.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
         self.assertTrue(
             controller.testAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
@@ -1119,7 +1119,7 @@ class ControlDashboardTest(unittest.TestCase):
                     dashboard.live_button.text(), compact.live_button.text()
                 )
                 for button in (dashboard.pause_button, compact.pause_button):
-                    self.assertEqual(button.text(), state.pause_label)
+                    self.assertEqual(button.text(), "")
                     self.assertEqual(button.accessibleName(), state.pause_label)
                     self.assertTrue(button.accessibleDescription())
                     self.assertTrue(button.toolTip())
@@ -1326,8 +1326,10 @@ class ControlDashboardTest(unittest.TestCase):
                     self.assertTrue(dashboard.prepare_reading_button.isDefault())
                     self.assertFalse(dashboard.live_button.isDefault())
                 controls.set_runtime_controls(RuntimeControlState(ready=True))
-                self.assertEqual(controls.live_button.toolTip(), "")
-                self.assertEqual(controls.read_button.toolTip(), "")
+                self.assertEqual(controls.live_button.toolTip(), "Start reading")
+                self.assertEqual(
+                    controls.read_button.toolTip(), "Read current dialogue"
+                )
                 self.assertTrue(controls.live_button.isEnabled())
                 self.assertTrue(controls.read_button.isEnabled())
         dashboard.deleteLater()

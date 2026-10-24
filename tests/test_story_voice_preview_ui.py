@@ -121,7 +121,14 @@ class StoryVoicePreviewTest(unittest.TestCase):
         self.assertEqual(self.pool.tasks, [])
         self.service.generate.assert_not_called()
         self.assertIn(message, self.dialog.voice_confirmation_status.text())
-        self.assertEqual(self.dialog.play_selected_voice.text(), "Play selected voice")
+        self.assertEqual(self.dialog.play_selected_voice.text(), "Selected voice")
+        self.assertEqual(
+            self.dialog.play_selected_voice.accessibleName(), "Play selected voice"
+        )
+        self.assertEqual(
+            self.dialog.play_selected_voice.toolTip(),
+            "Play the selected voice preview.",
+        )
 
         controller = FakeClipController()
         pcm = PersistentPcmPlayer(controller)
@@ -129,6 +136,15 @@ class StoryVoicePreviewTest(unittest.TestCase):
         self.dialog.play_selected_voice.click()
         self.run_tasks()
         self.assertTrue(preview.active)
+        self.assertEqual(self.dialog.play_selected_voice.text(), "Selected voice")
+        self.assertEqual(
+            self.dialog.play_selected_voice.accessibleName(),
+            "Stop selected voice preview",
+        )
+        self.assertEqual(
+            self.dialog.play_selected_voice.toolTip(),
+            "Stop the selected voice preview.",
+        )
         self.assertIn("Starting", self.dialog.voice_confirmation_status.text())
         controller.pump(1)
         preview.player._poll()
@@ -149,7 +165,10 @@ class StoryVoicePreviewTest(unittest.TestCase):
         self.assertFalse(preview.active)
         self.assertIn("protocol mismatch", self.dialog.voice_confirmation_status.text())
         self.assertNotIn("Preparing", self.dialog.voice_confirmation_status.text())
-        self.assertEqual(self.dialog.play_selected_voice.text(), "Play selected voice")
+        self.assertEqual(self.dialog.play_selected_voice.text(), "Selected voice")
+        self.assertEqual(
+            self.dialog.play_selected_voice.accessibleName(), "Play selected voice"
+        )
 
     def test_selected_voice_plays_without_leaving_summary_or_saving_choice(self):
         self.select(self.group)
@@ -309,10 +328,23 @@ class StoryVoicePreviewTest(unittest.TestCase):
 
         self.assertEqual(self.service.generate.call_args.args[2], "preset:marius")
         self.dialog.game_narrator_chooser.assert_not_called()
-        self.assertEqual(self.dialog.play_summary_narrator.text(), "Stop preview")
+        self.assertEqual(self.dialog.play_summary_narrator.text(), "Narrator")
+        self.assertEqual(
+            self.dialog.play_summary_narrator.accessibleName(), "Stop narrator preview"
+        )
+        self.assertEqual(
+            self.dialog.play_summary_narrator.toolTip(),
+            "Stop the narrator preview.",
+        )
         self.dialog.play_summary_narrator.click()
         self.assertFalse(self.dialog.summary_voice_preview.active)
-        self.assertEqual(self.dialog.play_summary_narrator.text(), "Play narrator")
+        self.assertEqual(self.dialog.play_summary_narrator.text(), "Narrator")
+        self.assertEqual(
+            self.dialog.play_summary_narrator.accessibleName(), "Play narrator preview"
+        )
+        self.assertEqual(
+            self.dialog.play_summary_narrator.toolTip(), "Play the narrator preview."
+        )
 
     def test_switching_roles_discards_old_result_and_cancels_old_request(self):
         self.select(self.group)

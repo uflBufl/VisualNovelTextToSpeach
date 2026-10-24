@@ -377,7 +377,7 @@ class VoiceAuditionPanel(QGroupBox):
             | Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
         self.a_reason.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.a_original = QPushButton("Play original reference")
+        self.a_original = QPushButton("Original")
         set_action_icon(self.a_original, "play")
         self.a_original.setAccessibleName("Play original reference")
         self.a_original.clicked.connect(self._play_original)
@@ -413,12 +413,13 @@ class VoiceAuditionPanel(QGroupBox):
             QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
         )
         self.preview_text.textChanged.connect(self._preview_text_edited)
-        self.game_phrase_button = QPushButton("Use game phrase")
+        self.game_phrase_button = QPushButton("Game phrase")
         set_action_icon(self.game_phrase_button, "file-text")
         self.game_phrase_button.setAutoDefault(False)
         self.game_phrase_button.setAccessibleName("Insert next game phrase")
+        self.game_phrase_button.setToolTip("Insert the next game phrase for preview")
         self.game_phrase_button.clicked.connect(self._insert_game_phrase)
-        self.a_play = QPushButton("Play preview")
+        self.a_play = QPushButton("Preview")
         set_action_icon(self.a_play, "play")
         self.a_play.setMinimumWidth(self.a_play.sizeHint().width())
         self.a_play.setAccessibleName("Play voice preview")
@@ -456,13 +457,13 @@ class VoiceAuditionPanel(QGroupBox):
         self.current_reason.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        self.current_original = QPushButton("Play original reference")
+        self.current_original = QPushButton("Original")
         set_action_icon(self.current_original, "play")
         self.current_original.setAccessibleName("Play current voice original reference")
         self.current_original.clicked.connect(
             lambda: self._play_original(current_voice=True)
         )
-        self.current_play = QPushButton("Play preview")
+        self.current_play = QPushButton("Preview")
         set_action_icon(self.current_play, "play")
         self.current_play.setAccessibleName("Play current voice preview")
         self.current_play.clicked.connect(self.play_current)
@@ -494,7 +495,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._comparison_mode = True
         self._size_transient_controls()
         self.setFlat(True)
-        self.game_phrase_button.setText("Next game phrase")
+        self.game_phrase_button.setText("Game phrase")
         self.a_box.setTitle("")
         self.a_box.setFlat(True)
         self.preview_box.setTitle("")
@@ -698,14 +699,8 @@ class VoiceAuditionPanel(QGroupBox):
             * (3 if self._comparison_mode else 4)
             + (12 if self._comparison_mode else 16)
         )
-        for button, label in (
-            (self.a_play, "Stop preview"),
-            (self.a_original, "Play original reference"),
-        ):
-            current = button.text()
-            button.setText(label)
+        for button in (self.a_play, self.a_original):
             button.setMinimumWidth(button.sizeHint().width())
-            button.setText(current)
         self.status.setFixedHeight(self.status.fontMetrics().lineSpacing() * 2 + 12)
         self.recommendation.setFixedHeight(
             self.recommendation.fontMetrics().lineSpacing() * 2
@@ -2290,13 +2285,7 @@ class VoiceAuditionPanel(QGroupBox):
             self._candidate_entries
             and len(self._current_entry()[0].reference_sha256s) > 1
         )
-        self.a_original.setText(
-            "Stop original"
-            if source == "original" or preparing_original
-            else "Play first reference"
-            if multiple
-            else "Play original reference"
-        )
+        self.a_original.setText("Original")
         self.a_original.setAccessibleName(
             "Stop original reference"
             if source == "original" or preparing_original
@@ -2304,7 +2293,7 @@ class VoiceAuditionPanel(QGroupBox):
             if multiple
             else "Play original reference"
         )
-        self.a_play.setText("Stop preview" if source == "preview" else "Play preview")
+        self.a_play.setText("Preview")
         self.a_play.setAccessibleName(
             "Stop voice preview" if source == "preview" else "Play voice preview"
         )
@@ -2313,19 +2302,13 @@ class VoiceAuditionPanel(QGroupBox):
             and self._original_request is not None
             and self._original_request[3]
         )
-        self.current_original.setText(
-            "Stop original"
-            if source == "current-original" or preparing_current
-            else "Play original reference"
-        )
+        self.current_original.setText("Original")
         self.current_original.setAccessibleName(
             "Stop current voice original reference"
             if source == "current-original" or preparing_current
             else "Play current voice original reference"
         )
-        self.current_play.setText(
-            "Stop preview" if source == "current-preview" else "Play preview"
-        )
+        self.current_play.setText("Preview")
         self.current_play.setAccessibleName(
             "Stop current voice preview"
             if source == "current-preview"
@@ -2341,6 +2324,7 @@ class VoiceAuditionPanel(QGroupBox):
             (self.current_play, source == "current-preview"),
         ):
             set_action_icon(button, "square" if playing else "play")
+            button.setToolTip(button.accessibleName())
 
     def _stop_player(self) -> None:
         self.original_runner.cancel()

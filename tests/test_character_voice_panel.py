@@ -87,8 +87,8 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.assertFalse(self.panel.a_use.isEnabled())
         self.assertIsNone(self.panel._accepted_choice)
         self.assertEqual(self.panel._auditioned, {})
-        self.assertEqual(self.panel.current_play.text(), "Stop preview")
-        self.assertEqual(self.panel.a_play.text(), "Play preview")
+        self.assertEqual(self.panel.current_play.text(), "Preview")
+        self.assertEqual(self.panel.a_play.text(), "Preview")
         self.assertFalse(self.panel.current_play.icon().isNull())
         self.decisions.remember_many.assert_not_called()
 
@@ -104,9 +104,9 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.assertTrue(self.panel.a_use.isEnabled())
         self.assertEqual(self.panel._auditioned, heard)
         self.assertEqual(self.panel.player.play_bytes.call_count, 2)
-        self.assertEqual(self.panel.a_play.text(), "Play preview")
+        self.assertEqual(self.panel.a_play.text(), "Preview")
         self.panel.current_play.click()
-        self.assertEqual(self.panel.current_play.text(), "Play preview")
+        self.assertEqual(self.panel.current_play.text(), "Preview")
         self.assertGreaterEqual(self.panel.player.stop.call_count, 2)
 
     def test_switching_preview_direction_waits_for_cancelled_generation(self):
@@ -144,8 +144,8 @@ class CharacterVoicePanelTest(unittest.TestCase):
             preview.path, preview.path.read_bytes()
         )
         self.panel.current_original.click()
-        self.assertEqual(self.panel.current_original.text(), "Stop original")
-        self.assertEqual(self.panel.a_original.text(), "Play original reference")
+        self.assertEqual(self.panel.current_original.text(), "Original")
+        self.assertEqual(self.panel.a_original.text(), "Original")
         self.run_tasks()
         self.service.reference_audio.assert_called_once_with(
             plan, group, candidate.source_id

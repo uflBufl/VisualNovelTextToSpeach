@@ -3505,7 +3505,14 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertTrue(dialog.progress_runtime.isVisible())
             dialog.progress_details_toggle.click()
             self.assertFalse(dialog.progress_runtime.isVisible())
-            self.assertEqual(dialog.play_ready_button.text(), "Start reading")
+            self.assertEqual(dialog.play_ready_button.text(), "Read")
+            self.assertEqual(
+                dialog.play_ready_button.accessibleName(),
+                "Start reading selected story",
+            )
+            self.assertEqual(
+                dialog.play_ready_button.toolTip(), "Start reading the selected story."
+            )
             self.assertTrue(dialog.play_ready_button.isEnabled())
             dialog.play_ready_button.click()
             reading.assert_called_once_with()

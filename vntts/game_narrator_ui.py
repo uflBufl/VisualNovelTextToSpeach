@@ -364,10 +364,14 @@ class GameNarratorDialog(QDialog):
         self.game_installation = QLineEdit("Automatically detected")
         self.game_installation.setReadOnly(True)
         self._show_known_installation()
-        self.discover_button = QPushButton("Refresh voices")
+        self.discover_button = QPushButton("Refresh")
+        self.discover_button.setAccessibleName("Refresh voices")
+        self.discover_button.setToolTip("Refresh voices")
         set_action_icon(self.discover_button, "refresh-cw")
         self.discover_button.clicked.connect(lambda: self.discover())
-        self.folder_button = QPushButton("Change folder...")
+        self.folder_button = QPushButton("Folder...")
+        self.folder_button.setAccessibleName("Change folder...")
+        self.folder_button.setToolTip("Change folder...")
         set_action_icon(self.folder_button, "folder-open")
         self.folder_button.clicked.connect(self._choose_folder)
         setup_layout.addWidget(self.game_installation, 1)
@@ -653,9 +657,11 @@ class GameNarratorDialog(QDialog):
         )
         self.context_note.show()
         set_action_icon(self.cancel_button, "chevron-left" if resume_live else "x")
-        self.cancel_button.setText(
+        self.cancel_button.setText("Back" if resume_live else "Cancel")
+        self.cancel_button.setAccessibleName(
             "Back to recovery choices" if resume_live else "Cancel"
         )
+        self.cancel_button.setToolTip(self.cancel_button.accessibleName())
         if self.voice_library.binding(role) is None:
             with QSignalBlocker(self.source):
                 self.source.setCurrentIndex(self.source.findData("game"))
