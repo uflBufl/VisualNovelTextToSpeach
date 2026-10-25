@@ -2,11 +2,13 @@
 
 import hashlib
 import json
+import os
 import re
+import shutil
+import stat
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from itertools import islice
 from pathlib import Path
 from threading import Event, Lock, Thread
 from time import monotonic
@@ -239,65 +241,179 @@ class SavedDiagnosticSession:
         return _diagnostic_export_entries(self.directory)
 
 
+@dataclass(frozen=True)
+class DiagnosticSessionEntry:
+    directory: Path
+    session_id: str
+    report: dict[str, object] | None
+    size_bytes: int | None
+    saved: SavedDiagnosticSession | None
+    error: str = ""
+    file_counts: dict[str, int] | None = None
+
+
+def _session_directory(root: Path, session_id: str) -> Path:
+    if (
+        root.is_symlink()
+        or not root.is_dir()
+        or re.fullmatch(r"[0-9a-f]{32}", session_id) is None
+    ):
+        raise ValueError("Diagnostic session directory is unsafe")
+    directory = root / session_id
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("Diagnostic session directory is unsafe")
+    return directory
+
+
+def _session_report(directory: Path) -> dict[str, object]:
+    metadata = directory / "session.json"
+    if metadata.is_symlink():
+        raise ValueError("Diagnostic metadata contains a symlink")
+    with open_regular_binary(metadata) as source:
+        payload = source.read(65537)
+    if len(payload) > 65536:
+        raise ValueError("Diagnostic metadata exceeds its size limit")
+    report = json.loads(payload)
+    if (
+        not isinstance(report, dict)
+        or report.get("schema") != "vntts.reading-diagnostics"
+        or type(report.get("version")) is not int
+        or report["version"] != 1
+        or report.get("session_id") != directory.name
+        or not isinstance(report.get("started_at"), str)
+    ):
+        raise ValueError("Diagnostic metadata is invalid")
+    if datetime.fromisoformat(report["started_at"]).tzinfo is None:
+        raise ValueError("Diagnostic start date has no timezone")
+    return report
+
+
+def _finished_session(
+    directory: Path, report: dict[str, object]
+) -> SavedDiagnosticSession:
+    if report.get("status") != "finished":
+        raise ValueError("Diagnostic session is not finished")
+    if (
+        _active is not None
+        and not _active.finished.is_set()
+        and _active.directory.resolve() == directory.resolve()
+    ):
+        raise ValueError("Diagnostic session is still active or finalizing")
+    for name in ("timeline", "runtime"):
+        journal = report.get(name)
+        if (
+            not isinstance(journal, dict)
+            or not isinstance(journal.get("acquisition_id"), str)
+            or not _journal_has_cutoff(
+                directory / (name + ".jsonl"), journal["acquisition_id"]
+            )
+        ):
+            raise ValueError("Diagnostic journals are incomplete")
+    return SavedDiagnosticSession(directory, directory.name, report)
+
+
+def load_saved_diagnostic_session(
+    root: Path, session_id: str
+) -> SavedDiagnosticSession | None:
+    try:
+        directory = _session_directory(root, session_id)
+        return _finished_session(directory, _session_report(directory))
+    except OSError, ValueError, TypeError, IndexError:
+        return None
+
+
+def _session_inventory(directory: Path) -> tuple[int, dict[str, int]]:
+    if not stat.S_ISDIR(directory.stat(follow_symlinks=False).st_mode):
+        raise ValueError("Diagnostic session directory is unsafe")
+    total = 0
+    file_counts: dict[str, int] = {}
+
+    def fail(error: OSError) -> None:
+        raise error
+
+    for parent, directories, files in os.walk(directory, onerror=fail):
+        for name in directories + files:
+            path = Path(parent) / name
+            metadata = path.stat(follow_symlinks=False)
+            if stat.S_ISLNK(metadata.st_mode):
+                raise ValueError("Diagnostic evidence contains a symlink")
+            if stat.S_ISREG(metadata.st_mode):
+                total += metadata.st_size
+                suffix = path.suffix.lower()
+                file_counts[suffix] = file_counts.get(suffix, 0) + 1
+            elif not stat.S_ISDIR(metadata.st_mode):
+                raise ValueError("Diagnostic evidence contains an unsafe file")
+    return total, file_counts
+
+
+def _history_entry(directory: Path) -> DiagnosticSessionEntry:
+    report = None
+    saved = None
+    size = None
+    file_counts = None
+    errors = []
+    try:
+        _session_directory(directory.parent, directory.name)
+        size, file_counts = _session_inventory(directory)
+    except (OSError, ValueError) as error:
+        errors.append(str(error))
+    try:
+        _session_directory(directory.parent, directory.name)
+        report = _session_report(directory)
+        if not errors:
+            saved = _finished_session(directory, report)
+    except (OSError, ValueError, TypeError, IndexError) as error:
+        errors.append(str(error))
+    return DiagnosticSessionEntry(
+        directory, directory.name, report, size, saved, "; ".join(errors), file_counts
+    )
+
+
+def _session_started(entry: DiagnosticSessionEntry) -> datetime:
+    if entry.report is not None:
+        return datetime.fromisoformat(str(entry.report["started_at"]))
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def list_diagnostic_sessions(root: Path) -> list[DiagnosticSessionEntry]:
+    try:
+        metadata = root.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return []
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError("Diagnostic sessions root is unsafe")
+    entries = [
+        _history_entry(directory)
+        for directory in root.iterdir()
+        if re.fullmatch(r"[0-9a-f]{32}", directory.name)
+    ]
+    return sorted(entries, key=_session_started, reverse=True)
+
+
 def latest_finished_diagnostic_session(root: Path) -> SavedDiagnosticSession | None:
     if root.is_symlink() or not root.is_dir():
         return None
+    latest: SavedDiagnosticSession | None = None
     try:
-        directories = list(islice(root.iterdir(), 129))
-        if len(directories) > 128:
-            return None
-        latest: tuple[datetime, SavedDiagnosticSession] | None = None
-        for directory in directories:
-            if (
-                directory.is_symlink()
-                or not directory.is_dir()
-                or re.fullmatch(r"[0-9a-f]{32}", directory.name) is None
+        for directory in root.iterdir():
+            saved = load_saved_diagnostic_session(root, directory.name)
+            if saved is not None and (
+                latest is None
+                or datetime.fromisoformat(str(saved.report["started_at"]))
+                > datetime.fromisoformat(str(latest.report["started_at"]))
             ):
-                continue
-            metadata = directory / "session.json"
-            if metadata.is_symlink():
-                continue
-            try:
-                with open_regular_binary(metadata) as source:
-                    payload = source.read(65537)
-                if len(payload) > 65536:
-                    continue
-                report = json.loads(payload)
-                if (
-                    not isinstance(report, dict)
-                    or report.get("schema") != "vntts.reading-diagnostics"
-                    or type(report.get("version")) is not int
-                    or report["version"] != 1
-                    or report.get("session_id") != directory.name
-                    or report.get("status") != "finished"
-                    or not isinstance(report.get("started_at"), str)
-                ):
-                    continue
-                started = datetime.fromisoformat(report["started_at"])
-                if started.tzinfo is None:
-                    continue
-                closed = True
-                for name in ("timeline", "runtime"):
-                    journal = report.get(name)
-                    if (
-                        not isinstance(journal, dict)
-                        or not isinstance(journal.get("acquisition_id"), str)
-                        or not _journal_has_cutoff(
-                            directory / (name + ".jsonl"), journal["acquisition_id"]
-                        )
-                    ):
-                        closed = False
-                        break
-                if not closed:
-                    continue
-            except OSError, ValueError, TypeError, IndexError:
-                continue
-            saved = SavedDiagnosticSession(directory, directory.name, report)
-            if latest is None or started > latest[0]:
-                latest = started, saved
-        return latest[1] if latest is not None else None
+                latest = saved
     except OSError:
         return None
+    return latest
+
+
+def delete_saved_diagnostic_session(root: Path, session_id: str) -> None:
+    directory = _session_directory(root, session_id)
+    _finished_session(directory, _session_report(directory))
+    # Inspect all evidence before rmtree; no symlinks or special files are owned data.
+    _session_inventory(directory)
+    shutil.rmtree(directory)
 
 
 class ReadingDiagnosticSession:
@@ -317,17 +433,6 @@ class ReadingDiagnosticSession:
         if _active is not None:
             raise RuntimeError("A diagnostic session is already active")
         root.mkdir(parents=True, exist_ok=True)
-        if (
-            sum(
-                1
-                for path in root.iterdir()
-                if path.is_dir() and (path / "session.json").is_file()
-            )
-            >= 10
-        ):
-            raise RuntimeError(
-                f"Diagnostic retention limit reached. Export or remove old sessions in {root}"
-            )
         self.session_id = uuid4().hex
         self.directory = root / self.session_id
         self.directory.mkdir(parents=True)

@@ -251,6 +251,7 @@ class SupportCenterDialogTest(unittest.TestCase):
         dialog.settings_folder_requested.connect(lambda: settings.append(True))
         dialog.resize(620, 420)
         dialog.layout().activate()
+        initial_size = dialog.size()
 
         dialog.diagnostics_button.setFocus()
         QTest.keyClick(dialog.diagnostics_button, Qt.Key.Key_Return)
@@ -286,8 +287,7 @@ class SupportCenterDialogTest(unittest.TestCase):
                 button.shortcut().toString(QKeySequence.SequenceFormat.NativeText),
                 button.toolTip(),
             )
-        self.assertEqual(dialog.size().width(), 620)
-        self.assertEqual(dialog.size().height(), 420)
+        self.assertEqual(dialog.size(), initial_size)
         dialog.close()
         dialog.deleteLater()
 

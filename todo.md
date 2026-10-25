@@ -104,22 +104,19 @@
       финализации и создать новую. Для гарантии покрытия нужно вручную ставить
       чтение на паузу. Обсудить автоматические ограниченные по размеру сегменты
       одной сессии и видимый остаток времени записи.
-- [ ] **UX-25-11: лимит диагностических сессий требует работы с файлами.**
-      Start session не запускается при 10 сохранённых каталогах: `Diagnostic
-      retention limit reached. Export or remove old sessions`. Нет счётчика
-      свободных слотов, списка старых сессий или безопасного Archive в этом окне;
-      Export session относится только к последней. Нужен понятный путь сохранения
-      старых доказательств и продолжения записи без ручных перемещений каталогов.
-- [ ] **UX-25-01: Stories блокируется старым каталогом подготовки.** Каталог
-      schema2 не открывается текущим strict schema3. Нужен безопасный путь
-      восстановления библиотеки без потери WAV. Автоматические миграции намеренно
-      удалены в d6433d49; возвращать их без отдельного решения не следует.
-      Gate: открыть прежнюю библиотеку совместимой версией либо безопасно
-      пересоздать индекс штатным UI, сохранив готовые записи и назначения.
 - [ ] **UX-25-02: доступ к историям при стартовом размере 860x560.**
       Проверить высоту списка и прокрутку на рабочем каталоге и при длинных
       сообщениях. Настройки и состояние подготовки занимают значительную часть
       экрана; основное действие должно находиться без поиска ниже сгиба.
+- [ ] **UX-26-01: устройство генерации остаётся неизвестным.** При новой
+      подготовке 314001 через Stories MOSS Local v1.5 MLX уже обработал 9/90
+      реплик, но Show generation details показывает `Compute device: unknown
+      (not reported by the engine yet)`. Проверить передачу фактического
+      устройства из воркера; не выводить устройство только из названия модели.
+- [ ] **UX-26-02: найденная глава не показывает своё название в дереве.** Поиск
+      `A Hundred Thousand Billion Sketches` находит одну главу, но строка дерева
+      называется только `Stage 1` внутри `See You in the New World`. Обсудить
+      отображение названия эпизода, чтобы можно было проверить результат поиска.
 - [ ] **UX-25-03: missing audio worker занимает главный статус.** В чистом
       worktree обычный запуск требует отдельной Cargo-сборки (это описано в
       README). Длинная техническая команда обрезана, чтение невозможно до сборки.
@@ -129,11 +126,6 @@
       Первый переход в Reading: Read/Dialogue недоступны до отдельной загрузки
       движка. Обсудить автоматическую загрузку по Read и пользу предварительного
       технического шага для готовых записей отдельно от живой генерации.
-- [ ] **UX-25-07: восстановление готовых записей требует технических путей.**
-      При несовместимом каталоге Stories нельзя активировать существующую запись.
-      Settings намеренно не импортирует внутренние preparation paths как обычные
-      preferences. Нужен понятный путь восстановления/экспорта через Stories,
-      чтобы пользователю не требовалось знать пакет, индекс и манифест (UX-25-01).
 - [ ] **UX-25-09: Voices служит промежуточным экраном без списка голосов.**
       Вкладка Narrator and character voices содержит только строку Narrator:
       Centurion и кнопку Edit voices; остальная область пустая. Чтобы увидеть
@@ -314,49 +306,96 @@ Refactor ownership/state contracts or change the UI where necessary. Do not fix
 these findings with launcher monkey patches, hardcoded story edges, wider global
 matching, weakened admission, extra key presses or larger timeouts.
 
-Remaining execution order:
+Remaining execution order (one item at a time; plan before implementation):
 
-1. Finish the remaining native calibration interaction gates (U1/U4), retaining
-   the maximum multiline dialogue height, raised nameplate and continue cue.
-   The corrected14 ->15 early-admission gate passes; do not restore the clipped
-   one-line region or treat it as a matcher defect.
-2. Investigate independent owners in parallel: OCR-worker health/stage callbacks
-   and truthful retention gaps (R1/T1); prepared audio starvation at the real
-   native/Python boundary (R12); original-source elapsed/completion evidence (R6)
-   and the separate centered layout (R17). Inspect shared callers, current logs,
-   source/graph metadata and tests before choosing each repair. Keep setup errors,
-   missing measurements and demonstrated code defects distinct.
-3. Record each demonstrated repair's files, dependencies and regression gates here,
-   then implement it in the shared owner with its callers/UI/tests. Preserve
-   occurrence/source/WAV integrity, stale-run/focus/epoch/Stop guards and bounded
-   cancellation; no guessed edges, global threshold relaxation or arbitrary
-   timeout/buffer growth. Serialize changes to overlapping owners. Run the local
-   changed-test selector first after code changes and complete relevant static
-   checks before any native performance measurement.
-4. Prepare the native tools and evidence: qualify explicit-target MCP, calibration
-   visibility and control identity/lifecycle (T3/T4/T5/U1/U4), retain early
-   timing events and record instrumentation overhead (T1). Keep game window,
-   process audio, original/generated artifacts, model/runtime identity and the
-   approved-WAV baseline explicit. Native exact-window video may follow origin-only
-   moves of the same PID/window/size with explicit movement evidence; owner, target
-   closure and size changes must fail closed. Desktop-rectangle product capture
-   still revalidates its geometry. No desktop fallback; partial recordings cannot
-   pass a full-run gate.
-5. Qualify the existing implementations on Mac: completed-text freshness and safe
-   early successor start (R2/R3), published pack/Bob Narrator fallback (R4/R11),
-   explicit indexed recovery (R5), Read-once/transition/uncertainty ownership
-   (R7/R8/R9/U9), cold readiness/fallback startup and offline assets (U6/U7/U8).
-   Add a code repair only if its targeted check establishes a remaining defect.
-6. Run M0 live fallback and M1 prepared per-character playback with real pending
-   heavy generation, publication and catch-up, after the code gates. Measure
-   14 ->15,16 ->17, original speech completion, gaps, continuation and Stop against
-   independent exact-window video/process audio. Preserve approved WAV bytes;
-   cache hits alone do not qualify concurrent generation. No unit-test load runs
-   during the measurements; no separate generation-idle prepared run is required.
-7. Analyse source/output timing and gate outcomes, remove only completed verified
-   TODO items, and retain concrete remaining defects with reproduction and next
-   evidence/repair gates. Windows and unrelated authoring/package work stay in
-   their existing deferred sections and do not block this Mac follow-up.
+This is the single execution queue for the current Mac follow-up. The audit and
+older R/U/T/M sections retain evidence and detailed acceptance requirements;
+they are not separate competing schedules. Before each implementation, confirm
+its reproduction, shared owner/callers, data effects and focused regression gate.
+Present the investigation and concrete plan to the user and wait for agreement
+before implementing each item. Finish its targeted tests and native check before
+moving to the next item. Mark an investigation complete only when it yields a
+supported repair or an explicit product decision, not merely a hypothesis.
+
+1. **Record a complete chapter (UX-25-12 and interrupted-session recovery).**
+   Define one logical session with bounded finalized segments and truthful
+   readiness/coverage. Reuse recorder lifecycle ownership; keep old completed
+   segments playable after interruption. Gate: continuous chapter coverage beyond
+   600 seconds, bounded Stop, correct export and honest partial coverage after
+   interruption. D1/device/worker adverse-path checks remain explicit; a usable
+   short session is sufficient for the targeted reproductions below.
+2. **Repair completed-audio stalls (RUN-25-03).** Reproduce34/35 and inspect raw
+   OCR plus each tracker idle-completion condition with generation/occurrence.
+   Add only missing bounded diagnostic evidence before choosing a shared repair.
+   Then check85/86/97. Gate: exactly one continuation after playback, no manual
+   Space or repeat, with Stop/focus/uncertainty guards intact. Do not conflate
+   routed_latest_equal=true here with R18's different refusal or render quietness.
+3. **Locate pre-route delays (RUN-25-09/02, R1/T1).** Measure frame age, capture,
+   OCR queue/worker health, recognition, matching and tracker admission separately
+   around100 and the31 transition. Fix the measured owner; test slow/error/stale
+   observations. Handle the independent reload/readiness race RUN-25-01 as the
+   next small change in that owner. Gate: every long wait has an attributable
+   stage and valid cancellation/recovery; no OCR replacement or larger timeout
+   chosen from the total duration alone.
+4. **Restore expected prepared routes (RUN-25-07).** Retain actual OCR for the
+   candidate66/74/76/92 occurrences and compare against the existing exact resolver.
+   Fix only the demonstrated mismatch/admission cause with real positive and
+   nearby wrong-line negative fixtures. Gate: the correct prepared WAV, with no
+   unexpected live synthesis, global threshold relaxation or guessed story edge.
+5. **Explain repeated routing (RUN-25-10).** Correlate both102 generations with
+   raw OCR, speaker identity, source lead and the event that replaces the owner;
+   check the false character `I`. Gate: correct occurrence ownership and no
+   unnecessary restart. Preserve the distinction between cancellation before
+   PCM and a repeated audible clip; add a repair only after reproducing its cause.
+6. **Repair scene interruption (RUN-25-08).** Correlate48's source WAV, captured
+   output and transition to49. Establish which scene changes invalidate speech
+   and which permit the current clip to finish. Gate: intended speech completion
+   without stale audio crossing a genuinely new occurrence; Stop still cancels.
+7. **Resolve short/centered dialogue policy (RUN-25-06/R17).** Independently check
+   original game audio for centered46 and brief116. Decide the required product
+   behavior before adding capture or playback. Gate: truthful supported coverage,
+   no duplicate game voice and no arbitrary widening of the normal dialogue ROI.
+8. **Make failed preparation actionable (GEN-25-01).** Through restored Stories,
+    inspect/replay a rejected result and retry while retaining ready neighbouring
+    recordings. Compare the actual pause with quality evidence before changing
+    synthesis or rejection. Gate: understandable failure/retry and intact saved
+    assignments/audio; do not weaken quality gates from one rejected sample.
+9. **Check generation budget (GEN-25-02).** Reproduce314501:85 with its actual
+    text/reference/model/settings; inspect token/time budgeting and normal retries.
+    Gate: adequate bounded generation or a clear retryable failure, cancellation
+    and no publication of a truncated result. Preserve ready work on restart.
+10. **Finish the remaining UI items in separate increments.** Order: Stories
+    scrolling at860x560 (UX-25-02), off-screen calibration/U1/U4, source-launch
+    worker readiness (UX-25-03), loading on Read (UX-25-04), saved-voice overview
+    (UX-25-09), missing source text/unchanged candidate (UX-25-10), then canonical
+    displayed dialogue (RUN-25-04). Before each, distinguish missing native
+    qualification from a code defect; decide the smallest user action/feedback
+    change. Gate: reachable keyboard/mouse actions, truthful state and unchanged
+    voice assignments on browsing/cancel. Reuse the existing matching backlog
+    items rather than create parallel implementations.
+11. **Qualify sound and latency (RUN-25-05/R12/R6).** Correlate exact source WAVs
+    with independent captured output; explain the1.949s outlier and ambiguous
+    clips. Distinguish recorder discontinuities from audible playback gaps. Require
+    observer-only original-audio completion evidence before shortening its wait.
+    Gate: source/output onset, completion and continuation are measured over
+    covered intervals with explicit worker/device identity and instrumentation
+    overhead; no unit-test load runs during these measurements.
+12. **Repeat full native acceptance (M0/M1 and the latest chapter audit).** Run
+    all314001 through104 from Stories without manual transitions while real heavy
+    generation/publication remains active. Also qualify partly prepared active
+    chapter catch-up across newly published boundaries, failed/not-ready policy
+    and cancel/retry/restart. Use existing R2/R3/R4/R5/R7/R8/R9/R11 and
+    U1/U2/U4/U6/U7/U8 gates as targeted acceptance cases, including persistent OCR
+    and portable observation. Preserve approved WAV bytes and complete independent
+    capture; cache hits alone are not background-generation load. Remove only
+    verified completed TODO items and retain concrete remaining failures.
+
+Quality gate for every code item: run the local changed-test selector first,
+then missing focused tests and static checks. Existing full mypy/complexity debt
+is tracked under Restore pre-existing repository quality gates; do not introduce
+new failures, suppress diagnostics or raise allowances. Windows, packaging,
+accessibility and unrelated authoring/model work remain in their existing backlog
+and do not block this Mac sequence unless a specific changed contract requires it.
 
 ## P0 - Repair Reading ownership, OCR and continuation
 
@@ -1412,6 +1451,10 @@ M1 owns concurrent chapter-generation acceptance, including deferred activation,
 restart and completed-line reuse, on Mac. Windows platform acceptance remains a
 separate future gate.
 
+## Investigate subprocess cancellation state publication
+
+- [ ] Reproduce and fix `test_normal_subprocess_cancel_persists_typed_cancellation_after_real_child_exit`: after the child exits, `state["items"][queue_id]` is missing (`KeyError: line:one:5f2598bcb8bae8b4`). The October26 changed-test selector and isolated case fail identically on current code and untouched HEAD85d2a55. Trace queue/state publication before changing cancellation timing. Gate: the real-child cancellation retains its typed cancelled item, with no stale publication after cancellation.
+
 ## Investigate intermittent macOS Qt test crash
 
 - [ ] Isolate the intermittent macOS qt-app SIGSEGV at `test_backend_setting_reloads_speech_without_app_restart` while `player_session._replace_runtime` runs in a pooled thread. The historical five-test prefix and full4488 run passed, but their private logs are not a reproducible input. Record the full current discovery order and native stack on the next failure, then narrow that failing prefix. Establish a repeatable owner/lifetime sequence and deterministic regression before changing runtime ownership; passing reruns do not establish a cause or repair.
@@ -1473,7 +1516,7 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 
 ## Restore pre-existing repository quality gates
 
-- [ ] Fix the existing mypy errors in `vntts/diagnostic_recording.py`, `vntts/reading_diagnostics_analysis.py` and the preview backend factory contract in `vntts/app.py`; format the existing `vntts/moss_runtime.py` signature. These failures also reproduce on main before the unified-editor integration. Gate: the full configured mypy and Ruff format checks pass without suppressing diagnostics.
+- [ ] Fix the existing mypy errors in `vntts/diagnostic_recording.py`, `vntts/reading_diagnostics_analysis.py`, `vntts/authoring/workbench_ui.py`, optional remediation lookup in `vntts/onboarding_ui.py` and the preview backend factory contract in `vntts/app.py`; format the existing `vntts/moss_runtime.py` signature. Confirm the current baseline before each repair. Gate: the full configured mypy and Ruff format checks pass without suppressing diagnostics.
 - [ ] Bring the existing Reading, recording, generation and saved-audio complexity findings back within `tests/fixtures/ruff-complexity-v2.json`. Run `scripts/check_ruff_complexity.py` for the current scope inventory; refactor coherent responsibilities without increasing allowances, preserve lifecycle/error handling and run affected tests. Gate: the full complexity ratchet passes, with obsolete allowances removed or reduced.
 
 ## Qualify SQLite-only storage

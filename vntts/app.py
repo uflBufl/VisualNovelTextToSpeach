@@ -141,9 +141,13 @@ from vntts.profiles import GameProfileStore
 from vntts.profiles_ui import GameProfilesDialog
 from vntts.readiness_ui import ReadinessDialog
 from vntts.reading_diagnostics import (
+    DiagnosticSessionEntry,
     ReadingDiagnosticSession,
     SavedDiagnosticSession,
+    delete_saved_diagnostic_session,
     latest_finished_diagnostic_session,
+    list_diagnostic_sessions,
+    load_saved_diagnostic_session,
     record_diagnostic_event,
     selected_recording_target,
 )
@@ -2083,6 +2087,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self.support_export_runner = LatestTaskRunner(self)
         self.support_export_runner.finished.connect(self._support_export_finished)
+        self.support_history_runner = LatestTaskRunner(self)
+        self.support_history_runner.finished.connect(self._diagnostic_history_finished)
+        self._diagnostic_deletion_id: str | None = None
+        self._diagnostic_history_pending = False
         self._pregeneration_activation_generation: int | None = None
         self._pregeneration_activation_cancellation: Event | None = None
         self._pregeneration_activation_restore_runtime = Event()
@@ -4906,6 +4914,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.support_dialog.reading_export_requested.connect(
                 self.export_reading_diagnostics
             )
+            self.support_dialog.reading_delete_requested.connect(
+                self.delete_reading_diagnostics
+            )
+            self.support_dialog.reading_history_requested.connect(
+                self.refresh_diagnostic_history
+            )
             self.support_dialog.reading_folder_requested.connect(
                 self.open_reading_diagnostics_folder
             )
@@ -4990,12 +5004,76 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
             self.show_error("Unable to open the diagnostic sessions folder")
 
-    def export_reading_diagnostics(self) -> None:
-        session = self.reading_diagnostic_session
-        if session is None or (
-            not isinstance(session, SavedDiagnosticSession)
-            and not session.finished.is_set()
+    def refresh_diagnostic_history(self) -> None:
+        if self.support_history_runner.active:
+            self._diagnostic_history_pending = True
+            return
+        self._diagnostic_history_pending = False
+        if self.support_dialog is not None:
+            self.support_dialog.set_history_busy(True)
+        self.support_history_runner.start(
+            list_diagnostic_sessions,
+            get_local_data_directory() / "reading-diagnostics",
+        )
+
+    def _diagnostic_history_finished(
+        self, entries: list[DiagnosticSessionEntry] | None, error: Exception | None
+    ) -> None:
+        deleted_id = self._diagnostic_deletion_id
+        self._diagnostic_deletion_id = None
+        if self._shutting_down:
+            return
+        if deleted_id is not None and error is None:
+            current = self.reading_diagnostic_session
+            if current is not None and current.session_id == deleted_id:
+                self.reading_diagnostic_session = None
+        if self.support_dialog is not None:
+            self.support_dialog.set_history_busy(False)
+            if error is not None or deleted_id is not None:
+                self.support_dialog.set_history_status(
+                    f"Unable to {'delete session' if deleted_id else 'load session history'}: {error}"
+                    if error
+                    else ""
+                )
+            if entries is not None:
+                self.support_dialog.set_diagnostic_sessions(entries)
+            self.support_dialog.refresh_reading_session()
+        if deleted_id is not None or self._diagnostic_history_pending:
+            self.refresh_diagnostic_history()
+
+    def delete_reading_diagnostics(self, session_id: str) -> None:
+        if self.support_export_runner.active or self.support_history_runner.active:
+            return
+        current = self.reading_diagnostic_session
+        if (
+            current is not None
+            and current.session_id == session_id
+            and not isinstance(current, SavedDiagnosticSession)
+            and not current.finished.is_set()
         ):
+            return
+        self._diagnostic_deletion_id = session_id
+        if self.support_dialog is not None:
+            self.support_dialog.set_history_busy(True)
+            self.support_dialog.set_history_status("Deleting selected session...")
+        self.support_history_runner.start(
+            delete_saved_diagnostic_session,
+            get_local_data_directory() / "reading-diagnostics",
+            session_id,
+        )
+
+    def export_reading_diagnostics(self, session_id: str) -> None:
+        if self.support_export_runner.active or self.support_history_runner.active:
+            return
+        session = load_saved_diagnostic_session(
+            get_local_data_directory() / "reading-diagnostics", session_id
+        )
+        if session is None:
+            if self.support_dialog is not None:
+                self.support_dialog.set_export_result(
+                    False, "Selected session is no longer available for export"
+                )
+            self.refresh_diagnostic_history()
             return
         path = session.directory.parent / (session.session_id + ".zip")
         if self.support_dialog is not None:
@@ -5074,6 +5152,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.toggle_live()
 
     def export_support_bundle(self) -> None:
+        if (
+            self.support_export_runner.active
+            or self._diagnostic_deletion_id is not None
+        ):
+            if (
+                not self.support_export_runner.active
+                and self.support_dialog is not None
+            ):
+                self.support_dialog.set_export_result(
+                    None, "Wait until session deletion finishes, then export again."
+                )
+            return
         path, _selected_filter = QFileDialog.getSaveFileName(
             None,
             "Export support bundle",
@@ -5085,6 +5175,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.support_dialog.set_export_result(
                     None,
                     "Support report export cancelled.",
+                )
+            return
+        if (
+            self.support_export_runner.active
+            or self._diagnostic_deletion_id is not None
+        ):
+            if (
+                not self.support_export_runner.active
+                and self.support_dialog is not None
+            ):
+                self.support_dialog.set_export_result(
+                    None, "Wait until session deletion finishes, then export again."
                 )
             return
         self.set_status("Creating support bundle...")

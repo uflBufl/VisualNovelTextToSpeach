@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Callable, Literal
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
@@ -8,17 +9,22 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QTextEdit,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from vntts import support
 from vntts.action_icons import set_action_icon
+from vntts.reading_diagnostics import DiagnosticSessionEntry
 from vntts.ui_text import shortcut_tooltip
 
 
@@ -28,7 +34,9 @@ class SupportCenterDialog(QDialog):
     settings_folder_requested = Signal()
     reading_start_requested = Signal(bool, int)
     reading_stop_requested = Signal()
-    reading_export_requested = Signal()
+    reading_export_requested = Signal(str)
+    reading_delete_requested = Signal(str)
+    reading_history_requested = Signal()
     reading_folder_requested = Signal()
 
     def __init__(
@@ -42,8 +50,13 @@ class SupportCenterDialog(QDialog):
             None
         )
         self.setWindowTitle("Support and logs")
-        self.setMinimumSize(620, 420)
-        self.resize(760, 520)
+        self.setMinimumSize(620, 600)
+        self.resize(940, 760)
+        self._diagnostic_sessions: dict[str, DiagnosticSessionEntry] = {}
+        self._reading_report: dict[str, object] | None = None
+        self._history_busy = False
+        self._export_busy = False
+        self._history_status = ""
 
         self.events = QTextEdit()
         self.events.setReadOnly(True)
@@ -143,7 +156,36 @@ class SupportCenterDialog(QDialog):
         self.reading_start = QPushButton("Start session")
         self.reading_stop = QPushButton("Stop")
         self.reading_export = QPushButton("Export session")
+        self.reading_delete = QPushButton("Delete session")
         self.reading_folder = QPushButton("Sessions folder")
+        self.reading_history = QTreeWidget()
+        self.reading_history.setAccessibleName("Saved diagnostic sessions")
+        self.reading_history.setRootIsDecorated(False)
+        self.reading_history.setMinimumHeight(130)
+        self.reading_history.setHeaderLabels(
+            ["Recorded (local time)", "Game / window", "Size"]
+        )
+        self.reading_history.setColumnWidth(0, 215)
+        self.reading_history.setColumnWidth(2, 100)
+        self.reading_history.header().setStretchLastSection(False)
+        self.reading_history.header().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        self.reading_history.itemSelectionChanged.connect(self._update_history_actions)
+        self.reading_storage = QLabel("Loading saved sessions...")
+        self.reading_storage.setWordWrap(True)
+        self.reading_history_detail = QPlainTextEdit(
+            readOnly=True, tabChangesFocus=True
+        )
+        self.reading_history_detail.setAccessibleName(
+            "Selected diagnostic session details"
+        )
+        self.reading_history_detail.setFrameShape(QFrame.Shape.NoFrame)
+        self.reading_history_detail.viewport().setAutoFillBackground(False)
+        self.reading_history_detail.setFixedHeight(
+            self.reading_history_detail.fontMetrics().lineSpacing() * 3 + 12
+        )
+        self.reading_history_detail.installEventFilter(self)
         self.reading_status = QLabel(
             "No session. Logs exclude dialogue text. Media requires the checkbox above."
         )
@@ -155,12 +197,14 @@ class SupportCenterDialog(QDialog):
             )
         )
         self.reading_stop.clicked.connect(self.reading_stop_requested.emit)
-        self.reading_export.clicked.connect(self.reading_export_requested.emit)
+        self.reading_export.clicked.connect(self.request_session_export)
+        self.reading_delete.clicked.connect(self.request_session_delete)
         self.reading_folder.clicked.connect(self.reading_folder_requested.emit)
         for button, icon, action in (
             (self.reading_start, "play", "Start diagnostic session"),
             (self.reading_stop, "square", "Stop diagnostic session"),
             (self.reading_export, "download", "Export diagnostic session"),
+            (self.reading_delete, "trash-2", "Delete selected diagnostic session"),
             (self.reading_folder, "folder-open", "Open diagnostic sessions folder"),
         ):
             set_action_icon(button, icon)
@@ -169,6 +213,7 @@ class SupportCenterDialog(QDialog):
             button.setAutoDefault(False)
         self.reading_stop.setEnabled(False)
         self.reading_export.setEnabled(False)
+        self.reading_delete.setEnabled(False)
         self._create_layout(actions)
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
@@ -201,12 +246,19 @@ class SupportCenterDialog(QDialog):
         for button in (
             self.reading_start,
             self.reading_stop,
-            self.reading_export,
             self.reading_folder,
         ):
             recording_actions.addWidget(button)
         layout.addLayout(recording_actions)
         layout.addWidget(self.reading_status)
+        layout.addWidget(self.reading_storage)
+        layout.addWidget(self.reading_history, 1)
+        history_actions = QHBoxLayout()
+        history_actions.addWidget(self.reading_export)
+        history_actions.addWidget(self.reading_delete)
+        history_actions.addStretch()
+        layout.addLayout(history_actions)
+        layout.addWidget(self.reading_history_detail)
         layout.addWidget(self.operation_status)
         layout.addLayout(footer)
         self.setTabOrder(self.events, self.new_events_button)
@@ -216,10 +268,11 @@ class SupportCenterDialog(QDialog):
         self.setTabOrder(self.operation_status, self.export_button)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched is self.operation_status and event.type() == QEvent.Type.FontChange:
-            self.operation_status.setFixedHeight(
-                self.operation_status.fontMetrics().lineSpacing() * 3 + 12
-            )
+        if (
+            isinstance(watched, QPlainTextEdit)
+            and event.type() == QEvent.Type.FontChange
+        ):
+            watched.setFixedHeight(watched.fontMetrics().lineSpacing() * 3 + 12)
         return super().eventFilter(watched, event)
 
     def _show_status(self) -> None:
@@ -231,6 +284,7 @@ class SupportCenterDialog(QDialog):
                         self._export_status,
                         self._launcher_status,
                         self._reading_start_error,
+                        self._history_status,
                     ),
                 )
             )
@@ -275,6 +329,7 @@ class SupportCenterDialog(QDialog):
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
+        self.reading_history_requested.emit()
         self.refresh()
         self.timer.start()
 
@@ -286,7 +341,29 @@ class SupportCenterDialog(QDialog):
         report = (
             self.reading_status_provider() if self.reading_status_provider else None
         )
+        previous = self._reading_report or {}
+        current = report or {}
+        self._reading_report = dict(report) if report else None
+        if (previous.get("session_id"), previous.get("status")) != (
+            current.get("session_id"),
+            current.get("status"),
+        ):
+            self.reading_history_requested.emit()
+        if previous != current:
+            for index in range(self.reading_history.topLevelItemCount()):
+                item = self.reading_history.topLevelItem(index)
+                assert item is not None
+                entry = self._diagnostic_sessions[
+                    item.data(0, Qt.ItemDataRole.UserRole)
+                ]
+                self._set_history_row_label(item, entry)
+        self._update_history_actions()
         if report is None:
+            self.reading_start.setEnabled(True)
+            self.reading_media.setEnabled(True)
+            self.reading_seconds.setEnabled(True)
+            self.reading_stop.setEnabled(False)
+            self.reading_status.setText("No current diagnostic session.")
             return
         finished = report.get("status") == "finished"
         self.reading_start.setEnabled(finished)
@@ -295,7 +372,6 @@ class SupportCenterDialog(QDialog):
         self.reading_stop.setEnabled(
             not finished and report.get("status") == "recording"
         )
-        self.reading_export.setEnabled(finished)
         target = report.get("target")
         identity = (
             f"Window {target.get('window_id')}, PID {target.get('pid')}: {target.get('title')}. "
@@ -310,6 +386,121 @@ class SupportCenterDialog(QDialog):
             f"analysis: {report.get('analysis_status')}. "
             f"{report.get('media_error') or report.get('error_type') or ''}"
         )
+
+    def selected_diagnostic_session(self) -> DiagnosticSessionEntry | None:
+        item = self.reading_history.currentItem()
+        return (
+            self._diagnostic_sessions.get(item.data(0, Qt.ItemDataRole.UserRole))
+            if item is not None
+            else None
+        )
+
+    def set_diagnostic_sessions(self, entries: list[DiagnosticSessionEntry]) -> None:
+        selected = self.selected_diagnostic_session()
+        scroll = self.reading_history.verticalScrollBar().value()
+        self._diagnostic_sessions = {entry.session_id: entry for entry in entries}
+        self.reading_history.clear()
+        for entry in entries:
+            report = entry.report or {}
+            item = QTreeWidgetItem(
+                [
+                    _diagnostic_date(report.get("started_at")),
+                    "",
+                    _diagnostic_size(entry.size_bytes),
+                ]
+            )
+            item.setData(0, Qt.ItemDataRole.UserRole, entry.session_id)
+            self._set_history_row_label(item, entry)
+            self.reading_history.addTopLevelItem(item)
+            if selected is not None and entry.session_id == selected.session_id:
+                self.reading_history.setCurrentItem(item)
+        first = self.reading_history.topLevelItem(0)
+        if self.reading_history.currentItem() is None and first is not None:
+            self.reading_history.setCurrentItem(first)
+        self.reading_history.verticalScrollBar().setValue(scroll)
+        known_size = sum(
+            entry.size_bytes for entry in entries if entry.size_bytes is not None
+        )
+        unknown = sum(entry.size_bytes is None for entry in entries)
+        self.reading_storage.setText(
+            f"Saved sessions: {len(entries)} · {_diagnostic_size(known_size)}"
+            + (f" known; size unavailable for {unknown}" if unknown else " total")
+        )
+        self._update_history_actions()
+
+    def _set_history_row_label(
+        self, item: QTreeWidgetItem, entry: DiagnosticSessionEntry
+    ) -> None:
+        target = (entry.report or {}).get("target")
+        title = (
+            str(target.get("title") or "Untitled window")
+            if isinstance(target, dict)
+            else "Reading diagnostics"
+        )
+        issue, reason = _diagnostic_issue(entry, self._reading_report)
+        item.setText(1, f"{title} — {issue}" if issue else title)
+        for column in range(3):
+            item.setToolTip(
+                column,
+                f"{item.text(0)}\n{item.text(1)}\nSession: {entry.session_id}\n{reason}",
+            )
+
+    def set_history_busy(self, busy: bool) -> None:
+        self._history_busy = busy
+        self._update_history_actions()
+
+    def set_history_status(self, message: str) -> None:
+        self._history_status = message
+        self._show_status()
+
+    def _update_history_actions(self) -> None:
+        entry = self.selected_diagnostic_session()
+        current = self._reading_report or {}
+        current_busy = (
+            entry is not None
+            and entry.session_id == current.get("session_id")
+            and current.get("status") != "finished"
+        )
+        available = bool(entry and entry.saved and not current_busy)
+        enabled = available and not self._history_busy and not self._export_busy
+        self.export_button.setEnabled(not self._history_busy and not self._export_busy)
+        self.reading_export.setEnabled(enabled)
+        self.reading_delete.setEnabled(enabled)
+        details = "Select a saved session to export or delete it."
+        if entry is not None:
+            issue, reason = _diagnostic_issue(entry, self._reading_report)
+            details = "\n".join(
+                filter(
+                    None,
+                    (
+                        _diagnostic_files(entry.file_counts),
+                        f"{issue}: {reason}" if reason else issue,
+                    ),
+                )
+            )
+        if self.reading_history_detail.toPlainText() != details:
+            self.reading_history_detail.setPlainText(details)
+
+    def request_session_export(self) -> None:
+        entry = self.selected_diagnostic_session()
+        if entry is not None and self.reading_export.isEnabled():
+            self.reading_export_requested.emit(entry.session_id)
+
+    def request_session_delete(self) -> None:
+        entry = self.selected_diagnostic_session()
+        item = self.reading_history.currentItem()
+        if entry is None or item is None or not self.reading_delete.isEnabled():
+            return
+        answer = QMessageBox.question(
+            self,
+            "Delete diagnostic session?",
+            f"Delete {item.text(0)} — {item.text(1)} ({item.text(2)})?\n"
+            "The session's logs and recordings will be permanently deleted.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.reading_delete_requested.emit(entry.session_id)
 
     def refresh(self) -> None:
         self.refresh_reading_session()
@@ -395,18 +586,22 @@ class SupportCenterDialog(QDialog):
     def request_export(self) -> None:
         if not self.export_button.isEnabled():
             return
-        self.export_button.setEnabled(False)
+        self._export_busy = True
+        self._update_history_actions()
         self._export_status = "Choosing a destination for the support report..."
         self._show_status()
         self.export_requested.emit()
 
     def set_export_started(self) -> None:
+        self._export_busy = True
+        self._update_history_actions()
         self.export_button.setEnabled(False)
         self._export_status = "Creating support report..."
         self._show_status()
 
     def set_export_result(self, successful: bool | None, message: str) -> None:
-        self.export_button.setEnabled(True)
+        self._export_busy = False
+        self._update_history_actions()
         if successful is True:
             self._export_status = f"Support report saved to {message}"
         elif successful is False:
@@ -417,6 +612,88 @@ class SupportCenterDialog(QDialog):
         else:
             self._export_status = message or "Support report export cancelled."
         self._show_status()
+
+
+def _diagnostic_issue(
+    entry: DiagnosticSessionEntry, current: dict[str, object] | None
+) -> tuple[str, str]:
+    report = entry.report or {}
+    active = current is not None and current.get("session_id") == entry.session_id
+    if active:
+        report = current or report
+    media_error = str(report.get("media_error") or "")
+    if not media_error and report.get("media_status") in ("failed", "degraded"):
+        media_error = f"Media recording: {report['media_status']}."
+    session_error = str(report.get("error_type") or "")
+    phases = {
+        "recording": "Recording",
+        "stopping": "Stopping",
+        "finalizing": "Finishing",
+    }
+    phase = str(report.get("status", ""))
+    if active and phase in phases:
+        reason = media_error or session_error
+        return phases[phase] + (" (issue)" if reason else ""), reason
+    if entry.saved is None:
+        return "Unfinished" if phase in phases else "Unavailable", entry.error
+    if media_error:
+        return "Recording issue", media_error
+    if session_error:
+        return "Session issue", session_error
+    if report.get("analysis_status") == "unavailable":
+        return "Analysis issue", "Analysis is unavailable."
+    return "", ""
+
+
+def _diagnostic_files(counts: dict[str, int] | None) -> str:
+    if counts is None:
+        return "File inventory unavailable."
+    if not counts:
+        return "No files found."
+    categories = {
+        ".jsonl": "logs",
+        ".mp4": "video",
+        ".mov": "video",
+        ".wav": "audio",
+        ".m4a": "audio",
+        ".png": "images",
+        ".jpg": "images",
+    }
+    totals: dict[str, int] = {}
+    for suffix, count in counts.items():
+        category = categories.get(suffix, "other files")
+        totals[category] = totals.get(category, 0) + count
+    return (
+        "Files found: "
+        + "; ".join(
+            f"{name}: {totals[name]}"
+            for name in ("logs", "video", "audio", "images", "other files")
+            if name in totals
+        )
+        + "."
+    )
+
+
+def _diagnostic_date(value: object) -> str:
+    try:
+        return (
+            datetime.fromisoformat(str(value))
+            .astimezone()
+            .strftime("%Y-%m-%d %H:%M:%S %Z")
+        )
+    except ValueError, OverflowError, OSError:
+        return "Date unavailable"
+
+
+def _diagnostic_size(value: int | None) -> str:
+    if value is None:
+        return "Unavailable"
+    size = float(value)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1000 or unit == "TB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{value} B"
+        size /= 1000
+    return "Unavailable"
 
 
 def _support_value(value: object) -> str:

@@ -13,8 +13,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from vntts.reading_diagnostics import (  # noqa: E402
+    DiagnosticSessionEntry,
     ReadingDiagnosticSession,
+    SavedDiagnosticSession,
     arm_audio_worker_recording,
+    delete_saved_diagnostic_session,
     record_diagnostic_event,
     selected_recording_target,
 )
@@ -199,18 +202,28 @@ class ReadingDiagnosticSessionTest(unittest.TestCase):
             self.session()
         self.assertFalse(self.timelines.acquisition.stop_requested.is_set())
 
-    def test_export_rejects_symlink_and_retention_never_deletes_data(self):
+    def test_export_rejects_symlink_and_new_sessions_never_delete_old_data(self):
         session = self.session()
         session.stop(3)
         (session.directory / "linked").symlink_to(self.root / "external")
         with self.assertRaisesRegex(ValueError, "symlink"):
             session.export_entries()
-        for index in range(9):
-            directory = self.root / str(index)
-            directory.mkdir()
-            (directory / "session.json").write_text("{}")
-        with self.assertRaisesRegex(RuntimeError, "retention limit"):
-            self.session()
+        for _ in range(11):
+            self.session().stop(3)
+        self.assertEqual(len(list(self.root.iterdir())), 12)
+        self.assertTrue(session.directory.exists())
+
+    def test_history_deletion_refuses_active_and_finalizing_sessions(self):
+        session = self.session()
+        with self.assertRaisesRegex(ValueError, "not finished"):
+            delete_saved_diagnostic_session(self.root, session.session_id)
+        session.stop(3)
+        session.finished.clear()
+        session.phase = "finalizing"
+        with patch("vntts.reading_diagnostics._active", session):
+            with self.assertRaisesRegex(ValueError, "active or finalizing"):
+                delete_saved_diagnostic_session(self.root, session.session_id)
+        session.finished.set()
         self.assertTrue(session.directory.exists())
 
     def test_late_writer_completion_does_not_permanently_block_export(self):
@@ -279,6 +292,7 @@ class ReadingDiagnosticUiTest(unittest.TestCase):
         dialog.reading_start.click()
         self.assertEqual(calls, [(False, 600)])
         report = {
+            "session_id": "a" * 32,
             "status": "recording",
             "media_status": "disabled",
             "analysis_status": "not-requested",
@@ -290,5 +304,14 @@ class ReadingDiagnosticUiTest(unittest.TestCase):
         self.assertTrue(dialog.reading_stop.isEnabled())
         report["status"] = "finished"
         dialog.refresh()
+        self.assertFalse(dialog.reading_export.isEnabled())
+        saved = SavedDiagnosticSession(Path("session"), "a" * 32, report)
+        dialog.set_diagnostic_sessions(
+            [
+                DiagnosticSessionEntry(
+                    saved.directory, saved.session_id, report, 100, saved
+                )
+            ]
+        )
         self.assertTrue(dialog.reading_export.isEnabled())
         self.assertFalse(dialog.reading_stop.isEnabled())

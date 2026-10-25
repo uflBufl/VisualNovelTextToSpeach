@@ -386,6 +386,7 @@ class TrayApplicationTest(unittest.TestCase):
             dialog.reading_stop.click()
             self.wait_until(session.finished.is_set, timeout_ms=3000)
             dialog.refresh_reading_session()
+            self.wait_until(dialog.reading_export.isEnabled)
             self.assertTrue(dialog.reading_export.isEnabled())
             dialog.reading_export.click()
             archive_path = (
@@ -408,6 +409,7 @@ class TrayApplicationTest(unittest.TestCase):
                 restored.reading_diagnostic_session.session_id, session.session_id
             )
             restored.open_support_center()
+            self.wait_until(restored.support_dialog.reading_export.isEnabled)
             self.assertTrue(restored.support_dialog.reading_export.isEnabled())
             restored.support_dialog.reading_export.click()
             self.wait_until(
