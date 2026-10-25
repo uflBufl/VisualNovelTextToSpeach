@@ -2,8 +2,15 @@ import AVFoundation
 import Foundation
 import CoreVideo
 import CoreGraphics
+import Darwin
 
 func targetGuardSelfcheck() throws {
+    guard captureSafetyFailure(parentAlive: true, freeBytes: 512 * 1024 * 1024) == nil,
+          captureSafetyFailure(parentAlive: false, freeBytes: UInt64.max) == "controlling_parent_exited",
+          captureSafetyFailure(parentAlive: true, freeBytes: 512 * 1024 * 1024 - 1) == "low_free_space",
+          captureSafetyFailure(parentAlive: true, freeBytes: nil) == "free_space_unavailable" else {
+        throw CaptureError("Native safety guard failed")
+    }
     let frame = CGRect(x: 10, y: 20, width: 640, height: 400)
     let windowID: CGWindowID = 123
     let pid: pid_t = 456
@@ -66,11 +73,11 @@ func targetGuardSelfcheck() throws {
     print("target guard selfcheck passed: \(checks) fail-closed predicate checks; no window lookup or capture")
 }
 
-func writerSelfcheck(root: URL) async throws {
+func writerSelfcheck(root: URL, crash: Bool = false) async throws {
     guard root.path.hasPrefix("/"), mkdir(root.path, 0o700) == 0 else { throw CaptureError("Selfcheck output must be a new absolute directory") }
     let queue = DispatchQueue(label: "synthetic.writer.check", autoreleaseFrequency: .workItem)
     let recorder = try Recorder(label: "synthetic", root: root, queue: queue, width: 320, height: 180, requiresAudio: false)
-    for index in 0..<180 {
+    for index in 0..<(crash ? 750 : 180) {
         try queue.sync {
             try autoreleasepool {
                 var pixel: CVPixelBuffer?
@@ -99,6 +106,10 @@ func writerSelfcheck(root: URL) async throws {
             }
         }
         try await Task.sleep(nanoseconds: 33_333_333)
+    }
+    if crash {
+        // Deliberately skip AVAssetWriter finalization to verify completed ten-second fragments.
+        _exit(0)
     }
     try await recorder.finish()
     let asset = AVURLAsset(url: root.appendingPathComponent("window.mov"))

@@ -35,6 +35,42 @@ func activity(_ buffer: AVAudioPCMBuffer, threshold: Float = 0.001) throws -> (F
     return (peak, first)
 }
 
+
+func captureSafetyFailure(parentAlive: Bool, freeBytes: UInt64?) -> String? {
+    if !parentAlive { return "controlling_parent_exited" }
+    guard let freeBytes else { return "free_space_unavailable" }
+    return freeBytes < 512 * 1024 * 1024 ? "low_free_space" : nil
+}
+
+final class CaptureSafetyGuard {
+    let parentPID: pid_t
+    private let lock = NSLock()
+    private var failure: String?
+    private var timer: DispatchSourceTimer?
+    var reason: String? { lock.lock(); defer { lock.unlock() }; return failure }
+    init(directory: URL, parentPID: pid_t) {
+        self.parentPID = parentPID
+        let source = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        source.schedule(deadline: .now(), repeating: .milliseconds(250))
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            var info = statfs()
+            let free = statfs(directory.path, &info) == 0 ? UInt64(info.f_bavail) * UInt64(info.f_bsize) : nil
+            guard let reason = captureSafetyFailure(parentAlive: self.parentPID > 1 && getppid() == self.parentPID, freeBytes: free) else { return }
+            self.lock.lock()
+            guard self.failure == nil else { self.lock.unlock(); return }
+            self.failure = reason
+            self.lock.unlock()
+            // This queue also bounds a stalled main actor or native finalization after controller loss.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 10) { _exit(2) }
+            kill(getpid(), SIGTERM)
+        }
+        timer = source
+        source.resume()
+    }
+    deinit { timer?.cancel() }
+}
+
 final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     let label: String
     let root: URL
@@ -61,6 +97,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         super.init()
         if width > 0 {
             let asset = try AVAssetWriter(outputURL: root.appendingPathComponent("window.mov"), fileType: .mov)
+            asset.movieFragmentInterval = CMTime(seconds: 10, preferredTimescale: 600)
             let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
                 AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: width, AVVideoHeightKey: height,
                 // Reordering retains capture surfaces and stalls the three-frame SCStream pool.
@@ -184,6 +221,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         catch { FileHandle.standardError.write(Data("capture_helper: \(error)\n".utf8)); exit(1) }
     }
     static func run() async throws {
+        let parentPID = getppid()
         let args = Array(CommandLine.arguments.dropFirst())
         if args == ["--preflight"] {
             guard CGPreflightScreenCaptureAccess() else { throw CaptureError("Screen Recording permission missing; no prompt") }
@@ -216,6 +254,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             try await writerSelfcheck(root: URL(fileURLWithPath: args[1], isDirectory: true))
             return
         }
-        try await capture(args)
+        if args.count == 2 && args[0] == "--writer-crash-selfcheck" {
+            try await writerSelfcheck(root: URL(fileURLWithPath: args[1], isDirectory: true), crash: true)
+            return
+        }
+        try await capture(args, parentPID: parentPID)
     }
 }

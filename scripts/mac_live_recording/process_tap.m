@@ -9,6 +9,8 @@
 #include <stdatomic.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/mount.h>
+#import <dispatch/dispatch.h>
 #include <math.h>
 #include <unistd.h>
 
@@ -27,8 +29,9 @@ typedef struct {
     bool planar;
     Block blocks[SLOT_COUNT];
 } Queue;
-static volatile sig_atomic_t interrupted;
-static void stop_signal(int value) { (void)value; interrupted = 1; }
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "Stop flag must remain signal-safe");
+static _Atomic int interrupted;
+static void stop_signal(int value) { (void)value; atomic_store_explicit(&interrupted, 1, memory_order_relaxed); alarm(10); }
 static void watchdog(int value) { (void)value; _exit(2); }
 
 // The IO thread only validates shape and copies into bounded preallocated storage.
@@ -121,6 +124,12 @@ static double seconds(uint64_t ticks) {
     return (double)ticks * base.numer / base.denom / 1e9;
 }
 
+static NSString *safety_failure(bool parentAlive, bool spaceAvailable, uint64_t freeBytes) {
+    if (!parentAlive) return @"controlling_parent_exited";
+    if (!spaceAvailable) return @"free_space_unavailable";
+    return freeBytes < 512ull * 1024 * 1024 ? @"low_free_space" : nil;
+}
+
 static void record_stop(NSMutableDictionary *metadata, bool requested, double begin, double end, double duration) {
     metadata[@"stop_requested"] = @(requested);
     metadata[@"stop_reason"] = requested ? @"requested_stop" : @"duration";
@@ -130,6 +139,10 @@ static void record_stop(NSMutableDictionary *metadata, bool requested, double be
 }
 
 static void selfcheck(void) {
+    require(safety_failure(true, true, 512ull * 1024 * 1024) == nil &&
+        [safety_failure(false, true, UINT64_MAX) isEqual:@"controlling_parent_exited"] &&
+        [safety_failure(true, true, 512ull * 1024 * 1024 - 1) isEqual:@"low_free_space"] &&
+        [safety_failure(true, false, 0) isEqual:@"free_space_unavailable"], @"Native safety guard failed");
     NSMutableDictionary *stopped = [NSMutableDictionary dictionary];
     record_stop(stopped, true, 10, 11, 2);
     require([stopped[@"stop_reason"] isEqual:@"requested_stop"] && ![stopped[@"duration_completed"] boolValue] &&
@@ -164,20 +177,39 @@ static void selfcheck(void) {
     puts("selfcheck passed: bounded FIFO, wrap, overflow, interleaved/planar PCM, malformed buffers, controlled Stop metadata; no capture or playback");
 }
 
-static int capture(pid_t pid, NSString *expectedPath, double duration, NSString *root) {
+static dispatch_source_t monitor_safety(NSString *root, pid_t controllingParent, NSMutableDictionary *state) {
+    dispatch_source_t safety = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+    dispatch_source_set_timer(safety, DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC, 10 * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(safety, ^{
+        @autoreleasepool {
+            struct statfs info = {0};
+            bool available = statfs(root.stringByDeletingLastPathComponent.fileSystemRepresentation, &info) == 0;
+            NSString *reason = safety_failure(controllingParent > 1 && getppid() == controllingParent, available, (uint64_t)info.f_bavail * info.f_bsize);
+            @synchronized (state) {
+                if (reason && !state[@"reason"]) { state[@"reason"] = reason; atomic_store_explicit(&interrupted, 1, memory_order_relaxed); alarm(10); }
+            }
+        }
+    });
+    dispatch_resume(safety);
+    return safety;
+}
+
+static int capture(pid_t pid, NSString *expectedPath, double duration, NSString *root, pid_t controllingParent) {
     signal(SIGALRM, watchdog); alarm((unsigned)ceil(duration) + 15);
+    signal(SIGINT, stop_signal); signal(SIGTERM, stop_signal);
+    NSMutableDictionary *safetyState = [NSMutableDictionary dictionary];
+    dispatch_source_t safety = monitor_safety(root, controllingParent, safetyState);
     NSDictionary *selected = identity(pid, expectedPath);
     char recorderPath[PROC_PIDPATHINFO_MAXSIZE] = {0};
     require(proc_pidpath(getpid(), recorderPath, sizeof(recorderPath)) > 0, @"Recorder executable unavailable");
     require(mkdir(root.fileSystemRepresentation, 0700) == 0, @"Output directory must be new, with an existing parent");
     NSMutableDictionary *metadata = [@{@"status": @"in_progress", @"target": selected,
-        @"recorder_pid": @(getpid()), @"recorder_executable": @(recorderPath),
+        @"controlling_parent_pid": @(controllingParent), @"recorder_pid": @(getpid()), @"recorder_executable": @(recorderPath),
         @"mechanism": @"CoreAudio explicit process tap", @"scope": @"one HAL process; all its output streams",
         @"requested_seconds": @(duration), @"microphone": @NO, @"global_fallback": @NO,
         @"capture_consent": @"unqualified; nonzero PCM required", @"started_monotonic_s": @(seconds(mach_absolute_time()))} mutableCopy];
     NSString *session = [root stringByAppendingPathComponent:@"session.json"];
     json(metadata, session);
-    signal(SIGINT, stop_signal); signal(SIGTERM, stop_signal);
     AudioObjectID tap = 0, aggregate = 0;
     AudioDeviceIOProcID io = NULL;
     ExtAudioFileRef audio = NULL;
@@ -229,6 +261,8 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
         require(timeline != NULL, @"Cannot create timeline");
         check(AudioDeviceCreateIOProcID(aggregate, receive, q, &io), @"Create IOProc");
         require([identity(pid, expectedPath) isEqual:selected], @"Target changed before capture");
+        require(!interrupted, @"Capture stopped before acquisition");
+        require(controllingParent > 1 && getppid() == controllingParent, @"Native safety stop: controlling_parent_exited");
         check(AudioDeviceStart(aggregate, io), @"Start tap (Audio Capture consent may be required)"); started = true;
         uint64_t begin = mach_absolute_time(), lastIdentity = begin;
         metadata[@"capture_started_monotonic_s"] = @(seconds(begin)); json(metadata, session);
@@ -265,6 +299,10 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
                 require([identity(pid, expectedPath) isEqual:selected], @"Target changed at completion");
             } else usleep(5000);
         }
+        @synchronized (safetyState) {
+            NSString *safetyReason = safetyState[@"reason"];
+            if (safetyReason) { metadata[@"stop_reason"] = safetyReason; require(false, [@"Native safety stop: " stringByAppendingString:safetyReason]); }
+        }
         require(frames > 0 && peak > 0, @"No nonzero PCM; silence/consent is unqualified");
         metadata[@"capture_consent"] = @"nonzero process PCM observed; source correlation still required";
     } @catch (NSException *error) { [errors addObject:error.reason ?: error.name]; }
@@ -280,12 +318,14 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
     metadata[@"frames"] = @(frames); metadata[@"peak"] = @(peak); metadata[@"errors"] = errors;
     metadata[@"status"] = errors.count ? @"failed" : @"captured_unqualified";
     metadata[@"finished_monotonic_s"] = @(seconds(mach_absolute_time())); json(metadata, session);
+    dispatch_source_cancel(safety);
     alarm(0);
     if (errors.count) fprintf(stderr, "%s\n", [errors componentsJoinedByString:@"; "].UTF8String);
     return errors.count ? 1 : 0;
 }
 
 int main(int argc, const char **argv) {
+    pid_t controllingParent = getppid();
     @autoreleasepool { @try {
         if (argc == 2 && !strcmp(argv[1], "--selfcheck")) { selfcheck(); return 0; }
         bool inspect = argc == 4 && !strcmp(argv[1], "--inspect");
@@ -300,8 +340,8 @@ int main(int argc, const char **argv) {
             puts([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String); alarm(0); return 0;
         }
         double duration = strtod(argv[4], &end);
-        require(*argv[4] && !*end && isfinite(duration) && duration >= 1 && duration <= 600 && argv[5][0] == '/', @"Duration must be 1..600 seconds and output absolute");
-        if (@available(macOS 14.2, *)) return capture((pid_t)rawPID, @(argv[3]), duration, @(argv[5]));
+        require(*argv[4] && !*end && isfinite(duration) && duration >= 1 && duration <= 3600 && argv[5][0] == '/', @"Duration must be 1..3600 seconds and output absolute");
+        if (@available(macOS 14.2, *)) return capture((pid_t)rawPID, @(argv[3]), duration, @(argv[5]), controllingParent);
         require(false, @"Core Audio process taps require macOS 14.2+");
     } @catch (NSException *error) { fprintf(stderr, "process_tap: %s\n", error.reason.UTF8String); return 1; } }
     return 1;

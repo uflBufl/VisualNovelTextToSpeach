@@ -20,9 +20,20 @@ xcrun swiftc -parse-as-library scripts/mac_live_recording/fixture.swift -o /priv
 ```
 
 For sandboxed compilation, add `-module-cache-path /private/tmp/vntts-swift-cache`.
-The two selfchecks use only clock/PCM memory and generated pixels; they never
+The selfchecks use only clock/PCM memory and generated pixels; they never
 capture a screen or play audio. The writer selfcheck decodes all 180 generated
-frames and verifies three scene colors and original PTS.
+frames and verifies three scene colors and original PTS. The crash fixture writes
+25 seconds of generated video to the same single `window.mov` and calls `_exit`
+without finalizing the writer:
+
+```sh
+/private/tmp/vntts-native-recorder --writer-crash-selfcheck /private/tmp/new-crash-selfcheck
+ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=duration,nb_read_frames /private/tmp/new-crash-selfcheck/window.mov
+```
+
+The completed ten-second fragments must retain at least 20 seconds (600 decoded
+frames at 30 fps). An incomplete final fragment is expected; neither this file
+nor an `in_progress` capture is qualified as a complete session.
 
 The explicitly authorized native component gate opens a nonactivating generated
 window, prints its exact PID/window ID, captures **only that window** for 65 seconds,
@@ -68,10 +79,15 @@ distinguished just from missing content changes, so this is not labeled an encod
 failure. The changing fixture provides the independent evidence needed to qualify
 continuous dynamic recording.
 
-SIGINT/SIGTERM request orderly Stop. The capture's requested duration is 1..600
+SIGINT/SIGTERM request orderly Stop. The capture's requested duration is 1..3600
 seconds, native start/stop/finalization are bounded by a duration+15s watchdog,
 a separate Stop watchdog is 10s, and the fixture runner has an independent 83s timeout. Watchdog output can be
-partial and is never successful evidence.
+partial and is never successful evidence. Video uses one continuous MOV with
+`movieFragmentInterval=10s`, configured before the writer starts; there is no file
+rotation. Both native helpers independently monitor their controlling parent and
+available disk space every 250ms. Parent loss, unavailable free-space measurement,
+or less than 512 MiB free requests Stop and arms a ten-second forced-exit bound,
+including when the Python controller has crashed.
 
 ## Four-frame regression
 

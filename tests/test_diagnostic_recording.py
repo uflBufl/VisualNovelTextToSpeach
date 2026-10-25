@@ -10,7 +10,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from vntts.diagnostic_recording import NativeDiagnosticRecording, _run_checked
+import psutil
+
+from vntts.diagnostic_recording import (
+    MAX_DIAGNOSTIC_MEDIA_BYTES,
+    MAX_DIAGNOSTIC_SECONDS,
+    NativeDiagnosticRecording,
+    _run_checked,
+)
 
 
 class NativeDiagnosticRecordingTest(unittest.TestCase):
@@ -89,6 +96,89 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
         ):
             recording.run()
         return commands
+
+    @unittest.skipUnless(hasattr(os, "killpg"), "Owned process groups require POSIX")
+    def test_report_retains_helper_process_identity_while_native_capture_is_active(
+        self,
+    ):
+        from vntts.diagnostic_recording import _stop_process
+
+        recording = self.recording()
+        recording._launch(
+            [sys.executable, "-c", "import time; time.sleep(60)"], self.root / "window"
+        )
+        process = recording.processes[0][0]
+        try:
+            capture = recording.report()["captures"][0]
+            self.assertEqual(capture["helper_pid"], process.pid)
+            self.assertEqual(
+                capture["helper_created"], psutil.Process(process.pid).create_time()
+            )
+            self.assertIsNone(capture["returncode"])
+        finally:
+            _stop_process(process, 2)
+
+    def test_duration_is_mandatory_bounded_integer_up_to_one_hour(self):
+        for invalid in (0, 3601, True, 1.5, "3600", None):
+            with self.subTest(seconds=invalid), self.assertRaises(ValueError):
+                NativeDiagnosticRecording(self.root, {}, invalid, lambda: (), self.root)
+        self.assertEqual(MAX_DIAGNOSTIC_SECONDS, 3600)
+        for seconds in (1, 600, 601, 3600):
+            self.assertEqual(
+                NativeDiagnosticRecording(
+                    self.root, {}, seconds, lambda: (), self.root
+                ).seconds,
+                seconds,
+            )
+
+    def test_hour_keeps_continuous_initial_and_late_worker_capture_to_owned_deadline(
+        self,
+    ):
+        clock = [100.0]
+        recording = self.recording()
+        recording.seconds = 3600
+        calls = 0
+
+        def workers():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                clock[0] = 1300.0
+                return ()
+            recording.cancelled.set()
+            return ({"worker_pid": 123, "worker_path": "/worker", "worker_id": "late"},)
+
+        recording.workers = workers
+        with patch(
+            "vntts.diagnostic_recording.monotonic", side_effect=lambda: clock[0]
+        ):
+            commands = self.run_fake(recording)
+        self.assertEqual(len(commands), 3)
+        self.assertEqual(float(commands[0][4]), 3600)
+        self.assertEqual(float(commands[1][4]), 3600)
+        self.assertEqual(int(commands[2][4]), 2400)
+        self.assertEqual(recording.deadline, 3700)
+        self.assertEqual(recording.report()["captures"][2]["directory"], "rust-123")
+
+    def test_duration_scales_media_budget_without_deleting_evidence(self):
+        path = self.root / "large.caf"
+        for seconds, limit in (
+            (600, 1536 * 1024**2),
+            (601, 3 * 1024**3),
+            (3600, 9 * 1024**3),
+        ):
+            with self.subTest(seconds=seconds):
+                recording = self.recording()
+                recording.seconds = seconds
+                with path.open("wb") as output:
+                    output.truncate(limit)
+                recording._check_media_budget()
+                with path.open("ab") as output:
+                    output.write(b"x")
+                with self.assertRaisesRegex(RuntimeError, "evidence limit"):
+                    recording._check_media_budget()
+                self.assertTrue(path.is_file())
+        self.assertEqual(MAX_DIAGNOSTIC_MEDIA_BYTES, 9 * 1024**3)
 
     def test_worker_arm_wait_is_identity_specific_cancellable_and_failure_is_cached(
         self,

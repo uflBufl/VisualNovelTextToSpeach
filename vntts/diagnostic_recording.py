@@ -17,7 +17,12 @@ from threading import Condition, Event, Lock
 from time import monotonic
 from uuid import uuid4
 
+import psutil
+
 from vntts.path_safety import open_regular_binary
+
+MAX_DIAGNOSTIC_SECONDS = 3600
+MAX_DIAGNOSTIC_MEDIA_BYTES = 9 * 1024**3
 
 
 def process_executable(pid: int) -> str:
@@ -224,8 +229,8 @@ class NativeDiagnosticRecording:
         *,
         deadline: float | None = None,
     ) -> None:
-        if type(seconds) is not int or not 1 <= seconds <= 600:
-            raise ValueError("Recording duration must be between 1 and 600 seconds")
+        if type(seconds) is not int or not 1 <= seconds <= MAX_DIAGNOSTIC_SECONDS:
+            raise ValueError("Recording duration must be between 1 and 3600 seconds")
         self.directory, self.target, self.seconds = (
             directory.resolve(),
             dict(target),
@@ -242,6 +247,7 @@ class NativeDiagnosticRecording:
         self.started_monotonic: float | None = None
         self.ready_monotonic: float | None = None
         self._launched_at: dict[str, float] = {}
+        self._helper_created: dict[str, float] = {}
         self._sample_observed_at: dict[str, float] = {}
         self._failed_stop_started: dict[str, float] = {}
         self._identities: dict[str, dict[str, object]] = {}
@@ -307,6 +313,12 @@ class NativeDiagnosticRecording:
             )
         self.processes.append((process, output))
         self._launched_at[output.name] = monotonic()
+        try:
+            self._helper_created[output.name] = psutil.Process(
+                process.pid
+            ).create_time()
+        except psutil.Error:
+            pass
 
     def run(self) -> None:
         try:
@@ -422,7 +434,10 @@ class NativeDiagnosticRecording:
                         "observed_monotonic": monotonic(),
                     }
                     self._worker_lifetimes.append(lifetime)
-                    remaining = max(1, min(600, math.ceil(deadline - monotonic())))
+                    remaining = max(
+                        1,
+                        min(MAX_DIAGNOSTIC_SECONDS, math.ceil(deadline - monotonic())),
+                    )
                     output = self.directory / name
                     try:
                         self._launch(
@@ -672,14 +687,19 @@ class NativeDiagnosticRecording:
             process.wait(timeout=max(0.01, deadline - monotonic()))
 
     def _check_media_budget(self) -> None:
+        limit = min(
+            MAX_DIAGNOSTIC_MEDIA_BYTES, 1536 * 1024**2 * math.ceil(self.seconds / 600)
+        )
         total = 0
         for index, path in enumerate(self.directory.rglob("*")):
             if index >= 512 or path.is_symlink():
                 raise RuntimeError("Recording evidence exceeded its file limit")
             if path.is_file():
                 total += path.stat().st_size
-            if total > 1536 * 1024**2:
-                raise RuntimeError("Recording stopped at its 1.5 GiB evidence limit")
+            if total > limit:
+                raise RuntimeError(
+                    f"Recording stopped at its {limit / 1024**3:g} GiB evidence limit"
+                )
 
     def report(self) -> dict[str, object]:
         with self._arming:
@@ -688,6 +708,8 @@ class NativeDiagnosticRecording:
         for process, output in self.processes:
             record: dict[str, object] = {
                 "directory": output.name,
+                "helper_pid": process.pid if type(process.pid) is int else None,
+                "helper_created": self._helper_created.get(output.name),
                 "returncode": process.poll(),
                 "launched_monotonic": self._launched_at.get(output.name),
                 "first_sample_observed_monotonic": self._sample_observed_at.get(
