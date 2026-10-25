@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 from shiboken6 import isValid  # noqa: E402
 
-from tests.pregeneration_fixtures import ambiguous_fixture  # noqa: E402
+from tests.pregeneration_fixtures import ambiguous_fixture, fixture  # noqa: E402
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import write_synthetic_game_pack  # noqa: E402
 from vntts.app import (  # noqa: E402
@@ -66,10 +66,14 @@ from vntts.ocr_corrections_ui import OCRCorrectionsDialog  # noqa: E402
 from vntts.onboarding import DiagnosticResult  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivationResult  # noqa: E402
 from vntts.pregeneration_audition import VoiceAuditionCancelled  # noqa: E402
-from vntts.pregeneration_pack import OfflinePackResult  # noqa: E402
+from vntts.pregeneration_pack import (  # noqa: E402
+    OfflinePackPublisher,
+    OfflinePackResult,
+)
 from vntts.pregeneration_setup import ContentDiscovery, GameContent  # noqa: E402
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
 from vntts.pregeneration_voices import resolve_pregeneration_settings  # noqa: E402
+from vntts.prepared_playback import PreparedPlaybackStore  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
 from vntts.settings import (  # noqa: E402
     AppSettings,
@@ -1386,6 +1390,7 @@ class TrayApplicationTest(unittest.TestCase):
             generator=ANY,
             game_narrator_chooser=tray_application._open_preparation_narrator,
             automatic_activation=True,
+            base_pack=None,
             parent=tray_application.dashboard,
         )
         start_activation.assert_called_once()
@@ -1751,8 +1756,10 @@ class TrayApplicationTest(unittest.TestCase):
             )
             preparation.runtime_playback_settings.return_value = progress
             self.assertEqual(tray._reading_source_choice(), (None, True))
-            with patch.object(tray.initial_start_runner, "start"):
+            with patch.object(tray.initial_start_runner, "start") as load:
                 tray.prepare_reading()
+            initialize, *arguments = load.call_args.args
+            self.assertTrue(initialize(*arguments))
             controller.apply_settings.assert_not_called()
             tray._finish_controller_lifecycle()
             controller.apply_settings.return_value = True
@@ -8597,6 +8604,68 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertTrue(saved.compact_controls)
             self.assertEqual(saved.last_main_section, "reading")
 
+    def test_unrelated_save_preserves_external_pack_under_internal_pack_environment_override(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            external_pack, *_unused = write_synthetic_game_pack(
+                root / "external", include_sequence=True
+            )
+            local = root / "local"
+            internal_pack, *_unused = write_synthetic_game_pack(
+                local / "pregeneration" / "internal", include_sequence=True
+            )
+            path = root / "settings.json"
+            AppSettings(
+                game_pack=str(external_pack),
+                audio_source_policy="prefer-game-audio",
+                force_live_narrator=True,
+            ).save(path)
+            saved = load_app_settings(path, environment={})
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "VNTTS_SETTINGS_FILE": str(path),
+                        "VNTTS_GAME_PACK": str(internal_pack),
+                        "VNTTS_AUDIO_SOURCE_POLICY": "prefer-generated",
+                    },
+                ),
+                patch("vntts.settings.get_local_data_directory", return_value=local),
+                patch("vntts.app.get_local_data_directory", return_value=local),
+            ):
+                tray = TrayApplication(
+                    self.application,
+                    controller_factory=Mock(return_value=Mock()),
+                    profile_store=GameProfileStore(root / "profiles.json"),
+                    playback_store=PreparedPlaybackStore(
+                        local / "pregeneration" / "playback.json"
+                    ),
+                )
+                self.assertEqual(tray.settings.game_pack, str(internal_pack))
+                tray._save_compact_preference(True)
+                tray._save_main_section("reading")
+                self.assertEqual(tray.settings.game_pack, str(internal_pack))
+                self.assertEqual(tray.settings.audio_source_policy, "prefer-generated")
+                persisted = load_app_settings(path, environment={})
+                self.assertEqual(
+                    persisted,
+                    saved.updated(compact_controls=True, last_main_section="reading"),
+                )
+                document = json.loads(path.read_bytes())
+                for name in (
+                    "game_pack",
+                    "story_index",
+                    "voice_manifest",
+                    "live_sequence_plan",
+                    "generated_audio_manifest",
+                ):
+                    self.assertEqual(document[name], getattr(saved, name), name)
+                self.assertEqual(document["audio_source_policy"], "prefer-game-audio")
+                self.assertTrue(document["force_live_narrator"])
+                tray.shutdown()
+
     def test_profile_sync_uses_saved_settings_without_environment_override(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
@@ -8622,26 +8691,276 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertEqual(store.get(profile.id).game_window_title, "Saved game")
                 tray.shutdown()
 
-    def test_offline_pack_activator_uses_settings_revision_guard(self):
+    def test_prepared_pack_selection_does_not_overwrite_newer_preferences(self):
         with TemporaryDirectory() as directory:
-            path = Path(directory) / "settings.json"
+            root = Path(directory)
+            job, inputs, generated, _items = fixture(root / "source")
+            pack = OfflinePackPublisher().publish(job, inputs, generated)
+            path = root / "settings.json"
             original = AppSettings()
             original.save(path)
+            playback = PreparedPlaybackStore(root / "playback.json")
             with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(path)}):
                 tray = TrayApplication(
                     self.application,
-                    load_app_settings(path, environment={}),
+                    original,
                     controller_factory=Mock(return_value=Mock()),
+                    playback_store=playback,
                 )
                 external = original.updated(output_volume_percent=42)
                 external.save(path)
-                with self.assertRaisesRegex(OSError, "changed on disk"):
-                    tray.pregeneration_activator.save_settings(
-                        original.updated(audio_source_policy="prefer-generated")
-                    )
+                tray.pregeneration_activator.save_state(original, pack)
 
             self.assertEqual(load_app_settings(path, environment={}), external)
             self.assertEqual(tray.settings, original)
+            self.assertEqual(playback.restore(original).game_pack, str(pack.manifest))
+            tray.shutdown()
+
+    def test_prepared_activation_and_later_saves_keep_source_preferences(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, inputs, generated, _items = fixture(root / "source")
+            pack = OfflinePackPublisher().publish(job, inputs, generated)
+            profiles = GameProfileStore(root / "profiles.json")
+            preferences = AppSettings(
+                story_index=str(inputs.story_index),
+                voice_manifest=str(inputs.voice_manifest),
+                audio_source_policy="live-tts-only",
+                force_live_narrator=True,
+                live_sequence_mode="off",
+                output_volume_percent=42,
+            )
+            profile = profiles.create("Game", preferences)
+            preferences = preferences.updated(active_profile_id=profile.id)
+            playback = PreparedPlaybackStore(root / "playback.json")
+            controller = Mock(
+                settings=preferences, is_ready=False, is_live_running=False
+            )
+            controller.apply_settings.return_value = True
+            tray = TrayApplication(
+                self.application,
+                preferences,
+                controller_factory=Mock(return_value=controller),
+                profile_store=profiles,
+                playback_store=playback,
+            )
+            tray._pregeneration_activation_generation = (
+                tray._begin_controller_lifecycle()
+            )
+            result = tray.pregeneration_activator.activate(
+                preferences, pack, controller
+            )
+            controller.settings = result.settings
+            tray._pregeneration_activation_finished(result, None)
+            tray._save_compact_preference(True)
+            tray._save_offline_preferences(
+                preferences.updated(offline_tts_profile="fast")
+            )
+            self.assertTrue(tray._sync_active_profile())
+            saved = load_app_settings(tray._settings_path, environment={})
+            self.assertEqual(saved, tray.settings)
+            self.assertEqual(saved.story_index, preferences.story_index)
+            self.assertEqual(saved.voice_manifest, preferences.voice_manifest)
+            self.assertIsNone(saved.game_pack)
+            self.assertIsNone(saved.generated_audio_manifest)
+            self.assertEqual(saved.audio_source_policy, "live-tts-only")
+            self.assertTrue(saved.force_live_narrator)
+            self.assertEqual(saved.live_sequence_mode, "off")
+            self.assertEqual(
+                profiles.get(profile.id).story_index, preferences.story_index
+            )
+            self.assertIsNone(profiles.get(profile.id).game_pack)
+            self.assertEqual(tray._runtime_settings().game_pack, str(pack.manifest))
+            self.assertEqual(tray._runtime_settings().output_volume_percent, 42)
+            self.assertEqual(tray._runtime_settings().offline_tts_profile, "fast")
+            with patch.object(tray.configuration_runner, "start") as apply:
+                tray._start_configuration_apply(
+                    tray.settings, progress_status="Apply", success_status="Applied"
+                )
+                self.assertEqual(apply.call_args.args[2].game_pack, str(pack.manifest))
+            tray._finish_controller_lifecycle()
+            with (
+                patch("vntts.app.OfflineAudioPreparationDialog") as preparation,
+                patch.object(tray.dashboard, "embed_preparation"),
+            ):
+                tray.open_pregeneration()
+                self.assertEqual(preparation.call_args.args[0], tray.settings)
+                self.assertEqual(
+                    preparation.call_args.kwargs["base_pack"], str(pack.manifest)
+                )
+            tray.pregeneration_dialog = None
+            tray.shutdown()
+
+    def test_prepared_playback_preserves_manual_recovery_and_rejects_auto_advance(
+        self,
+    ):
+        from tests.test_pregeneration_pack import game_fixture, linear_plan
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, inputs, generated, _items = game_fixture(
+                root / "source", provider_id="local-story-index", game_id="custom-game"
+            )
+            plan = linear_plan(inputs.story_index, "custom-game")
+            pack = OfflinePackPublisher().publish(
+                job, inputs, generated, live_sequence_plan=plan
+            )
+            preferences = AppSettings(
+                capture_mode="window",
+                game_window_title="Game",
+                live_sequence_mode="audio-manual",
+                auto_advance_enabled=True,
+            )
+            playback = PreparedPlaybackStore(root / "playback.json")
+            playback.save(preferences, pack)
+            controller = Mock(is_ready=False, is_live_running=False)
+            tray = TrayApplication(
+                self.application,
+                preferences,
+                controller_factory=Mock(return_value=controller),
+                playback_store=playback,
+            )
+            self.assertEqual(
+                tray._runtime_settings().live_sequence_mode, "audio-manual"
+            )
+            self.assertFalse(tray.auto_advance_action.isEnabled())
+            with patch.object(tray, "_save_settings_candidate") as save:
+                tray.toggle_auto_advance(True)
+            save.assert_not_called()
+            controller.set_auto_advance_enabled.assert_not_called()
+            self.assertIs(tray.settings, preferences)
+            self.assertEqual(tray._runtime_settings().game_pack, str(pack.manifest))
+            tray.shutdown()
+
+    def test_prepared_runtime_keeps_paths_when_explicit_routing_preferences_change(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, inputs, generated, _items = fixture(root / "source")
+            pack = OfflinePackPublisher().publish(job, inputs, generated)
+            preferences = AppSettings(
+                capture_mode="window",
+                game_window_title="Game",
+                audio_source_policy="prefer-game-audio",
+            )
+            playback = PreparedPlaybackStore(root / "playback.json")
+            playback.save(preferences, pack)
+            tray = TrayApplication(
+                self.application,
+                preferences,
+                controller_factory=Mock(
+                    return_value=Mock(is_ready=False, is_live_running=False)
+                ),
+                playback_store=playback,
+            )
+            self.assertEqual(
+                tray._runtime_settings().audio_source_policy, "prefer-generated"
+            )
+            selected = preferences.updated(
+                audio_source_policy="live-tts-only",
+                force_live_narrator=True,
+                live_sequence_mode="off",
+                auto_advance_enabled=False,
+            )
+            tray.settings = selected
+            with patch.object(tray.configuration_runner, "start") as apply:
+                tray._start_configuration_apply(
+                    selected, progress_status="Apply", success_status="Applied"
+                )
+                runtime = apply.call_args.args[2]
+            self.assertEqual(runtime.game_pack, str(pack.manifest))
+            self.assertEqual(runtime.audio_source_policy, "live-tts-only")
+            self.assertTrue(runtime.force_live_narrator)
+            self.assertEqual(runtime.live_sequence_mode, "off")
+            self.assertFalse(runtime.auto_advance_enabled)
+            self.assertEqual(tray.settings, selected)
+            self.assertIsNone(tray.settings.generated_audio_manifest)
+            tray.shutdown()
+
+    def test_missing_prepared_files_fall_back_to_preferences_in_session_and_restart(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, inputs, generated, _items = fixture(root / "source")
+            pack = OfflinePackPublisher().publish(job, inputs, generated)
+            preferences = AppSettings(output_volume_percent=42, read_hotkey="<ctrl>+h")
+            playback = PreparedPlaybackStore(root / "playback.json")
+            playback.save(preferences, pack)
+            factory = Mock(return_value=Mock(is_ready=False, is_live_running=False))
+            tray = TrayApplication(
+                self.application,
+                preferences,
+                controller_factory=factory,
+                playback_store=playback,
+            )
+            self.assertEqual(factory.call_args.args[0].game_pack, str(pack.manifest))
+            self.assertTrue(tray._active_pack_reading_available())
+            pack.manifest.unlink()
+            with self.assertLogs("vntts.app", level="WARNING"):
+                self.assertFalse(tray._active_pack_reading_available())
+            self.assertEqual(tray._runtime_settings(), preferences)
+            self.assertEqual(tray.settings, preferences)
+            tray.shutdown()
+            with self.assertLogs("vntts.prepared_playback", level="ERROR"):
+                restarted = TrayApplication(
+                    self.application,
+                    preferences,
+                    controller_factory=factory,
+                    playback_store=playback,
+                )
+            self.assertEqual(factory.call_args.args[0], preferences)
+            self.assertEqual(restarted.settings, preferences)
+            self.assertFalse(restarted._active_pack_reading_available())
+            restarted.shutdown()
+            playback.path.unlink()
+            fresh = TrayApplication(
+                self.application,
+                preferences,
+                controller_factory=factory,
+                playback_store=playback,
+            )
+            self.assertEqual(fresh._runtime_settings(), preferences)
+            fresh.shutdown()
+
+    def test_profile_switch_restores_only_its_prepared_selection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, inputs, generated, _items = fixture(root / "source")
+            pack = OfflinePackPublisher().publish(job, inputs, generated)
+            profiles = GameProfileStore(root / "profiles.json")
+            first = profiles.create("First", AppSettings(game_window_title="First"))
+            second = profiles.create("Second", AppSettings(game_window_title="Second"))
+            preferences = first.apply(AppSettings())
+            playback = PreparedPlaybackStore(root / "playback.json")
+            playback.save(preferences, pack)
+            tray = TrayApplication(
+                self.application,
+                preferences,
+                controller_factory=Mock(
+                    return_value=Mock(is_ready=False, is_live_running=False)
+                ),
+                profile_store=profiles,
+                playback_store=playback,
+            )
+            dialog = Mock()
+            dialog.exec.return_value = QDialog.DialogCode.Accepted
+            with (
+                patch("vntts.app.GameProfilesDialog", return_value=dialog),
+                patch.object(tray.profile_restart_runner, "start") as restart,
+            ):
+                dialog.settings.return_value = second.apply(preferences)
+                tray.open_profiles()
+                self.assertEqual(restart.call_args.args[2], tray.settings)
+                self.assertIsNone(restart.call_args.args[2].game_pack)
+                tray._finish_controller_lifecycle()
+                dialog.settings.return_value = first.apply(tray.settings)
+                tray.open_profiles()
+                self.assertEqual(
+                    restart.call_args.args[2].game_pack, str(pack.manifest)
+                )
+                self.assertIsNone(tray.settings.game_pack)
             tray.shutdown()
 
     def test_pack_activation_keeps_reading_section_when_worker_saved_an_old_tab(self):
@@ -8660,7 +8979,6 @@ class TrayApplicationTest(unittest.TestCase):
                 )
                 tray.dashboard.show_reading()
                 candidate = original.updated(audio_source_policy="prefer-generated")
-                tray._save_settings_candidate(candidate)
 
                 tray._pregeneration_activation_status = (
                     "Prepared audio is active for 32 dialogue lines."
@@ -8670,7 +8988,12 @@ class TrayApplicationTest(unittest.TestCase):
                 )
 
                 self.assertEqual(tray.settings.last_main_section, "reading")
-                self.assertEqual(tray.settings.audio_source_policy, "prefer-generated")
+                self.assertEqual(
+                    tray.settings.audio_source_policy, original.audio_source_policy
+                )
+                self.assertEqual(
+                    tray._runtime_settings().audio_source_policy, "prefer-generated"
+                )
                 self.assertIn('"last_main_section": "reading"', path.read_text())
                 self.assertIs(
                     tray.dashboard.focusWidget(), tray.dashboard.prepare_reading_button
@@ -8708,7 +9031,6 @@ class TrayApplicationTest(unittest.TestCase):
                     tray._begin_controller_lifecycle()
                 )
                 candidate = original.updated(audio_source_policy="prefer-generated")
-                tray._save_settings_candidate(candidate)
 
                 tray._pregeneration_activation_finished(
                     OfflinePackActivationResult(candidate, path, False), None
@@ -9228,6 +9550,67 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertIn("Prepared recording", results[0][1])
                 self.assertFalse(tray._controller_ready)
                 tray.shutdown()
+
+    def test_setup_projects_prepared_state_without_persisting_draft_runtime_paths(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, inputs, generated, _items = fixture(root / "source")
+            pack = OfflinePackPublisher().publish(job, inputs, generated)
+            preferences = AppSettings(speech_backend="coqui-xtts", tts_model=None)
+            playback = PreparedPlaybackStore(root / "playback.json")
+            playback.save(preferences, pack)
+            controller = Mock(
+                settings=playback.restore(preferences),
+                is_ready=False,
+                is_live_running=False,
+                last_audio_source_description="Generated audio (line game:1)",
+            )
+            controller.test_current_dialog.return_value = (
+                "Narrator",
+                "Ready recording.",
+            )
+
+            def apply(settings):
+                controller.settings = settings
+                return True
+
+            controller.apply_settings.side_effect = apply
+            tray = TrayApplication(
+                self.application,
+                preferences,
+                controller_factory=Mock(return_value=controller),
+                playback_store=playback,
+            )
+            results = []
+            tray.signals.onboarding_test_finished.connect(
+                lambda success, message: results.append((success, message))
+            )
+            tray.onboarding_test_runner.thread_pool = ImmediateTaskPool()
+            draft = preferences.updated(capture_mode="window", game_window_title="Game")
+            tray.run_onboarding_test(draft)
+
+            runtime = controller.apply_settings.call_args.args[0]
+            self.assertEqual(runtime.game_pack, str(pack.manifest))
+            self.assertEqual(runtime.story_index, str(pack.imported.story_index))
+            self.assertEqual(
+                runtime.generated_audio_manifest,
+                str(pack.imported.generated_audio_manifest),
+            )
+            self.assertEqual(runtime.audio_source_policy, "prefer-generated")
+            self.assertEqual(runtime.game_window_title, "Game")
+            controller.test_current_dialog.assert_called_once_with(
+                capture_context=ANY, prepare_live=ANY
+            )
+            controller.start.assert_not_called()
+            controller.model_assets.download.assert_not_called()
+            self.assertTrue(results[0][0])
+            self.assertIn("Prepared recording", results[0][1])
+            self.assertIs(tray.settings, preferences)
+            self.assertIsNone(draft.story_index)
+            self.assertIsNone(draft.generated_audio_manifest)
+            self.assertEqual(draft.audio_source_policy, "live-tts-only")
+            self.assertIs(tray._onboarding_preview_settings, runtime)
+            tray.shutdown()
 
     def test_onboarding_test_requires_a_coqui_model(self):
         controller = Mock()

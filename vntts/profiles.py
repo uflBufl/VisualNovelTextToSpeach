@@ -12,6 +12,8 @@ from vntts.settings import (
     get_config_directory,
     legacy_narrator_assignment_forces_live_tts,
     live_sequence_modes,
+    preference_values,
+    user_preferences,
 )
 from vntts.versioned_json import (
     file_revision,
@@ -57,6 +59,7 @@ class GameProfile:
         profile_id: str | None = None,
         ocr_regions: OCRRegions | None = None,
     ) -> Self:
+        settings = user_preferences(settings)
         return cls(
             id=profile_id or uuid4().hex,
             name=_validated_name(name),
@@ -82,6 +85,7 @@ class GameProfile:
         *,
         source_schema: int = profiles_schema_version,
     ) -> Self:
+        values = preference_values(values)
         region = DialogRegion.from_mapping(values.get("dialog_region"))
         raw_ocr_regions = values.get("ocr_regions")
         ocr_regions = (
@@ -134,7 +138,7 @@ class GameProfile:
         )
 
     def to_mapping(self) -> dict[str, object]:
-        return asdict(self)
+        return preference_values(asdict(self))
 
     def apply(self, settings: AppSettings) -> AppSettings:
         settings = settings.updated(

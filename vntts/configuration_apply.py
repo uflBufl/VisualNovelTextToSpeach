@@ -16,6 +16,7 @@ from vntts.settings import (
     AppSettings,
     is_live_sequence_audio_mode,
     restart_required_setting_changes,
+    user_preferences,
 )
 
 if TYPE_CHECKING:
@@ -149,10 +150,19 @@ class ConfigurationApplyMixin:
 
         def _save_settings_candidate(self, candidate: AppSettings) -> Path: ...
 
+        def _runtime_settings(
+            self, settings: AppSettings | None = None
+        ) -> AppSettings: ...
+
     def _refresh_preparation_settings(self) -> None:
         preparation = self.pregeneration_dialog
         if preparation is not None and not preparation.has_pending_work():
             preparation.apply_narrator_settings(self.settings)
+            preparation.publisher.base_pack = (
+                Path(pack).expanduser().resolve()
+                if (pack := self._runtime_settings().game_pack)
+                else None
+            )
 
     def _setup_configuration_apply(self) -> None:
         if not isinstance(self, QObject):
@@ -197,6 +207,7 @@ class ConfigurationApplyMixin:
         restart: bool = False,
         after_apply: Callable[[], object] | None = None,
     ) -> None:
+        settings = self._runtime_settings(settings)
         # A cancelled replacement can leave the saved and loaded identities apart.
         restart = restart or (
             self._controller_ready
@@ -344,7 +355,7 @@ class ConfigurationApplyMixin:
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
-            updated_settings = dialog.settings()
+            updated_settings = user_preferences(dialog.settings())
         except (OSError, ValueError) as error:
             self._report_settings_failure(
                 f"Unable to read settings: {error}",
@@ -364,12 +375,13 @@ class ConfigurationApplyMixin:
             updated_settings,
         )
         self.settings = updated_settings
-        self.dashboard.set_configuration(self.settings)
+        runtime_settings = self._runtime_settings()
+        self.dashboard.set_configuration(runtime_settings)
         self.sequence_resync_action.setVisible(
-            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
+            is_live_sequence_audio_mode(runtime_settings.live_sequence_mode)
         )
         self.sequence_expected_action.setVisible(
-            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
+            is_live_sequence_audio_mode(runtime_settings.live_sequence_mode)
         )
         self._update_auto_advance_action()
         profile_synced = self._sync_active_profile()
@@ -392,7 +404,7 @@ class ConfigurationApplyMixin:
             restart=bool(restart_changes and self._controller_ready),
         )
         if self.readiness_dialog is not None:
-            self.readiness_dialog.update_settings(self.settings)
+            self.readiness_dialog.update_settings(runtime_settings)
 
     def open_assets(self) -> None:
         if self._controller_busy or self._shutting_down:
@@ -401,13 +413,14 @@ class ConfigurationApplyMixin:
         dialog = self._create_asset_manager_dialog()
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        candidate = dialog.settings()
+        candidate = user_preferences(dialog.settings())
         try:
             path = self._save_settings_candidate(candidate)
         except OSError as error:
             self.show_error(f"Unable to save model and voice settings: {error}")
             return
         self.settings = candidate
+        self.dashboard.set_configuration(self._runtime_settings())
         profile_synced = self._sync_active_profile()
         profile_suffix = ""
         if not profile_synced:

@@ -70,7 +70,7 @@ class OfflinePackActivatorTest(unittest.TestCase):
                     ),
                 ):
                     result = OfflinePackActivator(
-                        save_settings=lambda _settings: root / "settings.json"
+                        save_state=lambda _settings, _pack: root / "settings.json"
                     ).activate(
                         AppSettings(
                             live_sequence_mode="off",
@@ -118,7 +118,7 @@ class OfflinePackActivatorTest(unittest.TestCase):
             controller = Mock(is_ready=False)
             controller.apply_settings.return_value = True
             activated = OfflinePackActivator(
-                save_settings=lambda _settings: root / "settings.json"
+                save_state=lambda _settings, _pack: root / "settings.json"
             ).activate(AppSettings(), pack, controller)
             self.assertEqual(
                 activated.settings.audio_source_policy, "prefer-game-audio"
@@ -153,7 +153,7 @@ class OfflinePackActivatorTest(unittest.TestCase):
             controller.apply_settings.return_value = True
             controller.start.return_value = True
             activator = OfflinePackActivator(
-                save_settings=lambda _settings: root / "settings.json"
+                save_state=lambda _settings, _pack: root / "settings.json"
             )
             result = activator.activate(current, pack, controller)
             self.assertFalse(result.settings.force_live_narrator)
@@ -162,7 +162,7 @@ class OfflinePackActivatorTest(unittest.TestCase):
             self.assertFalse(live._has_manual_voice_override("Hotelier"))
             self.assertFalse(live._has_manual_voice_override("Other story speaker"))
 
-    def test_restarts_runtime_before_committing_generated_first_settings(self):
+    def test_restarts_runtime_before_committing_playback_state(self):
         with TemporaryDirectory() as temporary_directory:
             pack = published_pack(Path(temporary_directory))
             saved = []
@@ -170,7 +170,7 @@ class OfflinePackActivatorTest(unittest.TestCase):
             controller.apply_settings.return_value = True
             controller.start.return_value = True
             activator = OfflinePackActivator(
-                save_settings=lambda settings: (
+                save_state=lambda settings, _pack: (
                     saved.append(settings)
                     or Path(temporary_directory) / "settings.json"
                 )
@@ -188,7 +188,7 @@ class OfflinePackActivatorTest(unittest.TestCase):
             str(pack.imported.generated_audio_manifest),
         )
         self.assertTrue(result.restarted_runtime)
-        self.assertEqual(saved, [result.settings])
+        self.assertEqual(saved, [AppSettings()])
         controller.shutdown.assert_called_once_with()
         controller.apply_settings.assert_called_once_with(
             result.settings,
@@ -201,7 +201,7 @@ class OfflinePackActivatorTest(unittest.TestCase):
                 "pregeneration-activation-pack-preflight",
                 "pregeneration-activation-settings-build",
                 "pregeneration-activation-runtime-apply",
-                "pregeneration-activation-settings-save",
+                "pregeneration-activation-state-save",
             ],
         )
 
@@ -229,7 +229,7 @@ class OfflinePackActivatorTest(unittest.TestCase):
                     save = Mock(return_value=root / "settings.json")
                     if failure == "save":
                         save.side_effect = OSError("disk full")
-                    activator = OfflinePackActivator(save_settings=save)
+                    activator = OfflinePackActivator(save_state=save)
                     if failure:
                         with self.assertRaises(OfflinePackActivationError):
                             activator.activate(previous, pack, controller)
@@ -252,7 +252,7 @@ class OfflinePackActivatorTest(unittest.TestCase):
             controller.apply_settings.return_value = True
             controller.start.return_value = True
             activator = OfflinePackActivator(
-                save_settings=Mock(side_effect=OSError("disk full"))
+                save_state=Mock(side_effect=OSError("disk full"))
             )
 
             with self.assertRaisesRegex(OfflinePackActivationError, "disk full"):
@@ -275,7 +275,7 @@ class OfflinePackActivatorTest(unittest.TestCase):
                 OfflinePackActivationError,
                 "could not start",
             ):
-                OfflinePackActivator(save_settings=save).activate(
+                OfflinePackActivator(save_state=save).activate(
                     previous,
                     pack,
                     controller,
@@ -297,7 +297,7 @@ class OfflinePackActivatorTest(unittest.TestCase):
 
             with self.assertRaisesRegex(OfflinePackActivationError, "disk full"):
                 OfflinePackActivator(
-                    save_settings=Mock(side_effect=OSError("disk full"))
+                    save_state=Mock(side_effect=OSError("disk full"))
                 ).activate(
                     previous,
                     pack,

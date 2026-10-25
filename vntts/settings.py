@@ -21,6 +21,53 @@ if TYPE_CHECKING:
 
 settings_schema_version = 31
 main_sections = ("stories", "voices", "reading")
+content_path_setting_names = (
+    "game_pack",
+    "story_index",
+    "voice_manifest",
+    "live_sequence_plan",
+    "live_speaker_corpus",
+    "generated_audio_manifest",
+)
+
+
+def preference_values(values: Mapping[str, object]) -> dict[str, object]:
+    """Internal preparation paths belong to local playback state, not preferences."""
+    result = dict(values)
+    root = Path(os.path.abspath(get_local_data_directory() / "pregeneration"))
+    for name in content_path_setting_names:
+        value = result.get(name)
+        if isinstance(value, str) and value.strip():
+            path = Path(os.path.abspath(Path(value).expanduser()))
+            if path.is_relative_to(root):
+                result[name] = None
+    return result
+
+
+def user_preferences(settings: "AppSettings") -> "AppSettings":
+    values = preference_values(asdict(settings))
+    if all(
+        values[name] == getattr(settings, name) for name in content_path_setting_names
+    ):
+        return settings
+    return replace(
+        settings,
+        game_pack=settings.game_pack if values["game_pack"] is not None else None,
+        story_index=settings.story_index if values["story_index"] is not None else None,
+        voice_manifest=settings.voice_manifest
+        if values["voice_manifest"] is not None
+        else None,
+        live_sequence_plan=settings.live_sequence_plan
+        if values["live_sequence_plan"] is not None
+        else None,
+        live_speaker_corpus=settings.live_speaker_corpus
+        if values["live_speaker_corpus"] is not None
+        else None,
+        generated_audio_manifest=settings.generated_audio_manifest
+        if values["generated_audio_manifest"] is not None
+        else None,
+    )
+
 
 audio_source_policies = {
     "live-tts-only",
@@ -545,7 +592,9 @@ class AppSettings:
 
     def save(self, path: PathInput | None = None) -> Path:
         path = get_settings_path() if path is None else Path(path).expanduser()
-        write_versioned_json(path, settings_schema_version, asdict(self))
+        write_versioned_json(
+            path, settings_schema_version, preference_values(asdict(self))
+        )
         return path
 
     def updated(self, **changes: Unpack[AppSettingsChanges]) -> Self:
@@ -609,7 +658,9 @@ def load_app_settings(
         path,
         schema_version=settings_schema_version,
         document_name="settings",
-        decode=lambda values: AppSettings.from_mapping(values, warn=report),
+        decode=lambda values: AppSettings.from_mapping(
+            preference_values(values), warn=report
+        ),
         fallback=fallback,
         warn=report,
         allow_older=True,

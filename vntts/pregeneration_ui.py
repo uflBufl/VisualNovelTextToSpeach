@@ -285,6 +285,7 @@ class OfflineAudioPreparationDialog(QDialog):
         generator: OfflineGenerationWorker | None = None,
         recovery: OfflineRecoveryWorker | None = None,
         publisher: OfflinePackPublisher | None = None,
+        base_pack: str | Path | None = None,
         importer: Reverse1999GameImporter | None = None,
         game_narrator_chooser: Callable[..., AppSettings | None] | None = None,
         automatic_activation: bool = False,
@@ -316,7 +317,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.input_store = input_store or PregenerationInputStore(self.job_store)
         self.generator = generator or OfflineGenerationWorker()
         self.recovery = recovery or OfflineRecoveryWorker(self.generator)
-        self.publisher = publisher or OfflinePackPublisher(base_pack=settings.game_pack)
+        self.publisher = publisher or OfflinePackPublisher(
+            base_pack=base_pack or settings.game_pack
+        )
         self.importer = importer or Reverse1999GameImporter()
         self.game_narrator_chooser = game_narrator_chooser
         self._initialize_task_runners(audition_service, preview_player, thread_pool)

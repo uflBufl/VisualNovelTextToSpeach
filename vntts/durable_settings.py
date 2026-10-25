@@ -15,7 +15,9 @@ from vntts.profiles import GameProfileStore
 from vntts.settings import (
     AppSettings,
     load_app_settings,
+    preference_values,
     settings_schema_version,
+    user_preferences,
 )
 from vntts.versioned_json import write_versioned_json_if_unchanged
 
@@ -90,6 +92,7 @@ class DurableSettingsMixin:
                 for name, saved_value in asdict(persisted).items():
                     if current[name] != saved_value and values[name] == current[name]:
                         values[name] = saved_value
+            values = preference_values(values)
             self._settings_revision = write_versioned_json_if_unchanged(
                 self._settings_path,
                 settings_schema_version,
@@ -142,8 +145,8 @@ class DurableSettingsMixin:
             self._restore_onboarding_runtime()
             return
 
-        candidate = wizard.settings().updated(
-            last_main_section=self.settings.last_main_section
+        candidate = user_preferences(
+            wizard.settings().updated(last_main_section=self.settings.last_main_section)
         )
         try:
             path = self._save_settings_candidate(candidate)

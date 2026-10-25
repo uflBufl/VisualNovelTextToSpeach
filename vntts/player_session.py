@@ -304,7 +304,7 @@ class PlayerSessionOwner:
         cancellation: Event,
         restart_previous: Event,
     ) -> OfflinePackActivationResult | None:
-        def save_if_current(candidate: AppSettings) -> str:
+        def save_if_current(candidate: AppSettings, pack: OfflinePackResult) -> str:
             with self._state_lock:
                 if (
                     self._closed
@@ -314,7 +314,7 @@ class PlayerSessionOwner:
                     raise OfflinePackActivationCancelled(
                         "Offline game pack activation was cancelled"
                     )
-                return str(activator.save_settings(candidate))
+                return str(activator.save_state(candidate, pack))
 
         return self.run(
             generation,
@@ -324,7 +324,8 @@ class PlayerSessionOwner:
                 self.controller,
                 cancellation,
                 restart_previous,
-                save_settings=save_if_current,
+                save_state=save_if_current,
+                previous_runtime_settings=self.controller.settings,
             ),
             None,
         )

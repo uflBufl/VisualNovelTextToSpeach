@@ -50,6 +50,7 @@ from vntts.pregeneration_voices import (  # noqa: E402
     VoiceDecisionStore,
     VoicePlanStore,
 )
+from vntts.prepared_playback import PreparedPlaybackStore  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.source_audio_progress import SourceAudioProgress  # noqa: E402
 from vntts.speech_presentation import engine_model_label  # noqa: E402
@@ -1485,12 +1486,14 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 self.assertNotIn(authoring_term, player_copy)
 
             saved_settings = root / "settings.json"
+            playback = PreparedPlaybackStore(root / "playback.json")
             controller = Mock(is_ready=False)
             controller.apply_settings.return_value = True
             tray = TrayApplication(
                 self.application,
                 AppSettings(),
                 controller_factory=Mock(return_value=controller),
+                playback_store=playback,
             )
             with patch(
                 "vntts.app.OfflineAudioPreparationDialog",
@@ -1519,11 +1522,16 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 QTest.qWait(5)
 
             self.assertFalse(tray.pregeneration_activation_runner.active)
-            self.assertEqual(tray.settings.audio_source_policy, "prefer-game-audio")
+            self.assertEqual(tray.settings.audio_source_policy, "live-tts-only")
+            self.assertIsNone(tray.settings.game_pack)
             self.assertEqual(
-                tray.settings.game_pack, str(dialog.pack_result().manifest)
+                tray._runtime_settings().audio_source_policy, "prefer-game-audio"
+            )
+            self.assertEqual(
+                tray._runtime_settings().game_pack, str(dialog.pack_result().manifest)
             )
             self.assertTrue(saved_settings.is_file())
+            self.assertTrue(playback.path.is_file())
             self.assertIn("Prepared audio is active", tray.dashboard.status.text())
             self.assertIn("click Set up reading", tray.dashboard.status.text())
             self.assertTrue(tray.dashboard.isVisible())

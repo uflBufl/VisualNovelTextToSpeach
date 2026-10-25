@@ -46,6 +46,7 @@ from vntts.pregeneration_voices import (  # noqa: E402
     VoiceDecisionStore,
     VoicePlanStore,
 )
+from vntts.prepared_playback import PreparedPlaybackStore  # noqa: E402
 from vntts.settings import AppSettings, load_app_settings  # noqa: E402
 from vntts.voices import CharacterVoiceRegistry  # noqa: E402
 
@@ -270,6 +271,7 @@ def _first_process(root):
         application,
         saved,
         controller_factory=Mock(return_value=controller),
+        playback_store=PreparedPlaybackStore(),
     )
     try:
         with patch("vntts.app.OfflineAudioPreparationDialog", return_value=dialog):
@@ -327,8 +329,10 @@ def _first_process(root):
             lambda: not tray.pregeneration_activation_runner.active,
             "Offline pack activation did not finish",
         )
-        if tray.settings.game_pack != str(dialog.pack_result().manifest):
+        if tray._runtime_settings().game_pack != str(dialog.pack_result().manifest):
             raise AssertionError("The prepared pack was not activated")
+        if tray.settings.game_pack is not None:
+            raise AssertionError("Prepared playback leaked into user preferences")
         if tray.settings.last_main_section != "reading":
             raise AssertionError("Activation did not return to Reading")
         if controller.start.called:
@@ -343,9 +347,15 @@ def _first_process(root):
 
 def _second_process(root):
     application = QApplication.instance() or QApplication([])
-    settings = load_app_settings()
-    if not settings.onboarding_completed:
+    preferences = load_app_settings()
+    if not preferences.onboarding_completed:
         raise AssertionError("Onboarding completion was lost after restart")
+    if (
+        preferences.game_pack is not None
+        or preferences.generated_audio_manifest is not None
+    ):
+        raise AssertionError("Prepared playback was saved in user preferences")
+    settings = PreparedPlaybackStore().restore(preferences)
     if not settings.generated_audio_manifest or not settings.story_index:
         raise AssertionError("The active offline pack was not restored")
 

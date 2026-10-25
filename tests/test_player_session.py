@@ -4,6 +4,7 @@ from threading import Event, Thread
 from unittest.mock import Mock
 
 from vntts.player_session import PlayerSessionOwner
+from vntts.pregeneration_activation import OfflinePackActivationCancelled
 from vntts.settings import AppSettings
 
 
@@ -27,6 +28,58 @@ class _BackgroundWarmupBackend:
 
 
 class PlayerSessionOwnerTest(unittest.TestCase):
+    def test_pack_activation_saves_preferences_and_restores_actual_previous_runtime(
+        self,
+    ):
+        preferences = AppSettings(output_volume_percent=42)
+        previous_runtime = preferences.updated(game_pack="previous-prepared-pack.json")
+        controller = Mock(settings=previous_runtime)
+        owner = PlayerSessionOwner(controller)
+        cancellation = Event()
+        generation = owner.begin(cancellation)
+        activator = Mock()
+        activator.save_state.return_value = "playback.json"
+        pack = Mock()
+
+        def activate(current, selected_pack, current_controller, *_args, **kwargs):
+            self.assertIs(current, preferences)
+            self.assertIs(selected_pack, pack)
+            self.assertIs(current_controller, controller)
+            self.assertIs(kwargs["previous_runtime_settings"], previous_runtime)
+            self.assertEqual(
+                kwargs["save_state"](current, selected_pack), "playback.json"
+            )
+            return activator.result
+
+        activator.activate.side_effect = activate
+        self.assertIs(
+            owner.activate(
+                generation, activator, preferences, pack, cancellation, Event()
+            ),
+            activator.result,
+        )
+        activator.save_state.assert_called_once_with(preferences, pack)
+
+    def test_cancelled_activation_cannot_commit_prepared_selection(self):
+        preferences = AppSettings()
+        controller = Mock(settings=preferences)
+        owner = PlayerSessionOwner(controller)
+        cancellation = Event()
+        generation = owner.begin(cancellation)
+        activator = Mock()
+        pack = Mock()
+
+        def activate(current, selected_pack, *_args, **kwargs):
+            owner.cancel()
+            return kwargs["save_state"](current, selected_pack)
+
+        activator.activate.side_effect = activate
+        with self.assertRaises(OfflinePackActivationCancelled):
+            owner.activate(
+                generation, activator, preferences, pack, cancellation, Event()
+            )
+        activator.save_state.assert_not_called()
+
     def test_completed_start_operation_cancels_remaining_background_warmup(
         self,
     ) -> None:

@@ -136,6 +136,7 @@ from vntts.pregeneration_pack import OfflinePackResult
 from vntts.pregeneration_setup import GameContent, PregenerationJob
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 from vntts.pregeneration_voices import VoicePlan, resolve_pregeneration_settings
+from vntts.prepared_playback import PreparedPlaybackStore
 from vntts.profiles import GameProfileStore
 from vntts.profiles_ui import GameProfilesDialog
 from vntts.readiness_ui import ReadinessDialog
@@ -164,6 +165,7 @@ from vntts.settings import (
     get_settings_path,
     is_live_sequence_audio_mode,
     load_app_settings,
+    user_preferences,
 )
 from vntts.speech_backend import default_moss_tts_model
 from vntts.speech_presentation import playback_labels, speech_runtime_label
@@ -1855,6 +1857,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         pregeneration_activator: OfflinePackActivator | None = None,
         moss_runtime: RetainedMossRuntime | None = None,
         pocket_runtime: RetainedWorkerRuntime | None = None,
+        playback_store: PreparedPlaybackStore | None = None,
     ) -> None:
         super().__init__()
         self._initialize_runtime(
@@ -1864,6 +1867,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             moss_runtime,
             pocket_runtime,
             profile_store,
+            playback_store,
         )
         self._initialize_runners(pregeneration_activator)
         self._initialize_session_state(profile_store, correction_store)
@@ -1884,6 +1888,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         moss_runtime: RetainedMossRuntime | None,
         pocket_runtime: RetainedWorkerRuntime | None,
         profile_store: GameProfileStore | None,
+        playback_store: PreparedPlaybackStore | None,
     ) -> None:
         self.application = application
         self._settings_path = get_settings_path().expanduser().absolute()
@@ -1917,11 +1922,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 on_snapshot=remember_settings_snapshot,
             )
         else:
-            self.settings = settings
+            self.settings = user_preferences(settings)
             try:
                 self._settings_revision = file_revision(self._settings_path)
             except OSError:
                 pass
+        self.playback_store = playback_store or (
+            PreparedPlaybackStore() if uses_saved_settings else None
+        )
+        self._prepared_settings: AppSettings | None = None
+        self._prepared_source: tuple[str | bool | None, ...] | None = None
+        runtime_settings = self._runtime_settings()
         self.profile_store = profile_store or GameProfileStore.load()
         if uses_saved_settings:
             record_background_operation(
@@ -1990,7 +2001,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             background_available=self._voice_audition_background_available,
         )
         self.controller = controller_factory(
-            self.settings,
+            runtime_settings,
             profile_store=self.profile_store,
             status_handler=self.signals.status_changed.emit,
             dialog_handler=self.signals.dialog_changed.emit,
@@ -2048,7 +2059,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.moss_runtime_runner = LatestTaskRunner(self)
         self.moss_runtime_runner.finished.connect(self._moss_runtime_finished)
         self.pregeneration_activator = pregeneration_activator or OfflinePackActivator(
-            save_settings=self._save_settings_candidate
+            save_state=self._save_prepared_playback_state
         )
         self.pregeneration_activation_runner = LatestTaskRunner(self)
         self.pregeneration_activation_runner.finished.connect(
@@ -2107,7 +2118,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._calibration_capture_pending = False
         self._notification_recovery: str | None = None
         self._background_notification_shown = False
-        self.dashboard = ControlDashboard(self.settings)
+        self.dashboard = ControlDashboard(self._runtime_settings())
         self.compact_controller = CompactController()
 
     def _build_actions(self) -> None:
@@ -2184,10 +2195,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.pause_action.setEnabled(False)
         self.sequence_resync_action.setEnabled(False)
         self.sequence_expected_action.setEnabled(False)
+        runtime_settings = self._runtime_settings()
         sequence_controls_visible = bool(
-            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
-            and self.settings.live_sequence_plan
-            and self.settings.story_index
+            is_live_sequence_audio_mode(runtime_settings.live_sequence_mode)
+            and runtime_settings.live_sequence_plan
+            and runtime_settings.story_index
         )
         self.sequence_resync_action.setVisible(sequence_controls_visible)
         self.sequence_expected_action.setVisible(sequence_controls_visible)
@@ -2456,10 +2468,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._refresh_speech_runtime()
 
     def _update_auto_advance_action(self) -> None:
+        settings = self._runtime_settings()
         allowed, enabled, reason = auto_advance_control_state(
-            self.settings.capture_mode,
-            self.settings.live_sequence_mode,
-            self.settings.auto_advance_enabled,
+            settings.capture_mode,
+            settings.live_sequence_mode,
+            settings.auto_advance_enabled,
         )
         self.auto_advance_action.blockSignals(True)
         self.auto_advance_action.setChecked(enabled)
@@ -2478,7 +2491,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.auto_advance_reason_action.setText(availability_reason)
         self.auto_advance_reason_action.setVisible(bool(availability_reason))
         self.dashboard.set_auto_advance_configuration(
-            self.settings, busy=self._controller_busy
+            settings, busy=self._controller_busy
         )
 
     def _application_icon(self) -> QIcon:
@@ -2531,6 +2544,62 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.set_status("Audio playback is available. Retry playback to continue.")
         return True
 
+    @staticmethod
+    def _playback_source(settings: AppSettings) -> tuple[str | bool | None, ...]:
+        return (
+            settings.active_profile_id,
+            *TrayApplication._reading_pack_identity(settings),
+            settings.live_speaker_corpus,
+            settings.audio_source_policy,
+            settings.force_live_narrator,
+            settings.live_sequence_mode,
+            settings.auto_advance_enabled,
+        )
+
+    def _runtime_settings(self, settings: AppSettings | None = None) -> AppSettings:
+        settings = self.settings if settings is None else settings
+        source = self._playback_source(settings)
+        if source != self._prepared_source:
+            self._prepared_source = source
+            restored = (
+                self.playback_store.restore(settings)
+                if self.playback_store is not None
+                else settings
+            )
+            self._prepared_settings = restored if restored != settings else None
+        prepared = self._prepared_settings
+        if prepared is None:
+            return settings
+        files = tuple(
+            Path(path) for path in self._reading_pack_identity(prepared) if path
+        )
+        if files and _ReadingPackAdmission.file_stamps(files) is None:
+            logging.getLogger(__name__).warning(
+                "Prepared playback files are missing; retaining user preferences: %s",
+                prepared.game_pack,
+            )
+            self._prepared_settings = None
+            return settings
+        return settings.updated(
+            game_pack=prepared.game_pack,
+            story_index=prepared.story_index,
+            voice_manifest=prepared.voice_manifest,
+            live_sequence_plan=prepared.live_sequence_plan,
+            generated_audio_manifest=prepared.generated_audio_manifest,
+            live_speaker_corpus=prepared.live_speaker_corpus,
+            live_sequence_mode=prepared.live_sequence_mode,
+            audio_source_policy=prepared.audio_source_policy,
+            force_live_narrator=prepared.force_live_narrator,
+        )
+
+    def _save_prepared_playback_state(
+        self, settings: AppSettings, pack: OfflinePackResult
+    ) -> Path:
+        if self.playback_store is None:
+            # Explicit settings injection keeps this application session in memory.
+            return Path()
+        return self.playback_store.save(settings, pack)
+
     def _preparation_runtime_settings(self) -> AppSettings | None:
         dialog = self.pregeneration_dialog
         factory = getattr(dialog, "runtime_playback_settings", None)
@@ -2550,8 +2619,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _active_pack_reading_available(self) -> bool:
-        identity = self._reading_pack_identity(self.settings)
-        if not self.settings.game_pack or self._startup_game_pack_errors:
+        settings = self._runtime_settings()
+        identity = self._reading_pack_identity(settings)
+        if not settings.game_pack or self._startup_game_pack_errors:
             return False
         cached = self._reading_pack_admission
         if (
@@ -2567,10 +2637,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         playable = False
         try:
-            imported = import_game_pack(self.settings.game_pack)
-            projected = imported.apply_to(
-                self.settings, preserve_external_sequence=True
-            )
+            imported = import_game_pack(settings.game_pack)
+            projected = imported.apply_to(settings, preserve_external_sequence=True)
             playable = bool(imported.pack.generated_wavs) and (
                 self._reading_pack_identity(projected) == identity
             )
@@ -2593,7 +2661,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             files = tuple(
                 dict.fromkeys(
                     (
-                        Path(self.settings.game_pack),
+                        Path(settings.game_pack),
                         *(binding.path for binding in bindings),
                         *(
                             (imported.source_audio_semantic_evidence,)
@@ -2604,7 +2672,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 )
             )
         except OSError, ValueError, GamePackError:
-            pass
+            if self._prepared_settings is not None:
+                logging.getLogger(__name__).exception(
+                    "Prepared playback is no longer available: %s", settings.game_pack
+                )
+                self._prepared_settings = None
         self._reading_pack_admission = _ReadingPackAdmission(
             identity, files, _ReadingPackAdmission.file_stamps(files), playable
         )
@@ -2700,9 +2772,26 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             "automatically when ready"
         )
         self._initial_start_generation = generation
-        self.initial_start_runner.start(self._initialize_controller, generation)
+        self.initial_start_runner.start(
+            self._initialize_controller, generation, runtime_settings
+        )
 
-    def _initialize_controller(self, generation: int) -> bool:
+    def _initialize_controller(
+        self, generation: int, runtime_settings: AppSettings | None = None
+    ) -> bool:
+        runtime_settings = (
+            runtime_settings
+            or self._reading_source_choice()[0]
+            or self._runtime_settings()
+        )
+        loaded = getattr(self.controller, "settings", None)
+        if (
+            isinstance(loaded, AppSettings)
+            and self._reading_pack_identity(loaded)
+            != self._reading_pack_identity(runtime_settings)
+            and not self.session_owner.attach(generation, runtime_settings)
+        ):
+            return False
         return self.session_owner.start(generation)
 
     def _initial_start_finished(
@@ -3554,6 +3643,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 False, "Finish or cancel calibration before testing speech."
             )
             return
+        settings = self._runtime_settings(settings)
         model_name = settings.tts_model
         if (
             settings.speech_backend == "coqui-xtts"
@@ -3881,6 +3971,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ),
             game_narrator_chooser=self._open_preparation_narrator,
             automatic_activation=True,
+            base_pack=self._runtime_settings().game_pack,
             parent=self.dashboard,
         )
         self.pregeneration_dialog = dialog
@@ -4070,20 +4161,22 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "Unable to activate prepared offline audio: activation result is invalid"
             )
             return
-        self.settings = result.settings
-        self.dashboard.set_configuration(self.settings)
+        self._prepared_source = self._playback_source(self.settings)
+        self._prepared_settings = result.settings
+        runtime_settings = self._runtime_settings()
+        self.dashboard.set_configuration(runtime_settings)
         self._update_auto_advance_action()
         sequence_controls_visible = bool(
-            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
-            and self.settings.live_sequence_plan
-            and self.settings.story_index
+            is_live_sequence_audio_mode(runtime_settings.live_sequence_mode)
+            and runtime_settings.live_sequence_plan
+            and runtime_settings.story_index
         )
         self.sequence_resync_action.setVisible(sequence_controls_visible)
         self.sequence_expected_action.setVisible(sequence_controls_visible)
         self._controller_ready = bool(self.controller.is_ready)
         self._apply_controller_action_state()
         if self.readiness_dialog is not None:
-            self.readiness_dialog.update_settings(self.settings)
+            self.readiness_dialog.update_settings(runtime_settings)
         status = self._pregeneration_activation_status
         self._pregeneration_activation_status = None
         self.show_dashboard()
@@ -4104,7 +4197,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def open_readiness(self) -> None:
         if self.readiness_dialog is None:
             self.readiness_dialog = ReadinessDialog(
-                self.settings,
+                self._runtime_settings(),
                 OnboardingDiagnostics(),
                 self.dashboard,
             )
@@ -4118,7 +4211,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self._open_reading_from_readiness
             )
         else:
-            self.readiness_dialog.update_settings(self.settings)
+            self.readiness_dialog.update_settings(self._runtime_settings())
         self.readiness_dialog.show()
         self.readiness_dialog.raise_()
         self.readiness_dialog.activateWindow()
@@ -4140,7 +4233,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        candidate = dialog.settings()
+        candidate = user_preferences(dialog.settings())
         profile = self.profile_store.get(candidate.active_profile_id)
         if profile is None:
             self.show_error("The selected game profile is no longer available.")
@@ -4151,13 +4244,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.show_error(f"Unable to apply the selected profile: {error}")
             return
         self.settings = candidate
-        self.dashboard.set_configuration(self.settings)
+        runtime_settings = self._runtime_settings()
+        self.dashboard.set_configuration(runtime_settings)
         self._refresh_preparation_settings()
         self._update_auto_advance_action()
         sequence_controls_visible = bool(
-            is_live_sequence_audio_mode(self.settings.live_sequence_mode)
-            and self.settings.live_sequence_plan
-            and self.settings.story_index
+            is_live_sequence_audio_mode(runtime_settings.live_sequence_mode)
+            and runtime_settings.live_sequence_plan
+            and runtime_settings.story_index
         )
         self.sequence_resync_action.setVisible(sequence_controls_visible)
         self.sequence_expected_action.setVisible(sequence_controls_visible)
@@ -4173,7 +4267,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.profile_restart_runner.start(
             self.session_owner.restart,
             generation,
-            self.settings,
+            runtime_settings,
         )
 
     def _profile_restart_finished(
@@ -4473,6 +4567,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ),
             last_main_section=self.settings.last_main_section,
         )
+        candidate = user_preferences(candidate)
         try:
             self._save_settings_candidate(candidate)
         except OSError as error:
@@ -5126,6 +5221,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 and not self._controller_busy
                 and not self._shutting_down
             )
+        loaded = getattr(self.controller, "settings", None)
+        if (
+            enabled
+            and isinstance(loaded, AppSettings)
+            and self._reading_pack_identity(loaded)
+            != self._reading_pack_identity(self._runtime_settings())
+            and not self._preparation_playback_active()
+        ):
+            enabled = False
+            unavailable_reason = (
+                "Reading content changed. Load the reading engine again."
+            )
         snapshot = None
         reader = getattr(self.controller, "live_reader", None)
         snapshot_loader = getattr(self.controller, "runtime_control_snapshot", None)
@@ -5308,7 +5415,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 except Exception:
                     narrator = None
                 if isinstance(narrator, str):
-                    self.dashboard.set_speech_identity(self.settings, narrator)
+                    self.dashboard.set_speech_identity(
+                        self._runtime_settings(), narrator
+                    )
         else:
             from vntts.speech_presentation import narrator_voice_label
 

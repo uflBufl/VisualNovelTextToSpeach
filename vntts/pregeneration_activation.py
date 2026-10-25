@@ -8,9 +8,9 @@ from pathlib import Path
 from time import perf_counter, process_time
 from typing import Protocol
 
-from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.game_pack import GamePackError, import_game_pack
 from vntts.pregeneration_pack import OfflinePackResult
+from vntts.prepared_playback import PreparedPlaybackStore, project_prepared_pack
 from vntts.settings import AppSettings
 from vntts.support import record_background_operation
 
@@ -48,13 +48,13 @@ class OfflinePackActivationError(RuntimeError):
 
 
 class OfflinePackActivationCancelled(OfflinePackActivationError):
-    """Pack activation was cancelled before settings were committed."""
+    """Pack activation was cancelled before playback state was committed."""
 
 
 @dataclass(frozen=True)
 class OfflinePackActivationResult:
     settings: AppSettings
-    settings_path: Path
+    state_path: Path
     restarted_runtime: bool
 
 
@@ -62,9 +62,10 @@ class OfflinePackActivator:
     def __init__(
         self,
         *,
-        save_settings: Callable[[AppSettings], str | Path] | None = None,
+        save_state: Callable[[AppSettings, OfflinePackResult], str | Path]
+        | None = None,
     ) -> None:
-        self.save_settings = save_settings or (lambda settings: settings.save())
+        self.save_state = save_state or PreparedPlaybackStore().save
 
     def activate(
         self,
@@ -74,7 +75,9 @@ class OfflinePackActivator:
         cancellation: _Cancellation | None = None,
         restart_previous: _Cancellation | None = None,
         *,
-        save_settings: Callable[[AppSettings], str | Path] | None = None,
+        save_state: Callable[[AppSettings, OfflinePackResult], str | Path]
+        | None = None,
+        previous_runtime_settings: AppSettings | None = None,
     ) -> OfflinePackActivationResult:
         if not isinstance(current_settings, AppSettings):
             raise OfflinePackActivationError("Current settings are invalid")
@@ -95,27 +98,7 @@ class OfflinePackActivator:
             raise OfflinePackActivationError("Offline game pack identity changed")
         _record_activation_phase("pack-preflight", phase_started, cpu_started)
         phase_started, cpu_started = perf_counter(), process_time()
-        source_dialogue = ChapterVoicePreloader.load_optional(
-            imported.story_index
-        ).dialogue
-        candidate = imported.apply_to(current_settings).updated(
-            live_sequence_mode=(
-                "audio-auto"
-                if imported.live_sequence_plan is not None
-                and current_settings.auto_advance_enabled
-                else "off"
-            ),
-            audio_source_policy=(
-                "prefer-game-audio"
-                if any(
-                    line.source_audio_authoritative
-                    and line.source_audio_completeness == "full"
-                    for line in source_dialogue
-                )
-                else "prefer-generated"
-            ),
-            force_live_narrator=False,
-        )
+        candidate = project_prepared_pack(current_settings, imported)
         _record_activation_phase("settings-build", phase_started, cpu_started)
         _raise_if_cancelled(cancellation)
         was_ready = bool(controller.is_ready)
@@ -142,15 +125,15 @@ class OfflinePackActivator:
             _record_activation_phase("runtime-apply", phase_started, cpu_started)
             _raise_if_cancelled(cancellation)
             phase_started, cpu_started = perf_counter(), process_time()
-            settings_path = Path(
-                (save_settings or self.save_settings)(candidate)
+            state_path = Path(
+                (save_state or self.save_state)(current_settings, pack_result)
             ).expanduser()
-            _record_activation_phase("settings-save", phase_started, cpu_started)
+            _record_activation_phase("state-save", phase_started, cpu_started)
         except Exception as error:
             if runtime_changed or was_ready:
                 rollback_error = _restore_runtime(
                     controller,
-                    current_settings,
+                    previous_runtime_settings or current_settings,
                     was_ready=was_ready,
                     restart_previous=restart_previous,
                 )
@@ -165,7 +148,7 @@ class OfflinePackActivator:
             raise OfflinePackActivationError(
                 f"Unable to activate the offline game pack: {error}"
             ) from error
-        return OfflinePackActivationResult(candidate, settings_path, was_ready)
+        return OfflinePackActivationResult(candidate, state_path, was_ready)
 
 
 def _restore_runtime(

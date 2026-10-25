@@ -2,7 +2,7 @@
 
 ## Active - Windows story import and persistence
 
-- [ ] Verify the affected Windows installation after the user's manual cleanup and regeneration.
+- [ ] Verify the affected Windows installation after the user's manual cleanup and regeneration. Activate a prepared story, save ordinary preferences, remove prepared audio and restart: preferences/profiles must remain intact, source stories must remain available, and missing prepared playback must be logged without breaking startup.
 
 ## Active - Finish diagnostic-session native acceptance
 
