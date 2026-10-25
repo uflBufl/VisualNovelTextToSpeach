@@ -1,5 +1,10 @@
 # TODO
 
+## Active - Prepared-audio Reading setup
+
+- [ ] Make the Reading setup test verify the selected prepared/original/live playback route. Preserve source validation, audio-output checks, test invalidation after edits, cancellation and actionable fallback failures.
+- [ ] Run the changed-test selector first, focused route and UI checks, and native Qt visual verification. Remove completed steps after validation.
+
 ## Active - Windows story import and persistence
 
 - [ ] Verify the affected Windows installation after the user's manual cleanup and regeneration.

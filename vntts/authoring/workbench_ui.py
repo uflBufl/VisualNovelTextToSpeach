@@ -18,6 +18,7 @@ from PySide6.QtCore import (
     QProcess,
     QProcessEnvironment,
     QSettings,
+    QSignalBlocker,
     Qt,
     QThreadPool,
     QTimer,
@@ -752,6 +753,14 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         )
         self.review_scope.setAccessibleName("Independent review scope and counts")
         self.review_scope.setWordWrap(True)
+        self.reset_review_filters = QPushButton("Reset filters")
+        self.reset_review_filters.setAutoDefault(False)
+        set_action_icon(self.reset_review_filters, "refresh-cw")
+        self._accessible_button(
+            self.reset_review_filters,
+            "Reset review filters",
+            "Show all saved outcomes by clearing voice role, status, collection and text filters",
+        )
         self.current_review = QLabel("Current review: none")
         self.current_review.setAccessibleName("Current review line speaker and status")
         self.current_review.setTextFormat(Qt.TextFormat.PlainText)
@@ -959,7 +968,10 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         review_panel.setMinimumHeight(320)
         review_layout = QVBoxLayout(review_panel)
         review_layout.addLayout(review_filters)
-        review_layout.addWidget(self.review_scope)
+        review_scope_row = QHBoxLayout()
+        review_scope_row.addWidget(self.review_scope, 1)
+        review_scope_row.addWidget(self.reset_review_filters)
+        review_layout.addLayout(review_scope_row)
         review_layout.addWidget(self.review_table, 1)
         review_layout.addWidget(self.current_review)
         review_layout.addWidget(self.review_text)
@@ -1065,6 +1077,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         self.review_status.currentTextChanged.connect(self._review_status_changed)
         self.review_collection.currentTextChanged.connect(self._apply_review_filters)
         self.review_search.textChanged.connect(self._apply_review_filters)
+        self.reset_review_filters.clicked.connect(self._reset_review_filters)
         self.reference_previous.clicked.connect(lambda: self._move_reference(-1))
         self.reference_next.clicked.connect(lambda: self._move_reference(1))
         self.reference_play.clicked.connect(self.play_reference)
@@ -2101,6 +2114,24 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         combo.setCurrentIndex(index if index >= 0 else 0)
         combo.blockSignals(False)
 
+    def _reset_review_filters(self) -> None:
+        if hasattr(self, "_stored_review_character_scope"):
+            del self._stored_review_character_scope
+        if hasattr(self, "_stored_review_collection"):
+            del self._stored_review_collection
+        with (
+            QSignalBlocker(self.review_character),
+            QSignalBlocker(self.review_status),
+            QSignalBlocker(self.review_collection),
+            QSignalBlocker(self.review_search),
+        ):
+            self.review_character.setCurrentIndex(0)
+            self.review_status.setCurrentText("All statuses")
+            self.review_collection.setCurrentIndex(0)
+            self.review_search.clear()
+        self._review_status_explicit = True
+        self._apply_review_filters()
+
     def _apply_review_filters(self, *_arguments: object) -> None:
         if not hasattr(self, "review_character"):
             return
@@ -2108,6 +2139,12 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         status = self.review_status.currentText()
         collection = self.review_collection.currentText()
         needle = self.review_search.text().strip().casefold()
+        self.reset_review_filters.setEnabled(
+            character_scope != self.all_speakers_scope
+            or status != "All statuses"
+            or collection not in {"", "All collections"}
+            or bool(self.review_search.text())
+        )
 
         def included(item: ReviewItem) -> bool:
             narrator = item.voice_character.casefold() == "narrator"
@@ -2192,8 +2229,8 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
             )
         elif not self._filtered_reviews:
             scope = (
-                "No outcomes match these filters. Change Status, Voice role, Collection "
-                f"or Search to see {len(self._all_reviews)} saved outcome(s)."
+                "No outcomes match these filters. Reset filters to show all "
+                f"{len(self._all_reviews)} saved outcome(s)."
             )
         else:
             scope = (
@@ -3146,6 +3183,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
             self.review_status,
             self.review_collection,
             self.review_search,
+            self.reset_review_filters,
             self.review_table,
             self.previous_pending,
             self.next_pending,

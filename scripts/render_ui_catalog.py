@@ -602,8 +602,10 @@ def _authoring_workbench_story(
     _set_long_authoring_review(dialog, state)
     if process is not None:
         _stop_authoring_catalog_process(dialog, state)
-    if state == "filtered-empty":
+    if state in {"filtered-empty", "filters-reset"}:
         dialog.review_status.setCurrentText("Awaiting review")
+        if state == "filters-reset":
+            dialog.reset_review_filters.click()
     if state.startswith("load-failure") or state == "recovered":
         with patch.object(
             dialog,
@@ -4588,6 +4590,9 @@ def _render_stories(
         "authoring-workbench.failed": lambda: authoring_workbench("failed"),
         "authoring-workbench.running-elsewhere": lambda: authoring_workbench(
             "running-elsewhere"
+        ),
+        "authoring-workbench.filters-reset": lambda: authoring_workbench(
+            "filters-reset"
         ),
         "authoring-workbench.filtered-empty": lambda: authoring_workbench(
             "filtered-empty"

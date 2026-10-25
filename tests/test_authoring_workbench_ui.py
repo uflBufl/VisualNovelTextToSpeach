@@ -1035,6 +1035,90 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 "No generated audio to review yet", dialog.review_action_reason.text()
             )
 
+    def test_reset_review_filters_restores_all_saved_outcomes_without_editing_them(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            before = tree_hashes(workspace)
+            selection = dialog.collection_selection
+            outcomes = dialog._all_reviews
+            self.assertTrue(outcomes)
+            dialog.review_character.setCurrentIndex(dialog.review_character.count() - 1)
+            dialog.review_collection.setCurrentIndex(
+                dialog.review_collection.count() - 1
+            )
+            dialog.review_status.setCurrentText("Awaiting review")
+            dialog.review_search.setText("no matching line")
+            self.assertEqual(dialog.review_table.rowCount(), 0)
+            self.assertTrue(dialog.reset_review_filters.isEnabled())
+            self.assertIn("Reset filters", dialog.review_scope.text())
+
+            dialog.reset_review_filters.click()
+
+            self.assertEqual(
+                dialog.review_character.currentData(), dialog.all_speakers_scope
+            )
+            self.assertEqual(dialog.review_status.currentText(), "All statuses")
+            self.assertEqual(dialog.review_collection.currentText(), "All collections")
+            self.assertEqual(dialog.review_search.text(), "")
+            self.assertEqual(dialog.review_table.rowCount(), len(outcomes))
+            self.assertFalse(dialog.reset_review_filters.isEnabled())
+            self.assertEqual(dialog._all_reviews, outcomes)
+            self.assertEqual(dialog.collection_selection, selection)
+            self.assertEqual(tree_hashes(workspace), before)
+            dialog._save_settings()
+            replacement = AuthoringWorkbenchDialog(
+                workspace, settings=self.settings(root)
+            )
+            self.assertEqual(replacement.review_status.currentText(), "All statuses")
+            self.assertEqual(replacement.review_table.rowCount(), len(outcomes))
+
+    def test_reset_filters_during_initial_load_overrides_restored_filters(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            settings = self.settings(root)
+            settings.beginGroup(AuthoringWorkbenchDialog.settings_group)
+            settings.setValue(
+                "review-character", AuthoringWorkbenchDialog.characters_scope
+            )
+            settings.setValue("review-collection", "main")
+            settings.setValue("review-status", "Awaiting review")
+            settings.setValue("review-search", "missing text")
+            settings.endGroup()
+            release = Event()
+
+            def held_loader(*arguments):
+                release.wait(3)
+                return _load_workbench_projection(*arguments)
+
+            dialog = AuthoringWorkbenchDialog(
+                workspace,
+                settings=settings,
+                projection_loader=held_loader,
+                synchronous_projection=False,
+            )
+            try:
+                self.assertTrue(dialog._projection_active)
+                self.assertEqual(
+                    dialog._stored_review_character_scope, dialog.characters_scope
+                )
+                self.assertEqual(dialog._stored_review_collection, "main")
+                dialog.reset_review_filters.click()
+            finally:
+                release.set()
+            self.wait_for(lambda: not dialog._projection_active)
+            self.assertEqual(
+                dialog.review_character.currentData(), dialog.all_speakers_scope
+            )
+            self.assertEqual(dialog.review_collection.currentText(), "All collections")
+            self.assertEqual(dialog.review_status.currentText(), "All statuses")
+            self.assertEqual(dialog.review_table.rowCount(), len(dialog._all_reviews))
+            self.assertFalse(dialog.reset_review_filters.isEnabled())
+
     def test_review_filters_are_explicit_and_empty_result_never_means_all(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
