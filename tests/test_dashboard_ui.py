@@ -393,6 +393,29 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertTrue(dashboard.voice_edit_status.isHidden())
         dashboard.deleteLater()
 
+    def test_removed_voice_editor_has_no_pending_banner_after_navigation(self):
+        dashboard = ControlDashboard(AppSettings())
+        for busy in (False, True):
+            with self.subTest(busy=busy):
+                panel = QGroupBox("Voice editor")
+                dashboard.embed_narrator(panel)
+                dashboard.set_voice_editor_dirty(True)
+                dashboard.set_voice_editor_busy(busy)
+                dashboard.show_stories()
+                self.assertFalse(dashboard.voice_edit_status.isHidden())
+                dashboard.show_voices()
+                dashboard.remove_narrator(panel)
+                for section in (
+                    dashboard.show_stories,
+                    dashboard.show_voices,
+                    dashboard.show_reading,
+                    dashboard.show_stories,
+                ):
+                    section()
+                    self.assertTrue(dashboard.voice_edit_status.isHidden())
+                panel.deleteLater()
+        dashboard.deleteLater()
+
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])

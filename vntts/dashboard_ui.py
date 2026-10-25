@@ -798,7 +798,8 @@ class ControlDashboard(QMainWindow):
     def remove_narrator(self, panel: QWidget) -> None:
         self.voices_stack.removeWidget(panel)
         self.voices_stack.setCurrentIndex(0)
-        self.voice_edit_status.hide()
+        self._voice_dirty = False
+        self.set_voice_editor_busy(False)
 
     def set_voice_editor_busy(self, busy: bool) -> None:
         self._voice_busy = bool(busy)
