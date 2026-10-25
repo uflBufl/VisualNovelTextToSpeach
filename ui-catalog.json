@@ -34,7 +34,7 @@
         {"id": "dashboard.auto-advance-manual", "title": "Manual story mode", "state": "Manual story mode explains why automatic key presses are unavailable"},
         {"id": "dashboard.auto-advance-unavailable-compact", "title": "Auto advance unavailable at compact size", "state": "The disabled reason remains readable with larger text and a narrow window"},
         {"id": "dashboard.auto-advance-focus", "title": "Auto advance keyboard focus", "state": "Keyboard focus remains visible on the checkbox with larger text"},
-        {"id": "dashboard.auto-advance-settings-route", "title": "Auto advance settings route", "state": "Expanded settings navigation remains reachable from Reading at compact size"},
+        {"id": "dashboard.auto-advance-settings-route", "title": "Auto advance settings route", "state": "Settings remains directly reachable from Reading at compact size with Tools collapsed"},
         {"id": "dashboard.reading-waiting", "title": "Waiting for dialogue", "state": "Live mode is active while no line is speaking"},
         {"id": "dashboard.reading-paused", "title": "Reading paused", "state": "Speaker recovery can pause speech while Stop reading remains available"},
         {"id": "dashboard.reading-stopped", "title": "Reading stopped", "state": "Capture is off while previous dialogue remains visible"},
@@ -44,7 +44,7 @@
         {"id": "dashboard.reading-long-capture", "title": "Long capture title at compact size", "state": "Long speaker, dialogue and selected capture title remain readable together at larger text size"},
         {"id": "dashboard.reading-long-values-scrolled", "title": "Long source details after scrolling", "state": "Voice and audio source remain readable below long dialogue, and the long capture title wraps beside the controls"},
         {"id": "dashboard.story-position-manual", "title": "Manual story position available", "state": "The position override remains available before a mismatch in manual mode"},
-        {"id": "dashboard.setup-expanded", "title": "Setup navigation expanded", "state": "Settings and other secondary destinations are visible"}
+        {"id": "dashboard.setup-expanded", "title": "Tools expanded", "state": "Settings opens directly while Tools discloses calibration, support and quit actions"}
       ]
     },
     {

@@ -473,11 +473,11 @@ class ControlDashboard(QMainWindow):
         self.setup_primary_button.clicked.connect(self.readiness_requested.emit)
         setup_primary.addWidget(self.setup_primary_button)
         self.loading_blocked_buttons.append(self.setup_primary_button)
-        self.setup_more_button = QPushButton("Settings")
-        set_action_icon(self.setup_more_button, "settings")
+        self.setup_more_button = QPushButton("Tools")
+        set_action_icon(self.setup_more_button, "list")
         self.setup_more_button.setCheckable(True)
         self.setup_more_button.setAccessibleDescription(
-            "Show or hide calibration, voice, support and settings shortcuts"
+            "Show or hide calibration, support and logs, and quit actions"
         )
         setup_primary.addWidget(self.setup_more_button)
         setup_primary.addStretch()
@@ -495,7 +495,9 @@ class ControlDashboard(QMainWindow):
             button = QPushButton(label)
             set_action_icon(button, icon)
             button.clicked.connect(signal.emit)
-            if label != "Narrator voice":
+            if label == "Settings":
+                setup_primary.insertWidget(1, button)
+            elif label != "Narrator voice":
                 setup_secondary.addWidget(button)
             self.setup_buttons.append(button)
             if label != "Support and logs":
@@ -506,6 +508,8 @@ class ControlDashboard(QMainWindow):
                 self.calibrate_button = button
             elif label == "Settings":
                 self.settings_button = button
+        self.setTabOrder(self.setup_primary_button, self.settings_button)
+        self.setTabOrder(self.settings_button, self.setup_more_button)
         self.quit_button = QPushButton("Quit VNTTS")
         set_action_icon(self.quit_button, "log-out")
         self.quit_button.clicked.connect(self.request_quit)
@@ -841,9 +845,9 @@ class ControlDashboard(QMainWindow):
         expanded = bool(expanded)
         self.setup_more_button.blockSignals(True)
         self.setup_more_button.setChecked(expanded)
-        self.setup_more_button.setText("Settings")
+        self.setup_more_button.setText("Tools")
         self.setup_more_button.setAccessibleName(
-            "Hide settings and more" if expanded else "Settings and more"
+            "Hide tools" if expanded else "Show tools"
         )
         self.setup_more_button.setToolTip(self.setup_more_button.accessibleName())
         self.setup_more_button.blockSignals(False)

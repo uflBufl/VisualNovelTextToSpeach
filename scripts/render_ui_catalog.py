@@ -2767,7 +2767,6 @@ def _render_stories(
 
     def dashboard_auto_advance_settings_route() -> ControlDashboard:
         dashboard = dashboard_reading()
-        dashboard.setup_more_button.setChecked(True)
         dashboard.resize(620, 440)
         font = dashboard.font()
         font.setPointSize(font.pointSize() + 4)

@@ -6,7 +6,7 @@
 
 ## UI improvements - one item at a time
 
-- [ ] 3. Separate Settings from Tools: give the disclosure/menu of maintenance actions a distinct name and keep the actual Settings entry unambiguous.
+- [ ] 3. Review the implemented direct Settings action and separate Tools disclosure in the native Qt before/after views before proceeding to item 4.
 - [ ] 4. Add action feedback and keyboard affordances: confirm clipboard copies, include existing shortcuts in tooltips, and provide native clear buttons in search fields. Start after item 3; preserve existing keyboard dispatch and accessibility.
 
 ## Active - Finish diagnostic-session native acceptance
