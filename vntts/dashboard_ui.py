@@ -924,6 +924,11 @@ class ControlDashboard(QMainWindow):
                 if settings.tts_model
                 else ""
             )
+            + (
+                f"\nNarrator: {narrator}"
+                if narrator and str(narrator) != rows[0][1]
+                else ""
+            )
         )
         self.speech_configuration.setToolTip(reading_policy_label(settings))
 

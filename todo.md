@@ -1,5 +1,10 @@
 # TODO
 
+## Active - Real-game UI workflow qualification
+
+- [ ] Finish the ordinary UI reference audition and explicit two-voice assignment check in the isolated real-game run.
+- [ ] After macOS is unlocked (native foreground was `loginwindow`), complete actual-game reading, Stop and restart using the prepared episode. Verify matching prepared lines, capture/focus, physical output and real wheel input; synthetic Qt input is not a live-game pass.
+
 ## Active - Windows story import and persistence
 
 - [ ] Verify the affected Windows installation after the user's manual cleanup and regeneration. Activate a prepared story, save ordinary preferences, remove prepared audio and restart: preferences/profiles must remain intact, source stories must remain available, and missing prepared playback must be logged without breaking startup.

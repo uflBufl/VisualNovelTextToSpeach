@@ -336,6 +336,21 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertFalse(dashboard.copy_status_button.isHidden())
         dashboard.deleteLater()
 
+    def test_narrator_technical_identity_is_kept_in_details_only(self):
+        identity = "a" * 64
+        diagnostic = f"Player candidate Centurion {identity[:12]}; voice ID: player-candidate:{identity}"
+        dashboard = ControlDashboard(AppSettings(speech_backend="moss-tts"))
+        dashboard.set_speech_identity(
+            AppSettings(speech_backend="moss-tts"), narrator=diagnostic
+        )
+        self.assertIn("Centurion", dashboard.reading_defaults.text())
+        self.assertNotIn("Player candidate", dashboard.reading_defaults.text())
+        self.assertNotIn("voice ID:", dashboard.reading_defaults.text())
+        self.assertNotIn(identity, dashboard.speech_configuration.text())
+        self.assertIn(diagnostic, dashboard.speech_details.text())
+        self.assertIn(diagnostic, dashboard._copy_details())
+        dashboard.deleteLater()
+
     def test_missing_window_offers_window_settings(self):
         dashboard = ControlDashboard(AppSettings(onboarding_completed=True))
         requested = []

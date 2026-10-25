@@ -1655,6 +1655,15 @@ class TrayApplicationTest(unittest.TestCase):
                 "Player candidate", tray.dashboard.speech_configuration.text()
             )
             self.assertNotIn("Not chosen", tray.dashboard.speech_configuration.text())
+            tray._controller_ready = True
+            identity = "b" * 64
+            diagnostic = f"Player candidate Centurion {identity[:12]}; voice ID: player-candidate:{identity}"
+            controller._resolve_voice_label.return_value = diagnostic
+            tray._apply_controller_action_state()
+            self.assertIn("Centurion", tray.dashboard.reading_defaults.text())
+            self.assertNotIn("Player candidate", tray.dashboard.reading_defaults.text())
+            self.assertNotIn(identity, tray.dashboard.speech_configuration.text())
+            self.assertIn(diagnostic, tray.dashboard.speech_details.text())
             controller.start.assert_not_called()
             tray.shutdown()
 

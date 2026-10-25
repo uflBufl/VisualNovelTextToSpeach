@@ -15,6 +15,7 @@ from vntts.speech_presentation import (
     readable_model_name,
     reading_policy_label,
     speech_configuration_label,
+    speech_configuration_rows,
     speech_model_label,
     speech_runtime_label,
 )
@@ -52,6 +53,47 @@ class SpeechPresentationTest(unittest.TestCase):
         )
         self.assertEqual(voice, "Rhiannon (child)")
         self.assertEqual(playback_labels("MOSS live", "Rhiannon (child)")[0], voice)
+
+    def test_candidate_identity_is_readable_across_configuration_and_playback(self):
+        identity = "a" * 64
+        diagnostic = f"Player candidate Centurion {identity[:12]}; voice ID: player-candidate:{identity}"
+        settings = AppSettings(speech_backend="moss-tts")
+        self.assertEqual(
+            speech_configuration_rows(settings, narrator=diagnostic)[0],
+            ("Narrator", "Centurion"),
+        )
+        summary = speech_configuration_label(
+            settings, narrator=diagnostic, compact=True
+        )
+        self.assertIn("Narrator voice: Centurion", summary)
+        self.assertNotIn("Player candidate", summary)
+        self.assertNotIn(identity, summary)
+        self.assertEqual(playback_labels("MOSS live", diagnostic)[0], "Centurion")
+        recorded = (
+            "Generated audio (line 1)\nRecorded with: moss-tts; source voice: "
+            + diagnostic
+        )
+        self.assertEqual(
+            playback_labels(recorded, "Different live narrator")[0], "Centurion"
+        )
+
+    def test_voice_display_preserves_custom_names_and_unproven_candidate_names(self):
+        candidate_name = "Player candidate My custom voice aaaaaaaaaaaa"
+        for name, identity in (
+            ("Rhiannon (child)", "imported-voice"),
+            ("Alba", "alba"),
+            (candidate_name, "custom-id"),
+            (candidate_name, "player-candidate:" + "b" * 64),
+            (candidate_name, "player-candidate:not-a-digest"),
+        ):
+            with self.subTest(name=name, identity=identity):
+                self.assertEqual(
+                    playback_labels("MOSS live", name + "; voice ID: " + identity)[0],
+                    name,
+                )
+        self.assertEqual(
+            playback_labels("MOSS live", candidate_name)[0], candidate_name
+        )
 
     def test_live_tts_is_new_speech_with_engine_kept_in_playback_details(self):
         for backend in (

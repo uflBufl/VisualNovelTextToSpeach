@@ -99,6 +99,18 @@ def speech_model_label(
     )
 
 
+def readable_voice_label(voice: str) -> str:
+    name, _, identity = voice.partition("; voice ID: ")
+    candidate = identity.removeprefix("player-candidate:")
+    if identity.startswith("player-candidate:") and re.fullmatch(
+        r"[0-9a-f]{64}", candidate
+    ):
+        prefix, suffix = "Player candidate ", " " + candidate[:12]
+        if name.startswith(prefix) and name.endswith(suffix):
+            return name[len(prefix) : -len(suffix)]
+    return name
+
+
 def speech_configuration_rows(
     settings: AppSettings, *, narrator: object | None = None
 ) -> tuple[tuple[str, str], ...]:
@@ -108,7 +120,10 @@ def speech_configuration_rows(
         pocket_cloning=settings.pocket_gated_model_accepted,
     )
     return (
-        ("Narrator", str(narrator or narrator_voice_label(settings))),
+        (
+            "Narrator",
+            readable_voice_label(str(narrator or narrator_voice_label(settings))),
+        ),
         ("Engine", "MOSS" if settings.speech_backend == "moss-tts" else engine),
         ("Model", readable_model_name(model)),
     )
@@ -145,7 +160,7 @@ def readable_model_name(model: object | None) -> str:
 
 def playback_labels(source: str, voice: str) -> tuple[str, str]:
     """Summarize the diagnostic source; never substitute live defaults for a WAV."""
-    voice = voice.partition("; voice ID: ")[0]
+    voice = readable_voice_label(voice)
     if "/" in voice or "\\" in voice:
         voice = "Reference: " + voice.replace("\\", "/").rsplit("/", 1)[-1]
     if source.startswith("Generated audio"):
@@ -153,6 +168,8 @@ def playback_labels(source: str, voice: str) -> tuple[str, str]:
         for part in source.split("; "):
             if part.startswith("source voice: "):
                 recorded_voice = part.removeprefix("source voice: ")
+            elif part.startswith("voice ID: "):
+                recorded_voice = readable_voice_label(recorded_voice + "; " + part)
         provider = source.partition("Recorded with: ")[2].split("; ")[0]
         model = source.partition("; model: ")[2].split("; ")[0]
         engine = SPEECH_BACKEND_LABELS.get(provider, provider)
@@ -205,7 +222,7 @@ def speech_configuration_label(
     compact: bool = False,
 ) -> str:
     return (
-        f"Narrator voice: {narrator or narrator_voice_label(settings)}"
+        f"Narrator voice: {readable_voice_label(str(narrator or narrator_voice_label(settings)))}"
         + (" · " if compact else "\n")
         + engine_model_label(
             settings.speech_backend,
