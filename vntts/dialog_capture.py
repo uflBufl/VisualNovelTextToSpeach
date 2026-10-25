@@ -26,6 +26,7 @@ from vntts.diagnostics import DiagnosticSnapshot
 from vntts.dialog import is_empty, speak_dialog
 from vntts.ocr import (
     DialogRegion,
+    OCRPreviewCancelled,
     OCRRegions,
     OCRResult,
     UncertainFrameRecorder,
@@ -298,6 +299,8 @@ def recognize_screenshot_result(
             else result
         )
         return result_resolver(result) if result_resolver is not None else result
+    except OCRPreviewCancelled:
+        raise
     except Exception as error:
         raise OCRError(str(error)) from error
 

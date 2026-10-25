@@ -1,9 +1,5 @@
 # TODO
 
-## Active - Stop cancels live OCR
-
-- [ ] Preserve OCR cancellation through `recognize_screenshot_result` and the live worker: pressing Stop during persistent OCR currently wraps `OCRPreviewCancelled` in `OCRError` and reports `Tesseract OCR failed: OCR preview cancelled`. Add focused cancellation and genuine-error regressions; verify native Stop/restart without a spurious error. Evidence: isolated native run on 2026-10-25 at 16:39:57 UTC in `.codex/investigations/real-game-ui-check/data/errors.log`.
-
 ## Active - Windows story import and persistence
 
 - [ ] Verify the affected Windows installation after the user's manual cleanup and regeneration. Activate a prepared story, save ordinary preferences, remove prepared audio and restart: preferences/profiles must remain intact, source stories must remain available, and missing prepared playback must be logged without breaking startup.

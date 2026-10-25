@@ -17,6 +17,7 @@ from vntts.live_tracking import IncrementalDialogTracker, SpeechChunk
 from vntts.live_tracking import TrackerProbe as TrackerProbe
 from vntts.live_tracking import TrackerResolver as TrackerResolver
 from vntts.numeric_values import optional_finite_number
+from vntts.ocr import OCRPreviewCancelled
 from vntts.reading_diagnostics import retain_visual_wait_frames
 from vntts.support_timeline_acquisition import CONTINUATION_GATE_REASONS
 
@@ -1731,6 +1732,8 @@ class LiveDialogReader:
         uncertainty = None
         try:
             character, text = self.recognize_frame(frame)
+        except OCRPreviewCancelled:
+            return None
         except OCRUncertainError as error:
             uncertainty = error
         self._ocr_progress("validating-freshness")

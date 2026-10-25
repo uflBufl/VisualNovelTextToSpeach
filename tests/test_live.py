@@ -7,6 +7,7 @@ from queue import Queue
 from threading import Event, Lock, Thread
 from unittest.mock import Mock, call, patch
 
+from vntts.dialog_capture import OCRError
 from vntts.generated_audio import (
     AudioRouteTrace,
     GeneratedAudioRoute,
@@ -22,6 +23,7 @@ from vntts.live import (
     SilentDialogRoute,
     SpeechChunk,
 )
+from vntts.ocr import OCRPreviewCancelled
 
 
 class FakeClock:
@@ -2539,6 +2541,90 @@ class LiveDialogReaderTest(unittest.TestCase):
                 reader.stop_event.set()
                 with reader.pause_condition:
                     reader.pause_condition.notify_all()
+
+    def test_stop_discards_ocr_cancellation_but_retains_recognition_failures(self):
+        for stop_method in ("stop", "emergency_stop"):
+            for error_type in (OCRPreviewCancelled, OCRError):
+                with self.subTest(stop=stop_method, error=error_type.__name__):
+                    recognition_started = Event()
+                    failure = error_type("recognition interrupted")
+                    errors = []
+                    tracker = Mock()
+                    reader = self.create_reader(
+                        tracker_factory=Mock(return_value=tracker),
+                        report_error=errors.append,
+                    )
+
+                    def recognize(_frame):
+                        recognition_started.set()
+                        self.assertTrue(reader.stop_event.wait(timeout=1))
+                        raise failure
+
+                    reader.recognize_frame = recognize
+                    reader.latest_frame = "frame"
+                    reader.latest_frame_fingerprint = "text"
+                    reader.latest_frame_visible = True
+                    reader.frame_version = 1
+                    reader.capture_future = Future()
+                    reader.capture_future.set_result(None)
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        reader.ocr_future = executor.submit(
+                            reader._run_capture_worker,
+                            reader._run_ocr,
+                            reader.stop_event,
+                        )
+                        try:
+                            self.assertTrue(recognition_started.wait(timeout=1))
+                            getattr(reader, stop_method)()
+                            reader.wait(timeout_seconds=1)
+                        finally:
+                            reader.stop()
+
+                    self.assertEqual(
+                        errors, [] if error_type is OCRPreviewCancelled else [failure]
+                    )
+                    self.assertIsNone(reader.ocr_future.exception())
+                    self.assertEqual(reader.ocr_worker_stage, "finished")
+                    self.assertEqual(reader.get_pipeline_metrics().recognized_frames, 0)
+                    tracker.observe.assert_not_called()
+                    tracker.flush.assert_not_called()
+
+    def test_cancelled_ocr_frame_does_not_block_the_next_frame(self):
+        tracker = Mock(generation=0)
+        errors = []
+        reader = self.create_reader(
+            tracker_factory=Mock(return_value=tracker), report_error=errors.append
+        )
+
+        def recognize(frame):
+            if frame == "cancelled frame":
+                with reader.pause_condition:
+                    reader.latest_frame = "next frame"
+                    reader.latest_frame_fingerprint = "next text"
+                    reader.frame_version += 1
+                raise OCRPreviewCancelled("recognition interrupted")
+            return "Alice", "Next line."
+
+        def observe(_character, _text):
+            reader.stop_event.set()
+            return []
+
+        reader.recognize_frame = Mock(side_effect=recognize)
+        tracker.observe.side_effect = observe
+        reader.latest_frame = "cancelled frame"
+        reader.latest_frame_fingerprint = "cancelled text"
+        reader.latest_frame_visible = True
+        reader.frame_version = 1
+
+        reader._run_ocr(reader.stop_event)
+
+        self.assertEqual(
+            reader.recognize_frame.call_args_list,
+            [call("cancelled frame"), call("next frame")],
+        )
+        self.assertEqual(errors, [])
+        tracker.observe.assert_called_once_with("Alice", "Next line.")
+        self.assertEqual(reader.get_pipeline_metrics().recognized_frames, 1)
 
     def test_runtime_control_snapshot_reports_actual_playback_capabilities(self):
         reader = self.create_reader()

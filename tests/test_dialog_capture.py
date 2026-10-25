@@ -9,6 +9,7 @@ from PIL import Image, ImageDraw
 
 from vntts.dialog_capture import (
     CapturedDialogFrame,
+    OCRError,
     ScreenCaptureError,
     analyze_dialog_snapshot,
     capture_dialog,
@@ -16,8 +17,9 @@ from vntts.dialog_capture import (
     dialog_frames_equivalent,
     dialog_render_frames_equivalent,
     format_runtime_error,
+    recognize_screenshot_result,
 )
-from vntts.ocr import DialogRegion, OCRRegions, OCRResult
+from vntts.ocr import DialogRegion, OCRPreviewCancelled, OCRRegions, OCRResult
 from vntts.window_capture import (
     WindowCaptureError,
     WindowCaptureTarget,
@@ -27,6 +29,37 @@ from vntts.window_capture import (
     WindowMinimizedError,
     WindowNotFoundError,
 )
+
+
+class ScreenshotRecognitionTest(unittest.TestCase):
+    def test_cancellation_keeps_its_type_and_identity(self):
+        for regions in (
+            None,
+            OCRRegions(DialogRegion(0, 0, 1, 0.3), DialogRegion(0, 0.4, 1, 0.6)),
+        ):
+            with self.subTest(regions=regions):
+                cancelled = OCRPreviewCancelled("OCR preview cancelled")
+                backend = Mock()
+                backend.recognize.side_effect = cancelled
+                with self.assertRaises(OCRPreviewCancelled) as caught:
+                    recognize_screenshot_result(
+                        Image.new("RGB", (20, 20)),
+                        ocr_backend=backend,
+                        ocr_regions=regions,
+                    )
+                self.assertIs(caught.exception, cancelled)
+
+    def test_recognition_failures_keep_ocr_stage_and_cause(self):
+        for failure in (TimeoutError("OCR timed out"), RuntimeError("worker died")):
+            with self.subTest(error=type(failure).__name__):
+                backend = Mock()
+                backend.recognize.side_effect = failure
+                with self.assertRaises(OCRError) as caught:
+                    recognize_screenshot_result(
+                        Image.new("RGB", (20, 20)), ocr_backend=backend
+                    )
+                self.assertIs(caught.exception.__cause__, failure)
+                self.assertEqual(str(caught.exception), str(failure))
 
 
 class CaptureProvenanceTest(unittest.TestCase):
