@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from threading import Event
 from time import monotonic
@@ -12,10 +13,12 @@ from typing import Any
 import numpy as np
 import soundfile as sf
 
+from vntts.diagnostic_caf import MAX_CAPTURE_SECONDS, diagnostic_audio_path
 from vntts.path_safety import open_regular_binary
 
 RATE = 16000
 MAX_SOURCE_SECONDS = 60
+MATCH_STEP = RATE * 30
 MAX_MATCH_SAMPLES = 1 << 22
 
 
@@ -75,9 +78,15 @@ def _check(started: float, cancelled: Event | None) -> None:
 
 
 def _audio(
-    path: Path, *, seconds: int = 620, cancelled: Event | None = None
+    path: Path,
+    *,
+    seconds: int = MAX_CAPTURE_SECONDS,
+    first: int = 0,
+    last: int | None = None,
+    cancelled: Event | None = None,
+    started: float | None = None,
 ) -> np.ndarray:
-    # Resample one source-second at a time; 192 kHz stereo captures never expand in memory whole.
+    # Absolute resampling positions preserve the capture clock across window boundaries.
     with open_regular_binary(path) as source, sf.SoundFile(source) as audio:
         if (
             not 8000 <= audio.samplerate <= 192000
@@ -86,12 +95,18 @@ def _audio(
         ):
             raise ValueError("Unsupported or oversized diagnostic audio")
         rate, frames = audio.samplerate, audio.frames
-        result = np.empty(round(frames * RATE / rate), dtype=np.float32)
-        for first in range(0, len(result), RATE):
-            if cancelled is not None and cancelled.is_set():
+        total = round(frames * RATE / rate)
+        last = total if last is None else min(total, last)
+        if first < 0 or last < first or last - first > RATE * (30 + MAX_SOURCE_SECONDS):
+            raise ValueError("Diagnostic audio window exceeds its memory budget")
+        result = np.empty(last - first, dtype=np.float32)
+        for begin in range(first, last, RATE):
+            if started is not None:
+                _check(started, cancelled)
+            elif cancelled is not None and cancelled.is_set():
                 raise InterruptedError("Source analysis cancelled")
-            last = min(first + RATE, len(result))
-            positions = np.arange(first, last, dtype=np.float64) * rate / RATE
+            end = min(begin + RATE, last)
+            positions = np.arange(begin, end, dtype=np.float64) * rate / RATE
             start = int(positions[0])
             stop = min(frames, math.ceil(positions[-1]) + 1)
             audio.seek(start)
@@ -100,10 +115,31 @@ def _audio(
             )
             if not len(chunk) or not np.isfinite(chunk).all():
                 raise ValueError("Nonfinite or incomplete diagnostic audio")
-            result[first:last] = np.interp(
+            result[begin - first : end - first] = np.interp(
                 positions - start, np.arange(len(chunk)), chunk
             )
     return result
+
+
+def _match_audio(
+    path: Path,
+    left: int,
+    right: int,
+    template: np.ndarray,
+    started: float,
+    cancelled: Event | None,
+) -> tuple[int, float] | None:
+    best = None
+    for first in range(left, max(left, right - len(template) + 1), MATCH_STEP):
+        _check(started, cancelled)
+        last = min(right, first + MATCH_STEP + len(template) - 1)
+        window = _audio(
+            path, first=first, last=last, started=started, cancelled=cancelled
+        )
+        match = normalized_match(window, template)
+        if match is not None and (best is None or match[1] > best[1]):
+            best = first - left + match[0], match[1]
+    return best
 
 
 def _json(path: Path, limit: int = 65536) -> dict[str, Any]:
@@ -117,18 +153,41 @@ def _json(path: Path, limit: int = 65536) -> dict[str, Any]:
     return value
 
 
-def _journal(path: Path, limit: int = 32 * 1024**2) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
+def _journal(
+    path: Path,
+    limit: int = 512 * 1024**2,
+    *,
+    started: float | None = None,
+    cancelled: Event | None = None,
+) -> Iterator[dict[str, Any]]:
     consumed = 0
     with open_regular_binary(path) as source:
-        while line := source.readline(65537):
+        for count in range(2_000_001):
+            if started is not None:
+                _check(started, cancelled)
+            line = source.readline(65537)
+            if not line:
+                return
             consumed += len(line)
-            if len(line) > 65536 or consumed > limit or len(result) >= 100000:
+            if len(line) > 65536 or consumed > limit or count == 2_000_000:
                 raise ValueError("Diagnostic journal exceeds analysis budget")
             value = json.loads(line)
             if not isinstance(value, dict):
                 raise ValueError("Diagnostic journal entry must be an object")
-            result.append(value)
+            yield value
+
+
+def _events(
+    path: Path, field: str, wanted: set[str], started: float, cancelled: Event | None
+) -> list[dict]:
+    result: list[dict] = []
+    for event in _journal(path, started=started, cancelled=cancelled):
+        if event.get(field) in wanted:
+            if len(result) >= 20000:
+                raise ValueError(
+                    "Relevant diagnostic event count exceeds analysis budget"
+                )
+            result.append(event)
     return result
 
 
@@ -142,7 +201,13 @@ def _number(value: object) -> float:
     return float(value)
 
 
-def _capture_clock(directory: Path) -> tuple[float, float]:
+def _capture_clock(
+    directory: Path,
+    *,
+    started: float | None = None,
+    cancelled: Event | None = None,
+    audio_path: Path | None = None,
+) -> tuple[float, float]:
     metadata = _json(directory / "session.json")
     if (
         metadata.get("status") != "captured_unqualified"
@@ -164,7 +229,11 @@ def _capture_clock(directory: Path) -> tuple[float, float]:
     previous_sample: float | None = None
     previous_host = float("-inf")
     offsets: list[float] = []
-    for event in _journal(directory / "audio.jsonl"):
+    minimum_offset, maximum_offset = float("inf"), float("-inf")
+    callback_count = 0
+    for event in _journal(
+        directory / "audio.jsonl", started=started, cancelled=cancelled
+    ):
         if event.get("kind") != "audio":
             continue
         count, start = event.get("frame_count"), event.get("file_frame_start")
@@ -184,7 +253,13 @@ def _capture_clock(directory: Path) -> tuple[float, float]:
             abs(sample - previous_sample) >= 0.5 or host <= previous_host
         ):
             raise ValueError("Discontinuous capture callback timeline")
-        offsets.append(host - frames / rate)
+        offset = host - frames / rate
+        minimum_offset = min(minimum_offset, offset)
+        maximum_offset = max(maximum_offset, offset)
+        # Bound clock samples while still validating every callback, including the tail.
+        if callback_count % 256 == 0:
+            offsets.append(offset)
+        callback_count += 1
         frames += count
         previous_sample, previous_host = sample + count, host
     if (
@@ -195,7 +270,14 @@ def _capture_clock(directory: Path) -> tuple[float, float]:
     ):
         raise ValueError("No complete nonzero process capture")
     with (
-        open_regular_binary(directory / "process.caf") as source,
+        open_regular_binary(
+            audio_path
+            or diagnostic_audio_path(
+                directory / "process.caf",
+                cancelled=cancelled,
+                deadline=started + 120 if started is not None else None,
+            )
+        ) as source,
         sf.SoundFile(source) as audio,
     ):
         if (
@@ -204,10 +286,16 @@ def _capture_clock(directory: Path) -> tuple[float, float]:
             or audio.channels != metadata.get("channels")
         ):
             raise ValueError("Recorded PCM differs from the callback timeline")
-    return float(np.median(offsets)), float(np.ptp(offsets) * 1000)
+    return float(np.median(offsets)), float((maximum_offset - minimum_offset) * 1000)
 
 
-def _source_path(directory: Path, entry: dict) -> Path:
+def _source_path(
+    directory: Path,
+    entry: dict,
+    *,
+    started: float | None = None,
+    cancelled: Event | None = None,
+) -> Path:
     if not isinstance(entry.get("audio"), str):
         raise ValueError("Invalid source evidence path")
     path: Path = directory / entry["audio"]
@@ -216,6 +304,8 @@ def _source_path(directory: Path, entry: dict) -> Path:
     digest, total = hashlib.sha256(), 0
     with open_regular_binary(path) as source:
         while chunk := source.read(1024**2):
+            if started is not None:
+                _check(started, cancelled)
             total += len(chunk)
             if total > 64 * 1024**2:
                 raise ValueError("Source evidence exceeds its read budget")
@@ -302,12 +392,24 @@ def _playback_lifetime(
 
 
 def analyze_session(
-    directory: Path, *, cancelled: Event | None = None
+    directory: Path, *, cancelled: Event | None = None, interrupted: bool = False
 ) -> dict[str, object]:
     """A match qualifies digital source evidence, never physical speaker quality."""
     started = monotonic()
     _check(started, cancelled)
-    events = _journal(directory / "timeline.jsonl")
+    events = _events(
+        directory / "timeline.jsonl",
+        "stage",
+        {
+            "route-decision",
+            "playback-start",
+            "playback-completion",
+            "playback-outcome",
+            "reading-control",
+        },
+        started,
+        cancelled,
+    )
     entries = _json(directory / "sources.json", 1024**2).get("entries", [])
     if not isinstance(entries, list) or len(entries) > 200:
         raise ValueError("Source manifest exceeds analysis budget")
@@ -347,7 +449,18 @@ def analyze_session(
         and math.isfinite(e["occurred_at"])
     }
     runtime = (
-        _journal(directory / "runtime.jsonl")
+        _events(
+            directory / "runtime.jsonl",
+            "operation",
+            {
+                "prepared-source",
+                "rust-worker-finished",
+                "cancel",
+                "stop",
+            },
+            started,
+            cancelled,
+        )
         if (directory / "runtime.jsonl").exists()
         else []
     )
@@ -410,7 +523,7 @@ def analyze_session(
     capture_paths = sorted(path for path in directory.glob("rust-*") if path.is_dir())
     if len(capture_paths) > 8:
         raise ValueError("Process capture count exceeds analysis budget")
-    interrupted: str | None = None
+    analysis_interruption: str | None = None
     for capture in capture_paths:
         try:
             _check(started, cancelled)
@@ -421,8 +534,24 @@ def analyze_session(
             record = capture_records.get(capture.name, {})
             if record.get("acquisition_failure"):
                 raise ValueError("Process capture has an acquisition failure")
-            offset, residual = _capture_clock(capture)
-            audio = _audio(capture / "process.caf", cancelled=cancelled)
+            audio_path = diagnostic_audio_path(
+                capture / "process.caf", cancelled=cancelled, deadline=started + 120
+            )
+            offset, residual = _capture_clock(
+                capture, started=started, cancelled=cancelled, audio_path=audio_path
+            )
+            with (
+                open_regular_binary(audio_path) as source_file,
+                sf.SoundFile(source_file) as captured_audio,
+            ):
+                if (
+                    captured_audio.frames
+                    > MAX_CAPTURE_SECONDS * captured_audio.samplerate
+                ):
+                    raise ValueError("Unsupported or oversized diagnostic audio")
+                audio_frames = round(
+                    captured_audio.frames * RATE / captured_audio.samplerate
+                )
             capture_pid = int(capture.name.split("-")[1])
             captures.append(
                 {
@@ -430,7 +559,7 @@ def analyze_session(
                     "status": "captured-unqualified",
                     "clock_residual_ms": residual,
                     "monotonic_start": offset,
-                    "duration_seconds": len(audio) / RATE,
+                    "duration_seconds": audio_frames / RATE,
                 }
             )
             for index, route in enumerate(routes):
@@ -471,7 +600,7 @@ def analyze_session(
                 expected_start = dispatch + (
                     source_lead / 1000 if source_lead is not None else 0
                 )
-                if not offset - 0.25 <= expected_start < offset + len(audio) / RATE:
+                if not offset - 0.25 <= expected_start < offset + audio_frames / RATE:
                     continue
                 attempted.add(index)
                 end, lifetime_complete, lifetime_reason = _playback_lifetime(
@@ -481,13 +610,16 @@ def analyze_session(
                 if end is None:
                     continue
                 source = _audio(
-                    _source_path(directory, entry),
+                    _source_path(
+                        directory, entry, started=started, cancelled=cancelled
+                    ),
                     seconds=MAX_SOURCE_SECONDS,
                     cancelled=cancelled,
+                    started=started,
                 )
                 left = max(0, math.ceil((dispatch - offset) * RATE))
                 right = min(
-                    len(audio),
+                    audio_frames,
                     math.floor((end - offset) * RATE),
                 )
                 if right <= left:
@@ -500,7 +632,9 @@ def analyze_session(
                         : min(len(source), RATE // 2, max(0, (right - left) // 2))
                     ]
                 )
-                match = normalized_match(audio[left:right], template_source)
+                match = _match_audio(
+                    audio_path, left, right, template_source, started, cancelled
+                )
                 if match is None or (not full_source and match[1] < 0.9):
                     continue
                 position, score = match
@@ -529,7 +663,16 @@ def analyze_session(
                         max(left, predicted - RATE // 5),
                         min(right, predicted + RATE * 3 // 10),
                     )
-                    local = normalized_match(audio[lo:hi], template)
+                    local = normalized_match(
+                        _audio(
+                            audio_path,
+                            first=lo,
+                            last=hi,
+                            started=started,
+                            cancelled=cancelled,
+                        ),
+                        template,
+                    )
                     if local is not None and local[1] >= 0.9:
                         windows.append(
                             {
@@ -581,7 +724,7 @@ def analyze_session(
                     }
                 )
         except (InterruptedError, TimeoutError) as error:
-            interrupted = type(error).__name__
+            analysis_interruption = type(error).__name__
             break
         except Exception as error:
             try:
@@ -593,6 +736,7 @@ def analyze_session(
                     "capture": capture.name,
                     "status": "unavailable",
                     "error_type": type(error).__name__,
+                    "error": str(error),
                     "native_status": native.get("status"),
                     "native_errors": native.get("errors"),
                     "target": native.get("target"),
@@ -617,23 +761,33 @@ def analyze_session(
         if results
         and not unmatched
         and not interrupted
+        and not analysis_interruption
         and not gaps
         and not recording.get("error_type")
         and all(capture["status"] != "unavailable" for capture in captures)
         else "unqualified",
         "analysis_rate": RATE,
-        "status": "cancelled"
-        if interrupted == "InterruptedError"
-        else "budget-exhausted"
+        "status": "partial"
         if interrupted
+        else "cancelled"
+        if analysis_interruption == "InterruptedError"
+        else "budget-exhausted"
+        if analysis_interruption
         else "complete",
         "captures": captures,
+        "coverage": {
+            "generated_routes": len(routes),
+            "attempted_routes": len(attempted),
+            "correlated_routes": len(matched),
+        },
         "clips": results,
         "acquisition_gaps": gaps,
         "unmatched_routes": unmatched,
         "elapsed_seconds": monotonic() - started,
         "limits": {
             "source_seconds": MAX_SOURCE_SECONDS,
+            "capture_seconds": MAX_CAPTURE_SECONDS,
+            "audio_window_seconds": 30 + MAX_SOURCE_SECONDS,
             "routes": 200,
             "captures": 8,
             "seconds": 120,
@@ -645,7 +799,17 @@ def analyze_session(
             "Correlated windows can reveal timing shifts; inspect the actual recording and window coverage.",
         ],
     }
-    (directory / "analysis.json").write_text(
+    if interrupted:
+        report["scope"] = "interrupted"
+        report["analysis_status"] = (
+            "cancelled"
+            if analysis_interruption == "InterruptedError"
+            else "budget-exhausted"
+            if analysis_interruption
+            else "complete"
+        )
+    output = "recovery-analysis.json" if interrupted else "analysis.json"
+    (directory / output).write_text(
         json.dumps(report, indent=2, allow_nan=False) + "\n"
     )
     return report

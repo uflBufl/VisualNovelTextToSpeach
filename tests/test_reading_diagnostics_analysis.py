@@ -723,3 +723,177 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
             analyze_session(self.root, cancelled=cancelled)
         with self.assertRaises(InterruptedError):
             _audio(self.root / "source.wav", cancelled=cancelled)
+
+    def test_late_clip_in_continuous_long_capture_uses_bounded_windows(self):
+        capture, _ = self.fixture()
+        source, _rate = sf.read(self.root / "source.wav", dtype="float32")
+        frames = 660 * 48000
+        with sf.SoundFile(
+            capture / "process.caf", "w", samplerate=48000, channels=2, subtype="FLOAT"
+        ) as audio:
+            audio.seek(round(650.25 * 48000))
+            clip = np.repeat(source, 3)
+            audio.write(np.column_stack((clip, clip)))
+            audio.seek(frames - 1)
+            audio.write([[0.0, 0.0]])
+        metadata = json.loads((capture / "session.json").read_text())
+        metadata["frames"] = frames
+        self.write_json(capture / "session.json", metadata)
+        self.journal(
+            capture / "audio.jsonl",
+            (
+                dict(
+                    kind="audio",
+                    file_frame_start=frame,
+                    frame_count=48000,
+                    sample_time=1000 + frame,
+                    monotonic_s=10 + frame / 48000,
+                )
+                for frame in range(0, frames, 48000)
+            ),
+        )
+        for name in ("timeline.jsonl", "runtime.jsonl"):
+            rows = [
+                json.loads(line) for line in (self.root / name).read_text().splitlines()
+            ]
+            self.journal(
+                self.root / name,
+                [dict(row, occurred_at=row["occurred_at"] + 650) for row in rows],
+            )
+        windows = []
+
+        def read_window(*args, **kwargs):
+            result = _audio(*args, **kwargs)
+            windows.append(len(result))
+            return result
+
+        with patch(
+            "vntts.reading_diagnostics_analysis._audio", side_effect=read_window
+        ):
+            report = analyze_session(self.root)
+        self.assertEqual(report["qualification"], "digital-source-correlated")
+        self.assertEqual(report["captures"][0]["duration_seconds"], 660)
+        self.assertAlmostEqual(
+            report["clips"][0]["candidate_onset_monotonic"], 660.25, places=4
+        )
+        self.assertLessEqual(max(windows), 90 * RATE)
+
+    def test_window_boundary_preserves_full_clip_and_absolute_frame_alignment(self):
+        from time import monotonic
+
+        from vntts.reading_diagnostics_analysis import _match_audio
+
+        source = np.random.default_rng(12).normal(0, 0.1, RATE).astype(np.float32)
+        path = self.root / "boundary.wav"
+        onset = round(29.75 * RATE)
+        with sf.SoundFile(
+            path, "w", samplerate=RATE, channels=1, subtype="FLOAT"
+        ) as audio:
+            audio.seek(onset)
+            audio.write(source)
+            audio.seek(61 * RATE - 1)
+            audio.write([0.0])
+        position, score = _match_audio(path, 0, 61 * RATE, source, monotonic(), None)
+        self.assertEqual(position, onset)
+        self.assertAlmostEqual(score, 1, places=10)
+        cancelled = Event()
+
+        def cancel_after_window(*args, **kwargs):
+            result = _audio(*args, **kwargs)
+            cancelled.set()
+            return result
+
+        with patch(
+            "vntts.reading_diagnostics_analysis._audio", side_effect=cancel_after_window
+        ):
+            with self.assertRaises(InterruptedError):
+                _match_audio(path, 0, 61 * RATE, source, monotonic(), cancelled)
+
+    def test_streamed_callback_log_validates_tail_beyond_old_entry_cutoff(self):
+        capture, _ = self.fixture()
+        rows = (capture / "audio.jsonl").read_bytes()
+        with (capture / "audio.jsonl").open("wb") as journal:
+            journal.write(b'{"kind":"status"}\n' * 100001)
+            journal.write(rows)
+        offset, residual = _capture_clock(capture)
+        self.assertAlmostEqual(offset, 10)
+        self.assertLess(residual, 0.001)
+        with (capture / "audio.jsonl").open("a") as journal:
+            journal.write(
+                json.dumps(
+                    dict(
+                        kind="audio",
+                        file_frame_start=0,
+                        frame_count=480,
+                        sample_time=1000,
+                        monotonic_s=11,
+                    )
+                )
+                + "\n"
+            )
+        with self.assertRaisesRegex(ValueError, "callback timeline"):
+            _capture_clock(capture)
+
+    def test_cancelled_and_budget_limited_windows_report_partial_coverage(self):
+        self.fixture()
+
+        for error, status in (
+            (InterruptedError("cancelled"), "cancelled"),
+            (TimeoutError("budget"), "budget-exhausted"),
+        ):
+            with (
+                self.subTest(status=status),
+                patch(
+                    "vntts.reading_diagnostics_analysis._match_audio", side_effect=error
+                ),
+            ):
+                report = analyze_session(self.root)
+            self.assertEqual(report["status"], status)
+            self.assertEqual(report["qualification"], "unqualified")
+            self.assertEqual(
+                report["coverage"],
+                dict(generated_routes=1, attempted_routes=1, correlated_routes=0),
+            )
+
+    def test_interrupted_analysis_preserves_existing_report_and_labels_partial_scope(
+        self,
+    ):
+        self.fixture()
+        original = b'{"status":"original evidence"}\n'
+        (self.root / "analysis.json").write_bytes(original)
+        report = analyze_session(self.root, interrupted=True)
+        self.assertEqual(report["status"], "partial")
+        self.assertEqual(report["scope"], "interrupted")
+        self.assertEqual(report["analysis_status"], "complete")
+        self.assertEqual(report["qualification"], "unqualified")
+        self.assertEqual(report["clips"][0]["status"], "correlated")
+        self.assertEqual((self.root / "analysis.json").read_bytes(), original)
+        self.assertEqual(
+            json.loads((self.root / "recovery-analysis.json").read_text()), report
+        )
+        with patch(
+            "vntts.reading_diagnostics_analysis._match_audio",
+            side_effect=TimeoutError("budget"),
+        ):
+            limited = analyze_session(self.root, interrupted=True)
+        self.assertEqual(limited["status"], "partial")
+        self.assertEqual(limited["analysis_status"], "budget-exhausted")
+        self.assertEqual((self.root / "analysis.json").read_bytes(), original)
+
+    def test_hour_capture_decoding_allows_only_bounded_final_callback_tail(self):
+        path = self.root / "metadata-only.caf"
+        path.write_bytes(b"metadata mocked without hour PCM")
+        with patch("vntts.reading_diagnostics_analysis.sf.SoundFile") as decoder:
+            audio = decoder.return_value.__enter__.return_value
+            audio.samplerate, audio.channels = 48000, 2
+            audio.frames = 3620 * 48000
+            audio.read.side_effect = lambda count, **_kwargs: np.zeros(
+                (count, 2), dtype=np.float32
+            )
+            first = 3600 * RATE
+            decoded = _audio(path, first=first, last=first + 16)
+            self.assertEqual(len(decoded), 16)
+            self.assertLessEqual(audio.read.call_args.args[0], 48)
+            audio.frames += 1
+            with self.assertRaisesRegex(ValueError, "oversized"):
+                _audio(path, first=first, last=first + 16)
