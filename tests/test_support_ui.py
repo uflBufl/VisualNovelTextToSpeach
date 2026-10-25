@@ -263,6 +263,10 @@ class SupportCenterDialogTest(unittest.TestCase):
         ):
             self.assertTrue(button.accessibleName())
             self.assertFalse(button.shortcut().isEmpty())
+            self.assertIn(
+                button.shortcut().toString(QKeySequence.SequenceFormat.NativeText),
+                button.toolTip(),
+            )
         self.assertEqual(dialog.size().width(), 620)
         self.assertEqual(dialog.size().height(), 420)
         dialog.close()

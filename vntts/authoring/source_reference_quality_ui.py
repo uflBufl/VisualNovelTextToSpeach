@@ -43,6 +43,7 @@ from vntts.authoring.source_reference_quality_records import (
 from vntts.path_safety import read_regular_bytes
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
+from vntts.ui_text import shortcut_tooltip
 
 QualityDecision = Literal["accept", "reject", "needs_sample"]
 PlaybackPayload = tuple[str, str, str, bytes]
@@ -229,11 +230,15 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.play_reference = QPushButton("Original")
         set_action_icon(self.play_reference, "play")
         self.play_reference.setAccessibleName("Play original source reference")
-        self.play_reference.setToolTip(self.play_reference.accessibleName())
         self.play_reference.setAccessibleDescription(
             "Play the checksum-verified original until its end"
         )
         self.play_reference.setShortcut(QKeySequence("Ctrl+O"))
+        self.play_reference.setToolTip(
+            shortcut_tooltip(
+                self.play_reference.accessibleName(), self.play_reference.shortcut()
+            )
+        )
         self.play_reference.clicked.connect(self._play_reference)
 
     def _build_generated_widgets(self) -> QFormLayout:
@@ -256,18 +261,24 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.play_generated = QPushButton("Generated")
         set_action_icon(self.play_generated, "play")
         self.play_generated.setAccessibleName("Play selected generated sample")
-        self.play_generated.setToolTip(self.play_generated.accessibleName())
         self.play_generated.setAccessibleDescription(
             "Play the selected checksum-verified generated sample until its end"
         )
         self.play_generated.setShortcut(QKeySequence("Ctrl+G"))
+        self.play_generated.setToolTip(
+            shortcut_tooltip(
+                self.play_generated.accessibleName(), self.play_generated.shortcut()
+            )
+        )
         self.play_generated.clicked.connect(self._play_generated)
         self.stop = QPushButton("Stop")
         set_action_icon(self.stop, "square")
         self.stop.setAccessibleName("Stop source reference review audio")
-        self.stop.setToolTip(self.stop.accessibleName())
         self.stop.setAccessibleDescription("Stop current reference review playback")
         self.stop.setShortcut(QKeySequence("Ctrl+Space"))
+        self.stop.setToolTip(
+            shortcut_tooltip(self.stop.accessibleName(), self.stop.shortcut())
+        )
         self.stop.clicked.connect(self._stop)
         self.stop.setEnabled(False)
         playback = review_form_layout()
@@ -305,14 +316,26 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.needs_sample = QPushButton("Need another sample")
         set_action_icon(self.needs_sample, "plus")
         self.accept_button.setAccessibleName("Accept exact source reference")
-        self.accept_button.setToolTip(self.accept_button.accessibleName())
         self.reject_reference.setAccessibleName("Reject exact source reference")
-        self.reject_reference.setToolTip(self.reject_reference.accessibleName())
         self.needs_sample.setAccessibleName("Request another source reference sample")
-        self.needs_sample.setToolTip(self.needs_sample.accessibleName())
         self.accept_button.setShortcut(QKeySequence("Ctrl+Return"))
+        self.accept_button.setToolTip(
+            shortcut_tooltip(
+                self.accept_button.accessibleName(), self.accept_button.shortcut()
+            )
+        )
         self.reject_reference.setShortcut(QKeySequence("Ctrl+Backspace"))
+        self.reject_reference.setToolTip(
+            shortcut_tooltip(
+                self.reject_reference.accessibleName(), self.reject_reference.shortcut()
+            )
+        )
         self.needs_sample.setShortcut(QKeySequence("Ctrl+N"))
+        self.needs_sample.setToolTip(
+            shortcut_tooltip(
+                self.needs_sample.accessibleName(), self.needs_sample.shortcut()
+            )
+        )
         self.accept_button.clicked.connect(lambda: self._decide("accept"))
         self.reject_reference.clicked.connect(lambda: self._decide("reject"))
         self.needs_sample.clicked.connect(lambda: self._decide("needs_sample"))

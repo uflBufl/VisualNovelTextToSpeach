@@ -43,6 +43,7 @@ from vntts.authoring.review_context_ui import (
 )
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
+from vntts.ui_text import shortcut_tooltip
 
 
 class ReviewSample(TypedDict):
@@ -452,7 +453,6 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
         self.cohort_heading = QLabel()
         self.cohort_heading.setWordWrap(True)
         self.cohort_heading.setAccessibleName("Current missing voice family")
-
         self.previous = QPushButton("Previous")
         set_action_icon(self.previous, "chevron-left")
         self.previous.setSizePolicy(
@@ -474,17 +474,21 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
         set_action_icon(self.next, "chevron-right")
         self.next.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.previous.setAccessibleName("Previous exact review sample")
-        self.previous.setToolTip(self.previous.accessibleName())
         self.previous.setAccessibleDescription(
             "Select the previous sample in the current family"
         )
         self.next.setAccessibleName("Next exact review sample")
-        self.next.setToolTip(self.next.accessibleName())
         self.next.setAccessibleDescription(
             "Select the next sample in the current family"
         )
         self.previous.setShortcut(QKeySequence("Alt+Left"))
+        self.previous.setToolTip(
+            shortcut_tooltip(self.previous.accessibleName(), self.previous.shortcut())
+        )
         self.next.setShortcut(QKeySequence("Alt+Right"))
+        self.next.setToolTip(
+            shortcut_tooltip(self.next.accessibleName(), self.next.shortcut())
+        )
         self.previous.clicked.connect(lambda: self._move_sample(-1))
         self.next.clicked.connect(lambda: self._move_sample(1))
         self.sample_selector.currentIndexChanged.connect(self._select_sample)
@@ -523,12 +527,14 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
             button.setMinimumWidth(180)
             button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             button.setAccessibleName(f"Play opaque candidate {label}")
-            button.setToolTip(button.accessibleName())
             button.setAccessibleDescription(
                 "Play this checksum-bound candidate to completion before deciding"
             )
             if column < 9:
                 button.setShortcut(QKeySequence(f"Ctrl+{column + 1}"))
+            button.setToolTip(
+                shortcut_tooltip(button.accessibleName(), button.shortcut())
+            )
             button.clicked.connect(
                 lambda _checked=False, value=label: self._play(value)
             )
@@ -560,9 +566,11 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
         self.stop = QPushButton("Stop")
         set_action_icon(self.stop, "square")
         self.stop.setAccessibleName("Stop missing voice review audio")
-        self.stop.setToolTip(self.stop.accessibleName())
         self.stop.setAccessibleDescription("Stop the current candidate playback")
         self.stop.setShortcut(QKeySequence("Ctrl+Space"))
+        self.stop.setToolTip(
+            shortcut_tooltip(self.stop.accessibleName(), self.stop.shortcut())
+        )
         self.stop.clicked.connect(self._stop)
         self.playback_controls_widget = QWidget()
         playback_controls = QHBoxLayout(self.playback_controls_widget)
@@ -609,7 +617,9 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
             if self.failed_control_mode
             else "Reject all missing voice candidates"
         )
-        self.neither.setToolTip(self.neither.accessibleName())
+        self.neither.setToolTip(
+            shortcut_tooltip(self.neither.accessibleName(), self.neither.shortcut())
+        )
         self.neither.clicked.connect(lambda: self._save_decision("neither"))
         self.neither.setAccessibleDescription(
             "Keep this review unresolved instead of selecting a candidate"
@@ -874,7 +884,9 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
                 button.setAccessibleName(
                     f"{'Replay' if was_heard else 'Play'} opaque candidate {label}"
                 )
-                button.setToolTip(button.accessibleName())
+                button.setToolTip(
+                    shortcut_tooltip(button.accessibleName(), button.shortcut())
+                )
                 button.setEnabled(True)
                 quality = arm["quality"] or {}
                 duration = quality.get("duration_seconds")
@@ -891,7 +903,9 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
             else:
                 button.setText(f"{label} unavailable")
                 button.setAccessibleName(f"Opaque candidate {label} unavailable")
-                button.setToolTip(button.accessibleName())
+                button.setToolTip(
+                    shortcut_tooltip(button.accessibleName(), button.shortcut())
+                )
                 button.setEnabled(False)
                 self.arm_statuses[label].setText(
                     f"FAILED | {_failure_label(arm['failure_kind'])} | "

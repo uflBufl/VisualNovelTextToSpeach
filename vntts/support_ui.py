@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from vntts import support
 from vntts.action_icons import set_action_icon
+from vntts.ui_text import shortcut_tooltip
 
 
 class SupportCenterDialog(QDialog):
@@ -86,13 +87,28 @@ class SupportCenterDialog(QDialog):
             "Open the latest capture, OCR, routing and latency diagnostics"
         )
         self.diagnostics_button.setShortcut(QKeySequence("Ctrl+D"))
+        self.diagnostics_button.setToolTip(
+            shortcut_tooltip(
+                self.diagnostics_button.toolTip(), self.diagnostics_button.shortcut()
+            )
+        )
         self.export_button.setAccessibleName("Export support report")
         self.export_button.setShortcut(QKeySequence("Ctrl+E"))
+        self.export_button.setToolTip(
+            shortcut_tooltip(
+                self.export_button.toolTip(), self.export_button.shortcut()
+            )
+        )
         self.settings_button.setAccessibleName("Open application settings folder")
         self.settings_button.setAccessibleDescription(
             "Open the local folder containing application settings"
         )
         self.settings_button.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        self.settings_button.setToolTip(
+            shortcut_tooltip(
+                self.settings_button.toolTip(), self.settings_button.shortcut()
+            )
+        )
         self.diagnostics_button.clicked.connect(self.request_diagnostics)
         self.export_button.clicked.connect(self.request_export)
         self.settings_button.clicked.connect(self.request_settings_folder)

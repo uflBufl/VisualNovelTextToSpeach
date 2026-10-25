@@ -12,7 +12,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtGui import QCloseEvent
+    from PySide6.QtGui import QCloseEvent, QKeySequence
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtWidgets import QApplication
 
@@ -265,6 +265,18 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
                 dialog.decision_context.technical_toggle,
             )
             self.assertIs(dialog.neither.nextInFocusChain(), dialog.close_button)
+            for button, key in (
+                (dialog.play, "Ctrl+Alt+R"),
+                (dialog.stop, "Ctrl+Alt+S"),
+                (dialog.generate_preview, "Ctrl+Alt+G"),
+                (dialog.replay_preview, "Ctrl+Alt+P"),
+                (dialog.previous, "Ctrl+Alt+Left"),
+                (dialog.next, "Ctrl+Alt+Right"),
+            ):
+                self.assertIn(
+                    QKeySequence(key).toString(QKeySequence.SequenceFormat.NativeText),
+                    button.toolTip(),
+                )
             for button in (
                 dialog.play,
                 dialog.stop,

@@ -45,7 +45,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtCore import QPoint, Qt, QTimer
-    from PySide6.QtGui import QCloseEvent
+    from PySide6.QtGui import QCloseEvent, QKeySequence
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
@@ -1536,6 +1536,19 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertIn("Listen to A and B", dialog.decision_reason.text())
             self.assertEqual(dialog.play_a.shortcut().toString(), "Ctrl+1")
             self.assertEqual(dialog.play_b.shortcut().toString(), "Ctrl+2")
+            for button in (
+                dialog.play_a,
+                dialog.play_b,
+                dialog.stop,
+                dialog.prefer_a,
+                dialog.prefer_b,
+                dialog.tie,
+                dialog.neither,
+            ):
+                self.assertIn(
+                    button.shortcut().toString(QKeySequence.SequenceFormat.NativeText),
+                    button.toolTip(),
+                )
             self.assertEqual(dialog.neither.shortcut().toString(), "Ctrl+Shift+N")
             for widget in (
                 dialog.progress,
@@ -1796,6 +1809,11 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertTrue(dialog.now_playing.isHidden())
             dialog.play("a")
             self.assertEqual(dialog.now_playing.text(), "Loading A...")
+            self.assertIn("Pause", dialog.stop.toolTip())
+            self.assertIn(
+                dialog.stop.shortcut().toString(QKeySequence.SequenceFormat.NativeText),
+                dialog.stop.toolTip(),
+            )
             self.assertEqual(dialog.play_a.text(), "A")
             self.assertTrue(dialog.status.isHidden())
             dialog.playback.finish()

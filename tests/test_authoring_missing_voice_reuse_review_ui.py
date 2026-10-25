@@ -11,6 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtCore import QThreadPool
+    from PySide6.QtGui import QKeySequence
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtWidgets import QApplication
 
@@ -192,6 +193,13 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             ):
                 self.assertTrue(button.accessibleName(), button.text())
                 self.assertTrue(button.accessibleDescription(), button.text())
+                if not button.shortcut().isEmpty():
+                    self.assertIn(
+                        button.shortcut().toString(
+                            QKeySequence.SequenceFormat.NativeText
+                        ),
+                        button.toolTip(),
+                    )
             dialog.close()
 
     def test_irreversible_decision_can_be_cancelled(self):

@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtCore import QPoint, QThreadPool, QTimer
-    from PySide6.QtGui import QCloseEvent
+    from PySide6.QtGui import QCloseEvent, QKeySequence
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtWidgets import QApplication
 
@@ -376,6 +376,13 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             ):
                 self.assertTrue(button.accessibleName(), button.text())
                 self.assertTrue(button.accessibleDescription(), button.text())
+                if not button.shortcut().isEmpty():
+                    self.assertIn(
+                        button.shortcut().toString(
+                            QKeySequence.SequenceFormat.NativeText
+                        ),
+                        button.toolTip(),
+                    )
             dialog.close()
 
     def test_save_keeps_event_loop_responsive_and_defers_close(self):

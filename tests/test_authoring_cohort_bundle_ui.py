@@ -391,6 +391,25 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                     setattr(dialog, active, True)
                     dialog._update_actions()
                     self.assertFalse(dialog.accept_button.isEnabled())
+                    self.assertIn(
+                        "Playback is unavailable while checksum authority is refreshing."
+                        if active == "_load_active"
+                        else "Play immutable checksum-verified bytes.",
+                        dialog.replay.toolTip(),
+                    )
+                    for button, key in (
+                        (dialog.replay, "Ctrl+Alt+R"),
+                        (dialog.replay, "Space"),
+                        (dialog.accept_button, "Ctrl+Return"),
+                        (dialog.repair_marked, "Ctrl+Shift+Return"),
+                        (dialog.reject_button, "Ctrl+Backspace"),
+                    ):
+                        self.assertIn(
+                            QKeySequence(key).toString(
+                                QKeySequence.SequenceFormat.NativeText
+                            ),
+                            button.toolTip(),
+                        )
                     dialog.table.setFocus()
                     with patch.object(dialog._decision_runner, "start") as start:
                         try:
@@ -705,6 +724,10 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog.show()
             self.wait_for(lambda: dialog.table.rowCount() == 1)
             dialog.table.setFocus()
+            self.assertIn("focus in the sample table", dialog.previous.toolTip())
+            self.assertIn("focus in the sample table", dialog.next.toolTip())
+            self.assertIn("focus in the sample table", dialog.mark_bad.toolTip())
+            self.assertIn("before marking it bad", dialog.mark_bad.toolTip())
 
             QTest.keyClick(dialog.table, Qt.Key.Key_Space)
             self.wait_for(lambda: dialog._playback_target is not None)

@@ -4,7 +4,12 @@ from collections.abc import Callable, Iterable
 from html import escape
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QTextDocument
+from PySide6.QtGui import (
+    QAccessible,
+    QAccessibleAnnouncementEvent,
+    QKeySequence,
+    QTextDocument,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QFormLayout,
@@ -12,6 +17,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QPushButton,
     QSizePolicy,
+    QToolTip,
     QWidget,
 )
 
@@ -78,8 +84,34 @@ def copy_text_button(
 ) -> QPushButton:
     button = QPushButton(label, parent)
     set_action_icon(button, "copy")
-    button.clicked.connect(lambda: QApplication.clipboard().setText(text_provider()))
+    button.clicked.connect(lambda: copy_text(text_provider(), button))
     button.setToolTip(
         "Copy the full text, including details that do not fit on screen."
     )
     return button
+
+
+def copy_text(text: str, source: QWidget) -> None:
+    QApplication.clipboard().setText(text)
+    if source.isVisible():
+        message = "Copied to clipboard"
+        QToolTip.showText(
+            source.mapToGlobal(source.rect().bottomLeft()),
+            message,
+            source,
+            source.rect(),
+            1500,
+        )
+        QAccessible.updateAccessibility(QAccessibleAnnouncementEvent(source, message))
+
+
+def shortcut_tooltip(text: str, *shortcuts: QKeySequence) -> str:
+    keys = [
+        shortcut.toString(QKeySequence.SequenceFormat.NativeText)
+        for shortcut in shortcuts
+        if not shortcut.isEmpty()
+    ]
+    if not keys:
+        return text
+    label = "Shortcut" if len(keys) == 1 else "Shortcuts"
+    return f"{text}\n{label}: {', '.join(keys)}"

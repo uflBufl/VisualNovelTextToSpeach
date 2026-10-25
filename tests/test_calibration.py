@@ -18,7 +18,7 @@ from PySide6.QtCore import (  # noqa: E402
     QThreadPool,
     QTimer,
 )
-from PySide6.QtGui import QTextCursor  # noqa: E402
+from PySide6.QtGui import QKeySequence, QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
@@ -712,6 +712,11 @@ class DialogRegionOverlayTest(unittest.TestCase):
 
         self.assertEqual(dialog.save_button.shortcut().toString(), "Ctrl+Return")
         self.assertEqual(dialog.retry_button.shortcut().toString(), "Ctrl+R")
+        for button in (dialog.save_button, dialog.retry_button):
+            self.assertIn(
+                button.shortcut().toString(QKeySequence.SequenceFormat.NativeText),
+                button.toolTip(),
+            )
         for widget in (
             dialog.preview,
             dialog.result_text,

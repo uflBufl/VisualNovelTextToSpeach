@@ -49,6 +49,7 @@ from vntts.authoring.pcm_playback import (
 )
 from vntts.authoring.review_context_ui import ReviewDecisionContext, review_scroll_area
 from vntts.qt_dialogs import CloseGuardedDialog
+from vntts.ui_text import shortcut_tooltip
 
 Side = Literal["a", "b"]
 PlaybackState = Literal[
@@ -254,11 +255,17 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.play_b.setShortcut(QKeySequence("Ctrl+2"))
         self.stop.setShortcut(QKeySequence("Ctrl+Space"))
         self.play_a.setAccessibleName("Play anonymous sample A")
-        self.play_a.setToolTip(self.play_a.accessibleName())
+        self.play_a.setToolTip(
+            shortcut_tooltip(self.play_a.accessibleName(), self.play_a.shortcut())
+        )
         self.play_b.setAccessibleName("Play anonymous sample B")
-        self.play_b.setToolTip(self.play_b.accessibleName())
+        self.play_b.setToolTip(
+            shortcut_tooltip(self.play_b.accessibleName(), self.play_b.shortcut())
+        )
         self.stop.setAccessibleName("Control active anonymous sample")
-        self.stop.setToolTip(self.stop.accessibleName())
+        self.stop.setToolTip(
+            shortcut_tooltip(self.stop.accessibleName(), self.stop.shortcut())
+        )
         self.play_a.setAccessibleDescription("Play anonymous sample A")
         self.play_b.setAccessibleDescription("Play anonymous sample B")
         self.stop.setAccessibleDescription(
@@ -317,17 +324,25 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.prefer_b = QPushButton("B is better")
         set_action_icon(self.prefer_b, "check")
         self.prefer_a.setAccessibleName("Anonymous sample A is better")
-        self.prefer_a.setToolTip(self.prefer_a.accessibleName())
         self.tie.setAccessibleName("Both anonymous samples are acceptable")
-        self.tie.setToolTip(self.tie.accessibleName())
         self.prefer_a.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        self.prefer_a.setToolTip(
+            shortcut_tooltip(self.prefer_a.accessibleName(), self.prefer_a.shortcut())
+        )
         self.tie.setShortcut(QKeySequence("Ctrl+Shift+T"))
+        self.tie.setToolTip(
+            shortcut_tooltip(self.tie.accessibleName(), self.tie.shortcut())
+        )
         self.neither.setAccessibleName("Neither sample is acceptable")
-        self.neither.setToolTip(self.neither.accessibleName())
         self.neither.setShortcut(QKeySequence("Ctrl+Shift+N"))
+        self.neither.setToolTip(
+            shortcut_tooltip(self.neither.accessibleName(), self.neither.shortcut())
+        )
         self.prefer_b.setShortcut(QKeySequence("Ctrl+Shift+B"))
         self.prefer_b.setAccessibleName("Anonymous sample B is better")
-        self.prefer_b.setToolTip(self.prefer_b.accessibleName())
+        self.prefer_b.setToolTip(
+            shortcut_tooltip(self.prefer_b.accessibleName(), self.prefer_b.shortcut())
+        )
         self.apply_side_button_style(self.prefer_a, "a")
         self.tie.setStyleSheet(
             "QPushButton { background-color: #52525b; color: white;"
@@ -633,7 +648,9 @@ class ModelListeningDialog(CloseGuardedDialog):
             {"stopped": "play", "finished": "refresh-cw"}.get(state, "pause"),
         )
         self.stop.setAccessibleName(f"{self.stop.text()} active anonymous sample")
-        self.stop.setToolTip(self.stop.accessibleName())
+        self.stop.setToolTip(
+            shortcut_tooltip(self.stop.accessibleName(), self.stop.shortcut())
+        )
         self.stop.setEnabled(state not in {"ready", "complete"})
         if side is not None and state in {"loading", "playing"}:
             button = self.play_a if side == "a" else self.play_b

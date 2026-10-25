@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
-from PySide6.QtGui import QColor, QPalette, QTextCursor  # noqa: E402
+from PySide6.QtGui import QColor, QKeySequence, QPalette, QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QHeaderView  # noqa: E402
 
@@ -81,6 +81,11 @@ class ReadinessDialogTest(unittest.TestCase):
         dialog.copy_selected.click()
         expected = f"ERROR | Narrator\n{message}"
         self.assertEqual(self.application.clipboard().text(), expected)
+        self.assertIn(
+            dialog.copy_shortcut.key().toString(QKeySequence.SequenceFormat.NativeText),
+            dialog.copy_selected.toolTip(),
+        )
+        self.assertIn("focus in the checks table", dialog.copy_selected.toolTip())
         self.application.clipboard().clear()
         QTest.keyClick(dialog.table, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
         self.assertEqual(self.application.clipboard().text(), expected)

@@ -35,7 +35,7 @@ from vntts.onboarding import (
     is_diagnostic_results,
 )
 from vntts.settings import AppSettings
-from vntts.ui_text import copy_text_button, make_text_copyable
+from vntts.ui_text import copy_text_button, make_text_copyable, shortcut_tooltip
 
 
 class ReadinessDialog(QDialog):
@@ -120,6 +120,12 @@ class ReadinessDialog(QDialog):
         self.copy_shortcut = QShortcut(QKeySequence.StandardKey.Copy, self.table)
         self.copy_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.copy_shortcut.activated.connect(self.copy_selected.click)
+        self.copy_selected.setToolTip(
+            shortcut_tooltip(
+                "Copy selected check (with focus in the checks table)",
+                self.copy_shortcut.key(),
+            )
+        )
 
         remediation = QHBoxLayout()
         self.remediation_reason = QLabel()

@@ -46,7 +46,7 @@ try:
         Qt,
         QTimer,
     )
-    from PySide6.QtGui import QCloseEvent
+    from PySide6.QtGui import QCloseEvent, QKeySequence
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import (
@@ -332,6 +332,69 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(replacement.review_collection.currentText(), "main")
             self.assertEqual(replacement.review_search.text(), "dialogue")
             replacement.close()
+
+    def test_clear_search_controls_restore_filters_without_changing_reference(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            dialog = AuthoringWorkbenchDialog(
+                self.create_workspace(root), settings=self.settings(root)
+            )
+            initial_count = dialog.voice_character.count()
+            initial_character = dialog.voice_character.currentText()
+            for field in (
+                dialog.voice_search,
+                dialog.review_search,
+                dialog.recent_choice.lineEdit(),
+            ):
+                self.assertTrue(field.isClearButtonEnabled())
+            dialog.voice_search.setText("no matching voice")
+            self.assertEqual(dialog.voice_character.count(), 0)
+            dialog.voice_search.clear()
+            self.assertEqual(dialog.voice_character.count(), initial_count)
+            self.assertEqual(dialog.voice_character.currentText(), initial_character)
+            dialog.recent_choice.lineEdit().clear()
+            self.assertEqual(dialog.voice_character.currentText(), initial_character)
+
+    def test_review_shortcut_tooltips_retain_guard_reasons_after_refresh(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            dialog = AuthoringWorkbenchDialog(
+                self.create_workspace(root), settings=self.settings(root)
+            )
+            keys = [shortcut.key() for shortcut in dialog._review_shortcuts]
+            self.assertEqual(
+                keys,
+                [
+                    QKeySequence(value)
+                    for value in (
+                        "Ctrl+Shift+Left",
+                        "Ctrl+Shift+Right",
+                        "Ctrl+R",
+                        "Ctrl+Return",
+                        "Ctrl+Enter",
+                        "Ctrl+Backspace",
+                    )
+                ],
+            )
+            for _ in range(2):
+                dialog._update_review_actions(None)
+                for button in (
+                    dialog.approve,
+                    dialog.reject_button,
+                    dialog.review_play,
+                ):
+                    expected = (
+                        button.accessibleName()
+                        if button is dialog.review_play and button.isEnabled()
+                        else dialog.review_action_reason.text()
+                    )
+                    self.assertIn(expected, button.toolTip())
+                    self.assertEqual(button.toolTip().count("Shortcut"), 1)
+                    for key in dialog._review_shortcut_keys[button]:
+                        self.assertIn(
+                            key.toString(QKeySequence.SequenceFormat.NativeText),
+                            button.toolTip(),
+                        )
 
     def test_primary_review_hides_technical_controls_and_columns_by_default(self):
         with TemporaryDirectory() as directory:

@@ -80,6 +80,7 @@ from vntts.authoring.workbench import prepare_review_audio, review_technical_sum
 from vntts.cli import print_json
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
+from vntts.ui_text import shortcut_tooltip
 
 
 def _display_required_reason(reason: str) -> str:
@@ -1074,33 +1075,46 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             QKeySequence("Left"), self.table, lambda: self._move(-1)
         )
         previous_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        QShortcut(QKeySequence("Ctrl+Alt+R"), self, self.play_selected)
-        replay_shortcut = QShortcut(
+        self._play_shortcut = QShortcut(
+            QKeySequence("Ctrl+Alt+R"), self, self.play_selected
+        )
+        self._replay_shortcut = QShortcut(
             QKeySequence("Space"), self.table, self.play_selected
         )
-        replay_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        QShortcut(QKeySequence("Ctrl+Alt+S"), self, self.stop_playback)
+        self._replay_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        stop_shortcut = QShortcut(QKeySequence("Ctrl+Alt+S"), self, self.stop_playback)
         next_shortcut = QShortcut(
             QKeySequence("Right"), self.table, lambda: self._move(1)
         )
         next_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        bad_shortcut = QShortcut(QKeySequence("B"), self.table, self.toggle_bad)
-        bad_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        QShortcut(
+        self._bad_shortcut = QShortcut(QKeySequence("B"), self.table, self.toggle_bad)
+        self._bad_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._accept_shortcut = QShortcut(
             QKeySequence("Ctrl+Return"),
             self,
             lambda: self.apply_decision("accepted"),
         )
-        QShortcut(
+        self._repair_shortcut = QShortcut(
             QKeySequence("Ctrl+Shift+Return"),
             self,
             lambda: self.apply_decision("split"),
         )
-        QShortcut(
+        self._reject_shortcut = QShortcut(
             QKeySequence("Ctrl+Backspace"),
             self,
             lambda: self.apply_decision("rejected"),
         )
+        for button, shortcut in (
+            (self.previous, previous_shortcut),
+            (self.next, next_shortcut),
+        ):
+            button.setToolTip(
+                shortcut_tooltip(
+                    button.accessibleName() + " (with focus in the sample table)",
+                    shortcut.key(),
+                )
+            )
+        self.stop.setToolTip(shortcut_tooltip(self.stop.toolTip(), stop_shortcut.key()))
 
     def reload_bundle(self) -> None:
         if self._load_active or self._decision_active or self._close_requested:
@@ -2287,24 +2301,46 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             decision_text = self._listening_decision_guidance(state)
         self.decision_help.setText(decision_text)
         self.replay.setToolTip(
-            "Play immutable checksum-verified bytes. Shortcut: Space."
-            if state.ready
-            else "Playback is unavailable while checksum authority is refreshing."
+            shortcut_tooltip(
+                "Play immutable checksum-verified bytes."
+                if state.ready
+                else "Playback is unavailable while checksum authority is refreshing.",
+                self._play_shortcut.key(),
+            )
+            + "\n"
+            + shortcut_tooltip(
+                "With focus in the sample table", self._replay_shortcut.key()
+            )
         )
         self.mark_bad.setToolTip(
-            "Quickly mark this heard sample as other/unclear, or clear all selected reasons."
-            if state.sample is not None and state.sample.item.queue_id in heard
-            else "Listen to the selected sample completely before marking it bad."
+            shortcut_tooltip(
+                (
+                    "Quickly mark this heard sample as other/unclear, or clear all selected reasons."
+                    if state.sample is not None and state.sample.item.queue_id in heard
+                    else "Listen to the selected sample completely before marking it bad."
+                )
+                + "\nWith focus in the sample table",
+                self._bad_shortcut.key(),
+            )
         )
         self.accept_button.setToolTip(
-            "Accept is available after every required sample is heard and none is marked bad."
+            shortcut_tooltip(
+                "Accept is available after every required sample is heard and none is marked bad.",
+                self._accept_shortcut.key(),
+            )
         )
         self.reject_button.setToolTip(
-            "Reject applies to every WAV in this exact cohort; hear at least one sample first."
+            shortcut_tooltip(
+                "Reject applies to every WAV in this exact cohort; hear at least one sample first.",
+                self._reject_shortcut.key(),
+            )
         )
         self.repair_marked.setToolTip(
-            "Reject only marked WAVs, approve only individually heard acceptable WAVs, "
-            "and keep every unsampled sibling pending in the successor."
+            shortcut_tooltip(
+                "Reject only marked WAVs, approve only individually heard acceptable WAVs, "
+                "and keep every unsampled sibling pending in the successor.",
+                self._repair_shortcut.key(),
+            )
         )
         self.need_another.setToolTip(
             "Hear every current sample before requesting more evidence."

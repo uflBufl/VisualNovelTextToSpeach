@@ -61,6 +61,7 @@ from vntts.ocr import (
 )
 from vntts.ocr_worker import recognize_dialog_image_result
 from vntts.qt_images import pixmap_from_pil
+from vntts.ui_text import shortcut_tooltip
 from vntts.window_capture import WindowGeometry
 
 ReviewerFactory = Callable[[Image.Image], QDialog]
@@ -266,12 +267,24 @@ class CalibrationReviewDialog(QDialog):
             "Save the current normalized dialogue region"
         )
         self.save_button.setShortcut(QKeySequence("Ctrl+Return"))
+        self.save_button.setToolTip(
+            shortcut_tooltip(
+                self.save_button.accessibleName(),
+                self.save_button.shortcut(),
+            )
+        )
         self.retry_button.setText("Draw again")
         self.retry_button.setAccessibleName("Draw calibration region again")
         self.retry_button.setAccessibleDescription(
             "Return to the frozen screen and replace the current selection"
         )
         self.retry_button.setShortcut(QKeySequence("Ctrl+R"))
+        self.retry_button.setToolTip(
+            shortcut_tooltip(
+                self.retry_button.accessibleName(),
+                self.retry_button.shortcut(),
+            )
+        )
         self.cancel_button.setAccessibleName("Cancel calibration")
         self.cancel_button.setAccessibleDescription(
             "Close calibration without saving the selected region"
@@ -432,6 +445,7 @@ class DialogRegionOverlay(QWidget):
         set_action_icon(review, "scan")
         review.clicked.connect(self._review_bounds)
         review.setShortcut(QKeySequence("Ctrl+Return"))
+        review.setToolTip(shortcut_tooltip(review.text(), review.shortcut()))
         layout.addRow(review)
         reset = QPushButton("Reset region")
         set_action_icon(reset, "refresh-cw")
@@ -441,6 +455,7 @@ class DialogRegionOverlay(QWidget):
         set_action_icon(cancel, "x")
         cancel.clicked.connect(self.close)
         cancel.setShortcut(QKeySequence("Esc"))
+        cancel.setToolTip(shortcut_tooltip(cancel.text(), cancel.shortcut()))
         layout.addRow(cancel)
 
     def _sync_bounds_editor(self) -> None:

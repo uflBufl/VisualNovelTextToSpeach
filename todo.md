@@ -4,11 +4,6 @@
 
 - [ ] Verify the affected Windows installation after the user's manual cleanup and regeneration.
 
-## UI improvements - one item at a time
-
-- [ ] 3. Review the implemented direct Settings action and separate Tools disclosure in the native Qt before/after views before proceeding to item 4.
-- [ ] 4. Add action feedback and keyboard affordances: confirm clipboard copies, include existing shortcuts in tooltips, and provide native clear buttons in search fields. Start after item 3; preserve existing keyboard dispatch and accessibility.
-
 ## Active - Finish diagnostic-session native acceptance
 
 - [ ] Preserve usable diagnostics after process/OS interruption. A native run left

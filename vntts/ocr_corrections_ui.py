@@ -14,11 +14,11 @@ from PySide6.QtGui import (
     QCloseEvent,
     QColor,
     QKeyEvent,
+    QKeySequence,
     QResizeEvent,
     QTextOption,
 )
 from PySide6.QtWidgets import (
-    QApplication,
     QDialog,
     QDialogButtonBox,
     QFrame,
@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.ocr_corrections import OCRCorrectionStore
+from vntts.ui_text import copy_text, shortcut_tooltip
 from vntts.versioned_json import StaleDocumentError
 
 TableRow = tuple[str, str]
@@ -207,7 +208,7 @@ class OCRCorrectionsDialog(QDialog):
         writer.writerow(("Scope", "OCR text", "Replace with"))
         for index, rows in enumerate(self._all_table_rows()):
             writer.writerows((self.tabs.tabText(index), *row) for row in rows)
-        QApplication.clipboard().setText(output.getvalue())
+        copy_text(output.getvalue(), self.copy_button)
 
     def _create_table(self, entries: dict[str, str]) -> QTableWidget:
         table = QTableWidget(0, 2)
@@ -230,6 +231,17 @@ class OCRCorrectionsDialog(QDialog):
         add_button.setAccessibleDescription("Add a new OCR correction row (Insert)")
         remove_button.setAccessibleDescription(
             "Remove the selected OCR correction rows (Control+Delete)"
+        )
+        add_button.setToolTip(
+            shortcut_tooltip(
+                "Add a row while the rules table has focus", QKeySequence("Insert")
+            )
+        )
+        remove_button.setToolTip(
+            shortcut_tooltip(
+                "Remove selected rows while the rules table has focus",
+                QKeySequence("Ctrl+Delete"),
+            )
         )
         add_button.clicked.connect(lambda: self._append_row(table))
         remove_button.clicked.connect(lambda: self._remove_selected_rows(table))

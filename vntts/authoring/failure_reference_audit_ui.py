@@ -54,6 +54,7 @@ from vntts.json_types import decode_json
 from vntts.path_safety import read_regular_text
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
+from vntts.ui_text import shortcut_tooltip
 
 
 class AuditCandidate(TypedDict):
@@ -495,12 +496,16 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
         self._preview_runner = LatestTaskRunner(self, thread_pool=self.thread_pool)
         self._preview_runner.finished.connect(self._preview_finished)
 
-        QShortcut(QKeySequence("Ctrl+Alt+R"), self, self.play_selected)
-        QShortcut(QKeySequence("Ctrl+Alt+S"), self, self.stop_playback)
-        QShortcut(QKeySequence("Ctrl+Alt+G"), self, self.generate_selected_preview)
-        QShortcut(QKeySequence("Ctrl+Alt+P"), self, self.replay_generated_preview)
-        QShortcut(QKeySequence("Ctrl+Alt+Left"), self, lambda: self._move_group(-1))
-        QShortcut(QKeySequence("Ctrl+Alt+Right"), self, lambda: self._move_group(1))
+        for button, key, callback in (
+            (self.play, "Ctrl+Alt+R", self.play_selected),
+            (self.stop, "Ctrl+Alt+S", self.stop_playback),
+            (self.generate_preview, "Ctrl+Alt+G", self.generate_selected_preview),
+            (self.replay_preview, "Ctrl+Alt+P", self.replay_generated_preview),
+            (self.previous, "Ctrl+Alt+Left", lambda: self._move_group(-1)),
+            (self.next, "Ctrl+Alt+Right", lambda: self._move_group(1)),
+        ):
+            shortcut = QShortcut(QKeySequence(key), self, callback)
+            button.setToolTip(shortcut_tooltip(button.toolTip(), shortcut.key()))
 
         self.setTabOrder(self.group_choice, self.previous)
         self.setTabOrder(self.previous, self.next)

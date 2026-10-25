@@ -17,7 +17,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtCore import QEvent, QPoint, Qt, QThreadPool, QTimer
-    from PySide6.QtGui import QCloseEvent
+    from PySide6.QtGui import QCloseEvent, QKeySequence
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
@@ -338,6 +338,18 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             self.assertEqual(dialog.play_reference.shortcut().toString(), "Ctrl+O")
             self.assertEqual(dialog.play_generated.shortcut().toString(), "Ctrl+G")
             self.assertEqual(dialog.accept_button.shortcut().toString(), "Ctrl+Return")
+            for button in (
+                dialog.play_reference,
+                dialog.play_generated,
+                dialog.stop,
+                dialog.accept_button,
+                dialog.reject_reference,
+                dialog.needs_sample,
+            ):
+                self.assertIn(
+                    button.shortcut().toString(QKeySequence.SequenceFormat.NativeText),
+                    button.toolTip(),
+                )
             self.assertEqual(dialog.size().width(), 700)
             self.assertEqual(dialog.size().height(), 500)
             self.assertIs(dialog.play_reference.nextInFocusChain(), dialog.generated)

@@ -94,6 +94,7 @@ from vntts.authoring.workbench import (
 from vntts.json_types import decode_json
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
+from vntts.ui_text import copy_text, shortcut_tooltip
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 PROCESS_LOG_CHARACTER_LIMIT = 64 * 1024
@@ -537,6 +538,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         self._review_runner = LatestTaskRunner(self, thread_pool=review_thread_pool)
         self._review_runner.finished.connect(self._review_save_finished)
         self._review_shortcuts: list[QShortcut] = []
+        self._review_shortcut_keys: dict[QPushButton, list[QKeySequence]] = {}
         self._specialist_active = False
         self._specialist_runner = LatestTaskRunner(self)
         self._specialist_runner.finished.connect(self._specialist_task_finished)
@@ -598,6 +600,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
             QAbstractItemView.SelectionMode.NoSelection
         )
         self.voice_search = QLineEdit()
+        self.voice_search.setClearButtonEnabled(True)
         self.voice_search.setPlaceholderText("Search configured voices")
         self.voice_search.setAccessibleName("Search voice references")
         self.voice_search.setAccessibleDescription(
@@ -610,6 +613,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         )
         self.recent_choice = QComboBox()
         self.recent_choice.setEditable(True)
+        cast(QLineEdit, self.recent_choice.lineEdit()).setClearButtonEnabled(True)
         self.recent_choice.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.recent_choice.setAccessibleName("Recent narrator and reference previews")
         self.recent_choice.setAccessibleDescription(
@@ -713,6 +717,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
             "Show review outcomes from one source story collection"
         )
         self.review_search = QLineEdit()
+        self.review_search.setClearButtonEnabled(True)
         self.review_search.setPlaceholderText("Search line text")
         self.review_search.setAccessibleName("Filter review by line text")
         self.review_search.setAccessibleDescription(
@@ -2480,9 +2485,22 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
             reason = (
                 "Ready: exact WAV and state will be revalidated when the action starts"
             )
-        self.approve.setToolTip(reason)
-        self.reject_button.setToolTip(reason)
-        self.review_play.setToolTip("" if self.review_play.isEnabled() else reason)
+        self.approve.setToolTip(
+            shortcut_tooltip(reason, *self._review_shortcut_keys.get(self.approve, ()))
+        )
+        self.reject_button.setToolTip(
+            shortcut_tooltip(
+                reason, *self._review_shortcut_keys.get(self.reject_button, ())
+            )
+        )
+        self.review_play.setToolTip(
+            shortcut_tooltip(
+                self.review_play.accessibleName()
+                if self.review_play.isEnabled()
+                else reason,
+                *self._review_shortcut_keys.get(self.review_play, ()),
+            )
+        )
         self.review_stop.setToolTip(
             "" if self._preview_active else "No audio preview is currently playing"
         )
@@ -2917,9 +2935,10 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
 
     def copy_diagnostic_text(self) -> None:
         summary = self.summary.to_dict() if self.summary is not None else {}
-        QApplication.clipboard().setText(
+        copy_text(
             f"Workspace: {self.workspace_directory}\nStatus: {summary}\n"
-            f"Workspace error: {self._integrity_error or 'none'}\n\n{self.process_log.toPlainText()}"
+            f"Workspace error: {self._integrity_error or 'none'}\n\n{self.process_log.toPlainText()}",
+            self.copy_diagnostics,
         )
 
     def _technical_toggled(self, checked: bool) -> None:
@@ -3072,37 +3091,44 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
 
     def _install_review_shortcuts(self) -> None:
         bindings = (
-            ("Ctrl+Shift+Left", lambda: self._move_pending(-1)),
-            ("Ctrl+Shift+Right", lambda: self._move_pending(1)),
+            ("Ctrl+Shift+Left", self.previous_pending, lambda: self._move_pending(-1)),
+            ("Ctrl+Shift+Right", self.next_pending, lambda: self._move_pending(1)),
             (
                 "Ctrl+R",
+                self.review_play,
                 lambda: self._trigger_if_enabled(
                     self.review_play, self.play_selected_outcome
                 ),
             ),
             (
                 "Ctrl+Return",
+                self.approve,
                 lambda: self._trigger_if_enabled(
                     self.approve, lambda: self.review_selected("approved")
                 ),
             ),
             (
                 "Ctrl+Enter",
+                self.approve,
                 lambda: self._trigger_if_enabled(
                     self.approve, lambda: self.review_selected("approved")
                 ),
             ),
             (
                 "Ctrl+Backspace",
+                self.reject_button,
                 lambda: self._trigger_if_enabled(
                     self.reject_button, lambda: self.review_selected("rejected")
                 ),
             ),
         )
-        for sequence, callback in bindings:
+        for sequence, button, callback in bindings:
             shortcut = QShortcut(QKeySequence(sequence), self)
             shortcut.activated.connect(callback)
             self._review_shortcuts.append(shortcut)
+            self._review_shortcut_keys.setdefault(button, []).append(shortcut.key())
+        for button, keys in self._review_shortcut_keys.items():
+            button.setToolTip(shortcut_tooltip(button.toolTip(), *keys))
 
     @staticmethod
     def _trigger_if_enabled(button: QPushButton, callback: Callable[[], None]) -> None:
