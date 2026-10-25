@@ -1,10 +1,5 @@
 # TODO
 
-## Active - Prepared-audio Reading setup
-
-- [ ] Make the Reading setup test verify the selected prepared/original/live playback route. Preserve source validation, audio-output checks, test invalidation after edits, cancellation and actionable fallback failures.
-- [ ] Run the changed-test selector first, focused route and UI checks, and native Qt visual verification. Remove completed steps after validation.
-
 ## Active - Windows story import and persistence
 
 - [ ] Verify the affected Windows installation after the user's manual cleanup and regeneration.
@@ -64,14 +59,6 @@
       layout issue or MCP event routing before changing behavior. Gate: a user and
       MCP can reach story selection and Prepare without resizing or targeting
       clipped widgets; preserve ordinary keyboard navigation.
-- [ ] Allow prepared-audio Reading setup to validate its actual source route.
-      The final wizard page currently requires successful live synthesis before
-      saving, even when prepared recordings exist. Imported narrator + the default
-      Pocket fallback failed with the gated-model error. Check the selected
-      prepared/original route and audio output independently; retain explicit
-      fallback readiness/error reporting and do not silently mark setup complete.
-      Gate: existing prepared first line can complete setup without generating it
-      again, while missing or invalid prepared audio remains actionable.
 - [ ] Reject off-screen game geometry before calibration capture and ask to show
       the selected game. AeroSpace can park an inactive workspace window at
       (1727,1089) while Quartz still reports it onscreen on a1728x1117 display;

@@ -3,7 +3,7 @@ import logging
 import sys
 from collections import deque
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import asdict, dataclass
 from dataclasses import field as dataclass_field
 from json import JSONDecodeError
@@ -166,7 +166,7 @@ from vntts.settings import (
     load_app_settings,
 )
 from vntts.speech_backend import default_moss_tts_model
-from vntts.speech_presentation import speech_runtime_label
+from vntts.speech_presentation import playback_labels, speech_runtime_label
 from vntts.speech_worker import RetainedWorkerRuntime
 from vntts.support import (
     GenerationTimelineLog,
@@ -3555,7 +3555,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
             return
         model_name = settings.tts_model
-        if settings.speech_backend == "coqui-xtts" and not model_name:
+        if (
+            settings.speech_backend == "coqui-xtts"
+            and not model_name
+            and (
+                not settings.story_index
+                or settings.audio_source_policy == "live-tts-only"
+            )
+        ):
             self.signals.onboarding_test_finished.emit(
                 False, "Select a Coqui model before testing speech."
             )
@@ -3585,22 +3592,52 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if cancel_event.is_set():
                 return False, "OCR-to-speech test cancelled."
             preparation_error = self._prepare_onboarding_controller(
-                settings, model_name, cancel_event
+                settings, cancel_event
             )
             if preparation_error is not None:
                 return False, preparation_error
-            started = bool(self.controller.start())
+
+            def prepare_live() -> None:
+                nonlocal started
+                if cancel_event.is_set():
+                    raise RuntimeError("OCR-to-speech test cancelled.")
+                if settings.speech_backend == "coqui-xtts":
+                    if not model_name:
+                        raise RuntimeError(
+                            "Select a Coqui model before testing live speech."
+                        )
+                    download_error = self._download_onboarding_model(
+                        model_name, cancel_event
+                    )
+                    if download_error is not None:
+                        raise RuntimeError(download_error)
+                if cancel_event.is_set():
+                    raise RuntimeError("OCR-to-speech test cancelled.")
+                started = bool(self.controller.start())
+                if not started:
+                    raise RuntimeError(
+                        self.last_controller_error
+                        or "The live speech engine could not be initialized."
+                    )
+
+            prepared_route_test = bool(
+                settings.story_index and settings.audio_source_policy != "live-tts-only"
+            )
+            if not prepared_route_test:
+                prepare_live()
             if cancel_event.is_set():
                 return False, "OCR-to-speech test cancelled."
-            if not started:
-                return (
-                    False,
-                    self.last_controller_error
-                    or "The speech engine could not be initialized.",
+
+            def capture_context() -> AbstractContextManager[None]:
+                return self._onboarding_capture(generation, cancel_event)
+
+            character, text = (
+                self.controller.test_current_dialog(
+                    capture_context=capture_context, prepare_live=prepare_live
                 )
-            character, text = self.controller.test_current_dialog(
-                capture_context=lambda: self._onboarding_capture(
-                    generation, cancel_event
+                if prepared_route_test
+                else self.controller.test_current_dialog(
+                    capture_context=capture_context
                 )
             )
             if cancel_event.is_set():
@@ -3608,7 +3645,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             preview_succeeded = True
             return (
                 True,
-                f"Success. Recognized {character}: {text}",
+                f"Success. Recognized {character}: {text}"
+                + (
+                    "\nAudio: "
+                    + playback_labels(
+                        self.controller.last_audio_source_description, character
+                    )[1]
+                    if prepared_route_test
+                    else ""
+                ),
             )
         except Exception as error:
             if cancel_event.is_set():
@@ -3624,7 +3669,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _prepare_onboarding_controller(
         self,
         settings: AppSettings,
-        model_name: str | None,
         cancel_event: Event,
     ) -> str | None:
         previous_settings = self.controller.settings
@@ -3633,12 +3677,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         finally:
             if self.controller.settings is not previous_settings:
                 self._onboarding_preview_settings = self.controller.settings
-        if cancel_event.is_set():
-            return "OCR-to-speech test cancelled."
-        if settings.speech_backend == "coqui-xtts" and model_name:
-            download_error = self._download_onboarding_model(model_name, cancel_event)
-            if download_error is not None:
-                return download_error
         if cancel_event.is_set():
             return "OCR-to-speech test cancelled."
         self.last_controller_error = None

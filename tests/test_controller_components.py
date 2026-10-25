@@ -131,7 +131,7 @@ class ControllerComponentsTest(unittest.TestCase):
             notify=False, publish=True
         )
         controller.diagnostics.test_current_dialog.assert_called_once_with(
-            capture_context=None
+            capture_context=None, prepare_live=None
         )
 
     def test_facade_methods_do_not_reaccumulate_coordination_logic(self):

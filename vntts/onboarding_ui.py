@@ -1488,10 +1488,10 @@ class EndToEndTestPage(QWizardPage):
         self.cancelling = False
         self.setTitle("Test OCR and speech")
         instructions = QLabel(
-            "Keep dialogue visible in the calibrated area. The first test may "
-            "download and load the speech model, then read the detected line aloud. "
-            "This test uses the selected live speech engine. Original game voices "
-            "and prepared recordings are verified during Reading."
+            "Keep dialogue visible in the calibrated area. The test uses the selected "
+            "audio policy: a verified prepared recording, original game audio, or live "
+            "speech. The speech model is downloaded or loaded only if the detected "
+            "line needs live speech. Check that you hear the expected audio."
         )
         instructions.setWordWrap(True)
         self.button = QPushButton("Run OCR-to-speech test")
@@ -1550,7 +1550,9 @@ class EndToEndTestPage(QWizardPage):
         self.cancel_button.show()
         self.progress.setRange(0, 0)
         self.progress.show()
-        self.status.setText("Loading the model and testing OCR and audio...")
+        self.status.setText(
+            "Recognizing dialogue and testing the selected audio route..."
+        )
         self.completeChanged.emit()
         self.test_requested.emit(self.flow.draft_settings)
 
@@ -1576,6 +1578,9 @@ class EndToEndTestPage(QWizardPage):
         self.status.setText(message)
 
     def set_result(self, successful: bool, message: str) -> None:
+        if self.cancelling:
+            successful = False
+            message = "OCR-to-speech test cancelled."
         self.successful = successful
         self.running = False
         self.cancelling = False

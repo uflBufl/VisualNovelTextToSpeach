@@ -897,8 +897,11 @@ class AppController:
         self,
         *,
         capture_context: Callable[[], AbstractContextManager[None]] | None = None,
+        prepare_live: Callable[[], None] | None = None,
     ) -> tuple[str, str]:
-        return self.diagnostics.test_current_dialog(capture_context=capture_context)
+        return self.diagnostics.test_current_dialog(
+            capture_context=capture_context, prepare_live=prepare_live
+        )
 
     def _resolve_initial_live_sequence_line(
         self, character: str, text: str
@@ -1039,15 +1042,27 @@ class AppController:
             else self.speech_backend
         )
         self.speech_backend = live_backend
-        policy = self.settings.audio_source_policy
-        if policy == "live-tts-only":
-            self.status_handler(f"Audio policy: live TTS only ({live_backend.name})")
+        generated_backend = self._create_generated_audio_backend(live_backend)
+        if generated_backend is None:
             return False
+        self.speech_backend = generated_backend
+        return True
+
+    def _create_generated_audio_backend(
+        self, live_backend: SpeechBackend | None
+    ) -> GeneratedAudioFallbackBackend | None:
+        policy = self.settings.audio_source_policy
+        live_name = (
+            self.settings.speech_backend if live_backend is None else live_backend.name
+        )
+        if policy == "live-tts-only":
+            self.status_handler(f"Audio policy: live TTS only ({live_name})")
+            return None
         if not self.settings.story_index:
             self.status_handler(
                 "Audio fallback disabled: configure a story index for stable line IDs"
             )
-            return False
+            return None
         library = None
         if self.settings.generated_audio_manifest:
             library = self.generated_audio_library_factory(
@@ -1056,23 +1071,19 @@ class AppController:
             )
         if policy == "prefer-generated" and library is None:
             self.status_handler(
-                f"Generated audio unavailable; using live TTS ({live_backend.name})"
+                f"Generated audio unavailable; using live TTS ({live_name})"
             )
-            return False
-        backend_options = {
-            "volume": self.settings.output_volume_percent / 100,
-            "speed": self.settings.speech_rate_percent / 100,
-            "audio_source_policy": policy,
-        }
+            return None
         generated_backend = self.generated_audio_backend_factory(
             live_backend,
             library,
             self.chapter_voice_preloader,
-            **backend_options,
+            volume=self.settings.output_volume_percent / 100,
+            speed=self.settings.speech_rate_percent / 100,
+            audio_source_policy=policy,
         )
         generated_backend.voice_override = self._has_manual_voice_override
         generated_backend.progress_wait_status = self.status_handler
-        self.speech_backend = generated_backend
         if policy == "prefer-game-audio":
             suffix = (
                 ", then generated/live TTS"
@@ -1085,7 +1096,7 @@ class AppController:
                 f"Audio policy: {len(library.index.entries)} generated entries, "
                 "then live TTS"
             )
-        return True
+        return generated_backend
 
     def refresh_corrections(self) -> None:
         self.correction_store = OCRCorrectionStore.load(self.correction_store.path)

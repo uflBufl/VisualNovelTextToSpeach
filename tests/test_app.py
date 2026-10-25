@@ -9188,6 +9188,47 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("Marcus", results[0][1])
         tray_application.shutdown()
 
+    def test_prepared_setup_does_not_start_or_download_an_unrelated_live_model(self):
+        for engine in ("coqui-xtts", "pocket-tts"):
+            with self.subTest(engine=engine):
+                controller = Mock()
+                controller.is_ready = False
+                controller.test_current_dialog.return_value = (
+                    "Narrator",
+                    "Ready recording.",
+                )
+                controller.last_audio_source_description = (
+                    "Generated audio (line game:1)"
+                )
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=controller),
+                )
+                results = []
+                tray.signals.onboarding_test_finished.connect(
+                    lambda success, message: results.append((success, message))
+                )
+                tray.onboarding_test_runner.thread_pool = ImmediateTaskPool()
+                tray.run_onboarding_test(
+                    AppSettings(
+                        speech_backend=engine,
+                        tts_model=None,
+                        story_index="story.jsonl",
+                        generated_audio_manifest="generated.json",
+                        audio_source_policy="prefer-generated",
+                    )
+                )
+                controller.test_current_dialog.assert_called_once_with(
+                    capture_context=ANY, prepare_live=ANY
+                )
+                controller.start.assert_not_called()
+                controller.model_assets.download.assert_not_called()
+                self.assertTrue(results[0][0])
+                self.assertIn("Prepared recording", results[0][1])
+                self.assertFalse(tray._controller_ready)
+                tray.shutdown()
+
     def test_onboarding_test_requires_a_coqui_model(self):
         controller = Mock()
         tray_application = TrayApplication(

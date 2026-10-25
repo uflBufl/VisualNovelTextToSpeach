@@ -2228,9 +2228,10 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
                 else "No generated audio outcomes in this workspace."
             )
         elif not self._filtered_reviews:
+            unit = "outcome" if len(self._all_reviews) == 1 else "outcomes"
             scope = (
-                "No outcomes match these filters. Reset filters to show all "
-                f"{len(self._all_reviews)} saved outcome(s)."
+                "No outcomes match these filters. Reset filters to show "
+                f"{len(self._all_reviews)} saved {unit}."
             )
         else:
             scope = (

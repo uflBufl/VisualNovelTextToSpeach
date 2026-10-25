@@ -922,6 +922,7 @@ class UiCatalogTest(unittest.TestCase):
                     "onboarding.diagnostics-multiple-last",
                     "onboarding.test",
                     "onboarding.test-success",
+                    "onboarding.test-prepared-success",
                     "onboarding.compact-error",
                     "onboarding.diagnostics-complete",
                     "onboarding.diagnostics-warning",

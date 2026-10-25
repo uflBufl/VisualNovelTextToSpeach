@@ -1512,6 +1512,288 @@ class MainTest(unittest.TestCase):
             )
         return manifest, line
 
+    def test_setup_uses_prepared_audio_without_initializing_any_live_engine(self):
+        from tests.audio_output_fixtures import FakeAudioOutput
+
+        for engine in ("pocket-tts", "coqui-xtts", "moss-tts"):
+            for scenario in ("generated", "original"):
+                with (
+                    self.subTest(engine=engine, scenario=scenario),
+                    TemporaryDirectory() as directory,
+                ):
+                    manifest, line = self._prepared_reading_fixture(
+                        Path(directory), scenario
+                    )
+                    device = FakeAudioOutput()
+                    live_factory = Mock(
+                        side_effect=AssertionError("Unrelated model loaded")
+                    )
+                    controller = AppController(
+                        AppSettings(
+                            speech_backend=engine,
+                            story_index="bound-story.jsonl",
+                            generated_audio_manifest=str(manifest),
+                            audio_source_policy="prefer-game-audio"
+                            if scenario == "original"
+                            else "prefer-generated",
+                        ),
+                        tts_factory=live_factory,
+                        pocket_backend_factory=live_factory,
+                        moss_backend_factory=live_factory,
+                        chapter_voice_preloader=ChapterVoicePreloader((line,)),
+                        generated_audio_backend_factory=lambda *args, **options: (
+                            GeneratedAudioFallbackBackend(
+                                *args, audio_output=device, **options
+                            )
+                        ),
+                    )
+                    prepare_live = Mock(
+                        side_effect=AssertionError("Live initialization requested")
+                    )
+                    with patch(
+                        "vntts.controller_components.analyze_dialog_snapshot",
+                        return_value=(
+                            None,
+                            None,
+                            OCRResult("Narrator", "Hello.", 95.0, "balanced", 1),
+                        ),
+                    ):
+                        self.assertEqual(
+                            controller.test_current_dialog(prepare_live=prepare_live),
+                            ("Narrator", "Hello."),
+                        )
+                    live_factory.assert_not_called()
+                    prepare_live.assert_not_called()
+                    self.assertFalse(controller.is_ready)
+                    self.assertEqual(
+                        controller.last_audio_route_trace.effective_source,
+                        "game" if scenario == "original" else "generated",
+                    )
+                    self.assertEqual(
+                        len(device.plays), 0 if scenario == "original" else 1
+                    )
+
+    def test_setup_unusable_recording_uses_only_the_selected_live_fallback(self):
+
+        for scenario in (
+            "missing",
+            "corrupt",
+            "stale",
+            "override",
+            "speed",
+            "live-only",
+        ):
+            with self.subTest(scenario=scenario), TemporaryDirectory() as directory:
+                root = Path(directory)
+                manifest, line = self._prepared_reading_fixture(root, scenario)
+                if scenario == "missing":
+                    (root / "line.wav").unlink()
+                if scenario == "stale":
+                    line = replace(
+                        line, text="Changed.", text_sha256=text_sha256("Changed.")
+                    )
+                controller = AppController(
+                    AppSettings(
+                        story_index="bound-story.jsonl",
+                        generated_audio_manifest=str(manifest),
+                        audio_source_policy="live-tts-only"
+                        if scenario == "live-only"
+                        else "prefer-generated",
+                        force_live_narrator=scenario == "override",
+                        speech_rate_percent=150 if scenario == "speed" else 100,
+                    ),
+                    tts_factory=Mock(),
+                    chapter_voice_preloader=ChapterVoicePreloader((line,)),
+                )
+                live = StubTypedPlaybackBackend()
+                live.capabilities = SpeechBackendCapabilities(False, False, True)
+                live.prepare_playback = Mock(wraps=live.prepare_playback)
+                live.play_prepared = Mock(wraps=live.play_prepared)
+
+                def prepare_live():
+                    controller.speech_backend = live
+                    controller._configure_generated_audio_backend()
+
+                prepare = Mock(side_effect=prepare_live)
+                with patch(
+                    "vntts.controller_components.analyze_dialog_snapshot",
+                    return_value=(
+                        None,
+                        None,
+                        OCRResult("Narrator", line.text, 95.0, "balanced", 1),
+                    ),
+                ):
+                    self.assertEqual(
+                        controller.test_current_dialog(prepare_live=prepare),
+                        ("Narrator", line.text),
+                    )
+                prepare.assert_called_once_with()
+                live.prepare_playback.assert_called_once_with("Narrator", line.text)
+                live.play_prepared.assert_called_once()
+                if scenario not in {"live-only"}:
+                    self.assertNotEqual(
+                        controller.last_audio_route_trace.effective_source, "generated"
+                    )
+                    self.assertIsNotNone(
+                        controller.last_audio_route_trace.fallback_reason
+                    )
+
+    def test_setup_requires_an_audible_ready_route(self):
+        from tests.audio_output_fixtures import FakeAudioOutput
+        from vntts.generated_audio import (
+            AudioEventOmissionRoute,
+            PendingGeneratedAudioRoute,
+        )
+
+        controller = AppController(AppSettings())
+        trace = AudioRouteTrace(
+            None,
+            "waiting-for-generation",
+            "exact",
+            None,
+            None,
+            "game:1",
+            "generation-in-progress",
+        )
+        for route, message in (
+            (
+                PendingGeneratedAudioRoute(
+                    "game:1", text_sha256("Hello."), "Hello.", "Narrator", trace
+                ),
+                "Finish offline preparation",
+            ),
+            (AudioEventOmissionRoute(Mock(), trace), "Show another line"),
+        ):
+            with self.subTest(route=type(route).__name__):
+                backend = GeneratedAudioFallbackBackend(
+                    None,
+                    None,
+                    controller.chapter_voice_preloader,
+                    audio_output=FakeAudioOutput(),
+                )
+                backend.prepare_route = Mock(return_value=route)
+                backend.play_route = Mock()
+                prepare_live = Mock()
+                with (
+                    patch.object(
+                        controller,
+                        "_create_generated_audio_backend",
+                        return_value=backend,
+                    ),
+                    patch(
+                        "vntts.controller_components.analyze_dialog_snapshot",
+                        return_value=(
+                            None,
+                            None,
+                            OCRResult("Narrator", "Hello.", 95.0, "balanced", 1),
+                        ),
+                    ),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        controller.test_current_dialog(prepare_live=prepare_live)
+                backend.play_route.assert_not_called()
+                prepare_live.assert_not_called()
+
+    def test_setup_corrupt_recording_and_unavailable_fallback_does_not_succeed(self):
+        from tests.audio_output_fixtures import FakeAudioOutput
+
+        with TemporaryDirectory() as directory:
+            manifest, line = self._prepared_reading_fixture(Path(directory), "corrupt")
+            device = FakeAudioOutput()
+            controller = AppController(
+                AppSettings(
+                    story_index="bound-story.jsonl",
+                    generated_audio_manifest=str(manifest),
+                    audio_source_policy="prefer-generated",
+                ),
+                tts_factory=Mock(),
+                chapter_voice_preloader=ChapterVoicePreloader((line,)),
+                generated_audio_backend_factory=lambda *args, **options: (
+                    GeneratedAudioFallbackBackend(*args, audio_output=device, **options)
+                ),
+            )
+            prepare_live = Mock(
+                side_effect=TTSConfigurationError(
+                    "Live fallback needs gated model access"
+                )
+            )
+            with patch(
+                "vntts.controller_components.analyze_dialog_snapshot",
+                return_value=(
+                    None,
+                    None,
+                    OCRResult("Narrator", line.text, 95.0, "balanced", 1),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    TTSConfigurationError, "gated model access"
+                ):
+                    controller.test_current_dialog(prepare_live=prepare_live)
+            prepare_live.assert_called_once_with()
+            self.assertFalse(controller.is_ready)
+            self.assertEqual(device.plays, [])
+
+    def test_setup_prepared_playback_failure_or_cancellation_is_not_success(self):
+        from tests.audio_output_fixtures import FakeAudioOutput
+
+        for scenario in ("failed", "cancelled", "cancel-before-play"):
+            with self.subTest(scenario=scenario), TemporaryDirectory() as directory:
+                manifest, line = self._prepared_reading_fixture(
+                    Path(directory), "generated"
+                )
+                controller = AppController(
+                    AppSettings(
+                        story_index="bound-story.jsonl",
+                        generated_audio_manifest=str(manifest),
+                        audio_source_policy="prefer-generated",
+                    ),
+                    tts_factory=Mock(),
+                    chapter_voice_preloader=ChapterVoicePreloader((line,)),
+                )
+                backend = GeneratedAudioFallbackBackend(
+                    None,
+                    controller.generated_audio_library_factory(str(manifest)),
+                    controller.chapter_voice_preloader,
+                    audio_output=FakeAudioOutput(),
+                )
+                backend.play_route = Mock(
+                    return_value=PlaybackOutcome(
+                        PlaybackStatus.FAILED
+                        if scenario == "failed"
+                        else PlaybackStatus.INTERRUPTED,
+                        1.0,
+                        error="Output device disconnected"
+                        if scenario == "failed"
+                        else None,
+                    )
+                )
+                if scenario == "cancel-before-play":
+                    controller.shutdown_requested.set()
+                prepare = Mock(side_effect=AssertionError("Unexpected fallback"))
+                with (
+                    patch.object(
+                        controller,
+                        "_create_generated_audio_backend",
+                        return_value=backend,
+                    ),
+                    patch(
+                        "vntts.controller_components.analyze_dialog_snapshot",
+                        return_value=(
+                            None,
+                            None,
+                            OCRResult("Narrator", line.text, 95.0, "balanced", 1),
+                        ),
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        (RuntimeError, AudioPlaybackError),
+                        "Output device disconnected|did not complete|cancelled",
+                    ):
+                        controller.test_current_dialog(prepare_live=prepare)
+                prepare.assert_not_called()
+                if scenario == "cancel-before-play":
+                    backend.play_route.assert_not_called()
+
     @staticmethod
     def _blocked_startup_factory(entered, release, instances):
         from vntts.speech_worker import IsolatedSpeechBackend

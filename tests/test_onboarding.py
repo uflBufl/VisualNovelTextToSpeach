@@ -781,6 +781,18 @@ class OnboardingWizardTest(unittest.TestCase):
         page.set_result(False, "Done")
         wizard.deleteLater()
 
+    def test_cancelled_test_ignores_a_late_success(self):
+        wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+        wizard.show_page(len(wizard.pages) - 1)
+        page = wizard.test_page
+        page.run_test()
+        page.request_cancel()
+        page.set_result(True, "A late completed recording")
+        self.assertFalse(page.successful)
+        self.assertFalse(wizard.finish_button.isEnabled())
+        self.assertIn("cancelled", page.status.text())
+        wizard.deleteLater()
+
     def test_new_calibration_invalidates_previous_test_and_reuses_selected_region(self):
         wizard = OnboardingWizard(AppSettings(), reading_setup=True)
         first = DialogRegion(0.1, 0.2, 0.4, 0.16)

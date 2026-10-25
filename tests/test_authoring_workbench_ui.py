@@ -1055,6 +1055,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog.review_table.rowCount(), 0)
             self.assertTrue(dialog.reset_review_filters.isEnabled())
             self.assertIn("Reset filters", dialog.review_scope.text())
+            self.assertIn("1 saved outcome.", dialog.review_scope.text())
 
             dialog.reset_review_filters.click()
 

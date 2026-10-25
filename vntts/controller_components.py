@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 from vntts.auto_advance_policy import auto_advance_control_state
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.cleanup import cleanup_on_exit
-from vntts.dialog import is_empty, speak_dialog
+from vntts.dialog import is_empty
 from vntts.dialog_capture import (
     DiagnosticSnapshot,
     OCRError,
@@ -34,12 +34,17 @@ from vntts.dialog_capture import (
     fingerprint_dialog_render_activity,
     get_screenshot_directory,
 )
-from vntts.generated_audio import GeneratedAudioFallbackBackend
+from vntts.generated_audio import (
+    AudioEventOmissionRoute,
+    GeneratedAudioFallbackBackend,
+    LiveSpeechRequired,
+    PendingGeneratedAudioRoute,
+)
 from vntts.live import IncrementalDialogTracker, LivePipelineMetrics
 from vntts.live_snapshot import read_live_snapshot
-from vntts.live_speech import play_typed_text
+from vntts.live_speech import play_typed_text, raise_playback_failure
 from vntts.ocr_worker import cancel_pending_ocr, close_ocr_worker, open_ocr_worker
-from vntts.playback import PlaybackOutcome, PreparedPlayback
+from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
 from vntts.playback import TypedPlaybackBackend as _TypedPlaybackBackend
 from vntts.reading_diagnostics import record_diagnostic_event
 from vntts.runtime_config import (
@@ -1602,16 +1607,15 @@ class DiagnosticsComponent:
         self,
         *,
         capture_context: Callable[[], AbstractContextManager[None]] | None = None,
+        prepare_live: Callable[[], None] | None = None,
     ) -> tuple[str, str]:
         controller = self.controller
-        if not controller.is_ready:
+        if prepare_live is None and not controller.is_ready:
             raise RuntimeError("The speech engine is not ready")
         voice_router = controller.voice_router
-        if voice_router is None:
-            raise RuntimeError("The speech engine is not ready")
         image, _output, result = analyze_dialog_snapshot(
             get_screenshot_directory(controller.settings),
-            voice_router.registry,
+            None if voice_router is None else voice_router.registry,
             capture_target=controller.capture_target,
             minimum_confidence=controller.settings.ocr_minimum_confidence,
             diagnostic_handler=controller._publish_diagnostic,
@@ -1644,10 +1648,85 @@ class DiagnosticsComponent:
             raise OCRError("No dialogue text was detected in the calibrated region")
         controller.status_handler(f"Testing OCR and speech with {character}")
         try:
-            speak_dialog(
-                text,
-                lambda value: controller._speak_with_live_backend(character, value),
-            )
+            self._test_audio_route(character, text, prepare_live)
         finally:
             controller._refresh_diagnostic_metrics()
         return character, text
+
+    def _test_audio_route(
+        self, character: str, text: str, prepare_live: Callable[[], None] | None
+    ) -> None:
+        controller = self.controller
+        backend = (
+            controller._create_generated_audio_backend(None)
+            if prepare_live is not None
+            else controller.speech_backend
+        )
+
+        def guard() -> bool:
+            return not controller.shutdown_requested.is_set()
+
+        previous_match = controller.chapter_voice_preloader.current_match
+        try:
+            if not guard():
+                raise RuntimeError("OCR-to-speech test cancelled.")
+            if isinstance(backend, GeneratedAudioFallbackBackend):
+                backend.set_live_mode_active(True)
+                try:
+                    route = backend.prepare_route(character, text)
+                except LiveSpeechRequired as error:
+                    if prepare_live is None:
+                        raise
+                    controller.status_handler(str(error))
+                    controller.chapter_voice_preloader.current_match = previous_match
+                    prepare_live()
+                    backend = controller.speech_backend
+                    if not isinstance(backend, GeneratedAudioFallbackBackend):
+                        raise RuntimeError(
+                            "The selected audio route is no longer available"
+                        ) from error
+                    backend.set_live_mode_active(True)
+                    route = backend.prepare_route(character, text)
+                if not guard():
+                    raise RuntimeError("OCR-to-speech test cancelled.")
+                if isinstance(route, PendingGeneratedAudioRoute):
+                    raise RuntimeError(
+                        "This line is still being prepared. Finish offline preparation "
+                        "and read the line again."
+                    )
+                if isinstance(route, AudioEventOmissionRoute):
+                    raise RuntimeError(
+                        "This story line intentionally has no speech. Show another line "
+                        "to test audio output."
+                    )
+                controller.last_audio_source_description = (
+                    controller._describe_audio_source(route)
+                )
+                controller.last_audio_route_trace = route.trace
+                outcome = backend.play_route(route, playback_guard=guard)
+                if not isinstance(outcome, PlaybackOutcome):
+                    raise TypeError(
+                        "Speech backend returned an untyped playback outcome"
+                    )
+                raise_playback_failure(outcome)
+                if not guard() or outcome.status is not PlaybackStatus.COMPLETED:
+                    raise RuntimeError(
+                        "Audio playback did not complete. Read the line again."
+                    )
+            else:
+                if prepare_live is not None:
+                    prepare_live()
+                if not guard() or not controller._speak_with_live_backend(
+                    character, text
+                ):
+                    raise RuntimeError(
+                        "Audio playback did not complete. Read the line again."
+                    )
+                controller.last_audio_source_description = (
+                    controller._describe_audio_source(None)
+                )
+        finally:
+            if isinstance(backend, GeneratedAudioFallbackBackend):
+                backend.set_live_mode_active(False)
+                if backend.live_backend is None:
+                    backend.stop()

@@ -48,7 +48,7 @@ from vntts.playback import (
     PreparedPlayback,
 )
 from vntts.settings import audio_source_policies
-from vntts.speech_backend_contract import SpeechBackend
+from vntts.speech_backend_contract import SpeechBackend, SpeechBackendCapabilities
 from vntts.speech_backend_runtime import validate_speed, validate_volume
 from vntts.voices import is_unattributed_speaker, synthesis_character
 
@@ -636,12 +636,23 @@ def _has_full_source_audio(line: ChapterDialogue | None) -> bool:
     )
 
 
+class LiveSpeechRequired(RuntimeError):
+    """The selected route needs a live engine that has not been initialized."""
+
+    def __init__(self, trace: AudioRouteTrace) -> None:
+        self.trace = trace
+        super().__init__(
+            "The selected audio route requires live speech: "
+            + (trace.fallback_reason or trace.artifact_preflight_state)
+        )
+
+
 class GeneratedAudioFallbackBackend:
     """Pass through source audio, prefer local generations, then use live TTS."""
 
     def __init__(
         self,
-        live_backend: SpeechBackend,
+        live_backend: SpeechBackend | None,
         library: GeneratedAudioLibrary | None,
         line_resolver: _LineResolver,
         *,
@@ -662,8 +673,12 @@ class GeneratedAudioFallbackBackend:
             raise ValueError(f"Unknown audio source policy: {audio_source_policy}")
         self.audio_source_policy = audio_source_policy
         prefix = "generated-audio" if library is not None else "story-audio"
-        self.name = f"{prefix}+{live_backend.name}"
-        self.capabilities = live_backend.capabilities
+        self.name = prefix if live_backend is None else f"{prefix}+{live_backend.name}"
+        self.capabilities = (
+            SpeechBackendCapabilities(False, False, True)
+            if live_backend is None
+            else live_backend.capabilities
+        )
         self.generated_preflight_lock = Lock()
         self.generated_reservations: BoundedCache[
             tuple[str, str], PreparedGeneratedAudio
@@ -738,7 +753,7 @@ class GeneratedAudioFallbackBackend:
                 line.line_id,
                 line.text_sha256,
             )
-            if live_fallback is None:
+            if live_fallback is None or self.live_backend is None:
                 return False
             try:
                 _validate_live_fallback_backend(self.live_backend, live_fallback)
@@ -976,7 +991,7 @@ class GeneratedAudioFallbackBackend:
             )
             else self.library.find_live_fallback(line.line_id, line.text_sha256)
         )
-        if live_fallback is not None:
+        if live_fallback is not None and self.live_backend is not None:
             try:
                 _validate_live_fallback_backend(self.live_backend, live_fallback)
             except ValueError:
@@ -1054,6 +1069,8 @@ class GeneratedAudioFallbackBackend:
         *,
         source_audio_lead_seconds: float = 0.0,
     ) -> LiveTTSRoute:
+        if self.live_backend is None:
+            raise LiveSpeechRequired(trace)
         prepared = self.live_backend.prepare_playback(character, text)
         return LiveTTSRoute(
             prepared,
@@ -1072,6 +1089,8 @@ class GeneratedAudioFallbackBackend:
         trace: AudioRouteTrace,
         source_audio_lead_seconds: float = 0.0,
     ) -> LiveFallbackRoute:
+        if self.live_backend is None:
+            raise LiveSpeechRequired(trace)
         _validate_live_fallback_backend(self.live_backend, decision)
         if decision.schema_version == 6:
             evidence = decision.evidence
@@ -1150,6 +1169,8 @@ class GeneratedAudioFallbackBackend:
         )
         if live_fallback is None:
             return None
+        if self.live_backend is None:
+            raise LiveSpeechRequired(route.trace)
         try:
             _validate_live_fallback_backend(self.live_backend, live_fallback)
         except ValueError:
@@ -1529,6 +1550,8 @@ class AudioRoutePlaybackOwner:
             self._deactivate()
             return _route_outcome(route, PlaybackStatus.INTERRUPTED, lead_ms)
         try:
+            if self.router.live_backend is None:
+                raise LiveSpeechRequired(route.trace)
             outcome = self.router.live_backend.play_prepared(
                 route.prepared,
                 playback_guard=playback_guard,
@@ -1578,7 +1601,8 @@ class AudioRoutePlaybackOwner:
                 self.source_audio_completion_stop.set()
             elif self.active_playback_source == "generated":
                 self.generated_audio_stop.set()
-        return bool(self.router.live_backend.stop()) or was_playing
+        backend = self.router.live_backend
+        return bool(backend is not None and backend.stop()) or was_playing
 
 
 def _live_fallback_index(

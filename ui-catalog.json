@@ -194,6 +194,7 @@
         {"id": "onboarding.calibration", "title": "Calibrate dialogue", "state": "Overlay instructions and progress are clear"},
         {"id": "onboarding.test", "title": "Try one line", "state": "The test is pending and saving is gated"},
         {"id": "onboarding.test-success", "title": "Test succeeded", "state": "The successful test leads to saving setup"},
+        {"id": "onboarding.test-prepared-success", "title": "Prepared recording tested", "state": "A completed prepared recording test enables Save and names its source without requiring live generation"},
         {"id": "onboarding.compact-error", "title": "Compact error", "state": "Error and remediation remain reachable with larger text"},
       {"id": "onboarding.diagnostics-complete", "title": "Checks passed", "state": "Completed checks permit the next step"},
       {"id": "onboarding.compact-error-end", "title": "End of compact error", "state": "The blocking component and recovery action remain reachable at larger text"},

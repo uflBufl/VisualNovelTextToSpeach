@@ -2400,6 +2400,11 @@ def _onboarding_test_story(
     elif state != "test-running":
         outcomes = {
             "test-success": (True, "Recognized Marcus: The storm has passed."),
+            "test-prepared-success": (
+                True,
+                "Success. Recognized Marcus: The storm has passed.\n"
+                "Audio: Prepared recording · no generation",
+            ),
             "test-failure": (
                 False,
                 "No dialogue detected. Keep dialogue visible and try again.",
@@ -4029,6 +4034,9 @@ def _render_stories(
         ),
         "onboarding.test": lambda: _onboarding_story("test"),
         "onboarding.test-success": lambda: _onboarding_story("test-success"),
+        "onboarding.test-prepared-success": lambda: _onboarding_story(
+            "test-prepared-success"
+        ),
         "onboarding.compact-error": lambda: _onboarding_story("compact-error"),
         "onboarding.compact-error-end": lambda: _onboarding_story("compact-error-end"),
         "onboarding.diagnostics-exception-end": lambda: _onboarding_story(
