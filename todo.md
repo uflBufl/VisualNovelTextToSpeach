@@ -6,8 +6,7 @@
 
 ## UI improvements - one item at a time
 
-- [ ] 2. Review the native voice editor without maintenance/diagnostic panels, with the actual preview TTS model permanently visible inside Preview phrase above its text field, with a bold TTS model label. Preserve framed Current/New voice sections, concise Source/Reference labels and no duplicate donor name. Confirm the visual result before item 3.
-- [ ] 3. Separate Settings from Tools: give the disclosure/menu of maintenance actions a distinct name and keep the actual Settings entry unambiguous. Start after item 2.
+- [ ] 3. Separate Settings from Tools: give the disclosure/menu of maintenance actions a distinct name and keep the actual Settings entry unambiguous.
 - [ ] 4. Add action feedback and keyboard affordances: confirm clipboard copies, include existing shortcuts in tooltips, and provide native clear buttons in search fields. Start after item 3; preserve existing keyboard dispatch and accessibility.
 
 ## Active - Finish diagnostic-session native acceptance
