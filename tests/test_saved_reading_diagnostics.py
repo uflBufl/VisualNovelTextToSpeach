@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import struct
 import unittest
 import zipfile
 from pathlib import Path
@@ -131,6 +132,154 @@ class SavedReadingDiagnosticsTest(unittest.TestCase):
             self.assertIsNone(latest_finished_diagnostic_session(root))
             runtime.unlink()
             self.assertIsNone(latest_finished_diagnostic_session(root))
+
+    def test_interrupted_session_exports_recovered_audio_without_rewriting_originals(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = self.recorded_session(root)
+            metadata = session.directory / "session.json"
+            report = json.loads(metadata.read_text())
+            report.update(status="recording", started_at="2020-01-01T00:00:00+00:00")
+            report.pop("owner", None)
+            metadata.write_text(json.dumps(report))
+            original_metadata = metadata.read_bytes()
+            runtime = session.directory / "runtime.jsonl"
+            runtime.write_bytes(runtime.read_bytes().rsplit(b"\n", 2)[0] + b"\n")
+            original_runtime = runtime.read_bytes()
+            audio = session.directory / "process.caf"
+            desc = struct.pack(">d4sIIIII", 16000, b"lpcm", 3, 8, 1, 2, 32)
+            audio.write_bytes(
+                b"caff\x00\x01\x00\x00desc"
+                + struct.pack(">q", 32)
+                + desc
+                + b"data"
+                + struct.pack(">q", -1)
+                + b"\0" * (4 + 160 * 8)
+            )
+            original_audio = audio.read_bytes()
+            (session.directory / "sources.json").write_text('{"entries":[]}')
+            (session.directory / "analysis.json").write_bytes(
+                b"previous analysis evidence"
+            )
+
+            entry = list_diagnostic_sessions(root)[0]
+            self.assertEqual(entry.report["status"], "interrupted")
+            self.assertIsNotNone(entry.saved)
+            self.assertIsNone(latest_finished_diagnostic_session(root))
+            saved = load_saved_diagnostic_session(root, session.session_id)
+            entries = dict(saved.export_entries())
+            self.assertIn("reading-session/process.recovered.caf", entries)
+            self.assertIn("reading-session/recovery.json", entries)
+            self.assertIn("reading-session/recovery-analysis.json", entries)
+            self.assertEqual(
+                (session.directory / "analysis.json").read_bytes(),
+                b"previous analysis evidence",
+            )
+            self.assertEqual(
+                json.loads((session.directory / "recovery-analysis.json").read_text())[
+                    "status"
+                ],
+                "partial",
+            )
+            import soundfile as sf
+
+            with sf.SoundFile(
+                entries["reading-session/process.recovered.caf"]
+            ) as recovered:
+                self.assertEqual(recovered.frames, 160)
+            self.assertEqual(audio.read_bytes(), original_audio)
+            self.assertEqual(runtime.read_bytes(), original_runtime)
+            self.assertEqual(metadata.read_bytes(), original_metadata)
+            delete_saved_diagnostic_session(root, session.session_id)
+            self.assertFalse(session.directory.exists())
+
+    def test_live_owner_or_helper_blocks_interrupted_export_and_delete(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = self.recorded_session(root)
+            metadata = session.directory / "session.json"
+            report = json.loads(metadata.read_text())
+            report["status"] = "recording"
+            metadata.write_text(json.dumps(report))
+            self.assertIsNone(load_saved_diagnostic_session(root, session.session_id))
+            with self.assertRaises(ValueError):
+                delete_saved_diagnostic_session(root, session.session_id)
+            owner = report.pop("owner")
+            report["started_at"] = "2020-01-01T00:00:00+00:00"
+            report["recording"] = {
+                "captures": [
+                    {"helper_pid": owner["pid"], "helper_created": owner["created"]}
+                ]
+            }
+            metadata.write_text(json.dumps(report))
+            self.assertIsNone(load_saved_diagnostic_session(root, session.session_id))
+            with self.assertRaisesRegex(ValueError, "media is still finalizing"):
+                delete_saved_diagnostic_session(root, session.session_id)
+            report["recording"]["captures"][0]["helper_created"] = None
+            metadata.write_text(json.dumps(report))
+            self.assertIsNone(load_saved_diagnostic_session(root, session.session_id))
+
+    def test_dead_owner_allows_native_watchdog_to_finish_without_real_wait(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = self.recorded_session(root)
+            metadata = session.directory / "session.json"
+            report = json.loads(metadata.read_text())
+            report.update(
+                status="recording", target={"pid": 50}, recording={"captures": []}
+            )
+            metadata.write_text(json.dumps(report))
+            with (
+                patch(
+                    "vntts.reading_diagnostics._process_is_running", return_value=False
+                ),
+                patch("vntts.reading_diagnostics._dead_owners_seen", {}),
+                patch("vntts.reading_diagnostics.monotonic", return_value=100) as clock,
+            ):
+                self.assertIsNone(
+                    load_saved_diagnostic_session(root, session.session_id)
+                )
+                clock.return_value = 114.9
+                self.assertIsNone(
+                    load_saved_diagnostic_session(root, session.session_id)
+                )
+                clock.return_value = 115
+                self.assertEqual(
+                    load_saved_diagnostic_session(root, session.session_id).report[
+                        "status"
+                    ],
+                    "interrupted",
+                )
+
+    def test_diagnostic_export_uses_zip64_and_refuses_insufficient_space(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = self.recorded_session(root / "sessions")
+            saved = load_saved_diagnostic_session(root / "sessions", session.session_id)
+            builder = SupportBundleBuilder(
+                AppSettings(ocr_diagnostics_directory=str(root / "ocr")),
+                RuntimeSupportLog(),
+                dependency_probe=lambda: {},
+                diagnostic_session=saved,
+            )
+            with (
+                patch("vntts.support.collect_build_identity", return_value={}),
+                patch("zipfile.ZIP64_LIMIT", 128),
+            ):
+                archive = builder.build(root / "session.zip")
+            with zipfile.ZipFile(archive) as zipped:
+                self.assertEqual(
+                    zipped.read("reading-session/runtime.jsonl"),
+                    (session.directory / "runtime.jsonl").read_bytes(),
+                )
+            with patch(
+                "vntts.support.shutil.disk_usage", return_value=SimpleNamespace(free=1)
+            ):
+                with self.assertRaisesRegex(OSError, "free disk space"):
+                    builder.build(root / "cannot-fit.zip")
+            self.assertFalse((root / "cannot-fit.zip").exists())
 
     def test_restore_rejects_symlink_paths_and_bounded_oversize_metadata(self):
         with TemporaryDirectory() as directory:

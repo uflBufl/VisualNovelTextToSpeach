@@ -19,6 +19,7 @@ from vntts.reading_diagnostics import (  # noqa: E402
     arm_audio_worker_recording,
     delete_saved_diagnostic_session,
     record_diagnostic_event,
+    retain_diagnostic_source,
     selected_recording_target,
 )
 from vntts.support import GenerationTimelineLog  # noqa: E402
@@ -215,7 +216,7 @@ class ReadingDiagnosticSessionTest(unittest.TestCase):
 
     def test_history_deletion_refuses_active_and_finalizing_sessions(self):
         session = self.session()
-        with self.assertRaisesRegex(ValueError, "not finished"):
+        with self.assertRaisesRegex(ValueError, "active or finalizing"):
             delete_saved_diagnostic_session(self.root, session.session_id)
         session.stop(3)
         session.finished.clear()
@@ -253,8 +254,103 @@ class ReadingDiagnosticSessionTest(unittest.TestCase):
             (session.directory / entries[0]["audio"]).read_bytes(), source.read_bytes()
         )
         source.write_bytes(b"replacement after publication")
+        session._retain_sources()
+        self.assertEqual(
+            (session.directory / entries[0]["audio"]).read_bytes(),
+            b"admitted source bytes",
+        )
+        session.sources[("another-line", digest)] = source
         with self.assertRaisesRegex(ValueError, "changed since playback"):
             session._retain_sources()
+
+    def test_hour_limit_is_mandatory_and_scales_journal_capacity(self):
+        for duration in (0, 3601, None, True, 1.5):
+            with self.subTest(duration=duration), self.assertRaises(ValueError):
+                self.session(seconds=duration)
+        session = self.session(seconds=3600)
+        self.assertEqual(session.seconds, 3600)
+        self.assertEqual(session.timeline.maximum_events, 120000)
+        self.assertEqual(session.runtime.maximum_bytes, 48 * 1024**2)
+        self.assertLessEqual(session.status()["remaining_seconds"], 3600)
+        session.stop(3)
+        self.assertEqual(session.status()["remaining_seconds"], 0)
+
+    def test_source_and_native_identity_persist_before_stop(self):
+        recorder = Mock(status="recording", error_message=None)
+        recorder.cancelled = threading.Event()
+        recorder.target = {"pid": 50}
+        recorder.run.side_effect = lambda: recorder.cancelled.wait(5)
+        recorder.report.return_value = {
+            "status": "recording",
+            "captures": [{"directory": "game-audio"}],
+        }
+        with (
+            patch(
+                "vntts.reading_diagnostics.NativeDiagnosticRecording",
+                return_value=recorder,
+            ),
+            patch("vntts.reading_diagnostics_analysis.analyze_session"),
+        ):
+            session = self.session(seconds=3600, target={"pid": 50})
+            source = self.root / "source.wav"
+            source.write_bytes(b"admitted PCM")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            retain_diagnostic_source("line-one", source, digest)
+            for _ in range(250):
+                manifest = session.directory / "sources.json"
+                if manifest.exists() and json.loads(manifest.read_text()).get(
+                    "entries"
+                ):
+                    break
+                threading.Event().wait(0.01)
+            self.assertEqual(
+                json.loads(manifest.read_text())["entries"][0]["audio_sha256"], digest
+            )
+            self.assertFalse(session.finished.is_set())
+            report = json.loads((session.directory / "session.json").read_text())
+            self.assertEqual(
+                report["recording"]["captures"][0]["directory"], "game-audio"
+            )
+            self.assertEqual(report["owner"]["pid"], os.getpid())
+            retain_diagnostic_source("missing", self.root / "gone.wav", "f" * 64)
+            recorder.report.return_value = {
+                "status": "recording",
+                "captures": [{"directory": "new-worker"}],
+            }
+            for _ in range(250):
+                report = json.loads((session.directory / "session.json").read_text())
+                if (
+                    report.get("error_type")
+                    and report["recording"]["captures"][0]["directory"] == "new-worker"
+                ):
+                    break
+                threading.Event().wait(0.01)
+            self.assertEqual(
+                report["recording"]["captures"][0]["directory"], "new-worker"
+            )
+            self.assertEqual(report["error_type"], "ValueError")
+            session.stop(3)
+            self.assertEqual(session.analysis_status, "partial")
+
+    def test_hour_deadline_automatically_finishes_with_simulated_time(self):
+        clock = [100.0]
+        with (
+            patch("vntts.reading_diagnostics.monotonic", side_effect=lambda: clock[0]),
+            patch("vntts.reading_diagnostics.Thread"),
+        ):
+            session = self.session(seconds=3600)
+
+            def advance(_timeout):
+                clock[0] = 3700.0
+                return False
+
+            with patch.object(session.stop_requested, "wait", side_effect=advance):
+                session._run()
+            self.assertTrue(session.finished.is_set())
+            self.assertFalse(session.stop_requested.is_set())
+            self.assertEqual(session.phase, "finished")
+            self.assertTrue(session.timeline.stop_requested.is_set())
+            self.assertTrue(session.runtime.stop_requested.is_set())
 
     def test_exact_recording_target_never_falls_back_to_first_window(self):
         backend = Mock()
@@ -287,6 +383,8 @@ class ReadingDiagnosticUiTest(unittest.TestCase):
         dialog = SupportCenterDialog(SimpleNamespace(snapshot=lambda: []))
         self.addCleanup(dialog.close)
         self.assertFalse(dialog.reading_media.isChecked())
+        self.assertEqual(dialog.reading_seconds.maximum(), 3600)
+        self.assertEqual(dialog.reading_seconds.minimum(), 1)
         calls = []
         dialog.reading_start_requested.connect(lambda *args: calls.append(args))
         dialog.reading_start.click()

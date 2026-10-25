@@ -2588,6 +2588,12 @@ class SupportBundleBuilder:
             if self.diagnostic_session is not None
             else ()
         )
+        if session_entries:
+            required = sum(source.stat().st_size for _, source in session_entries)
+            if shutil.disk_usage(path.parent).free < required * 1.01 + 512 * 1024**2:
+                raise OSError(
+                    "Not enough free disk space to export diagnostic evidence"
+                )
         active_content = collect_active_content_identity(self.settings)
         preparation = pregeneration_support.report()
         files = {
@@ -2677,7 +2683,7 @@ class SupportBundleBuilder:
                 for filename, source in session_entries:
                     with (
                         open_regular_binary(source) as original,
-                        archive.open(filename, "w") as output,
+                        archive.open(filename, "w", force_zip64=True) as output,
                     ):
                         shutil.copyfileobj(original, output)
         return path

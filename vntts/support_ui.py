@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from vntts import support
 from vntts.action_icons import set_action_icon
+from vntts.diagnostic_recording import MAX_DIAGNOSTIC_SECONDS
 from vntts.reading_diagnostics import DiagnosticSessionEntry
 from vntts.ui_text import shortcut_tooltip
 
@@ -57,6 +58,9 @@ class SupportCenterDialog(QDialog):
         self._history_busy = False
         self._export_busy = False
         self._history_status = ""
+        self._history_retry = QTimer(self)
+        self._history_retry.setSingleShot(True)
+        self._history_retry.timeout.connect(self.reading_history_requested.emit)
 
         self.events = QTextEdit()
         self.events.setReadOnly(True)
@@ -149,10 +153,13 @@ class SupportCenterDialog(QDialog):
             "Opt-in: includes dialogue visible in the selected window, process audio and used source WAVs in the diagnostic export. Never records the desktop or microphone."
         )
         self.reading_seconds = QSpinBox()
-        self.reading_seconds.setRange(1, 600)
+        self.reading_seconds.setRange(1, MAX_DIAGNOSTIC_SECONDS)
         self.reading_seconds.setValue(600)
         self.reading_seconds.setSuffix(" s")
         self.reading_seconds.setAccessibleName("Diagnostic session duration limit")
+        self.reading_seconds.setToolTip(
+            "Required duration, up to 3600 seconds (1 hour). Recording stops automatically at this limit or when disk space runs low."
+        )
         self.reading_start = QPushButton("Start session")
         self.reading_stop = QPushButton("Stop")
         self.reading_export = QPushButton("Export session")
@@ -365,7 +372,7 @@ class SupportCenterDialog(QDialog):
             self.reading_stop.setEnabled(False)
             self.reading_status.setText("No current diagnostic session.")
             return
-        finished = report.get("status") == "finished"
+        finished = report.get("status") in {"finished", "interrupted"}
         self.reading_start.setEnabled(finished)
         self.reading_media.setEnabled(finished)
         self.reading_seconds.setEnabled(finished)
@@ -384,7 +391,12 @@ class SupportCenterDialog(QDialog):
             + identity
             + f"Session: {report.get('status')}; media: {report.get('media_status')}; "
             f"analysis: {report.get('analysis_status')}. "
-            f"{report.get('media_error') or report.get('error_type') or ''}"
+            + (
+                f"Time remaining: {report['remaining_seconds']} s. "
+                if report.get("status") == "recording" and "remaining_seconds" in report
+                else ""
+            )
+            + f"{report.get('media_error') or report.get('error_type') or ''}"
         )
 
     def selected_diagnostic_session(self) -> DiagnosticSessionEntry | None:
@@ -396,6 +408,10 @@ class SupportCenterDialog(QDialog):
         )
 
     def set_diagnostic_sessions(self, entries: list[DiagnosticSessionEntry]) -> None:
+        if any("Waiting for interrupted recorders" in entry.error for entry in entries):
+            self._history_retry.start(15000)
+        else:
+            self._history_retry.stop()
         selected = self.selected_diagnostic_session()
         scroll = self.reading_history.verticalScrollBar().value()
         self._diagnostic_sessions = {entry.session_id: entry for entry in entries}
@@ -459,7 +475,7 @@ class SupportCenterDialog(QDialog):
         current_busy = (
             entry is not None
             and entry.session_id == current.get("session_id")
-            and current.get("status") != "finished"
+            and current.get("status") not in {"finished", "interrupted"}
         )
         available = bool(entry and entry.saved and not current_busy)
         enabled = available and not self._history_busy and not self._export_busy
@@ -631,6 +647,11 @@ def _diagnostic_issue(
         "finalizing": "Finishing",
     }
     phase = str(report.get("status", ""))
+    if phase == "interrupted":
+        return (
+            "Interrupted",
+            "Recording ended unexpectedly. Export includes the available evidence and attempts audio recovery; coverage may be incomplete.",
+        )
     if active and phase in phases:
         reason = media_error or session_error
         return phases[phase] + (" (issue)" if reason else ""), reason
@@ -656,6 +677,7 @@ def _diagnostic_files(counts: dict[str, int] | None) -> str:
         ".mov": "video",
         ".wav": "audio",
         ".m4a": "audio",
+        ".caf": "audio",
         ".png": "images",
         ".jpg": "images",
     }

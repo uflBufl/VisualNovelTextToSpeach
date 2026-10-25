@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -15,9 +16,14 @@ from time import monotonic
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+import psutil
 from vntts_artifacts.atomic_io import atomic_output_path
 
-from vntts.diagnostic_recording import NativeDiagnosticRecording
+from vntts.diagnostic_recording import (
+    MAX_DIAGNOSTIC_MEDIA_BYTES,
+    MAX_DIAGNOSTIC_SECONDS,
+    NativeDiagnosticRecording,
+)
 from vntts.path_safety import open_regular_binary, safe_relative_path
 from vntts.support_timeline_acquisition import TimelineAcquisition
 from vntts.window_capture import WindowCaptureTarget
@@ -28,6 +34,7 @@ if TYPE_CHECKING:
     from vntts.support import GenerationTimelineLog
 
 _active: "ReadingDiagnosticSession | None" = None
+_dead_owners_seen: dict[tuple[int, float], float] = {}
 
 
 def record_diagnostic_event(category: str, operation: str, **details: object) -> None:
@@ -80,8 +87,10 @@ def retain_diagnostic_source(
     session = _active
     if session is None or session.recording is None or path is None or digest is None:
         return
-    if re.fullmatch(r"[0-9a-f]{64}", digest) and len(session.sources) < 200:
-        session.sources[(line_id, digest)] = path
+    if re.fullmatch(r"[0-9a-f]{64}", digest):
+        with session.source_lock:
+            if session.phase == "recording" and len(session.sources) < 200:
+                session.sources[(line_id, digest)] = path
 
 
 def retain_visual_wait_frames(
@@ -202,7 +211,8 @@ def _diagnostic_export_entries(directory: Path) -> list[tuple[str, Path]]:
         if not path.is_file():
             continue
         total += path.stat().st_size
-        if total > 2 * 1024**3 or len(entries) >= 1024:
+        # Interrupted audio may include an original and a finalized recovery copy.
+        if total > 2 * MAX_DIAGNOSTIC_MEDIA_BYTES + 1024**3 or len(entries) >= 1024:
             raise ValueError("Diagnostic export exceeds its bounded evidence budget")
         filename = "reading-session/" + path.relative_to(directory).as_posix()
         safe_relative_path(filename, "Diagnostic archive entry")
@@ -238,6 +248,8 @@ class SavedDiagnosticSession:
         return dict(self.report)
 
     def export_entries(self) -> list[tuple[str, Path]]:
+        if self.report.get("status") == "interrupted":
+            _prepare_interrupted_export(self)
         return _diagnostic_export_entries(self.directory)
 
 
@@ -317,9 +329,131 @@ def load_saved_diagnostic_session(
 ) -> SavedDiagnosticSession | None:
     try:
         directory = _session_directory(root, session_id)
-        return _finished_session(directory, _session_report(directory))
+        return _exportable_session(directory, _session_report(directory))
     except OSError, ValueError, TypeError, IndexError:
         return None
+
+
+def _process_is_running(pid: object, created: object) -> bool:
+    if (
+        not isinstance(pid, int)
+        or isinstance(pid, bool)
+        or pid <= 0
+        or not isinstance(created, (int, float))
+        or isinstance(created, bool)
+        or isinstance(created, int)
+        and created.bit_length() > 64
+        or not math.isfinite(created)
+        or created <= 0
+    ):
+        raise ValueError("Diagnostic owner identity is invalid")
+    try:
+        process = psutil.Process(pid)
+        return bool(
+            process.create_time() == created
+            and process.status() != psutil.STATUS_ZOMBIE
+        )
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.AccessDenied:
+        return True
+
+
+def _exportable_session(
+    directory: Path, report: dict[str, object]
+) -> SavedDiagnosticSession:
+    try:
+        return _finished_session(directory, report)
+    except ValueError as error:
+        reason = str(error)
+    if (
+        _active is not None
+        and not _active.finished.is_set()
+        and _active.directory.resolve() == directory.resolve()
+    ):
+        raise ValueError("Diagnostic session is still active or finalizing")
+    if report.get("status") not in {"recording", "stopping", "finalizing", "finished"}:
+        raise ValueError(reason)
+    owner = report.get("owner")
+    if isinstance(owner, dict):
+        if _process_is_running(owner.get("pid"), owner.get("created")):
+            raise ValueError(reason)
+        if report.get("target") is not None:
+            identity = (owner["pid"], owner["created"])
+            if identity not in _dead_owners_seen:
+                if len(_dead_owners_seen) >= 256:
+                    _dead_owners_seen.pop(next(iter(_dead_owners_seen)))
+                _dead_owners_seen[identity] = monotonic()
+            # A helper launched after the last snapshot still has a 10-second native watchdog.
+            if monotonic() - _dead_owners_seen[identity] < 15:
+                raise ValueError("Waiting for interrupted recorders to stop")
+    else:
+        # Legacy captures had their own deadline/watchdog but no owner identity.
+        duration = report.get("duration_limit_seconds")
+        if type(duration) is not int or not 1 <= duration <= MAX_DIAGNOSTIC_SECONDS:
+            raise ValueError(reason)
+        age = (
+            datetime.now(timezone.utc)
+            - datetime.fromisoformat(str(report["started_at"]))
+        ).total_seconds()
+        if age <= duration + 30:
+            raise ValueError(reason)
+    recording = report.get("recording")
+    if isinstance(recording, dict):
+        captures = recording.get("captures", [])
+        if isinstance(captures, list):
+            for capture in captures:
+                if not isinstance(capture, dict):
+                    continue
+                if capture.get("helper_created") is not None:
+                    if _process_is_running(
+                        capture.get("helper_pid"), capture["helper_created"]
+                    ):
+                        raise ValueError("Diagnostic media is still finalizing")
+                elif type(capture.get("helper_pid")) is int and psutil.pid_exists(
+                    capture["helper_pid"]
+                ):
+                    raise ValueError("Diagnostic media is still finalizing")
+    partial = {
+        **report,
+        "status": "interrupted",
+        "original_status": report["status"],
+        "analysis_status": "partial",
+        "interruption_reason": reason,
+    }
+    return SavedDiagnosticSession(directory, directory.name, partial)
+
+
+def _prepare_interrupted_export(session: SavedDiagnosticSession) -> None:
+    from vntts.diagnostic_caf import diagnostic_audio_path
+    from vntts.reading_diagnostics_analysis import analyze_session
+
+    _exportable_session(session.directory, _session_report(session.directory))
+    entries = _diagnostic_export_entries(session.directory)
+    errors = []
+    recovered = []
+    for _, path in entries:
+        if path.suffix.lower() != ".caf" or path.name.endswith(".recovered.caf"):
+            continue
+        try:
+            result = diagnostic_audio_path(path)
+            if result != path:
+                recovered.append(str(result.relative_to(session.directory)))
+        except (OSError, ValueError, RuntimeError) as error:
+            errors.append(f"{path.relative_to(session.directory)}: {error}")
+    try:
+        analyze_session(session.directory, interrupted=True)
+    except (OSError, ValueError, RuntimeError) as error:
+        errors.append(f"Analysis: {error}")
+    _write_json(
+        session.directory / "recovery.json",
+        {
+            "status": "partial",
+            "reason": "Recording ended without a verified complete finalization; originals preserved.",
+            "recovered_audio": recovered,
+            "errors": errors,
+        },
+    )
 
 
 def _session_inventory(directory: Path) -> tuple[int, dict[str, int]]:
@@ -361,7 +495,8 @@ def _history_entry(directory: Path) -> DiagnosticSessionEntry:
         _session_directory(directory.parent, directory.name)
         report = _session_report(directory)
         if not errors:
-            saved = _finished_session(directory, report)
+            saved = _exportable_session(directory, report)
+            report = saved.report
     except (OSError, ValueError, TypeError, IndexError) as error:
         errors.append(str(error))
     return DiagnosticSessionEntry(
@@ -397,6 +532,8 @@ def latest_finished_diagnostic_session(root: Path) -> SavedDiagnosticSession | N
     try:
         for directory in root.iterdir():
             saved = load_saved_diagnostic_session(root, directory.name)
+            if saved is not None and saved.report.get("status") != "finished":
+                continue
             if saved is not None and (
                 latest is None
                 or datetime.fromisoformat(str(saved.report["started_at"]))
@@ -410,7 +547,7 @@ def latest_finished_diagnostic_session(root: Path) -> SavedDiagnosticSession | N
 
 def delete_saved_diagnostic_session(root: Path, session_id: str) -> None:
     directory = _session_directory(root, session_id)
-    _finished_session(directory, _session_report(directory))
+    _exportable_session(directory, _session_report(directory))
     # Inspect all evidence before rmtree; no symlinks or special files are owned data.
     _session_inventory(directory)
     shutil.rmtree(directory)
@@ -426,9 +563,9 @@ class ReadingDiagnosticSession:
         target: dict[str, object] | None = None,
     ) -> None:
         global _active
-        if not 1 <= seconds <= 600:
+        if type(seconds) is not int or not 1 <= seconds <= MAX_DIAGNOSTIC_SECONDS:
             raise ValueError(
-                "Diagnostic session duration must be between 1 and 600 seconds"
+                "Diagnostic session duration must be between 1 and 3600 seconds"
             )
         if _active is not None:
             raise RuntimeError("A diagnostic session is already active")
@@ -438,6 +575,10 @@ class ReadingDiagnosticSession:
         self.directory.mkdir(parents=True)
         self.timelines, self.seconds = timelines, seconds
         self.sources: dict[tuple[str, str], Path] = {}
+        self.source_lock = Lock()
+        self.retained_sources: dict[tuple[str, str], dict[str, object]] = {}
+        self.source_errors: dict[tuple[str, str], str] = {}
+        self.source_bytes = 0
         self.visual_wait_lock = Lock()
         self.visual_wait_frames: dict[
             tuple[str, int], tuple[tuple[Image, ...], dict[str, object]]
@@ -446,6 +587,7 @@ class ReadingDiagnosticSession:
         self.visual_wait_dropped = 0
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.started_monotonic = monotonic()
+        self.owner = {"pid": os.getpid(), "created": psutil.Process().create_time()}
         self.stop_requested = Event()
         self.finished = Event()
         self.analysis_cancelled = Event()
@@ -454,9 +596,14 @@ class ReadingDiagnosticSession:
         self.recording: NativeDiagnosticRecording | None = None
         self.analysis_status = "not-requested"
         self.timeline_status: dict[str, object] = {}
-        self.runtime = TimelineAcquisition(self.directory / "runtime.jsonl")
+        capacity = math.ceil(seconds / 600)
+        limits = {
+            "maximum_events": 20_000 * capacity,
+            "maximum_bytes": 8 * 1024**2 * capacity,
+        }
+        self.runtime = TimelineAcquisition(self.directory / "runtime.jsonl", **limits)
         try:
-            timelines.start_acquisition(self.directory / "timeline.jsonl")
+            timelines.start_acquisition(self.directory / "timeline.jsonl", **limits)
             acquisition = timelines.acquisition
             assert acquisition is not None
             self.timeline = acquisition
@@ -503,9 +650,22 @@ class ReadingDiagnosticSession:
                     target=self._run_recording, name="reading-media", daemon=True
                 )
                 recording_thread.start()
-            self.stop_requested.wait(
-                max(0, self.started_monotonic + self.seconds - monotonic())
-            )
+            while not self.stop_requested.is_set():
+                remaining = self.started_monotonic + self.seconds - monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    if self.recording is not None:
+                        self._retain_sources()
+                except (OSError, ValueError) as error:
+                    self.failure = type(error).__name__
+                try:
+                    self._persist()
+                except (OSError, ValueError) as error:
+                    self.failure = type(error).__name__
+                self.stop_requested.wait(
+                    min(1, max(0, self.started_monotonic + self.seconds - monotonic()))
+                )
         except Exception as error:
             self.failure = type(error).__name__
             self.stop_requested.wait(
@@ -527,13 +687,18 @@ class ReadingDiagnosticSession:
                         # Retain ownership until release; Stop's caller has its own bound.
                         recording_thread.join()
                     self._retain_visual_wait_frames()
-                    self._retain_sources()
+                    try:
+                        self._retain_sources()
+                    except (OSError, ValueError) as error:
+                        self.failure = type(error).__name__
                     self.analysis_status = "running"
                     self._persist()
                     from vntts.reading_diagnostics_analysis import analyze_session
 
                     analyze_session(self.directory, cancelled=self.analysis_cancelled)
-                    self.analysis_status = "complete"
+                    self.analysis_status = (
+                        "partial" if self.source_errors else "complete"
+                    )
             except Exception as error:
                 self.analysis_status = "unavailable"
                 self.failure = type(error).__name__
@@ -563,6 +728,12 @@ class ReadingDiagnosticSession:
             "started_at": self.started_at,
             "started_monotonic": self.started_monotonic,
             "duration_limit_seconds": self.seconds,
+            "remaining_seconds": max(
+                0, math.ceil(self.started_monotonic + self.seconds - monotonic())
+            )
+            if self.phase == "recording"
+            else 0,
+            "owner": self.owner,
             "status": "stopping"
             if self.stop_requested.is_set() and self.phase == "recording"
             else self.phase,
@@ -585,29 +756,58 @@ class ReadingDiagnosticSession:
         _write_json(self.directory / "session.json", report)
 
     def _retain_sources(self) -> None:
-        sources: list[dict[str, object]] = []
         directory = self.directory / "sources"
         directory.mkdir(exist_ok=True)
-        total = 0
-        for (line_id, digest), audio in list(self.sources.items()):
-            with open_regular_binary(audio) as source:
-                data = source.read(64 * 1024**2 + 1)
-            total += len(data)
-            if len(data) > 64 * 1024**2 or total > 256 * 1024**2:
-                raise ValueError("Source WAV evidence exceeds diagnostic budget")
-            if hashlib.sha256(data).hexdigest() != digest:
-                raise ValueError("Source WAV changed since playback admission")
-            output = directory / (digest + ".wav")
-            if not output.exists():
-                output.write_bytes(data)
-            sources.append(
-                {
+        with self.source_lock:
+            pending = list(self.sources.items())
+        for key, audio in pending:
+            if self.phase == "recording" and (
+                self.stop_requested.is_set()
+                or monotonic() >= self.started_monotonic + self.seconds
+            ):
+                break
+            if key in self.retained_sources or key in self.source_errors:
+                continue
+            line_id, digest = key
+            try:
+                with open_regular_binary(audio) as source:
+                    data = source.read(64 * 1024**2 + 1)
+                if (
+                    len(data) > 64 * 1024**2
+                    or self.source_bytes + len(data) > 256 * 1024**2
+                ):
+                    raise ValueError("Source WAV evidence exceeds diagnostic budget")
+                if hashlib.sha256(data).hexdigest() != digest:
+                    raise ValueError("Source WAV changed since playback admission")
+                output = directory / (digest + ".wav")
+                if not output.exists():
+                    with atomic_output_path(output) as temporary:
+                        temporary.write_bytes(data)
+                    self.source_bytes += len(data)
+                self.retained_sources[key] = {
                     "line_id": line_id,
                     "audio_sha256": digest,
                     "audio": str(output.relative_to(self.directory)),
                 }
-            )
-        _write_json(self.directory / "sources.json", {"entries": sources})
+            except (OSError, ValueError) as error:
+                self.source_errors[key] = str(error)
+            self._persist_sources()
+        if not (self.directory / "sources.json").exists():
+            self._persist_sources()
+        if self.source_errors:
+            raise ValueError(next(iter(self.source_errors.values())))
+
+    def _persist_sources(self) -> None:
+        _write_json(
+            self.directory / "sources.json",
+            {
+                "entries": list(self.retained_sources.values()),
+                "errors": [
+                    {"line_id": key[0], "audio_sha256": key[1], "error": error}
+                    for key, error in self.source_errors.items()
+                ],
+            },
+        )
 
     def _retain_visual_wait_frames(self) -> None:
         with self.visual_wait_lock:

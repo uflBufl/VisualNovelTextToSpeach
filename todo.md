@@ -99,11 +99,6 @@
       и осталось на той же реплике до ручного вмешательства. Длительное
       ожидание включает время анализа/инструментов; не считать его чистой
       измеренной задержкой алгоритма. Игра оставалась на полностью видимом тексте.
-- [ ] **UX-25-12: 600-секундный предел записи мешает аудиту целой главы.**
-      Для длинной главы приходится открыть Support, закончить запись, дождаться
-      финализации и создать новую. Для гарантии покрытия нужно вручную ставить
-      чтение на паузу. Обсудить автоматические ограниченные по размеру сегменты
-      одной сессии и видимый остаток времени записи.
 - [ ] **UX-25-02: доступ к историям при стартовом размере 860x560.**
       Проверить высоту списка и прокрутку на рабочем каталоге и при длинных
       сообщениях. Настройки и состояние подготовки занимают значительную часть
@@ -159,13 +154,6 @@
 
 ## Active - Finish diagnostic-session native acceptance
 
-- [ ] Preserve usable diagnostics after process/OS interruption. A native run left
-      `session.json` at its initial preparing state, omitted source evidence and
-      produced an unreadable MOV (`moov atom not found`) despite persisted event
-      journals. Persist recorder identity/readiness and source references during
-      acquisition; use recoverable video fragments or bounded finalized segments.
-      On startup mark interrupted sessions explicitly. Gate: abrupt termination
-      retains a playable completed segment and honest partial-analysis coverage.
 - [ ] Diagnose simultaneous process-tap sample-time discontinuities under live
       chapter generation. Both game and Rust taps stopped around 114 seconds while
       Reading continued, each reporting `Sample-time discontinuity`. Preserve the
@@ -317,54 +305,47 @@ before implementing each item. Finish its targeted tests and native check before
 moving to the next item. Mark an investigation complete only when it yields a
 supported repair or an explicit product decision, not merely a hypothesis.
 
-1. **Record a complete chapter (UX-25-12 and interrupted-session recovery).**
-   Define one logical session with bounded finalized segments and truthful
-   readiness/coverage. Reuse recorder lifecycle ownership; keep old completed
-   segments playable after interruption. Gate: continuous chapter coverage beyond
-   600 seconds, bounded Stop, correct export and honest partial coverage after
-   interruption. D1/device/worker adverse-path checks remain explicit; a usable
-   short session is sufficient for the targeted reproductions below.
-2. **Repair completed-audio stalls (RUN-25-03).** Reproduce34/35 and inspect raw
+1. **Repair completed-audio stalls (RUN-25-03).** Reproduce34/35 and inspect raw
    OCR plus each tracker idle-completion condition with generation/occurrence.
    Add only missing bounded diagnostic evidence before choosing a shared repair.
    Then check85/86/97. Gate: exactly one continuation after playback, no manual
    Space or repeat, with Stop/focus/uncertainty guards intact. Do not conflate
    routed_latest_equal=true here with R18's different refusal or render quietness.
-3. **Locate pre-route delays (RUN-25-09/02, R1/T1).** Measure frame age, capture,
+2. **Locate pre-route delays (RUN-25-09/02, R1/T1).** Measure frame age, capture,
    OCR queue/worker health, recognition, matching and tracker admission separately
    around100 and the31 transition. Fix the measured owner; test slow/error/stale
    observations. Handle the independent reload/readiness race RUN-25-01 as the
    next small change in that owner. Gate: every long wait has an attributable
    stage and valid cancellation/recovery; no OCR replacement or larger timeout
    chosen from the total duration alone.
-4. **Restore expected prepared routes (RUN-25-07).** Retain actual OCR for the
+3. **Restore expected prepared routes (RUN-25-07).** Retain actual OCR for the
    candidate66/74/76/92 occurrences and compare against the existing exact resolver.
    Fix only the demonstrated mismatch/admission cause with real positive and
    nearby wrong-line negative fixtures. Gate: the correct prepared WAV, with no
    unexpected live synthesis, global threshold relaxation or guessed story edge.
-5. **Explain repeated routing (RUN-25-10).** Correlate both102 generations with
+4. **Explain repeated routing (RUN-25-10).** Correlate both102 generations with
    raw OCR, speaker identity, source lead and the event that replaces the owner;
    check the false character `I`. Gate: correct occurrence ownership and no
    unnecessary restart. Preserve the distinction between cancellation before
    PCM and a repeated audible clip; add a repair only after reproducing its cause.
-6. **Repair scene interruption (RUN-25-08).** Correlate48's source WAV, captured
+5. **Repair scene interruption (RUN-25-08).** Correlate48's source WAV, captured
    output and transition to49. Establish which scene changes invalidate speech
    and which permit the current clip to finish. Gate: intended speech completion
    without stale audio crossing a genuinely new occurrence; Stop still cancels.
-7. **Resolve short/centered dialogue policy (RUN-25-06/R17).** Independently check
+6. **Resolve short/centered dialogue policy (RUN-25-06/R17).** Independently check
    original game audio for centered46 and brief116. Decide the required product
    behavior before adding capture or playback. Gate: truthful supported coverage,
    no duplicate game voice and no arbitrary widening of the normal dialogue ROI.
-8. **Make failed preparation actionable (GEN-25-01).** Through restored Stories,
+7. **Make failed preparation actionable (GEN-25-01).** Through restored Stories,
     inspect/replay a rejected result and retry while retaining ready neighbouring
     recordings. Compare the actual pause with quality evidence before changing
     synthesis or rejection. Gate: understandable failure/retry and intact saved
     assignments/audio; do not weaken quality gates from one rejected sample.
-9. **Check generation budget (GEN-25-02).** Reproduce314501:85 with its actual
+8. **Check generation budget (GEN-25-02).** Reproduce314501:85 with its actual
     text/reference/model/settings; inspect token/time budgeting and normal retries.
     Gate: adequate bounded generation or a clear retryable failure, cancellation
     and no publication of a truncated result. Preserve ready work on restart.
-10. **Finish the remaining UI items in separate increments.** Order: Stories
+9. **Finish the remaining UI items in separate increments.** Order: Stories
     scrolling at860x560 (UX-25-02), off-screen calibration/U1/U4, source-launch
     worker readiness (UX-25-03), loading on Read (UX-25-04), saved-voice overview
     (UX-25-09), missing source text/unchanged candidate (UX-25-10), then canonical
@@ -373,14 +354,14 @@ supported repair or an explicit product decision, not merely a hypothesis.
     change. Gate: reachable keyboard/mouse actions, truthful state and unchanged
     voice assignments on browsing/cancel. Reuse the existing matching backlog
     items rather than create parallel implementations.
-11. **Qualify sound and latency (RUN-25-05/R12/R6).** Correlate exact source WAVs
+10. **Qualify sound and latency (RUN-25-05/R12/R6).** Correlate exact source WAVs
     with independent captured output; explain the1.949s outlier and ambiguous
     clips. Distinguish recorder discontinuities from audible playback gaps. Require
     observer-only original-audio completion evidence before shortening its wait.
     Gate: source/output onset, completion and continuation are measured over
     covered intervals with explicit worker/device identity and instrumentation
     overhead; no unit-test load runs during these measurements.
-12. **Repeat full native acceptance (M0/M1 and the latest chapter audit).** Run
+11. **Repeat full native acceptance (M0/M1 and the latest chapter audit).** Run
     all314001 through104 from Stories without manual transitions while real heavy
     generation/publication remains active. Also qualify partly prepared active
     chapter catch-up across newly published boundaries, failed/not-ready policy

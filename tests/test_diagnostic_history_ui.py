@@ -140,6 +140,18 @@ class DiagnosticHistoryUITest(unittest.TestCase):
                 self.dialog.set_diagnostic_sessions([entry])
                 self.assertTrue(self.dialog.reading_export.isEnabled())
 
+    def test_interrupted_history_is_exportable_and_caf_counts_as_audio(self):
+        entry = session_entry(1)
+        entry.report.update(status="interrupted")
+        entry = replace(entry, file_counts={".caf": 2, ".mov": 1, ".json": 1})
+        self.dialog.set_diagnostic_sessions([entry])
+        self.assertIn(
+            "Interrupted", self.dialog.reading_history.topLevelItem(0).text(1)
+        )
+        self.assertIn("audio: 2", self.dialog.reading_history_detail.toPlainText())
+        self.assertTrue(self.dialog.reading_export.isEnabled())
+        self.assertTrue(self.dialog.reading_delete.isEnabled())
+
     def test_session_and_analysis_errors_are_not_reported_as_success(self):
         for changes, label, reason in (
             ({"error_type": "RuntimeError"}, "Session issue", "RuntimeError"),
