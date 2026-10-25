@@ -37,6 +37,7 @@ from vntts.speech_presentation import (
     compact_runtime_label,
     engine_model_label,
     playback_labels,
+    playback_status_label,
     reading_policy_label,
     speech_configuration_label,
     speech_configuration_rows,
@@ -1062,7 +1063,7 @@ class ControlDashboard(QMainWindow):
         self.status.setVisible(bool(message))
         self.copy_status_button.setVisible(bool(message))
         self.status.setToolTip(message)
-        summary = " ".join(message.split())
+        summary = " ".join(playback_status_label(message).split())
         self.status.setText(
             summary
             if len(summary) <= 240
@@ -1464,12 +1465,14 @@ class CompactController(QWidget):
         self.raise_()
 
     def set_status(self, message: str) -> None:
-        self.status.setPlainText(message)
+        self.status.setPlainText(playback_status_label(message))
+        self.status.setToolTip(message)
         self.status.setFont(QFont())
         self._fit_content()
 
     def set_warning(self, message: str) -> None:
         self.status.setPlainText(message)
+        self.status.setToolTip(message)
         warning_font = QFont()
         warning_font.setBold(True)
         self.status.setFont(warning_font)

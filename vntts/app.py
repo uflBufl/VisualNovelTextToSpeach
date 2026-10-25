@@ -168,7 +168,11 @@ from vntts.settings import (
     user_preferences,
 )
 from vntts.speech_backend import default_moss_tts_model
-from vntts.speech_presentation import playback_labels, speech_runtime_label
+from vntts.speech_presentation import (
+    playback_labels,
+    playback_status_label,
+    speech_runtime_label,
+)
 from vntts.speech_worker import RetainedWorkerRuntime
 from vntts.support import (
     GenerationTimelineLog,
@@ -5133,7 +5137,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def set_status(self, message: str | None) -> None:
         message = message or ""
         self.support_log.add("status", message)
-        bounded = self._bounded_menu_text(message)
+        bounded = self._bounded_menu_text(playback_status_label(message))
         self.status_action.setText(bounded)
         self.status_action.setToolTip(message)
         self.tray.setToolTip(f"{application_name}\n{bounded}")

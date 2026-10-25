@@ -1,5 +1,9 @@
 # TODO
 
+## Active - Stable-frame candidate reset
+
+- [ ] Clear the retained candidate image together with its fingerprint, owner and timestamp in `_reset_stable_frame_candidate_locked`. Add coverage for equivalent frames with `owner=None` after routing and focus resets; verify stationary dialogue with auto advance disabled no longer reaches the unset-start-time assertion.
+
 ## Active - Windows story import and persistence
 
 - [ ] Verify the affected Windows installation after the user's manual cleanup and regeneration. Activate a prepared story, save ordinary preferences, remove prepared audio and restart: preferences/profiles must remain intact, source stories must remain available, and missing prepared playback must be logged without breaking startup.
@@ -690,8 +694,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 - [ ] Resolve the Qwen dependency audit findings or explicitly accept their release risk. After the Windows quality check, make Qwen the preferred offline engine on supported installations and verify narrator setup and story preparation; keep MOSS available as an alternative.
 
 ## Active - Finish repeated UI scanability rollout
-
-- [ ] Condense normal `Audio source for ...` status during live playback; retain exact source and voice IDs in Details/Copy status. The native reading run exposed multi-line diagnostic IDs above the Reading controls.
 
 - [ ] Validate the integrated voice-route layout on Windows at normal and enlarged text sizes: wheel and keyboard navigation must reach the last route and Inspect/Edit/Generate actions; clicking or double-clicking a row must select and inspect that character. Check all-or-none portraits when game references are mixed, and retain screenshots.
 

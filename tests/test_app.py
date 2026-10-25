@@ -2395,6 +2395,27 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application.shutdown()
 
+    def test_routine_playback_status_is_summarized_only_for_display(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        message = "Audio source for Cornerstone: Generated audio (line private-id)\nRecorded with: moss-tts; model: private-model; voice ID: private-voice"
+        summary = "Cornerstone: Prepared recording · no generation"
+        tray.set_status(message)
+        self.assertEqual(tray.status_action.text(), summary)
+        self.assertIn(summary, tray.tray.toolTip())
+        self.assertEqual(tray.status_action.toolTip(), message)
+        self.assertEqual(tray.dashboard.status.text(), summary)
+        self.assertEqual(tray.compact_controller.status.toPlainText(), summary)
+        self.assertEqual(tray.compact_controller.status.toolTip(), message)
+        statuses = [
+            event for event in tray.support_log.snapshot() if event["level"] == "status"
+        ]
+        self.assertEqual(statuses[-1]["message"], message)
+        tray.shutdown()
+
     def test_audio_route_trace_goes_to_support_log_without_replacing_status(self):
         controller_factory = Mock(return_value=Mock())
         tray_application = TrayApplication(

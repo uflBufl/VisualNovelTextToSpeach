@@ -187,6 +187,30 @@ class ControlDashboardTest(unittest.TestCase):
             dashboard.close()
             dashboard.deleteLater()
 
+    def test_playback_status_is_short_and_exact_diagnostics_remain_copyable(self):
+        message = "Audio source for Cornerstone: Generated audio (line private-id)\nRecorded with: moss-tts; model: private-model; voice ID: private-voice"
+        summary = "Cornerstone: Prepared recording · no generation"
+        dashboard = ControlDashboard(AppSettings())
+        compact = CompactController(platform="win32")
+        dashboard.set_status(message)
+        compact.set_status(message)
+        self.assertEqual(dashboard.status.text(), summary)
+        self.assertEqual(compact.status.toPlainText(), summary)
+        self.assertEqual(dashboard.status.toolTip(), message)
+        self.assertEqual(compact.status.toolTip(), message)
+        dashboard.copy_status_button.click()
+        self.assertEqual(self.application.clipboard().text(), message)
+        self.assertIn(message, dashboard._copy_details())
+        compact.set_warning("Narrator fallback: chosen voice is unavailable")
+        self.assertEqual(compact.status.toPlainText(), compact.status.toolTip())
+        self.assertTrue(compact.status.font().bold())
+        dashboard.set_status("")
+        compact.set_status("")
+        self.assertEqual(dashboard.status.toolTip(), "")
+        self.assertEqual(compact.status.toolTip(), "")
+        dashboard.deleteLater()
+        compact.deleteLater()
+
     def test_long_status_stays_compact_but_copy_preserves_exact_error_and_compute(self):
         dashboard = ControlDashboard(AppSettings())
         message = "Unable to load model: " + "a" * 500 + "\nRetry after downloading."

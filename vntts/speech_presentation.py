@@ -194,6 +194,21 @@ def playback_labels(source: str, voice: str) -> tuple[str, str]:
     return voice, "Audio source: see details"
 
 
+def playback_status_label(message: str) -> str:
+    match = re.fullmatch(
+        r"Audio source for ([^\n]+): "
+        r"(Generated audio \(line [^\n]+\)\nRecorded with: [^\n]+"
+        r"|Original game audio \(line [^\n]+, completion \d+(?:\.\d+)?s\)"
+        r"|Live TTS \([^\n]+\)"
+        r"|MOSS (?:fresh generation|memory cache|persistent cache) \(voice [^\n]+\))",
+        message,
+    )
+    if match is None:
+        return message
+    source_label = playback_labels(match[2], "")[1].splitlines()[0]
+    return f"{match[1]}: {source_label}"
+
+
 def narrator_voice_label(
     settings: AppSettings, voice_library: VoiceLibrary | None = None
 ) -> str:

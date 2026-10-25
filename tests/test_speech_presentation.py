@@ -12,6 +12,7 @@ from vntts.speech_presentation import (
     engine_model_label,
     narrator_voice_label,
     playback_labels,
+    playback_status_label,
     readable_model_name,
     reading_policy_label,
     speech_configuration_label,
@@ -46,6 +47,51 @@ class SpeechPresentationTest(unittest.TestCase):
         self.assertIn("RTX 2070 SUPER", compact)
         self.assertIn("codec: CPU", compact)
         self.assertIn("fallback: memory pressure", compact)
+
+    def test_routine_playback_statuses_are_short_without_losing_route_kind(self):
+        for source, expected in (
+            (
+                "Generated audio (line private-id)\nRecorded with: moss-tts; model: private-model; voice ID: private-voice",
+                "Prepared recording · no generation",
+            ),
+            (
+                "Original game audio (line private-id, completion 1.25s)",
+                "Played by the game · no generation",
+            ),
+            ("Live TTS (pocket-tts)", "New speech"),
+            ("MOSS fresh generation (voice private-id)", "MOSS · new speech"),
+            (
+                "MOSS memory cache (voice private-id)",
+                "Saved preview or cached speech · no generation",
+            ),
+            (
+                "MOSS persistent cache (voice private-id)",
+                "Saved preview or cached speech · no generation",
+            ),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(
+                    playback_status_label("Audio source for Nick: Guard: " + source),
+                    "Nick: Guard: " + expected,
+                )
+
+    def test_playback_status_preserves_warnings_and_unrecognized_routes(self):
+        messages = (
+            "Audio underrun detected; live speech prefetch disabled temporarily",
+            "Auto advance paused: source-audio completion is unavailable",
+            "Audio source for Narrator: Authorized live fallback (moss-tts/model)",
+            "Audio source for Narrator: Waiting for prepared audio (line private-id)",
+            "Audio source for Narrator: Authorized silent audio event omission",
+            "Audio source for Narrator: Original game audio (line private-id, completion unavailable)",
+            "Audio source for Narrator: Original game cue (1.00s including post-roll), then Authorized live fallback (moss-tts/model)",
+            "Audio source for Narrator: unknown route details",
+            "Audio source for Narrator: Generated audio failed to load",
+            "Audio source for Narrator: Generated audio (line private-id)\nRecorded with: moss-tts\nWarning: audio incomplete",
+            "",
+        )
+        for message in messages:
+            with self.subTest(message=message):
+                self.assertEqual(playback_status_label(message), message)
 
     def test_live_voice_keeps_variant_and_hides_only_explicit_internal_identity(self):
         voice, _ = playback_labels(
