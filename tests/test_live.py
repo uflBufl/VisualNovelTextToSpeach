@@ -1954,6 +1954,52 @@ class LiveDialogReaderTest(unittest.TestCase):
                     reader.stable_frame_route.assert_not_called()
                     reader.play_prepared.assert_not_called()
 
+    def test_stable_candidate_restarts_settling_after_route_or_focus_reset(self):
+        for reset in ("accepted-route", "focus-loss"):
+            with self.subTest(reset=reset):
+                clock, focused = FakeClock(), [True]
+                route = Mock(return_value=False)
+                reader = self.create_reader(
+                    stable_frame_route=route,
+                    stable_frame_owner=lambda: None,
+                    stable_frame_clock=clock,
+                    stable_frame_minimum_seconds=0.12,
+                    focus_probe=lambda: focused[0],
+                    frame_equivalent=lambda before, after: abs(before - after) <= 1,
+                )
+                reader.routed_frame = -10
+                reader.routed_frame_fingerprint = "previous"
+                reader.latest_frame = 1
+                reader._stable_frame_route_decision("candidate")
+                clock.advance(0.2)
+                reader.latest_frame = 2
+                reader._stable_frame_route_decision("accepted")
+                self.assertTrue(route.call_args.args[1])
+
+                if reset == "accepted-route":
+                    reader._accept_routed_frame("accepted")
+                else:
+                    focused[0] = False
+                    self.assertIs(
+                        reader._stable_frame_route_decision("unfocused"), False
+                    )
+                    focused[0] = True
+                route.reset_mock()
+                clock.advance(1)
+                reader.latest_frame = 0
+                reader._stable_frame_route_decision("fresh-candidate")
+                self.assertEqual(reader.candidate_frame_count, 1)
+                self.assertEqual(reader.candidate_frame_started_at, clock.now)
+                clock.advance(0.05)
+                reader._stable_frame_route_decision("fresh-jitter")
+                clock.advance(0.07)
+                reader._stable_frame_route_decision("settled-jitter")
+
+                self.assertEqual(
+                    [candidate.args[1] for candidate in route.call_args_list],
+                    [False, False, True],
+                )
+
     def test_stable_comparison_revalidates_frame_and_ownership_before_routing(self):
         for barrier in (
             "version",

@@ -1,8 +1,8 @@
 # TODO
 
-## Active - Stable-frame candidate reset
+## Active - Stop cancels live OCR
 
-- [ ] Clear the retained candidate image together with its fingerprint, owner and timestamp in `_reset_stable_frame_candidate_locked`. Add coverage for equivalent frames with `owner=None` after routing and focus resets; verify stationary dialogue with auto advance disabled no longer reaches the unset-start-time assertion.
+- [ ] Preserve OCR cancellation through `recognize_screenshot_result` and the live worker: pressing Stop during persistent OCR currently wraps `OCRPreviewCancelled` in `OCRError` and reports `Tesseract OCR failed: OCR preview cancelled`. Add focused cancellation and genuine-error regressions; verify native Stop/restart without a spurious error. Evidence: isolated native run on 2026-10-25 at 16:39:57 UTC in `.codex/investigations/real-game-ui-check/data/errors.log`.
 
 ## Active - Windows story import and persistence
 

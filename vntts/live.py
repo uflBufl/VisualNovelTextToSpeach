@@ -1941,6 +1941,7 @@ class LiveDialogReader:
         self._reset_stable_frame_candidate_locked()
 
     def _reset_stable_frame_candidate_locked(self) -> None:
+        self.candidate_frame = None
         self.candidate_frame_fingerprint = object()
         self.candidate_frame_count = 0
         self.candidate_frame_owner = None
