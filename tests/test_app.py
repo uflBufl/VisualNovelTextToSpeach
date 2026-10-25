@@ -77,6 +77,7 @@ from vntts.prepared_playback import PreparedPlaybackStore  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
 from vntts.settings import (  # noqa: E402
     AppSettings,
+    content_path_setting_names,
     load_app_settings,
     settings_schema_version,
 )
@@ -1047,8 +1048,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("Set up reading", tray.dashboard.action_reason.text())
         self.assertEqual(
             tray.compact_controller.action_reason.toPlainText(),
-            "Reading unavailable: Select Full controls, then Reading and "
-            "Set up reading to start.",
+            "Reading unavailable: Select Set up reading in the Reading tab to start.",
         )
         self.assertNotIn(message, tray.live_action.toolTip())
         tray.shutdown()
@@ -4205,6 +4205,77 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertTrue(dialog.game_pack.hasFocus())
             delete_dialog(dialog)
 
+    def test_settings_rejects_manual_managed_paths_and_accepts_external_pack(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            managed, *_ = write_synthetic_game_pack(
+                root / "pregeneration" / "jobs" / "job"
+            )
+            external, *_ = write_synthetic_game_pack(root / "exported")
+            with patch("vntts.settings.get_local_data_directory", return_value=root):
+                dialog = SettingsDialog(
+                    AppSettings(
+                        screenshot_directory=str(root), live_sequence_mode="off"
+                    )
+                )
+                pool = ManualThreadPool()
+                dialog.game_pack_runner.thread_pool = pool
+                for name in content_path_setting_names:
+                    getattr(dialog, name).setText(str(managed))
+
+                dialog.validate_and_accept()
+
+                self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                self.assertFalse(dialog.game_pack_runner.active)
+                errors = dialog.validation_errors()
+                for name in content_path_setting_names:
+                    self.assertTrue(
+                        any(
+                            widget is getattr(dialog, name)
+                            and "managed in Stories" in message
+                            for _, widget, message in errors
+                        ),
+                        name,
+                    )
+                    getattr(dialog, name).setText(str(external))
+                self.assertNotIn(
+                    "managed in Stories", dialog.validation_summary.toPlainText()
+                )
+                dialog.validate_and_accept()
+                pool.run_next()
+                self.application.processEvents()
+
+                self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                self.assertEqual(dialog.settings().game_pack, str(external))
+                delete_dialog(dialog)
+
+    def test_settings_unrelated_save_allows_untouched_managed_runtime_paths(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            managed, *_ = write_synthetic_game_pack(
+                root / "pregeneration" / "jobs" / "job"
+            )
+            settings = apply_game_pack(
+                AppSettings(
+                    screenshot_directory=str(root), live_speaker_corpus=str(managed)
+                ),
+                str(managed),
+            )
+            with patch("vntts.settings.get_local_data_directory", return_value=root):
+                dialog = SettingsDialog(settings)
+                pool = ManualThreadPool()
+                dialog.game_pack_runner.thread_pool = pool
+                dialog.output_volume.setValue(45)
+
+                dialog.validate_and_accept()
+                pool.run_next()
+                self.application.processEvents()
+
+                self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                self.assertEqual(dialog.settings().game_pack, str(managed))
+                self.assertEqual(dialog.settings().output_volume_percent, 45)
+                delete_dialog(dialog)
+
     def test_settings_new_game_pack_owns_all_derived_paths(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -7020,7 +7091,7 @@ class TrayApplicationTest(unittest.TestCase):
                     self.assertFalse(state.ready)
                     self.assertFalse(tray._controller_busy)
                     self.assertIn(action, state.unavailable_reason)
-                    self.assertIn("Full controls", state.unavailable_reason)
+                    self.assertNotIn("Full controls", state.unavailable_reason)
                     self.assertIn("Reading", state.unavailable_reason)
                     self.assertEqual(tray.compact_controller.mode.text(), "Unavailable")
                     self.assertIn(
@@ -7154,35 +7225,47 @@ class TrayApplicationTest(unittest.TestCase):
         controller.request_shutdown.assert_called_once_with()
 
     def test_macos_skips_unstable_native_hotkey_listener(self):
-        controller = Mock()
-        controller.get_capture_geometry.return_value = None
-        tray_application = TrayApplication(
-            self.application,
-            AppSettings(),
-            controller_factory=Mock(return_value=controller),
-        )
+        for compact in (False, True):
+            with self.subTest(compact=compact):
+                controller = Mock()
+                controller.get_capture_geometry.return_value = None
+                tray_application = TrayApplication(
+                    self.application,
+                    AppSettings(compact_controls=compact),
+                    controller_factory=Mock(return_value=controller),
+                )
+                controls = (
+                    tray_application.compact_controller
+                    if compact
+                    else tray_application.dashboard
+                )
+                controls.show()
 
-        with (
-            patch("vntts.app.sys.platform", "darwin"),
-            patch.object(tray_application, "start_hotkeys") as start_hotkeys,
-        ):
-            generation = tray_application._begin_controller_lifecycle()
-            tray_application._initial_start_generation = generation
-            tray_application._initial_start_finished(True, None)
-            self.assertFalse(tray_application.compact_controller.isVisible())
-            QTest.qWait(350)
+                with (
+                    patch("vntts.app.sys.platform", "darwin"),
+                    patch.object(tray_application, "start_hotkeys") as start_hotkeys,
+                ):
+                    generation = tray_application._begin_controller_lifecycle()
+                    tray_application._initial_start_generation = generation
+                    tray_application._initial_start_finished(True, None)
+                    QTest.qWait(350)
 
-        start_hotkeys.assert_not_called()
-        self.assertTrue(tray_application.compact_controller.isVisible())
-        self.assertFalse(tray_application.dashboard.isVisible())
-        self.assertIn("macOS hotkeys disabled", tray_application.status_action.text())
-        self.assertTrue(
-            any(
-                "Compact controls were opened" in entry["message"]
-                for entry in tray_application.support_log.snapshot()
-            )
-        )
-        tray_application.shutdown()
+                start_hotkeys.assert_not_called()
+                self.assertEqual(
+                    tray_application.compact_controller.isVisible(), compact
+                )
+                self.assertEqual(tray_application.dashboard.isVisible(), not compact)
+                self.assertEqual(tray_application.settings.compact_controls, compact)
+                self.assertIn(
+                    "macOS hotkeys disabled", tray_application.status_action.text()
+                )
+                self.assertTrue(
+                    any(
+                        "Global hotkeys are unavailable" in entry["message"]
+                        for entry in tray_application.support_log.snapshot()
+                    )
+                )
+                tray_application.shutdown()
 
     def test_window_calibration_uses_selected_client_geometry(self):
         controller = Mock()

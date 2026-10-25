@@ -69,7 +69,7 @@ from vntts.release_backends import (
     packaged_speech_backend_available,
     speech_backend_options,
 )
-from vntts.settings import AppSettings
+from vntts.settings import AppSettings, content_path_import_errors
 from vntts.speech_backend import default_moss_tts_model
 from vntts.speech_presentation import speech_configuration_rows
 from vntts.ui_text import add_composite_form_row as _add_composite_form_row
@@ -804,13 +804,23 @@ class ConfigurationPage(QWizardPage):
                 "You can listen before choosing.",
             )
         game_pack = self.game_pack.text().strip()
+        errors.extend(
+            (getattr(self, name), message)
+            for name, message in content_path_import_errors(
+                {
+                    name: getattr(self, name).text()
+                    for name in ("game_pack", "voice_manifest")
+                },
+                self.original_settings,
+            )
+        )
         manifest = self.voice_manifest.text().strip()
         if not game_pack and manifest and not Path(manifest).expanduser().is_file():
             add(
                 self.voice_manifest,
                 "Voice manifest: the selected file does not exist.",
             )
-        if game_pack:
+        if game_pack and not any(widget is self.game_pack for widget, _ in errors):
             try:
                 apply_game_pack(self._base_settings(), game_pack)
             except (GamePackError, OSError) as error:
@@ -1197,6 +1207,10 @@ class DiagnosticsPage(QWizardPage):
             self.remediation_button.hide()
             self.remediation_button.setText("Fix selected issue")
             set_action_icon(self.remediation_button, "wand-sparkles")
+            return
+        if result.status == "warning" and result.remediation is None:
+            self.remediation_reason.setText(result.message)
+            self.remediation_button.hide()
             return
         if result.remediation == "external-ocr":
             self.remediation_reason.setText(

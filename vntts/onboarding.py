@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Literal, TypeGuard
 
 from vntts.auto_advance_policy import auto_advance_allowed
-from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
+from vntts.hotkeys import (
+    HotkeyValidationError,
+    macos_hotkey_limitation,
+    validate_hotkey_assignments,
+)
 from vntts.macos import get_macos_permission_status
 from vntts.model_assets import ModelAssetManager
 from vntts.release_backends import packaged_speech_backend_available
@@ -172,6 +176,8 @@ class OnboardingDiagnostics:
         return DiagnosticResult("macOS permissions", "ok", message)
 
     def _check_hotkeys(self, settings: AppSettings) -> DiagnosticResult:
+        if sys.platform == "darwin":
+            return DiagnosticResult("Hotkeys", "warning", macos_hotkey_limitation)
         try:
             validate_hotkey_assignments(
                 {

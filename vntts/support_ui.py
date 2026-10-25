@@ -303,7 +303,9 @@ class SupportCenterDialog(QDialog):
             else ""
         )
         self.reading_status.setText(
-            identity
+            ("Last completed session" if finished else "Current session")
+            + f" (started {report.get('started_at') or 'time unavailable'}). "
+            + identity
             + f"Session: {report.get('status')}; media: {report.get('media_status')}; "
             f"analysis: {report.get('analysis_status')}. "
             f"{report.get('media_error') or report.get('error_type') or ''}"
@@ -321,8 +323,6 @@ class SupportCenterDialog(QDialog):
         rendered = []
         for entry in entries:
             timestamp = str(entry.get("recorded_at", ""))
-            if "T" in timestamp:
-                timestamp = timestamp.split("T", 1)[1][:8]
             message = str(entry.get("message", ""))
             if entry.get("level") == "game-import":
                 details = "; ".join(

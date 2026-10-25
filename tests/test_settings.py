@@ -9,9 +9,12 @@ from unittest.mock import patch
 
 from vntts.settings import (
     AppSettings,
+    content_path_import_error,
+    content_path_setting_names,
     get_config_directory,
     get_local_data_directory,
     load_app_settings,
+    preference_values,
     preserve_loaded_runtime_settings,
     restart_required_setting_changes,
     settings_schema_version,
@@ -19,6 +22,28 @@ from vntts.settings import (
 
 
 class SettingsTest(unittest.TestCase):
+    def test_manual_content_import_matches_preference_path_ownership(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            managed = str(root / "pregeneration" / "jobs" / "job" / "pack.json")
+            external = str(root / "pregeneration-exported" / "pack.json")
+            with patch("vntts.settings.get_local_data_directory", return_value=root):
+                message = content_path_import_error(managed, None)
+                self.assertIn("managed in Stories", message)
+                self.assertIn("exported external pack", message)
+                self.assertEqual(
+                    content_path_import_error(f" {managed} ", None), message
+                )
+                self.assertIsNone(content_path_import_error(managed, managed))
+                self.assertIsNone(content_path_import_error(external, managed))
+                self.assertIsNone(content_path_import_error("", managed))
+                for path, expected in ((managed, None), (external, external)):
+                    values = dict.fromkeys(content_path_setting_names, path)
+                    self.assertEqual(
+                        preference_values(values),
+                        dict.fromkeys(content_path_setting_names, expected),
+                    )
+
     def test_snapshot_reuses_one_admission_for_the_same_resolved_pack(self):
         from tests.story_fixtures import write_synthetic_game_pack
         from vntts.game_pack import import_game_pack

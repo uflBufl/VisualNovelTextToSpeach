@@ -59,6 +59,25 @@ class SupportCenterDialogTest(unittest.TestCase):
         dialog.close()
         dialog.deleteLater()
 
+    def test_previous_session_and_event_timestamps_are_not_current_status(self):
+        entry = event(0)
+        dialog = SupportCenterDialog(FakeEventLog([entry]))
+        report = {"status": "finished", "started_at": "2026-08-21T10:00:00+00:00"}
+        dialog.reading_status_provider = lambda: report
+        dialog.refresh()
+        self.assertIn(entry["recorded_at"], dialog.events.toPlainText())
+        self.assertIn("Last completed session", dialog.reading_status.text())
+        self.assertIn(report["started_at"], dialog.reading_status.text())
+        self.assertTrue(dialog.reading_start.isEnabled())
+        self.assertFalse(dialog.reading_stop.isEnabled())
+        report["status"] = "recording"
+        dialog.refresh_reading_session()
+        self.assertIn("Current session", dialog.reading_status.text())
+        self.assertFalse(dialog.reading_start.isEnabled())
+        self.assertTrue(dialog.reading_stop.isEnabled())
+        dialog.close()
+        dialog.deleteLater()
+
     def test_native_timings_are_visible_in_existing_runtime_log(self):
         self.native_log.add("moss-native", "MOSS native: gen_s=1.25")
         dialog = SupportCenterDialog(FakeEventLog())

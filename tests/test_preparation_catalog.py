@@ -30,7 +30,7 @@ class PreparationCatalogTest(unittest.TestCase):
             legacy = catalog.path.parent / ("a" * 24) / "job.json"
             legacy.parent.mkdir(parents=True)
             legacy.write_bytes(b"legacy job authority")
-            with self.assertRaisesRegex(PreparationCatalogError, "manually clear"):
+            with self.assertRaisesRegex(PreparationCatalogError, "back up"):
                 catalog.jobs()
             self.assertFalse(catalog.path.exists())
             catalog.required_marker.touch()
@@ -145,7 +145,7 @@ class PreparationCatalogTest(unittest.TestCase):
                     "loads",
                     side_effect=AssertionError("old JSON was read"),
                 ),
-                self.assertRaisesRegex(PregenerationSetupError, "manually clear"),
+                self.assertRaisesRegex(PregenerationSetupError, "back up"),
             ):
                 legacy.jobs_for_content(content)
             self.assertFalse(legacy.catalog.path.exists())
@@ -250,8 +250,11 @@ class PreparationCatalogTest(unittest.TestCase):
                     with self.assertRaisesRegex(
                         PreparationCatalogError,
                         "Unsupported preparation catalog schema",
-                    ):
+                    ) as caught:
                         operation()
+                    self.assertIn(f"{version} (expected 3)", str(caught.exception))
+                    self.assertIn(str(catalog.path), str(caught.exception))
+                    self.assertIn("including generated audio", str(caught.exception))
                     self.assertEqual(catalog.path.read_bytes(), original)
                 self.assertTrue(catalog.required_marker.is_file())
 

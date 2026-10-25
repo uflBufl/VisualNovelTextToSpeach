@@ -1826,7 +1826,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             path.parent.mkdir(parents=True)
             write_versioned_json(path, 5, plan.to_document())
             original = path.read_bytes()
-            with self.assertRaisesRegex(PregenerationVoiceError, "manually clear"):
+            with self.assertRaisesRegex(PregenerationVoiceError, "back up"):
                 store.saved_documents()
             self.assertFalse(imported_jobs.catalog.path.exists())
             store = VoicePlanStore(jobs)

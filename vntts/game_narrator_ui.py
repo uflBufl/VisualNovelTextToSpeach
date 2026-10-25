@@ -177,7 +177,6 @@ class GameNarratorDialog(QDialog):
         self.tts_model_label.setTextFormat(Qt.TextFormat.RichText)
         phrase_layout = cast(QVBoxLayout, self.voice_panel.phrase_box.layout())
         phrase_layout.insertWidget(0, self.tts_model_label)
-        self._build_editor_actions(content)
         self.content_scroll = QScrollArea()
         self.content_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.content_scroll.setWidgetResizable(True)
@@ -186,6 +185,7 @@ class GameNarratorDialog(QDialog):
         layout.addWidget(self.status)
         layout.addWidget(self.progress)
         layout.addWidget(self.content_scroll, 1)
+        self._build_editor_actions(layout)
         self._connect_voice_controls()
 
     def _connect_voice_controls(self) -> None:

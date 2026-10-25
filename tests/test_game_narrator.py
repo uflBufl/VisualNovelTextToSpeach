@@ -187,6 +187,26 @@ class GameNarratorTest(unittest.TestCase):
 
         self.assertEqual(valid_after_transfer, [False, False])
 
+    def test_save_and_cancel_stay_visible_outside_scrolling_content(self):
+        dialog = self.editor()
+        self.select(dialog, "catalog", source="character:centurion")
+        font = dialog.font()
+        font.setPointSizeF(font.pointSizeF() * 2)
+        dialog.setFont(font)
+        dialog.resize(860, 560)
+        dialog.show()
+        self.application.processEvents()
+        scroll = dialog.content_scroll
+        self.assertGreater(scroll.verticalScrollBar().maximum(), 0)
+        for position in (0, scroll.verticalScrollBar().maximum()):
+            scroll.verticalScrollBar().setValue(position)
+            self.application.processEvents()
+            for button in (dialog.cancel_button, dialog.voice_panel.a_use):
+                self.assertIs(button.parentWidget(), dialog)
+                self.assertTrue(button.isVisible())
+                self.assertTrue(dialog.rect().contains(button.geometry()))
+                self.assertGreater(button.y(), scroll.geometry().bottom())
+
     def test_saved_label_stays_separate_from_story_plan_and_current_audition(self):
         plan, group, _manifest = ambiguous_fixture(self.root / "saved-story")
         self.library.select(group.character, route="voice", source_id="preset:alba")

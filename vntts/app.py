@@ -161,6 +161,8 @@ from vntts.runtime_paths import configure_bundled_dependencies
 from vntts.rust_audio import check_audio_runtime
 from vntts.settings import (
     AppSettings,
+    content_path_import_errors,
+    content_path_setting_names,
     get_local_data_directory,
     get_settings_path,
     is_live_sequence_audio_mode,
@@ -1369,6 +1371,16 @@ class SettingsDialog(QDialog):
                 "Narrator voice: choose a game voice for MOSS-TTS. "
                 "You can listen before choosing.",
             )
+        errors.extend(
+            (2, getattr(self, name), message)
+            for name, message in content_path_import_errors(
+                {
+                    name: getattr(self, name).text()
+                    for name in content_path_setting_names
+                },
+                self.original_settings,
+            )
+        )
         game_pack = self.game_pack.text().strip()
         effective_settings: AppSettings | None = None
         if game_pack:
@@ -2830,11 +2842,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if sys.platform == "darwin":
             self.support_log.add(
                 "warning",
-                "Global hotkeys are disabled on macOS because the current native "
-                "listener is unstable. Compact controls were opened instead.",
+                macos_hotkey_limitation,
             )
-            self.show_compact_controls(persist=False)
-            self.set_status("Ready; use compact controls (macOS hotkeys disabled)")
+            self.set_status("Ready (macOS hotkeys disabled)")
             return
         try:
             self.start_hotkeys()
@@ -5299,10 +5309,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 or (
                     f"{self.last_controller_error} Select Check readiness to recover."
                     if self.last_controller_error
-                    else "Select Full controls, then Reading and Load reading engine "
-                    "to start."
+                    else "Select Load reading engine in the Reading tab to start."
                     if not self._controller_ready and self.settings.onboarding_completed
-                    else "Select Full controls, then Reading and Set up reading to start."
+                    else "Select Set up reading in the Reading tab to start."
                     if not self._controller_ready
                     else None
                 )

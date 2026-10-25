@@ -3407,13 +3407,12 @@ class OfflineAudioPreparationDialog(QDialog):
             and self._preparation_catalog_error is None
             and not self.coverage_runner.active
         )
+        if self._preparation_catalog_error is not None:
+            self.story_audio_status.clear()
+            self.story_audio_status.hide()
+            return
         self.story_audio_status.setVisible(item is not None)
         if item is not None:
-            if self._preparation_catalog_error is not None:
-                self.story_audio_status.setText(
-                    f"Saved audio status unavailable: {self._preparation_catalog_error}"
-                )
-                return
             self.story_audio_status.setText(
                 f"Story details: {item.toolTip(0)} "
                 f"({item.data(0, Qt.ItemDataRole.UserRole + 5)} lines)\n"
@@ -3548,7 +3547,8 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _queue_story_checks(self) -> None:
         if (
-            self.coverage_runner.active
+            self._preparation_catalog_error is not None
+            or self.coverage_runner.active
             or self.has_pending_work()
             or self._awaiting_voice_confirmation
             or self._pack_result is not None
@@ -3582,6 +3582,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def _story_audio_finished(self, result: object, error: Exception | None) -> None:
         self.check_story_audio.setEnabled(
             self.stories.current_story_item() is not None
+            and self._preparation_catalog_error is None
             and not self.has_pending_work()
         )
         if self._checking_story is None:
@@ -4354,8 +4355,8 @@ class OfflineAudioPreparationDialog(QDialog):
         if self._preparation_catalog_error is not None:
             message = f"Unable to restore offline preparation: {self._preparation_catalog_error}"
             self._set_selection_status(message)
-            self._set_phase_detail(message)
-            set_labeled_text(self.summary, (("Preparation unavailable", message),))
+            self._set_phase_detail("")
+            self.summary.clear()
             self.continue_button.setEnabled(False)
             self.prepare_again.setEnabled(False)
             self._story_check_timer.stop()

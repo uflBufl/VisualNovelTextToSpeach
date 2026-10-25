@@ -25,10 +25,11 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
+from tests.story_fixtures import write_synthetic_game_pack  # noqa: E402
 from vntts.calibration import DialogRegionOverlay  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.diagnostics_ui import DiagnosticsDialog  # noqa: E402
-from vntts.game_pack import GamePackError  # noqa: E402
+from vntts.game_pack import GamePackError, apply_game_pack  # noqa: E402
 from vntts.moss_cpp_installation import MossCppInstallRequired  # noqa: E402
 from vntts.ocr import DialogRegion  # noqa: E402
 from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics  # noqa: E402
@@ -44,6 +45,21 @@ def granted_permissions():
 
 
 class OnboardingDiagnosticsTest(unittest.TestCase):
+    def test_hotkey_readiness_reports_runtime_platform_availability(self):
+        diagnostics = OnboardingDiagnostics()
+        for platform, status in (("darwin", "warning"), ("win32", "ok")):
+            with (
+                self.subTest(platform=platform),
+                patch("vntts.onboarding.sys.platform", platform),
+            ):
+                result = diagnostics._check_hotkeys(AppSettings())
+                self.assertEqual(result.status, status)
+                self.assertTrue(result.passed)
+                if platform == "darwin":
+                    self.assertIn("Global hotkeys are unavailable", result.message)
+                    self.assertIn("control window or compact controls", result.message)
+                    self.assertIsNone(result.remediation)
+
     def test_failed_readiness_probe_logs_the_original_exception_chain(self):
         cause = OSError("device disconnected")
         failure = RuntimeError("audio probe failed")
@@ -170,7 +186,8 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
                 voice_manifest=str(manifest),
             )
 
-            results = diagnostics.run(settings)
+            with patch("vntts.onboarding.sys.platform", "win32"):
+                results = diagnostics.run(settings)
 
         self.assertTrue(all(result.passed for result in results))
         self.assertTrue(all(result.status == "ok" for result in results))
@@ -358,6 +375,54 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
 
 
 class OnboardingWizardTest(unittest.TestCase):
+    def test_manual_managed_content_paths_are_rejected_without_blocking_existing_paths(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            managed, *_ = write_synthetic_game_pack(
+                root / "pregeneration" / "jobs" / "job"
+            )
+            external, *_ = write_synthetic_game_pack(root / "exported")
+            settings = AppSettings(game_window_title="Game")
+            with patch("vntts.settings.get_local_data_directory", return_value=root):
+                wizard = OnboardingWizard(settings)
+                page = wizard.configuration_page
+                for name in ("game_pack", "voice_manifest"):
+                    getattr(page, name).setText(str(managed))
+                self.assertFalse(page.validatePage())
+                errors = page.validation_errors()
+                for name in ("game_pack", "voice_manifest"):
+                    self.assertTrue(
+                        any(
+                            widget is getattr(page, name)
+                            and "managed in Stories" in message
+                            for widget, message in errors
+                        ),
+                        name,
+                    )
+                    getattr(page, name).setText(str(external))
+                self.assertTrue(page.validatePage())
+                wizard.deleteLater()
+
+                wizard = OnboardingWizard(apply_game_pack(settings, str(managed)))
+                self.assertTrue(wizard.configuration_page.validatePage())
+                wizard.deleteLater()
+
+    def test_macos_hotkey_warning_explains_buttons_without_installation_action(self):
+        with patch("vntts.onboarding.sys.platform", "darwin"):
+            result = OnboardingDiagnostics()._check_hotkeys(AppSettings())
+        wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+        page = wizard.diagnostics_page
+
+        page._checks_finished((result,), None)
+
+        self.assertTrue(page.isComplete())
+        self.assertIn("[WARNING] Hotkeys", page.results.item(0).text())
+        self.assertEqual(page.remediation_reason.text(), result.message)
+        self.assertTrue(page.remediation_button.isHidden())
+        wizard.deleteLater()
+
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])

@@ -118,10 +118,14 @@ def _verify_catalog(connection: sqlite3.Connection) -> None:
     objects = connection.execute(
         "SELECT name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
     ).fetchall()
-    if version != _VERSION or application != _APPLICATION_ID:
+    if application != _APPLICATION_ID:
+        raise PreparationCatalogError("Not a VNTTS preparation catalog")
+    if version != _VERSION:
         raise PreparationCatalogError(
-            "Unsupported preparation catalog schema; manually clear the preparation "
-            "data directory and recreate it with this version"
+            f"Unsupported preparation catalog schema {version} (expected {_VERSION}). "
+            "Existing recordings have not been changed. Open it with a compatible "
+            "version, or back up the complete preparation directory, including "
+            "generated audio, before starting with an empty directory."
         )
     if {row["sql"] for row in objects} != set(_SCHEMA):
         raise PreparationCatalogError("Preparation catalog schema changed")
@@ -160,12 +164,13 @@ class PreparationCatalog:
             if self.required_marker.exists():
                 raise PreparationCatalogError(
                     "Previously initialized preparation catalog is missing; restore "
-                    "preparation.sqlite3 from its verified backup or manually clear "
-                    "the preparation data directory before recreating it"
+                    "preparation.sqlite3 from its verified backup. Back up the complete "
+                    "preparation directory before starting with an empty directory."
                 )
             raise PreparationCatalogError(
                 "Preparation catalog is missing from an existing jobs directory; "
-                "manually clear the preparation data directory and recreate it"
+                "restore its catalog or back up the complete preparation directory, "
+                "including generated audio, before starting with an empty directory."
             )
 
     def _initialize(self) -> None:
@@ -249,9 +254,11 @@ class PreparationCatalog:
             yield connection
             if write:
                 connection.commit()
+        except PreparationCatalogError as error:
+            raise PreparationCatalogError(f"{error}\nCatalog: {self.path}") from error
         except (sqlite3.Error, OSError) as error:
             raise PreparationCatalogError(
-                f"Unable to use preparation catalog: {error}"
+                f"Unable to use preparation catalog {self.path}: {error}"
             ) from error
         finally:
             if connection is not None:

@@ -34,14 +34,38 @@ content_path_setting_names = (
 def preference_values(values: Mapping[str, object]) -> dict[str, object]:
     """Internal preparation paths belong to local playback state, not preferences."""
     result = dict(values)
-    root = Path(os.path.abspath(get_local_data_directory() / "pregeneration"))
     for name in content_path_setting_names:
-        value = result.get(name)
-        if isinstance(value, str) and value.strip():
-            path = Path(os.path.abspath(Path(value).expanduser()))
-            if path.is_relative_to(root):
-                result[name] = None
+        if _is_managed_preparation_path(result.get(name)):
+            result[name] = None
     return result
+
+
+def _is_managed_preparation_path(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    root = Path(os.path.abspath(get_local_data_directory() / "pregeneration"))
+    return Path(os.path.abspath(Path(value).expanduser())).is_relative_to(root)
+
+
+def content_path_import_error(value: str, original_value: str | None) -> str | None:
+    value = value.strip()
+    if value != (original_value or "").strip() and _is_managed_preparation_path(value):
+        return (
+            "This recording is managed in Stories. Choose it there, or import an "
+            "exported external pack."
+        )
+    return None
+
+
+def content_path_import_errors(
+    values: Mapping[str, str], original_settings: "AppSettings"
+) -> tuple[tuple[str, str], ...]:
+    errors: list[tuple[str, str]] = []
+    for name, value in values.items():
+        message = content_path_import_error(value, getattr(original_settings, name))
+        if message:
+            errors.append((name, f"{name.replace('_', ' ').capitalize()}: {message}"))
+    return tuple(errors)
 
 
 def user_preferences(settings: "AppSettings") -> "AppSettings":

@@ -69,7 +69,7 @@ class ApplicationErrorLoggingTest(unittest.TestCase):
                 report = json.loads(archive.read("application-errors.json"))
             text = json.dumps(report)
             for expected in (
-                "manually clear",
+                "back up",
                 "PreparationCatalogError",
                 "PregenerationSetupError",
                 "_check_missing_catalog",

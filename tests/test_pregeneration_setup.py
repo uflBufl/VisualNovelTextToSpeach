@@ -16,6 +16,7 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
     QDialog,
+    QLabel,
     QMessageBox,
 )
 from vntts_artifacts import write_story_index_document  # noqa: E402
@@ -1235,7 +1236,7 @@ class PregenerationSetupTest(unittest.TestCase):
             write_versioned_json(
                 (legacy.directory_for(job.job_id) / "job.json"), 1, document
             )
-            with self.assertRaisesRegex(PregenerationSetupError, "manually clear"):
+            with self.assertRaisesRegex(PregenerationSetupError, "back up"):
                 legacy.load(job.job_id)
             with self.assertRaisesRegex(
                 PregenerationSetupError, "selected_line_ids must contain non-empty text"
@@ -1601,10 +1602,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                         )
                         dialog.stories.setCurrentItem(dialog.stories.item(0))
                         self.assertFalse(dialog.check_story_audio.isEnabled())
-                        self.assertIn(
-                            str(dialog._preparation_catalog_error),
-                            dialog.story_audio_status.text(),
-                        )
+                        self.assertTrue(dialog.story_audio_status.isHidden())
                         record.assert_any_call(
                             "preparation-catalog",
                             outcome="failed",
@@ -1631,6 +1629,68 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                         self.assertEqual(saved.read_bytes(), original)
                         if not damaged:
                             self.assertFalse(store.catalog.path.exists())
+
+    def test_catalog_failure_has_one_error_and_async_refresh_restores_normal_details(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            store = PregenerationJobStore(root / "jobs")
+            with patch(
+                "vntts.pregeneration_ui.discover_game_content",
+                return_value=ContentDiscovery((content,)),
+            ):
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(), job_store=store, thread_pool=pool
+                )
+                self.addCleanup(dialog.deleteLater)
+                dialog.show()
+                self.application.processEvents()
+                self.run_next_task(pool)
+                dialog.select_all_button.click()
+                selected = dialog.selected_story_ids()
+                error = PermissionError("Saved preparation catalog cannot be read")
+                with patch.object(store, "latest_for_content", side_effect=error):
+                    dialog.refresh()
+                    self.run_next_task(pool)
+                dialog.stories.setCurrentItem(dialog.stories.item(0))
+
+                self.assertEqual(dialog.selected_story_ids(), selected)
+                self.assertIn(str(error), dialog.selection_status.text())
+                self.assertTrue(dialog.selection_status.isVisibleTo(dialog))
+                self.assertEqual(
+                    [
+                        label
+                        for label in dialog.findChildren(QLabel)
+                        if label.isVisibleTo(dialog)
+                        and str(error) in plain_label_text(label)
+                    ],
+                    [dialog.selection_status],
+                )
+                self.assertEqual(dialog.summary.text(), "")
+                self.assertEqual(dialog.resume_status.text(), "")
+                self.assertTrue(dialog.story_audio_status.isHidden())
+                self.assertFalse(dialog.continue_button.isEnabled())
+                self.assertFalse(dialog.prepare_again.isEnabled())
+                dialog._queue_story_checks()
+                self.assertFalse(pool.tasks)
+                dialog._story_audio_finished(None, None)
+                self.assertFalse(dialog.check_story_audio.isEnabled())
+
+                dialog.refresh()
+                self.run_next_task(pool)
+
+                self.assertIsNone(dialog._preparation_catalog_error)
+                self.assertFalse(dialog.selection_status.isVisibleTo(dialog))
+                self.assertNotIn(str(error), dialog.resume_status.text())
+                self.assertIn("dialogue lines", plain_label_text(dialog.summary))
+                self.assertTrue(dialog.continue_button.isEnabled())
+                dialog.stories.setCurrentItem(dialog.stories.item(0))
+                self.assertNotIn(str(error), dialog.story_audio_status.text())
+                self.assertTrue(dialog.story_audio_status.isVisibleTo(dialog))
+                dialog.close()
 
     def test_changed_installed_game_imports_automatically_and_replaces_source(self):
         with TemporaryDirectory() as directory:
@@ -2402,7 +2462,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.selected_story_ids(), ())
             self.assertEqual(dialog.stories.count(), len(content.selections))
             self.assertIn("Unable to restore", dialog.selection_status.text())
-            self.assertIn("manually clear", dialog.selection_status.text())
+            self.assertIn("back up", dialog.selection_status.text())
             self.assertFalse(dialog.continue_button.isEnabled())
             self.assertFalse(dialog.prepare_again.isEnabled())
             dialog._continue_requested()
