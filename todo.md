@@ -298,93 +298,102 @@ Remaining execution order (one item at a time; plan before implementation):
 
 This is the single execution queue for the current Mac follow-up. The audit and
 older R/U/T/M sections retain evidence and detailed acceptance requirements;
-they are not separate competing schedules. Before each implementation, confirm
-its reproduction, shared owner/callers, data effects and focused regression gate.
-Investigate independently; present the concrete implementation plan to the user
-and wait for agreement before implementing each item. Finish its targeted tests and native check before
-moving to the next item. Mark an investigation complete only when it yields a
-supported repair or an explicit product decision, not merely a hypothesis.
+they are not separate competing schedules. Investigate independently using code,
+existing recordings/logs and deterministic tests; present the concrete change plan
+and wait for agreement before implementing each item. Finish focused tests and
+static checks for each change. Per the user's decision, defer game/chapter/phrase
+reruns and native acceptance to one combined run after the defect fixes. A pending
+native gate does not block moving to the next code item and must not be marked
+complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Qualify remaining pre-route waits (RUN-25-09/02, R1/T1).** Reproduce
-   99 ->100 and31 ->32 with the correlated OCR-attempt, worker/resolver timings
-   and coalesced tracker-admission diagnostics. Distinguish time before visible
-   text from recognition, resolver and tracker waiting. Choose a speed/recovery
-   repair only if a remaining delay is reproduced; the old capture-only R1
-   incident remains an independent unresolved cause. Gate: each reproduced wait
-   has current frame evidence and an identified stage; a short successful run
-   on other lines does not close these historical cases.
-   **Next separate change: reload/readiness race (RUN-25-01).** Suspend and
-   invalidate readiness checks at shared controller-lifecycle start, reject late
-   probe results, and refresh once with effective settings after completion or
-   rollback. Cover opening readiness during reload and an already-running probe;
-   keep OCR shutdown admission sealed. Gate: no shutdown race reported as an OCR
-   installation fault, and a fresh probe validates the loaded runtime.
-2. **Restore expected prepared routes (RUN-25-07).** Retain actual OCR for the
-   candidate66/74/76/92 occurrences and compare against the existing exact resolver.
-   Fix only the demonstrated mismatch/admission cause with real positive and
-   nearby wrong-line negative fixtures. Gate: the correct prepared WAV, with no
-   unexpected live synthesis, global threshold relaxation or guessed story edge.
-3. **Explain repeated routing (RUN-25-10).** Correlate both102 generations with
-   raw OCR, speaker identity, source lead and the event that replaces the owner;
-   check the false character `I`. Also reproduce the native22/23 case: completed22
-   dispatches a key and reports a confirmed transition, then22 reaches PCM again;
-   23 has three interrupted playback attempts without another key dispatch.
-   Correlate the missing-divider/full-dialog OCR path and trailing indicator
-   noise with owner replacement before choosing a repair. A changed chunk ID
-   alone is not OCR-change evidence because its hash includes generation.
-   Gate: correct occurrence ownership and no
-   unnecessary restart. Preserve the distinction between cancellation before
-   PCM and a repeated audible clip; add a repair only after reproducing its cause.
-4. **Repair scene interruption (RUN-25-08).** Correlate48's source WAV, captured
-   output and transition to49. Establish which scene changes invalidate speech
-   and which permit the current clip to finish. Gate: intended speech completion
-   without stale audio crossing a genuinely new occurrence; Stop still cancels.
-5. **Resolve short/centered dialogue policy (RUN-25-06/R17).** Independently check
-   original game audio for centered46 and brief116. Decide the required product
-   behavior before adding capture or playback. Gate: truthful supported coverage,
-   no duplicate game voice and no arbitrary widening of the normal dialogue ROI.
-6. **Make failed preparation actionable (GEN-25-01).** Through restored Stories,
-    inspect/replay a rejected result and retry while retaining ready neighbouring
-    recordings. Compare the actual pause with quality evidence before changing
-    synthesis or rejection. Gate: understandable failure/retry and intact saved
-    assignments/audio; do not weaken quality gates from one rejected sample.
-7. **Check generation budget (GEN-25-02).** Reproduce314501:85 with its actual
-    text/reference/model/settings; inspect token/time budgeting and normal retries.
-    Gate: adequate bounded generation or a clear retryable failure, cancellation
-    and no publication of a truncated result. Preserve ready work on restart.
-8. **Finish the remaining UI items in separate increments.** Order: Stories
-    scrolling at860x560 (UX-25-02), off-screen calibration/U1/U4, source-launch
-    worker readiness (UX-25-03), loading on Read (UX-25-04), saved-voice overview
-    (UX-25-09), missing source text/unchanged candidate (UX-25-10), then canonical
-    displayed dialogue (RUN-25-04). Before each, distinguish missing native
-    qualification from a code defect; decide the smallest user action/feedback
-    change. Gate: reachable keyboard/mouse actions, truthful state and unchanged
-    voice assignments on browsing/cancel. Reuse the existing matching backlog
-    items rather than create parallel implementations.
-    - Separate OCR status from the last speaker: an uncertain startup currently
-      displays `Last speaker: OCR uncertain` in Compact. Trace the shared dialogue
-      callback before proposing a repair; preserve the last actual speaker and
-      keep the uncertainty reason visible without treating it as a character.
-9. **Qualify sound and latency (RUN-25-05/R12/R6).** Correlate exact source WAVs
-    with independent captured output; explain the1.949s outlier and ambiguous
-    clips. Distinguish recorder discontinuities from audible playback gaps. Require
-    observer-only original-audio completion evidence before shortening its wait.
-    Gate: source/output onset, completion and continuation are measured over
-    covered intervals with explicit worker/device identity and instrumentation
-    overhead; no unit-test load runs during these measurements.
-10. **Repeat full native acceptance (M0/M1 and the latest chapter audit).** Run
-    all314001 through104 from Stories without manual transitions while real heavy
-    generation/publication remains active. Also qualify partly prepared active
-    chapter catch-up across newly published boundaries, failed/not-ready policy
-    and cancel/retry/restart. Use existing R2/R3/R4/R5/R7/R8/R9/R11 and
-    U1/U2/U4/U6/U7/U8 gates as targeted acceptance cases, including persistent OCR
-    and portable observation. Preserve approved WAV bytes and complete independent
-    capture; cache hits alone are not background-generation load. Remove only
-    verified completed TODO items and retain concrete remaining failures.
-    Recheck the historical34/35/85/86/97 stalls with raw OCR and tracker state;
-    their complete original observations were not retained, so do not assume
-    that every stall had the same cause. Preserve Stop/focus/uncertainty guards
-    and do not introduce dictionary autocorrection for dust-obscured words.
+1. **Fix reload/readiness race (RUN-25-01; plan awaiting agreement).** Suspend
+   and invalidate readiness checks at shared controller-lifecycle start, defer
+   checks opened during reload and reject late probe results. Refresh once with
+   effective settings after completion or rollback, including prepared-pack
+   activation, settings, profile/narrator/assets flows. Cancel obsolete probe work
+   without reopening OCR shutdown admission. Test a held reload, already-running
+   probe, stale completion, failure/rollback and settings publication order.
+   Gate: no shutdown race reported as an OCR installation fault; real post-reload
+   OCR qualification belongs to the final native run.
+2. **Fix remaining UI issues in separate increments.** Start with concrete
+   ownership/data defects, then agree the desired behavior for UX changes:
+   - Keep OCR uncertainty out of the speaker/last-dialogue callback. Preserve the
+     last actual speaker and show the reason through the shared status path;
+     include both dashboard and Compact consumers.
+   - Reject unusable off-screen game geometry before calibration capture and
+     revalidate after window/workspace changes (U1/U4 and capture-setup backlog).
+     Native visibility qualification is deferred to the combined run.
+   - Trace actual generation-device reporting (UX-26-01): completed MLX work
+     still displays unknown. Report the engine's evidence, not a guessed device
+     derived from its name.
+   - Resolve Stories scrolling/action reachability at860x560 (UX-25-02), using
+     layout and Qt event evidence to distinguish an app defect from MCP routing.
+     Preserve keyboard access and avoid a speculative scrolling workaround.
+   - Agree found-chapter labels (UX-26-02), automatic loading on Read (UX-25-04),
+     saved-voice overview (UX-25-09), missing source text/unchanged voice candidate
+     (UX-25-10), source-launch worker readiness (UX-25-03), and canonical displayed
+     dialogue (RUN-25-04). Reuse existing backlog items rather than add duplicate
+     implementations. Gate: reachable actions, truthful status and unchanged
+     voice assignments on browsing/cancel; native checks move to the final run.
+3. **Make failed preparation actionable (GEN-25-01).** Inspect the existing
+   rejected result, quality evidence and Stories retry path without a game run.
+   Decide the smallest understandable failure/preview/retry change; retain ready
+   neighbouring recordings and saved assignments. Do not weaken quality gates
+   because one sample was rejected. Fresh generation acceptance is deferred.
+4. **Check generation budget (GEN-25-02).** Trace314501:85's actual retained
+   text/reference/model/settings through token/time budgeting and normal retries.
+   Fix a demonstrated budgeting or failure-reporting defect with deterministic
+   tests. Gate: adequate bounded generation or a clear retryable failure,
+   cancellation, no truncated publication and preserved ready work on restart.
+   Fresh model/native qualification belongs to the combined run.
+5. **Investigate scene interruption from retained evidence (RUN-25-08).**
+   Correlate48's source WAV, captured output and transition to49. Establish which
+   scene changes invalidate speech and which permit the current clip to finish;
+   present a repair plan only when the cause/product behavior is established.
+   Gate: intended completion without stale audio crossing a genuinely new
+   occurrence; Stop still cancels. If evidence is insufficient, retain the case
+   for the final run instead of introducing a guessed playback policy.
+6. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
+   Run all314001 through104 from Stories without manual transitions while real
+   heavy generation/publication remains active. Also qualify partly prepared
+   active-chapter catch-up across newly published boundaries, failed/not-ready
+   policy and cancel/retry/restart. Use existing R2/R3/R4/R5/R7/R8/R9/R11 and
+   U1/U2/U4/U6/U7/U8 gates, persistent OCR and portable observation. Preserve
+   approved WAV bytes and complete independent capture; cache hits alone are
+   not background-generation load. Include the following deferred checks:
+   - **Pre-route waits (RUN-25-09/02, R1/T1):**99 ->100 and31 ->32 with correlated
+     OCR-attempt, worker/resolver timing and tracker admission. Distinguish the
+     game transition before visible text from recognition/resolver/tracker wait.
+     Choose a speed/recovery repair only if a delay remains. The old capture-only
+     R1 incident is a separate unresolved cause; other successful lines do not
+     close it.
+   - **Prepared-route matching (RUN-25-07):** retain actual OCR for candidate
+     occurrences66/74/76/92 after the implemented Sauvola/name/edit-distance
+     changes. Compare to the exact resolver; require correct prepared WAVs and
+     no unexpected synthesis. If still wrong, use real positive and neighbouring
+     wrong-line fixtures; no global threshold relaxation or guessed story edge.
+   - **Repeated routing (RUN-25-10):** correlate both102 generations with raw
+     OCR, speaker identity, source lead and owner replacement, including false
+     character I. Recheck native22/23: completed22 dispatched a key/confirmed a
+     transition then reached PCM again;23 had three interrupted attempts without
+     another key. Preserve missing-divider/full-dialogue and trailing-indicator
+     evidence. A changed chunk ID is not OCR-change evidence (generation is
+     hashed); distinguish cancellation before PCM from repeated audible speech.
+   - **Short/centered dialogue (RUN-25-06/R17):** check original game audio for
+     centered46 and brief116 before deciding whether extra capture/playback is
+     required. No duplicate game voice or arbitrary widening of the normal ROI.
+   - **Sound/latency (RUN-25-05/R12/R6):** correlate exact WAVs with captured
+     output; explain the1.949s outlier and ambiguous clips. Distinguish recorder
+     discontinuities from audible gaps. Require observer-only original-audio
+     completion evidence before shortening its wait. Record worker/device
+     identity, covered intervals and instrumentation overhead; no unit-test
+     load during measurements.
+   - **Continuation stalls:** recheck34/35/85/86/97 with raw OCR and tracker
+     state. Original observations were incomplete; do not assume all shared a
+     cause. Preserve Stop/focus/uncertainty guards and omit dictionary
+     autocorrection for dust-obscured words.
+   Remove only verified completed TODO items and retain concrete remaining
+   failures. Phrase-specific checks stay here rather than preceding each fix.
 
 Quality gate for every code item: run the local changed-test selector first,
 then missing focused tests and static checks. Existing full mypy/complexity debt
