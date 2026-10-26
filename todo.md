@@ -305,13 +305,36 @@ and wait for agreement before implementing each item. Finish its targeted tests 
 moving to the next item. Mark an investigation complete only when it yields a
 supported repair or an explicit product decision, not merely a hypothesis.
 
-1. **Locate pre-route delays (RUN-25-09/02, R1/T1).** Measure frame age, capture,
-   OCR queue/worker health, recognition, matching and tracker admission separately
-   around100 and the31 transition. Fix the measured owner; test slow/error/stale
-   observations. Handle the independent reload/readiness race RUN-25-01 as the
-   next small change in that owner. Gate: every long wait has an attributable
-   stage and valid cancellation/recovery; no OCR replacement or larger timeout
-   chosen from the total duration alone.
+1. **Make pre-route waits attributable (RUN-25-09/02, R1/T1; proposed change,
+   awaiting agreement).** Extend the existing diagnostic timeline in one change:
+   - Record each actual OCR attempt independently of generation changes, with
+     run/capture/frame identity, capture age, duration and accepted/uncertain/
+     stale/cancelled/error outcome. Preserve the existing generation-level `ocr`
+     event and freshness, focus, Stop and worker-ownership checks.
+   - Measure OCR lock waiting and the call after lock acquisition separately in
+     the existing opt-in diagnostic sink; the latter includes preprocessing and
+     IPC, so must not be labelled pure Tesseract time. Measure the source-result
+     resolver including cursor-lock waiting separately in the frame-recognition
+     owner, without claiming to time every later source probe or adding a new
+     native protocol.
+   - Report tracker admission reasons at their decision points, including cached
+     observations: waiting for stability, incomplete source prefix, committed
+     text conflict, unchanged and emitted. Coalesce unchanged reasons with a
+     count/time span; keep text/pixels out of ordinary telemetry.
+   - Extend support/acquisition allowlists and export checks. Use virtual time
+     for queued/slow/error/stale/Stop/focus cases, terminal attempt outcomes,
+     generation-zero evidence and bounded journal capacity. Gate: a recorded
+     wait can be assigned to an actual stage or explicit admission reason,
+     and telemetry failure cannot alter reading or cancellation.
+   Then validate99 ->100 and31 ->32 with current code. Choose a speed/recovery
+   repair only if a remaining delay is reproduced; the old capture-only R1
+   incident remains an independent unresolved cause.
+   **Next separate change: reload/readiness race (RUN-25-01).** Suspend and
+   invalidate readiness checks at shared controller-lifecycle start, reject late
+   probe results, and refresh once with effective settings after completion or
+   rollback. Cover opening readiness during reload and an already-running probe;
+   keep OCR shutdown admission sealed. Gate: no shutdown race reported as an OCR
+   installation fault, and a fresh probe validates the loaded runtime.
 2. **Restore expected prepared routes (RUN-25-07).** Retain actual OCR for the
    candidate66/74/76/92 occurrences and compare against the existing exact resolver.
    Fix only the demonstrated mismatch/admission cause with real positive and
