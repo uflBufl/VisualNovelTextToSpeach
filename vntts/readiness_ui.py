@@ -1,4 +1,5 @@
 import logging
+from threading import Event
 
 from PySide6.QtCore import Qt, QThreadPool, QUrl, Signal
 from PySide6.QtGui import (
@@ -53,12 +54,15 @@ class ReadinessDialog(QDialog):
         parent: QWidget | None = None,
         *,
         thread_pool: QThreadPool | None = None,
+        suspended: bool = False,
     ) -> None:
         super().__init__(parent)
         self.settings = settings
         self.diagnostics = diagnostics
         self._results: tuple[DiagnosticResult, ...] = ()
         self._checks_running = False
+        self._suspended = suspended
+        self._cancellation = Event()
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.runner.finished.connect(self._checks_finished)
         self.setWindowTitle("Check readiness")
@@ -206,17 +210,42 @@ class ReadinessDialog(QDialog):
         self.settings = settings
         self.refresh()
 
+    def suspend_checks(self) -> None:
+        self._suspended = True
+        self.refresh()
+
+    def resume_checks(self, settings: AppSettings) -> None:
+        self.settings = settings
+        if not self._suspended:
+            return
+        self._suspended = False
+        if self.isVisible():
+            self.refresh()
+
+    def _cancel_probe(self) -> bool:
+        self._cancellation.set()
+        return self.runner.cancel()
+
     def refresh(self) -> None:
-        self.runner.cancel()
+        self._cancel_probe()
         self._results = ()
         self.table.setRowCount(0)
+        if self._suspended:
+            self._set_checks_running(False)
+            self.refresh_button.setEnabled(False)
+            self.summary.setText("Waiting for the reading engine to finish updating...")
+            self._update_remediation()
+            return
         self.summary.setText("Running readiness checks...")
         self._set_checks_running(True)
         self._update_remediation()
-        self.runner.start(self.diagnostics.run, self.settings)
+        self._cancellation = Event()
+        self.runner.start(
+            self.diagnostics.run, self.settings, cancellation=self._cancellation
+        )
 
     def cancel_checks(self) -> None:
-        if not self.runner.cancel():
+        if not self._cancel_probe():
             return
         self.table.setRowCount(0)
         self._results = ()
@@ -236,6 +265,8 @@ class ReadinessDialog(QDialog):
         self.reading_button.hide()
 
     def _checks_finished(self, results: object, error: Exception | None) -> None:
+        if self._suspended or self._cancellation.is_set():
+            return
         self._set_checks_running(False)
         if error is not None or not is_diagnostic_results(results):
             self._results = ()
@@ -447,9 +478,9 @@ class ReadinessDialog(QDialog):
             signal.emit()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        self.runner.cancel()
+        self._cancel_probe()
         super().closeEvent(event)
 
     def done(self, result: int) -> None:
-        self.runner.cancel()
+        self._cancel_probe()
         super().done(result)

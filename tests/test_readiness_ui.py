@@ -64,7 +64,7 @@ class ReadinessDialogTest(unittest.TestCase):
             "Diagnostics",
             (),
             {
-                "run": lambda _self, _settings: (
+                "run": lambda _self, _settings, *, cancellation=None: (
                     DiagnosticResult("Narrator", "error", message),
                 )
             },
@@ -106,7 +106,7 @@ class ReadinessDialogTest(unittest.TestCase):
             "Diagnostics",
             (),
             {
-                "run": lambda _self, _settings: (
+                "run": lambda _self, _settings, *, cancellation=None: (
                     DiagnosticResult("OCR", "error", message),
                 )
             },
@@ -139,7 +139,11 @@ class ReadinessDialogTest(unittest.TestCase):
     def test_loading_state_names_readiness_and_has_no_stale_details(self):
         dialog = ReadinessDialog(
             AppSettings(),
-            type("Diagnostics", (), {"run": lambda _self, _settings: ()})(),
+            type(
+                "Diagnostics",
+                (),
+                {"run": lambda _self, _settings, *, cancellation=None: ()},
+            )(),
             thread_pool=ManualThreadPool(),
         )
         self.assertEqual(dialog.windowTitle(), "Check readiness")
@@ -156,7 +160,7 @@ class ReadinessDialogTest(unittest.TestCase):
             "Diagnostics",
             (),
             {
-                "run": lambda _self, _settings: (
+                "run": lambda _self, _settings, *, cancellation=None: (
                     DiagnosticResult("Capture", "error", "Select a window"),
                     DiagnosticResult("Voices", "warning", "Narrator fallback"),
                 )
@@ -227,7 +231,7 @@ class ReadinessDialogTest(unittest.TestCase):
         pool = ManualThreadPool()
 
         class Diagnostics:
-            def run(self, settings):
+            def run(self, settings, *, cancellation=None):
                 return (
                     DiagnosticResult(
                         "Backend", "ok", f"Using {settings.speech_backend}"
@@ -251,13 +255,80 @@ class ReadinessDialogTest(unittest.TestCase):
         self.assertEqual(dialog.table.item(0, 2).text(), "Using moss-tts")
         dialog.deleteLater()
 
+    def test_suspended_dialog_defers_all_refreshes_until_visible_resume(self):
+        pool = ManualThreadPool()
+        diagnostics = Mock()
+        diagnostics.run.return_value = (DiagnosticResult("OCR", "ok", "Ready"),)
+        dialog = ReadinessDialog(
+            AppSettings(), diagnostics, thread_pool=pool, suspended=True
+        )
+        dialog.show()
+        current = AppSettings(speech_backend="moss-tts")
+        dialog.update_settings(current)
+        dialog.refresh()
+        self.assertEqual(pool.tasks, [])
+        self.assertFalse(dialog.refresh_button.isEnabled())
+        self.assertIn("finish updating", dialog.summary.text())
+        self.assertTrue(dialog.reading_button.isHidden())
+
+        dialog.resume_checks(current)
+        dialog.resume_checks(current)
+        self.assertEqual(len(pool.tasks), 1)
+        pool.run_next()
+        self.application.processEvents()
+        self.assertEqual(diagnostics.run.call_args.args, (current,))
+        self.assertFalse(diagnostics.run.call_args.kwargs["cancellation"].is_set())
+        self.assertEqual(dialog.table.item(0, 2).text(), "Ready")
+
+    def test_suspending_inflight_probe_discards_late_failure_and_cancels_token(self):
+        pool = ManualThreadPool()
+        diagnostics = Mock()
+        dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
+        dialog.show()
+        cancelled = []
+
+        def old_probe(_settings, *, cancellation):
+            dialog.suspend_checks()
+            cancelled.append(cancellation.is_set())
+            return (DiagnosticResult("OCR", "error", "OCR service is shutting down"),)
+
+        diagnostics.run.side_effect = old_probe
+        pool.run_next()
+        self.application.processEvents()
+        self.assertEqual(cancelled, [True])
+        self.assertEqual(dialog.table.rowCount(), 0)
+        self.assertIn("finish updating", dialog.summary.text())
+        diagnostics.run.side_effect = None
+        diagnostics.run.return_value = (DiagnosticResult("OCR", "ok", "Reloaded"),)
+        dialog.resume_checks(AppSettings())
+        pool.run_next()
+        self.application.processEvents()
+        self.assertEqual(dialog.table.item(0, 2).text(), "Reloaded")
+
+    def test_closed_suspended_dialog_waits_for_reopen(self):
+        pool = ManualThreadPool()
+        diagnostics = Mock()
+        diagnostics.run.return_value = ()
+        dialog = ReadinessDialog(
+            AppSettings(), diagnostics, thread_pool=pool, suspended=True
+        )
+        dialog.show()
+        dialog.close()
+        dialog.resume_checks(AppSettings())
+        self.assertEqual(pool.tasks, [])
+        dialog.update_settings(AppSettings())
+        dialog.show()
+        pool.run_next()
+        self.application.processEvents()
+        self.assertTrue(dialog.reading_button.isVisible())
+
     def test_cancelled_probe_cannot_restore_stale_readiness(self):
         pool = ManualThreadPool()
         diagnostics = type(
             "Diagnostics",
             (),
             {
-                "run": lambda _self, _settings: (
+                "run": lambda _self, _settings, *, cancellation=None: (
                     DiagnosticResult("Capture", "ok", "Ready"),
                 )
             },
@@ -326,7 +397,7 @@ class ReadinessDialogTest(unittest.TestCase):
             "Diagnostics",
             (),
             {
-                "run": lambda _self, _settings: (
+                "run": lambda _self, _settings, *, cancellation=None: (
                     DiagnosticResult("Tesseract OCR", "error", "Install it"),
                     DiagnosticResult(
                         "Character voices",
@@ -401,7 +472,7 @@ class ReadinessDialogTest(unittest.TestCase):
             "Diagnostics",
             (),
             {
-                "run": lambda _self, _settings: (
+                "run": lambda _self, _settings, *, cancellation=None: (
                     DiagnosticResult(
                         "Character voices", "warning", "Fallback", "voices"
                     ),
@@ -426,7 +497,7 @@ class ReadinessDialogTest(unittest.TestCase):
             "Diagnostics",
             (),
             {
-                "run": lambda _self, _settings: (
+                "run": lambda _self, _settings, *, cancellation=None: (
                     DiagnosticResult(
                         "Tesseract OCR", "error", "not found", "external-ocr"
                     ),
@@ -477,7 +548,7 @@ class ReadinessDialogTest(unittest.TestCase):
             "Diagnostics",
             (),
             {
-                "run": lambda _self, _settings: (
+                "run": lambda _self, _settings, *, cancellation=None: (
                     DiagnosticResult(
                         "Tesseract OCR", "error", "not found", "external-ocr"
                     ),
@@ -503,7 +574,7 @@ class ReadinessDialogTest(unittest.TestCase):
             "Diagnostics",
             (),
             {
-                "run": lambda _self, _settings: (
+                "run": lambda _self, _settings, *, cancellation=None: (
                     DiagnosticResult("Audio output", "ok", "Speakers"),
                 )
             },
@@ -540,7 +611,7 @@ class ReadinessDialogTest(unittest.TestCase):
         class Diagnostics:
             results = (DiagnosticResult("Audio output", "ok", "Speakers"),)
 
-            def run(self, _settings):
+            def run(self, _settings, *, cancellation=None):
                 return self.results
 
         diagnostics = Diagnostics()
@@ -582,7 +653,7 @@ class ReadinessDialogTest(unittest.TestCase):
         pool = ManualThreadPool()
 
         class Diagnostics:
-            def run(self, _settings):
+            def run(self, _settings, *, cancellation=None):
                 raise RuntimeError("device probe failed")
 
         dialog = ReadinessDialog(AppSettings(), Diagnostics(), thread_pool=pool)

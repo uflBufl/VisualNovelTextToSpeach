@@ -75,18 +75,6 @@ class _Signals(Protocol):
     hotkeys_requested: SignalInstance
 
 
-class _ReadinessDialog(Protocol):
-    def update_settings(self, settings: AppSettings) -> None: ...
-
-    def hide(self) -> None: ...
-
-    def show(self) -> None: ...
-
-    def raise_(self) -> None: ...
-
-    def activateWindow(self) -> None: ...
-
-
 class _Menu(Protocol):
     def insertAction(self, before: QAction, action: QAction) -> object: ...
 
@@ -108,7 +96,6 @@ class ConfigurationApplyMixin:
         dashboard: _Dashboard
         signals: _Signals
         pregeneration_dialog: OfflineAudioPreparationDialog | None
-        readiness_dialog: _ReadinessDialog | None
         menu: _Menu
         voice_preview_action: QAction
         sequence_resync_action: QAction
@@ -403,8 +390,6 @@ class ConfigurationApplyMixin:
             refresh_hotkeys=True,
             restart=bool(restart_changes and self._controller_ready),
         )
-        if self.readiness_dialog is not None:
-            self.readiness_dialog.update_settings(runtime_settings)
 
     def open_assets(self) -> None:
         if self._controller_busy or self._shutting_down:

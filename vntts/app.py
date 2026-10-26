@@ -2119,7 +2119,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.diagnostics_dialog: DiagnosticsDialog | None = None
         self._onboarding_voice_wizard: OnboardingWizard | None = None
         self.diagnostics_refresh_generation = 0
-        self.readiness_dialog = None
+        self.readiness_dialog: ReadinessDialog | None = None
         self.pregeneration_dialog: OfflineAudioPreparationDialog | None = None
         self.support_dialog: SupportCenterDialog | None = None
         self.narrator_dialog: GameNarratorDialog | None = None
@@ -4203,8 +4203,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.sequence_expected_action.setVisible(sequence_controls_visible)
         self._controller_ready = bool(self.controller.is_ready)
         self._apply_controller_action_state()
-        if self.readiness_dialog is not None:
-            self.readiness_dialog.update_settings(runtime_settings)
         status = self._pregeneration_activation_status
         self._pregeneration_activation_status = None
         self.show_dashboard()
@@ -4222,12 +4220,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
         self._save_main_section("reading")
 
+    def _readiness_settings(self) -> AppSettings:
+        loaded = getattr(self.controller, "settings", None)
+        return loaded if isinstance(loaded, AppSettings) else self._runtime_settings()
+
     def open_readiness(self) -> None:
         if self.readiness_dialog is None:
             self.readiness_dialog = ReadinessDialog(
-                self._runtime_settings(),
+                self._readiness_settings(),
                 OnboardingDiagnostics(),
                 self.dashboard,
+                suspended=self._controller_busy,
             )
             self.readiness_dialog.settings_requested.connect(self.open_settings)
             self.readiness_dialog.permissions_requested.connect(
@@ -4239,7 +4242,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self._open_reading_from_readiness
             )
         else:
-            self.readiness_dialog.update_settings(self._runtime_settings())
+            self.readiness_dialog.update_settings(self._readiness_settings())
         self.readiness_dialog.show()
         self.readiness_dialog.raise_()
         self.readiness_dialog.activateWindow()
@@ -5608,6 +5611,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._cancel_live_scope()
         self._cancel_diagnostics_refresh()
         self._pregeneration_activation_restore_runtime.clear()
+        if self.readiness_dialog is not None:
+            self.readiness_dialog.suspend_checks()
         self._lifecycle_generation = self.session_owner.begin(cancellation)
         self.last_controller_error = None
         self._controller_busy = True
@@ -5619,6 +5624,20 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._controller_busy = False
         self._apply_controller_action_state()
         self._update_auto_advance_action()
+        if self.readiness_dialog is not None:
+            generation = self._lifecycle_generation
+            # Completion callbacks publish effective settings before checks resume.
+            QTimer.singleShot(
+                0, self, lambda: self._resume_readiness_checks(generation)
+            )
+
+    def _resume_readiness_checks(self, generation: int) -> None:
+        if (
+            self.readiness_dialog is not None
+            and not self._controller_busy
+            and self._lifecycle_is_current(generation)
+        ):
+            self.readiness_dialog.resume_checks(self._readiness_settings())
 
     def _lifecycle_is_current(self, generation: int | None) -> bool:
         return (
@@ -5696,6 +5715,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         self.speech_runtime_timer.stop()
         self._shutting_down = True
+        if self.readiness_dialog is not None:
+            self.readiness_dialog.close()
         self.voice_auditions.suspend()
         if self.narrator_dialog is not None:
             self.narrator_dialog.close()

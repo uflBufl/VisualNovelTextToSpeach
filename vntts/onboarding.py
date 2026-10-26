@@ -17,6 +17,7 @@ from vntts.model_assets import ModelAssetManager
 from vntts.release_backends import packaged_speech_backend_available
 from vntts.runtime_preparation import (
     Cancellation,
+    CancellationToken,
     ProgressCallback,
     check_runtime_cancelled,
 )
@@ -58,23 +59,32 @@ class OnboardingDiagnostics:
         permission_status_provider: Callable[[], Mapping[str, bool | None]]
         | None = None,
     ) -> None:
-        self.tesseract_probe = tesseract_probe or probe_tesseract
+        self.tesseract_probe = tesseract_probe
         self.audio_probe = audio_probe or probe_audio_output
         self.model_path_resolver = model_path_resolver or get_model_cache_path
         self.permission_status_provider = (
             permission_status_provider or get_macos_permission_status
         )
 
-    def run(self, settings: AppSettings) -> tuple[DiagnosticResult, ...]:
-        results = [
-            self._check_hotkeys(settings),
-            self._check_capture_source(settings),
-            self._check_tesseract(),
-            self._check_audio(),
-            self._check_model(settings),
-            self._check_voice_manifest(settings),
-        ]
-        permission_result = self._check_platform_permissions(settings)
+    def run(
+        self, settings: AppSettings, *, cancellation: Cancellation = None
+    ) -> tuple[DiagnosticResult, ...]:
+        results = []
+        for probe in (
+            lambda: self._check_hotkeys(settings, cancellation=cancellation),
+            lambda: self._check_capture_source(settings, cancellation=cancellation),
+            lambda: self._check_tesseract(cancellation=cancellation),
+            lambda: self._check_audio(cancellation=cancellation),
+            lambda: self._check_model(settings, cancellation=cancellation),
+            lambda: self._check_voice_manifest(settings, cancellation=cancellation),
+        ):
+            check_runtime_cancelled(cancellation)
+            results.append(probe())
+            check_runtime_cancelled(cancellation)
+        permission_result = self._check_platform_permissions(
+            settings, cancellation=cancellation
+        )
+        check_runtime_cancelled(cancellation)
         if permission_result is not None:
             results.insert(2, permission_result)
         return tuple(results)
@@ -132,10 +142,10 @@ class OnboardingDiagnostics:
             )
         progress("Checking OCR, audio, permissions, and speech assets...")
         check_runtime_cancelled(cancellation)
-        return self.run(settings)
+        return self.run(settings, cancellation=cancellation)
 
     def _check_platform_permissions(
-        self, settings: AppSettings
+        self, settings: AppSettings, *, cancellation: Cancellation = None
     ) -> DiagnosticResult | None:
         status = self.permission_status_provider()
         screen_capture = status.get("screen_capture")
@@ -149,6 +159,7 @@ class OnboardingDiagnostics:
         if accessibility is False and needs_accessibility:
             missing.append("Accessibility for auto advance")
         if missing:
+            check_runtime_cancelled(cancellation)
             logging.getLogger(__name__).error(
                 "Readiness permissions missing: %s", ", ".join(missing)
             )
@@ -161,6 +172,7 @@ class OnboardingDiagnostics:
                 "permissions",
             )
         if screen_capture is None or (needs_accessibility and accessibility is None):
+            check_runtime_cancelled(cancellation)
             logging.getLogger(__name__).warning(
                 "Readiness could not determine required macOS permissions"
             )
@@ -175,7 +187,9 @@ class OnboardingDiagnostics:
             message += " and Accessibility is granted"
         return DiagnosticResult("macOS permissions", "ok", message)
 
-    def _check_hotkeys(self, settings: AppSettings) -> DiagnosticResult:
+    def _check_hotkeys(
+        self, settings: AppSettings, *, cancellation: Cancellation = None
+    ) -> DiagnosticResult:
         if sys.platform == "darwin":
             return DiagnosticResult("Hotkeys", "warning", macos_hotkey_limitation)
         try:
@@ -186,12 +200,16 @@ class OnboardingDiagnostics:
                 }
             )
         except HotkeyValidationError as error:
+            check_runtime_cancelled(cancellation)
             logging.getLogger(__name__).exception("Readiness hotkey validation failed")
             return DiagnosticResult("Hotkeys", "error", str(error), "settings")
         return DiagnosticResult("Hotkeys", "ok", "Read and live hotkeys are valid")
 
-    def _check_capture_source(self, settings: AppSettings) -> DiagnosticResult:
+    def _check_capture_source(
+        self, settings: AppSettings, *, cancellation: Cancellation = None
+    ) -> DiagnosticResult:
         if settings.capture_mode == "window" and not settings.game_window_title:
+            check_runtime_cancelled(cancellation)
             logging.getLogger(__name__).error(
                 "Readiness capture source unavailable: no game window selected"
             )
@@ -208,10 +226,17 @@ class OnboardingDiagnostics:
         )
         return DiagnosticResult("Capture source", "ok", description)
 
-    def _check_tesseract(self) -> DiagnosticResult:
+    def _check_tesseract(
+        self, *, cancellation: Cancellation = None
+    ) -> DiagnosticResult:
         try:
-            version = self.tesseract_probe()
+            version = (
+                probe_tesseract(cancellation=cancellation)
+                if self.tesseract_probe is None
+                else self.tesseract_probe()
+            )
         except Exception as error:
+            check_runtime_cancelled(cancellation)
             logging.getLogger(__name__).exception(
                 "Readiness Tesseract OCR probe failed"
             )
@@ -220,22 +245,26 @@ class OnboardingDiagnostics:
             )
         return DiagnosticResult("Tesseract OCR", "ok", f"Version {version}")
 
-    def _check_audio(self) -> DiagnosticResult:
+    def _check_audio(self, *, cancellation: Cancellation = None) -> DiagnosticResult:
         try:
             device = self.audio_probe()
         except AudioRuntimeUnavailable as error:
+            check_runtime_cancelled(cancellation)
             logging.getLogger(__name__).exception("Readiness audio runtime unavailable")
             return DiagnosticResult(
                 "Audio output", "error", str(error), "external-audio-runtime"
             )
         except Exception as error:
+            check_runtime_cancelled(cancellation)
             logging.getLogger(__name__).exception("Readiness audio output probe failed")
             return DiagnosticResult(
                 "Audio output", "error", str(error), "external-audio"
             )
         return DiagnosticResult("Audio output", "ok", str(device))
 
-    def _check_model(self, settings: AppSettings) -> DiagnosticResult:
+    def _check_model(
+        self, settings: AppSettings, *, cancellation: Cancellation = None
+    ) -> DiagnosticResult:
         from vntts.moss_cpp_backend import moss_cpp_paths, moss_cpp_requested
 
         if settings.speech_backend == "moss-tts" and moss_cpp_requested(
@@ -244,6 +273,7 @@ class OnboardingDiagnostics:
             try:
                 executable, model, _sidecar = moss_cpp_paths(settings.tts_model)
             except Exception as error:
+                check_runtime_cancelled(cancellation)
                 logging.getLogger(__name__).exception(
                     "Readiness MOSS C++ runtime probe failed for %s", settings.tts_model
                 )
@@ -256,6 +286,7 @@ class OnboardingDiagnostics:
                 f"Found {executable.name} and {model.name}; render test still required",
             )
         if not packaged_speech_backend_available(settings.speech_backend):
+            check_runtime_cancelled(cancellation)
             logging.getLogger(__name__).error(
                 "Readiness speech backend unavailable in package: %s",
                 settings.speech_backend,
@@ -280,6 +311,7 @@ class OnboardingDiagnostics:
                     _isolated_runtime_backend(settings.speech_backend)
                 )
             except Exception as error:
+                check_runtime_cancelled(cancellation)
                 logging.getLogger(__name__).exception(
                     "Readiness speech runtime probe failed for %s",
                     settings.speech_backend,
@@ -289,6 +321,7 @@ class OnboardingDiagnostics:
 
         model_name = settings.tts_model
         if not model_name:
+            check_runtime_cancelled(cancellation)
             logging.getLogger(__name__).error(
                 "Readiness speech model is not configured"
             )
@@ -298,6 +331,7 @@ class OnboardingDiagnostics:
         try:
             model_path = self.model_path_resolver(model_name)
         except Exception as error:
+            check_runtime_cancelled(cancellation)
             logging.getLogger(__name__).exception(
                 "Readiness speech model probe failed for %s", model_name
             )
@@ -310,7 +344,9 @@ class OnboardingDiagnostics:
             "Not cached yet; it will be downloaded before the final test",
         )
 
-    def _check_voice_manifest(self, settings: AppSettings) -> DiagnosticResult:
+    def _check_voice_manifest(
+        self, settings: AppSettings, *, cancellation: Cancellation = None
+    ) -> DiagnosticResult:
         if not settings.voice_manifest:
             if settings.speech_backend == "pocket-tts":
                 return DiagnosticResult(
@@ -322,6 +358,7 @@ class OnboardingDiagnostics:
                 settings.speech_backend == "coqui-xtts"
                 and not settings.narrator_speaker
             ):
+                check_runtime_cancelled(cancellation)
                 logging.getLogger(__name__).error(
                     "Readiness XTTS narrator voice or voice pack is not configured"
                 )
@@ -340,6 +377,7 @@ class OnboardingDiagnostics:
         try:
             registry = CharacterVoiceRegistry.from_file(settings.voice_manifest)
         except VoiceManifestError as error:
+            check_runtime_cancelled(cancellation)
             logging.getLogger(__name__).exception(
                 "Readiness voice manifest probe failed for %s", settings.voice_manifest
             )
@@ -353,6 +391,7 @@ class OnboardingDiagnostics:
             if not reference.is_file()
         ]
         if missing:
+            check_runtime_cancelled(cancellation)
             logging.getLogger(__name__).error(
                 "Readiness voice reference was not found: %s (manifest %s)",
                 missing[0],
@@ -371,17 +410,28 @@ class OnboardingDiagnostics:
         )
 
 
-def probe_tesseract() -> object:
+def probe_tesseract(*, cancellation: Cancellation = None) -> object:
     import pytesseract
     from PIL import Image
 
     from vntts.ocr_worker import recognize_dialog_image_result
 
+    check_runtime_cancelled(cancellation)
     version = pytesseract.get_tesseract_version()
+    check_runtime_cancelled(cancellation)
+    cancelled = (
+        cancellation.is_set
+        if isinstance(cancellation, CancellationToken)
+        else cancellation
+    )
     # Verify the shared library as well as the executable and warm the OCR owner.
     recognize_dialog_image_result(
-        Image.new("L", (32, 32), 255), minimum_confidence=0, timeout=15
+        Image.new("L", (32, 32), 255),
+        minimum_confidence=0,
+        timeout=15,
+        cancelled=cancelled,
     )
+    check_runtime_cancelled(cancellation)
     return version
 
 

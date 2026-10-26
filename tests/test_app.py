@@ -349,6 +349,150 @@ class TrayApplicationTest(unittest.TestCase):
         delete_dialog(tray.dashboard)
         delete_dialog(tray.compact_controller)
 
+    def test_readiness_cancels_before_runtime_shutdown_and_ignores_old_resume(self):
+        from vntts.readiness_ui import ReadinessDialog
+
+        settings = AppSettings()
+        controller = Mock(settings=settings, is_ready=True, is_live_running=False)
+        tray = TrayApplication(
+            self.application, settings, controller_factory=Mock(return_value=controller)
+        )
+        pool = ManualThreadPool()
+        diagnostics = Mock()
+        diagnostics.run.return_value = (DiagnosticResult("OCR", "ok", "Ready"),)
+        dialog = ReadinessDialog(settings, diagnostics, thread_pool=pool)
+        tray.readiness_dialog = dialog
+        dialog.show()
+        old_cancellation = dialog._cancellation
+        begin = tray.session_owner.begin
+
+        def observe_begin(cancellation):
+            self.assertTrue(old_cancellation.is_set())
+            return begin(cancellation)
+
+        with patch.object(tray.session_owner, "begin", side_effect=observe_begin):
+            first = tray._begin_controller_lifecycle()
+        tray._finish_controller_lifecycle()
+        current = tray._begin_controller_lifecycle()
+        self.assertNotEqual(first, current)
+        pool.run_next()
+        self.application.processEvents()
+        self.assertEqual(dialog.table.rowCount(), 0)
+        self.assertEqual(pool.tasks, [])
+        self.assertIn("finish updating", dialog.summary.text())
+        tray._finish_controller_lifecycle()
+        self.application.processEvents()
+        self.assertEqual(len(pool.tasks), 1)
+        pool.run_next()
+        self.application.processEvents()
+        self.assertEqual(dialog.table.item(0, 2).text(), "Ready")
+        active_cancellation = dialog._cancellation
+        tray.shutdown()
+        self.assertTrue(active_cancellation.is_set())
+
+    def test_readiness_opened_during_apply_checks_loaded_settings_once_after_result(
+        self,
+    ):
+        from vntts.readiness_ui import ReadinessDialog
+
+        for outcome in ("success", "cancel", "failure"):
+            with self.subTest(outcome=outcome):
+                loaded = AppSettings(speech_backend="pocket-tts")
+                saved = loaded.updated(speech_backend="moss-tts")
+                controller = Mock(settings=loaded, is_ready=True, is_live_running=False)
+                tray = TrayApplication(
+                    self.application,
+                    saved,
+                    controller_factory=Mock(return_value=controller),
+                )
+                pool = ManualThreadPool()
+
+                def create_dialog(*args, **kwargs):
+                    return ReadinessDialog(*args, thread_pool=pool, **kwargs)
+
+                with (
+                    patch.object(tray.configuration_runner, "start"),
+                    patch.object(tray, "show_error"),
+                    patch("vntts.app.ReadinessDialog", side_effect=create_dialog),
+                    patch(
+                        "vntts.app.OnboardingDiagnostics.run", return_value=()
+                    ) as run,
+                ):
+                    tray._start_configuration_apply(
+                        saved,
+                        progress_status="Applying",
+                        success_status="Applied",
+                        restart=True,
+                    )
+                    tray.open_readiness()
+                    tray.open_readiness()
+                    self.assertEqual(pool.tasks, [])
+                    effective = saved if outcome == "success" else loaded
+                    controller.settings = effective
+                    tray._configuration_apply_finished(
+                        (True, outcome == "success"),
+                        RuntimeError("reload failed") if outcome == "failure" else None,
+                    )
+                    self.assertEqual(pool.tasks, [])
+                    self.application.processEvents()
+                    self.assertEqual(len(pool.tasks), 1)
+                    pool.run_next()
+                    self.application.processEvents()
+                    self.assertEqual(run.call_args.args, (effective,))
+                    self.assertEqual(run.call_count, 1)
+                    self.assertEqual(tray.readiness_dialog.settings, effective)
+                tray.shutdown()
+
+    def test_readiness_resumes_after_prepared_settings_are_published(self):
+        from vntts.readiness_ui import ReadinessDialog
+
+        original = AppSettings()
+        effective = original.updated(speech_backend="moss-tts")
+        controller = Mock(settings=original, is_ready=True, is_live_running=False)
+        tray = TrayApplication(
+            self.application, original, controller_factory=Mock(return_value=controller)
+        )
+        pool = ManualThreadPool()
+        diagnostics = Mock()
+        diagnostics.run.return_value = ()
+        tray.readiness_dialog = ReadinessDialog(
+            original, diagnostics, thread_pool=pool, suspended=True
+        )
+        tray.readiness_dialog.show()
+        tray._pregeneration_activation_generation = tray._begin_controller_lifecycle()
+        controller.settings = effective
+        result = OfflinePackActivationResult(effective, Path("state.json"), True)
+        with patch.object(tray, "_save_main_section"):
+            tray._pregeneration_activation_finished(result, None)
+        self.assertEqual(tray._prepared_settings, effective)
+        self.assertEqual(pool.tasks, [])
+        self.application.processEvents()
+        self.assertEqual(len(pool.tasks), 1)
+        pool.run_next()
+        self.application.processEvents()
+        self.assertEqual(diagnostics.run.call_args.args, (effective,))
+        self.assertEqual(diagnostics.run.call_count, 1)
+        tray.shutdown()
+
+    def test_shutdown_does_not_resume_pending_readiness_refresh(self):
+        from vntts.readiness_ui import ReadinessDialog
+
+        settings = AppSettings()
+        controller = Mock(settings=settings, is_ready=True, is_live_running=False)
+        tray = TrayApplication(
+            self.application, settings, controller_factory=Mock(return_value=controller)
+        )
+        pool = ManualThreadPool()
+        dialog = ReadinessDialog(settings, Mock(), thread_pool=pool, suspended=True)
+        tray.readiness_dialog = dialog
+        dialog.show()
+        tray._begin_controller_lifecycle()
+        tray._finish_controller_lifecycle()
+        tray.shutdown()
+        self.application.processEvents()
+        self.assertEqual(pool.tasks, [])
+        self.assertFalse(dialog.isVisible())
+
     def test_application_owns_retained_pocket_runtime(self):
         runtime = Mock()
         tray = TrayApplication(

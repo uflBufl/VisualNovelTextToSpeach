@@ -130,12 +130,6 @@
       Current voice и New voice одновременно показывают Centurion / Text
       unavailable. Обсудить необходимость дублирования при неизменённом выборе
       и пояснение отсутствующего текста.
-- [ ] **RUN-25-01: OCR probe ошибается при применении пакета.** В 21:49:27 MSK
-      после Save внешнего пакета лог записал `Readiness Tesseract OCR probe
-      failed: RuntimeError: OCR service is shutting down`; в 21:49:38 снова
-      Reading is ready. Проверить гонку readiness с перезагрузкой и реальное
-      восстановление OCR. Копия пакета вне внутреннего pregeneration импортировалась:
-      Reading > Details показывает Prepared recordings: available.
 - [ ] **RUN-25-02: объяснить заметные паузы между репликами.** В начале
       прогона key-dispatch -> confirmed-next-dialogue достиг 4.17 с после line13.
       Это пока наблюдение, не доказанный сбой OCR: сопоставить запись экрана,
@@ -306,16 +300,7 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Fix reload/readiness race (RUN-25-01; plan awaiting agreement).** Suspend
-   and invalidate readiness checks at shared controller-lifecycle start, defer
-   checks opened during reload and reject late probe results. Refresh once with
-   effective settings after completion or rollback, including prepared-pack
-   activation, settings, profile/narrator/assets flows. Cancel obsolete probe work
-   without reopening OCR shutdown admission. Test a held reload, already-running
-   probe, stale completion, failure/rollback and settings publication order.
-   Gate: no shutdown race reported as an OCR installation fault; real post-reload
-   OCR qualification belongs to the final native run.
-2. **Fix remaining UI issues in separate increments.** Start with concrete
+1. **Fix remaining UI issues in separate increments.** Start with concrete
    ownership/data defects, then agree the desired behavior for UX changes:
    - Keep OCR uncertainty out of the speaker/last-dialogue callback. Preserve the
      last actual speaker and show the reason through the shared status path;
@@ -335,25 +320,25 @@ complete. Do not change recognition or playback policy on an unverified hypothes
      dialogue (RUN-25-04). Reuse existing backlog items rather than add duplicate
      implementations. Gate: reachable actions, truthful status and unchanged
      voice assignments on browsing/cancel; native checks move to the final run.
-3. **Make failed preparation actionable (GEN-25-01).** Inspect the existing
+2. **Make failed preparation actionable (GEN-25-01).** Inspect the existing
    rejected result, quality evidence and Stories retry path without a game run.
    Decide the smallest understandable failure/preview/retry change; retain ready
    neighbouring recordings and saved assignments. Do not weaken quality gates
    because one sample was rejected. Fresh generation acceptance is deferred.
-4. **Check generation budget (GEN-25-02).** Trace314501:85's actual retained
+3. **Check generation budget (GEN-25-02).** Trace314501:85's actual retained
    text/reference/model/settings through token/time budgeting and normal retries.
    Fix a demonstrated budgeting or failure-reporting defect with deterministic
    tests. Gate: adequate bounded generation or a clear retryable failure,
    cancellation, no truncated publication and preserved ready work on restart.
    Fresh model/native qualification belongs to the combined run.
-5. **Investigate scene interruption from retained evidence (RUN-25-08).**
+4. **Investigate scene interruption from retained evidence (RUN-25-08).**
    Correlate48's source WAV, captured output and transition to49. Establish which
    scene changes invalidate speech and which permit the current clip to finish;
    present a repair plan only when the cause/product behavior is established.
    Gate: intended completion without stale audio crossing a genuinely new
    occurrence; Stop still cancels. If evidence is insufficient, retain the case
    for the final run instead of introducing a guessed playback policy.
-6. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
+5. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
    Run all314001 through104 from Stories without manual transitions while real
    heavy generation/publication remains active. Also qualify partly prepared
    active-chapter catch-up across newly published boundaries, failed/not-ready
@@ -361,6 +346,10 @@ complete. Do not change recognition or playback policy on an unverified hypothes
    U1/U2/U4/U6/U7/U8 gates, persistent OCR and portable observation. Preserve
    approved WAV bytes and complete independent capture; cache hits alone are
    not background-generation load. Include the following deferred checks:
+   - **Readiness after reload (RUN-25-01):** validate settings and prepared-pack
+     activation, profile changes, cancellation and restored-runtime rollback.
+     Checks must wait for the current operation, discard obsolete results and
+     probe the effective configuration once; no false OCR installation error.
    - **Pre-route waits (RUN-25-09/02, R1/T1):**99 ->100 and31 ->32 with correlated
      OCR-attempt, worker/resolver timing and tracker admission. Distinguish the
      game transition before visible text from recognition/resolver/tracker wait.
