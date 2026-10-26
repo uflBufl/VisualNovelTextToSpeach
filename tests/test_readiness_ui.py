@@ -35,9 +35,48 @@ class ReadinessDialogTest(unittest.TestCase):
         pool.run_next()
         self.application.processEvents()
         dialog.table.selectRow(0)
-        self.assertIn("cargo build", dialog.remediation_reason.text())
+        self.assertIn("cargo build", dialog.selected_details.toPlainText())
+        self.assertFalse(dialog.selected_details.isHidden())
+        self.assertNotIn("cargo build", dialog.remediation_reason.text())
         self.assertIn("automatically", dialog.remediation_reason.text())
         self.assertNotIn("Connect", dialog.remediation_reason.text())
+
+    def test_requested_audio_check_opens_full_copyable_details(self):
+        for pending in (True, False):
+            with self.subTest(pending=pending):
+                pool = ManualThreadPool()
+                diagnostics = Mock()
+                instruction = (
+                    "Run cargo build --release --locked from the project directory"
+                )
+                diagnostics.run.return_value = (
+                    DiagnosticResult("Game window", "error", "Select a window"),
+                    DiagnosticResult(
+                        "Audio output", "error", instruction, "external-audio-runtime"
+                    ),
+                )
+                dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
+                if pending:
+                    dialog.select_check("Audio output")
+                pool.run_next()
+                self.application.processEvents()
+                if not pending:
+                    dialog.select_check("Audio output")
+                self.assertEqual(dialog.table.currentRow(), 1)
+                self.assertTrue(dialog.details_toggle.isChecked())
+                self.assertFalse(dialog.selected_details.isHidden())
+                self.assertIn(instruction, dialog.selected_details.toPlainText())
+                dialog.copy_selected.click()
+                self.assertEqual(
+                    self.application.clipboard().text(),
+                    f"ERROR | Audio output\n{instruction}",
+                )
+                dialog.table.selectRow(0)
+                dialog.refresh()
+                pool.run_next()
+                self.application.processEvents()
+                self.assertEqual(dialog.table.currentRow(), 0)
+                dialog.close()
 
     def test_failed_assertion_releases_the_readiness_window(self):
         case = ReadinessDialogTest(

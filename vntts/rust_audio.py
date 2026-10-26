@@ -40,6 +40,12 @@ AUDIO_WORKER_BUILD_COMMAND = (
 class AudioRuntimeUnavailable(RuntimeError):
     """Audio installation is incomplete; browsing and preparation remain available."""
 
+    def __init__(
+        self, message: str, *, summary: str = "Audio playback is unavailable."
+    ) -> None:
+        super().__init__(message)
+        self.summary = summary
+
 
 def check_audio_runtime() -> None:
     """Check installation before expensive work, without starting native services."""
@@ -54,7 +60,8 @@ def portaudio_library() -> str:
         if not Path(explicit).is_file():
             raise AudioRuntimeUnavailable(
                 "PortAudio library is missing. Check VNTTS_PORTAUDIO_LIBRARY "
-                "or reinstall the audio dependencies described in README."
+                "or reinstall the audio dependencies described in README.",
+                summary="The configured PortAudio library was not found.",
             )
         return explicit
     found = ctypes.util.find_library("portaudio")
@@ -74,7 +81,8 @@ def portaudio_library() -> str:
     raise AudioRuntimeUnavailable(
         "PortAudio not found. Install libportaudio2 on Debian/Ubuntu, or restore "
         "the sounddevice package on Windows/macOS (uv sync --no-dev). "
-        "VNTTS_PORTAUDIO_LIBRARY can select the installed library."
+        "VNTTS_PORTAUDIO_LIBRARY can select the installed library.",
+        summary="PortAudio is not installed.",
     )
 
 
@@ -93,15 +101,26 @@ def worker_executable() -> Path:
     )
     if not path.is_file():
         raise AudioRuntimeUnavailable(
-            "Rust audio worker is missing. From the project directory run: "
-            f"{AUDIO_WORKER_BUILD_COMMAND}. Or set VNTTS_AUDIO_WORKER to a built worker. "
-            "VNTTS starts the worker automatically; do not launch it separately."
+            (
+                "Configured Rust audio worker was not found. Correct "
+                "VNTTS_AUDIO_WORKER to point to a built worker."
+                if explicit
+                else "Rust audio worker is missing. From the project directory run: "
+                f"{AUDIO_WORKER_BUILD_COMMAND}."
+            )
+            + " VNTTS starts the worker automatically; do not launch it separately.",
+            summary=(
+                "The configured audio worker was not found."
+                if explicit
+                else "The audio component is not installed."
+            ),
         )
     if sys.platform != "win32" and not os.access(path, os.X_OK):
         raise AudioRuntimeUnavailable(
             "Rust audio worker is not executable. Restore its executable permission "
             f"or rebuild from the project directory: {AUDIO_WORKER_BUILD_COMMAND}. "
-            "Check VNTTS_AUDIO_WORKER if it selects a custom worker."
+            "Check VNTTS_AUDIO_WORKER if it selects a custom worker.",
+            summary="The audio worker cannot be executed; check its permissions.",
         )
     return path
 

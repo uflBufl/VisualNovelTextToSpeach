@@ -76,6 +76,7 @@ from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
 from vntts.pregeneration_voices import resolve_pregeneration_settings  # noqa: E402
 from vntts.prepared_playback import PreparedPlaybackStore  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
+from vntts.rust_audio import AudioRuntimeUnavailable  # noqa: E402
 from vntts.settings import (  # noqa: E402
     AppSettings,
     content_path_setting_names,
@@ -208,13 +209,71 @@ class TrayApplicationTest(unittest.TestCase):
         )
         self.audio_runtime_check.side_effect = RuntimeError("Run cargo build")
         with (
-            patch.object(tray, "open_pregeneration"),
+            patch.object(tray, "open_pregeneration") as library,
             patch.object(tray, "show_error") as show_error,
             patch.object(tray.initial_start_runner, "start") as start,
         ):
             tray._load_initial_library()
         self.assertIn("cargo build", show_error.call_args.args[0])
+        library.assert_called_once_with()
         start.assert_not_called()
+
+    def test_audio_setup_reports_short_cause_and_preserves_instructions(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        tray.set_ready(True)
+        instruction = "Run cargo build --release --locked from the project directory."
+        self.audio_runtime_check.side_effect = AudioRuntimeUnavailable(
+            instruction, summary="The audio component is not installed."
+        )
+        with patch.object(tray.support_log, "add") as log:
+            self.assertFalse(tray._audio_runtime_available())
+        expected = "The audio component is not installed. Select Audio setup."
+        details = f"Audio playback unavailable: {instruction}"
+        self.assertEqual(tray.dashboard.status.text(), expected)
+        self.assertEqual(tray.compact_controller.status.toPlainText(), expected)
+        self.assertFalse(tray.dashboard.audio_setup_button.isHidden())
+        tray.dashboard.copy_status_button.click()
+        self.assertEqual(self.application.clipboard().text(), details)
+        log.assert_any_call("error", details)
+        self.assertTrue(tray.pregeneration_action.isEnabled())
+        self.assertTrue(tray.voice_preview_action.isEnabled())
+        with patch.object(tray, "open_readiness") as open_readiness:
+            tray.readiness_dialog = Mock()
+            tray.dashboard.audio_setup_button.click()
+            open_readiness.assert_called_once_with()
+            tray.readiness_dialog.select_check.assert_called_once_with("Audio output")
+            tray.readiness_dialog = None
+        with patch.object(tray, "_open_audio_setup") as open_audio:
+            tray._activate_notification_recovery()
+            open_audio.assert_called_once_with()
+        self.audio_runtime_check.side_effect = None
+        tray._refresh_audio_setup()
+        self.assertIsNone(tray._audio_runtime_error)
+        self.assertTrue(tray.dashboard.audio_setup_button.isHidden())
+        self.assertNotIn("cargo", tray.dashboard.status.toolTip())
+
+    def test_audio_setup_recheck_clears_error_in_existing_readiness_window(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        self.audio_runtime_check.side_effect = AudioRuntimeUnavailable("Build worker")
+        self.assertFalse(tray._audio_runtime_available())
+        with patch("vntts.app.OnboardingDiagnostics") as diagnostics:
+            diagnostics.return_value.run.return_value = (
+                DiagnosticResult("Audio output", "ok", "Speakers"),
+            )
+            self.audio_runtime_check.side_effect = None
+            tray._open_audio_setup()
+            self.wait_until(lambda: tray._audio_runtime_error is None)
+        self.assertTrue(tray.dashboard.audio_setup_button.isHidden())
+        self.assertEqual(tray.readiness_dialog.table.currentRow(), 0)
+        self.assertTrue(tray.readiness_dialog.details_toggle.isChecked())
 
     def _shutdown_trays(self):
         with ExitStack() as cleanup:

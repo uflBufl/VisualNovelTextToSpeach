@@ -231,6 +231,7 @@ class ControlDashboard(QMainWindow):
     sequence_expected_requested = Signal()
     pregeneration_requested = Signal()
     readiness_requested = Signal()
+    audio_setup_requested = Signal()
     calibration_requested = Signal()
     voices_requested = Signal()
     diagnostics_requested = Signal()
@@ -714,6 +715,14 @@ class ControlDashboard(QMainWindow):
         shell_layout.setContentsMargins(12, 12, 12, 12)
         status_row = QHBoxLayout()
         status_row.addWidget(self.status, 1)
+        self.audio_setup_button = QPushButton("Audio setup")
+        self.audio_setup_button.setAccessibleName("Open audio setup instructions")
+        self.audio_setup_button.setToolTip(
+            "Check audio output and fix its installation"
+        )
+        self.audio_setup_button.clicked.connect(self.audio_setup_requested.emit)
+        self.audio_setup_button.hide()
+        status_row.addWidget(self.audio_setup_button)
         self.copy_status_button = copy_text_button(
             "Copy status", lambda: self.status.toolTip() or self.status.text()
         )
@@ -1068,10 +1077,10 @@ class ControlDashboard(QMainWindow):
         )
         self.sequence_resync_button.setToolTip(guidance)
 
-    def set_status(self, message: str) -> None:
+    def set_status(self, message: str, *, details: str | None = None) -> None:
         self.status.setVisible(bool(message))
         self.copy_status_button.setVisible(bool(message))
-        self.status.setToolTip(message)
+        self.status.setToolTip(message if details is None else details)
         summary = " ".join(playback_status_label(message).split())
         self.status.setText(
             summary
@@ -1488,9 +1497,9 @@ class CompactController(QWidget):
         self.move(x, y)
         self.raise_()
 
-    def set_status(self, message: str) -> None:
+    def set_status(self, message: str, *, details: str | None = None) -> None:
         self.status.setPlainText(playback_status_label(message))
-        self.status.setToolTip(message)
+        self.status.setToolTip(message if details is None else details)
         self.status.setFont(QFont())
         self._fit_content()
 

@@ -72,6 +72,28 @@ for line in sys.stdin.buffer:
 
 
 class AudioRuntimeAvailabilityTest(unittest.TestCase):
+    def test_exception_keeps_technical_message_and_supports_summary_override(self):
+        error = AudioRuntimeUnavailable("technical detail", summary="Short summary")
+        self.assertEqual(str(error), "technical detail")
+        self.assertEqual(error.summary, "Short summary")
+        self.assertEqual(
+            AudioRuntimeUnavailable("technical detail").summary,
+            "Audio playback is unavailable.",
+        )
+
+    def test_missing_default_worker_has_install_summary_and_full_guidance(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("vntts.rust_audio.portaudio_library", return_value="library"),
+            patch("vntts.rust_audio.Path.is_file", return_value=False),
+        ):
+            with self.assertRaises(AudioRuntimeUnavailable) as raised:
+                check_audio_runtime()
+        self.assertEqual(
+            raised.exception.summary, "The audio component is not installed."
+        )
+        self.assertIn("cargo build --release", str(raised.exception))
+
     def test_missing_worker_is_actionable_and_can_be_installed_then_retried(self):
         with tempfile.TemporaryDirectory() as directory:
             worker = Path(directory) / "worker"
@@ -80,10 +102,13 @@ class AudioRuntimeAvailabilityTest(unittest.TestCase):
                 patch("vntts.rust_audio.portaudio_library", return_value="library"),
                 patch("vntts.rust_audio.subprocess.Popen") as launch,
             ):
-                with self.assertRaisesRegex(
-                    AudioRuntimeUnavailable, "cargo build --release"
-                ):
+                with self.assertRaises(AudioRuntimeUnavailable) as raised:
                     check_audio_runtime()
+                self.assertIn("Correct VNTTS_AUDIO_WORKER", str(raised.exception))
+                self.assertEqual(
+                    raised.exception.summary,
+                    "The configured audio worker was not found.",
+                )
                 worker.write_text("fixture")
                 worker.chmod(0o700)
                 check_audio_runtime()
@@ -114,8 +139,13 @@ class AudioRuntimeAvailabilityTest(unittest.TestCase):
             worker.write_text("fixture")
             worker.chmod(0o600)
             with patch.dict(os.environ, {"VNTTS_AUDIO_WORKER": str(worker)}):
-                with self.assertRaisesRegex(AudioRuntimeUnavailable, "not executable"):
+                with self.assertRaises(AudioRuntimeUnavailable) as raised:
                     check_audio_runtime()
+                self.assertIn("not executable", str(raised.exception))
+                self.assertEqual(
+                    raised.exception.summary,
+                    "The audio worker cannot be executed; check its permissions.",
+                )
 
     def test_explicit_missing_portaudio_reports_override_instead_of_falling_back(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -123,10 +153,24 @@ class AudioRuntimeAvailabilityTest(unittest.TestCase):
                 os.environ,
                 {"VNTTS_PORTAUDIO_LIBRARY": str(Path(directory) / "missing")},
             ):
-                with self.assertRaisesRegex(
-                    AudioRuntimeUnavailable, "VNTTS_PORTAUDIO_LIBRARY"
-                ):
+                with self.assertRaises(AudioRuntimeUnavailable) as raised:
                     portaudio_library()
+                self.assertIn("VNTTS_PORTAUDIO_LIBRARY", str(raised.exception))
+                self.assertEqual(
+                    raised.exception.summary,
+                    "The configured PortAudio library was not found.",
+                )
+
+    def test_missing_portaudio_has_install_summary_and_full_guidance(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("vntts.rust_audio.ctypes.util.find_library", return_value=None),
+            patch("vntts.rust_audio.importlib.util.find_spec", return_value=None),
+        ):
+            with self.assertRaises(AudioRuntimeUnavailable) as raised:
+                portaudio_library()
+        self.assertEqual(raised.exception.summary, "PortAudio is not installed.")
+        self.assertIn("libportaudio2", str(raised.exception))
 
 
 class RustAudioProtocolTest(unittest.TestCase):
@@ -420,7 +464,7 @@ class RustPreparedSelectionTest(unittest.TestCase):
         with patch.dict(
             os.environ, {"VNTTS_AUDIO_WORKER": "/missing/vntts-audio-worker"}
         ):
-            with self.assertRaisesRegex(RuntimeError, "cargo build"):
+            with self.assertRaisesRegex(RuntimeError, "Correct VNTTS_AUDIO_WORKER"):
                 worker_executable()
 
     def test_injected_streams_keep_their_output_factory(self):

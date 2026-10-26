@@ -163,7 +163,7 @@ from vntts.release_smoke_test import (
 )
 from vntts.runtime_config import get_hotkey, get_live_hotkey
 from vntts.runtime_paths import configure_bundled_dependencies
-from vntts.rust_audio import check_audio_runtime
+from vntts.rust_audio import AudioRuntimeUnavailable, check_audio_runtime
 from vntts.settings import (
     AppSettings,
     content_path_import_errors,
@@ -2360,6 +2360,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self.dashboard.pregeneration_requested.connect(self.open_pregeneration)
         self.dashboard.readiness_requested.connect(self.open_readiness)
+        self.dashboard.audio_setup_requested.connect(self._open_audio_setup)
         self.dashboard.calibration_requested.connect(self.calibrate)
         self.dashboard.voices_requested.connect(self.open_voice_previews)
         self.dashboard.diagnostics_requested.connect(self.open_support_center)
@@ -2566,10 +2567,21 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             check_audio_runtime()
         except (OSError, RuntimeError) as error:
             self._audio_runtime_error = f"Audio playback unavailable: {error}"
-            self.show_error(self._audio_runtime_error)
+            summary = (
+                error.summary
+                if isinstance(error, AudioRuntimeUnavailable)
+                else "Audio playback is unavailable."
+            )
+            self.dashboard.audio_setup_button.show()
+            self.show_error(
+                self._audio_runtime_error,
+                summary=f"{summary} Select Audio setup.",
+                recovery="audio-setup",
+            )
             return False
         if self._audio_runtime_error is not None:
             self._audio_runtime_error = None
+            self.dashboard.audio_setup_button.hide()
             self.set_status("Audio playback is available. Retry playback to continue.")
         return True
 
@@ -4256,11 +4268,21 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.readiness_dialog.reading_requested.connect(
                 self._open_reading_from_readiness
             )
+            self.readiness_dialog.refresh_requested.connect(self._refresh_audio_setup)
         else:
             self.readiness_dialog.update_settings(self._readiness_settings())
         self.readiness_dialog.show()
         self.readiness_dialog.raise_()
         self.readiness_dialog.activateWindow()
+
+    def _open_audio_setup(self) -> None:
+        self.open_readiness()
+        if self.readiness_dialog is not None:
+            self.readiness_dialog.select_check("Audio output")
+
+    def _refresh_audio_setup(self) -> None:
+        if self._audio_runtime_error is not None and not self._shutting_down:
+            self._audio_runtime_available()
 
     def _open_reading_from_readiness(self) -> None:
         if self.last_controller_error:
@@ -5329,16 +5351,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             raise OSError("the operating system refused the folder-open request")
         return path
 
-    def set_status(self, message: str | None) -> None:
+    def set_status(self, message: str | None, *, details: str | None = None) -> None:
         message = message or ""
-        self.support_log.add("status", message)
+        self.support_log.add("status", message if details is None else details)
         bounded = self._bounded_menu_text(playback_status_label(message))
         self.status_action.setText(bounded)
-        self.status_action.setToolTip(message)
+        self.status_action.setToolTip(message if details is None else details)
         self.tray.setToolTip(f"{application_name}\n{bounded}")
-        self.dashboard.set_status(message)
+        self.dashboard.set_status(message, details=details)
         self._refresh_speech_runtime()
-        self.compact_controller.set_status(message)
+        self.compact_controller.set_status(message, details=details)
         self._apply_runtime_control_state(self._runtime_control_state())
 
     def record_audio_route(self, trace: AudioRouteTrace) -> None:
@@ -5391,6 +5413,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.show_dashboard()
         elif recovery == "support":
             self.open_support_center()
+        elif recovery == "audio-setup":
+            self._open_audio_setup()
 
     def _controller_configuration_actions(self) -> tuple[QAction, ...]:
         return (
@@ -5762,17 +5786,22 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.compact_controller.set_paused(paused)
         self._apply_runtime_control_state(self._runtime_control_state())
 
-    def show_error(self, message: str) -> None:
+    def show_error(
+        self, message: str, *, summary: str | None = None, recovery: str = "support"
+    ) -> None:
         logging.getLogger(__name__).error(
             "Application action failed: %s", message, exc_info=sys.exception()
         )
         self.support_log.add("error", message)
-        self.set_status(message)
+        if summary is None:
+            self.set_status(message)
+        else:
+            self.set_status(summary, details=message)
         self._show_tray_notification(
             f"{application_name} needs attention",
-            "An error needs attention. Open Support and logs for details.",
+            summary or "An error needs attention. Open Support and logs for details.",
             QSystemTrayIcon.MessageIcon.Critical,
-            recovery="support",
+            recovery=recovery,
         )
 
     def report_controller_error(self, error: BaseException) -> None:

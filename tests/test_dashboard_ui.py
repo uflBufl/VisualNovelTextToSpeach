@@ -211,6 +211,28 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.deleteLater()
         compact.deleteLater()
 
+    def test_short_status_preserves_full_audio_instructions_for_copy(self):
+        dashboard = ControlDashboard(AppSettings())
+        compact = CompactController()
+        summary = "The audio component is not installed. Select Audio setup."
+        details = "Run cargo build --release --locked from the project directory."
+        dashboard.set_status(summary, details=details)
+        compact.set_status(summary, details=details)
+        self.assertEqual(dashboard.status.text(), summary)
+        self.assertEqual(compact.status.toPlainText(), summary)
+        self.assertEqual(compact.status.toolTip(), details)
+        dashboard.copy_status_button.click()
+        self.assertEqual(self.application.clipboard().text(), details)
+        requested = Mock()
+        dashboard.audio_setup_requested.connect(requested)
+        dashboard.audio_setup_button.show()
+        dashboard.audio_setup_button.click()
+        requested.assert_called_once_with()
+        dashboard.set_status("Reading ready")
+        self.assertEqual(dashboard.status.toolTip(), "Reading ready")
+        compact.deleteLater()
+        dashboard.deleteLater()
+
     def test_long_status_stays_compact_but_copy_preserves_exact_error_and_compute(self):
         dashboard = ControlDashboard(AppSettings())
         message = "Unable to load model: " + "a" * 500 + "\nRetry after downloading."

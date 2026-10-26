@@ -60,6 +60,7 @@ class ReadinessDialog(QDialog):
         self.settings = settings
         self.diagnostics = diagnostics
         self._results: tuple[DiagnosticResult, ...] = ()
+        self._requested_check: str | None = None
         self._checks_running = False
         self._suspended = suspended
         self._cancellation = Event()
@@ -325,7 +326,21 @@ class ReadinessDialog(QDialog):
             self.table.selectRow(0)
             self.table.scrollToTop()
         self._update_remediation()
+        if self._requested_check is not None:
+            self.select_check(self._requested_check)
         self.refresh_requested.emit()
+
+    def select_check(self, name: str) -> None:
+        self._requested_check = name
+        for row, result in enumerate(self._results):
+            if result.name == name:
+                self.table.selectRow(row)
+                item = self.table.item(row, 0)
+                if item is not None:
+                    self.table.scrollToItem(item)
+                self.details_toggle.setChecked(True)
+                self._requested_check = None
+                break
 
     def _open_reading(self) -> None:
         self.reading_requested.emit()
@@ -403,8 +418,10 @@ class ReadinessDialog(QDialog):
             self.remediation_button.show()
             return
         if result.remediation == "external-audio-runtime":
+            self.details_toggle.setChecked(True)
             self.remediation_reason.setText(
-                f"{result.message} After fixing the installation, run checks again. "
+                "Follow the installation instructions in Full check details, "
+                "then run checks again. "
                 "VNTTS starts its audio worker automatically."
             )
             return

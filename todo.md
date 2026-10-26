@@ -115,11 +115,13 @@
       `A Hundred Thousand Billion Sketches`: строка должна показывать номер этапа
       и название эпизода; проверить полный текст в подсказке при узком окне,
       сохранение выбора после обновления и ту же подпись в прогрессе подготовки.
-- [ ] **UX-25-03: missing audio worker занимает главный статус.** В чистом
-      worktree обычный запуск требует отдельной Cargo-сборки (это описано в
-      README). Длинная техническая команда обрезана, чтение невозможно до сборки.
-      Обсудить проверку/подготовку source-run до GUI; не считать это дефектом
-      portable-сборки без отдельной проверки.
+- [ ] **UX-25-03: проверить Audio setup в общем живом прогоне.**
+      Проверить краткую причину недоступности аудио, кнопку и уведомление:
+      они должны открывать Check readiness на Audio output с полной инструкцией
+      и копированием. После исправления установки повторная проверка убирает
+      предупреждение; Stories и просмотр голосов остаются доступны. Проверить
+      узкое окно и крупный шрифт. Cargo остаётся отдельным шагом установки;
+      portable-сборки требуют самостоятельной проверки.
 - [ ] **UX-25-04: проверить запуск по Read в общем живом прогоне.**
       На настроенном холодном старте Read должна сама подготовить чтение и
       начать его; проверить главное/компактное окна и меню, повторное нажатие,
@@ -311,11 +313,10 @@ complete. Do not change recognition or playback policy on an unverified hypothes
 
 1. **Fix remaining UI issues in separate increments.** Start with concrete
    ownership/data defects, then agree the desired behavior for UX changes:
-   - Verify reference selection and narrator/fallback presentation (UX-25-09);
-     agree source-launch worker readiness (UX-25-03) and canonical displayed
-     dialogue (RUN-25-04). Reuse existing backlog items rather than add duplicate
-     implementations. Gate: reachable actions, truthful status and unchanged
-     voice assignments on browsing/cancel; native checks move to the final run.
+   - Agree canonical displayed dialogue and access to its full text (RUN-25-04).
+     Reuse the existing backlog item rather than add duplicate implementations.
+     Gate: reachable actions and truthful status; Voices and Audio setup native
+     checks remain in the final run.
 2. **Make failed preparation actionable (GEN-25-01).** Inspect the existing
    rejected result, quality evidence and Stories retry path without a game run.
    Decide the smallest understandable failure/preview/retry change; retain ready
