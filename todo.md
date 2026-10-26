@@ -128,11 +128,18 @@
       отдельный переход из Stories к доступным новым записям. Первый запуск
       без настройки должен по-прежнему предлагать Set up reading. Политика
       загрузки живой TTS-модели при наличии записей остаётся прежней.
-- [ ] **UX-25-09: Voices служит промежуточным экраном без списка голосов.**
-      Вкладка Narrator and character voices содержит только строку Narrator:
-      Centurion и кнопку Edit voices; остальная область пустая. Чтобы увидеть
-      персонажей/выбор голоса, требуется ещё один экран. Обсудить необходимость
-      промежуточной страницы и отображение текущих назначений прямо на ней.
+- [ ] **UX-25-09: сделать Voices полезной для выбора референсов.**
+      Основной сценарий: персонаж говорит своим голосом, выбор идёт между его
+      записями-референсами. Предложить и согласовать дизайн с прослушиванием и
+      выбором этих записей, отдельным выбором голоса наратора и понятными случаями
+      fallback на наратора при отсутствии референсов. Подмена голоса персонажа
+      другим персонажем остаётся редким вторичным действием; таблица одинаковых
+      пар Character / Voice не должна быть основой экрана. Переиспользовать
+      существующие выбор/воспроизведение и проверки актуальности референсов.
+      Гейт: game/imported/built-in/narrator-fallback/automatic/missing-source;
+      сохранённый выбор, кандидат и готовые записи историй различимы, просмотр
+      и отмена не меняют назначения и не прерывают чтение. Сначала согласовать
+      новый план реализации; живые проверки оставить на общий прогон.
 - [ ] **UX-25-10: редактор Voices повторяет неизменённый голос.**
       Current voice и New voice одновременно показывают Centurion / Text
       unavailable. Обсудить необходимость дублирования при неизменённом выборе
@@ -309,7 +316,7 @@ complete. Do not change recognition or playback policy on an unverified hypothes
 
 1. **Fix remaining UI issues in separate increments.** Start with concrete
    ownership/data defects, then agree the desired behavior for UX changes:
-   - Agree saved-voice overview (UX-25-09), missing source text/unchanged voice
+   - Agree reference selection and narrator/fallback presentation (UX-25-09), missing source text/unchanged voice
      candidate (UX-25-10), source-launch worker readiness (UX-25-03), and canonical displayed
      dialogue (RUN-25-04). Reuse existing backlog items rather than add duplicate
      implementations. Gate: reachable actions, truthful status and unchanged
@@ -1478,8 +1485,6 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 - [ ] Before shipping frozen macOS/Windows builds, smoke-test preview ASR spawn from the packaged entrypoint: start checking during playback, play ready audio during checking, cancel/close and reopen. Confirm no second desktop window, no surviving ASR worker and continued prefetch. Source-mode Mac qualification and early-dispatch unit tests do not establish bundled behavior; record entrypoint/build, worker PID lifecycle and timing for this packaged run.
 
 ## Voices tab - remaining fixes from the October 24 native UI audit
-
-- [ ] **P1 - Add a compact saved-voice overview.** Show a compact character/current-voice overview in Voices and a Play current voice action; distinguish saved binding, auditioned candidate and prepared story recordings. Gate: game/imported/built-in/narrator-fallback/automatic/missing-source cases have useful consistent labels; browsing/cancel never changes the saved-voice display or assignment.
 
 - [ ] **P2 - Qualify selective regeneration for partly generated stories.** Change one character in a partly prepared story and verify that other characters' ready recordings survive, missing lines are completed, and the Stories preparation UI reports the exact reuse/new-work scope across chapters.
 
