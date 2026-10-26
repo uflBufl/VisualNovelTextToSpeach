@@ -111,10 +111,10 @@
       устройства и PID должны относиться к одному процессу; после завершения/нового запуска не
       показывать старые сведения как текущие. Отсутствие optional-метаданных
       не должно прерывать генерацию; не делать выводов о CPU/GPU по имени модели.
-- [ ] **UX-26-02: найденная глава не показывает своё название в дереве.** Поиск
-      `A Hundred Thousand Billion Sketches` находит одну главу, но строка дерева
-      называется только `Stage 1` внутри `See You in the New World`. Обсудить
-      отображение названия эпизода, чтобы можно было проверить результат поиска.
+- [ ] **UX-26-02: проверить названия глав в общем живом прогоне.** Найти
+      `A Hundred Thousand Billion Sketches`: строка должна показывать номер этапа
+      и название эпизода; проверить полный текст в подсказке при узком окне,
+      сохранение выбора после обновления и ту же подпись в прогрессе подготовки.
 - [ ] **UX-25-03: missing audio worker занимает главный статус.** В чистом
       worktree обычный запуск требует отдельной Cargo-сборки (это описано в
       README). Длинная техническая команда обрезана, чтение невозможно до сборки.
@@ -305,7 +305,7 @@ complete. Do not change recognition or playback policy on an unverified hypothes
 
 1. **Fix remaining UI issues in separate increments.** Start with concrete
    ownership/data defects, then agree the desired behavior for UX changes:
-   - Agree found-chapter labels (UX-26-02), automatic loading on Read (UX-25-04),
+   - Agree automatic loading on Read (UX-25-04),
      saved-voice overview (UX-25-09), missing source text/unchanged voice candidate
      (UX-25-10), source-launch worker readiness (UX-25-03), and canonical displayed
      dialogue (RUN-25-04). Reuse existing backlog items rather than add duplicate

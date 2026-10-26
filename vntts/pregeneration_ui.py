@@ -1697,7 +1697,7 @@ class OfflineAudioPreparationDialog(QDialog):
         content = self.current_content()
         stories = (
             [
-                selection.title
+                _story_title(selection)
                 for selection in content.selections
                 if self._job is not None
                 and selection.selection_id in self._job.selected_story_ids
@@ -3856,16 +3856,9 @@ class OfflineAudioPreparationDialog(QDialog):
                     and coverage.live
                 ):
                     label = "Ready with live speech"
-                item.setText(0, selection.title)
-                if selection.parent_story_title is not None:
-                    item.setText(
-                        0,
-                        selection.title.removeprefix(
-                            f"{selection.parent_story_title} - "
-                        ),
-                    )
+                item.setText(0, _story_title(selection, grouped=True))
                 item.setText(1, label)
-                item.setToolTip(0, selection.title)
+                item.setToolTip(0, _story_title(selection))
                 item.setToolTip(1, detail)
                 item.setData(0, Qt.ItemDataRole.UserRole + 2, status)
                 item.setData(0, Qt.ItemDataRole.UserRole + 4, detail)
@@ -3941,16 +3934,17 @@ class OfflineAudioPreparationDialog(QDialog):
         groups: dict[tuple[str, str], list[StorySelection]] = {}
         for selection, ready, continuity, detail in rows:
             item = self._progress_story_items[selection.selection_id]
-            title = selection.title
             if (
                 selection.parent_story_id is not None
                 and selection.parent_story_title is not None
             ):
-                title = title.removeprefix(f"{selection.parent_story_title} - ")
                 groups.setdefault(
                     (selection.kind, selection.parent_story_id), []
                 ).append(selection)
-            self._set_readiness_item(item, title, ready, continuity, detail)
+            self._set_readiness_item(
+                item, _story_title(selection, grouped=True), ready, continuity, detail
+            )
+            item.setToolTip(0, _story_title(selection))
         for key, chapters in groups.items():
             self._update_readiness_story_group(
                 self._progress_story_groups[key], chapters, completed=completed
@@ -4260,12 +4254,7 @@ class OfflineAudioPreparationDialog(QDialog):
                         story_parents[parent_key] = story_parent
                     parent = story_parent
                 item = QTreeWidgetItem()
-                item.setText(
-                    0,
-                    selection.title.removeprefix(f"{selection.parent_story_title} - ")
-                    if selection.parent_story_title is not None
-                    else selection.title,
-                )
+                item.setText(0, _story_title(selection, grouped=True))
                 item.setData(0, Qt.ItemDataRole.UserRole, selection.selection_id)
                 item.setData(
                     0,
@@ -4599,7 +4588,9 @@ class OfflineAudioPreparationDialog(QDialog):
     ) -> None:
         estimate = estimate_preparation(content, selected)
         titles = [
-            item.title for item in content.selections if item.selection_id in selected
+            _story_title(item)
+            for item in content.selections
+            if item.selection_id in selected
         ]
         set_labeled_text(
             self.story_context,
@@ -5745,6 +5736,20 @@ def _readiness_continuity(
         return "All selected lines" if grouped else "All lines"
     location = "current line" if start else "selected start" if grouped else "start"
     return f"{consecutive} from {location}" if consecutive else f"Waiting at {location}"
+
+
+def _story_title(selection: StorySelection, *, grouped: bool = False) -> str:
+    stage = selection.title
+    if selection.parent_story_title is not None:
+        stage = stage.removeprefix(f"{selection.parent_story_title} - ")
+    title = stage if grouped else selection.title
+    known_titles = {stage.casefold(), selection.title.casefold()}
+    episodes = []
+    for episode in selection.episode_titles:
+        if episode and episode.casefold() not in known_titles:
+            episodes.append(episode)
+            known_titles.add(episode.casefold())
+    return f"{title}: {'; '.join(episodes)}" if episodes else title
 
 
 def _content_label(content: GameContent) -> str:

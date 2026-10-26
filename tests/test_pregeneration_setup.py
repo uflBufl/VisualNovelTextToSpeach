@@ -1959,10 +1959,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.stories.columnCount(), 2)
             self.assertEqual(dialog.stories.headerItem().text(0), "Story")
             self.assertEqual(dialog.stories.headerItem().text(1), "Audio status")
-            self.assertEqual(dialog.stories.item(0).text(0), "Main Story 1")
-            self.assertEqual(
-                dialog.stories.item(0).toolTip(0), dialog.stories.item(0).text(0)
-            )
+            self.assertEqual(dialog.stories.item(0).text(0), "Main Story 1: The Storm")
+            self.assertIn("Main Story 1", dialog.stories.item(0).toolTip(0))
+            self.assertIn("The Storm", dialog.stories.item(0).toolTip(0))
             self.assertNotEqual(groups[0].child(0).text(0), groups[1].child(0).text(0))
             self.assertEqual(dialog.stories.item(0).text(1), "Not prepared")
             dialog.stories.setCurrentItem(dialog.stories.item(0))
@@ -2029,7 +2028,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(category.childCount(), 1)
             self.assertEqual(story.text(0), "A Story")
             self.assertEqual(
-                [first.text(0), second.text(0)], ["Episode 1", "Episode 2"]
+                [first.text(0), second.text(0)],
+                ["Episode 1: The Storm", "Episode 2: The Wandering Child"],
             )
             self.assertEqual(dialog.stories.count(), 2)
             dialog.stories.setCurrentItem(story)
@@ -2060,6 +2060,94 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             story.setExpanded(False)
             self.assertIs(dialog.stories.currentItem(), story)
             self.assertFalse(dialog.check_story_audio.isEnabled())
+
+    def test_episode_titles_label_stages_search_refresh_tooltip_and_readiness(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            first, second = content.selections
+            first = replace(
+                first,
+                title="A Story - Stage 1",
+                kind="main_story",
+                parent_story_id="story",
+                parent_story_title="A Story",
+                episode_titles=(
+                    "A Hundred Thousand Billion Sketches",
+                    "The Final Sketch",
+                    "a story - stage 1",
+                    "stage 1",
+                    "A Hundred Thousand Billion Sketches",
+                ),
+            )
+            second = replace(
+                second,
+                title="A Story - Stage 2",
+                kind="main_story",
+                parent_story_id="story",
+                parent_story_title="A Story",
+                episode_titles=(),
+            )
+            content = replace(content, selections=(first, second))
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=ManualThreadPool(),
+            )
+            self.addCleanup(dialog.deleteLater)
+
+            stage = dialog.stories.topLevelItem(0).child(0).child(0)
+            self.assertEqual(
+                stage.text(0),
+                "Stage 1: A Hundred Thousand Billion Sketches; The Final Sketch",
+            )
+            self.assertIn("A Story - Stage 1", stage.toolTip(0))
+            self.assertIn("A Hundred Thousand Billion Sketches", stage.toolTip(0))
+            self.assertEqual(
+                dialog.stories.topLevelItem(0).child(0).child(1).text(0),
+                "Stage 2",
+            )
+
+            dialog.story_search.setText("Sketches")
+            self.assertFalse(stage.isHidden())
+            self.assertTrue(
+                dialog.stories.topLevelItem(0).child(0).child(1).isHidden()
+            )
+            stage.setCheckState(0, Qt.CheckState.Checked)
+            self.assertEqual(dialog.selected_story_ids(), (first.selection_id,))
+            self.assertIn("A Story - Stage 1", plain_label_text(dialog.story_context))
+            self.assertIn(
+                "A Hundred Thousand Billion Sketches; The Final Sketch",
+                plain_label_text(dialog.story_context),
+            )
+            long_title_label = stage.text(0)
+            dialog._story_job_statuses[first.selection_id] = "ready"
+            dialog._refresh_story_statuses()
+            self.assertEqual(stage.text(0), long_title_label)
+            self.assertEqual(stage.text(1), "Not checked")
+            self.assertIn("A Hundred Thousand Billion Sketches", stage.toolTip(0))
+            dialog.story_search.clear()
+
+            dialog.refresh_button.click()
+            refreshed_stage = dialog.stories.topLevelItem(0).child(0).child(0)
+            self.assertEqual(refreshed_stage.text(0), long_title_label)
+            self.assertEqual(dialog.selected_story_ids(), (first.selection_id,))
+
+            dialog._job = dialog.job_store.create_or_resume(
+                content, (first.selection_id,)
+            )
+            dialog.generating = True
+            dialog._show_phase(
+                "Generating offline audio", "", "Finished lines are saved."
+            )
+            dialog._progress_snapshot = OfflineGenerationProgress()
+            dialog._render_progress_story_readiness()
+            progress_stage = dialog.progress_story_readiness.topLevelItem(0).child(0)
+            self.assertEqual(progress_stage.text(0), refreshed_stage.text(0))
+            self.assertIn("A Story - Stage 1", progress_stage.toolTip(0))
+            dialog.generating = False
+            dialog.close()
 
     def test_stage_tree_expansion_survives_filter_and_refresh(self):
         with TemporaryDirectory() as temporary_directory:
@@ -3179,7 +3267,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(parent.text(1), "2/3")
             self.assertEqual(parent.text(2), "1 from selected start")
             self.assertEqual(parent.childCount(), 2)
-            self.assertEqual(parent.child(0).text(0), "Episode 1")
+            self.assertEqual(parent.child(0).text(0), "Episode 1: The Storm")
             self.assertEqual(parent.child(0).text(1), "1/2")
             self.assertEqual(parent.child(1).text(1), "1/1")
             self.assertFalse(parent.isExpanded())
@@ -3285,7 +3373,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             parent = dialog.progress_story_readiness.topLevelItem(0)
             self.assertEqual(parent.text(1), "1/1")
             self.assertEqual(parent.childCount(), 1)
-            self.assertEqual(parent.child(0).text(0), "Episode 2")
+            self.assertEqual(
+                parent.child(0).text(0), "Episode 2: The Wandering Child"
+            )
             self.assertIn("only the selected chapters", parent.toolTip(1))
 
     def test_scoped_regeneration_keeps_story_scope_and_reuses_voice_decisions(self):
@@ -3326,7 +3416,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertFalse(dialog.selection_details_toggle.isChecked())
             self.assertIn("recorded voice and model", plain_label_text(dialog.summary))
             self.assertEqual(
-                dialog.prepare_again.toolTip(), "Prepare again: Main Story 1"
+                dialog.prepare_again.toolTip(),
+                "Prepare again: Main Story 1: The Storm",
             )
             reading = Mock()
             dialog.readingRequested.connect(reading)
