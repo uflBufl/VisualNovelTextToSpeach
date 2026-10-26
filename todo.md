@@ -306,10 +306,9 @@ moving to the next item. Mark an investigation complete only when it yields a
 supported repair or an explicit product decision, not merely a hypothesis.
 
 1. **Finish name-presence acceptance (RUN-25-03).**
-   - Run a short native Mac check with the game window available: ordinary named
-     dialogue, narration and a visible-but-unreadable name; verify Read/Stop and
-     canonical prepared speaker selection. Saved-frame worker/CLI parity alone
-     does not qualify live capture or continuation.
+   - Qualify a genuinely visible-but-unreadable name on a native Mac frame:
+     preserve uncertainty rather than substituting Narrator. Synthetic glyph
+     controls and a raised confidence threshold do not qualify this visual case.
    - Keep 101/103 as conservative ambiguous-name cases. Obtain original capture
      evidence before proposing further filtering: the current pixels still
      resemble short/clipped glyphs. Preserve uncertainty; do not trade a real
@@ -340,7 +339,13 @@ supported repair or an explicit product decision, not merely a hypothesis.
    unexpected live synthesis, global threshold relaxation or guessed story edge.
 5. **Explain repeated routing (RUN-25-10).** Correlate both102 generations with
    raw OCR, speaker identity, source lead and the event that replaces the owner;
-   check the false character `I`. Gate: correct occurrence ownership and no
+   check the false character `I`. Also reproduce the native22/23 case: completed22
+   dispatches a key and reports a confirmed transition, then22 reaches PCM again;
+   23 has three interrupted playback attempts without another key dispatch.
+   Correlate the missing-divider/full-dialog OCR path and trailing indicator
+   noise with owner replacement before choosing a repair. A changed chunk ID
+   alone is not OCR-change evidence because its hash includes generation.
+   Gate: correct occurrence ownership and no
    unnecessary restart. Preserve the distinction between cancellation before
    PCM and a repeated audible clip; add a repair only after reproducing its cause.
 6. **Repair scene interruption (RUN-25-08).** Correlate48's source WAV, captured
