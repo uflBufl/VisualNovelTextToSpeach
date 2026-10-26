@@ -12,7 +12,7 @@ from uuid import uuid4
 import numpy as np
 import pytesseract
 from durable_file import atomic_write_json
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageEnhance, ImageOps
 from pytesseract import pytesseract as pytesseract_runtime
 from scipy.ndimage import find_objects, label, maximum_filter, minimum_filter
 from vntts_artifacts.atomic_io import atomic_output_group
@@ -691,7 +691,6 @@ def preprocess_dialog_image(image: Image.Image) -> Image.Image:
             (round(image.width * scale), round(image.height * scale)),
             Image.Resampling.LANCZOS,
         )
-    image = image.filter(ImageFilter.SHARPEN)
     return ImageOps.invert(image) if np.median(np.asarray(image)) < 128 else image
 
 

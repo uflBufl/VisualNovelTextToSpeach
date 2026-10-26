@@ -87,6 +87,20 @@ class OCRPreprocessingTest(unittest.TestCase):
         self.assertTrue(result.is_confident())
         self.assertEqual(result.attempts, 1)
 
+    @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
+    def test_sauvola_live_frames_resolve_speaker_and_dialogue(self):
+        fixtures = Path(__file__).resolve().parent / "fixtures" / "ocr-sauvola-live"
+        for filename in ("line007-first.png", "line007-third.png"):
+            with (
+                self.subTest(filename=filename),
+                Image.open(fixtures / filename) as image,
+            ):
+                result = recognize_dialog_image_result(image)
+
+                self.assertEqual(result.character, "Cornerstone")
+                self.assertTrue(result.is_confident())
+                self.assertIn("delighted I am", result.text)
+
 
 class DialogRegionTest(unittest.TestCase):
     def test_mapping_uses_domain_coordinate_validation(self):

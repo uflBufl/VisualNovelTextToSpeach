@@ -305,32 +305,14 @@ and wait for agreement before implementing each item. Finish its targeted tests 
 moving to the next item. Mark an investigation complete only when it yields a
 supported repair or an explicit product decision, not merely a hypothesis.
 
-1. **Finish live Sauvola acceptance, then address absent-name detection
+1. **Report uncertain OCR correctly at startup, then address absent-name detection
    separately (RUN-25-03).**
-   - Resolve the live raw-frame regression before closing acceptance: on line007,
-     Sauvola reads `Cornerstone` correctly but gives speaker confidence 1-10
-     (dialogue about95); the old cascade gives94 on the same saved raw frame.
-     The compressed-video corpus did not reproduce this. The speaker border is
-     already white; forcing white or removing it does not fix confidence1.
-     Proposed repair, awaiting agreement: remove only SHARPEN from shared
-     preprocessing and its unused import; retain Sauvola window0.33/k0.5 and the
-     confidence gate. Without sharpening both saved raw frames read Cornerstone
-     at96 and correct the dialogue I. A paired 91+24 replay preserves all101
-     normalized-text/name/confidence successes; three literal matches change
-     straight quotes/apostrophes into curly ones. Add a raw-frame regression
-     fixture, run the changed-test selector and affected OCR checks, then verify
-     the native/worker/CLI paths and a short live reading. Do not lower confidence
-     thresholds or add a scenario-specific fallback.
    - Fix bootstrap refusal classification separately after agreeing the repair:
      `identify_scope` invokes `_ocr_uncertain`, which increments
      `observation_serial`; its own post-capture guard then returns `cancelled`.
      The UI reports `Live reading start cancelled` without a user cancellation.
      Gate: uncertain OCR has its actual reason while external Stop, target
      changes and stale bootstrap requests remain rejected.
-   - After the raw-frame repair, run a short native reading check. Verify
-     sauvola output, responsive Stop and absence of worker errors; do not require
-     a long timed recording. Three focused live attempts rejected line007 before
-     playback, so saved-frame replay does not close this live gate.
    - Independently reproduce and plan the narration/no-name repair: false
      name/background or zero speaker confidence on 006/010/017/022/037/079/100/101/103.
      Check all 18 narration and 73 named-dialogue samples without weakening
@@ -1467,7 +1449,7 @@ separate future gate.
 
 ## Investigate subprocess cancellation state publication
 
-- [ ] Reproduce and fix `test_normal_subprocess_cancel_persists_typed_cancellation_after_real_child_exit`: after the child exits, `state["items"][queue_id]` is missing (`KeyError: line:one:5f2598bcb8bae8b4`). The October26 changed-test selector and isolated case fail identically on current code and untouched HEAD85d2a55. Trace queue/state publication before changing cancellation timing. Gate: the real-child cancellation retains its typed cancelled item, with no stale publication after cancellation.
+- [ ] Reproduce and fix `test_normal_subprocess_cancel_persists_typed_cancellation_after_real_child_exit`: after the child exits, `state["items"][queue_id]` is missing (`KeyError: line:one:5f2598bcb8bae8b4`). The October26 changed-test selector and an isolated run against untouched HEAD06699fc3 fail identically. Trace queue/state publication before changing cancellation timing. Gate: the real-child cancellation retains its typed cancelled item, with no stale publication after cancellation.
 
 ## Investigate intermittent macOS Qt test crash
 
