@@ -12,7 +12,6 @@ from pytesseract import pytesseract as pytesseract_runtime
 
 from vntts.ocr import (
     DialogRegion,
-    OCRPreprocessingProfile,
     OCRPreviewCancelled,
     OCRRegions,
     OCRResult,
@@ -23,7 +22,6 @@ from vntts.ocr import (
     clean_dialog_lines_from_data,
     crop_dialog_text,
     default_dialog_region,
-    default_ocr_profiles,
     load_dialog_region,
     parse_dialog_region,
     parse_recognized_dialog,
@@ -33,6 +31,7 @@ from vntts.ocr import (
     recognize_speaker_from_data,
     save_dialog_region,
 )
+from vntts.tesseract_config import tesseract_config
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
@@ -55,25 +54,21 @@ class OCRPreprocessingTest(unittest.TestCase):
         draw.text((15, 15), text, fill=foreground, font_size=20)
         return image
 
-    def test_sparse_short_text_retains_contrast_without_promoting_scenery(self):
+    def test_sparse_short_text_retains_grayscale_and_normalizes_both_polarities(self):
         for text in ("Hmm?", "I", "?"):
             for light_background in (False, True):
-                image = self._short_dialogue(text, light_background=light_background)
-                for profile in default_ocr_profiles:
-                    with self.subTest(
-                        text=text,
-                        light_background=light_background,
-                        profile=profile.name,
-                    ):
-                        processed = preprocess_dialog_image(image, profile)
-                        background = 255 if light_background else 0
-                        self.assertEqual(
-                            processed.crop((900, 20, 1400, 160)).getextrema(),
-                            (background, background),
-                        )
-                        self.assertEqual(
-                            processed.crop((20, 20, 150, 90)).getextrema(), (0, 255)
-                        )
+                with self.subTest(text=text, light_background=light_background):
+                    image = self._short_dialogue(
+                        text, light_background=light_background
+                    )
+                    processed = preprocess_dialog_image(image)
+                    self.assertEqual(processed.mode, "L")
+                    background = processed.crop((1700, 20, 1900, 160)).getextrema()
+                    self.assertEqual(background[0], background[1])
+                    self.assertGreaterEqual(background[0], 128)
+                    glyphs = processed.crop((20, 20, 150, 90))
+                    self.assertLess(glyphs.getextrema()[0], background[0] - 100)
+                    self.assertGreater(len(glyphs.getcolors()), 2)
 
     @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
     def test_real_ocr_reads_sparse_interjection_over_bright_scenery(self):
@@ -439,7 +434,6 @@ class RecognizedDialogTest(unittest.TestCase):
             Image.new("RGB", (1000, 300), "black"),
             recognize_text=Mock(return_value="Who are you?\n"),
             recognize_data=Mock(side_effect=[merged_data, sparse_data, dialog_data]),
-            profiles=(OCRPreprocessingProfile("balanced", 1.8, 180),),
         )
 
         self.assertEqual((result.character, result.text), ("???", "Who are you?"))
@@ -464,7 +458,6 @@ class RecognizedDialogTest(unittest.TestCase):
                     Image.new("RGB", (1000, 300), "black"),
                     recognize_text=Mock(return_value="Who are you?\n"),
                     recognize_data=Mock(side_effect=[frame_data, dialog_data]),
-                    profiles=(OCRPreprocessingProfile("balanced", 1.8, 180),),
                 )
 
                 self.assertEqual(
@@ -503,7 +496,6 @@ class RecognizedDialogTest(unittest.TestCase):
             Image.new("RGB", (2560, 560), "black"),
             recognize_text=Mock(return_value="Hey! - ™ \\\n| a\nSe\n"),
             recognize_data=Mock(side_effect=[merged_data, sparse_data, dialog_data]),
-            profiles=(OCRPreprocessingProfile("balanced", 1.8, 180),),
         )
 
         self.assertEqual((result.character, result.text), ("???", "Hey!"))
@@ -530,19 +522,8 @@ class RecognizedDialogTest(unittest.TestCase):
 
                 self.assertEqual(speaker[0], nameplate)
 
-    def test_confident_orphaned_nameplate_does_not_hide_short_dialogue(self):
-        orphaned_nameplate = {
-            "text": [":", "Hotelier"],
-            "conf": [92, 96],
-            "block_num": [1, 1],
-            "par_num": [1, 1],
-            "line_num": [1, 1],
-            "left": [40, 80],
-            "top": [30, 30],
-            "width": [20, 180],
-            "height": [45, 45],
-        }
-        complete_frame = {
+    def test_geometry_keeps_short_dialogue_below_an_unknown_nameplate(self):
+        frame_data = {
             "text": ["Hotelier", "This", "..."],
             "conf": [96, 95, 94],
             "block_num": [1, 2, 2],
@@ -553,46 +534,20 @@ class RecognizedDialogTest(unittest.TestCase):
             "width": [180, 80, 35],
             "height": [45, 40, 40],
         }
-        false_speaker_frame = {
-            "text": ["TTS", "&", "Hotelier"],
-            "conf": [90, 70, 96],
-            "block_num": [1, 2, 2],
-            "par_num": [1, 1, 1],
-            "line_num": [1, 1, 1],
-            "left": [40, 75, 100],
-            "top": [5, 150, 150],
-            "width": [100, 20, 180],
-            "height": [35, 40, 40],
-        }
-        false_dialog_data = {"text": ["e", "Hotelier"], "conf": [60, 96]}
-        dialog_data = {"text": ["This", "..."], "conf": [95, 94]}
-
+        recognize_text = Mock(return_value="This ...\n")
+        recognize_data = Mock(
+            side_effect=[frame_data, {"text": ["This", "..."], "conf": [95, 94]}]
+        )
         result = recognize_dialog_image_result(
             Image.new("RGB", (1000, 300), "black"),
-            recognize_text=Mock(
-                side_effect=[": Hotelier\n", "e Hotelier\n", "This ...\n"]
-            ),
-            recognize_data=Mock(
-                side_effect=[
-                    orphaned_nameplate,
-                    orphaned_nameplate,
-                    false_speaker_frame,
-                    false_dialog_data,
-                    complete_frame,
-                    dialog_data,
-                ]
-            ),
-            profiles=(
-                OCRPreprocessingProfile("balanced", 1.8, 180),
-                OCRPreprocessingProfile("dark-background", 2.2, 155),
-                OCRPreprocessingProfile("light-background", 1.5, 205),
-            ),
-            minimum_confidence=60,
+            recognize_text=recognize_text,
+            recognize_data=recognize_data,
         )
 
-        self.assertEqual(result.character, "Hotelier")
-        self.assertEqual(result.text, "This ...")
-        self.assertEqual(result.profile, "light-background")
+        self.assertEqual((result.character, result.text), ("Hotelier", "This ..."))
+        self.assertEqual((result.profile, result.attempts), ("sauvola", 1))
+        recognize_text.assert_called_once()
+        self.assertEqual(recognize_data.call_count, 2)
 
     def test_geometry_prefers_known_speaker_over_uppercase_ui_noise(self):
         data = {
@@ -654,7 +609,6 @@ class RecognizedDialogTest(unittest.TestCase):
             registry,
             recognize_text=recognize_text,
             recognize_data=recognize_data,
-            profiles=(OCRPreprocessingProfile("balanced", 1.8, 180),),
         )
 
         self.assertEqual(result.character, "Fatutu")
@@ -668,7 +622,7 @@ class RecognizedDialogTest(unittest.TestCase):
         )
         self.assertEqual(
             [call.kwargs["config"] for call in recognize_data.call_args_list],
-            ["--psm 6", "--psm 11", "--psm 6"],
+            [tesseract_config(6), tesseract_config(11), tesseract_config(6)],
         )
 
     def test_dialog_cleanup_removes_only_trailing_non_speech_glyphs(self):
@@ -721,7 +675,6 @@ class RecognizedDialogTest(unittest.TestCase):
             self.registry,
             recognize_text=Mock(return_value="...\n"),
             recognize_data=Mock(side_effect=[frame_data, dialog_data]),
-            profiles=(OCRPreprocessingProfile("balanced", 1.8, 180),),
         )
 
         self.assertEqual(result.character, "Marcus")
@@ -749,7 +702,6 @@ class RecognizedDialogTest(unittest.TestCase):
             Image.new("RGB", (1000, 300), "black"),
             recognize_text=Mock(return_value="Alright, that makes five. ae\n"),
             recognize_data=Mock(side_effect=[frame_data, dialog_data]),
-            profiles=(OCRPreprocessingProfile("balanced", 1.8, 180),),
             minimum_confidence=0,
         )
 
@@ -820,26 +772,24 @@ class RecognizedDialogTest(unittest.TestCase):
                     float(value),
                 )
 
-    def test_non_finite_confidence_cannot_finish_a_retry_early(self):
-        recognize_text = Mock(side_effect=["Bad result", "Reliable dialogue."])
-        recognize_data = Mock(
-            side_effect=[
-                {"text": ["Bad", "result"], "conf": [float("inf"), float("inf")]},
-                {"text": ["Reliable", "dialogue"], "conf": [90, 90]},
-            ]
-        )
-        result = recognize_dialog_image_result(
-            Image.new("RGB", (320, 120)),
-            recognize_text=recognize_text,
-            recognize_data=recognize_data,
-            profiles=(
-                OCRPreprocessingProfile("first", 1.0, 170),
-                OCRPreprocessingProfile("second", 2.0, 200),
-            ),
-        )
-        self.assertEqual(result.text, "Reliable dialogue.")
-        self.assertEqual(result.attempts, 2)
-        self.assertEqual(result.confidence, 90)
+    def test_invalid_confidence_keeps_single_pass_result_uncertain(self):
+        for confidence in (float("nan"), float("inf"), float("-inf"), "invalid"):
+            with self.subTest(confidence=confidence):
+                recognize_text = Mock(return_value="Bad result")
+                recognize_data = Mock(
+                    return_value={"text": ["Bad", "result"], "conf": [confidence] * 2}
+                )
+                result = recognize_dialog_image_result(
+                    Image.new("RGB", (320, 120)),
+                    recognize_text=recognize_text,
+                    recognize_data=recognize_data,
+                )
+                self.assertEqual(result.text, "Bad result")
+                self.assertEqual((result.profile, result.attempts), ("sauvola", 1))
+                self.assertEqual(result.confidence, 0)
+                self.assertFalse(result.is_confident())
+                recognize_text.assert_called_once()
+                recognize_data.assert_called_once()
 
     def test_invalid_timeout_is_rejected_before_preprocessing(self):
         for value in (float("nan"), float("inf"), float("-inf"), 10**400):
@@ -896,65 +846,30 @@ class RecognizedDialogTest(unittest.TestCase):
                     self.assertEqual(speaker[0], "Marcus")
                     self.assertEqual(speaker[1].text, "Marcus")
 
-    def test_low_confidence_result_retries_with_alternate_preprocessing(self):
-        profiles = (
-            OCRPreprocessingProfile("first", 1.0, 170),
-            OCRPreprocessingProfile("second", 2.0, 200),
-        )
-        recognize_text = Mock(
-            side_effect=["Garbled text", "Clear recognized dialogue."]
-        )
+    def test_low_confidence_result_keeps_its_single_pass_image(self):
+        recognize_text = Mock(return_value="Garbled text")
         recognize_data = Mock(
-            side_effect=[
-                {"text": ["Garbled", "text"], "conf": [25, 30]},
-                {
-                    "text": ["Clear", "recognized", "dialogue"],
-                    "conf": [88, 91, 90],
-                },
-            ]
+            return_value={"text": ["Garbled", "text"], "conf": [25, 30]}
         )
-
         result = recognize_dialog_image_result(
             Image.new("RGB", (320, 120), "black"),
             recognize_text=recognize_text,
             recognize_data=recognize_data,
             minimum_confidence=60,
-            profiles=profiles,
         )
 
-        self.assertEqual(result.text, "Clear recognized dialogue.")
-        self.assertEqual(result.profile, "second")
-        self.assertEqual(result.attempts, 2)
-        self.assertGreater(result.confidence, 60)
+        self.assertEqual(result.text, "Garbled text")
+        self.assertEqual((result.profile, result.attempts), ("sauvola", 1))
+        self.assertFalse(result.is_confident())
+        self.assertAlmostEqual(result.confidence, (25 * 7 + 30 * 4) / 11)
         self.assertIs(result.processed_image, recognize_text.call_args.args[0])
+        self.assertIs(result.processed_image, recognize_data.call_args.args[0])
         self.assertEqual(result.processed_image.mode, "L")
-        self.assertEqual(set(result.processed_image.getdata()), {0})
+        self.assertEqual(result.processed_image.getextrema(), (255, 255))
+        recognize_text.assert_called_once()
+        recognize_data.assert_called_once()
 
-    def test_best_uncertain_result_keeps_its_own_image_instead_of_last_attempt(self):
-        recognize_text = Mock(side_effect=["First result.", "Second result."])
-        recognize_data = Mock(
-            side_effect=[
-                {"text": ["First", "result"], "conf": [45, 45]},
-                {"text": ["Second", "result"], "conf": [20, 20]},
-            ]
-        )
-        result = recognize_dialog_image_result(
-            Image.new("RGB", (320, 120), "black"),
-            recognize_text=recognize_text,
-            recognize_data=recognize_data,
-            profiles=(
-                OCRPreprocessingProfile("first", 1.0, 170),
-                OCRPreprocessingProfile("second", 2.0, 200),
-            ),
-        )
-
-        self.assertEqual(result.profile, "first")
-        self.assertIs(result.processed_image, recognize_text.call_args_list[0].args[0])
-        self.assertIsNot(
-            result.processed_image, recognize_text.call_args_list[1].args[0]
-        )
-
-    def test_confident_first_attempt_does_not_run_extra_ocr(self):
+    def test_confident_result_uses_a_single_ocr_pass(self):
         recognize_text = Mock(return_value="A reliable result.")
         recognize_data = Mock(
             return_value={"text": ["A", "reliable", "result"], "conf": [95, 94, 96]}
@@ -967,6 +882,7 @@ class RecognizedDialogTest(unittest.TestCase):
         )
 
         self.assertTrue(result.is_confident())
+        self.assertEqual((result.profile, result.attempts), ("sauvola", 1))
         recognize_text.assert_called_once()
         recognize_data.assert_called_once()
 
@@ -987,7 +903,7 @@ class RecognizedDialogTest(unittest.TestCase):
         self.assertEqual(recognize_data.call_args.kwargs["lang"], "eng+jpn")
 
     def test_uncertain_frame_recorder_saves_image_and_metadata_once(self):
-        result = OCRResult("Marcus", "Maybe this text", 41.5, "balanced", 3)
+        result = OCRResult("Marcus", "Maybe this text", 41.5, "sauvola", 1)
         with TemporaryDirectory() as temporary_directory:
             recorder = UncertainFrameRecorder(temporary_directory)
             image = Image.new("RGB", (32, 16), "black")
@@ -1000,14 +916,14 @@ class RecognizedDialogTest(unittest.TestCase):
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             self.assertEqual(metadata["confidence"], 41.5)
             self.assertEqual(metadata["minimum_confidence"], 60)
-            self.assertEqual(metadata["preprocessing_profile"], "balanced")
+            self.assertEqual(metadata["preprocessing_profile"], "sauvola")
             self.assertIsNone(duplicate)
 
             recorder.reset()
             self.assertIsNotNone(recorder.record(image, result, 60))
 
     def test_uncertain_frame_recorder_does_not_publish_image_when_metadata_fails(self):
-        result = OCRResult("Marcus", "Maybe this text", 41.5, "balanced", 3)
+        result = OCRResult("Marcus", "Maybe this text", 41.5, "sauvola", 1)
         with TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
             recorder = UncertainFrameRecorder(directory)

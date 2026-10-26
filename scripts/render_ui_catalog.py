@@ -3573,7 +3573,7 @@ def _render_stories(
                 dialogue_confidence=91.2,
                 speaker_confidence=87.4,
                 speaker_note="Speaker from prepared story; raw OCR: Beliver IV",
-                preprocessing_profile="dark-background",
+                preprocessing_profile="sauvola",
                 voice="Believer IV; voice ID: game-believer-iv",
                 capture_ms=12.3,
                 ocr_ms=45.6,

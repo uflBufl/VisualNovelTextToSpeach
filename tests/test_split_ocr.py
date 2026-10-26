@@ -15,7 +15,6 @@ from vntts.dialog_capture import (
 )
 from vntts.ocr import (
     DialogRegion,
-    OCRPreprocessingProfile,
     OCRRegions,
     OCRResult,
     combine_ocr_regions,
@@ -28,6 +27,7 @@ from vntts.ocr import (
     speaker_glyphs_visible,
 )
 from vntts.ocr_corrections import OCRCorrectionDictionary
+from vntts.tesseract_config import tesseract_config
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
@@ -100,7 +100,7 @@ class SplitOCRTest(unittest.TestCase):
             DialogRegion(0.4, 0.1, 0.3, 0.2),
             DialogRegion(0.4, 0.4, 0.5, 0.4),
         )
-        result = OCRResult("Marcus", "Hello there", 95, "balanced", 1)
+        result = OCRResult("Marcus", "Hello there", 95, "sauvola", 1)
         with patch(
             "vntts.dialog_capture.recognize_screenshot_result", return_value=result
         ):
@@ -134,8 +134,10 @@ class SplitOCRTest(unittest.TestCase):
                 self.assertIs(result.processed_image, read.call_args.args[0])
                 self.assertEqual(result.speaker_image.size, (620, 140))
                 self.assertEqual(result.processed_image.size, (1400, 240))
-                self.assertEqual(data.call_args_list[0].kwargs["config"], "--psm 7")
-                self.assertEqual(read.call_args.kwargs["config"], "--psm 6")
+                self.assertEqual(
+                    data.call_args_list[0].kwargs["config"], tesseract_config(7)
+                )
+                self.assertEqual(read.call_args.kwargs["config"], tesseract_config(6))
                 corrected = OCRCorrectionDictionary(
                     {text: "Corrected line."}
                 ).correct_result(result)
@@ -143,10 +145,9 @@ class SplitOCRTest(unittest.TestCase):
                 self.assertIs(corrected.speaker_image, result.speaker_image)
                 self.assertIs(corrected.processed_image, result.processed_image)
 
-    def test_parts_choose_profiles_independently_and_reject_uncertain_name(self):
+    def test_parts_are_read_once_and_uncertain_name_blocks_dialogue(self):
         data = Mock(
             side_effect=[
-                {"text": ["Marcus"], "conf": [20]},
                 {"text": ["Marcus"], "conf": [45]},
                 {"text": ["Hey!"], "conf": [96]},
             ]
@@ -156,18 +157,17 @@ class SplitOCRTest(unittest.TestCase):
             self._image_with_name(),
             recognize_text=read,
             recognize_data=data,
-            profiles=(
-                OCRPreprocessingProfile("first", 1, 170),
-                OCRPreprocessingProfile("second", 2, 200),
-            ),
             ocr_regions=self.regions,
         )
         self.assertFalse(result.is_confident())
         self.assertEqual(result.confidence, 45)
         self.assertEqual(result.speaker_confidence, 45)
         self.assertEqual(result.dialogue_confidence, 96)
-        self.assertIs(result.speaker_image, data.call_args_list[1].args[0])
+        self.assertIs(result.speaker_image, data.call_args_list[0].args[0])
         self.assertIs(result.processed_image, read.call_args.args[0])
+        self.assertEqual((result.profile, result.attempts), ("sauvola", 1))
+        self.assertEqual(data.call_count, 2)
+        read.assert_called_once()
 
     def test_background_in_empty_nameplate_does_not_block_narration(self):
         image = Image.new("RGB", (1000, 300))
@@ -177,8 +177,10 @@ class SplitOCRTest(unittest.TestCase):
         )
         text = "She scans the instructions quickly, then signs her name."
         data = Mock(
-            side_effect=[{"text": ["To", "a"], "conf": [27, 27]}] * 3
-            + [{"text": [text], "conf": [95.3]}]
+            side_effect=[
+                {"text": ["To", "a"], "conf": [27, 27]},
+                {"text": [text], "conf": [95.3]},
+            ]
         )
         result = recognize_dialog_image_result(
             image,
@@ -219,7 +221,6 @@ class SplitOCRTest(unittest.TestCase):
                             {"text": ["Hey!"], "conf": [95]},
                         ]
                     ),
-                    profiles=(OCRPreprocessingProfile("first", 1, 170),),
                     ocr_regions=self.regions,
                 )
                 self.assertEqual(result.character, name)
@@ -252,7 +253,6 @@ class SplitOCRTest(unittest.TestCase):
             Image.new("RGB", (1000, 300)),
             recognize_text=Mock(return_value="Hey!"),
             recognize_data=data,
-            profiles=(OCRPreprocessingProfile("first", 1, 170),),
             ocr_regions=self.regions,
         )
         self.assertEqual((result.character, result.text), ("Narrator", "Hey!"))
@@ -292,7 +292,7 @@ class SplitOCRTest(unittest.TestCase):
             "Marcus",
             "Hey!",
             95,
-            "balanced",
+            "sauvola",
             1,
             processed_image=Image.new("L", (100, 40)),
             speaker_image=Image.new("L", (40, 20)),

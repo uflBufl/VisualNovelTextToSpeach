@@ -25,6 +25,7 @@ from vntts.dialog import (
 from vntts.json_types import decode_json
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION
 from vntts.path_safety import read_regular_text
+from vntts.tesseract_config import require_sauvola_cli, tesseract_config
 from vntts.versioned_json import write_versioned_json
 
 default_dialog_region_file = Path("~/.config/vntts/dialog-region.json").expanduser()
@@ -495,13 +496,6 @@ class OCRLine:
 
 
 @dataclass(frozen=True)
-class OCRPreprocessingProfile:
-    name: str
-    contrast: float
-    threshold: int
-
-
-@dataclass(frozen=True)
 class OCRResult:
     character: str
     text: str
@@ -551,13 +545,6 @@ def detect_standalone_ellipsis_frame(
     return max(center[1] for center in centers) - min(
         center[1] for center in centers
     ) <= 2.5 and all(4 <= gap <= 9 for gap in gaps)
-
-
-default_ocr_profiles = (
-    OCRPreprocessingProfile("balanced", 1.8, 180),
-    OCRPreprocessingProfile("dark-background", 2.2, 155),
-    OCRPreprocessingProfile("light-background", 1.5, 205),
-)
 
 
 class UncertainFrameRecorder:
@@ -693,14 +680,11 @@ def get_dialog_region(profile_region: DialogRegion | None = None) -> DialogRegio
     return default_dialog_region
 
 
-def preprocess_dialog_image(
-    image: Image.Image, profile: OCRPreprocessingProfile | None = None
-) -> Image.Image:
-    profile = profile or default_ocr_profiles[0]
+def preprocess_dialog_image(image: Image.Image) -> Image.Image:
     image = ImageOps.grayscale(image)
     # A short line can occupy less than 1% of the crop; clipping loses its glyphs.
     image = ImageOps.autocontrast(image)
-    image = ImageEnhance.Contrast(image).enhance(profile.contrast)
+    image = ImageEnhance.Contrast(image).enhance(1.8)
     scale = max(1.0, min(2.0, 600 / max(1, image.height)))
     if scale > 1:
         image = image.resize(
@@ -708,7 +692,7 @@ def preprocess_dialog_image(
             Image.Resampling.LANCZOS,
         )
     image = image.filter(ImageFilter.SHARPEN)
-    return image.point(lambda value: 255 if value >= profile.threshold else 0)
+    return ImageOps.invert(image) if np.median(np.asarray(image)) < 128 else image
 
 
 def recognize_dialog_image(
@@ -738,7 +722,6 @@ def recognize_dialog_image_result(
     recognize_data: OcrDataRecognizer | None = None,
     *,
     minimum_confidence: float = default_minimum_ocr_confidence,
-    profiles: Sequence[OCRPreprocessingProfile] = default_ocr_profiles,
     language: str = "eng",
     timeout: float | None = None,
     cancelled: Callable[[], bool] | None = None,
@@ -746,6 +729,10 @@ def recognize_dialog_image_result(
     recognize_combined: OcrCombinedRecognizer | None = None,
 ) -> OCRResult:
     remaining_timeout = _ocr_budget(timeout, cancelled)
+    if recognize_data is None or (
+        recognize_combined is None and recognize_text is None
+    ):
+        require_sauvola_cli(str(pytesseract_runtime.tesseract_cmd), remaining_timeout())
     if recognize_combined is None and recognize_text is None and recognize_data is None:
         recognize_combined = _recognize_psm6_text_data
     if recognize_text is None:
@@ -760,10 +747,8 @@ def recognize_dialog_image_result(
             speaker_image,
             recognize_text,
             recognize_data,
-            profiles,
             language,
             remaining_timeout,
-            minimum_confidence,
             speaker=True,
             recognize_combined=recognize_combined,
         )
@@ -771,10 +756,8 @@ def recognize_dialog_image_result(
             ocr_regions.dialogue.crop(image),
             recognize_text,
             recognize_data,
-            profiles,
             language,
             remaining_timeout,
-            minimum_confidence,
             speaker=False,
             recognize_combined=recognize_combined,
         )
@@ -799,115 +782,90 @@ def recognize_dialog_image_result(
             speaker_note="Visible name could not be read" if unreadable_speaker else "",
         )
 
-    best_result = None
-    for attempt, profile in enumerate(profiles, start=1):
-        remaining_timeout()
-        processed_image = preprocess_dialog_image(image, profile)
-        result = _recognize_preprocessed_dialog(
-            processed_image,
-            voice_registry,
-            recognize_text,
-            recognize_data,
-            profile.name,
-            attempt,
-            language,
-            recognize_combined,
-            remaining_timeout,
-        )
-        if best_result is None or _result_rank(result) > _result_rank(best_result):
-            best_result = result
-        if result.is_confident(minimum_confidence) and not _orphaned_nameplate_result(
-            result
-        ):
-            return result
-
-    return best_result or OCRResult("Narrator", "", 0.0, "none", 0)
+    remaining_timeout()
+    return _recognize_preprocessed_dialog(
+        preprocess_dialog_image(image),
+        voice_registry,
+        recognize_text,
+        recognize_data,
+        language,
+        recognize_combined,
+        remaining_timeout,
+    )
 
 
 def _recognize_isolated_region(
     image: Image.Image,
     recognize_text: OcrTextRecognizer,
     recognize_data: OcrDataRecognizer,
-    profiles: Sequence[OCRPreprocessingProfile],
     language: str,
     remaining_timeout: Callable[[], float | None],
-    minimum_confidence: float,
     *,
     speaker: bool,
     recognize_combined: OcrCombinedRecognizer | None,
 ) -> OCRResult:
-    best_result: OCRResult | None = None
     has_speaker_glyphs = not speaker or speaker_glyphs_visible(image)
-    for attempt, profile in enumerate(profiles, start=1):
-        remaining_timeout()
-        processed = preprocess_dialog_image(image, profile)
-        if speaker:
-            histogram = processed.histogram()
-            processed = ImageOps.expand(
-                processed, border=10, fill=255 if histogram[255] > histogram[0] else 0
+    remaining_timeout()
+    processed = preprocess_dialog_image(image)
+    if speaker:
+        histogram = processed.histogram()
+        processed = ImageOps.expand(
+            processed, border=10, fill=255 if histogram[255] > histogram[0] else 0
+        )
+        data = _call_ocr(
+            recognize_data,
+            processed,
+            remaining_timeout,
+            config=tesseract_config(7),
+            output_type=pytesseract.Output.DICT,
+            lang=language,
+        )
+        text = (
+            " ".join(word for word, _confidence in _recognized_words(data))
+            if has_speaker_glyphs
+            else ""
+        )
+    else:
+        if recognize_combined is not None:
+            text, data = recognize_combined(processed, language, remaining_timeout)
+        else:
+            text = _call_ocr(
+                recognize_text,
+                processed,
+                remaining_timeout,
+                config=tesseract_config(6),
+                lang=language,
             )
             data = _call_ocr(
                 recognize_data,
                 processed,
                 remaining_timeout,
-                config="--psm 7",
+                config=tesseract_config(6),
                 output_type=pytesseract.Output.DICT,
                 lang=language,
             )
-            text = (
-                " ".join(word for word, _confidence in _recognized_words(data))
-                if has_speaker_glyphs
-                else ""
-            )
-        else:
-            if recognize_combined is not None:
-                text, data = recognize_combined(processed, language, remaining_timeout)
-            else:
-                text = _call_ocr(
-                    recognize_text,
-                    processed,
-                    remaining_timeout,
-                    config="--psm 6",
-                    lang=language,
-                )
-                data = _call_ocr(
-                    recognize_data,
-                    processed,
-                    remaining_timeout,
-                    config="--psm 6",
-                    output_type=pytesseract.Output.DICT,
-                    lang=language,
-                )
-            # The explicit dialogue rectangle supplies layout authority. Keep
-            # one-letter words and punctuation instead of nameplate/UI heuristics.
-            text = " ".join(line.strip() for line in text.splitlines()).strip()
-            words = _recognized_words(data)
-            cleaned = _trim_trailing_ocr_noise(words)
-            if len(cleaned) < len(words):
-                text = " ".join(word for word, _confidence in cleaned)
-        result = OCRResult(
-            "Narrator",
-            text,
-            calculate_ocr_confidence(data),
-            profile.name,
-            attempt,
-            processed_image=processed,
-        )
-        if (
-            not speaker
-            and not text
-            and detect_standalone_ellipsis_frame(image, dialogue_only=True)
-        ):
-            return replace(result, text="...")
-        if best_result is None or (
-            bool(result.text),
-            result.confidence,
-            len(result.text),
-        ) > (bool(best_result.text), best_result.confidence, len(best_result.text)):
-            best_result = result
-        if result.is_confident(minimum_confidence):
-            return result
-    return best_result or OCRResult("Narrator", "", 0.0, "none", 0)
+        # The explicit dialogue rectangle supplies layout authority. Keep
+        # one-letter words and punctuation instead of nameplate/UI heuristics.
+        text = " ".join(line.strip() for line in text.splitlines()).strip()
+        words = _recognized_words(data)
+        cleaned = _trim_trailing_ocr_noise(words)
+        if len(cleaned) < len(words):
+            text = " ".join(word for word, _confidence in cleaned)
+    result = OCRResult(
+        "Narrator",
+        text,
+        calculate_ocr_confidence(data),
+        "sauvola",
+        1,
+        processed_image=processed,
+    )
+    if (
+        not speaker
+        and not text
+        and detect_standalone_ellipsis_frame(image, dialogue_only=True)
+    ):
+        return replace(result, text="...")
+    return result
 
 
 def _recognize_preprocessed_dialog(
@@ -915,8 +873,6 @@ def _recognize_preprocessed_dialog(
     voice_registry: VoiceRegistry | None,
     recognize_text: OcrTextRecognizer,
     recognize_data: OcrDataRecognizer,
-    profile_name: str,
-    attempt: int,
     language: str,
     recognize_combined: OcrCombinedRecognizer | None,
     remaining_timeout: Callable[[], float | None],
@@ -929,7 +885,7 @@ def _recognize_preprocessed_dialog(
             recognize_data,
             image,
             remaining_timeout,
-            config="--psm 6",
+            config=tesseract_config(6),
             output_type=pytesseract.Output.DICT,
             lang=language,
         )
@@ -948,7 +904,7 @@ def _recognize_preprocessed_dialog(
             recognize_data,
             image,
             remaining_timeout,
-            config="--psm 11",
+            config=tesseract_config(11),
             output_type=pytesseract.Output.DICT,
             lang=language,
         )
@@ -970,7 +926,7 @@ def _recognize_preprocessed_dialog(
                 recognize_text,
                 dialog_image,
                 remaining_timeout,
-                config="--psm 6",
+                config=tesseract_config(6),
                 lang=language,
             )
             dialog_data = None
@@ -981,7 +937,7 @@ def _recognize_preprocessed_dialog(
                     recognize_data,
                     dialog_image,
                     remaining_timeout,
-                    config="--psm 6",
+                    config=tesseract_config(6),
                     output_type=pytesseract.Output.DICT,
                     lang=language,
                 )
@@ -990,8 +946,8 @@ def _recognize_preprocessed_dialog(
                 character,
                 " ".join(dialog_lines),
                 calculate_ocr_confidence(dialog_data),
-                profile_name,
-                attempt,
+                "sauvola",
+                1,
                 processed_image=dialog_image,
                 speaker_image=image,
                 dialogue_confidence=calculate_ocr_confidence(dialog_data),
@@ -1002,7 +958,7 @@ def _recognize_preprocessed_dialog(
             recognize_text,
             image,
             remaining_timeout,
-            config="--psm 6",
+            config=tesseract_config(6),
             lang=language,
         )
     character, text = parse_recognized_dialog(recognized_text, voice_registry)
@@ -1010,8 +966,8 @@ def _recognize_preprocessed_dialog(
         character,
         text,
         calculate_ocr_confidence(data),
-        profile_name,
-        attempt,
+        "sauvola",
+        1,
         processed_image=image,
     )
 
@@ -1028,7 +984,7 @@ def _recognize_psm6_text_data(
             output_filename_base=base,
             extension="txt tsv",
             lang=language,
-            config="-c tessedit_create_tsv=1 --psm 6",
+            config=f"{tesseract_config(6)} -c tessedit_create_tsv=1",
             timeout=remaining_timeout() or 0,
         )
         text = pytesseract_runtime._read_output(f"{base}.txt")
@@ -1045,7 +1001,7 @@ def recognize_speaker(
 ) -> tuple[str, OCRLine] | None:
     data = recognize_data(
         image,
-        config="--psm 6",
+        config=tesseract_config(6),
         output_type=pytesseract.Output.DICT,
     )
     return recognize_speaker_from_data(
@@ -1192,35 +1148,6 @@ def calculate_ocr_confidence(data: OcrData) -> float:
         weighted_confidence += confidence * weight
         total_weight += weight
     return weighted_confidence / total_weight if total_weight else 0.0
-
-
-def _result_rank(result: OCRResult) -> tuple[bool, float, int]:
-    return (
-        not _orphaned_nameplate_result(result),
-        result.confidence,
-        len(result.text.strip()),
-    )
-
-
-def _orphaned_nameplate_result(result: OCRResult) -> bool:
-    """Return whether preprocessing found a decorated name but no dialogue."""
-    character = str(result.character or "").strip()
-    compact_character = "".join(value for value in character if value.isalnum())
-    if character.casefold() != "narrator" and not (
-        compact_character.isupper() and len(compact_character) <= 4
-    ):
-        return False
-    text = str(result.text or "").strip()
-    if not text:
-        return False
-    candidate = text.lstrip(" :;,.|_-=+~`'\"&<>[](){}\\/—–")
-    tokens = candidate.split()
-    removed_noise = candidate != text
-    if tokens and len(tokens[0]) == 1 and tokens[0].islower():
-        tokens.pop(0)
-        removed_noise = True
-    candidate = " ".join(tokens)
-    return removed_noise and is_probable_character_name(candidate)
 
 
 def extract_ocr_lines(data: OcrData) -> list[OCRLine]:

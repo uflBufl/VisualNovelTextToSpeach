@@ -15,7 +15,6 @@ from vntts.dialog_capture import (
 )
 from vntts.ocr import (
     DialogRegion,
-    OCRPreprocessingProfile,
     OCRRegions,
     OCRResult,
     default_dialog_region,
@@ -134,7 +133,6 @@ class AdaptiveOCRTest(unittest.TestCase):
                     {"text": ["I"], "conf": [96]},
                 ]
             ),
-            profiles=(OCRPreprocessingProfile("one", 1, 170),),
         )
         self.assertEqual((result.character, result.text), ("Narrator", "I"))
         self.assertIsNone(result.speaker_confidence)
@@ -161,7 +159,6 @@ class AdaptiveOCRTest(unittest.TestCase):
                             {"text": ["I"], "conf": [96]},
                         ]
                     ),
-                    profiles=(OCRPreprocessingProfile("one", 1, 170),),
                     ocr_regions=regions,
                 )
                 self.assertEqual((result.character, result.text), ("Narrator", "I"))
@@ -201,7 +198,6 @@ class AdaptiveOCRTest(unittest.TestCase):
                                             {"text": ["I"], "conf": [96]},
                                         ]
                                     ),
-                                    profiles=(OCRPreprocessingProfile("one", 1, 170),),
                                     ocr_regions=regions,
                                 )
                                 self.assertFalse(result.is_confident())
@@ -245,7 +241,6 @@ class AdaptiveOCRTest(unittest.TestCase):
                                     {"text": ["I"], "conf": [96]},
                                 ]
                             ),
-                            profiles=(OCRPreprocessingProfile("one", 1, 170),),
                         )
                         self.assertFalse(result.is_confident())
                         self.assertIsNotNone(result.speaker_confidence)
@@ -283,7 +278,6 @@ class AdaptiveOCRTest(unittest.TestCase):
                                     {"text": ["I"], "conf": [96]},
                                 ]
                             ),
-                            profiles=(OCRPreprocessingProfile("one", 1, 170),),
                         )
                         self.assertFalse(result.is_confident())
                         self.assertIsNotNone(result.speaker_confidence)
@@ -306,7 +300,6 @@ class AdaptiveOCRTest(unittest.TestCase):
                             {"text": ["I"], "conf": [96]},
                         ]
                     ),
-                    profiles=(OCRPreprocessingProfile("one", 1, 170),),
                 )
                 self.assertFalse(result.is_confident())
                 self.assertIsNotNone(result.speaker_confidence)
@@ -353,7 +346,6 @@ class AdaptiveOCRTest(unittest.TestCase):
                                 {"text": [text], "conf": [96]},
                             ]
                         ),
-                        profiles=(OCRPreprocessingProfile("one", 1, 170),),
                     )
                     self.assertEqual((result.character, result.text), (name, text))
                     self.assertTrue(result.is_confident())
@@ -366,7 +358,6 @@ class AdaptiveOCRTest(unittest.TestCase):
             recognize_data=Mock(
                 side_effect=[{"text": [], "conf": []}, {"text": ["?"], "conf": [96]}]
             ),
-            profiles=(OCRPreprocessingProfile("one", 1, 170),),
         )
         self.assertFalse(result.is_confident())
         self.assertIsNotNone(result.speaker_confidence)
@@ -410,7 +401,6 @@ class AdaptiveOCRTest(unittest.TestCase):
             recognize_data=Mock(
                 side_effect=[{"text": [], "conf": []}, {"text": ["I"], "conf": [96]}]
             ),
-            profiles=(OCRPreprocessingProfile("one", 1, 170),),
         )
         self.assertEqual((result.character, result.text), ("Narrator", "I"))
         self.assertTrue(result.is_confident())
@@ -423,7 +413,7 @@ class AdaptiveOCRTest(unittest.TestCase):
                 "X",
                 "...",
                 0,
-                "one",
+                "sauvola",
                 1,
                 speaker_confidence=speaker_confidence,
                 dialogue_confidence=0,
@@ -476,7 +466,7 @@ class AdaptiveOCRTest(unittest.TestCase):
         draw = ImageDraw.Draw(image)
         for x in (12, 18, 24):
             draw.rectangle((x, divider + 12, x + 1, divider + 13), fill="white")
-        result = OCRResult("X", "", 95, "one", 1)
+        result = OCRResult("X", "", 95, "sauvola", 1)
         with patch(
             "vntts.dialog_capture.recognize_screenshot_result", return_value=result
         ):

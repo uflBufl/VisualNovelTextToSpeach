@@ -233,7 +233,7 @@ class DiagnosticsDialog(QDialog):
         speaker_processed_header.addStretch()
         speaker_processed_header.addWidget(self.enlarge_speaker_button)
         self.processed_preview.setToolTip(
-            "The selected OCR attempt after preprocessing and any dialogue crop."
+            "The OCR input after preprocessing and any dialogue crop."
         )
         ocr_confidence = QFormLayout()
         ocr_confidence.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)

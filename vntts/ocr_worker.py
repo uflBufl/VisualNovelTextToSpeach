@@ -6,7 +6,7 @@ import atexit
 import json
 import multiprocessing
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from pathlib import Path
@@ -19,18 +19,17 @@ from pytesseract import pytesseract as runtime
 
 from vntts.ocr import (
     OcrData,
-    OCRPreprocessingProfile,
     OCRRegions,
     OCRResult,
     VoiceRegistry,
     _ocr_budget,
     default_minimum_ocr_confidence,
-    default_ocr_profiles,
 )
 from vntts.ocr import (
     recognize_dialog_image_result as recognize_pipeline,
 )
 from vntts.reading_diagnostics import record_diagnostic_event
+from vntts.tesseract_config import tesseract_config
 
 _MAX_PIXELS = 32 * 1024 * 1024
 _MAX_RESULT_BYTES = 16 * 1024 * 1024
@@ -214,7 +213,6 @@ class PersistentOCR:
         minimum_confidence: float = default_minimum_ocr_confidence,
         language: str = "eng",
         ocr_regions: OCRRegions | None = None,
-        profiles: Sequence[OCRPreprocessingProfile] = default_ocr_profiles,
         timeout: float | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> OCRResult:
@@ -240,7 +238,7 @@ class PersistentOCR:
             **unused: object,
         ) -> tuple[str, OcrData]:
             check()
-            modes = {"--psm 6": 6, "--psm 7": 7, "--psm 11": 11}
+            modes = {tesseract_config(psm): psm for psm in (6, 7, 11)}
             if config not in modes or img.mode != "L":
                 raise ValueError("Unsupported native OCR input")
             if img.width * img.height > _MAX_PIXELS:
@@ -293,9 +291,8 @@ class PersistentOCR:
                     1
                 ],
                 recognize_combined=lambda img, lang, remaining: run(
-                    img, lang=lang, config="--psm 6", text=True, data=True
+                    img, lang=lang, config=tesseract_config(6), text=True, data=True
                 ),
-                profiles=profiles,
                 minimum_confidence=minimum_confidence,
                 language=language,
                 ocr_regions=ocr_regions,

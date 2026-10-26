@@ -1,17 +1,22 @@
 import ctypes as ct
 import os
+import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from PIL import Image
 
 from vntts.ocr import (
     DialogRegion,
     OCRRegions,
-    default_ocr_profiles,
     recognize_dialog_image_result,
+)
+from vntts.tesseract_config import (
+    SAUVOLA_PARAMETERS,
+    require_sauvola_cli,
+    tesseract_config,
 )
 from vntts.tesseract_native import (
     NativeTesseract,
@@ -26,6 +31,7 @@ class NativeTesseractTest(unittest.TestCase):
         self.library = Mock()
         self.library.TessBaseAPICreate.return_value = 123
         self.library.TessBaseAPIInit3.return_value = 0
+        self.library.TessBaseAPISetVariable.return_value = 1
         self.library.TessBaseAPIRecognize.return_value = 0
         self.library.TessBaseAPIGetLoadedLanguagesAsVector.return_value = [
             b"eng",
@@ -61,6 +67,13 @@ class NativeTesseractTest(unittest.TestCase):
             self.assertEqual(data["left"], [0, 5])
         self.library.TessBaseAPIInit3.assert_called_once_with(
             123, b"/models", b"eng+rus"
+        )
+        self.assertEqual(
+            self.library.TessBaseAPISetVariable.call_args_list,
+            [
+                call(123, name.encode("ascii"), value.encode("ascii"))
+                for name, value in SAUVOLA_PARAMETERS
+            ],
         )
         self.assertEqual(self.library.TessBaseAPIRecognize.call_count, 3)
         self.assertEqual(self.library.TessDeleteText.call_count, 6)
@@ -120,6 +133,7 @@ class NativeTesseractTest(unittest.TestCase):
             NativeTesseract("missing", tessdata_dir="/models")
         self.library.TessBaseAPIDelete.assert_called_once_with(123)
         self.dll_directory.close.assert_called_once_with()
+        self.library.TessBaseAPISetVariable.assert_not_called()
 
     def test_partial_language_load_fails_and_releases_language_array_and_engine(self):
         self.engine.close()
@@ -129,6 +143,25 @@ class NativeTesseractTest(unittest.TestCase):
             NativeTesseract("eng+rus", tessdata_dir="/models")
         self.library.TessDeleteTextArray.assert_called_once_with([b"eng", None])
         self.library.TessBaseAPIDelete.assert_called_once_with(123)
+        self.library.TessBaseAPISetVariable.assert_not_called()
+
+    def test_unsupported_sauvola_setting_releases_engine_and_dll_directory(self):
+        self.engine.close()
+        for index, (name, value) in enumerate(SAUVOLA_PARAMETERS):
+            with self.subTest(setting=name):
+                self.library.reset_mock()
+                self.dll_directory.reset_mock()
+                self.library.TessBaseAPISetVariable.side_effect = [1] * index + [0]
+                with self.assertRaisesRegex(
+                    RuntimeError, f"Sauvola setting {name}={value}.*Tesseract 5"
+                ):
+                    NativeTesseract("eng+rus", tessdata_dir="/models")
+                self.assertEqual(
+                    self.library.TessBaseAPISetVariable.call_count, index + 1
+                )
+                self.library.TessBaseAPIDelete.assert_called_once_with(123)
+                self.dll_directory.close.assert_called_once_with()
+                self.library.TessBaseAPIRecognize.assert_not_called()
 
     def test_rejects_invalid_images_modes_and_empty_output_requests(self):
         for image, psm, text, data in (
@@ -142,6 +175,73 @@ class NativeTesseractTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.engine.recognize(image, psm, text=text, data=data)
         self.library.TessBaseAPIRecognize.assert_not_called()
+
+
+class TesseractConfigTest(unittest.TestCase):
+    def setUp(self):
+        cache = patch("vntts.tesseract_config._SAUVOLA_CLI_EXECUTABLES", set())
+        cache.start()
+        self.addCleanup(cache.stop)
+
+    def test_subprocess_config_uses_fixed_sauvola_settings(self):
+        self.assertEqual(
+            tesseract_config(7),
+            "--psm 7 -c thresholding_method=2 -c thresholding_window_size=0.33 "
+            "-c thresholding_kfactor=0.5",
+        )
+
+    def test_supported_cli_is_checked_once_per_executable_with_bounded_timeout(self):
+        parameters = "\n".join(f"{name}\t{value}" for name, value in SAUVOLA_PARAMETERS)
+        with patch(
+            "vntts.tesseract_config.subprocess.run",
+            return_value=Mock(stdout=parameters),
+        ) as run:
+            require_sauvola_cli("configured", None)
+            require_sauvola_cli("configured", 2.5)
+            run.assert_called_once_with(
+                ["configured", "--print-parameters"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=10.0,
+            )
+            require_sauvola_cli("another", 2.5)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args.kwargs["timeout"], 2.5)
+
+    def test_cli_rejects_each_missing_parameter_without_caching_failure(self):
+        for missing, _value in SAUVOLA_PARAMETERS:
+            with self.subTest(parameter=missing):
+                parameters = "\n".join(
+                    f"{name}\t{value}"
+                    for name, value in SAUVOLA_PARAMETERS
+                    if name != missing
+                )
+                with patch(
+                    "vntts.tesseract_config.subprocess.run",
+                    return_value=Mock(stdout=parameters),
+                ) as run:
+                    for _attempt in range(2):
+                        with self.assertRaisesRegex(
+                            RuntimeError, f"Sauvola settings: {missing}.*Tesseract 5"
+                        ):
+                            require_sauvola_cli("configured", 2.5)
+                    self.assertEqual(run.call_count, 2)
+
+    def test_cli_probe_errors_are_actionable(self):
+        for error in (
+            FileNotFoundError("missing executable"),
+            subprocess.CalledProcessError(1, "configured"),
+            subprocess.TimeoutExpired("configured", 2.5),
+        ):
+            with (
+                self.subTest(error=type(error).__name__),
+                patch("vntts.tesseract_config.subprocess.run", side_effect=error),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "Sauvola support.*Tesseract 5"
+                ):
+                    require_sauvola_cli("configured", 2.5)
 
 
 class TesseractDiscoveryTest(unittest.TestCase):
@@ -287,7 +387,6 @@ class CombinedOcrInjectionTest(unittest.TestCase):
             recognize_data=data,
             recognize_combined=combined,
             language="eng+rus",
-            profiles=default_ocr_profiles[:1],
         )
         self.assertEqual(
             (result.character, result.text, result.confidence),
@@ -315,13 +414,12 @@ class CombinedOcrInjectionTest(unittest.TestCase):
                 recognize_text=text,
                 recognize_data=data,
                 recognize_combined=combined,
-                profiles=default_ocr_profiles[:1],
                 ocr_regions=regions,
             )
         self.assertEqual((result.character, result.text), ("Alice", "Hello world."))
         combined.assert_called_once()
         data.assert_called_once()
-        self.assertEqual(data.call_args.kwargs["config"], "--psm 7")
+        self.assertEqual(data.call_args.kwargs["config"], tesseract_config(7))
         text.assert_not_called()
 
 

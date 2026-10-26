@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Protocol
 from PIL import Image
 from pytesseract import pytesseract as runtime
 
+from vntts.tesseract_config import SAUVOLA_PARAMETERS
+
 if TYPE_CHECKING:
     from vntts.ocr import OcrData
 
@@ -134,6 +136,15 @@ class NativeTesseract:
                     "to their directory."
                 )
             self._check_loaded_languages()
+            for name, value in SAUVOLA_PARAMETERS:
+                if not self._lib.TessBaseAPISetVariable(
+                    self._handle, name.encode("ascii"), value.encode("ascii")
+                ):
+                    raise RuntimeError(
+                        f"Native Tesseract does not support required Sauvola setting "
+                        f"{name}={value}. Install Tesseract 5 or select a matching "
+                        "VNTTS_TESSERACT_LIBRARY."
+                    )
         except BaseException:
             self.close()
             raise
@@ -142,6 +153,10 @@ class NativeTesseract:
         signatures = {
             "TessBaseAPICreate": (ct.c_void_p, []),
             "TessBaseAPIInit3": (ct.c_int, [ct.c_void_p, ct.c_char_p, ct.c_char_p]),
+            "TessBaseAPISetVariable": (
+                ct.c_int,
+                [ct.c_void_p, ct.c_char_p, ct.c_char_p],
+            ),
             "TessBaseAPIGetLoadedLanguagesAsVector": (
                 ct.POINTER(ct.c_char_p),
                 [ct.c_void_p],
