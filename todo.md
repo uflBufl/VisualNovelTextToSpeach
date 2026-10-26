@@ -305,13 +305,33 @@ and wait for agreement before implementing each item. Finish its targeted tests 
 moving to the next item. Mark an investigation complete only when it yields a
 supported repair or an explicit product decision, not merely a hypothesis.
 
-1. **Implement the agreed image preprocessing change (RUN-25-03).** Present a
-   concrete plan for the shared preprocessing/native OCR path based on the saved
-   threshold benchmark. Candidate: per-region brightness-based inversion plus
-   tuned Sauvola. Agree the replacement and removal of superseded profiles before
-   editing product code. Gate: retain real short replies and speaker recognition,
-   replay the labelled corpus, and verify the live worker with focused regression
-   checks. Keep OCR latency separate from capture, routing and playback latency.
+1. **Implement selected Sauvola preprocessing (RUN-25-03).** The user selected
+   brightness-based auto-inversion plus tuned Sauvola; confirm the concrete
+   migration plan before editing product code.
+   - Keep the measured grayscale/autocontrast/contrast 1.8/resize/sharpen path;
+     invert each prepared name/dialogue region when its median is below 128.
+     Pass grayscale to Tesseract with thresholding_method=2,
+     thresholding_window_size=0.33 and thresholding_kfactor=0.5.
+   - Apply one shared configuration to the persistent native engine and CLI
+     reference path. Verify native parameter support at initialization; expose
+     unsupported installations through existing errors instead of silently
+     selecting another threshold method.
+   - Remove OCRPreprocessingProfile, the balanced/dark/light threshold profiles,
+     profile injection and the retry/ranking code that becomes unused. Migrate
+     their callers and tests together. Preserve region separation, layout modes,
+     cancellation/time budgets and existing result/admission guards.
+   - Report sauvola in diagnostics and preserve reading of historical profile
+     labels. Keep reference algorithms in local benchmark artifacts and Git
+     history, without a runtime fallback or a new user-facing mode selector.
+   - Gate: changed-test selector first, related OCR/native/worker and consumer
+     tests, labelled-corpus replay and native/CLI agreement. Compare against the
+     selected benchmark result and verify live preview/reading briefly; keep OCR
+     time separate from capture/routing/playback. No long timed recording needed.
+   - After migration, independently repair narration/no-name detection if its
+     cause is reproduced: false name/background or zero speaker confidence on
+     006/010/017/022/037/079/100/101/103. Check all 18 narration and 73 named-dialogue
+     samples without weakening confidence globally. Keep 099's background noise
+     separate from a threshold retuning or typo-matching workaround.
 2. **Repair typo-tolerant text acceptance later (RUN-25-03).** After image
    preprocessing, agree the shared observation/readiness repair for already
    identified prepared lines. Calibrate allowed edits and competing-line checks
