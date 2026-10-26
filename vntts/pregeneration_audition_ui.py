@@ -518,7 +518,7 @@ class VoiceAuditionPanel(QGroupBox):
                 candidate.reference_transcript
                 or "\n".join(candidate.source_excerpts)
                 or (
-                    "Text unavailable."
+                    "Transcript unavailable. Use Original to listen to the recording."
                     if candidate.reference_sha256s
                     else "No original reference."
                 )
@@ -1019,7 +1019,7 @@ class VoiceAuditionPanel(QGroupBox):
                 self.reference_model.appendRow(
                     [
                         QStandardItem(label),
-                        QStandardItem(text or "Text unavailable"),
+                        QStandardItem(text or "No transcript"),
                         QStandardItem(duration),
                     ]
                 )
@@ -1231,9 +1231,7 @@ class VoiceAuditionPanel(QGroupBox):
             candidate.reference_transcript
             or "\n".join(candidate.source_excerpts)
             or (
-                UNLINKED_BANK_LABEL
-                if candidate.candidate_origin == UNLINKED_BANK_MEDIA
-                else "Text unavailable."
+                "Transcript unavailable. Use Original to listen to the recording."
                 if reference_count
                 else "No original reference."
             )
@@ -1660,7 +1658,7 @@ class VoiceAuditionPanel(QGroupBox):
                         f"Source: {_candidate_name(candidate)}",
                         origin,
                         *candidate.source_titles,
-                        text or "Original text unavailable.",
+                        text or "No transcript",
                         self.reference_model.item(index, 2).text(),
                         availability,
                         content,
@@ -1671,7 +1669,7 @@ class VoiceAuditionPanel(QGroupBox):
                 reference_item.setIcon(
                     self._current_reference_icon if is_current else QIcon()
                 )
-                self.reference_model.item(index, 1).setText(text or "Text unavailable")
+                self.reference_model.item(index, 1).setText(text or "No transcript")
                 self.reference_model.item(index, 1).setData(
                     text.casefold(), Qt.ItemDataRole.UserRole + 1
                 )

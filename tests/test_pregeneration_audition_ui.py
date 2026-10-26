@@ -991,7 +991,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                     Qt.ItemDataRole.ToolTipRole
                 ),
             )
-            self.assertIn("spoken text unknown", panel.a_reason.text())
+            self.assertIn("Transcript unavailable", panel.a_reason.text())
             panel.cancel()
 
     def test_shutdown_waits_for_save_without_emitting_terminal_signals(self):
@@ -1297,7 +1297,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertEqual(panel.reference_model.rowCount(), 2)
             self.assertTrue(reference_text(panel).startswith("1"))
             self.assertIn(
-                "text unavailable",
+                "No transcript",
                 panel.reference_model.index(panel._candidate_offset, 0).data(
                     Qt.ItemDataRole.ToolTipRole
                 ),

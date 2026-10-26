@@ -136,9 +136,6 @@
       Отдельно согласовать остановку чтения при обычном просмотре Voices:
       open_voice_previews / _open_narrator_picker сейчас останавливают его
       до запуска аудиопревью. Смена дизайна это поведение не исправляет.
-- [ ] **UX-25-10: пояснить отсутствие текста референса.**
-      Обсудить, какое пояснение нужно вместо одного Text unavailable,
-      когда слова из исходной записи неизвестны.
 - [ ] **RUN-25-02: объяснить заметные паузы между репликами.** В начале
       прогона key-dispatch -> confirmed-next-dialogue достиг 4.17 с после line13.
       Это пока наблюдение, не доказанный сбой OCR: сопоставить запись экрана,
@@ -311,8 +308,8 @@ complete. Do not change recognition or playback policy on an unverified hypothes
 
 1. **Fix remaining UI issues in separate increments.** Start with concrete
    ownership/data defects, then agree the desired behavior for UX changes:
-   - Agree reference selection and narrator/fallback presentation (UX-25-09), missing source text/unchanged voice
-     candidate (UX-25-10), source-launch worker readiness (UX-25-03), and canonical displayed
+   - Verify reference selection and narrator/fallback presentation (UX-25-09);
+     agree source-launch worker readiness (UX-25-03) and canonical displayed
      dialogue (RUN-25-04). Reuse existing backlog items rather than add duplicate
      implementations. Gate: reachable actions, truthful status and unchanged
      voice assignments on browsing/cancel; native checks move to the final run.
