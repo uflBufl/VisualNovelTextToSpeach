@@ -38,7 +38,10 @@ from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION, OCRReviewMetadata
 from vntts.onboarding import probe_audio_output, probe_tesseract
 from vntts.path_safety import open_regular_binary
 from vntts.settings import AppSettings
-from vntts.support_timeline_acquisition import TimelineAcquisition
+from vntts.support_timeline_acquisition import (
+    PREROUTE_DIAGNOSTIC_REASONS,
+    TimelineAcquisition,
+)
 from vntts.versioned_json import read_versioned_json
 from vntts.voice_library import VoiceLibrary
 
@@ -215,8 +218,11 @@ runtime_event_fields = (
     *application_error_fields,
 )
 
+preroute_timeline_stages = ("ocr-attempt", "tracker-admission")
+
 generation_timeline_stages = (
     "capture",
+    *preroute_timeline_stages,
     "reading-control",
     "ocr",
     "stable-text",
@@ -284,6 +290,17 @@ generation_timeline_detail_fields = (
     "frame_version",
     "started_monotonic",
     "completed_monotonic",
+    "frame_age_ms",
+    "ocr_call_ms",
+    "attempt_ms",
+    "span_ms",
+    "observations",
+    "committed_characters",
+    "latest_characters",
+    "stable_characters",
+    "transition_expected",
+    "route_kind",
+    "phase",
     "window_id",
     "owner_pid",
     "window_bounds",
@@ -432,6 +449,42 @@ def _record_stable_frame_gate(existing: SupportDetails, event: SupportDocument) 
     )
 
 
+def _sanitize_preroute_details(details: SupportDetails) -> SupportDocument:
+    safe: SupportDocument = {}
+    for key in (
+        "started_monotonic",
+        "completed_monotonic",
+        "frame_version",
+        "frame_age_ms",
+        "ocr_call_ms",
+        "attempt_ms",
+        "span_ms",
+        "observations",
+        "committed_characters",
+        "latest_characters",
+        "stable_characters",
+        "ocr_confidence",
+        "minimum_confidence",
+    ):
+        value = details.get(key)
+        if optional_finite_number(value) is not None:
+            safe[key] = value
+    if isinstance(details.get("transition_expected"), bool):
+        safe["transition_expected"] = details["transition_expected"]
+    for key in ("capture_id", "run_id", "route_kind", "outcome", "error_type"):
+        value = details.get(key)
+        if isinstance(value, str) and re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}", value
+        ):
+            safe[key] = value
+    if details.get("phase") in ("started", "summary"):
+        safe["phase"] = details["phase"]
+    reason = details.get("reason")
+    if isinstance(reason, str) and reason in PREROUTE_DIAGNOSTIC_REASONS:
+        safe["reason"] = reason
+    return safe
+
+
 class GenerationTimelineLog:
     """Keep one bounded, privacy-safe pipeline timeline per generation."""
 
@@ -472,7 +525,7 @@ class GenerationTimelineLog:
             ) from error
         if not math.isfinite(occurred_at):
             raise ValueError("Timeline timestamp must be finite")
-        if generation < 1:
+        if generation < 0 or generation == 0 and stage not in preroute_timeline_stages:
             return False
         session_id = _timeline_uuid(session_id, "session")
         run_id = _timeline_uuid(run_id, "run")
@@ -509,11 +562,15 @@ class GenerationTimelineLog:
                     (occurred_at - self.clock_origin) * 1000
                 ),
                 "event_sequence": self.event_sequence,
-                **{
-                    key: _sanitize_event_value(details[key])
-                    for key in generation_timeline_detail_fields
-                    if key in details and details[key] is not None
-                },
+                **(
+                    _sanitize_preroute_details(details)
+                    if stage in preroute_timeline_stages
+                    else {
+                        key: _sanitize_event_value(details[key])
+                        for key in generation_timeline_detail_fields
+                        if key in details and details[key] is not None
+                    }
+                ),
             }
             if stage == "stable-frame-gate":
                 _record_stable_frame_gate(existing, event)
@@ -1769,10 +1826,16 @@ def _sanitize_previous_timeline(timeline: object) -> SupportDocument | None:
     if (
         not isinstance(generation, int)
         or isinstance(generation, bool)
-        or generation < 1
+        or generation < 0
     ):
         return None
     events = _sanitize_previous_events(timeline.get("events"))
+    if generation == 0:
+        events = [
+            event for event in events if event["stage"] in preroute_timeline_stages
+        ]
+        if not events:
+            return None
     sanitized: SupportDocument = {"generation": generation, "events": events}
     dropped = timeline.get("dropped_events")
     if isinstance(dropped, int) and not isinstance(dropped, bool) and dropped >= 0:
@@ -1802,6 +1865,15 @@ def _sanitize_previous_event(event: object) -> SupportDocument | None:
         generation_timeline_stages + sequence_timeline_stages
     ):
         return None
+    details = (
+        _sanitize_preroute_details(event)
+        if event["stage"] in preroute_timeline_stages
+        else {
+            key: _sanitize_event_value(event[key])
+            for key in generation_timeline_detail_fields
+            if key in event and event[key] is not None
+        }
+    )
     return {
         "stage": event["stage"],
         **{
@@ -1812,10 +1884,10 @@ def _sanitize_previous_event(event: object) -> SupportDocument | None:
                 "clock_origin",
                 "clock_elapsed_ms",
                 "event_sequence",
-                *generation_timeline_detail_fields,
             )
             if key in event and event[key] is not None
         },
+        **details,
     }
 
 

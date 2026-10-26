@@ -305,30 +305,14 @@ and wait for agreement before implementing each item. Finish its targeted tests 
 moving to the next item. Mark an investigation complete only when it yields a
 supported repair or an explicit product decision, not merely a hypothesis.
 
-1. **Make pre-route waits attributable (RUN-25-09/02, R1/T1; proposed change,
-   awaiting agreement).** Extend the existing diagnostic timeline in one change:
-   - Record each actual OCR attempt independently of generation changes, with
-     run/capture/frame identity, capture age, duration and accepted/uncertain/
-     stale/cancelled/error outcome. Preserve the existing generation-level `ocr`
-     event and freshness, focus, Stop and worker-ownership checks.
-   - Measure OCR lock waiting and the call after lock acquisition separately in
-     the existing opt-in diagnostic sink; the latter includes preprocessing and
-     IPC, so must not be labelled pure Tesseract time. Measure the source-result
-     resolver including cursor-lock waiting separately in the frame-recognition
-     owner, without claiming to time every later source probe or adding a new
-     native protocol.
-   - Report tracker admission reasons at their decision points, including cached
-     observations: waiting for stability, incomplete source prefix, committed
-     text conflict, unchanged and emitted. Coalesce unchanged reasons with a
-     count/time span; keep text/pixels out of ordinary telemetry.
-   - Extend support/acquisition allowlists and export checks. Use virtual time
-     for queued/slow/error/stale/Stop/focus cases, terminal attempt outcomes,
-     generation-zero evidence and bounded journal capacity. Gate: a recorded
-     wait can be assigned to an actual stage or explicit admission reason,
-     and telemetry failure cannot alter reading or cancellation.
-   Then validate99 ->100 and31 ->32 with current code. Choose a speed/recovery
+1. **Qualify remaining pre-route waits (RUN-25-09/02, R1/T1).** Reproduce
+   99 ->100 and31 ->32 with the correlated OCR-attempt, worker/resolver timings
+   and coalesced tracker-admission diagnostics. Distinguish time before visible
+   text from recognition, resolver and tracker waiting. Choose a speed/recovery
    repair only if a remaining delay is reproduced; the old capture-only R1
-   incident remains an independent unresolved cause.
+   incident remains an independent unresolved cause. Gate: each reproduced wait
+   has current frame evidence and an identified stage; a short successful run
+   on other lines does not close these historical cases.
    **Next separate change: reload/readiness race (RUN-25-01).** Suspend and
    invalidate readiness checks at shared controller-lifecycle start, reject late
    probe results, and refresh once with effective settings after completion or

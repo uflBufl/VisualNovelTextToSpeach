@@ -100,6 +100,7 @@ from vntts.ocr import (
 from vntts.ocr_corrections import OCRCorrectionDictionary, OCRCorrectionStore
 from vntts.playback import PreparedPlayback
 from vntts.profiles import GameProfileStore
+from vntts.reading_diagnostics import record_diagnostic_event
 from vntts.runtime_config import (
     LiveConfiguration,
     LiveTrackerOptions,
@@ -1158,6 +1159,47 @@ class AppController:
         voice_router = self.voice_router
         if voice_router is None:
             raise RuntimeError("The speech engine is not ready")
+        try:
+            image = getattr(frame, "image", None)
+            provenance = getattr(image, "info", {}).get("capture_provenance")
+            identity = (
+                {key: provenance.get(key) for key in ("run_id", "capture_id")}
+                if isinstance(provenance, dict)
+                else {}
+            )
+            if not identity:
+                frame_provenance = getattr(frame, "provenance", None)
+                if frame_provenance is not None:
+                    identity = {
+                        key: getattr(frame_provenance, key, None)
+                        for key in ("run_id", "capture_id")
+                    }
+        except Exception:
+            identity = {}
+
+        def resolve_result(result: OCRResult) -> OCRResult:
+            started = monotonic()
+            outcome = "success"
+            error_type: str | None = None
+            try:
+                return self._resolve_story_ocr_result(result)
+            except BaseException as error:
+                outcome = "error"
+                error_type = type(error).__name__
+                raise
+            finally:
+                try:
+                    record_diagnostic_event(
+                        "ocr",
+                        "story-result-resolution",
+                        **identity,
+                        outcome=outcome,
+                        error_type=error_type,
+                        resolver_ms=round((monotonic() - started) * 1000, 3),
+                    )
+                except Exception:
+                    pass
+
         character, text = recognize_live_frame(
             frame,
             voice_router.registry,
@@ -1169,7 +1211,7 @@ class AppController:
             self.settings.ocr_language,
             self.correction_dictionary,
             ellipsis_speaker_resolver=self.chapter_voice_preloader,
-            result_resolver=self._resolve_story_ocr_result,
+            result_resolver=resolve_result,
         )
         return self._canonical_observed_character(character, text), text
 

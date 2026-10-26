@@ -46,9 +46,29 @@ _IDENTITY_FIELDS = {
     "match_result",
     "phase",
     "worker_id",
+    "route_kind",
 }
 # Reasons are application symbols, never user, OCR or exception text.
-CONTINUATION_GATE_REASONS = frozenset(
+PREROUTE_DIAGNOSTIC_REASONS = frozenset(
+    {
+        "ocr-current",
+        "ocr-not-current",
+        "empty",
+        "waiting-stability",
+        "committed-prefix",
+        "committed-conflict",
+        "canonical-held",
+        "speaker-noise",
+        "incomplete-source-prefix",
+        "waiting-boundary",
+        "unchanged",
+        "emitted",
+        "silent",
+        "routing-held",
+        "visual-only",
+    }
+)
+CONTINUATION_GATE_REASONS = PREROUTE_DIAGNOSTIC_REASONS | frozenset(
     {
         "armed",
         "cancelled",
@@ -125,6 +145,8 @@ ocr_confidence minimum_confidence wait_ms
 generation occurred_at monotonic_at clock_origin clock_elapsed_ms event_sequence run_started_at
 worker_progress_age_ms worker_frame_version latest_frame_version frame_version started_monotonic
 completed_monotonic window_id owner_pid success attempt underflowed generation_limited synthesis_ms
+frame_age_ms ocr_call_ms attempt_ms span_ms committed_characters latest_characters stable_characters
+transition_expected queue_wait_ms worker_call_ms resolver_ms
 playback_ms first_audio_ms chunk_ordinal chunk_characters occurrence_id next_event_count visible
 focused completion_cue recheck_interval_ms candidate_frames settled_ms ready prefetch_ms
 from_text_visible_ms from_ocr_stable_ms from_generation_started_ms from_playback_started_ms

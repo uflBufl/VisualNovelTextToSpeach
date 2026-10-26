@@ -211,10 +211,17 @@ class LiveReplayTest(unittest.TestCase):
             ["live:replay-live-tts", "live:replay-live-tts"],
         )
         self.assertEqual(report["advance_requests"], 2)
-        first_stages = {event["stage"] for event in report["timelines"][0]["events"]}
+        startup = next(row for row in report["timelines"] if row["generation"] == 0)
+        self.assertTrue(
+            any(event["stage"] == "ocr-attempt" for event in startup["events"])
+        )
+        first = next(row for row in report["timelines"] if row["generation"] == 1)
+        first_stages = {event["stage"] for event in first["events"]}
         self.assertEqual(
             first_stages,
             {
+                "ocr-attempt",
+                "tracker-admission",
                 "capture",
                 "ocr",
                 "stable-text",

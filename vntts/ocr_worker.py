@@ -12,6 +12,7 @@ from multiprocessing.process import BaseProcess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Lock
+from time import monotonic
 from typing import Any
 
 from PIL import Image
@@ -19,6 +20,7 @@ from pytesseract import pytesseract as runtime
 
 from vntts.ocr import (
     OcrData,
+    OCRPreviewCancelled,
     OCRRegions,
     OCRResult,
     VoiceRegistry,
@@ -203,7 +205,10 @@ class PersistentOCR:
         finally:
             child.close()
         self._wait(b"ready", check)
-        record_diagnostic_event("ocr", "worker_started", pid=self.pid)
+        try:
+            record_diagnostic_event("ocr", "worker_started", pid=self.pid)
+        except Exception:
+            pass
 
     def recognize(
         self,
@@ -216,17 +221,8 @@ class PersistentOCR:
         timeout: float | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> OCRResult:
-        with self._state_lock:
-            if self._closed:
-                raise RuntimeError("OCR service is closed")
-            cancellation = self._cancel
-
         def is_cancelled() -> bool:
             return cancellation.is_set() or (cancelled is not None and cancelled())
-
-        check = _ocr_budget(
-            _DEFAULT_TIMEOUT if timeout is None else timeout, is_cancelled
-        )
 
         def run(
             img: Image.Image,
@@ -276,10 +272,31 @@ class PersistentOCR:
                 raise RuntimeError("Invalid OCR worker result")
             return result["text"], result["data"]
 
-        check()
-        while not self._lock.acquire(timeout=0.025):
-            check()
+        provenance = image.info.get("capture_provenance")
+        identity = (
+            {key: provenance.get(key) for key in ("run_id", "capture_id")}
+            if isinstance(provenance, dict)
+            else {}
+        )
+        queued_at: float | None = None
+        worker_started: float | None = None
+        completed: float | None = None
+        outcome = "success"
+        error_type: str | None = None
+        request_pid: int | None = None
         try:
+            with self._state_lock:
+                if self._closed:
+                    raise RuntimeError("OCR service is closed")
+                cancellation = self._cancel
+            check = _ocr_budget(
+                _DEFAULT_TIMEOUT if timeout is None else timeout, is_cancelled
+            )
+            check()
+            queued_at = monotonic()
+            while not self._lock.acquire(timeout=0.025):
+                check()
+            worker_started = monotonic()
             check()
             result = recognize_pipeline(
                 image,
@@ -302,16 +319,49 @@ class PersistentOCR:
             check()
             return result
         except BaseException as error:
-            record_diagnostic_event(
-                "ocr",
-                "worker_request_failed",
-                pid=self.pid,
-                error_type=type(error).__name__,
+            completed = monotonic()
+            outcome = (
+                "cancelled"
+                if isinstance(error, OCRPreviewCancelled)
+                else "timeout"
+                if isinstance(error, TimeoutError)
+                else "error"
             )
-            self._discard()
+            error_type = type(error).__name__
+            if worker_started is not None:
+                request_pid = self.pid
+                self._discard()
             raise
         finally:
-            self._lock.release()
+            completed = monotonic() if completed is None else completed
+            if worker_started is not None:
+                if outcome == "success":
+                    request_pid = self.pid
+                self._lock.release()
+            try:
+                record_diagnostic_event(
+                    "ocr",
+                    "worker_request_completed",
+                    **identity,
+                    worker_pid=request_pid,
+                    outcome=outcome,
+                    error_type=error_type,
+                    queue_wait_ms=round(
+                        (
+                            (completed if worker_started is None else worker_started)
+                            - queued_at
+                        )
+                        * 1000,
+                        3,
+                    )
+                    if queued_at is not None
+                    else 0.0,
+                    worker_call_ms=round((completed - worker_started) * 1000, 3)
+                    if worker_started is not None
+                    else 0.0,
+                )
+            except Exception:
+                pass
 
 
 _service_lock = Lock()

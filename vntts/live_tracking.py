@@ -92,6 +92,7 @@ class IncrementalDialogTracker:
         self.next_chunk_ordinal = 1
         self.silent_event_id: str | None = None
         self.canonical_line_id: str | None = None
+        self.admission_reason = "empty"
 
     @property
     def committed_position(self) -> int:
@@ -103,10 +104,12 @@ class IncrementalDialogTracker:
 
     def observe(self, character: str, text: str) -> list[SpeechChunk]:
         now = self.clock()
+        self.admission_reason = "waiting-stability"
 
         if not text:
             if self.latest_text:
                 self._clear_dialog()
+            self.admission_reason = "empty"
             return []
 
         if self._observation_is_blocked(character, text):
@@ -150,6 +153,7 @@ class IncrementalDialogTracker:
             and self.incomplete_dialogue_probe is not None
             and self.incomplete_dialogue_probe(character, stable_text)
         ):
+            self.admission_reason = "incomplete-source-prefix"
             return []
         return self._emit(stable_text, flush=idle)
 
@@ -159,9 +163,11 @@ class IncrementalDialogTracker:
             and character == self.character
             and not self.transition_expected
         ):
+            self.admission_reason = "canonical-held"
             return True
         if self._is_speaker_noise_over_committed_text(character, text):
             self._clear_pending_dialog()
+            self.admission_reason = "speaker-noise"
             return True
         if character != self.character or self.transition_expected:
             return False
@@ -172,17 +178,21 @@ class IncrementalDialogTracker:
                 return False
             if observed_key and committed_key.startswith(observed_key):
                 self._clear_pending_dialog()
+                self.admission_reason = "committed-prefix"
                 return True
         if self.committed_text.startswith(text) and text != self.committed_text:
             self._clear_pending_dialog()
+            self.admission_reason = "committed-prefix"
             return True
         if self.committed_text and not text.startswith(self.committed_text):
             self.conflicting_observation = True
             self._clear_pending_dialog()
+            self.admission_reason = "committed-conflict"
             return True
         return False
 
     def observe_silent(self, event_id: str) -> bool:
+        self.admission_reason = "silent"
         if self.silent_event_id == event_id:
             return False
         self._clear_dialog()
@@ -194,6 +204,7 @@ class IncrementalDialogTracker:
         self, character: str, text: str, line_id: str
     ) -> list[SpeechChunk]:
         if self.canonical_line_id == line_id:
+            self.admission_reason = "canonical-held"
             return []
         now = self.clock()
         self._start_dialog(character, text, now)
@@ -201,6 +212,7 @@ class IncrementalDialogTracker:
         self.stable_text = text
         self.next_chunk_ordinal = 2
         self.canonical_line_id = line_id
+        self.admission_reason = "emitted"
         return [
             SpeechChunk(
                 self.generation,
@@ -213,6 +225,9 @@ class IncrementalDialogTracker:
 
     def flush(self) -> list[SpeechChunk]:
         if not self.latest_text or self.conflicting_observation:
+            self.admission_reason = (
+                "committed-conflict" if self.conflicting_observation else "empty"
+            )
             return []
         return self._emit(self.latest_text, flush=True)
 
@@ -337,25 +352,31 @@ class IncrementalDialogTracker:
 
     def _emit(self, stable_text: str, *, flush: bool) -> list[SpeechChunk]:
         if self.complete_dialogue_only and not flush:
+            self.admission_reason = "waiting-boundary"
             return []
         if self.committed_text and self._comparison_key(
             stable_text
         ) == self._comparison_key(self.committed_text):
+            self.admission_reason = "unchanged"
             return []
         if not stable_text.startswith(self.committed_text):
             self.conflicting_observation = True
+            self.admission_reason = "committed-conflict"
             return []
         if len(stable_text) <= len(self.committed_text):
+            self.admission_reason = "unchanged"
             return []
 
         unspoken_text = stable_text[len(self.committed_text) :]
         boundary = len(unspoken_text) if flush else self._find_boundary(unspoken_text)
         if boundary == 0:
+            self.admission_reason = "waiting-boundary"
             return []
 
         text = unspoken_text[:boundary].strip()
         self.committed_text += unspoken_text[:boundary]
         if not text or not any(character.isalnum() for character in text):
+            self.admission_reason = "silent"
             return []
 
         sentences = (
@@ -374,6 +395,7 @@ class IncrementalDialogTracker:
                 )
             )
             self.next_chunk_ordinal += 1
+        self.admission_reason = "emitted" if chunks else "silent"
         return chunks
 
     @staticmethod

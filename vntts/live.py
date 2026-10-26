@@ -46,6 +46,91 @@ class _CapturePolicy(Protocol):
     ) -> float: ...
 
 
+def _frame_capture_evidence(frame: Frame) -> tuple[str | None, float | None]:
+    try:
+        provenance = getattr(frame, "provenance", None)
+        capture_id = getattr(provenance, "capture_id", None)
+        captured_at = optional_finite_number(
+            getattr(provenance, "completed_monotonic", None)
+        )
+        return capture_id if isinstance(capture_id, str) else None, captured_at
+    except Exception:
+        return None, None
+
+
+class _TrackerAdmissionDiagnostics:
+    def __init__(self, report: Callable[..., object]) -> None:
+        self.report = report
+        self.identity: tuple[str, int, str, str] | None = None
+        self.started_at = self.last_at = 0.0
+        self.observations = 0
+        self.details: dict[str, object] = {}
+
+    def observe(
+        self,
+        tracker: IncrementalDialogTracker,
+        run_id: str,
+        route_kind: str,
+        frame: Frame,
+        frame_version: int,
+        reason: str | None = None,
+    ) -> None:
+        try:
+            tracker_reason = getattr(tracker, "admission_reason", None)
+            if not isinstance(tracker_reason, str):
+                return
+            details: dict[str, object] = {
+                "capture_id": _frame_capture_evidence(frame)[0],
+                "frame_version": frame_version,
+                "committed_characters": len(tracker.committed_text),
+                "latest_characters": len(tracker.latest_text),
+                "stable_characters": len(tracker.stable_text),
+                "transition_expected": tracker.transition_expected,
+            }
+            identity = run_id, tracker.generation, reason or tracker_reason, route_kind
+        except Exception:
+            return
+        now = monotonic()
+        changed = identity != self.identity
+        if changed:
+            self.finish()
+            self.identity = identity
+            self.started_at = now
+        self.last_at = now
+        self.observations += 1
+        self.details = details
+        if changed:
+            self._emit("started")
+
+    def _emit(self, phase: str) -> None:
+        assert self.identity is not None
+        run_id, generation, reason, route_kind = self.identity
+        try:
+            self.report(
+                "tracker-admission",
+                generation,
+                self.last_at,
+                run_id=run_id,
+                reason=reason,
+                route_kind=route_kind,
+                phase=phase,
+                observations=self.observations,
+                started_monotonic=self.started_at,
+                completed_monotonic=self.last_at,
+                span_ms=(self.last_at - self.started_at) * 1000,
+                **self.details,
+            )
+        except Exception:
+            pass
+
+    def finish(self) -> None:
+        if self.identity is not None and self.observations > 1:
+            # The summary includes the first observation; it is not another attempt.
+            self._emit("summary")
+        self.identity = None
+        self.observations = 0
+
+
 @dataclass(frozen=True)
 class SilentDialogRoute:
     """A cursor-owned visible dialogue event that intentionally has no speech."""
@@ -1431,6 +1516,28 @@ class LiveDialogReader:
             base_interval=self.interval_seconds,
             **self.adaptive_options,
         )
+        admission = _TrackerAdmissionDiagnostics(self._report_pipeline_event)
+        try:
+            self._consume_ocr_frames(stop_event, tracker, policy, admission)
+        finally:
+            admission.finish()
+        self._ocr_progress("flushing")
+        if not self.stop_event.is_set() and not self.is_shutting_down:
+            self._ocr_callback(
+                "scheduling-flush",
+                self._schedule_tracked_chunks,
+                tracker,
+                self._ocr_callback("flushing-tracker", tracker.flush),
+            )
+        self._ocr_progress("finished")
+
+    def _consume_ocr_frames(
+        self,
+        stop_event: Event,
+        tracker: IncrementalDialogTracker,
+        policy: _CapturePolicy,
+        admission: _TrackerAdmissionDiagnostics,
+    ) -> None:
         cached_fingerprint = object()
         cached_render_fingerprint = object()
         cached_completion = object()
@@ -1533,6 +1640,14 @@ class LiveDialogReader:
                         complete,
                     )
                 if frame_route is False:
+                    admission.observe(
+                        tracker,
+                        self.run_id,
+                        "visual",
+                        frame,
+                        recognition_version,
+                        "visual-only",
+                    )
                     if self._ocr_callback("reading-purpose", self.ocr_purpose) is None:
                         self._ocr_callback(
                             "observing-frame",
@@ -1565,6 +1680,14 @@ class LiveDialogReader:
                 ):
                     purpose = self._ocr_callback("reading-purpose", self.ocr_purpose)
                     if purpose is None:
+                        admission.observe(
+                            tracker,
+                            self.run_id,
+                            "visual",
+                            frame,
+                            recognition_version,
+                            "visual-only",
+                        )
                         self._ocr_callback(
                             "observing-frame",
                             self.frame_observed,
@@ -1591,6 +1714,8 @@ class LiveDialogReader:
                         complete,
                         render_fingerprint,
                         policy,
+                        recognition_version,
+                        recognition_capture_at,
                     )
                     if observation is None:
                         continue
@@ -1630,6 +1755,14 @@ class LiveDialogReader:
                     )
                 )
                 if routed_observation is None:
+                    admission.observe(
+                        tracker,
+                        self.run_id,
+                        route_kind,
+                        frame,
+                        recognition_version,
+                        "routing-held",
+                    )
                     interval = self._ocr_callback(
                         "updating-policy", policy.observe, character, text, focused=True
                     )
@@ -1691,6 +1824,9 @@ class LiveDialogReader:
                             text,
                             line_id,
                         )
+                admission.observe(
+                    tracker, self.run_id, route_kind, frame, recognition_version
+                )
                 self._ocr_callback(
                     "scheduling-speech", self._schedule_tracked_chunks, tracker, chunks
                 )
@@ -1704,16 +1840,6 @@ class LiveDialogReader:
                 with self.state_lock:
                     self.next_capture_interval = self.interval_seconds
 
-        self._ocr_progress("flushing")
-        if not self.stop_event.is_set() and not self.is_shutting_down:
-            self._ocr_callback(
-                "scheduling-flush",
-                self._schedule_tracked_chunks,
-                tracker,
-                self._ocr_callback("flushing-tracker", tracker.flush),
-            )
-        self._ocr_progress("finished")
-
     def _recognize_current_frame(
         self,
         frame: Frame,
@@ -1723,45 +1849,91 @@ class LiveDialogReader:
         complete: bool,
         render_fingerprint: FrameFingerprint,
         policy: _CapturePolicy,
+        frame_version: int,
+        captured_at: float | None,
     ) -> Observation | None:
         recognition_owner = self._ocr_callback("reading-owner", self.stable_frame_owner)
         with self.state_lock:
             recognition_epoch = self.frame_route_epoch
             recognition_run_id = self.run_id
+            generation = self.active_generation
         self._ocr_progress("recognizing")
+        started = monotonic()
+        capture_id, provenance_time = _frame_capture_evidence(frame)
+        captured_at = (
+            provenance_time
+            if provenance_time is not None
+            else optional_finite_number(captured_at)
+        )
+        outcome, reason, error_type = "error", None, None
         uncertainty = None
         try:
-            character, text = self.recognize_frame(frame)
-        except OCRPreviewCancelled:
-            return None
-        except OCRUncertainError as error:
-            uncertainty = error
-        self._ocr_progress("validating-freshness")
-        is_current = partial(
-            self._recognition_is_current,
-            purpose,
-            recognition_owner,
-            recognition_epoch,
-            fingerprint,
-            visible,
-            complete,
-            render_fingerprint,
-            frame,
-            recognition_run_id,
-        )
-        if not is_current():
-            return None
-        if uncertainty is not None:
-            self._ocr_callback(
-                "reporting-uncertainty", self.ocr_uncertain, uncertainty, is_current
+            try:
+                character, text = self.recognize_frame(frame)
+            except OCRPreviewCancelled as error:
+                outcome, error_type = "cancelled", type(error).__name__
+                return None
+            except OCRUncertainError as error:
+                uncertainty = error
+            finally:
+                ocr_call_ms = (monotonic() - started) * 1000
+            self._ocr_progress("validating-freshness")
+            is_current = partial(
+                self._recognition_is_current,
+                purpose,
+                recognition_owner,
+                recognition_epoch,
+                fingerprint,
+                visible,
+                complete,
+                render_fingerprint,
+                frame,
+                recognition_run_id,
             )
-            interval = self._ocr_callback(
-                "updating-policy", policy.observe, None, "", focused=True
+            if not is_current():
+                outcome, reason = "stale", "ocr-not-current"
+                return None
+            if uncertainty is not None:
+                self._ocr_callback(
+                    "reporting-uncertainty", self.ocr_uncertain, uncertainty, is_current
+                )
+                interval = self._ocr_callback(
+                    "updating-policy", policy.observe, None, "", focused=True
+                )
+                with self.state_lock:
+                    self.next_capture_interval = interval
+                outcome = "uncertain"
+                return None
+            # Accepted here means current OCR evidence, not tracker/speech admission.
+            outcome, reason = "accepted", "ocr-current"
+            return character, text
+        except BaseException as error:
+            error_type = type(error).__name__
+            raise
+        finally:
+            completed = monotonic()
+            self._report_pipeline_event(
+                "ocr-attempt",
+                generation,
+                completed,
+                run_id=recognition_run_id,
+                capture_id=capture_id,
+                frame_version=frame_version,
+                started_monotonic=started,
+                completed_monotonic=completed,
+                frame_age_ms=(started - captured_at) * 1000
+                if captured_at is not None
+                else None,
+                ocr_call_ms=ocr_call_ms,
+                attempt_ms=(completed - started) * 1000,
+                outcome=outcome,
+                reason=reason,
+                error_type=error_type,
+                ocr_confidence=uncertainty.result.confidence if uncertainty else None,
+                minimum_confidence=uncertainty.minimum_confidence
+                if uncertainty
+                else None,
             )
-            with self.state_lock:
-                self.next_capture_interval = interval
-            return None
-        return character, text
 
     def _stable_frame_route_decision(
         self,
@@ -3003,7 +3175,11 @@ class LiveDialogReader:
                 **details,
             )
         except Exception as error:
-            self.report_error(error)
+            try:
+                self.report_error(error)
+            except Exception:
+                # Diagnostic sinks must not change reading or mask its failure.
+                pass
 
     def _cancel_auto_advance_locked(self) -> None:
         timer = self.auto_advance_timer
