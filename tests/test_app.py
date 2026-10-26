@@ -57,6 +57,7 @@ from vntts.generated_audio import AudioRouteTrace  # noqa: E402
 from vntts.ocr import (  # noqa: E402
     DialogRegion,
     OCRRegions,
+    OCRResult,
     load_dialog_region,
     load_ocr_regions,
     save_dialog_region,
@@ -2540,6 +2541,55 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.compact_controller.status.toPlainText(),
         )
         tray_application.shutdown()
+
+    def test_uncertain_ocr_keeps_last_dialogue_and_reports_only_status(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=lambda settings, **options: AppController(
+                settings, tts_factory=Mock(), **options
+            ),
+        )
+        controller = tray.controller
+        uncertain = OCRResult("Untrusted name", "Private OCR fragment", 42.4, "test", 3)
+        warning = "OCR uncertain: 42% (requires 60%). Waiting for clearer text."
+        for previous in (None, ("Marcus", "Previously recognized dialogue.")):
+            with self.subTest(previous=previous):
+                if previous is not None:
+                    controller.dialog_handler(*previous)
+                speaker = tray.dashboard.speaker.text()
+                dialogue = tray.dashboard.dialogue.text()
+                compact_speaker = tray.compact_controller.speaker.toPlainText()
+                compact_hidden = tray.compact_controller.speaker.isHidden()
+                menu_dialogue = tray.dialog_action.text()
+
+                controller._ocr_uncertain(uncertain, 60)
+                self.application.processEvents()
+
+                self.assertEqual(tray.dashboard.speaker.text(), speaker)
+                self.assertEqual(tray.dashboard.dialogue.text(), dialogue)
+                self.assertEqual(
+                    tray.compact_controller.speaker.toPlainText(), compact_speaker
+                )
+                self.assertEqual(
+                    tray.compact_controller.speaker.isHidden(), compact_hidden
+                )
+                self.assertEqual(tray.dialog_action.text(), menu_dialogue)
+                self.assertEqual(tray.dashboard.status.text(), warning)
+                self.assertEqual(tray.compact_controller.status.toPlainText(), warning)
+                self.assertEqual(tray.status_action.toolTip(), warning)
+                logged = repr(tray.support_log.snapshot())
+                self.assertNotIn(uncertain.text, logged)
+                self.assertNotIn(uncertain.character, logged)
+
+        controller.status_handler("Reading resumed")
+        controller._ocr_uncertain(uncertain, 60, observation_is_current=lambda: False)
+        self.assertEqual(tray.dashboard.status.text(), "Reading resumed")
+        controller.dialog_handler("Sonetto", "Next recognized dialogue.")
+        self.assertEqual(tray.dashboard.speaker.text(), "Sonetto")
+        self.assertEqual(tray.dashboard.dialogue.text(), "Next recognized dialogue.")
+        self.assertEqual(tray.compact_controller.speaker.toPlainText(), "Sonetto")
+        tray.shutdown()
 
     def test_routine_playback_status_is_summarized_only_for_display(self):
         tray = TrayApplication(

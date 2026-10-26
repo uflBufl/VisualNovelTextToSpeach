@@ -302,9 +302,6 @@ complete. Do not change recognition or playback policy on an unverified hypothes
 
 1. **Fix remaining UI issues in separate increments.** Start with concrete
    ownership/data defects, then agree the desired behavior for UX changes:
-   - Keep OCR uncertainty out of the speaker/last-dialogue callback. Preserve the
-     last actual speaker and show the reason through the shared status path;
-     include both dashboard and Compact consumers.
    - Reject unusable off-screen game geometry before calibration capture and
      revalidate after window/workspace changes (U1/U4 and capture-setup backlog).
      Native visibility qualification is deferred to the combined run.
@@ -346,6 +343,9 @@ complete. Do not change recognition or playback policy on an unverified hypothes
    U1/U2/U4/U6/U7/U8 gates, persistent OCR and portable observation. Preserve
    approved WAV bytes and complete independent capture; cache hits alone are
    not background-generation load. Include the following deferred checks:
+   - **OCR warning presentation:** low-confidence startup/live observations must
+     preserve the last real speaker and dialogue in dashboard and Compact.
+     Confidence/reason belongs to status; raw OCR must not enter status logs.
    - **Readiness after reload (RUN-25-01):** validate settings and prepared-pack
      activation, profile changes, cancellation and restored-runtime rollback.
      Checks must wait for the current operation, discard obsolete results and

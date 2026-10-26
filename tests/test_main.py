@@ -7649,10 +7649,12 @@ class MainTest(unittest.TestCase):
 
     def test_controller_reports_uncertain_ocr_confidence(self):
         dialogs = []
+        statuses = []
         controller = AppController(
             AppSettings(),
             tts_factory=Mock(),
             dialog_handler=lambda character, text: dialogs.append((character, text)),
+            status_handler=statuses.append,
         )
         reader = self._sequence_reader(controller)
         reader.active_generation = 3
@@ -7662,8 +7664,13 @@ class MainTest(unittest.TestCase):
             60,
         )
 
-        self.assertEqual(dialogs[-1][0], "OCR uncertain")
-        self.assertIn("42% (requires 60%)", dialogs[-1][1])
+        self.assertEqual(dialogs, [])
+        self.assertEqual(
+            statuses[-1],
+            "OCR uncertain: 42% (requires 60%). Waiting for clearer text.",
+        )
+        self.assertNotIn("Possibly incorrect", repr(statuses))
+        self.assertNotIn("Marcus", repr(statuses))
         self.assertIsNone(reader.suppressed_generation)
         self.assertTrue(reader.observation_uncertain)
 

@@ -26,6 +26,7 @@ class LiveScopeBootstrapTest(unittest.TestCase):
             AppSettings(),
             chapter_voice_preloader=ChapterVoicePreloader((self.line,)),
             dialog_handler=Mock(),
+            status_handler=Mock(),
         )
         self.controller.live_reader = Mock(
             is_running=False,
@@ -56,8 +57,15 @@ class LiveScopeBootstrapTest(unittest.TestCase):
             self.events.call_args.args, ("runtime", "live-scope-bootstrap")
         )
         self.assertEqual(self.events.call_args.kwargs["outcome"], outcome)
-        if outcome not in {"matched", "ocr-uncertain"}:
+        if outcome != "matched":
             self.controller.dialog_handler.assert_not_called()
+        if outcome != "ocr-uncertain":
+            self.assertFalse(
+                any(
+                    "OCR uncertain" in call.args[0]
+                    for call in self.controller.status_handler.call_args_list
+                )
+            )
         if outcome != "matched":
             self.assertIsNone(self.controller.chapter_voice_preloader.current_match)
 
@@ -186,9 +194,10 @@ class LiveScopeBootstrapTest(unittest.TestCase):
         self.assertEqual(self.controller.observation_serial, serial + 1)
         self.assertIsNone(self.controller.indexed_current_recovery)
         self.controller.live_reader.invalidate_observation.assert_called_once_with()
-        self.controller.dialog_handler.assert_called_once_with(
-            "OCR uncertain", "25% (requires 60%): The complete dialogue."
+        self.controller.status_handler.assert_called_once_with(
+            "OCR uncertain: 25% (requires 60%). Waiting for clearer text."
         )
+        self.assertNotIn(self.line.text, repr(self.controller.status_handler.call_args))
         matcher.assert_not_called()
         self.assert_outcome("ocr-uncertain")
         self.assertNotIn(self.line.text, repr(self.events.call_args))
@@ -260,6 +269,7 @@ class LiveScopeBootstrapTest(unittest.TestCase):
                 controller.chapter_voice_preloader = preloader
                 controller.observation_serial = serial
                 controller.dialog_handler.reset_mock()
+                controller.status_handler.reset_mock()
                 controller.live_reader.invalidate_observation.reset_mock()
                 self.target.last_window = window
                 self.target.is_focused.return_value = True

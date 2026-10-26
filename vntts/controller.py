@@ -3541,10 +3541,9 @@ class AppController:
                             suppressed_generation=reader.suppressed_generation,
                             **context,
                         )
-        preview = result.text if len(result.text) <= 80 else f"{result.text[:77]}..."
-        self.dialog_handler(
-            "OCR uncertain",
-            f"{result.confidence:.0f}% (requires {minimum_confidence}%): {preview}",
+        self.status_handler(
+            f"OCR uncertain: {result.confidence:.0f}% (requires {minimum_confidence}%). "
+            "Waiting for clearer text."
         )
 
     def _resolve_voice_label(self, character: str) -> str:
