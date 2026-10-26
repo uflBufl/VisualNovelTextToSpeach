@@ -78,7 +78,7 @@ from vntts.auto_advance_policy import (
 from vntts.calibration import (
     CaptureWindowVisibility,
     DialogRegionOverlay,
-    capture_calibration_background,
+    capture_calibration_preview,
     show_calibration_overlay,
 )
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
@@ -3410,8 +3410,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _capture_calibration_background(
         self,
     ) -> tuple[WindowGeometry | None, Image.Image]:
-        geometry = self.controller.get_capture_geometry()
-        return geometry, capture_calibration_background(geometry)
+        return capture_calibration_preview(self.controller.capture_target)
 
     def _calibration_capture_finished(
         self,

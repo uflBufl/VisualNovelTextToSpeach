@@ -51,7 +51,7 @@ from vntts.calibration import (
     DIALOG_REGION_GUIDANCE,
     CaptureWindowVisibility,
     DialogRegionOverlay,
-    capture_calibration_background,
+    capture_calibration_preview,
     show_calibration_overlay,
 )
 from vntts.game_narrator_ui import GameNarratorDialog
@@ -86,16 +86,12 @@ from vntts.window_capture import (
 default_onboarding_model = "tts_models/multilingual/multi-dataset/xtts_v2"
 
 
-class _CaptureTarget(Protocol):
-    def get_geometry(self) -> WindowGeometry: ...
-
-
 class _DiagnosticsService(Protocol):
     def run(self, settings: AppSettings) -> tuple[DiagnosticResult, ...]: ...
 
 
 WindowLoader = Callable[[], Sequence[WindowInfo]]
-CaptureTargetFactory = Callable[[str | None], _CaptureTarget]
+CaptureTargetFactory = Callable[[str | None], WindowCaptureTarget]
 ValidationError = tuple[QWidget, str]
 
 
@@ -1323,7 +1319,7 @@ class CalibrationPage(QWizardPage):
         self.flow: OnboardingWizard
         self.calibrated = False
         self.overlay: DialogRegionOverlay | None = None
-        self.pending_geometry: WindowGeometry | None = None
+        self.pending_capture_target: WindowCaptureTarget | None = None
         self._calibration_cancelled = False
         self._capture_cancelled = Event()
         self._capture_visibility: CaptureWindowVisibility | None = None
@@ -1369,16 +1365,14 @@ class CalibrationPage(QWizardPage):
         ):
             return
         settings = self.flow.draft_settings
-        geometry = None
+        capture_target = None
         if settings.capture_mode == "window":
             try:
-                geometry = self.capture_target_factory(
-                    settings.game_window_title
-                ).get_geometry()
+                capture_target = self.capture_target_factory(settings.game_window_title)
             except WindowCaptureError as error:
                 QMessageBox.warning(self, "Unable to calibrate", str(error))
                 return
-        self.pending_geometry = geometry
+        self.pending_capture_target = capture_target
         self._calibration_cancelled = False
         self._capture_cancelled = Event()
         self.flow.installEventFilter(self)
@@ -1413,30 +1407,38 @@ class CalibrationPage(QWizardPage):
             return
         self.capture_timer.stop()
         self.capture_runner.start(
-            self._capture_background, self.pending_geometry, self._capture_cancelled
+            self._capture_background,
+            self.pending_capture_target,
+            self._capture_cancelled,
         )
 
     @staticmethod
     def _capture_background(
-        geometry: WindowGeometry | None, cancelled: Event
-    ) -> Image.Image:
+        capture_target: WindowCaptureTarget | None, cancelled: Event
+    ) -> tuple[WindowGeometry | None, Image.Image]:
         if cancelled.is_set():
             raise RuntimeError("Calibration capture cancelled")
-        return capture_calibration_background(geometry)
+        return capture_calibration_preview(capture_target)
 
-    def _capture_finished(self, background: object, error: Exception | None) -> None:
+    def _capture_finished(self, preview: object, error: Exception | None) -> None:
         if self._calibration_cancelled:
             return
-        if error is not None or not isinstance(background, Image.Image):
+        if (
+            error is not None
+            or not isinstance(preview, tuple)
+            or len(preview) != 2
+            or not isinstance(preview[1], Image.Image)
+        ):
             self.restore_wizard()
             self.status.setText(
                 f"The game could not be captured: {error or 'no image returned'}. Check capture permission "
                 "and keep the game visible, then try again."
             )
             return
+        geometry, background = preview
         try:
             overlay = show_calibration_overlay(
-                self.pending_geometry,
+                geometry,
                 background=background,
                 save_region=self.save_region,
                 capture_region=self.capture_region,

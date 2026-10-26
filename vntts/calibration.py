@@ -28,6 +28,7 @@ from PySide6.QtGui import (
     QPainter,
     QPaintEvent,
     QPen,
+    QRegion,
     QResizeEvent,
     QShowEvent,
 )
@@ -62,7 +63,11 @@ from vntts.ocr import (
 from vntts.ocr_worker import recognize_dialog_image_result
 from vntts.qt_images import pixmap_from_pil
 from vntts.ui_text import shortcut_tooltip
-from vntts.window_capture import WindowGeometry
+from vntts.window_capture import (
+    WindowCaptureError,
+    WindowCaptureTarget,
+    WindowGeometry,
+)
 
 ReviewerFactory = Callable[[Image.Image], QDialog]
 CALIBRATION_OCR_TIMEOUT_SECONDS = 10.0
@@ -130,18 +135,50 @@ def capture_calibration_background(
     geometry: WindowGeometry | None = None,
 ) -> Image.Image:
     with mss.mss() as capture:
-        monitor = (
-            capture.monitors[1]
-            if geometry is None
-            else {
-                "left": geometry.left,
-                "top": geometry.top,
-                "width": geometry.width,
-                "height": geometry.height,
-            }
-        )
+        if geometry is None:
+            monitor = capture.monitors[1]
+        else:
+            uncovered = QRegion(
+                geometry.left, geometry.top, geometry.width, geometry.height
+            )
+            # The combined monitor bounds can include gaps with no display pixels.
+            for display in capture.monitors[1:]:
+                uncovered = uncovered.subtracted(
+                    QRegion(
+                        display["left"],
+                        display["top"],
+                        display["width"],
+                        display["height"],
+                    )
+                )
+            if geometry.width <= 0 or geometry.height <= 0 or not uncovered.isEmpty():
+                raise WindowCaptureError(
+                    "Show the entire selected game window on the connected screens, "
+                    "then retry calibration."
+                )
+            monitor = geometry.as_monitor()
         screenshot = capture.grab(monitor)
     return Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
+
+
+def capture_calibration_preview(
+    capture_target: object | None = None,
+) -> tuple[WindowGeometry | None, Image.Image]:
+    if capture_target is not None and not isinstance(capture_target, WindowCaptureTarget):
+        raise WindowCaptureError(
+            "This capture source does not support game-window calibration. "
+            "Select a game window and retry calibration."
+        )
+    snapshot = (
+        capture_target.capture_snapshot(DialogRegion(0, 0, 1, 1))
+        if capture_target is not None
+        else None
+    )
+    geometry = snapshot.geometry if snapshot is not None else None
+    background = capture_calibration_background(geometry)
+    if snapshot is not None and capture_target is not None:
+        capture_target.validate_snapshot(snapshot)
+    return geometry, background
 
 
 class CalibrationReviewDialog(QDialog):

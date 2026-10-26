@@ -194,13 +194,13 @@
       layout issue or MCP event routing before changing behavior. Gate: a user and
       MCP can reach story selection and Prepare without resizing or targeting
       clipped widgets; preserve ordinary keyboard navigation.
-- [ ] Reject off-screen game geometry before calibration capture and ask to show
-      the selected game. AeroSpace can park an inactive workspace window at
-      (1727,1089) while Quartz still reports it onscreen on a1728x1117 display;
-      calibration then accepted an almost entirely off-screen area and displayed
-      a blank preview. Require usable display intersection and revalidate after
-      workspace/window changes. Gate: no blank capture is offered for approval,
-      and activating the game permits normal calibration with the same target.
+- [ ] Validate calibration visibility in the combined native run. Exercise tray
+      and wizard with a game parked outside the active screens, then show the
+      same game and retry without reselecting it. Gate: reject partial/off-screen
+      captures before preview, restore controls on failure and accept the fully
+      visible window. Include movement/resize during capture, workspace changes,
+      adjacent monitors, negative origins and display scaling; preserve the saved
+      normalized dialogue region and cancellation behavior.
 
 ## Persistent OCR remaining qualification
 
@@ -302,9 +302,6 @@ complete. Do not change recognition or playback policy on an unverified hypothes
 
 1. **Fix remaining UI issues in separate increments.** Start with concrete
    ownership/data defects, then agree the desired behavior for UX changes:
-   - Reject unusable off-screen game geometry before calibration capture and
-     revalidate after window/workspace changes (U1/U4 and capture-setup backlog).
-     Native visibility qualification is deferred to the combined run.
    - Trace actual generation-device reporting (UX-26-01): completed MLX work
      still displays unknown. Report the engine's evidence, not a guessed device
      derived from its name.

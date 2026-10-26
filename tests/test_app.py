@@ -87,7 +87,11 @@ from vntts.versioned_json import (  # noqa: E402
     read_versioned_json_snapshot,
 )
 from vntts.voice_library import VoiceLibrary  # noqa: E402
-from vntts.window_capture import WindowGeometry  # noqa: E402
+from vntts.window_capture import (  # noqa: E402
+    WindowCaptureTarget,
+    WindowGeometry,
+    WindowInfo,
+)
 
 
 def delete_dialog(dialog):
@@ -7501,8 +7505,8 @@ class TrayApplicationTest(unittest.TestCase):
         with (
             patch("vntts.app.show_calibration_overlay") as show_overlay,
             patch(
-                "vntts.app.capture_calibration_background",
-                return_value=background,
+                "vntts.app.capture_calibration_preview",
+                return_value=(geometry, background),
             ),
             patch(
                 "vntts.app.QTimer.singleShot",
@@ -7550,6 +7554,58 @@ class TrayApplicationTest(unittest.TestCase):
         finally:
             tray.shutdown()
 
+    def test_offscreen_calibration_restores_controls_then_retries_same_target(self):
+        window = WindowInfo(123, "Selected game", 42)
+        backend = Mock()
+        backend.list_windows.return_value = [window]
+        backend.get_window.return_value = window
+        backend.get_client_geometry.return_value = WindowGeometry(799, 599, 400, 300)
+        target = WindowCaptureTarget("Selected game", backend)
+        controller = Mock(is_live_running=False, capture_target=target)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(capture_mode="window", game_window_title="Selected game"),
+            controller_factory=Mock(return_value=controller),
+        )
+        self.addCleanup(tray.shutdown)
+        pool = ManualThreadPool()
+        tray.calibration_capture_runner.thread_pool = pool
+        tray.dashboard.show()
+        screen = Mock()
+        monitor = {"left": 0, "top": 0, "width": 800, "height": 600}
+        screen.monitors = [monitor, monitor]
+        screen.grab.return_value = Mock(size=(2, 1), bgra=b"\0\0\0\xff" * 2)
+        with (
+            patch("vntts.calibration.mss.mss") as capture,
+            patch("vntts.app.QTimer.singleShot") as schedule,
+            patch("vntts.app.show_calibration_overlay") as show,
+            patch.object(tray, "show_error") as error,
+        ):
+            capture.return_value.__enter__.return_value = screen
+            tray.calibrate()
+            backend.get_client_geometry.assert_not_called()
+            schedule.call_args.args[-1]()
+            pool.run_next()
+            self.application.processEvents()
+            screen.grab.assert_not_called()
+            show.assert_not_called()
+            error.assert_called_once()
+            self.assertIn("entire selected game", error.call_args.args[0])
+            self.assertTrue(tray.dashboard.isVisible())
+            self.assertFalse(tray._calibration_capture_pending)
+
+            tray.calibrate()
+            geometry = WindowGeometry(100, 100, 400, 300)
+            backend.get_client_geometry.return_value = geometry
+            schedule.call_args.args[-1]()
+            pool.run_next()
+            self.application.processEvents()
+            show.assert_called_once()
+            self.assertEqual(show.call_args.args, (geometry,))
+            self.assertEqual(show.call_args.kwargs["background"].size, (2, 1))
+            self.assertIs(controller.capture_target, target)
+            error.assert_called_once()
+
     def test_calibration_captures_without_any_visible_controls_and_restores_ownership(
         self,
     ):
@@ -7571,19 +7627,19 @@ class TrayApplicationTest(unittest.TestCase):
                 overlay = Mock()
                 background = object()
 
-                def capture(_geometry):
+                def capture(_target):
                     self.assertFalse(tray.dashboard.isVisible())
                     self.assertFalse(visible.isVisible())
                     self.assertFalse(closed.isVisible())
                     if fails:
                         raise RuntimeError("capture failed")
-                    return background
+                    return None, background
 
                 try:
                     with (
                         patch("vntts.app.QTimer.singleShot") as schedule,
                         patch(
-                            "vntts.app.capture_calibration_background",
+                            "vntts.app.capture_calibration_preview",
                             side_effect=capture,
                         ),
                         patch(
@@ -7635,7 +7691,7 @@ class TrayApplicationTest(unittest.TestCase):
         try:
             with (
                 patch("vntts.app.QTimer.singleShot") as schedule,
-                patch("vntts.app.capture_calibration_background") as capture,
+                patch("vntts.app.capture_calibration_preview") as capture,
                 patch("vntts.app.show_calibration_overlay") as show,
             ):
                 tray.calibrate()
@@ -7696,13 +7752,13 @@ class TrayApplicationTest(unittest.TestCase):
             controller_factory=Mock(return_value=controller),
         )
 
-        def slow_capture(_geometry):
+        def slow_capture(_target):
             started.set()
             release.wait(2)
-            return object()
+            return None, object()
 
         with (
-            patch("vntts.app.capture_calibration_background", side_effect=slow_capture),
+            patch("vntts.app.capture_calibration_preview", side_effect=slow_capture),
             patch("vntts.app.show_calibration_overlay") as show_overlay,
         ):
             try:
@@ -7825,8 +7881,8 @@ class TrayApplicationTest(unittest.TestCase):
         with (
             patch("vntts.app.show_calibration_overlay", return_value=overlay) as show,
             patch(
-                "vntts.app.capture_calibration_background",
-                return_value=background,
+                "vntts.app.capture_calibration_preview",
+                return_value=(geometry, background),
             ),
             patch(
                 "vntts.app.QTimer.singleShot",

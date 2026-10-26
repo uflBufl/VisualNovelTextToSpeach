@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from PIL import Image
 
@@ -37,7 +37,11 @@ from vntts.onboarding_ui import OnboardingWizard  # noqa: E402
 from vntts.services.tts_engine import TTSSynthesisError  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.ui_text import plain_label_text  # noqa: E402
-from vntts.window_capture import WindowGeometry  # noqa: E402
+from vntts.window_capture import (  # noqa: E402
+    WindowCaptureTarget,
+    WindowGeometry,
+    WindowInfo,
+)
 
 
 def granted_permissions():
@@ -648,7 +652,7 @@ class OnboardingWizardTest(unittest.TestCase):
         page.capture_runner.thread_pool = pool
         wizard.show()
         with patch(
-            "vntts.onboarding_ui.capture_calibration_background",
+            "vntts.onboarding_ui.capture_calibration_preview",
             side_effect=RuntimeError("Screen Recording permission denied"),
         ):
             page.calibrate()
@@ -1610,8 +1614,13 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.deleteLater()
 
     def test_calibration_hides_wizard_before_frozen_overlay_capture(self):
-        target = Mock()
-        target.get_geometry.return_value = WindowGeometry(0, 0, 1000, 600)
+        window = WindowInfo(17, "Reverse: 1999", 42)
+        backend = Mock()
+        backend.list_windows.return_value = [window]
+        backend.get_window.return_value = window
+        backend.get_client_geometry.return_value = WindowGeometry(0, 0, 1000, 600)
+        target = WindowCaptureTarget(window.title, backend)
+        fresh_geometry = WindowGeometry(30, 40, 800, 500)
         with TemporaryDirectory() as temporary_directory:
             wizard = OnboardingWizard(
                 AppSettings(
@@ -1629,7 +1638,7 @@ class OnboardingWizardTest(unittest.TestCase):
             wizard.show()
             other, hidden = QWidget(), QWidget()
             other.show()
-            background = Image.new("RGB", (16, 16))
+            background = Image.new("RGB", (800, 500))
 
             def show_overlay(_geometry, **_kwargs):
                 overlay.show()
@@ -1641,16 +1650,23 @@ class OnboardingWizardTest(unittest.TestCase):
                     side_effect=show_overlay,
                 ) as show,
                 patch(
-                    "vntts.onboarding_ui.capture_calibration_background",
+                    "vntts.calibration.capture_calibration_background",
                     return_value=background,
-                ),
+                ) as capture,
             ):
                 wizard.calibration_page.calibrate()
                 self.assertFalse(wizard.isVisible())
                 self.assertFalse(other.isVisible())
+                self.assertTrue(wizard.calibration_page.capture_timer.isActive())
+                backend.get_client_geometry.assert_not_called()
+                capture.assert_not_called()
+                backend.get_client_geometry.return_value = fresh_geometry
                 wizard.calibration_page.open_overlay()
+                backend.get_client_geometry.assert_not_called()
                 pool.run_next()
                 self.application.processEvents()
+                capture.assert_called_once_with(fresh_geometry)
+                self.assertIs(show.call_args.args[0], fresh_geometry)
                 self.assertIs(show.call_args.kwargs["background"], background)
 
             self.assertTrue(overlay.isVisible())
@@ -1668,6 +1684,85 @@ class OnboardingWizardTest(unittest.TestCase):
             wizard.close()
             wizard.deleteLater()
 
+    def test_calibration_rejects_moved_capture_then_retries_same_selected_window(self):
+        window = WindowInfo(17, "Game", 42)
+        geometry = WindowGeometry(0, 0, 800, 500)
+        moved_geometry = WindowGeometry(30, 40, 800, 500)
+        backend = Mock()
+        backend.list_windows.return_value = [window]
+        backend.get_window.return_value = window
+        backend.get_client_geometry.return_value = geometry
+        target = WindowCaptureTarget(window.title, backend)
+        factory = Mock(return_value=target)
+        wizard = OnboardingWizard(
+            AppSettings(capture_mode="window", game_window_title=window.title),
+            capture_target_factory=factory,
+        )
+        page = wizard.calibration_page
+        pool = ManualThreadPool()
+        page.capture_runner.thread_pool = pool
+        background = Image.new("RGB", (800, 500))
+        overlay = Mock()
+        other = QWidget()
+        wizard.show()
+        other.show()
+
+        def capture_while_window_moves(_geometry):
+            self.assertFalse(wizard.isVisible())
+            self.assertFalse(other.isVisible())
+            backend.get_client_geometry.return_value = moved_geometry
+            return background
+
+        try:
+            with (
+                patch(
+                    "vntts.calibration.capture_calibration_background",
+                    side_effect=capture_while_window_moves,
+                ) as capture,
+                patch(
+                    "vntts.onboarding_ui.show_calibration_overlay", return_value=overlay
+                ) as show,
+            ):
+                page.calibrate()
+                page.open_overlay()
+                pool.run_next()
+                self.application.processEvents()
+
+                show.assert_not_called()
+                self.assertTrue(wizard.isVisible())
+                self.assertTrue(other.isVisible())
+                self.assertFalse(page.isComplete())
+                self.assertIn("moved or resized", page.status.text())
+                self.assertIn("try again", page.status.text())
+                self.assertEqual(wizard.draft_settings.game_window_title, window.title)
+
+                capture.side_effect = None
+                capture.return_value = background
+                page.calibrate()
+                page.open_overlay()
+                pool.run_next()
+                self.application.processEvents()
+
+                show.assert_called_once_with(
+                    moved_geometry,
+                    background=background,
+                    save_region=None,
+                    capture_region=None,
+                )
+                self.assertEqual(
+                    factory.call_args_list, [call(window.title), call(window.title)]
+                )
+                self.assertIs(page.overlay, overlay)
+                self.assertFalse(wizard.isVisible())
+                self.assertFalse(other.isVisible())
+                overlay.closed.connect.call_args.args[0]()
+                self.assertTrue(wizard.isVisible())
+                self.assertTrue(other.isVisible())
+        finally:
+            for widget in (wizard, other):
+                widget.close()
+                widget.deleteLater()
+
     def test_reading_setup_passes_profile_aware_region_save_to_overlay(self):
         save_region = Mock()
         region = DialogRegion(0.1, 0.6, 0.8, 0.3)
@@ -1683,8 +1778,8 @@ class OnboardingWizardTest(unittest.TestCase):
         with (
             patch("vntts.onboarding_ui.show_calibration_overlay") as show_overlay,
             patch(
-                "vntts.onboarding_ui.capture_calibration_background",
-                return_value=background,
+                "vntts.onboarding_ui.capture_calibration_preview",
+                return_value=(None, background),
             ),
         ):
             wizard.calibration_page.calibrate()
@@ -1712,8 +1807,8 @@ class OnboardingWizardTest(unittest.TestCase):
         try:
             with (
                 patch(
-                    "vntts.onboarding_ui.capture_calibration_background",
-                    return_value=object(),
+                    "vntts.onboarding_ui.capture_calibration_preview",
+                    return_value=(None, object()),
                 ),
                 patch("vntts.onboarding_ui.show_calibration_overlay") as overlay,
                 patch.object(other, "activateWindow") as activate,
@@ -1766,7 +1861,7 @@ class OnboardingWizardTest(unittest.TestCase):
         page.capture_runner.thread_pool = pool
         try:
             with (
-                patch("vntts.onboarding_ui.capture_calibration_background") as capture,
+                patch("vntts.onboarding_ui.capture_calibration_preview") as capture,
                 patch("vntts.onboarding_ui.show_calibration_overlay") as show,
                 patch.object(wizard, "activateWindow") as activate,
                 patch.object(wizard, "raise_") as raise_window,
@@ -1802,7 +1897,7 @@ class OnboardingWizardTest(unittest.TestCase):
         page.capture_runner.thread_pool = pool
         try:
             with (
-                patch("vntts.onboarding_ui.capture_calibration_background") as capture,
+                patch("vntts.onboarding_ui.capture_calibration_preview") as capture,
                 patch("vntts.onboarding_ui.show_calibration_overlay") as show,
                 patch.object(other, "activateWindow") as activate,
                 patch.object(other, "raise_") as raise_window,
@@ -1839,8 +1934,8 @@ class OnboardingWizardTest(unittest.TestCase):
         try:
             with (
                 patch(
-                    "vntts.onboarding_ui.capture_calibration_background",
-                    return_value=Image.new("RGB", (16, 16)),
+                    "vntts.onboarding_ui.capture_calibration_preview",
+                    return_value=(None, Image.new("RGB", (16, 16))),
                 ),
                 patch(
                     "vntts.onboarding_ui.show_calibration_overlay", return_value=overlay
@@ -1882,8 +1977,8 @@ class OnboardingWizardTest(unittest.TestCase):
                     "vntts.onboarding_ui.show_calibration_overlay", return_value=overlay
                 ),
                 patch(
-                    "vntts.onboarding_ui.capture_calibration_background",
-                    return_value=Image.new("RGB", (16, 16)),
+                    "vntts.onboarding_ui.capture_calibration_preview",
+                    return_value=(None, Image.new("RGB", (16, 16))),
                 ),
             ):
                 page.calibrate()
