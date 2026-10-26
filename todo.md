@@ -305,12 +305,19 @@ and wait for agreement before implementing each item. Finish its targeted tests 
 moving to the next item. Mark an investigation complete only when it yields a
 supported repair or an explicit product decision, not merely a hypothesis.
 
-1. **Repair absent-name detection (RUN-25-03).**
-   - Independently reproduce and plan the narration/no-name repair: false
-     name/background or zero speaker confidence on 006/010/017/022/037/079/100/101/103.
-     Check all 18 narration and 73 named-dialogue samples without weakening
-     confidence globally. Keep 099's background noise separate from threshold
-     retuning or a typo-matching workaround. Agree this repair before coding it.
+1. **Finish name-presence acceptance (RUN-25-03).**
+   - Run a short native Mac check with the game window available: ordinary named
+     dialogue, narration and a visible-but-unreadable name; verify Read/Stop and
+     canonical prepared speaker selection. Saved-frame worker/CLI parity alone
+     does not qualify live capture or continuation.
+   - Keep 101/103 as conservative ambiguous-name cases. Obtain original capture
+     evidence before proposing further filtering: the current pixels still
+     resemble short/clipped glyphs. Preserve uncertainty; do not trade a real
+     unknown name for Narrator. Exact prepared-story matching already handles
+     101; 103's text mismatch belongs to the separately agreed matching repair.
+   - Exclude dust-obscured dialogue words from this repair. The user reviewed
+     the ambiguous pixels and explicitly deferred dictionary/autocorrection;
+     preserve the observed text rather than guessing English words.
 2. **Repair typo-tolerant text acceptance later (RUN-25-03).** After image
    preprocessing, agree the shared observation/readiness repair for already
    identified prepared lines. Calibrate allowed edits and competing-line checks

@@ -332,6 +332,50 @@ class AdaptiveOCRTest(unittest.TestCase):
                         recognize_live_frame(frame), ("Narrator", result.text)
                     )
 
+    def test_scenery_is_not_a_name_but_an_added_unreadable_name_is_retained(self):
+        directory = Path(__file__).parent / "fixtures" / "ocr-narrator-scenery"
+        for filename in ("lecture-books.png", "gallery.png", "room.png"):
+            with Image.open(directory / filename) as source:
+                original = source.convert("RGB")
+            for name in ("", "I", "X", "???"):
+                with self.subTest(scene=filename, name=name):
+                    image = original.copy()
+                    regions = resolve_ocr_regions(image)
+                    _, _, _, bottom = regions.speaker._pixel_box(*image.size)
+                    ImageDraw.Draw(image).text(
+                        (30, max(0, bottom - 25)), name, fill="white", font_size=18
+                    )
+                    result = recognize_dialog_image_result(
+                        image,
+                        recognize_text=Mock(return_value="A complete dialogue."),
+                        recognize_data=Mock(
+                            side_effect=[
+                                {"text": [], "conf": []},
+                                {"text": ["A complete dialogue."], "conf": [96]},
+                            ]
+                        ),
+                    )
+                    self.assertEqual(result.text, "A complete dialogue.")
+                    self.assertEqual(result.is_confident(), not bool(name))
+                    if name:
+                        self.assertIn("could not be read", result.speaker_note)
+                    else:
+                        self.assertEqual(result.character, "Narrator")
+                        self.assertIsNone(result.speaker_confidence)
+
+    @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
+    def test_recorded_scenery_frames_are_accepted_without_a_speaker(self):
+        directory = Path(__file__).parent / "fixtures" / "ocr-narrator-scenery"
+        for filename in ("lecture-books.png", "gallery.png", "room.png"):
+            with (
+                self.subTest(scene=filename),
+                Image.open(directory / filename) as image,
+            ):
+                result = recognize_dialog_image_result(image)
+                self.assertEqual(result.character, "Narrator")
+                self.assertIsNone(result.speaker_confidence)
+                self.assertTrue(result.is_confident())
+
     def test_spatial_roles_preserve_short_names_and_dialogue(self):
         for name in ("X", "I", "???", "6", "37"):
             for text in ("I", "?", "...", "No.", ":", ";", "—"):

@@ -1092,26 +1092,42 @@ def _normalize_unknown_nameplate(text: str) -> str:
 
 def speaker_glyphs_visible(image: Image.Image) -> bool:
     pixels = np.asarray(image.convert("L"), dtype=np.int16)
-    # Test local strokes before autocontrast can amplify empty scenery.
+    if np.ptp(pixels) < 16:
+        return False
+    # Ink has background on both sides; a broad surface supplies only one edge.
     # shortcut: qualify fonts below 4px or 16 levels of contrast before widening this gate.
-    for contrast in (
-        pixels - minimum_filter(pixels, size=3),
-        maximum_filter(pixels, size=3) - pixels,
-    ):
-        foreground = contrast >= 16
-        components, _count = label(foreground, structure=np.ones((3, 3)))
-        for bounds in find_objects(components):
-            if bounds is None:
-                continue
-            height = bounds[0].stop - bounds[0].start
-            width = bounds[1].stop - bounds[1].start
-            if (
-                height >= 4
-                and 1 <= width <= height * 3
-                and np.count_nonzero(foreground[bounds]) >= 4
-            ):
+    stroke_width = 2
+    while stroke_width <= max(2, pixels.shape[0] // 2):
+        size = stroke_width + 1
+        for contrast in (
+            pixels - maximum_filter(minimum_filter(pixels, size=size), size=size),
+            minimum_filter(maximum_filter(pixels, size=size), size=size) - pixels,
+        ):
+            components, _count = label(contrast >= 16, structure=np.ones((3, 3)))
+            for index, bounds in enumerate(find_objects(components), start=1):
+                if bounds is None:
+                    continue
+                height = bounds[0].stop - bounds[0].start
+                width = bounds[1].stop - bounds[1].start
+                clipped = bounds[0].start == 0 or bounds[0].stop == pixels.shape[0]
+                if (
+                    height < max(4, stroke_width) - int(clipped)
+                    or (
+                        height < 2 * stroke_width - int(clipped)
+                        and width > stroke_width
+                    )
+                    or width > height * 3
+                ):
+                    continue
+                if width > 2 * height:
+                    ys, xs = np.nonzero(components[bounds] == index)
+                    slope = np.cov(xs, ys, bias=True)[0, 1] / np.var(xs)
+                    # Shallow straight ridges can come from shelves and book edges.
+                    if np.std(ys - slope * xs) < 1:
+                        continue
                 return True
-    return False
+        stroke_width *= 2
+    return _isolated_speaker_strokes(pixels)
 
 
 def normalize_recognized_speaker(

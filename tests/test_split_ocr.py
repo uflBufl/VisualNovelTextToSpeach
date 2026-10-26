@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 from vntts.dialog_capture import (
     CapturedDialogFrame,
@@ -244,6 +244,53 @@ class SplitOCRTest(unittest.TestCase):
                 draw.text((20, 50), name, fill="#555555")
                 draw.rectangle((0, 0, 299, 7), fill="white")
                 self.assertTrue(speaker_glyphs_visible(image))
+
+    def test_presence_retains_small_large_and_bold_name_strokes(self):
+        for size in (10, 18, 32, 64):
+            for stroke in (0, 1, 3):
+                for name in ("I", "X", "???", "Unknown"):
+                    for fill in (24, 255):
+                        image = Image.new("L", (size * 10, size * 3))
+                        ImageDraw.Draw(image).text(
+                            (10, 10),
+                            name,
+                            fill=fill,
+                            font_size=size,
+                            stroke_width=stroke,
+                            stroke_fill=fill,
+                        )
+                        for inverted in (False, True):
+                            with self.subTest(
+                                size=size,
+                                stroke=stroke,
+                                name=name,
+                                fill=fill,
+                                inverted=inverted,
+                            ):
+                                self.assertTrue(
+                                    speaker_glyphs_visible(
+                                        ImageOps.invert(image) if inverted else image
+                                    )
+                                )
+
+    def test_adjacent_antialiased_question_marks_remain_visible(self):
+        tile = [
+            [31, 108, 168, 171, 124, 35],
+            [80, 175, 64, 45, 161, 104],
+            [30, 30, 30, 43, 161, 110],
+            [30, 30, 53, 165, 129, 35],
+            [30, 30, 108, 145, 30, 30],
+            [30, 30, 30, 30, 30, 30],
+            [30, 30, 117, 150, 30, 30],
+        ]
+        image = Image.new("L", (500, 110), 30)
+        mark = Image.frombytes(
+            "L", (6, 7), bytes(value for row in tile for value in row)
+        )
+        for x in (20, 26, 32):
+            image.paste(mark, (x, 13))
+        self.assertTrue(speaker_glyphs_visible(image))
+        self.assertTrue(speaker_glyphs_visible(ImageOps.invert(image)))
 
     def test_blank_name_is_narration_without_stealing_first_dialogue_word(self):
         data = Mock(
