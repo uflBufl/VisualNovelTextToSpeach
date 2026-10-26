@@ -307,11 +307,30 @@ supported repair or an explicit product decision, not merely a hypothesis.
 
 1. **Finish live Sauvola acceptance, then address absent-name detection
    separately (RUN-25-03).**
-   - With the game window available on a visible dialogue, refresh the native
-     diagnostics preview and run a short reading check. Verify sauvola output,
-     responsive Stop and absence of worker errors; do not require a long timed
-     recording. The current selected game window was unavailable during the
-     migration check, so saved-frame replay does not close this live gate.
+   - Resolve the live raw-frame regression before closing acceptance: on line007,
+     Sauvola reads `Cornerstone` correctly but gives speaker confidence 1-10
+     (dialogue about95); the old cascade gives94 on the same saved raw frame.
+     The compressed-video corpus did not reproduce this. The speaker border is
+     already white; forcing white or removing it does not fix confidence1.
+     Proposed repair, awaiting agreement: remove only SHARPEN from shared
+     preprocessing and its unused import; retain Sauvola window0.33/k0.5 and the
+     confidence gate. Without sharpening both saved raw frames read Cornerstone
+     at96 and correct the dialogue I. A paired 91+24 replay preserves all101
+     normalized-text/name/confidence successes; three literal matches change
+     straight quotes/apostrophes into curly ones. Add a raw-frame regression
+     fixture, run the changed-test selector and affected OCR checks, then verify
+     the native/worker/CLI paths and a short live reading. Do not lower confidence
+     thresholds or add a scenario-specific fallback.
+   - Fix bootstrap refusal classification separately after agreeing the repair:
+     `identify_scope` invokes `_ocr_uncertain`, which increments
+     `observation_serial`; its own post-capture guard then returns `cancelled`.
+     The UI reports `Live reading start cancelled` without a user cancellation.
+     Gate: uncertain OCR has its actual reason while external Stop, target
+     changes and stale bootstrap requests remain rejected.
+   - After the raw-frame repair, run a short native reading check. Verify
+     sauvola output, responsive Stop and absence of worker errors; do not require
+     a long timed recording. Three focused live attempts rejected line007 before
+     playback, so saved-frame replay does not close this live gate.
    - Independently reproduce and plan the narration/no-name repair: false
      name/background or zero speaker confidence on 006/010/017/022/037/079/100/101/103.
      Check all 18 narration and 73 named-dialogue samples without weakening
