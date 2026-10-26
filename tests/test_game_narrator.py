@@ -217,11 +217,15 @@ class GameNarratorTest(unittest.TestCase):
             plan, character=group.character, story_titles=("Story one", "Story two")
         )
         self.drain()
-        self.assertEqual(dialog.role_summary.text(), "Saved: Alba")
-        self.assertIn("Story one", dialog.role_summary.toolTip())
-        self.assertNotIn("Story one", dialog.role_summary.text())
+        self.assertEqual(
+            dialog.voice_panel.current_voice_label.text().casefold(), "alba"
+        )
+        self.assertIn("Story one", dialog.role_heading.toolTip())
+        self.assertNotIn("Story one", dialog.role_heading.text())
         self.select(dialog, "preset", role=group.character, source="preset:marius")
-        self.assertEqual(dialog.role_summary.text(), "Saved: Alba")
+        self.assertEqual(
+            dialog.voice_panel.current_voice_label.text().casefold(), "alba"
+        )
         self.assertEqual(self.library.binding(group.character).source_id, "preset:alba")
         self.assertTrue(dialog.status.isHidden())
 
@@ -551,7 +555,7 @@ class GameNarratorTest(unittest.TestCase):
         dialog._catalog_registry = CharacterVoiceRegistry()
         dialog._role_changed()
         self.drain()
-        self.assertEqual(dialog.role_summary.text(), "Saved: Rhiannon")
+        self.assertEqual(dialog.voice_panel.current_voice_label.text(), "Rhiannon")
         self.assertEqual(dialog.saved_assignment_summary(), "Narrator: Rhiannon")
 
     def test_imported_voice_catalog_failure_is_logged(self):
@@ -591,7 +595,9 @@ class GameNarratorTest(unittest.TestCase):
                 dialog.select_role(role)
                 self.drain()
                 self.assertEqual(dialog.source.currentData(), "saved")
-                self.assertEqual(dialog.role_summary.text(), "Saved: Rhiannon")
+                self.assertEqual(
+                    dialog.voice_panel.current_voice_label.text(), "Rhiannon"
+                )
                 self.assertFalse(dialog.voice_panel.isHidden())
                 self.assertEqual(
                     dialog.voice_panel.current_group().candidates[0].reference_sha256s,
@@ -1191,7 +1197,7 @@ class GameNarratorTest(unittest.TestCase):
         )
         self.select(dialog, "narrator", role="Aderyn")
         self.assertIn("terms", dialog.status.text())
-        self.assertTrue(dialog.voice_panel.preview_box.isHidden())
+        self.assertFalse(dialog.voice_panel.a_play.isVisibleTo(dialog))
         self.assertEqual(self.library.binding("Narrator"), before)
         self.assertEqual(self.backend.requests, [])
 

@@ -176,6 +176,9 @@ class GameNarratorDialog(QDialog):
         comparison.addWidget(self.voice_panel, 1)
         content.addLayout(comparison)
         self.tts_model_label = QLabel()
+        model_font = self.font()
+        model_font.setBold(False)
+        self.tts_model_label.setFont(model_font)
         self.tts_model_label.setWordWrap(True)
         self.tts_model_label.setTextFormat(Qt.TextFormat.RichText)
         phrase_layout = cast(QVBoxLayout, self.voice_panel.phrase_box.layout())
@@ -288,8 +291,7 @@ class GameNarratorDialog(QDialog):
         self._saved_source: str | None = None
         self._narrator_binding: VoiceBinding | None = None
         self._saved_voice_binding: VoiceBinding | None = None
-        self._recovery_role: str | None = None
-        self._recovery_resume_live = self._suppress_auto_discovery = False
+        self._suppress_auto_discovery = False
         self._candidate_manifest: Path | str | None = None
         self._narrator_directory = TemporaryDirectory(prefix="vntts-narrator-editor-")
 
@@ -341,9 +343,6 @@ class GameNarratorDialog(QDialog):
             "Choose a game character, imported or built-in voice, or narrator fallback."
         )
         self.source_controls.hide()
-        self.role_summary = QLabel()
-        self.role_summary.setWordWrap(True)
-        self.role_summary.hide()
         self.source = QComboBox()
         self.source.setAccessibleName("Voice source")
         for label, mode in (
@@ -567,21 +566,6 @@ class GameNarratorDialog(QDialog):
             )
         return saved_binding, selected
 
-    def _role_summary_text(
-        self,
-        role: str,
-        narrator: bool,
-        selected: str | None,
-        saved_binding: VoiceBinding | None,
-    ) -> str:
-        if (
-            self._recovery_role == normalize_character_name(role)
-            and saved_binding is None
-        ):
-            return "No saved voice (narrator fallback)"
-        summary = voice_binding_label(saved_binding) or self._source_label(selected)
-        return f"Saved: {summary}" if saved_binding is not None or narrator else summary
-
     def _show_role_context(self, role: str) -> None:
         self.portrait.clear()
         self.portrait.hide()
@@ -639,8 +623,8 @@ class GameNarratorDialog(QDialog):
             "Saving changes future speech and preparation for this role. "
             "Existing recordings keep priority."
         )
-        self.role_summary.setToolTip("\n".join((scope, *self._story_titles)))
-        self.role_summary.setAccessibleDescription(scope)
+        self.role_heading.setToolTip("\n".join((scope, *self._story_titles)))
+        self.role_heading.setAccessibleDescription(scope)
 
     def _select_role_source(self, narrator: bool, selected: str | None) -> None:
         binding, _saved = self._saved_role_voice(self.selected_role, narrator)
@@ -678,8 +662,6 @@ class GameNarratorDialog(QDialog):
         self._installation_root = Path(root)
 
     def set_recovery_context(self, role: str, *, resume_live: bool) -> None:
-        self._recovery_role = normalize_character_name(role)
-        self._recovery_resume_live = resume_live
         self._suppress_auto_discovery = True
         self.context_note.setText(
             f"Live reading is paused for voice editing: {role}. Save a voice to continue after any other voice choices."
@@ -697,7 +679,6 @@ class GameNarratorDialog(QDialog):
             with QSignalBlocker(self.source):
                 self.source.setCurrentIndex(self.source.findData("game"))
             self._source_changed()
-            self.role_summary.setText("No saved voice (narrator fallback)")
 
     def _role_changed(self) -> None:
         if self._initializing or self._closing or self._closed:
@@ -711,10 +692,7 @@ class GameNarratorDialog(QDialog):
         self.source_toggle.setChecked(False)
         self.source_toggle.setVisible(not narrator)
         self.source_controls.setVisible(narrator)
-        binding, selected = self._saved_role_voice(role, is_narrator(role))
-        self.role_summary.setText(
-            self._role_summary_text(role, is_narrator(role), selected, binding)
-        )
+        _binding, selected = self._saved_role_voice(role, narrator)
         self._show_role_context(role)
         self._select_role_source(is_narrator(role), selected)
         self._load_current_voice()

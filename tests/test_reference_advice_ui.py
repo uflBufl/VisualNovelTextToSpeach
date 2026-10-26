@@ -210,7 +210,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))
             f.ready.update(f.previews)
-            f.panel.start(f.plan)
+            f.panel.start(f.plan, group_id=f.plan.groups[0].group_id)
             self.drain(f)
             self.assertEqual(f.transcript.call_count, 2)
             f.installer.assert_called_once_with()
@@ -236,18 +236,18 @@ class ReferenceAdviceUITest(unittest.TestCase):
             self.assertTrue(f.panel.a_use.isEnabled())
             self.assertEqual(f.panel._accepted_choice, f.candidates[0].source_id)
 
-    def test_font_scaled_playback_buttons_keep_their_geometry(self):
+    def test_font_scaled_playback_buttons_keep_their_size_and_alignment(self):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))
             f.ready.update(f.previews)
-            f.panel.start(f.plan)
+            f.panel.start(f.plan, group_id=f.plan.groups[0].group_id)
             font = f.panel.font()
             font.setPointSizeF(font.pointSizeF() * 2)
             f.panel.setFont(font)
             f.panel.resize(680, 700)
             f.panel.show()
             self.application.processEvents()
-            before = (f.panel.a_play.geometry(), f.panel.a_original.geometry())
+            before = (f.panel.a_play.size(), f.panel.a_original.size())
             for action in (
                 f.panel.a_play,
                 f.panel.a_play,
@@ -257,8 +257,9 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 action.click()
                 self.application.processEvents()
                 self.assertEqual(
-                    before, (f.panel.a_play.geometry(), f.panel.a_original.geometry())
+                    before, (f.panel.a_play.size(), f.panel.a_original.size())
                 )
+                self.assertEqual(f.panel.a_play.y(), f.panel.a_original.y())
             f.service.generate.assert_not_called()
             f.decisions.remember_many.assert_not_called()
 
@@ -266,7 +267,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))
             f.ready.update(f.previews)
-            f.panel.start(f.plan)
+            f.panel.start(f.plan, group_id=f.plan.groups[0].group_id)
             self.assertIn("Ready", self.reference_cell(f, 0, 0))
             self.assertEqual(f.panel.a_play.text(), "Preview")
             f.panel.a_play.click()
@@ -278,7 +279,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f = self.fixture(Path(directory))
             first, second = f.candidates
             f.ready[first.source_id] = f.previews[first.source_id]
-            f.panel.start(f.plan)
+            f.panel.start(f.plan, group_id=f.plan.groups[0].group_id)
             self.drain(f)
             self.assertIn(
                 "Possible extra or missing words", f.panel.recommendation.text()
@@ -392,7 +393,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
     def test_background_preparation_and_status_keep_compact_geometry(self):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))
-            f.panel.start(f.plan)
+            f.panel.start(f.plan, group_id=f.plan.groups[0].group_id)
             f.panel.resize(680, 700)
             self.application.processEvents()
             before = (
@@ -419,7 +420,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             with self.subTest(original=original), TemporaryDirectory() as directory:
                 f = self.fixture(Path(directory))
                 f.ready.update(f.previews)
-                f.panel.start(f.plan)
+                f.panel.start(f.plan, group_id=f.plan.groups[0].group_id)
                 action = f.panel._play_original if original else f.panel.play_a
                 action()
                 stops = f.player.stop.call_count
@@ -446,7 +447,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 TemporaryDirectory() as directory,
             ):
                 f = self.fixture(Path(directory))
-                f.panel.start(f.plan)
+                f.panel.start(f.plan, group_id=f.plan.groups[0].group_id)
                 self.drain(f)
                 f.ready.update(f.previews)
                 f.service.preparing = True
@@ -482,7 +483,9 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 resolution="saved-player-decision",
                 source_id=f.candidates[0].source_id,
             )
-            f.panel.start(replace(f.plan, groups=(saved,)))
+            f.panel.start(
+                replace(f.plan, groups=(saved,)), group_id=f.plan.groups[0].group_id
+            )
             self.drain(f)
             self.assertEqual(self.selected_reference_row(f), 0)
             f.service.generate.assert_not_called()
@@ -494,7 +497,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))
             f.ready.update(f.previews)
-            f.panel.start(f.plan)
+            f.panel.start(f.plan, group_id=f.plan.groups[0].group_id)
             f.panel._refresh_runtime()
             f.panel.reference_table.entered.emit(f.panel.reference_proxy.index(1, 0))
             f.panel.cancel()
@@ -512,11 +515,12 @@ class ReferenceAdviceUITest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))
             f.ready.update(f.previews)
-            f.panel.start(f.plan)
+            f.panel.start(f.plan, group_id=f.plan.groups[0].group_id)
             f.pool.run_next()
             self.application.processEvents()
             self.assertTrue(f.panel.advice_runner.active)
-            f.panel.choose_for_me()
+            f.panel.play_a()
+            f.panel.use_a()
             self.drain(f)
             f.transcript.assert_not_called()
             f.decisions.remember_many.assert_called_once_with(
@@ -550,7 +554,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f.advisor.check(tuple(f.previews.values()))
             f.advisor.lookup_saved = Mock(wraps=f.advisor.lookup_saved)
             f.ready.update(f.previews)
-            f.panel.start(f.plan)
+            f.panel.start(f.plan, group_id=f.plan.groups[0].group_id)
             self.drain(f)
             reads = f.advisor.lookup_saved.call_count
             self.assertEqual(reads, 2)
@@ -571,7 +575,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))
             f.ready.update(f.previews)
-            f.panel.start(f.plan)
+            f.panel.start(f.plan, group_id=f.plan.groups[0].group_id)
             self.application.processEvents()
             f.pool.run_next()
             self.application.processEvents()
@@ -590,7 +594,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))
             f.ready.update(f.previews)
-            f.panel.start(f.plan)
+            f.panel.start(f.plan, group_id=f.plan.groups[0].group_id)
             self.drain(f)
             check = f.panel._content_checks[f.candidates[0].source_id]
             f.panel._content_checks[check.source_id] = replace(
@@ -641,7 +645,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f = self.fixture(Path(directory))
             f.ready.update(f.previews)
             f.transcript.side_effect = RuntimeError("Checker unavailable")
-            f.panel.start(f.plan)
+            f.panel.start(f.plan, group_id=f.plan.groups[0].group_id)
             self.drain(f)
             attempts = f.transcript.call_count
             self.assertGreater(attempts, 0)

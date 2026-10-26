@@ -309,12 +309,10 @@ class CharacterVoicePanelTest(unittest.TestCase):
 
     def test_inspection_hides_repeated_target_scope_and_idle_instructions(self):
         self.panel.start(self.plan, group_id=self.group.group_id)
-        self.assertTrue(self.panel.character.isHidden())
-        self.assertTrue(self.panel.scope.isHidden())
         self.assertTrue(self.panel.status.isHidden())
         self.assertEqual(self.panel.status.toPlainText(), "")
         self.assertTrue(self.panel.recommendation.isHidden())
-        self.assertEqual(self.panel.a_box.title(), "Original reference")
+        self.assertEqual(self.panel.a_box.title(), "")
         self.assertNotIn("Voice:", self.panel.a_reason.text())
         self.assertNotIn("Original spoken text:", self.panel.a_reason.text())
         for row in range(self.panel.reference_model.rowCount()):
@@ -325,9 +323,7 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.assertFalse(self.panel.status.isHidden())
         self.panel.start(self.plan, group_id=self.group.group_id)
         self.assertTrue(self.panel.status.isHidden())
-        self.panel.start(self.plan)
-        self.assertFalse(self.panel.character.isHidden())
-        self.assertFalse(self.panel.scope.isHidden())
+        self.panel.start(self.plan, group_id=self.plan.groups[0].group_id)
 
     def test_original_transcript_is_selectable_without_repeated_metadata(self):
         candidate = replace(

@@ -54,11 +54,9 @@ from vntts.path_safety import read_regular_bytes
 from vntts.pregeneration_audition import (
     COMPARISON_PREVIEW_TEXT,
     VoiceAuditionCancelled,
-    VoiceAuditionIncomplete,
     VoiceAuditionPreview,
     VoiceAuditionPreviewService,
     VoiceAuditionReference,
-    VoiceAuditionRejected,
     preview_identity,
 )
 from vntts.pregeneration_voices import (
@@ -75,10 +73,7 @@ from vntts.preview_content_advisor import (
     PreviewContentCheckCancelled,
 )
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
-from vntts.reference_recommendation import (
-    cached_reference_checks,
-    recommended_reference,
-)
+from vntts.reference_recommendation import cached_reference_checks
 from vntts.voices import default_voice_choice_id, voice_source_label
 
 
@@ -244,57 +239,31 @@ class VoiceAuditionPanel(QGroupBox):
         self.player: _PreviewPlayer | None = player
         self.playback_guard: Callable[[], None] | None = None
         self._plan: VoicePlan | None = None
-        self._groups: tuple[VoiceGroup, ...] = ()
-        self._group_index = 0
+        self._group: VoiceGroup | None = None
         self._candidate_offset = 0
         self._candidate_entries: tuple[CandidateEntry, ...] = ()
         self._initialize_preview_state(thread_pool)
-        self._failed_candidate_source_ids: set[str] = set()
         self._accepted_choice: str | None = None
         self._sample_text: str | None = None
         self._pending_decisions: list[PendingDecision] = []
         self._save_succeeded = False
         self._cancel_requested = False
         self._terminal_emitted = False
-        self._ignore_preview_result = False
         self._shutdown_requested = False
-        self._inspection_mode = False
         self._policy_choice: tuple[str, str] | None = None
         self._show_portraits = False
         self._playing_source: str | None = None
         self._current_voice: tuple[VoicePlan, VoiceGroup, VoiceCandidate] | None = None
         self._current_playback_guard: Callable[[], None] | None = None
         self._current_previews: dict[str | None, _PreviewAudio] = {}
-        self._comparison_mode = False
         self._original_request: (
             tuple[VoicePlan, VoiceGroup, VoiceCandidate, bool] | None
         ) = None
 
-        self.summary = QLabel()
-        self.summary.setAccessibleName("Voice choice estimate")
-        self.summary.setWordWrap(True)
-        self.choose_all_button = QPushButton("Choose all automatically")
-        set_action_icon(self.choose_all_button, "wand-sparkles")
-        self.choose_all_button.clicked.connect(self.choose_all_automatically)
-        self.summary_row = QHBoxLayout()
-        self.summary_row.addWidget(self.summary, 1)
-        self.summary_row.addWidget(self.choose_all_button)
-
-        self.character = QLabel()
-        self.character.setTextFormat(Qt.TextFormat.PlainText)
-        self.character.setAccessibleName("Character needing a voice choice")
-        self.character.setWordWrap(True)
-        character_font = self.character.font()
-        character_font.setBold(True)
-        self.character.setFont(character_font)
         self.portrait_image = QLabel()
         self.portrait_image.setAccessibleName("Exact game character portrait")
         self.portrait_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.portrait_image.setVisible(False)
-        self.scope = QLabel()
-        self.scope.setTextFormat(Qt.TextFormat.PlainText)
-        self.scope.setAccessibleName("Voice choice scope")
-        self.scope.setWordWrap(True)
         self.candidate_voice_label = QLabel()
         self.candidate_voice_label.setTextFormat(Qt.TextFormat.PlainText)
         self.candidate_voice_label.setWordWrap(True)
@@ -302,25 +271,20 @@ class VoiceAuditionPanel(QGroupBox):
         self.candidate_voice_label.hide()
         self._initialize_selectors()
 
-        self.preview_box = self._build_preview()
+        self._build_preview()
         self.a_box = self._build_original_reference()
         self.current_voice_box = self._build_current_voice()
         self._initialize_advice(content_advisor, thread_pool)
-        self.a_use = QPushButton("Use this voice")
+        self.a_use = QPushButton("Save")
         set_action_icon(self.a_use, "check")
         self.a_use.setAccessibleName("Use selected character voice")
         self.a_use.setAutoDefault(False)
         self.a_use.clicked.connect(self.use_a)
-        self.auto_button = QPushButton("Choose for me")
-        set_action_icon(self.auto_button, "wand-sparkles")
-        self.auto_button.setToolTip("Opt out of verifying this sample yourself")
-        self.auto_button.clicked.connect(self.choose_for_me)
         self.retry_save_button = QPushButton("Retry saving choices")
         set_action_icon(self.retry_save_button, "refresh-cw")
         self.retry_save_button.clicked.connect(self._start_save)
         self.retry_save_button.setVisible(False)
         self.outcome_actions = QHBoxLayout()
-        self.outcome_actions.addWidget(self.auto_button)
         self.outcome_actions.addStretch()
         self.outcome_actions.addWidget(self.retry_save_button)
         self.outcome_actions.addWidget(self.a_use)
@@ -347,18 +311,49 @@ class VoiceAuditionPanel(QGroupBox):
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        layout.addLayout(self.summary_row)
         layout.addWidget(self.portrait_image)
-        layout.addWidget(self.character)
-        layout.addWidget(self.scope)
         layout.addWidget(self.phrase_box)
-        layout.addWidget(self.candidate_voice_label)
         layout.addWidget(self.reference_browser)
+        actions = QHBoxLayout()
+        actions.addWidget(self.candidate_voice_label, 1)
+        actions.addWidget(self.a_original, alignment=Qt.AlignmentFlag.AlignTop)
+        actions.addWidget(self.a_play, alignment=Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(actions)
+        self.a_original.setFont(self.current_original.font())
+        self.a_play.setFont(self.current_play.font())
         layout.addWidget(self.a_box)
-        layout.addWidget(self.preview_box)
         layout.addWidget(self.current_voice_box)
         layout.addLayout(self.outcome_actions)
+        layout.addWidget(self.recommendation)
         layout.addWidget(self.status)
+        self.setTitle("New voice")
+        self.a_box.setFlat(True)
+        self.a_box.setContentsMargins(0, 0, 0, 0)
+        for compact_layout in (layout, self.a_box.layout()):
+            assert compact_layout is not None
+            compact_layout.setContentsMargins(0, 0, 0, 0)
+            compact_layout.setSpacing(4)
+        for box in (self.phrase_box, self.current_voice_box, self):
+            box.setFlat(False)
+            if box is not self.phrase_box:
+                box.setSizePolicy(
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+                )
+            # Keep the group title weight from propagating to body controls.
+            for child in box.findChildren(
+                QWidget, options=Qt.FindChildOption.FindDirectChildrenOnly
+            ):
+                child_font = child.font()
+                child_font.setBold(child_font.bold())
+                child.setFont(child_font)
+            title_font = box.font()
+            title_font.setBold(True)
+            box.setFont(title_font)
+            box_layout = box.layout()
+            assert box_layout is not None
+            box_layout.setContentsMargins(8, 6, 8, 6)
+            box_layout.setSpacing(4)
+        self.a_box.setContentsMargins(0, 0, 0, 0)
         for widget in (
             self.status,
             self.recommendation,
@@ -386,12 +381,7 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_original.setAccessibleName("Play original reference")
         self.a_original.clicked.connect(self._play_original)
         candidate_layout = QVBoxLayout(box)
-        self._original_row = QHBoxLayout()
-        self._original_row.addWidget(self.a_reason, 1)
-        self._original_row.addWidget(
-            self.a_original, alignment=Qt.AlignmentFlag.AlignTop
-        )
-        candidate_layout.addLayout(self._original_row)
+        candidate_layout.addWidget(self.a_reason)
         self.reference_transcript = QLineEdit()
         self.reference_transcript.setAccessibleName(
             "Exact reference transcript for Qwen"
@@ -408,7 +398,7 @@ class VoiceAuditionPanel(QGroupBox):
         candidate_layout.addWidget(self.reference_transcript)
         return box
 
-    def _build_preview(self) -> QGroupBox:
+    def _build_preview(self) -> None:
         self._game_phrases: tuple[str, ...] = ()
         self.preview_text = QPlainTextEdit(tabChangesFocus=True)
         self.preview_text.setAccessibleName("Text for the generated voice preview")
@@ -428,13 +418,6 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_play.setMinimumWidth(self.a_play.sizeHint().width())
         self.a_play.setAccessibleName("Play voice preview")
         self.a_play.clicked.connect(self.play_a)
-        self._preview_row = QHBoxLayout()
-        self._preview_row.addStretch()
-        self._preview_row.addWidget(self.a_play)
-        preview_box = QGroupBox("Generated preview")
-        preview_layout = QVBoxLayout(preview_box)
-        preview_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        preview_layout.addLayout(self._preview_row)
         self.phrase_box = QGroupBox("Preview phrase")
         self.phrase_box.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
@@ -447,7 +430,6 @@ class VoiceAuditionPanel(QGroupBox):
             self.game_phrase_button, alignment=Qt.AlignmentFlag.AlignBottom
         )
         phrase_layout.addLayout(phrase_row)
-        return preview_box
 
     def _build_current_voice(self) -> QGroupBox:
         box = QGroupBox("Current voice")
@@ -495,22 +477,10 @@ class VoiceAuditionPanel(QGroupBox):
         playback_guard: Callable[[], None] | None = None,
         error: str | None = None,
     ) -> None:
-        if not self._comparison_mode:
-            self._build_comparison_layout()
-        self._comparison_mode = True
         self.candidate_voice_label.setVisible(
             bool(self._candidate_entries or self._policy_choice)
         )
-        self._size_transient_controls()
         self.setTitle("New voice")
-        self.setFlat(False)
-        self.game_phrase_button.setText("Game phrase")
-        self.a_box.setTitle("")
-        self.a_box.setFlat(True)
-        self.a_box.setContentsMargins(0, 0, 0, 0)
-        self.preview_box.setTitle("")
-        self.preview_box.setFlat(True)
-        self.a_use.setText("Save")
         self._cancel_preview_request()
         self._stop_player()
         self._current_voice = None
@@ -557,50 +527,6 @@ class VoiceAuditionPanel(QGroupBox):
         if self._candidate_entries:
             self._refresh_reference_advice()
         self._refresh_current_actions()
-
-    def _build_comparison_layout(self) -> None:
-        layout = cast(QVBoxLayout, self.layout())
-        layout.removeItem(self.summary_row)
-        layout.removeWidget(self.preview_box)
-        cast(QVBoxLayout, self.preview_box.layout()).removeWidget(self.recommendation)
-        layout.insertWidget(layout.indexOf(self.status), self.recommendation)
-        self.preview_box.hide()
-        self.a_box.setContentsMargins(0, 0, 0, 0)
-        for compact_layout in (layout, self.a_box.layout()):
-            assert compact_layout is not None
-            compact_layout.setContentsMargins(0, 0, 0, 0)
-            compact_layout.setSpacing(4)
-        for box in (self.phrase_box, self.current_voice_box, self):
-            box.setFlat(False)
-            if box is not self.phrase_box:
-                box.setSizePolicy(
-                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
-                )
-            # Keep the group title weight from propagating to body controls.
-            for child in box.findChildren(
-                QWidget, options=Qt.FindChildOption.FindDirectChildrenOnly
-            ):
-                child_font = child.font()
-                child_font.setBold(child_font.bold())
-                child.setFont(child_font)
-            title_font = box.font()
-            title_font.setBold(True)
-            box.setFont(title_font)
-            box_layout = box.layout()
-            assert box_layout is not None
-            box_layout.setContentsMargins(8, 6, 8, 6)
-            box_layout.setSpacing(4)
-        actions = QHBoxLayout()
-        # Remove from the owning layouts before Qt reparents their widget items.
-        layout.removeWidget(self.candidate_voice_label)
-        self._original_row.removeWidget(self.a_original)
-        self._preview_row.removeWidget(self.a_play)
-        self.a_original.setFont(self.current_original.font())
-        self.a_play.setFont(self.current_play.font())
-        actions.addWidget(self.candidate_voice_label, 1)
-        actions.addWidget(self.a_original, alignment=Qt.AlignmentFlag.AlignTop)
-        actions.addWidget(self.a_play, alignment=Qt.AlignmentFlag.AlignTop)
-        layout.insertLayout(layout.indexOf(self.a_box), actions)
 
     def _refresh_current_actions(self) -> None:
         enabled = bool(self._current_voice) and not (
@@ -752,13 +678,10 @@ class VoiceAuditionPanel(QGroupBox):
         self.recommendation.setAccessibleName("Generated speech content check")
         self.recommendation.setWordWrap(True)
         self.recommendation.setTextFormat(Qt.TextFormat.PlainText)
-        cast(QVBoxLayout, self.preview_box.layout()).addWidget(self.recommendation)
 
     def _size_transient_controls(self) -> None:
         self.preview_text.setFixedHeight(
-            self.preview_text.fontMetrics().lineSpacing()
-            * (2 if self._comparison_mode else 4)
-            + (12 if self._comparison_mode else 16)
+            self.preview_text.fontMetrics().lineSpacing() * 2 + 12
         )
         for button in (self.a_play, self.a_original):
             button.setMinimumWidth(button.sizeHint().width())
@@ -793,7 +716,7 @@ class VoiceAuditionPanel(QGroupBox):
         if (
             self._plan is not None
             and self._candidate_entries
-            and self._group_index < len(self._groups)
+            and not self._pending_decisions
             and not self._shutdown_requested
             and not self._cancel_requested
             and not self.decision_runner.active
@@ -807,7 +730,7 @@ class VoiceAuditionPanel(QGroupBox):
             self._preview_errors.pop(self._preview_key(candidate), None)
         if (
             self._candidate_entries
-            and self._group_index < len(self._groups)
+            and not self._pending_decisions
             and not self._shutdown_requested
             and not self._terminal_emitted
         ):
@@ -825,7 +748,7 @@ class VoiceAuditionPanel(QGroupBox):
 
     @property
     def current_selection(self) -> tuple[VoicePlan, VoiceGroup, str] | None:
-        if self._plan is None or self._group_index >= len(self._groups):
+        if self._plan is None or self._pending_decisions:
             return None
         if self._policy_choice is not None:
             return self._plan, self.current_group(), self._policy_choice[0]
@@ -842,23 +765,16 @@ class VoiceAuditionPanel(QGroupBox):
         self,
         plan: VoicePlan,
         *,
-        group_id: str | None = None,
+        group_id: str,
         policy_choice: tuple[str, str] | None = None,
     ) -> None:
         if not isinstance(plan, VoicePlan):
             raise VoiceAuditionUIError("Voice audition plan is invalid")
-        groups = tuple(
-            group
-            for group in plan.groups
-            if (group_id is None and group.route == "needs-audition")
-            or group.group_id == group_id
-        )
-        if not groups:
-            raise VoiceAuditionUIError("Voice plan has no matching character")
+        groups = tuple(group for group in plan.groups if group.group_id == group_id)
+        if len(groups) != 1:
+            raise VoiceAuditionUIError("Voice plan must have one matching character")
         if policy_choice is None and any(
-            not (
-                group.candidate_inventory if group_id is not None else group.candidates
-            )
+            not (group.candidate_inventory or group.candidates)
             and group.narrator_candidate is None
             for group in groups
         ):
@@ -876,34 +792,27 @@ class VoiceAuditionPanel(QGroupBox):
         self._preview_request = None
         self._plan = plan
         self._policy_choice = policy_choice
-        self._inspection_mode = group_id is not None
         self._show_portraits = all(
             group.portrait_image and group.portrait_image_sha256
             for group in plan.groups
             if group.character != "Narrator"
         )
-        self._groups = groups
-        self._group_index = 0
+        self._group = groups[0]
         self._pending_decisions = []
-        self._failed_candidate_source_ids.clear()
         self._preview_errors.clear()
         self._save_succeeded = False
         self._cancel_requested = False
         self._terminal_emitted = False
-        self._ignore_preview_result = False
         self._shutdown_requested = False
         self.retry_save_button.setVisible(False)
-        self.summary.setVisible(not self._inspection_mode)
-        self.choose_all_button.setVisible(not self._inspection_mode)
-        self.auto_button.setVisible(not self._inspection_mode)
-        self.character.setVisible(not self._inspection_mode)
-        self.scope.setVisible(not self._inspection_mode)
         self.runtime_timer.start()
         self.setVisible(True)
         self._show_group()
 
     def current_group(self) -> VoiceGroup:
-        return self._groups[self._group_index]
+        if self._group is None:
+            raise VoiceAuditionUIError("No character voice is selected")
+        return self._group
 
     def play_a(self) -> None:
         if self._playing_source == "preview":
@@ -971,68 +880,6 @@ class VoiceAuditionPanel(QGroupBox):
         if self._accepted_choice is not None:
             self._record_choice(self._accepted_choice)
 
-    def choose_for_me(self) -> None:
-        if self.decision_runner.active:
-            return
-        if self._inspection_mode:
-            self.cancel()
-            return
-        source_id = self._automatic_source_id(self.current_group())
-        if source_id is None:
-            self._set_status(
-                "No working automatic voice remains. Retry this preview, or return "
-                "to the voice plan and open the character voice editor."
-            )
-            return
-        self._record_choice(source_id)
-
-    def choose_all_automatically(self) -> None:
-        if self.decision_runner.active or self._cancel_requested:
-            return
-        choices: list[PendingDecision] = []
-        for group in self._groups[self._group_index :]:
-            source_id = self._automatic_source_id(group)
-            if source_id is None:
-                self._set_status(
-                    "No working automatic voice remains. Retry the failed preview, "
-                    "or return to the voice plan and open the character voice editor."
-                )
-                return
-            choices.append((group, source_id))
-        self._pending_decisions.extend(choices)
-        self._group_index = len(self._groups)
-        self._ignore_preview_result = self.preview_runner.active
-        if self.preview_runner.active:
-            self._cancel_preview_request()
-        self._stop_player()
-        self._start_save(
-            "VNTTS selected the recommended voice for every remaining character."
-        )
-
-    def _automatic_source_id(self, group: VoiceGroup) -> str | None:
-        candidates = tuple(
-            candidate
-            for candidate in group.candidates
-            if candidate.source_id not in self._failed_candidate_source_ids
-        )
-        if candidates:
-            text = self._advice_text(group)
-            checks = self._saved_checks(group, candidates, text)
-            return recommended_reference(
-                candidates,
-                checks,
-                saved_source_id=group.source_id
-                if group.resolution.startswith("saved-")
-                else None,
-            )
-        narrator = group.narrator_candidate
-        if (
-            narrator is not None
-            and narrator.source_id not in self._failed_candidate_source_ids
-        ):
-            return default_voice_choice_id
-        return None
-
     def cancel(self) -> None:
         if self._terminal_emitted:
             return
@@ -1049,7 +896,6 @@ class VoiceAuditionPanel(QGroupBox):
         if getattr(self.preview_service, "supports_prefetch", False) is True:
             self.preview_service.cancel()
         self._set_decision_actions(False)
-        self.choose_all_button.setEnabled(False)
         self._set_status("Cancelling voice selection...")
         if not self.active:
             self._emit_cancelled()
@@ -1081,13 +927,9 @@ class VoiceAuditionPanel(QGroupBox):
         self._accepted_choice = None
         group = self.current_group()
         self.reference_browser.setEnabled(True)
-        self.character.setText(group.character)
         self._show_portrait(group)
         self.a_use.show()
-        self.preview_box.setVisible(
-            self._policy_choice is None and not self._comparison_mode
-        )
-        self.phrase_box.setVisible(self._policy_choice is None or self._comparison_mode)
+        self.phrase_box.show()
         self.reference_browser.setVisible(self._policy_choice is None)
         self.a_original.setVisible(self._policy_choice is None)
         self.a_play.setVisible(self._policy_choice is None)
@@ -1095,11 +937,10 @@ class VoiceAuditionPanel(QGroupBox):
             self._candidate_entries = ()
             self.reference_model.removeRows(0, self.reference_model.rowCount())
             self.a_box.hide()
-            self.scope.clear()
             self._accepted_choice, label = self._policy_choice
             self.candidate_voice_label.setText(label)
-            self.candidate_voice_label.setVisible(self._comparison_mode)
-            self.a_use.setText("Save" if self._comparison_mode else label)
+            self.candidate_voice_label.show()
+            self.a_use.setText("Save")
             self.a_use.setEnabled(True)
             self._set_status("")
             self._refresh_saved_reference()
@@ -1115,8 +956,7 @@ class VoiceAuditionPanel(QGroupBox):
         entries.sort(
             key=lambda entry: (
                 entry[0].source_id != group.source_id,
-                self._inspection_mode
-                and not is_playable_main_voice_source(
+                not is_playable_main_voice_source(
                     entry[0].source_bank, entry[0].source_line_ids
                 ),
             )
@@ -1129,37 +969,10 @@ class VoiceAuditionPanel(QGroupBox):
         self._advice_error = None
         self._focus_index = 0
         self._populate_reference_choices()
-        self._show_group_scope(group)
         self._show_preview_text(group)
         self._restore_cached_previews()
         self.reference_table.setEnabled(bool(self._candidate_entries))
-        self.choose_all_button.setEnabled(True)
         self._show_current_candidate()
-
-    def _show_group_scope(self, group: VoiceGroup) -> None:
-        self.summary.setText(
-            "Review the suggested voices, or keep every automatic choice."
-            if self._inspection_mode
-            else f"Voice sample {self._group_index + 1} of {len(self._groups)}."
-        )
-        self.character.setText(group.character)
-        self._show_portrait(group)
-        identity = normalize_character_name(group.character)
-        count = len(
-            {
-                line_id
-                for item in self._require_plan().groups
-                if normalize_character_name(item.character) == identity
-                for line_id in item.line_ids
-            }
-        )
-        self.scope.setText(
-            f"Used for {count} selected line{'s' if count != 1 else ''}."
-        )
-        self.scope.setToolTip(
-            "Saving changes this character's voice for future speech and preparation; "
-            "existing prepared audio is unchanged."
-        )
 
     @property
     def reference_source_names(self) -> tuple[str, ...]:
@@ -1279,9 +1092,8 @@ class VoiceAuditionPanel(QGroupBox):
                 )
             )
         )
-        self.current_voice_box.setVisible(self._comparison_mode and not same_preview)
-        if self._comparison_mode:
-            self.setTitle("Selected reference" if same_preview else "New voice")
+        self.current_voice_box.setVisible(not same_preview)
+        self.setTitle("Selected reference" if same_preview else "New voice")
 
     def _show_preview_text(self, group: VoiceGroup) -> None:
         phrases = [group.sample_text, group.alternate_sample_text]
@@ -1297,7 +1109,7 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self._sample_text = (
             self._sample_text
-            if self._comparison_mode and self._sample_text is not None
+            if self._sample_text is not None
             else (
                 self._game_phrases[0]
                 if self._game_phrases
@@ -1336,9 +1148,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._show_current_candidate()
 
     def _preview_text_edited(self) -> None:
-        if not self.decision_runner.active and (
-            self._candidate_entries or self._current_voice or self._comparison_mode
-        ):
+        if not self.decision_runner.active:
             text = self.preview_text.toPlainText().strip()
             if text != self._sample_text:
                 self._set_sample_text(text)
@@ -1382,10 +1192,7 @@ class VoiceAuditionPanel(QGroupBox):
             if group.narrator_candidate
             else None,
         )
-        self._groups = tuple(
-            group if value.group_id == group.group_id else value
-            for value in self._groups
-        )
+        self._group = group
         self._plan = replace(
             self._require_plan(),
             groups=tuple(
@@ -1411,15 +1218,14 @@ class VoiceAuditionPanel(QGroupBox):
     def _show_current_candidate(self) -> None:
         self._stop_player()
         self._accepted_choice = None
-        candidate, _choice, narrator = self._current_entry()
+        candidate, _choice, _narrator = self._current_entry()
         self.candidate_voice_label.setText(_candidate_name(candidate))
-        self.candidate_voice_label.setVisible(self._comparison_mode)
+        self.candidate_voice_label.show()
         with QSignalBlocker(self.reference_transcript):
             self.reference_transcript.setText(candidate.reference_transcript or "")
         self.reference_transcript.setVisible(
             self._require_plan().synthesis_backend == "qwen-tts"
         )
-        self.a_box.setTitle("" if self._comparison_mode else "Original reference")
         reference_count = len(candidate.reference_sha256s)
         transcript = (
             candidate.reference_transcript
@@ -1444,13 +1250,7 @@ class VoiceAuditionPanel(QGroupBox):
             if candidate.reference_sha256s
             else "This voice has no recorded reference."
         )
-        self.a_use.setText(
-            "Save"
-            if self._comparison_mode
-            else "Use narrator voice"
-            if narrator
-            else "Use this voice"
-        )
+        self.a_use.setText("Save")
         self.a_use.setAccessibleDescription(
             "Save this voice for future speech and story preparation"
         )
@@ -1463,8 +1263,6 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_box.setVisible(True)
         self.reference_table.setEnabled(bool(self._candidate_entries))
         self.game_phrase_button.setEnabled(bool(self._game_phrases))
-        self.auto_button.setText("Choose for me")
-        self.auto_button.setEnabled(True)
         self._prefetch_window()
         self._refresh_reference_advice()
         if preview is not None and heard:
@@ -1530,10 +1328,6 @@ class VoiceAuditionPanel(QGroupBox):
             if not self.active:
                 self._emit_cancelled()
             return
-        if self._ignore_preview_result:
-            self._ignore_preview_result = False
-            self._maybe_complete()
-            return
         request = self._completed_preview_request(error)
         if request is None:
             return
@@ -1553,7 +1347,6 @@ class VoiceAuditionPanel(QGroupBox):
             self._preview_failed(request, error)
             return
         assert preview is not None
-        self._failed_candidate_source_ids.discard(candidate.source_id)
         self._previews[self._preview_key(candidate)] = preview
         self._set_decision_actions(True)
         self._play_preview(preview)
@@ -1573,14 +1366,11 @@ class VoiceAuditionPanel(QGroupBox):
             reason=str(error),
             traceback_tail="".join(format_exception(error))[-12000:],
         )
-        if isinstance(error, (VoiceAuditionIncomplete, VoiceAuditionRejected)):
-            self._failed_candidate_source_ids.add(candidate.source_id)
         self.a_play.setEnabled(True)
         self.a_original.setEnabled(bool(candidate.reference_sha256s))
         self.a_use.setEnabled(False)
         self.reference_table.setEnabled(bool(self._candidate_entries))
         self.game_phrase_button.setEnabled(bool(self._game_phrases))
-        self.auto_button.setEnabled(True)
         self._preview_errors[self._preview_key(candidate)] = str(error)
         self._set_status(
             f"Preview failed. {error}\n"
@@ -1763,20 +1553,6 @@ class VoiceAuditionPanel(QGroupBox):
         if self._require_plan().synthesis_language in {None, "en", "English"}:
             return COMPARISON_PREVIEW_TEXT
         return group.sample_text
-
-    def _saved_checks(
-        self, group: VoiceGroup, candidates: tuple[VoiceCandidate, ...], text: str
-    ) -> dict[str, PreviewContentCheck]:
-        plan = self._require_plan()
-        return cached_reference_checks(
-            candidates,
-            text,
-            backend=plan.synthesis_backend,
-            model=plan.synthesis_model,
-            language=plan.synthesis_language,
-            profile=plan.synthesis_profile,
-            advisor=self.content_advisor,
-        )
 
     def _availability(self, candidate: VoiceCandidate) -> str:
         if self._ready_preview(candidate) is not None:
@@ -1990,7 +1766,7 @@ class VoiceAuditionPanel(QGroupBox):
     ) -> None:
         if self._shutdown_requested or self._cancel_requested:
             return
-        if self._group_index >= len(self._groups) or self._terminal_emitted:
+        if self._pending_decisions or self._terminal_emitted:
             return
         context = self._advice_context
         if context != (
@@ -2061,7 +1837,7 @@ class VoiceAuditionPanel(QGroupBox):
     ) -> None:
         if self._shutdown_requested or self._cancel_requested or self._terminal_emitted:
             return
-        if self._group_index >= len(self._groups):
+        if self._pending_decisions:
             return
         if error is None:
             self._content_checks.update(checks or {})
@@ -2196,19 +1972,15 @@ class VoiceAuditionPanel(QGroupBox):
             self._accepted_choice = self._current_entry()[1]
             self.a_use.setEnabled(True)
 
-    def _record_choice(self, source_id: str, status_message: str | None = None) -> None:
-        if self._group_index >= len(self._groups) or self.decision_runner.active:
+    def _record_choice(self, source_id: str) -> None:
+        if self._pending_decisions or self.decision_runner.active:
             return
         self._cancel_preview_request()
         self._stop_player()
         self._pending_decisions.append((self.current_group(), source_id))
-        self._group_index += 1
-        if self._group_index < len(self._groups):
-            self._show_group()
-            return
-        self._start_save(status_message)
+        self._start_save()
 
-    def _start_save(self, status_message: str | None = None) -> None:
+    def _start_save(self) -> None:
         self._cache_cancel.set()
         self.cache_runner.cancel()
         self._cancel_advice()
@@ -2218,12 +1990,7 @@ class VoiceAuditionPanel(QGroupBox):
             self.preview_service.cancel()
         self.retry_save_button.setVisible(False)
         self._set_decision_actions(False)
-        self.choose_all_button.setEnabled(False)
-        self._set_status(
-            f"{status_message} Saving in the background..."
-            if status_message
-            else "Saving voice choices in the background..."
-        )
+        self._set_status("Saving voice choice in the background...")
         self.beforeSave.emit(tuple(self._pending_decisions))
         self.decision_runner.start(
             self.decisions.remember_many,
@@ -2279,7 +2046,6 @@ class VoiceAuditionPanel(QGroupBox):
         self.game_phrase_button.setEnabled(enabled and bool(self._game_phrases))
         self.preview_text.setEnabled(enabled)
         self.reference_transcript.setEnabled(enabled)
-        self.auto_button.setEnabled(enabled)
         self._refresh_current_actions()
         if not enabled:
             self.current_play.setEnabled(False)
