@@ -2792,7 +2792,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         generation = self._begin_controller_lifecycle()
         self._start_live_after_initial_start = bool(start_live)
         self.set_status(
-            "Loading the speech model and voices; controls will unlock "
+            "Preparing reading; it will start automatically when ready."
+            if start_live
+            else "Loading the speech model and voices; controls will unlock "
             "automatically when ready"
         )
         self._initial_start_generation = generation
@@ -2830,6 +2832,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.last_controller_error = f"Unable to initialize controller: {error}"
             self.show_error(self.last_controller_error)
             ready = False
+        if not ready and not self.last_controller_error:
+            self.last_controller_error = "Unable to initialize reading."
         self.signals.ready_changed.emit(ready)
         if ready:
             self.schedule_hotkeys()
@@ -2933,6 +2937,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return False
         if QApplication.activeModalWidget() is not None:
             self.set_status("Close the dialog before reading")
+            return False
+        if not state.can_toggle_live:
+            return False
+        if state.can_initialize:
+            self.prepare_reading(start_live=True)
             return False
         if not self._audio_runtime_available():
             return False
@@ -3294,6 +3303,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         return False
 
     def emergency_stop(self) -> None:
+        self._start_live_after_initial_start = False
         self.resume_live_after_unknown_mapping = False
         self._configuration_after_apply = None
         if self.unknown_speaker_prompt is not None:
@@ -3307,6 +3317,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.speech_paused_changed.emit(False)
 
     def _request_stop_reading(self) -> None:
+        self._start_live_after_initial_start = False
         self.resume_live_after_unknown_mapping = False
         self._configuration_after_apply = None
         if self.unknown_speaker_prompt is not None:
@@ -4247,6 +4258,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.readiness_dialog.activateWindow()
 
     def _open_reading_from_readiness(self) -> None:
+        if self.last_controller_error:
+            self.last_controller_error = None
+            self._apply_controller_action_state()
+            self.set_status("Select Read to retry reading.")
         self.dashboard.show_reading()
         self.show_dashboard()
 
@@ -5339,6 +5354,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         enabled: bool | None = None,
         unavailable_reason: str | None = None,
     ) -> RuntimeControlState:
+        initialization_needed = not self._controller_ready
         if enabled is None:
             enabled = (
                 self._controller_ready
@@ -5354,9 +5370,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             and not self._preparation_playback_active()
         ):
             enabled = False
-            unavailable_reason = (
-                "Reading content changed. Load the reading engine again."
-            )
+            initialization_needed = True
         snapshot = None
         reader = getattr(self.controller, "live_reader", None)
         snapshot_loader = getattr(self.controller, "runtime_control_snapshot", None)
@@ -5378,9 +5392,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         if preparing and self._preparation_blocks_reading(loaded=True):
             enabled = False
-            unavailable_reason = (
-                "Story preparation has not finished its first playable dialogue yet."
-            )
+            if self._preparation_blocks_reading(loaded=False):
+                unavailable_reason = "Story preparation has not finished its first playable dialogue yet."
+            else:
+                initialization_needed = True
         if self.narrator_dialog is not None:
             enabled = False
             unavailable_reason = (
@@ -5392,6 +5407,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         return RuntimeControlState(
             ready=bool(enabled),
+            can_initialize=bool(
+                initialization_needed
+                and not enabled
+                and self.settings.onboarding_completed
+                and not self._controller_busy
+                and not self._shutting_down
+                and not self.last_controller_error
+                and not unavailable_reason
+            ),
             indexed_current=indexed_current,
             live=live if isinstance(live, bool) else self._reported_live,
             starting=self._live_scope_generation is not None
@@ -5419,7 +5443,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 or (
                     f"{self.last_controller_error} Select Check readiness to recover."
                     if self.last_controller_error
-                    else "Select Load reading engine in the Reading tab to start."
+                    else "Select Read to prepare and start reading."
                     if not self._controller_ready and self.settings.onboarding_completed
                     else "Select Set up reading in the Reading tab to start."
                     if not self._controller_ready

@@ -120,10 +120,14 @@
       README). Длинная техническая команда обрезана, чтение невозможно до сборки.
       Обсудить проверку/подготовку source-run до GUI; не считать это дефектом
       portable-сборки без отдельной проверки.
-- [ ] **UX-25-04: Reading требует Load reading engine как отдельный шаг.**
-      Первый переход в Reading: Read/Dialogue недоступны до отдельной загрузки
-      движка. Обсудить автоматическую загрузку по Read и пользу предварительного
-      технического шага для готовых записей отдельно от живой генерации.
+- [ ] **UX-25-04: проверить запуск по Read в общем живом прогоне.**
+      На настроенном холодном старте Read должна сама подготовить чтение и
+      начать его; проверить главное/компактное окна и меню, повторное нажатие,
+      остановку и закрытие во время загрузки, ошибку и повтор после успешной
+      проверки готовности. При фоновой подготовке сохранить активный пакет и
+      отдельный переход из Stories к доступным новым записям. Первый запуск
+      без настройки должен по-прежнему предлагать Set up reading. Политика
+      загрузки живой TTS-модели при наличии записей остаётся прежней.
 - [ ] **UX-25-09: Voices служит промежуточным экраном без списка голосов.**
       Вкладка Narrator and character voices содержит только строку Narrator:
       Centurion и кнопку Edit voices; остальная область пустая. Чтобы увидеть
@@ -305,9 +309,8 @@ complete. Do not change recognition or playback policy on an unverified hypothes
 
 1. **Fix remaining UI issues in separate increments.** Start with concrete
    ownership/data defects, then agree the desired behavior for UX changes:
-   - Agree automatic loading on Read (UX-25-04),
-     saved-voice overview (UX-25-09), missing source text/unchanged voice candidate
-     (UX-25-10), source-launch worker readiness (UX-25-03), and canonical displayed
+   - Agree saved-voice overview (UX-25-09), missing source text/unchanged voice
+     candidate (UX-25-10), source-launch worker readiness (UX-25-03), and canonical displayed
      dialogue (RUN-25-04). Reuse existing backlog items rather than add duplicate
      implementations. Gate: reachable actions, truthful status and unchanged
      voice assignments on browsing/cancel; native checks move to the final run.
@@ -590,9 +593,10 @@ callers and focused regressions together when changing these contracts.
       only readiness, cancel/retry and same-input callback handoff. Reject missing/
       corrupt WAVs, foreign state/manifest, changed source evidence and callbacks
       from another input; completed counts alone are not playable coverage.
-      On the native compact UI, confirm cold startup names Load reading engine or
-      Set up reading, active preparation reports loading, and retry errors preserve
-      Check readiness rather than reverting to an indefinite starting message.
+      On the native compact UI, confirm configured cold startup offers Read,
+      first-time setup offers Set up reading, active preparation reports loading,
+      and retry errors preserve Check readiness rather than reverting to an
+      indefinite starting message.
 - [ ] **U7 - Complete model-asset evidence and native offline reuse.**
       Qualify normal GUI/preflight with network unavailable and no experiment-only
       environment: offline-first and Reading-first must reuse the same managed

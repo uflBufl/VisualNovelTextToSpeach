@@ -259,8 +259,9 @@ class ControlDashboardTest(unittest.TestCase):
     def test_reading_setup_tracks_configuration_and_retains_specific_errors(self):
         dashboard = ControlDashboard(AppSettings(onboarding_completed=True))
         dashboard.set_ready(False)
-        self.assertEqual(dashboard.prepare_reading_button.text(), "Load reading engine")
-        self.assertIn("Load reading engine", dashboard.action_reason.text())
+        self.assertEqual(dashboard.prepare_reading_button.text(), "Prepare reading")
+        self.assertIn("Prepare reading", dashboard.action_reason.text())
+        self.assertFalse(dashboard.live_button.isEnabled())
         dashboard.set_ready(
             False, reason="Speech model failed to load. Check readiness."
         )
@@ -276,13 +277,79 @@ class ControlDashboardTest(unittest.TestCase):
             )
         )
         self.assertEqual(dashboard.prepare_reading_button.text(), "Check readiness")
+        self.assertFalse(dashboard.prepare_reading_button.isHidden())
+        self.assertTrue(dashboard.prepare_reading_button.isDefault())
+        self.assertFalse(dashboard.live_button.isEnabled())
         dashboard.prepare_reading_button.click()
         self.assertEqual(requested, ["readiness"])
         dashboard.set_configuration(AppSettings(onboarding_completed=False))
         dashboard.set_ready(False)
         self.assertEqual(dashboard.prepare_reading_button.text(), "Set up reading")
         self.assertIn("Set up reading", dashboard.action_reason.text())
+        self.assertFalse(dashboard.prepare_reading_button.isHidden())
+        self.assertTrue(dashboard.prepare_reading_button.isDefault())
+        self.assertFalse(dashboard.live_button.isEnabled())
         dashboard.deleteLater()
+
+    def test_cold_reading_starts_from_read_without_an_extra_setup_action(self):
+        dashboard = ControlDashboard(AppSettings(onboarding_completed=True))
+        compact = CompactController(platform="win32")
+        for controls in (dashboard, compact):
+            with self.subTest(controls=type(controls).__name__):
+                requested = []
+                controls.live_requested.connect(lambda: requested.append("read"))
+                controls.set_runtime_controls(RuntimeControlState(can_initialize=True))
+                self.assertFalse(controls._ready)
+                self.assertTrue(controls.live_button.isEnabled())
+                self.assertTrue(controls.live_button.isDefault())
+                self.assertEqual(controls.live_button.text(), "Read")
+                self.assertEqual(
+                    controls.reading_state.text()
+                    if controls is dashboard
+                    else controls.mode.text(),
+                    "Ready to start",
+                )
+                self.assertFalse(controls.read_button.isEnabled())
+                self.assertFalse(controls.pause_button.isEnabled())
+                self.assertIn("prepares", controls.live_button.toolTip())
+                self.assertIn("then starts", controls.live_button.toolTip())
+                self.assertIn("prepares", controls.live_button.accessibleDescription())
+                reason = (
+                    controls.action_reason.text()
+                    if controls is dashboard
+                    else controls.action_reason.toPlainText()
+                )
+                self.assertEqual(reason, controls.live_button.toolTip())
+                self.assertNotIn("unavailable", reason.casefold())
+                controls.live_button.click()
+                self.assertEqual(requested, ["read"])
+                if controls is dashboard:
+                    self.assertTrue(dashboard.prepare_reading_button.isHidden())
+                    self.assertFalse(dashboard.prepare_reading_button.isDefault())
+                    dashboard.set_configuration(AppSettings(onboarding_completed=True))
+                    dashboard.set_loading(False)
+                    self.assertEqual(dashboard.action_reason.text(), reason)
+                    self.assertEqual(dashboard.reading_state.text(), "Ready to start")
+
+                controls.set_runtime_controls(
+                    RuntimeControlState(unavailable_reason="Speech engine is loading.")
+                )
+                self.assertFalse(controls.live_button.isEnabled())
+                self.assertFalse(controls.read_button.isEnabled())
+                self.assertFalse(controls.pause_button.isEnabled())
+                self.assertIn("loading", controls.live_button.toolTip())
+
+                controls.set_runtime_controls(RuntimeControlState(ready=True))
+                self.assertTrue(controls.live_button.isEnabled())
+                self.assertTrue(controls.read_button.isEnabled())
+                self.assertFalse(controls.pause_button.isEnabled())
+                self.assertEqual(controls.live_button.toolTip(), "Start reading")
+                self.assertEqual(
+                    controls.live_button.accessibleDescription(),
+                    "Primary action: start following dialogue in the game",
+                )
+        dashboard.deleteLater()
+        compact.deleteLater()
 
     def test_empty_reading_card_shows_only_observed_dialogue_and_playback(self):
         dashboard = ControlDashboard(AppSettings())
@@ -382,6 +449,9 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.reading_setup_requested.connect(lambda: requested.append("engine"))
         dashboard.set_ready(False, reason="Selected game window is unavailable")
         self.assertEqual(dashboard.prepare_reading_button.text(), "Select game window")
+        self.assertFalse(dashboard.prepare_reading_button.isHidden())
+        self.assertTrue(dashboard.prepare_reading_button.isDefault())
+        self.assertFalse(dashboard.live_button.isEnabled())
         dashboard.prepare_reading_button.click()
         self.assertEqual(requested, ["window"])
         dashboard.deleteLater()
@@ -665,6 +735,9 @@ class ControlDashboardTest(unittest.TestCase):
         self.application.processEvents()
 
         dashboard.set_loading(True)
+        dashboard.set_runtime_controls(
+            RuntimeControlState(unavailable_reason="Speech engine is loading.")
+        )
 
         self.assertTrue(dashboard.loading_panel.isVisibleTo(dashboard))
         self.assertEqual(dashboard.reading_state.text(), "Loading speech engine")
@@ -685,6 +758,9 @@ class ControlDashboardTest(unittest.TestCase):
             all(not button.isEnabled() for button in dashboard.loading_blocked_buttons)
         )
         self.assertTrue(dashboard.quit_button.isEnabled())
+        self.assertFalse(dashboard.live_button.isEnabled())
+        self.assertFalse(dashboard.read_button.isEnabled())
+        self.assertFalse(dashboard.pause_button.isEnabled())
 
         dashboard.set_loading(False)
 
@@ -1119,6 +1195,16 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard = ControlDashboard(AppSettings())
         compact = CompactController(platform="win32")
         cases = (
+            (
+                "configured cold start",
+                RuntimeControlState(can_initialize=True),
+                (False, True, False),
+            ),
+            (
+                "cold start while stopping",
+                RuntimeControlState(can_initialize=True, transition="stopping"),
+                (False, False, False),
+            ),
             (
                 "identifying current chapter",
                 RuntimeControlState(ready=True, starting=True),

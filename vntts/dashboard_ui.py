@@ -57,9 +57,13 @@ if TYPE_CHECKING:
     from vntts.window_capture import WindowGeometry
 
 
+_INITIALIZE_READING_REASON = "Read prepares the speech engine, then starts reading."
+
+
 @dataclass(frozen=True)
 class RuntimeControlState:
     ready: bool = False
+    can_initialize: bool = False
     live: bool = False
     starting: bool = False
     paused: bool = False
@@ -103,7 +107,9 @@ class RuntimeControlState:
 
     @property
     def can_toggle_live(self) -> bool:
-        return (self.ready or self.active) and self.transition != "stopping"
+        return (
+            self.ready or self.active or self.can_initialize
+        ) and self.transition != "stopping"
 
     @property
     def can_pause(self) -> bool:
@@ -133,8 +139,10 @@ class RuntimeControlState:
         if self.transition == "starting":
             return "Reading is starting; choose Cancel start to stop."
         if not self.ready:
-            return (
-                self.unavailable_reason or "VNTTS is not ready. Select Check readiness."
+            return self.unavailable_reason or (
+                _INITIALIZE_READING_REASON
+                if self.can_initialize
+                else "VNTTS is not ready. Select Check readiness."
             )
         reasons = {
             "read": "Stop reading and speech before reading the visible dialogue once.",
@@ -166,10 +174,12 @@ def _apply_reading_capabilities(
     live_button.setEnabled(state.can_toggle_live)
     _set_live_button_presentation(live_button, state.active)
     live_button.setToolTip(
-        live_button.accessibleName()
-        if state.can_toggle_live
-        else state.reason_for("live")
+        state.reason_for("live")
+        if not state.can_toggle_live or (state.can_initialize and not state.ready)
+        else live_button.accessibleName()
     )
+    if state.can_initialize and not state.ready:
+        live_button.setAccessibleDescription(state.reason_for("live"))
     if state.transition is not None:
         set_action_icon(
             live_button, "x" if state.transition == "starting" else "square"
@@ -250,12 +260,13 @@ class ControlDashboard(QMainWindow):
         self._quitting = False
         self._live = False
         self._ready = False
+        self._can_initialize = False
         self._dialogue_current = False
         self._dialogue_speaker: str | None = None
         self._dialogue_text = ""
         self._unavailable_reason: str | None = None
         self._reading_setup_label = (
-            "Load reading engine" if settings.onboarding_completed else "Set up reading"
+            "Prepare reading" if settings.onboarding_completed else "Set up reading"
         )
         self._sequence_expected_candidate_count = 0
         self._sequence_controls_available = False
@@ -855,7 +866,7 @@ class ControlDashboard(QMainWindow):
 
     def set_configuration(self, settings: AppSettings) -> None:
         self._reading_setup_label = (
-            "Load reading engine" if settings.onboarding_completed else "Set up reading"
+            "Prepare reading" if settings.onboarding_completed else "Set up reading"
         )
         self.prepare_reading_button.setText(self._reading_setup_action())
         if not self._ready:
@@ -1111,7 +1122,9 @@ class ControlDashboard(QMainWindow):
                 "finishes loading."
             )
         elif not self._ready:
-            self.reading_state.setText("Not ready")
+            self.reading_state.setText(
+                "Ready to start" if self._can_initialize else "Not ready"
+            )
             self._set_action_reason(self._reading_setup_reason())
 
     def set_ready(self, ready: bool, *, reason: str | None = None) -> None:
@@ -1124,12 +1137,17 @@ class ControlDashboard(QMainWindow):
 
     def set_runtime_controls(self, state: RuntimeControlState) -> None:
         self._ready = state.ready
+        self._can_initialize = state.can_initialize
         self._unavailable_reason = state.unavailable_reason
         self._needs_readiness_check = state.needs_readiness_check
         self._dialogue_current = state.speaking or state.paused
         self._update_dialogue_title()
         self.reading_state.setText(
-            "Not ready"
+            "Loading speech engine"
+            if not self.loading_panel.isHidden()
+            else "Ready to start"
+            if state.can_initialize
+            else "Not ready"
             if not state.ready
             else "Finding current dialogue"
             if state.starting
@@ -1143,7 +1161,9 @@ class ControlDashboard(QMainWindow):
             if state.live
             else "Reading stopped"
         )
-        self.prepare_reading_button.setVisible(not state.ready)
+        self.prepare_reading_button.setVisible(
+            not state.ready and not state.can_initialize
+        )
         window_problem = "window" in (state.unavailable_reason or "").casefold()
         self._window_problem = window_problem
         self.prepare_reading_button.setText(self._reading_setup_action())
@@ -1170,8 +1190,10 @@ class ControlDashboard(QMainWindow):
             live_button=self.live_button,
             pause_button=self.pause_button,
         )
-        self.prepare_reading_button.setDefault(not state.ready and not state.active)
-        self.live_button.setDefault(state.ready or state.active)
+        self.prepare_reading_button.setDefault(
+            not state.ready and not state.active and not state.can_initialize
+        )
+        self.live_button.setDefault(state.ready or state.active or state.can_initialize)
 
     def _reading_setup_action(self) -> str:
         if self._window_problem:
@@ -1181,7 +1203,11 @@ class ControlDashboard(QMainWindow):
         return self._reading_setup_label
 
     def _reading_setup_reason(self) -> str:
-        return self._unavailable_reason or f"{self._reading_setup_label} to start."
+        return self._unavailable_reason or (
+            _INITIALIZE_READING_REASON
+            if self._can_initialize
+            else f"{self._reading_setup_label} to start."
+        )
 
     def _set_action_reason(self, message: str) -> None:
         self.action_reason.setText(message)
@@ -1508,6 +1534,8 @@ class CompactController(QWidget):
             if state.speaking or state.queued
             else "Ready"
             if state.ready
+            else "Ready to start"
+            if state.can_initialize
             else "Unavailable"
             if state.unavailable_reason
             else "Not ready"
@@ -1527,7 +1555,11 @@ class CompactController(QWidget):
             state.unavailable_reason
             or "VNTTS is not ready. Select Full controls, then Check readiness."
         )
-        self.action_reason.setPlainText(f"Reading unavailable: {reason}")
+        self.action_reason.setPlainText(
+            state.reason_for("live")
+            if state.can_initialize
+            else f"Reading unavailable: {reason}"
+        )
         self.sequence_expected_button.setToolTip("" if state.ready else reason)
         self._fit_content()
 

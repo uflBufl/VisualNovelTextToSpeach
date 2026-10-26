@@ -1888,8 +1888,10 @@ class TrayApplicationTest(unittest.TestCase):
                 )
                 saved = tray.settings
                 tray._apply_controller_action_state()
-                self.assertTrue(tray.dashboard.prepare_reading_button.isEnabled())
-                self.assertEqual(tray._runtime_control_state().ready, loaded)
+                state = tray._runtime_control_state()
+                self.assertTrue(tray.dashboard.live_button.isEnabled())
+                self.assertEqual(state.ready, loaded)
+                self.assertEqual(state.can_initialize, not loaded)
                 with patch.object(tray.initial_start_runner, "start") as start:
                     tray.prepare_reading()
                 start.assert_called_once()
@@ -2095,6 +2097,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray.set_ready(True)
         preparation = OfflineAudioPreparationDialog(
             AppSettings(), discovery=lambda: ContentDiscovery(())
         )
@@ -2140,6 +2143,7 @@ class TrayApplicationTest(unittest.TestCase):
             picker = Mock(result_settings=tray.settings.updated(tts_speaker="marius"))
             with (
                 patch("vntts.app.GameNarratorDialog", return_value=picker),
+                patch.object(tray, "_active_pack_reading_available", return_value=True),
                 patch.object(tray.dashboard, "embed_narrator"),
                 patch.object(tray.dashboard, "remove_narrator"),
                 patch.object(
@@ -2815,6 +2819,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.set_ready(True)
 
         self.assertTrue(tray_application.toggle_live())
 
@@ -2833,6 +2838,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.set_ready(True)
         runner = Mock(active=False)
         tray_application.live_scope_runner = runner
 
@@ -2860,6 +2866,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray.set_ready(True)
         self.addCleanup(tray.shutdown)
         runner = Mock(active=False)
         tray.live_scope_runner = runner
@@ -2893,6 +2900,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray.set_ready(True)
         self.addCleanup(tray.shutdown)
         runner = Mock(active=False)
         tray.live_scope_runner = runner
@@ -2916,6 +2924,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray.set_ready(True)
         self.addCleanup(tray.shutdown)
         tray.live_scope_runner = Mock(active=False)
         tray.toggle_live()
@@ -2939,6 +2948,7 @@ class TrayApplicationTest(unittest.TestCase):
                     AppSettings(),
                     controller_factory=Mock(return_value=controller),
                 )
+                tray.set_ready(True)
                 self.addCleanup(tray.shutdown)
                 tray.live_scope_runner = Mock(active=False)
                 tray.toggle_live()
@@ -2962,6 +2972,7 @@ class TrayApplicationTest(unittest.TestCase):
                     AppSettings(),
                     controller_factory=Mock(return_value=controller),
                 )
+                tray.set_ready(True)
                 self.addCleanup(tray.shutdown)
                 tray.live_scope_runner = Mock(active=False)
                 tray.toggle_live()
@@ -2982,6 +2993,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.set_ready(True)
         tray_application.live_scope_runner = Mock(active=False)
 
         self.assertFalse(tray_application.toggle_live())
@@ -3005,6 +3017,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.set_ready(True)
         tray_application.live_scope_runner = Mock(active=False)
 
         self.assertFalse(tray_application.toggle_live())
@@ -3201,6 +3214,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.set_ready(True)
         tray_application.live_scope_runner = Mock(active=False)
 
         self.assertFalse(tray_application.toggle_live())
@@ -3218,6 +3232,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.set_ready(True)
         tray_application.live_scope_runner = Mock(active=False)
 
         self.assertFalse(tray_application.toggle_live())
@@ -3239,6 +3254,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.set_ready(True)
         tray_application.live_scope_runner = Mock(active=False)
 
         self.assertFalse(tray_application.toggle_live())
@@ -3255,6 +3271,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.set_ready(True)
         runner = Mock(active=False)
         tray_application.live_scope_runner = runner
 
@@ -3279,6 +3296,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.set_ready(True)
         tray_application.live_scope_runner = Mock(active=False)
 
         self.assertFalse(tray_application.toggle_live())
@@ -3296,6 +3314,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.set_ready(True)
         runner = Mock(active=False)
         tray_application.live_scope_runner = runner
 
@@ -3627,6 +3646,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.set_ready(True)
 
         dialog = Mock(result_settings=tray_application.settings)
         dialog.voice_library.binding.return_value = Mock()
@@ -4002,6 +4022,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.set_ready(True)
         tray_application.resume_live_after_unknown_mapping = True
 
         tray_application._continue_unknown_with_narrator("Selone")
@@ -5912,6 +5933,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.set_ready(True)
         dialog = Mock()
 
         with (
@@ -6002,6 +6024,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.set_ready(True)
         dialog = Mock()
         dialog.exec.side_effect = lambda: self.assertFalse(controller.is_live_running)
 
@@ -7294,7 +7317,7 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertEqual(tray.status_action.text(), "Saved configuration.")
                 tray.shutdown()
 
-    def test_cold_reading_state_names_explicit_setup_action_until_engine_loads(self):
+    def test_cold_reading_state_offers_read_only_after_setup(self):
         for configured in (False, True):
             with self.subTest(configured=configured):
                 controller = Mock(is_ready=False, is_live_running=False)
@@ -7304,25 +7327,41 @@ class TrayApplicationTest(unittest.TestCase):
                     AppSettings(onboarding_completed=configured),
                     controller_factory=Mock(return_value=controller),
                 )
-                action = "Load reading engine" if configured else "Set up reading"
+                action = "Select Read" if configured else "Set up reading"
                 for _ in range(2):
                     tray.set_status("Settings saved")
                     tray._refresh_speech_runtime()
                     state = tray._runtime_control_state()
                     self.assertFalse(state.ready)
+                    self.assertEqual(state.can_initialize, configured)
+                    self.assertEqual(state.can_toggle_live, configured)
+                    self.assertFalse(state.can_read)
                     self.assertFalse(tray._controller_busy)
                     self.assertIn(action, state.unavailable_reason)
                     self.assertNotIn("Full controls", state.unavailable_reason)
-                    self.assertIn("Reading", state.unavailable_reason)
-                    self.assertEqual(tray.compact_controller.mode.text(), "Unavailable")
+                    self.assertEqual(
+                        tray.compact_controller.mode.text(),
+                        "Ready to start" if configured else "Unavailable",
+                    )
                     self.assertIn(
                         action, tray.compact_controller.action_reason.toPlainText()
                     )
                     self.assertIn(action, tray.dashboard.action_reason.text())
                     self.assertEqual(
-                        tray.live_action.toolTip(), state.unavailable_reason
+                        tray.live_action.toolTip(),
+                        "Start reading" if configured else state.unavailable_reason,
                     )
-                    self.assertFalse(tray.compact_controller.live_button.isEnabled())
+                    for control in (
+                        tray.dashboard.live_button,
+                        tray.compact_controller.live_button,
+                        tray.live_action,
+                    ):
+                        self.assertEqual(control.isEnabled(), configured)
+                    self.assertFalse(tray.dashboard.read_button.isEnabled())
+                    self.assertFalse(tray.compact_controller.read_button.isEnabled())
+                    self.assertEqual(
+                        tray.dashboard.prepare_reading_button.isHidden(), configured
+                    )
                 controller.start.assert_not_called()
 
                 tray._begin_controller_lifecycle()
@@ -7347,6 +7386,223 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertIsNone(tray._runtime_control_state().unavailable_reason)
                 self.assertEqual(tray.compact_controller.mode.text(), "Ready")
                 self.assertTrue(tray.compact_controller.live_button.isEnabled())
+                tray.shutdown()
+
+    def _cold_reading_tray(self):
+        settings = AppSettings(onboarding_completed=True)
+        controller = Mock(
+            settings=settings,
+            is_ready=False,
+            is_live_running=False,
+            is_one_shot_read_running=False,
+        )
+        controller.runtime_control_snapshot.return_value = {}
+        controller.unresolved_live_speakers.return_value = ()
+        controller.start.return_value = True
+        controller.toggle_live.side_effect = lambda: (
+            setattr(controller, "is_live_running", True) or True
+        )
+        tray = TrayApplication(
+            self.application, settings, controller_factory=Mock(return_value=controller)
+        )
+        pool = ManualThreadPool()
+        tray.initial_start_runner.thread_pool = pool
+        return tray, controller, pool
+
+    def test_read_initializes_once_then_starts_from_all_entry_points(self):
+        for entry in ("main", "compact", "menu", "hotkey"):
+            with self.subTest(entry=entry):
+                tray, controller, pool = self._cold_reading_tray()
+                with patch.object(tray, "schedule_hotkeys"):
+                    if entry == "main":
+                        tray.dashboard.live_button.click()
+                    elif entry == "compact":
+                        tray.compact_controller.live_button.click()
+                    elif entry == "menu":
+                        tray.live_action.trigger()
+                    else:
+                        tray.signals.live_requested.emit()
+                        self.application.processEvents()
+                    self.assertTrue(tray._controller_busy)
+                    self.assertEqual(len(pool.tasks), 1)
+                    controller.toggle_live.assert_not_called()
+                    for _ in range(2):
+                        self.assertFalse(tray.toggle_live())
+                        tray.signals.live_requested.emit()
+                        self.application.processEvents()
+                    self.assertEqual(len(pool.tasks), 1)
+                    pool.run_next()
+                    self.application.processEvents()
+                controller.start.assert_called_once_with()
+                controller.toggle_live.assert_called_once_with()
+                self.assertTrue(controller.is_live_running)
+                self.assertFalse(tray._start_live_after_initial_start)
+                tray.shutdown()
+
+    def test_failed_read_initialization_blocks_retry_with_specific_recovery(self):
+        for error in (None, RuntimeError("model unavailable")):
+            with self.subTest(error=error):
+                tray, controller, pool = self._cold_reading_tray()
+                controller.start.return_value = False
+                controller.start.side_effect = error
+                with patch.object(tray, "show_error"):
+                    self.assertFalse(tray.toggle_live())
+                    pool.run_next()
+                    self.application.processEvents()
+                self.assertFalse(tray._runtime_control_state().can_initialize)
+                self.assertIn("Check readiness", tray.dashboard.action_reason.text())
+                if error is not None:
+                    self.assertIn(str(error), tray.dashboard.action_reason.text())
+                self.assertFalse(tray.toggle_live())
+                controller.start.assert_called_once_with()
+                controller.toggle_live.assert_not_called()
+                self.assertFalse(tray._start_live_after_initial_start)
+                with (
+                    patch(
+                        "vntts.app.OnboardingDiagnostics.run",
+                        return_value=(
+                            DiagnosticResult("Audio output", "ok", "Speakers"),
+                        ),
+                    ),
+                    patch.object(tray, "schedule_hotkeys"),
+                ):
+                    tray.open_readiness()
+                    self.wait_until(
+                        lambda: tray.readiness_dialog.reading_button.isVisible()
+                    )
+                    tray.readiness_dialog.reading_button.click()
+                    self.assertIsNone(tray.last_controller_error)
+                    self.assertFalse(tray._controller_ready)
+                    self.assertTrue(tray.dashboard.live_button.isEnabled())
+                    controller.start.assert_called_once_with()
+                    controller.toggle_live.assert_not_called()
+                    controller.start.side_effect = None
+                    controller.start.return_value = True
+                    self.assertFalse(tray.toggle_live())
+                    pool.run_next()
+                    self.application.processEvents()
+                    self.wait_until(lambda: not tray.readiness_dialog.runner.active)
+                self.assertEqual(controller.start.call_count, 2)
+                controller.toggle_live.assert_called_once_with()
+                tray.shutdown()
+
+    def test_interrupted_initialization_never_starts_reading_later(self):
+        for interruption in (
+            "emergency_stop",
+            "_request_stop_reading",
+            "_begin_controller_lifecycle",
+            "shutdown",
+        ):
+            with self.subTest(interruption=interruption):
+                tray, controller, pool = self._cold_reading_tray()
+                self.assertFalse(tray.toggle_live())
+                with (
+                    patch.object(tray, "schedule_hotkeys"),
+                    patch.object(tray.live_stop_runner, "start"),
+                ):
+                    getattr(tray, interruption)()
+                    pool.run_next()
+                    self.application.processEvents()
+                    tray._initial_start_finished(True, None)
+                controller.toggle_live.assert_not_called()
+                tray.shutdown()
+
+    def test_ready_read_starts_without_initializing_again(self):
+        tray, controller, pool = self._cold_reading_tray()
+        tray.set_ready(True)
+        self.assertTrue(tray.toggle_live())
+        controller.toggle_live.assert_called_once_with()
+        controller.start.assert_not_called()
+        self.assertEqual(pool.tasks, [])
+        tray.shutdown()
+
+    def test_changed_reading_pack_initializes_before_live_start(self):
+        tray, controller, pool = self._cold_reading_tray()
+        tray.set_ready(True)
+        tray.settings = tray.settings.updated(story_index="changed-story.jsonl")
+        controller.apply_settings.side_effect = lambda settings, **_kwargs: (
+            setattr(controller, "settings", settings) or True
+        )
+        state = tray._runtime_control_state()
+        self.assertFalse(state.ready)
+        self.assertTrue(state.can_initialize)
+        with patch.object(tray, "schedule_hotkeys"):
+            self.assertFalse(tray.toggle_live())
+            controller.toggle_live.assert_not_called()
+            pool.run_next()
+            self.application.processEvents()
+        controller.apply_settings.assert_called_once_with(
+            tray.settings, cancellation=ANY
+        )
+        controller.start.assert_called_once_with()
+        controller.toggle_live.assert_called_once_with()
+        tray.shutdown()
+
+    def test_unconfigured_read_stays_blocked_until_explicit_setup(self):
+        tray, controller, pool = self._cold_reading_tray()
+        tray.settings = tray.settings.updated(onboarding_completed=False)
+        tray._apply_controller_action_state()
+        with patch.object(tray, "run_onboarding") as setup:
+            self.assertFalse(tray.toggle_live())
+            setup.assert_not_called()
+            tray.dashboard.prepare_reading_button.click()
+            setup.assert_called_once_with()
+        controller.start.assert_not_called()
+        controller.toggle_live.assert_not_called()
+        self.assertEqual(pool.tasks, [])
+        tray.shutdown()
+
+    def test_pending_preparation_initializes_only_an_available_reading_source(self):
+        for source in ("active-pack", "progressive", "unavailable"):
+            with self.subTest(source=source):
+                tray, controller, pool = self._cold_reading_tray()
+                preparation = Mock()
+                preparation.has_pending_work.return_value = True
+                progress = tray.settings.updated(
+                    story_index="progress-story.jsonl",
+                    generated_audio_manifest="progress-audio.json",
+                )
+                preparation.runtime_playback_settings.return_value = (
+                    None if source == "unavailable" else progress
+                )
+                tray.pregeneration_dialog = preparation
+
+                def attach(settings, **_kwargs):
+                    controller.settings = settings
+                    return True
+
+                controller.apply_settings.side_effect = attach
+                with (
+                    patch.object(
+                        tray,
+                        "_active_pack_reading_available",
+                        return_value=source == "active-pack",
+                    ),
+                    patch.object(tray, "schedule_hotkeys"),
+                ):
+                    tray._apply_controller_action_state()
+                    state = tray._runtime_control_state()
+                    self.assertEqual(state.can_initialize, source != "unavailable")
+                    self.assertFalse(tray.toggle_live())
+                    if source == "unavailable":
+                        self.assertIn(
+                            "first playable dialogue", state.unavailable_reason
+                        )
+                        self.assertEqual(pool.tasks, [])
+                        controller.toggle_live.assert_not_called()
+                    else:
+                        self.assertEqual(len(pool.tasks), 1)
+                        pool.run_next()
+                        self.application.processEvents()
+                        controller.start.assert_called_once_with()
+                        controller.toggle_live.assert_called_once_with()
+                    if source == "progressive":
+                        controller.apply_settings.assert_called_once_with(
+                            progress, cancellation=ANY
+                        )
+                    else:
+                        controller.apply_settings.assert_not_called()
+                tray.pregeneration_dialog = None
                 tray.shutdown()
 
     def test_controller_lifecycle_shows_main_window_loading_state(self):
