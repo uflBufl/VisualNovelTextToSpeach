@@ -2156,7 +2156,8 @@ class TrayApplicationTest(unittest.TestCase):
             ):
                 tray.open_voice_previews()
                 self.wait_until(lambda: tray.narrator_dialog is picker)
-                self.assertFalse(controller.is_live_running)
+                self.assertTrue(controller.is_live_running)
+                controller.stop_live.assert_not_called()
                 self.assertTrue(preparation.cancel_button.isEnabled())
                 tray._narrator_finished(QDialog.DialogCode.Accepted)
                 self.assertEqual(tray.settings.tts_speaker, "marius")
@@ -3627,6 +3628,174 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(tray.dashboard.live_button.isEnabled())
         self.assertEqual(tray.dashboard.live_button.accessibleName(), "Start reading")
         tray.shutdown()
+
+    def open_voice_editor_for_playback(self, *, live=True):
+        controller = Mock(is_ready=True, is_live_running=live)
+        controller.live_reader.runtime_control_snapshot.return_value = {}
+        controller.stop_live.side_effect = lambda: setattr(
+            controller, "is_live_running", False
+        )
+        controller.emergency_stop.side_effect = controller.stop_live.side_effect
+        controller.toggle_live.side_effect = lambda: (
+            setattr(controller, "is_live_running", True) or True
+        )
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.set_ready(True)
+        pool = ManualThreadPool()
+        tray.live_stop_runner.thread_pool = pool
+        dialog = Mock(result_settings=tray.settings, _closing=False)
+
+        def reject():
+            dialog._closing = True
+            tray._narrator_finished(QDialog.DialogCode.Rejected)
+
+        dialog.reject.side_effect = reject
+        dialog.close.side_effect = reject
+        self.enterContext(patch("vntts.app.GameNarratorDialog", return_value=dialog))
+        self.enterContext(patch.object(tray.dashboard, "embed_narrator"))
+        self.enterContext(patch.object(tray.dashboard, "remove_narrator"))
+        tray.open_voice_previews()
+        return tray, controller, dialog, pool
+
+    def test_voice_browsing_does_not_interrupt_reading(self):
+        tray, controller, dialog, pool = self.open_voice_editor_for_playback()
+        self.assertIs(tray.narrator_dialog, dialog)
+        tray.open_voice_previews(character="Selone")
+        dialog.select_role.assert_called_once_with("Selone")
+        controller.stop_live.assert_not_called()
+        controller.emergency_stop.assert_not_called()
+        self.assertEqual(pool.tasks, [])
+        dialog.reject()
+        self.assertTrue(controller.is_live_running)
+        controller.toggle_live.assert_not_called()
+
+    def test_voice_playback_waits_for_reading_and_speech_then_resumes_on_close(self):
+        tray, controller, dialog, pool = self.open_voice_editor_for_playback()
+        play = Mock()
+        dialog.voice_panel.before_playback(play)
+        play.assert_not_called()
+        self.assertTrue(tray.live_stop_runner.active)
+        pool.run_next()
+        self.wait_until(lambda: play.called)
+        play.assert_called_once_with()
+        controller.stop_live.assert_called_once_with()
+        controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
+        self.assertFalse(controller.is_live_running)
+        controller.toggle_live.assert_not_called()
+        dialog.reject()
+        controller.toggle_live.assert_called_once_with()
+
+    def test_voice_playback_without_reading_needs_no_stop_or_resume(self):
+        _tray, controller, dialog, pool = self.open_voice_editor_for_playback(
+            live=False
+        )
+        play = Mock()
+        dialog.voice_panel.before_playback(play)
+        play.assert_called_once_with()
+        self.assertEqual(pool.tasks, [])
+        controller.stop_live.assert_not_called()
+        dialog.reject()
+        controller.toggle_live.assert_not_called()
+
+    def test_voice_playback_cancels_pending_story_identification(self):
+        tray, controller, dialog, _pool = self.open_voice_editor_for_playback(
+            live=False
+        )
+        scope_pool = ManualThreadPool()
+        tray.live_scope_runner.thread_pool = scope_pool
+        controller.identify_live_scope.return_value = True
+        tray._identify_live_scope_then_start()
+        cancellation = tray._live_scope_cancellation
+        tray.open_voice_previews()
+        self.assertFalse(cancellation.is_set())
+        play = Mock()
+        dialog.voice_panel.before_playback(play)
+        play.assert_called_once_with()
+        self.assertTrue(cancellation.is_set())
+        scope_pool.run_next()
+        self.application.processEvents()
+        controller.toggle_live.assert_not_called()
+        dialog.reject()
+        controller.toggle_live.assert_called_once_with()
+
+    def test_voice_editor_close_during_stop_discards_audio_and_waits_to_resume(self):
+        tray, controller, dialog, pool = self.open_voice_editor_for_playback()
+        play = Mock()
+        dialog.voice_panel.before_playback(play)
+        dialog.reject()
+        self.assertIs(tray.narrator_dialog, dialog)
+        controller.toggle_live.assert_not_called()
+        pool.run_next()
+        self.wait_until(lambda: tray.narrator_dialog is None)
+        play.assert_not_called()
+        controller.toggle_live.assert_called_once_with()
+
+    def test_voice_save_during_stop_waits_for_runtime_apply_before_resuming(self):
+        for stop_after_save in (False, True):
+            with self.subTest(stop_after_save=stop_after_save):
+                tray, controller, dialog, pool = self.open_voice_editor_for_playback()
+                apply_pool = ManualThreadPool()
+                tray.configuration_runner.thread_pool = apply_pool
+                play = Mock()
+                with (
+                    patch.object(tray, "_save_settings_candidate") as save,
+                    patch.object(tray, "_sync_active_profile", return_value=True),
+                ):
+                    dialog.voice_panel.before_playback(play)
+                    dialog._closing = True
+                    tray._narrator_finished(QDialog.DialogCode.Accepted)
+                    if stop_after_save:
+                        tray._request_stop_reading()
+                    save.assert_not_called()
+                    while pool.tasks:
+                        pool.run_next()
+                        self.application.processEvents()
+                    self.wait_until(lambda: tray.configuration_runner.active)
+                    save.assert_called_once()
+                    play.assert_not_called()
+                    controller.toggle_live.assert_not_called()
+                    apply_pool.run_next()
+                    self.wait_until(lambda: not tray._controller_busy)
+                    self.application.processEvents()
+                self.assertEqual(controller.toggle_live.call_count, not stop_after_save)
+                tray.shutdown()
+
+    def test_voice_playback_stop_failure_never_plays_or_resumes(self):
+        tray, controller, dialog, pool = self.open_voice_editor_for_playback()
+        controller.live_reader.wait.side_effect = TimeoutError("speech busy")
+        play = Mock()
+        dialog.voice_panel.before_playback(play)
+        pool.run_next()
+        self.wait_until(lambda: not tray.live_stop_runner.active)
+        play.assert_not_called()
+        self.assertIn("speech busy", tray.status_action.text())
+        dialog.reject()
+        controller.toggle_live.assert_not_called()
+
+    def test_voice_playback_interruption_never_plays_or_resumes(self):
+        for interruption in (
+            "_request_stop_reading",
+            "emergency_stop",
+            "_begin_controller_lifecycle",
+            "shutdown",
+        ):
+            with self.subTest(interruption=interruption):
+                tray, controller, dialog, pool = self.open_voice_editor_for_playback()
+                play = Mock()
+                dialog.voice_panel.before_playback(play)
+                getattr(tray, interruption)()
+                while pool.tasks:
+                    pool.run_next()
+                    self.application.processEvents()
+                self.application.processEvents()
+                play.assert_not_called()
+                dialog.reject()
+                controller.toggle_live.assert_not_called()
+                tray.shutdown()
 
     def test_voice_mapping_resumes_live_mode_after_assignment(self):
         controller = Mock()
@@ -5913,7 +6082,7 @@ class TrayApplicationTest(unittest.TestCase):
         dialog.exec.assert_not_called()
         tray_application.shutdown()
 
-    def test_narrator_voice_dialog_pauses_live_and_restores_it(self):
+    def test_narrator_voice_dialog_pauses_only_for_playback_and_restores_it(self):
         controller = Mock()
         controller.is_live_running = True
         controller.unresolved_live_speakers.return_value = ()
@@ -5943,6 +6112,11 @@ class TrayApplicationTest(unittest.TestCase):
         ):
             tray_application.open_voice_previews()
             self.wait_until(lambda: tray_application.narrator_dialog is dialog)
+            self.assertTrue(controller.is_live_running)
+            controller.stop_live.assert_not_called()
+            play = Mock()
+            dialog.voice_panel.before_playback(play)
+            self.wait_until(lambda: play.called)
             self.assertFalse(controller.is_live_running)
             tray_application._narrator_finished(QDialog.DialogCode.Rejected)
             self.wait_until(lambda: controller.is_live_running)
@@ -8489,7 +8663,7 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
 
     def test_modal_retry_waits_for_speech_after_capture_already_stopped(self):
-        for target in ("settings", "history", "voices", "preparation"):
+        for target in ("settings", "history", "preparation"):
             with self.subTest(target=target):
                 controller = Mock(is_ready=True, is_live_running=True)
                 controller.live_reader.runtime_control_snapshot.return_value = {}
@@ -8507,13 +8681,11 @@ class TrayApplicationTest(unittest.TestCase):
                 opener = {
                     "settings": tray.open_settings,
                     "history": tray.open_history,
-                    "voices": tray.open_voice_previews,
                     "preparation": tray.open_pregeneration,
                 }[target]
                 with (
                     patch.object(tray, "_create_settings_dialog") as settings,
                     patch.object(tray, "_open_history_dialog") as history,
-                    patch.object(tray, "_open_narrator_picker") as voices,
                     patch("vntts.app.OfflineAudioPreparationDialog") as preparation,
                 ):
                     settings.return_value.exec.return_value = (
@@ -8528,7 +8700,7 @@ class TrayApplicationTest(unittest.TestCase):
                     controller.live_reader.wait.side_effect = None
                     opener()
                     self.assertTrue(tray.live_stop_runner.active)
-                    for opened in (settings, history, voices, preparation):
+                    for opened in (settings, history, preparation):
                         opened.assert_not_called()
                     heartbeat = []
                     QTimer.singleShot(0, lambda: heartbeat.append(True))
@@ -8545,8 +8717,6 @@ class TrayApplicationTest(unittest.TestCase):
                         settings.assert_called_once_with()
                     elif target == "history":
                         history.assert_called_once_with(False)
-                    elif target == "voices":
-                        self.assertFalse(voices.call_args.args[0])
                     controller.toggle_live.assert_not_called()
                 tray.shutdown()
 

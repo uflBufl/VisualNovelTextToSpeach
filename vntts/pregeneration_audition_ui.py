@@ -238,6 +238,8 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self.player: _PreviewPlayer | None = player
         self.playback_guard: Callable[[], None] | None = None
+        self.before_playback: Callable[[Callable[[], None]], None] | None = None
+        self._playback_request_serial = 0
         self._plan: VoicePlan | None = None
         self._group: VoiceGroup | None = None
         self._candidate_offset = 0
@@ -557,6 +559,10 @@ class VoiceAuditionPanel(QGroupBox):
             return
         if not self._check_playback_available(current_voice=True):
             return
+        self._request_playback(self._start_current_preview)
+
+    def _start_current_preview(self) -> None:
+        assert self._current_voice is not None
         self._stop_player()
         preview = self._current_ready_preview()
         self._cancel_preview_request()
@@ -829,6 +835,9 @@ class VoiceAuditionPanel(QGroupBox):
             self._stop_player()
         if not self._check_playback_available():
             return
+        self._request_playback(self._start_candidate_preview)
+
+    def _start_candidate_preview(self) -> None:
         candidate, _choice, _narrator = self._current_entry()
         preview = self._ready_preview(candidate)
         if preview is not None:
@@ -1871,6 +1880,11 @@ class VoiceAuditionPanel(QGroupBox):
             return
         if not self._check_playback_available(current_voice=current_voice):
             return
+        self._request_playback(
+            lambda: self._start_original(current_voice=current_voice)
+        )
+
+    def _start_original(self, *, current_voice: bool) -> None:
         if current_voice:
             assert self._current_voice is not None
             plan, group, candidate = self._current_voice
@@ -2213,7 +2227,27 @@ class VoiceAuditionPanel(QGroupBox):
             set_action_icon(button, "square" if playing else "play")
             button.setToolTip(button.accessibleName())
 
+    def _request_playback(self, action: Callable[[], None]) -> None:
+        self._playback_request_serial += 1
+        serial = self._playback_request_serial
+
+        def continue_playback() -> None:
+            if (
+                serial != self._playback_request_serial
+                or self._cancel_requested
+                or self._shutdown_requested
+            ):
+                return
+            self._playback_request_serial += 1
+            action()
+
+        if self.before_playback is None:
+            continue_playback()
+        else:
+            self.before_playback(continue_playback)
+
     def _stop_player(self) -> None:
+        self._playback_request_serial += 1
         self.original_runner.cancel()
         self._original_request = None
         if self.player is not None:

@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import asdict, dataclass
 from dataclasses import field as dataclass_field
+from functools import partial
 from json import JSONDecodeError
 from multiprocessing import freeze_support
 from pathlib import Path
@@ -2127,6 +2128,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._narrator_offline = False
         self._narrator_return_to_stories = False
         self._resume_live_after_narrator = False
+        self._narrator_playback_pending: (
+            tuple[GameNarratorDialog, Callable[[], None]] | None
+        ) = None
+        self._narrator_result_after_stop: int | None = None
         self._preparation_activation_settings: AppSettings | None = None
         self._reading_pack_admission: _ReadingPackAdmission | None = None
         self.unknown_speaker_prompt: QMessageBox | None = None
@@ -4399,6 +4404,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if not self._shutting_down:
             self._apply_controller_action_state()
         if not self._lifecycle_is_current(generation):
+            self._finish_narrator_playback_stop(False)
             return
         if self.diagnostics_dialog is not None:
             self.diagnostics_dialog.set_calibration_pending(False)
@@ -4408,12 +4414,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.set_status(message)
             if continuation == self.calibrate and self.diagnostics_dialog is not None:
                 self.diagnostics_dialog.set_warning(message)
+            self._finish_narrator_playback_stop(False)
             return
         if result is not True:
+            self._finish_narrator_playback_stop(False)
             return
         if self._live_stop_wait_for_speech:
             self._modal_stop_pending = False
         self.signals.live_changed.emit(False)
+        if self._narrator_playback_pending is not None:
+            self._finish_narrator_playback_stop(True)
+            return
         if continuation is not None:
             QTimer.singleShot(
                 0,
@@ -4489,20 +4500,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self._refresh_preparation_settings()
         should_resume_live = (
             bool(self.controller.is_live_running)
+            or self._live_scope_generation is not None
             if resume_live is None
             else bool(resume_live)
         )
-        if self._needs_modal_stop():
-            self._stop_live_then(
-                lambda: self._open_narrator_picker(
-                    should_resume_live,
-                    character=character,
-                    recovery=recovery,
-                    for_preparation=for_preparation,
-                ),
-                "Stopping live capture before voice preview...",
-            )
-            return
         self._open_narrator_picker(
             should_resume_live,
             character=character,
@@ -4520,7 +4521,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     ) -> None:
         if self._shutting_down or self._quit_requested:
             return
-        self.emergency_stop()
         if recovery:
             self.resume_live_after_unknown_mapping = resume_live
         self._narrator_return_to_stories = (
@@ -4566,6 +4566,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if recovery and character is not None:
             dialog.set_recovery_context(character, resume_live=bool(resume_live))
         self.narrator_dialog = dialog
+        dialog.voice_panel.before_playback = partial(
+            self._prepare_narrator_playback, dialog
+        )
         self._resume_live_after_narrator = resume_live
         dialog.finished.connect(self._narrator_finished)
         dialog.busyChanged.connect(self.dashboard.set_voice_editor_busy)
@@ -4579,6 +4582,56 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             and self.pregeneration_dialog.has_pending_work()
             else ""
         )
+
+    def _prepare_narrator_playback(
+        self, dialog: GameNarratorDialog, play: Callable[[], None]
+    ) -> None:
+        if (
+            dialog is not self.narrator_dialog
+            or dialog._closing is True
+            or self._shutting_down
+            or self._quit_requested
+            or self._controller_busy
+        ):
+            return
+        if self._narrator_playback_pending is not None:
+            self._narrator_playback_pending = dialog, play
+            return
+        if self._live_scope_generation is not None:
+            self._resume_live_after_narrator = True
+            self._cancel_live_scope()
+            self._apply_controller_action_state()
+        if not self._needs_modal_stop():
+            play()
+            return
+        if self.live_stop_runner.active:
+            self.set_status(
+                "Reading is already stopping; retry the preview when ready."
+            )
+            return
+        self._resume_live_after_narrator |= self.controller.is_live_running is True
+        self._narrator_playback_pending = dialog, play
+        if not self._stop_live_then(
+            lambda: None, "Pausing reading before voice playback..."
+        ):
+            self._narrator_playback_pending = None
+
+    def _finish_narrator_playback_stop(self, stopped: bool) -> None:
+        pending = self._narrator_playback_pending
+        if pending is None:
+            return
+        self._narrator_playback_pending = None
+        result = self._narrator_result_after_stop
+        self._narrator_result_after_stop = None
+        dialog, play = pending
+        if dialog is not self.narrator_dialog:
+            return
+        if not stopped:
+            self._resume_live_after_narrator = False
+        if result is not None:
+            self._narrator_finished(result)
+        elif stopped and dialog._closing is not True:
+            play()
 
     def _open_preparation_narrator(
         self,
@@ -4647,6 +4700,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _narrator_finished(self, result: int) -> None:
         dialog = self.narrator_dialog
         if dialog is None:
+            return
+        if (
+            self._narrator_playback_pending is not None
+            and self._narrator_playback_pending[0] is dialog
+        ):
+            if self._narrator_result_after_stop is None:
+                self._narrator_result_after_stop = result
             return
         saved_assignment = (
             dialog.saved_assignment_summary()
@@ -5743,6 +5803,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.voice_auditions.suspend()
         if self.narrator_dialog is not None:
             self.narrator_dialog.close()
+        self._finish_narrator_playback_stop(False)
         if self.pregeneration_dialog is not None:
             self.pregeneration_dialog.close()
         self._pregeneration_activation_restore_runtime.clear()

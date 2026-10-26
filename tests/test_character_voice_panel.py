@@ -92,6 +92,126 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.assertFalse(self.panel.current_play.icon().isNull())
         self.decisions.remember_many.assert_not_called()
 
+    def test_explicit_playback_waits_for_host_before_generating_or_playing(self):
+        for current_voice in (False, True):
+            for original in (False, True):
+                with self.subTest(current_voice=current_voice, original=original):
+                    self.configure_current()
+                    preview = self.service.generate.return_value
+                    self.service.reference_audio.return_value = VoiceAuditionReference(
+                        preview.path, preview.path.read_bytes()
+                    )
+                    continuations = []
+                    self.panel.before_playback = continuations.append
+                    self.service.reset_mock()
+                    self.panel.player.reset_mock()
+                    if original:
+                        self.panel._play_original(current_voice=current_voice)
+                    elif current_voice:
+                        self.panel.play_current()
+                    else:
+                        self.panel.play_a()
+                    self.run_tasks()
+                    self.assertEqual(len(continuations), 1)
+                    self.service.generate.assert_not_called()
+                    self.service.reference_audio.assert_not_called()
+                    self.panel.player.play_bytes.assert_not_called()
+                    continuations[0]()
+                    self.run_tasks()
+                    self.panel.player.play_bytes.assert_called_once()
+                    if original:
+                        self.service.reference_audio.assert_called_once()
+                    else:
+                        self.service.generate.assert_called_once()
+                    self.panel._stop_playback()
+
+    def test_cached_previews_also_wait_for_host(self):
+        self.configure_current()
+        for current_voice in (False, True):
+            with self.subTest(current_voice=current_voice):
+                play = self.panel.play_current if current_voice else self.panel.play_a
+                play()
+                self.run_tasks()
+                self.panel._stop_playback()
+                continuations = []
+                self.panel.before_playback = continuations.append
+                self.service.reset_mock()
+                self.panel.player.reset_mock()
+                play()
+                self.assertEqual(len(continuations), 1)
+                self.panel.player.play_bytes.assert_not_called()
+                continuations[0]()
+                self.panel.player.play_bytes.assert_called_once()
+                self.service.generate.assert_not_called()
+                self.panel._stop_playback()
+                self.panel.before_playback = None
+
+    def test_pending_playback_is_invalidated_by_selection_change_or_cancel(self):
+        for interruption in ("phrase", "current-voice", "cancel", "shutdown"):
+            with self.subTest(interruption=interruption):
+                self.configure_current()
+                continuations = []
+                self.panel.before_playback = continuations.append
+                self.panel.play_a()
+                if interruption == "phrase":
+                    self.panel.preview_text.setPlainText("Changed comparison phrase")
+                elif interruption == "current-voice":
+                    self.panel.set_current_voice(None, "Unavailable")
+                else:
+                    getattr(self.panel, interruption)()
+                self.service.reset_mock()
+                self.panel.player.reset_mock()
+                continuations[0]()
+                self.run_tasks()
+                self.service.generate.assert_not_called()
+                self.panel.player.play_bytes.assert_not_called()
+
+    def test_new_playback_request_supersedes_pending_request(self):
+        self.configure_current()
+        continuations = []
+        self.panel.before_playback = continuations.append
+        self.panel.play_a()
+        self.panel.play_current()
+        continuations[0]()
+        self.run_tasks()
+        self.service.generate.assert_not_called()
+        continuations[1]()
+        self.run_tasks()
+        self.assertEqual(self.panel._playing_source, "current-preview")
+        self.assertEqual(self.service.generate.call_count, 1)
+
+    def test_playback_toggle_stops_immediately_without_host_gate(self):
+        for current_voice in (False, True):
+            for original in (False, True):
+                with self.subTest(current_voice=current_voice, original=original):
+                    self.configure_current()
+                    preview = self.service.generate.return_value
+                    self.service.reference_audio.return_value = VoiceAuditionReference(
+                        preview.path, preview.path.read_bytes()
+                    )
+                    if original:
+                        button = (
+                            self.panel.current_original
+                            if current_voice
+                            else self.panel.a_original
+                        )
+                    else:
+                        button = (
+                            self.panel.current_play
+                            if current_voice
+                            else self.panel.a_play
+                        )
+                    self.panel.before_playback = None
+                    button.click()
+                    self.run_tasks()
+                    gate = Mock()
+                    self.panel.before_playback = gate
+                    self.panel.player.stop.reset_mock()
+                    button.click()
+                    gate.assert_not_called()
+                    self.panel.player.stop.assert_called_once()
+                    self.assertIsNone(self.panel._playing_source)
+
     def test_current_audition_preserves_candidate_acceptance_and_uses_one_player(self):
         self.configure_current()
         self.panel.play_a()
