@@ -367,34 +367,33 @@ class ChapterVoicePreloader:
         exact_text = _normalize_exact_text(text)
         normalized_text = _normalize(text)
         speaker_key = _normalize(character)
-        candidates = [
+        valid = tuple(
             row
             for line_id in allowed
-            if (row := self.by_line_id.get(line_id)) is not None
-            and row.text_sha256
-            and _normalize_exact_text(row.text) == exact_text
-            and _normalize(row.speaker) == speaker_key
-        ]
-        match_result = "expected-exact"
-        if not candidates:
+            if (row := self.by_line_id.get(line_id)) is not None and row.text_sha256
+        )
+        candidates = []
+        match_result = "expected-no-match"
+        for exact, observed, require_speaker, result in (
+            (True, exact_text, True, "expected-exact"),
+            (False, normalized_text, True, "expected-normalized-exact"),
+            (True, exact_text, False, "expected-text-only"),
+            (False, normalized_text, False, "expected-normalized-text-only"),
+        ):
             candidates = [
                 row
-                for line_id in allowed
-                if (row := self.by_line_id.get(line_id)) is not None
-                and row.text_sha256
-                and self.normalized_text[row] == normalized_text
-                and _normalize(row.speaker) == speaker_key
+                for row in valid
+                if (
+                    _normalize_exact_text(row.text)
+                    if exact
+                    else self.normalized_text[row]
+                )
+                == observed
+                and (not require_speaker or _normalize(row.speaker) == speaker_key)
             ]
-            match_result = "expected-normalized-exact"
-        if not candidates:
-            candidates = [
-                row
-                for line_id in allowed
-                if (row := self.by_line_id.get(line_id)) is not None
-                and row.text_sha256
-                and _normalize_exact_text(row.text) == exact_text
-            ]
-            match_result = "expected-text-only"
+            if candidates:
+                match_result = result
+                break
         if len(candidates) != 1:
             return None, "expected-ambiguous" if candidates else "expected-no-match"
         selected = candidates[0]
@@ -403,6 +402,72 @@ class ChapterVoicePreloader:
                 selected.chapter, selected.sequence, 1.0, selected.story_order
             )
         return selected, match_result
+
+    def resolve_complete_among(
+        self,
+        character: object,
+        text: object,
+        line_ids: Iterable[object],
+        *,
+        update_context: bool = True,
+    ) -> tuple[ChapterDialogue | None, str]:
+        """Confirm a whole source line without treating a prefix as completion."""
+        valid = tuple(
+            row
+            for line_id in dict.fromkeys(str(value) for value in line_ids if value)
+            if (row := self.by_line_id.get(line_id)) is not None and row.text_sha256
+        )
+        observed = _normalize(text)
+        if not observed or not valid:
+            return None, "expected-no-match"
+        protected = _protected_text_content(text)
+        line, result = self.resolve_exact_among(
+            character,
+            text,
+            (
+                row.line_id
+                for row in valid
+                if _protected_text_content(row.text) == protected
+            ),
+            update_context=False,
+        )
+        if line is None:
+            # Include every competitor, even one which fails its own acceptance
+            # guards. A missing alternative is not evidence of a unique match.
+            # Cutoff 4 distinguishes distance 5, the margin needed at budget 3.
+            ranked = sorted(
+                (
+                    (_bounded_levenshtein(observed, self.normalized_text[row], 4), row)
+                    for row in valid
+                ),
+                key=lambda item: item[0],
+            )
+            distance, line = ranked[0]
+            canonical = self.normalized_text[line]
+            length = sum(character.isalnum() for character in canonical)
+            budget = sum(length >= boundary for boundary in (20, 60, 120))
+            if (
+                distance > budget
+                or _protected_text_content(line.text) != protected
+                or not _complete_ocr_words(observed, canonical)
+            ):
+                return None, "expected-no-match"
+            if len(ranked) > 1 and ranked[1][0] < distance + 2:
+                return None, "expected-ambiguous"
+            result = "expected-complete-edit-distance"
+        canonical = self.normalized_text[line]
+        if any(
+            row.line_id != line.line_id
+            and len(self.normalized_text[row]) > len(canonical)
+            and self.normalized_text[row].startswith(canonical)
+            for row in valid
+        ):
+            return None, "expected-incomplete"
+        if update_context:
+            self.current_match = ChapterMatch(
+                line.chapter, line.sequence, 1.0, line.story_order
+            )
+        return line, result
 
     def resolve_bounded_among(
         self,
@@ -748,6 +813,65 @@ class ChapterVoicePreloader:
         return ChapterMatch(
             best_row.chapter, best_row.sequence, best_score, best_row.story_order
         )
+
+
+def _bounded_levenshtein(left: str, right: str, limit: int) -> int:
+    """Return the edit distance, or limit + 1 when it exceeds the cutoff."""
+    overflow = limit + 1
+    if abs(len(left) - len(right)) > limit:
+        return overflow
+    previous = {column: column for column in range(min(len(right), limit) + 1)}
+    for row, character in enumerate(left, 1):
+        current = {0: row} if row <= limit else {}
+        for column in range(max(1, row - limit), min(len(right), row + limit) + 1):
+            current[column] = min(
+                current.get(column - 1, overflow) + 1,
+                previous.get(column, overflow) + 1,
+                previous.get(column - 1, overflow) + (character != right[column - 1]),
+            )
+        if min(current.values(), default=overflow) > limit:
+            return overflow
+        previous = current
+    return min(previous.get(len(right), overflow), overflow)
+
+
+_PROTECTED_WORDS = frozenset(
+    "no not never neither nor cannot zero one two three four five six seven eight "
+    "nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen "
+    "nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred "
+    "thousand million billion".split()
+)
+
+
+def _protected_text_content(text: object) -> tuple[tuple[int, str], ...]:
+    # Inspect numbers and English negation before punctuation normalization can
+    # erase a sign, decimal separator or contracted negative.
+    original = unicodedata.normalize("NFKC", str(text)).casefold()
+    original = original.translate(str.maketrans("’‘ʼ−", "'''-"))
+    protected = list(
+        re.finditer(r"[+-]?(?:\d+(?:[.,]\d+)*|[.,]\d+)(?:[%‰])?", original)
+    )
+    protected.extend(
+        match
+        for match in re.finditer(r"\w+(?:'\w+)?", original)
+        if match[0] in _PROTECTED_WORDS or match[0].endswith("n't")
+    )
+    return tuple(
+        (len(_normalize(original[: match.start()]).split()), match[0])
+        for match in protected
+    )
+
+
+def _complete_ocr_words(observed: str, canonical: str) -> bool:
+    actual, expected = observed.split(), canonical.split()
+    return bool(
+        actual
+        and expected
+        and len(actual) == len(expected)
+        and actual[-1] == expected[-1]
+        and not canonical.startswith(observed)
+        and not canonical.endswith(observed)
+    )
 
 
 def _bounded_text_match(

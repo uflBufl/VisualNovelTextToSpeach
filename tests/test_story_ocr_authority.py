@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 from vntts_artifacts.generated_audio import text_sha256
 
+from tests.test_live import AutoAdvanceFakeFrameHarness
 from vntts.chapter_voice_preload import (
     ChapterDialogue,
     ChapterMatch,
@@ -161,6 +162,125 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                             CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
                         )
                 controller._ocr_uncertain.assert_not_called()
+
+    def test_saved_narrator_frames_resolve_exact_and_normalized_text_only(self):
+        for text, raw_text, noise in (
+            (
+                "She picks up a discarded draft and places it atop the mountain "
+                "of paper beside her.",
+                "She picks up a discarded draft and places it atop the mountain "
+                "of paper beside her.",
+                "les ad 5 rr ww",
+            ),
+            (
+                "The sheer height of the stack finally catches up to her.",
+                "The sheer height of the stack-finally catches up to her.",
+                "— ~- es . | .",
+            ),
+        ):
+            with self.subTest(text=text):
+                controller = self.controller((story_line(text),))
+                raw = observed(raw_text, noise)
+                resolved = controller._resolve_story_ocr_result(raw)
+                self.assertEqual(
+                    (resolved.character, resolved.text), ("Narrator", text)
+                )
+                self.assertEqual(resolved.speaker_confidence, raw.speaker_confidence)
+                self.assertEqual(resolved.confidence, raw.dialogue_confidence)
+                self.assertIsNone(controller.chapter_voice_preloader.current_match)
+
+    def test_complete_ocr_typo_after_early_audio_continues_once(self):
+        # 34's substitution was documented live; 97's was reproduced from a
+        # saved screenshot derivative. Neither is a saved full live OCR trace.
+        for canonical, old, new in (
+            (
+                "I'm afraid I won't be handling your make-up assignment. You'll "
+                "have to ask those old gentlemen in the office when applications open.",
+                "afraid I",
+                "afraid J]",
+            ),
+            (
+                "A plane? I-I'm sure I could catch a train there if they don't "
+                "mind me arriving a little—Never mind! I owe you!",
+                "sure I",
+                "sure J",
+            ),
+        ):
+            with self.subTest(canonical=canonical):
+                line = story_line(canonical, "Cornerstone")
+                controller = self.controller((line,))
+                preloader = controller.chapter_voice_preloader
+                harness = AutoAdvanceFakeFrameHarness(
+                    tracker_options={
+                        "complete_dialogue_only": True,
+                        "early_dialogue_resolver": lambda speaker, text: (
+                            resolved.text
+                            if (
+                                resolved := preloader.resolve_unique_prefix(
+                                    speaker, text
+                                )
+                            )
+                            else None
+                        ),
+                    },
+                )
+
+                def recognize(frame):
+                    result = controller._resolve_story_ocr_result(
+                        observed(frame["text"], frame["character"])
+                    )
+                    return result.character, result.text
+
+                harness.reader.recognize_frame = recognize
+                with patch(
+                    "vntts.live.Timer", side_effect=harness.timer_scheduler.create
+                ):
+                    harness.start()
+                    try:
+                        prefix = canonical[:30]
+                        for _ in range(2):
+                            harness.push(
+                                line.speaker,
+                                prefix,
+                                background="prefix",
+                                fingerprint="prefix",
+                            )
+                        self.assertEqual(len(harness.speech_executor.jobs), 1)
+                        self.assertEqual(
+                            harness.speech_executor.jobs[0][2][0].text, canonical
+                        )
+                        for _ in range(3):
+                            harness.clock.advance(0.2)
+                            harness.push(
+                                line.speaker,
+                                canonical.replace(old, new),
+                                background="full",
+                                fingerprint="full",
+                                complete=True,
+                                expected=(line.speaker, canonical),
+                            )
+                        self.assertEqual(harness.reader.dialog_ready_generation, 1)
+                        self.assertEqual(harness.advance_calls, [])
+                        harness.finish_playback()
+                        harness.timer_scheduler.fire_next("_run_auto_advance")
+                        self.assertEqual(harness.advance_calls, [1])
+                        self.assertEqual(len(harness.played), 1)
+                        self.assertEqual(harness.speech_executor.jobs, [])
+                        self.assertEqual(harness.reader.active_generation, 1)
+                        for _ in range(2):
+                            harness.push(
+                                "Duvalle",
+                                "The next dialogue is now visible.",
+                                background="next",
+                                fingerprint="next",
+                            )
+                        self.assertEqual(
+                            harness.states, [("dispatched", 1, 1), ("confirmed", 1, 1)]
+                        )
+                        self.assertEqual(harness.advance_calls, [1])
+                        self.assertEqual(harness.errors, [])
+                    finally:
+                        harness.stop()
 
     def test_cursor_candidates_keep_an_exact_match_inside_the_selected_path(self):
         text = "A repeated complete phrase."

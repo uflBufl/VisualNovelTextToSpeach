@@ -19,7 +19,6 @@ from vntts.auto_advance_policy import auto_advance_allowed
 from vntts.chapter_voice_preload import (
     ChapterDialogue,
     ChapterVoicePreloader,
-    _normalize_exact_text,
 )
 from vntts.chapter_voice_preload import _normalize as _normalize_story_text
 from vntts.controller_components import (
@@ -1228,21 +1227,10 @@ class AppController:
                     else preloader.by_chapter.get(preloader.current_match.chapter, ())
                 )
                 line_ids = tuple(row.line_id for row in rows if row.line_id)
-            line, _match = preloader.resolve_exact_among(
+            line, _match = preloader.resolve_complete_among(
                 "", result.text, line_ids, update_context=False
             )
         if line is None:
-            return result
-        # A short complete line can also be the still-rendering start of another.
-        if any(
-            (candidate := preloader.line_for_id(line_id)) is not None
-            and candidate.line_id != line.line_id
-            and candidate.text_sha256
-            and _normalize_exact_text(candidate.text).startswith(
-                _normalize_exact_text(line.text)
-            )
-            for line_id in line_ids
-        ):
             return result
         return replace(
             result,
