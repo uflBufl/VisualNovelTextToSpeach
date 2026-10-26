@@ -3011,6 +3011,27 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("no dialog text", tray_application.dashboard.status.text())
         tray_application.shutdown()
 
+    def test_live_scope_failure_explains_uncertain_ocr_without_starting(self):
+        controller = Mock(is_live_running=False)
+        controller.unresolved_live_speakers.return_value = None
+        controller.live_scope_identification_failure = "ocr-uncertain"
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application.live_scope_runner = Mock(active=False)
+
+        self.assertFalse(tray_application.toggle_live())
+        tray_application._live_scope_finished(False, None)
+
+        message = tray_application.dashboard.status.text()
+        self.assertIn("not recognized confidently", message)
+        self.assertIn("check the capture area", message)
+        self.assertNotIn("cancelled", message)
+        controller.toggle_live.assert_not_called()
+        tray_application.shutdown()
+
     def test_live_scope_identification_starts_with_unresolved_speakers(self):
         controller = Mock(is_live_running=False)
         controller.unresolved_live_speakers.side_effect = [None, ("Hotelier",)]

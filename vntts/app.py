@@ -3208,6 +3208,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     "Live reading could not start: no dialog text was recognized "
                     "in the selected game window"
                 )
+            elif failure == "ocr-uncertain":
+                message = (
+                    "Live reading could not start: dialogue text or speaker name "
+                    "was not recognized confidently. Wait for the full dialogue "
+                    "or check the capture area."
+                )
             elif failure == "capture-target-unavailable":
                 message = (
                     "Live reading could not start: select a game window in Settings"

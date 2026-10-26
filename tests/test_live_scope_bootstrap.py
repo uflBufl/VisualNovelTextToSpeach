@@ -1,5 +1,5 @@
 import unittest
-from threading import Event
+from threading import Event, RLock
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -7,6 +7,8 @@ from vntts_artifacts.hashing import text_sha256
 
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.controller import AppController
+from vntts.live_snapshot import read_live_snapshot
+from vntts.ocr import OCRResult
 from vntts.settings import AppSettings
 
 
@@ -25,7 +27,12 @@ class LiveScopeBootstrapTest(unittest.TestCase):
             chapter_voice_preloader=ChapterVoicePreloader((self.line,)),
             dialog_handler=Mock(),
         )
-        self.controller.live_reader = Mock(is_running=False)
+        self.controller.live_reader = Mock(
+            is_running=False,
+            state_lock=RLock(),
+            current_chunk=None,
+            speech_futures={},
+        )
         self.controller.voice_router = Mock()
         self.target = Mock(last_window=SimpleNamespace(handle=42, process_id=7))
         self.target.is_focused.return_value = True
@@ -49,8 +56,9 @@ class LiveScopeBootstrapTest(unittest.TestCase):
             self.events.call_args.args, ("runtime", "live-scope-bootstrap")
         )
         self.assertEqual(self.events.call_args.kwargs["outcome"], outcome)
-        if outcome != "matched":
+        if outcome not in {"matched", "ocr-uncertain"}:
             self.controller.dialog_handler.assert_not_called()
+        if outcome != "matched":
             self.assertIsNone(self.controller.chapter_voice_preloader.current_match)
 
     def test_absent_focus_does_not_capture_despite_cached_focus(self):
@@ -155,6 +163,129 @@ class LiveScopeBootstrapTest(unittest.TestCase):
         self.read.return_value = (None, "")
         self.assertFalse(self.identify())
         self.assert_outcome("no-dialog-text")
+
+    def test_uncertain_snapshot_reports_uncertainty_without_matching(self):
+        result = OCRResult(self.line.speaker, self.line.text, 25, "test", 1)
+        serial = self.controller.observation_serial
+        self.controller.indexed_current_recovery = object()
+        self.read.side_effect = read_live_snapshot
+        with (
+            patch(
+                "vntts.live_snapshot.analyze_dialog_snapshot",
+                return_value=(Mock(), None, result),
+            ),
+            patch.object(
+                self.controller, "_resolve_initial_live_sequence_line"
+            ) as matcher,
+        ):
+            self.assertFalse(self.identify())
+
+        self.assertEqual(
+            self.controller.live_scope_identification_failure, "ocr-uncertain"
+        )
+        self.assertEqual(self.controller.observation_serial, serial + 1)
+        self.assertIsNone(self.controller.indexed_current_recovery)
+        self.controller.live_reader.invalidate_observation.assert_called_once_with()
+        self.controller.dialog_handler.assert_called_once_with(
+            "OCR uncertain", "25% (requires 60%): The complete dialogue."
+        )
+        matcher.assert_not_called()
+        self.assert_outcome("ocr-uncertain")
+        self.assertNotIn(self.line.text, repr(self.events.call_args))
+
+    def test_stale_uncertain_snapshot_has_no_uncertainty_side_effects(self):
+        controller = self.controller
+        settings = controller.settings
+        preloader = controller.chapter_voice_preloader
+        window = self.target.last_window
+        serial = controller.observation_serial
+        result = OCRResult(self.line.speaker, self.line.text, 25, "test", 1)
+        changes = (
+            ("cancellation", self.cancellation.set, "cancelled", 0),
+            ("stop", controller.stop_live, "cancelled", 1),
+            (
+                "token",
+                lambda: setattr(controller, "live_scope_identification_token", "new"),
+                "cancelled",
+                0,
+            ),
+            (
+                "observation",
+                lambda: setattr(controller, "observation_serial", serial + 1),
+                "cancelled",
+                1,
+            ),
+            (
+                "target",
+                lambda: setattr(controller, "capture_target", Mock()),
+                "target-changed",
+                0,
+            ),
+            (
+                "window",
+                lambda: setattr(
+                    self.target, "last_window", SimpleNamespace(handle=43, process_id=8)
+                ),
+                "target-changed",
+                0,
+            ),
+            (
+                "settings",
+                lambda: setattr(controller, "settings", AppSettings()),
+                "target-changed",
+                0,
+            ),
+            (
+                "preloader",
+                lambda: setattr(
+                    controller,
+                    "chapter_voice_preloader",
+                    ChapterVoicePreloader((self.line,)),
+                ),
+                "target-changed",
+                0,
+            ),
+            (
+                "focus",
+                lambda: setattr(self.target.is_focused, "return_value", False),
+                "focus-lost",
+                0,
+            ),
+        )
+        for name, change, outcome, serial_increment in changes:
+            with self.subTest(change=name):
+                self.cancellation.clear()
+                controller.capture_target = self.target
+                controller.settings = settings
+                controller.chapter_voice_preloader = preloader
+                controller.observation_serial = serial
+                controller.dialog_handler.reset_mock()
+                controller.live_reader.invalidate_observation.reset_mock()
+                self.target.last_window = window
+                self.target.is_focused.return_value = True
+
+                def read(*args):
+                    args[4](result, settings.ocr_minimum_confidence)
+                    controller.dialog_handler.assert_not_called()
+                    change()
+                    return None, ""
+
+                self.read.side_effect = read
+                with patch.object(
+                    controller, "_resolve_initial_live_sequence_line"
+                ) as matcher:
+                    self.assertFalse(self.identify())
+
+                self.assertEqual(
+                    controller.observation_serial, serial + serial_increment
+                )
+                controller.live_reader.invalidate_observation.assert_not_called()
+                matcher.assert_not_called()
+                self.assert_outcome(outcome)
+                if name != "token":
+                    self.assertEqual(
+                        controller.live_scope_identification_failure, outcome
+                    )
 
     def test_story_mismatch_has_matcher_evidence_without_dialogue(self):
         self.read.return_value = ("Private name", "Unrelated private dialogue.")

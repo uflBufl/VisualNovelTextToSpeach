@@ -43,6 +43,7 @@ from vntts.generated_audio import (
 from vntts.live import IncrementalDialogTracker, LivePipelineMetrics
 from vntts.live_snapshot import read_live_snapshot
 from vntts.live_speech import play_typed_text, raise_playback_failure
+from vntts.ocr import OCRResult
 from vntts.ocr_worker import cancel_pending_ocr, close_ocr_worker, open_ocr_worker
 from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
 from vntts.playback import TypedPlaybackBackend as _TypedPlaybackBackend
@@ -928,6 +929,7 @@ class LiveSessionComponent:
         window = None
         text = ""
         match_result = None
+        uncertain: tuple[OCRResult, float] | None = None
         controller.live_scope_identification_failure = None
         controller.live_scope_identification_match_result = None
         controller.live_scope_identification_diagnostics = {}
@@ -984,12 +986,17 @@ class LiveSessionComponent:
 
                 return guarded
 
+            def defer_uncertainty(result: OCRResult, minimum: float) -> None:
+                nonlocal uncertain
+                # Publishing uncertainty invalidates this request's observation serial.
+                uncertain = result, minimum
+
             character, text = read_live_snapshot(
                 get_screenshot_directory(settings),
                 voice_router.registry,
                 target,
                 settings.ocr_minimum_confidence,
-                while_current(controller._ocr_uncertain),
+                defer_uncertainty,
                 controller.uncertain_frame_recorder,
                 while_current(controller._publish_diagnostic),
                 controller._resolve_voice_label,
@@ -999,15 +1006,15 @@ class LiveSessionComponent:
                 controller._capture_ocr_regions(),
                 controller._resolve_story_ocr_result,
             )
-            refusal = request_refusal()
-            if refusal is not None:
-                return finish(refusal)
-            if is_empty(text):
-                return finish("no-dialog-text")
             with controller.story_cursor_lock:
                 refusal = request_refusal()
                 if refusal is not None:
                     return finish(refusal)
+                if uncertain is not None:
+                    controller._ocr_uncertain(*uncertain)
+                    return finish("ocr-uncertain")
+                if is_empty(text):
+                    return finish("no-dialog-text")
                 previous_match = preloader.current_match
                 observed_character = character
                 character = controller._canonical_observed_character(

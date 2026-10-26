@@ -305,14 +305,7 @@ and wait for agreement before implementing each item. Finish its targeted tests 
 moving to the next item. Mark an investigation complete only when it yields a
 supported repair or an explicit product decision, not merely a hypothesis.
 
-1. **Report uncertain OCR correctly at startup, then address absent-name detection
-   separately (RUN-25-03).**
-   - Fix bootstrap refusal classification separately after agreeing the repair:
-     `identify_scope` invokes `_ocr_uncertain`, which increments
-     `observation_serial`; its own post-capture guard then returns `cancelled`.
-     The UI reports `Live reading start cancelled` without a user cancellation.
-     Gate: uncertain OCR has its actual reason while external Stop, target
-     changes and stale bootstrap requests remain rejected.
+1. **Repair absent-name detection (RUN-25-03).**
    - Independently reproduce and plan the narration/no-name repair: false
      name/background or zero speaker confidence on 006/010/017/022/037/079/100/101/103.
      Check all 18 narration and 73 named-dialogue samples without weakening
@@ -369,6 +362,10 @@ supported repair or an explicit product decision, not merely a hypothesis.
     change. Gate: reachable keyboard/mouse actions, truthful state and unchanged
     voice assignments on browsing/cancel. Reuse the existing matching backlog
     items rather than create parallel implementations.
+    - Separate OCR status from the last speaker: an uncertain startup currently
+      displays `Last speaker: OCR uncertain` in Compact. Trace the shared dialogue
+      callback before proposing a repair; preserve the last actual speaker and
+      keep the uncertainty reason visible without treating it as a character.
 11. **Qualify sound and latency (RUN-25-05/R12/R6).** Correlate exact source WAVs
     with independent captured output; explain the1.949s outlier and ambiguous
     clips. Distinguish recorder discontinuities from audible playback gaps. Require
