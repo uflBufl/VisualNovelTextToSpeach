@@ -1472,11 +1472,12 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.resize(620, 440)
             dialog.show()
             self.application.processEvents()
+            dialog.selection_details_toggle.setChecked(True)
+            self.application.processEvents()
             self.assertTrue(dialog.summary.isVisibleTo(dialog))
-            self.assertIs(
-                dialog.summary.parentWidget(), dialog.selection_panel.widget()
-            )
+            self.assertIs(dialog.summary.parentWidget(), dialog.selection_details)
             self.assertIn("3 dialogue lines", plain_label_text(dialog.summary))
+            dialog.selection_details_toggle.setChecked(False)
             with patch.object(
                 dialog, "_generation_engine_available", return_value=False
             ):
@@ -1488,6 +1489,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                     plain_label_text(dialog.summary),
                 )
                 self.assertFalse(dialog.continue_button.isEnabled())
+                self.assertTrue(dialog.selection_settings_toggle.isChecked())
+                self.assertTrue(dialog.selection_details_toggle.isChecked())
                 self.assertTrue(dialog.game_narrator_button.isVisibleTo(dialog))
                 dialog.game_narrator_button.click()
                 chooser.assert_called_once_with(dialog.settings, dialog)
@@ -1790,6 +1793,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.source.count(), 1)
             self.assertEqual(dialog.current_content(), content)
             self.assertIn("update failed", dialog.source_status.text())
+            self.assertTrue(dialog.selection_settings_toggle.isChecked())
+            self.assertTrue(dialog.source_status.isVisibleTo(dialog))
             self.assertTrue(dialog.import_button.isEnabled())
 
     def test_reimport_preserves_still_available_story_selection(self):
@@ -1817,10 +1822,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 story_index_sha256="e" * 64,
                 selections=updated.selections[:1],
             )
+            dialog.selection_settings_toggle.setChecked(False)
             dialog._select_content(reduced, "Updated stories")
             self.assertEqual(dialog.source.count(), 1)
             self.assertEqual(dialog.selected_story_ids(), selected[:1])
             self.assertIn("no longer available", dialog.source_status.text())
+            self.assertTrue(dialog.selection_settings_toggle.isChecked())
+            self.assertTrue(dialog.source_status.isVisibleTo(dialog))
 
     def test_manual_game_folder_can_replace_discovery_while_it_is_loading(self):
         with TemporaryDirectory() as temporary_directory:
@@ -2216,7 +2224,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         from vntts.dashboard_ui import ControlDashboard
 
         with TemporaryDirectory() as temporary_directory:
-            content = inspect_story_index(write_story_index(Path(temporary_directory)))
+            content = story_filter_content(
+                inspect_story_index(write_story_index(Path(temporary_directory)))
+            )
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
@@ -2230,9 +2240,24 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertTrue(dialog.import_options.isHidden())
+            self.assertFalse(dialog.selection_settings_toggle.isChecked())
+            self.assertFalse(dialog.selection_details_toggle.isChecked())
+            self.assertTrue(dialog.selection_options_scroll.isHidden())
+            self.assertTrue(dialog.selection_configuration.isVisibleTo(dashboard))
+            self.assertNotIn("Engine:", plain_label_text(dialog.narrator_status))
+            self.assertNotIn("Model:", plain_label_text(dialog.narrator_status))
             self.assertFalse(dialog.content_scroll.isVisibleTo(dashboard))
-            self.assertGreaterEqual(dialog.stories.viewport().height(), 90)
+            row_height = dialog.stories.visualItemRect(
+                dialog.stories.topLevelItem(0)
+            ).height()
+            self.assertGreater(row_height, 0)
+            self.assertGreaterEqual(dialog.stories.viewport().height(), 5 * row_height)
             self.assertNotIn("story-index", dialog.source.currentText())
+            dialog.selection_settings_toggle.setFocus()
+            QTest.keyClick(dialog.selection_settings_toggle, Qt.Key.Key_Space)
+            self.application.processEvents()
+            self.assertTrue(dialog.selection_settings.isVisibleTo(dashboard))
+            self.assertFalse(dialog.selection_configuration.isVisibleTo(dashboard))
             dialog.import_options_toggle.click()
             self.assertFalse(dialog.import_options.isHidden())
             self.assertTrue(
@@ -2250,7 +2275,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertTrue(
                 all(
                     "Not prepared" in dialog.stories.item(row).text(1)
-                    for row in range(2)
+                    for row in range(dialog.stories.count())
                 )
             )
             dialog.copy_narrator_details.click()
@@ -2259,6 +2284,15 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             error = "unbroken-error-" * 12
             dialog._set_resume_error("Unable to save preparation", error)
+            self.application.processEvents()
+            self.assertTrue(dialog.selection_details_toggle.isChecked())
+            error_origin = dialog.selection_status.mapTo(
+                dialog.selection_options_scroll.viewport(), QPoint(0, 0)
+            )
+            self.assertGreaterEqual(error_origin.y(), 0)
+            self.assertLess(
+                error_origin.y(), dialog.selection_options_scroll.viewport().height()
+            )
             self.assertEqual(
                 dialog.resume_status.text(), f"Unable to save preparation: {error}"
             )
@@ -2268,34 +2302,139 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 f"Unable to save preparation: {error}",
             )
 
-    def test_story_selection_scrolls_at_large_text(self):
+            default_font = dashboard.font()
+            for large_text in (False, True):
+                font = dashboard.font()
+                font.setPointSize(22 if large_text else default_font.pointSize())
+                dashboard.setFont(font)
+                for expanded in (False, True):
+                    with self.subTest(large_text=large_text, expanded=expanded):
+                        dialog.selection_settings_toggle.setChecked(expanded)
+                        dialog.selection_details_toggle.setChecked(expanded)
+                        if expanded:
+                            dialog._set_resume_error(
+                                "Unable to save preparation", "unbroken-error-" * 30
+                            )
+                        else:
+                            dialog._clear_resume_error()
+                        dashboard.resize(480, 340)
+                        self.application.processEvents()
+                        row_height = dialog.stories.visualItemRect(
+                            dialog.stories.topLevelItem(0)
+                        ).height()
+                        self.assertGreaterEqual(
+                            dialog.stories.viewport().height(), 5 * row_height
+                        )
+                        for widget in (
+                            dialog.stories,
+                            dialog.select_all_button,
+                            dialog.select_none_button,
+                            dialog.buttons,
+                        ):
+                            self.assertTrue(widget.isVisibleTo(dashboard))
+                            origin = widget.mapTo(dashboard, QPoint(0, 0))
+                            self.assertGreaterEqual(origin.x(), 0)
+                            self.assertGreaterEqual(origin.y(), 0)
+                            self.assertLessEqual(
+                                origin.x() + widget.width(), dashboard.width()
+                            )
+                            self.assertLessEqual(
+                                origin.y() + widget.height(), dashboard.height()
+                            )
+
+    def test_story_rows_and_actions_stay_visible_when_details_scroll(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            content = inspect_story_index(write_story_index(root / "content"))
+            content = story_filter_content(
+                inspect_story_index(write_story_index(root / "content"))
+            )
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=ManualThreadPool(),
             )
             self.addCleanup(dialog.deleteLater)
-            dialog.resize(620, 440)
-            font = dialog.font()
-            font.setPointSize(22)
-            dialog.setFont(font)
+            default_font = dialog.font()
+            dialog.stories.expandAll()
             dialog.show()
-            dialog.stories.setCurrentRow(0)
-            self.application.processEvents()
-            self.assertGreater(dialog.selection_panel.verticalScrollBar().maximum(), 0)
-            dialog.selection_panel.ensureWidgetVisible(dialog.check_story_audio)
-            self.application.processEvents()
-            y = dialog.check_story_audio.mapTo(
-                dialog.selection_panel.viewport(), QPoint(0, 0)
-            ).y()
-            self.assertGreaterEqual(y, 0)
-            self.assertLessEqual(
-                y + dialog.check_story_audio.height(),
-                dialog.selection_panel.viewport().height(),
-            )
+
+            def assert_fixed_controls_visible():
+                for widget in (
+                    dialog.stories.viewport(),
+                    dialog.select_all_button,
+                    dialog.select_none_button,
+                    dialog.continue_button,
+                    dialog.cancel_button,
+                ):
+                    with self.subTest(
+                        widget=widget.accessibleName() or widget.objectName()
+                    ):
+                        self.assertTrue(widget.isVisibleTo(dialog))
+                        origin = widget.mapTo(dialog, QPoint(0, 0))
+                        self.assertGreaterEqual(origin.x(), 0)
+                        self.assertGreaterEqual(origin.y(), 0)
+                        self.assertLessEqual(
+                            origin.x() + widget.width(), dialog.width()
+                        )
+                        self.assertLessEqual(
+                            origin.y() + widget.height(), dialog.height()
+                        )
+                index = dialog.stories.model().index(0, 0)
+                row_heights = []
+                for _ in range(5):
+                    self.assertTrue(index.isValid())
+                    rectangle = dialog.stories.visualRect(index)
+                    self.assertGreater(rectangle.height(), 0)
+                    row_heights.append(rectangle.height())
+                    self.assertLess(
+                        rectangle.bottom(), dialog.stories.viewport().height()
+                    )
+                    index = dialog.stories.indexBelow(index)
+                self.assertGreaterEqual(
+                    dialog.stories.viewport().height(), sum(row_heights)
+                )
+
+            for width, height, large_text in (
+                (860, 560, False),
+                (620, 440, False),
+                (480, 340, False),
+                (620, 440, True),
+            ):
+                with self.subTest(size=(width, height), large_text=large_text):
+                    font = dialog.font()
+                    font.setPointSize(22 if large_text else default_font.pointSize())
+                    dialog.setFont(font)
+                    dialog.selection_settings_toggle.setChecked(False)
+                    dialog.selection_details_toggle.setChecked(False)
+                    dialog.resize(width, height)
+                    dialog.stories.verticalScrollBar().setValue(0)
+                    self.application.processEvents()
+                    assert_fixed_controls_visible()
+
+                    dialog.selection_settings_toggle.setChecked(True)
+                    dialog._set_resume_error(
+                        "Unable to save preparation", "unbroken-error-" * 30
+                    )
+                    self.application.processEvents()
+                    self.assertTrue(dialog.selection_details_toggle.isChecked())
+                    assert_fixed_controls_visible()
+                    self.assertGreater(
+                        dialog.selection_options_scroll.verticalScrollBar().maximum(), 0
+                    )
+                    dialog.selection_options_scroll.ensureWidgetVisible(
+                        dialog.check_story_audio
+                    )
+                    self.application.processEvents()
+                    viewport = dialog.selection_options_scroll.viewport()
+                    origin = dialog.check_story_audio.mapTo(viewport, QPoint(0, 0))
+                    self.assertGreaterEqual(origin.y(), 0)
+                    self.assertLessEqual(
+                        origin.y() + dialog.check_story_audio.height(),
+                        viewport.height(),
+                    )
+                    assert_fixed_controls_visible()
+                    dialog._clear_resume_error()
 
     def test_unstarted_story_selection_survives_close_without_creating_jobs(self):
         with TemporaryDirectory() as temporary_directory:
@@ -3182,6 +3321,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.continue_button.text(), "Start reading")
             self.assertEqual(dialog.continue_button.property("vnttsActionIcon"), "play")
             self.assertTrue(dialog.prepare_again.isVisibleTo(dialog))
+            self.assertIs(dialog.prepare_again.parentWidget(), dialog.selection_panel)
+            self.assertFalse(dialog.selection_settings_toggle.isChecked())
+            self.assertFalse(dialog.selection_details_toggle.isChecked())
             self.assertIn("recorded voice and model", plain_label_text(dialog.summary))
             self.assertEqual(
                 dialog.prepare_again.toolTip(), "Prepare again: Main Story 1"
@@ -3194,6 +3336,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 side_effect=PregenerationVoiceCancelled("Paused after scope check"),
             ) as prepare:
                 dialog.prepare_again.click()
+                self.assertFalse(dialog.prepare_again.isVisibleTo(dialog))
                 self.run_next_task(pool)
                 self.assertEqual(
                     prepare.call_args.args[0].selected_story_ids, ("main-1",)
@@ -4270,6 +4413,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         self.assertIn("Find installed Reverse: 1999", dialog.source_status.text())
         self.assertIn("game is closed", dialog.source_status.text())
         self.assertTrue(dialog.browse_button.isHidden())
+        self.assertTrue(dialog.selection_settings_toggle.isChecked())
+        self.assertTrue(dialog.selection_settings.isVisibleTo(dialog))
+        self.assertTrue(dialog.import_button.isVisibleTo(dialog))
+        self.assertTrue(dialog.source_status.isVisibleTo(dialog))
         self.assertIn("Importer is not installed", dialog.source_status.text())
         self.assertFalse(dialog.continue_button.isEnabled())
         self.assertTrue(dialog.browse_button.isEnabled())

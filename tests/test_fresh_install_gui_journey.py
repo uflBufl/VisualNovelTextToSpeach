@@ -306,8 +306,10 @@ def _first_process(root):
             raise AssertionError("Narrator playback did not receive reference bytes")
         if "Centurion" not in dialog.voice_confirmation_status.text():
             raise AssertionError("Narrator playback status hid the selected voice")
-        if "Pocket TTS" not in dialog.narrator_status.text():
-            raise AssertionError("The selected generation engine was not visible")
+        if dialog.engine_choice.currentData() != "pocket-tts":
+            raise AssertionError("The selected generation engine was not retained")
+        if "Pocket TTS" not in dialog._full_narrator_configuration():
+            raise AssertionError("The full preparation details hid the generation engine")
 
         dialog.continue_button.click()
         for _ in range(20):

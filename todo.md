@@ -99,10 +99,12 @@
       и осталось на той же реплике до ручного вмешательства. Длительное
       ожидание включает время анализа/инструментов; не считать его чистой
       измеренной задержкой алгоритма. Игра оставалась на полностью видимом тексте.
-- [ ] **UX-25-02: доступ к историям при стартовом размере 860x560.**
-      Проверить высоту списка и прокрутку на рабочем каталоге и при длинных
-      сообщениях. Настройки и состояние подготовки занимают значительную часть
-      экрана; основное действие должно находиться без поиска ниже сгиба.
+- [ ] **UX-25-02: проверить Stories в заключительном живом прогоне.**
+      При 860x560 и уменьшении окна, включая крупный шрифт, проверить минимум
+      пять видимых строк, доступность Prepare again и основного действия без
+      прокрутки. Проверить раскрытие настроек/оценок, доступ к импорту при пустом
+      каталоге, видимость длинных ошибок, копирование и клавиатуру после возврата
+      из подготовки. Реальное колесо/трекпад проверить отдельно от MCP-событий.
 - [ ] **UX-26-01: проверить устройство генерации в общем живом прогоне.**
       В Stories / Show generation details сверить устройство и доступное имя
       чипа с health работающего MLX-воркера. После перезапуска воркера подпись
@@ -303,9 +305,6 @@ complete. Do not change recognition or playback policy on an unverified hypothes
 
 1. **Fix remaining UI issues in separate increments.** Start with concrete
    ownership/data defects, then agree the desired behavior for UX changes:
-   - Resolve Stories scrolling/action reachability at860x560 (UX-25-02), using
-     layout and Qt event evidence to distinguish an app defect from MCP routing.
-     Preserve keyboard access and avoid a speculative scrolling workaround.
    - Agree found-chapter labels (UX-26-02), automatic loading on Read (UX-25-04),
      saved-voice overview (UX-25-09), missing source text/unchanged voice candidate
      (UX-25-10), source-launch worker readiness (UX-25-03), and canonical displayed

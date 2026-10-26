@@ -264,8 +264,6 @@ class ControlDashboard(QMainWindow):
         self._voice_dirty = False
         self._voice_busy = False
         self.setWindowTitle("Visual Novel Text to Speech")
-        self.setMinimumWidth(620)
-        self.setMinimumHeight(340)
         self.resize(860, 560)
 
     def _build_status_widgets(self) -> None:

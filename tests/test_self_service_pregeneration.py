@@ -777,6 +777,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 game_narrator_chooser=chooser,
             )
 
+            dialog.selection_settings_toggle.setChecked(True)
             self.assertTrue(dialog.game_narrator_button.isVisibleTo(dialog))
             self.assertIn("Alba", plain_label_text(dialog.narrator_status))
             dialog.game_narrator_button.click()
@@ -931,8 +932,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertFalse(dialog._awaiting_voice_confirmation)
             self.assertTrue(dialog.voice_confirmation.isHidden())
             self.assertIn("Step 2", dialog.step.text())
-            self.assertIn("MOSS", plain_label_text(dialog.narrator_status))
-            self.assertIn("Engine:", plain_label_text(dialog.narrator_status))
+            self.assertNotIn("Engine:", plain_label_text(dialog.narrator_status))
+            self.assertNotIn("Model:", plain_label_text(dialog.narrator_status))
+            self.assertIn("MOSS", dialog._full_narrator_configuration())
             dialog.copy_narrator_details.click()
             self.assertIn(
                 engine_model_label("moss-tts", "selected-model.gguf"),
@@ -1111,7 +1113,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             dialog.show_all_voice_routes.setChecked(False)
             self.assertIn("Step 2", dialog.step.text())
-            self.assertIn("Pocket TTS", plain_label_text(dialog.narrator_status))
+            self.assertEqual(dialog.engine_choice.currentData(), "pocket-tts")
+            self.assertIn("Pocket TTS", dialog._full_narrator_configuration())
             dialog.copy_narrator_details.click()
             self.assertIn("Model:", self.application.clipboard().text())
             self.assertNotIn("Model:", dialog.voice_configuration.text())
