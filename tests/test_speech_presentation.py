@@ -225,6 +225,17 @@ class SpeechPresentationTest(unittest.TestCase):
         self.assertEqual(
             speech_runtime_label(backend), "Compute: CUDA (RTX 2070 SUPER)"
         )
+        for health, label in (
+            (
+                {"device": "metal", "accelerator": {"name": "Test chip"}},
+                "Compute: METAL (Test chip)",
+            ),
+            ({"device": "metal"}, "Compute: METAL"),
+            ({"device": "cpu"}, "Compute: CPU"),
+        ):
+            with self.subTest(health=health):
+                backend.health = health
+                self.assertEqual(speech_runtime_label(backend), label)
         backend.process.poll.return_value = 1
         self.assertIn("not running", speech_runtime_label(backend))
 

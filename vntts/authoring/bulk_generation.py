@@ -1835,6 +1835,7 @@ def _render_and_publish_generation_attempt(
     )
     active = run.state.get("active")
     if _is_json_document(active):
+        active["runtime_status"] = speech_runtime_label(run.backend)
         active["runtime_worker_pid"] = worker_pid
     _validate_render_result(attempt.rendered, attempt.request, run.provider)
     _assert_control_files_unchanged(run.controls)

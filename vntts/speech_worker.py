@@ -723,6 +723,29 @@ def _backend_runtime_metadata(backend: object) -> FrameDocument:
         "platform": platform.platform(),
         "machine": platform.machine(),
     }
+    mlx_module = getattr(backend, "_mlx", None)
+    if mlx_module is not None:
+        # Inspect the loaded worker's selection, not just GPU availability.
+        try:
+            selected = mlx_module.default_device()
+            if selected.type == mlx_module.cpu:
+                metadata["device"] = "cpu"
+                return metadata
+            if selected.type != mlx_module.gpu:
+                return metadata
+            metadata["device"] = "gpu"
+            if mlx_module.metal.is_available():
+                metadata["device"] = "metal"
+        except AttributeError, OSError, RuntimeError, TypeError, ValueError:
+            return metadata
+        try:
+            info = mlx_module.device_info(selected)
+            name = info.get("device_name") if isinstance(info, dict) else None
+            if isinstance(name, str) and name.strip():
+                metadata["accelerator"] = {"name": name.strip()}
+        except AttributeError, OSError, RuntimeError, TypeError, ValueError:
+            pass
+        return metadata
     torch_module = getattr(backend, "torch", None)
     if device != "cuda" or torch_module is None:
         return metadata

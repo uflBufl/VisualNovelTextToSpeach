@@ -616,6 +616,62 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         )
         self.assertEqual(progress_manifest["entries"][0]["line_id"], item["line_id"])
 
+    def test_post_render_progress_refreshes_worker_device_and_pid(self):
+        for device, exit_code, expected_status, expected_pid in (
+            ("cuda", None, "Compute: CUDA (new accelerator)", 202),
+            ("cuda", 0, "Compute: engine not running.", None),
+            (
+                "unknown",
+                None,
+                "Compute device: unknown (not reported by the engine yet).",
+                202,
+            ),
+        ):
+            with self.subTest(device=device, exit_code=exit_code):
+                with TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    queue = write_queue(root / "queue.jsonl", [queue_item()])
+                    output = root / "output"
+                    observed = {}
+
+                    def replace_worker(_request):
+                        renderer.health = {
+                            "device": device,
+                            "accelerator": {"name": "new accelerator"},
+                        }
+                        renderer.process = Mock(
+                            pid=202, poll=Mock(return_value=exit_code)
+                        )
+
+                    def observe(event):
+                        if isinstance(event.active, dict):
+                            active = event.active
+                            observed[active["phase"]] = (
+                                active["runtime_status"],
+                                active["runtime_worker_pid"],
+                            )
+                            stored = generation_database.read_state(
+                                output / "generation-state.sqlite3"
+                            )
+                            self.assertEqual(stored["active"], active)
+
+                    renderer = SyntheticRenderer(inspect_state=replace_worker)
+                    renderer.health = {"device": "cpu"}
+                    renderer.process = Mock(pid=101, poll=Mock(return_value=None))
+                    result = self.run_generation(
+                        queue, output, renderer, progress_observer=observe
+                    )
+
+                    self.assertEqual(result.generated, 1)
+                    self.assertEqual(
+                        observed,
+                        {
+                            "generating": ("Compute: CPU", 101),
+                            "validating": (expected_status, expected_pid),
+                            "publishing": (expected_status, expected_pid),
+                        },
+                    )
+
     def test_rendered_wav_decodes_once_before_publication(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

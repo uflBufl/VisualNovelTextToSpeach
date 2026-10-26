@@ -23,6 +23,7 @@ from vntts.speech_worker import (
     _REQUIRED_MODULES,
     IsolatedSpeechBackend,
     RetainedWorkerRuntime,
+    _backend_runtime_metadata,
     _is_worker_backend,
     _is_worker_process,
     _module_health,
@@ -607,6 +608,108 @@ class DeferredWorkerStartupTests(unittest.TestCase):
 
 
 class SpeechWorkerTest(unittest.TestCase):
+    def test_mlx_metadata_uses_selected_device_not_accelerator_availability(self):
+        for selected_type, metal_available, expected in (
+            ("cpu", True, "cpu"),
+            ("gpu", True, "metal"),
+            ("gpu", False, "gpu"),
+            ("unrecognized", True, "unknown"),
+        ):
+            with self.subTest(selected=selected_type, metal=metal_available):
+                selected = SimpleNamespace(type=selected_type)
+                mlx = SimpleNamespace(
+                    cpu="cpu",
+                    gpu="gpu",
+                    default_device=MagicMock(return_value=selected),
+                    metal=SimpleNamespace(is_available=lambda: metal_available),
+                    device_info=MagicMock(return_value={"device_name": " Test chip "}),
+                )
+                metadata = _backend_runtime_metadata(SimpleNamespace(_mlx=mlx))
+                self.assertEqual(metadata["device"], expected)
+                if selected_type == "gpu":
+                    self.assertEqual(metadata["accelerator"], {"name": "Test chip"})
+                    mlx.device_info.assert_called_once_with(selected)
+                else:
+                    self.assertNotIn("accelerator", metadata)
+                    mlx.device_info.assert_not_called()
+
+    def test_missing_mlx_device_details_do_not_fail_worker_startup(self):
+        failures = (
+            AttributeError("missing"),
+            OSError("unavailable"),
+            RuntimeError("probe failed"),
+        )
+        for failure in failures:
+            for stage in ("default_device", "metal", "device_info"):
+                with self.subTest(stage=stage, error=type(failure).__name__):
+                    mlx = SimpleNamespace(
+                        cpu="cpu",
+                        gpu="gpu",
+                        default_device=MagicMock(
+                            return_value=SimpleNamespace(type="gpu")
+                        ),
+                        metal=SimpleNamespace(
+                            is_available=MagicMock(return_value=True)
+                        ),
+                        device_info=MagicMock(
+                            return_value={"device_name": "Test chip"}
+                        ),
+                    )
+                    probe = (
+                        mlx.metal.is_available
+                        if stage == "metal"
+                        else getattr(mlx, stage)
+                    )
+                    probe.side_effect = failure
+                    metadata = _backend_runtime_metadata(SimpleNamespace(_mlx=mlx))
+                    self.assertEqual(
+                        metadata["device"],
+                        {
+                            "default_device": "unknown",
+                            "metal": "gpu",
+                            "device_info": "metal",
+                        }[stage],
+                    )
+                    self.assertNotIn("accelerator", metadata)
+        mlx = SimpleNamespace(
+            cpu="cpu",
+            gpu="gpu",
+            default_device=lambda: SimpleNamespace(type="gpu"),
+            metal=SimpleNamespace(is_available=lambda: True),
+        )
+        for info in ({}, {"device_name": " "}, {"device_name": 42}, None):
+            with self.subTest(info=info):
+                mlx.device_info = MagicMock(return_value=info)
+                metadata = _backend_runtime_metadata(SimpleNamespace(_mlx=mlx))
+                self.assertEqual(metadata["device"], "metal")
+                self.assertNotIn("accelerator", metadata)
+
+    def test_cuda_metadata_keeps_confirmed_device_properties(self):
+        torch = SimpleNamespace(
+            version=SimpleNamespace(cuda="runtime-version"),
+            cuda=SimpleNamespace(
+                current_device=lambda: 1,
+                get_device_properties=lambda _index: SimpleNamespace(
+                    name="CUDA chip", total_memory=123
+                ),
+                get_device_capability=lambda _index: (8, 6),
+            ),
+        )
+        metadata = _backend_runtime_metadata(
+            SimpleNamespace(device="cuda", torch=torch)
+        )
+        self.assertEqual(metadata["device"], "cuda")
+        self.assertEqual(
+            metadata["accelerator"],
+            {
+                "runtime": "runtime-version",
+                "device_index": 1,
+                "name": "CUDA chip",
+                "total_memory_bytes": 123,
+                "capability": [8, 6],
+            },
+        )
+
     def test_installed_only_startup_never_installs_missing_runtime(self):
         with (
             patch(
@@ -1045,6 +1148,45 @@ print("worker-import-ready")
             np.frombuffer(chunk_payload, dtype=np.float32), [0.25, -0.25]
         )
         self.assertEqual(frames[3][0]["result"]["completion"], "complete")
+
+    def test_worker_health_reports_loaded_mlx_device(self):
+        def loaded_backend(registry, **options):
+            backend = FakeWorkerBackend(registry, **options)
+            backend._mlx = SimpleNamespace(
+                cpu="cpu",
+                gpu="gpu",
+                default_device=lambda: SimpleNamespace(type="gpu"),
+                metal=SimpleNamespace(is_available=lambda: True),
+                device_info=lambda _device: {"device_name": "Test chip"},
+            )
+            return backend
+
+        incoming, outgoing = BytesIO(), BytesIO()
+        _write_frame(
+            incoming,
+            {
+                "type": "initialize",
+                "backend": "fake",
+                "runtime_site": "/isolated/site-packages",
+                "registry": _serialize_registry(CharacterVoiceRegistry()),
+                "options": {},
+            },
+        )
+        incoming.seek(0)
+        self.assertEqual(
+            worker_main(
+                input_stream=incoming,
+                output_stream=outgoing,
+                backend_classes={"fake": loaded_backend},
+                required_modules={"fake": ()},
+            ),
+            0,
+        )
+        outgoing.seek(0)
+        health, _payload = _read_frame(outgoing)
+        self.assertEqual(health["type"], "health")
+        self.assertEqual(health["device"], "metal")
+        self.assertEqual(health["accelerator"], {"name": "Test chip"})
 
     def test_worker_protocol_returns_underlying_identity_without_rendering(self):
         for supported in (False, True):

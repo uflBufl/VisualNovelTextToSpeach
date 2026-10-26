@@ -103,11 +103,12 @@
       Проверить высоту списка и прокрутку на рабочем каталоге и при длинных
       сообщениях. Настройки и состояние подготовки занимают значительную часть
       экрана; основное действие должно находиться без поиска ниже сгиба.
-- [ ] **UX-26-01: устройство генерации остаётся неизвестным.** При новой
-      подготовке 314001 через Stories MOSS Local v1.5 MLX уже обработал 9/90
-      реплик, но Show generation details показывает `Compute device: unknown
-      (not reported by the engine yet)`. Проверить передачу фактического
-      устройства из воркера; не выводить устройство только из названия модели.
+- [ ] **UX-26-01: проверить устройство генерации в общем живом прогоне.**
+      В Stories / Show generation details сверить устройство и доступное имя
+      чипа с health работающего MLX-воркера. После перезапуска воркера подпись
+      устройства и PID должны относиться к одному процессу; после завершения/нового запуска не
+      показывать старые сведения как текущие. Отсутствие optional-метаданных
+      не должно прерывать генерацию; не делать выводов о CPU/GPU по имени модели.
 - [ ] **UX-26-02: найденная глава не показывает своё название в дереве.** Поиск
       `A Hundred Thousand Billion Sketches` находит одну главу, но строка дерева
       называется только `Stage 1` внутри `See You in the New World`. Обсудить
@@ -302,9 +303,6 @@ complete. Do not change recognition or playback policy on an unverified hypothes
 
 1. **Fix remaining UI issues in separate increments.** Start with concrete
    ownership/data defects, then agree the desired behavior for UX changes:
-   - Trace actual generation-device reporting (UX-26-01): completed MLX work
-     still displays unknown. Report the engine's evidence, not a guessed device
-     derived from its name.
    - Resolve Stories scrolling/action reachability at860x560 (UX-25-02), using
      layout and Qt event evidence to distinguish an app defect from MCP routing.
      Preserve keyboard access and avoid a speculative scrolling workaround.
