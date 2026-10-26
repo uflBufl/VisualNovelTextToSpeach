@@ -322,7 +322,7 @@ class VoicePlanOverviewTest(unittest.TestCase):
         editor.set_voice_context(plan, character=group.character)
         self.application.processEvents()
         self.assertIs(editor._voice_context, plan)
-        self.assertEqual(editor.role.currentText(), group.character)
+        self.assertEqual(editor.selected_role, group.character)
         self.assertFalse(editor.voice_panel.isHidden())
         selection = editor.voice_panel.current_selection
         self.assertIsNotNone(selection)

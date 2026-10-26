@@ -1333,7 +1333,9 @@ def _voice_audition_story(
     alternate_phrase = panel.current_group().alternate_sample_text
     assert alternate_phrase is not None
     actions = {
-        "alternate": lambda: panel.voice_reference.setCurrentIndex(1),
+        "alternate": lambda: panel.reference_table.setCurrentIndex(
+            panel.reference_proxy.mapFromSource(panel.reference_model.index(1, 0))
+        ),
         "alternate-phrase": lambda: panel.preview_text.setPlainText(alternate_phrase),
         "original-playing": lambda: _voice_original_playback_story(panel),
         "preview-generating": panel.a_play.click,

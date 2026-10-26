@@ -282,14 +282,12 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.decisions.remember_many.assert_not_called()
         self.panel.start(self.plan, group_id=self.group.group_id)
         self.assertTrue(self.panel.a_box.isVisibleTo(self.panel))
-        self.assertEqual(
-            self.panel.voice_reference_label.isVisibleTo(self.panel),
-            self.panel.voice_reference.count() > 1,
-        )
+        self.assertTrue(self.panel.reference_browser.isVisibleTo(self.panel))
+        self.assertGreater(self.panel.reference_model.rowCount(), 0)
         self.assertTrue(self.panel.a_original.isEnabled())
         self.assertNotEqual(self.panel.current_selection[2], "default")
 
-    def test_reference_selector_only_appears_when_there_is_a_choice(self):
+    def test_reference_browser_shows_single_reference_and_full_inventory(self):
         candidate = self.group.candidates[0]
         group = replace(
             self.group,
@@ -298,16 +296,16 @@ class CharacterVoicePanelTest(unittest.TestCase):
             narrator_candidate=None,
         )
         self.panel.start(replace(self.plan, groups=(group,)), group_id=group.group_id)
-        self.assertTrue(self.panel.voice_reference.isHidden())
-        self.assertTrue(self.panel.voice_reference_label.isHidden())
+        self.assertFalse(self.panel.reference_browser.isHidden())
+        self.assertEqual(self.panel.reference_model.rowCount(), 1)
         self.assertTrue(self.panel.a_original.isEnabled())
         self.assertTrue(self.panel.a_play.isEnabled())
         second = replace(candidate, source_id="character:second")
         group = replace(group, candidate_inventory=(candidate, second))
         self.panel.start(replace(self.plan, groups=(group,)), group_id=group.group_id)
-        self.assertFalse(self.panel.voice_reference.isHidden())
-        self.assertFalse(self.panel.voice_reference_label.isHidden())
-        self.assertTrue(self.panel.voice_reference.isEnabled())
+        self.assertFalse(self.panel.reference_browser.isHidden())
+        self.assertEqual(self.panel.reference_model.rowCount(), 2)
+        self.assertTrue(self.panel.reference_table.isEnabled())
 
     def test_inspection_hides_repeated_target_scope_and_idle_instructions(self):
         self.panel.start(self.plan, group_id=self.group.group_id)
@@ -319,10 +317,10 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.assertEqual(self.panel.a_box.title(), "Original reference")
         self.assertNotIn("Voice:", self.panel.a_reason.text())
         self.assertNotIn("Original spoken text:", self.panel.a_reason.text())
-        self.assertNotIn("Not prepared", self.panel.voice_reference.currentText())
-        self.assertNotIn(
-            "Content not checked", self.panel.voice_reference.currentText()
-        )
+        for row in range(self.panel.reference_model.rowCount()):
+            label = self.panel.reference_model.item(row, 0).text()
+            self.assertNotIn("Not prepared", label)
+            self.assertNotIn("Content not checked", label)
         self.panel._set_status("Unable to play original reference: file missing")
         self.assertFalse(self.panel.status.isHidden())
         self.panel.start(self.plan, group_id=self.group.group_id)

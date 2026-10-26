@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
 
@@ -167,6 +168,26 @@ class ReferenceAdviceUITest(unittest.TestCase):
             fixture.pool.run_next()
         self.fail("Automatic reference preparation did not finish its bounded batch")
 
+    @staticmethod
+    def select_reference(fixture, row):
+        source_index = fixture.panel.reference_model.index(row, 0)
+        fixture.panel.reference_table.setCurrentIndex(
+            fixture.panel.reference_proxy.mapFromSource(source_index)
+        )
+
+    @staticmethod
+    def selected_reference_row(fixture):
+        return fixture.panel.reference_proxy.mapToSource(
+            fixture.panel.reference_table.currentIndex()
+        ).row()
+
+    @staticmethod
+    def reference_cell(fixture, row, column):
+        value = fixture.panel.reference_model.index(row, column).data(
+            Qt.ItemDataRole.DisplayRole
+        )
+        return str(value or "")
+
     def test_opening_keeps_existing_choice_and_only_queues_listening_window(self):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))
@@ -175,7 +196,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             self.drain(f)
             self.assertEqual(f.panel._current_entry()[0].source_id, group.source_id)
             self.assertEqual(
-                f.panel.voice_reference.count(), len(group.candidate_inventory)
+                f.panel.reference_model.rowCount(), len(group.candidate_inventory)
             )
             requests = f.service.prefetch.call_args.args[1]
             self.assertEqual(requests[0][1], group.source_id)
@@ -193,13 +214,13 @@ class ReferenceAdviceUITest(unittest.TestCase):
             self.drain(f)
             self.assertEqual(f.transcript.call_count, 2)
             f.installer.assert_called_once_with()
-            self.assertEqual(f.panel.voice_reference.currentIndex(), 0)
+            self.assertEqual(self.selected_reference_row(f), 0)
             self.assertNotIn("Suggested:", f.panel.recommendation.text())
             self.assertIn(
                 "Possible extra or missing words", f.panel.recommendation.text()
             )
-            self.assertIn("Check words by ear", f.panel.voice_reference.itemText(0))
-            self.assertNotIn("No text mismatch", f.panel.voice_reference.itemText(1))
+            self.assertIn("Check words by ear", self.reference_cell(f, 0, 0))
+            self.assertNotIn("No text mismatch", self.reference_cell(f, 1, 0))
             self.assertEqual(
                 f.panel._content_checks[f.candidates[1].source_id].advice.status,
                 "no_asr_mismatch",
@@ -246,7 +267,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f = self.fixture(Path(directory))
             f.ready.update(f.previews)
             f.panel.start(f.plan)
-            self.assertIn("Ready", f.panel.voice_reference.currentText())
+            self.assertIn("Ready", self.reference_cell(f, 0, 0))
             self.assertEqual(f.panel.a_play.text(), "Preview")
             f.panel.a_play.click()
             f.service.generate.assert_not_called()
@@ -307,8 +328,8 @@ class ReferenceAdviceUITest(unittest.TestCase):
             plan, group, candidates = self.add_inventory(f, root)
             f.panel.start(plan, group_id=group.group_id)
             self.drain(f)
-            self.assertEqual(f.panel.voice_reference.count(), 18)
-            f.panel.voice_reference.setCurrentIndex(17)
+            self.assertEqual(f.panel.reference_model.rowCount(), 18)
+            self.select_reference(f, 17)
             self.assertEqual(f.panel._current_entry()[0], candidates[17])
             original = Path(plan.voice_manifest).parent / "references" / "centurion.wav"
             f.service.reference_audio.return_value = VoiceAuditionReference(
@@ -322,7 +343,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             self.assertEqual(
                 f.player.play_bytes.call_args.args[0], original.read_bytes()
             )
-            f.panel.voice_reference.setCurrentIndex(0)
+            self.select_reference(f, 0)
             self.assertEqual(f.panel._current_entry()[0], candidates[0])
             self.assertIsNone(f.panel._accepted_choice)
             f.decisions.remember_many.assert_not_called()
@@ -333,23 +354,23 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f = self.fixture(root)
             plan, group, candidates = self.add_inventory(f, root)
             f.panel.start(plan, group_id=group.group_id)
-            f.panel.voice_reference.setCurrentIndex(4)
+            self.select_reference(f, 4)
             requests = f.service.prefetch.call_args.args[1]
             self.assertEqual(
                 [source for _group, source, _text in requests],
                 [candidates[index].source_id for index in (4, 5, 3)],
             )
-            self.assertIn("Queued", f.panel.voice_reference.itemText(4))
-            self.assertNotIn("Not prepared", f.panel.voice_reference.itemText(7))
+            self.assertIn("Queued", self.reference_cell(f, 4, 0))
+            self.assertNotIn("Not prepared", self.reference_cell(f, 7, 0))
             f.ready.update(
                 (candidate.source_id, f.previews[candidate.source_id])
                 for candidate in candidates
             )
             self.drain(f)
             self.assertEqual(f.transcript.call_count, 3)
-            self.assertIn("Ready", f.panel.voice_reference.itemText(7))
-            self.assertNotIn("Content not checked", f.panel.voice_reference.itemText(7))
-            self.assertEqual(f.panel.voice_reference.currentIndex(), 4)
+            self.assertIn("Ready", self.reference_cell(f, 7, 0))
+            self.assertNotIn("Content not checked", self.reference_cell(f, 7, 0))
+            self.assertEqual(self.selected_reference_row(f), 4)
 
     def test_highlight_dwell_prepares_before_click_without_changing_selection(self):
         with TemporaryDirectory() as directory:
@@ -358,13 +379,13 @@ class ReferenceAdviceUITest(unittest.TestCase):
             plan, group, candidates = self.add_inventory(f, root)
             f.panel.start(plan, group_id=group.group_id)
             f.service.prefetch.reset_mock()
-            f.panel.voice_reference.highlighted.emit(5)
+            f.panel.reference_table.entered.emit(f.panel.reference_proxy.index(5, 0))
             self.assertFalse(f.service.prefetch.called)
             QTest.qWait(220)
             requests = f.service.prefetch.call_args.args[1]
             self.assertEqual(requests[0][1], candidates[5].source_id)
             self.assertEqual(len(requests), 3)
-            self.assertEqual(f.panel.voice_reference.currentIndex(), 0)
+            self.assertEqual(self.selected_reference_row(f), 0)
             f.player.play_bytes.assert_not_called()
             f.decisions.remember_many.assert_not_called()
 
@@ -403,7 +424,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 action()
                 stops = f.player.stop.call_count
                 self.drain(f)
-                self.assertEqual(f.panel.voice_reference.currentIndex(), 0)
+                self.assertEqual(self.selected_reference_row(f), 0)
                 self.assertEqual(f.player.stop.call_count, stops)
                 f.player.play_bytes.assert_called_once()
                 self.assertTrue(f.panel.a_use.isEnabled())
@@ -439,7 +460,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 f.panel._refresh_runtime()
                 self.assertTrue(f.panel.advice_runner.active)
                 self.assertTrue(f.panel.a_play.isEnabled())
-                self.assertTrue(f.panel.voice_reference.isEnabled())
+                self.assertTrue(f.panel.reference_table.isEnabled())
                 f.service.prefetch.assert_called()
                 f.service.cancel.assert_not_called()
                 f.transcript.assert_not_called()
@@ -463,7 +484,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             )
             f.panel.start(replace(f.plan, groups=(saved,)))
             self.drain(f)
-            self.assertEqual(f.panel.voice_reference.currentIndex(), 0)
+            self.assertEqual(self.selected_reference_row(f), 0)
             f.service.generate.assert_not_called()
             f.transcript.assert_not_called()
             f.player.play_bytes.assert_not_called()
@@ -475,7 +496,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f.ready.update(f.previews)
             f.panel.start(f.plan)
             f.panel._refresh_runtime()
-            f.panel.voice_reference.highlighted.emit(1)
+            f.panel.reference_table.entered.emit(f.panel.reference_proxy.index(1, 0))
             f.panel.cancel()
             calls = f.service.prefetch.call_count
             QTest.qWait(220)
@@ -516,8 +537,8 @@ class ReferenceAdviceUITest(unittest.TestCase):
             self.drain(f)
             requests = f.service.restore_cached.call_args.args[1]
             self.assertEqual(len(requests), len(candidates))
-            self.assertIn("Ready", f.panel.voice_reference.itemText(7))
-            self.assertNotIn("Content not checked", f.panel.voice_reference.itemText(7))
+            self.assertIn("Ready", self.reference_cell(f, 7, 0))
+            self.assertNotIn("Content not checked", self.reference_cell(f, 7, 0))
             f.service.generate.assert_not_called()
             self.assertEqual(f.transcript.call_count, 3)
             f.player.play_bytes.assert_not_called()
@@ -537,7 +558,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 f.panel._refresh_runtime()
                 self.drain(f)
             self.assertEqual(f.advisor.lookup_saved.call_count, reads)
-            self.assertNotIn("No text mismatch", f.panel.voice_reference.itemText(1))
+            self.assertNotIn("No text mismatch", self.reference_cell(f, 1, 0))
             self.assertEqual(
                 f.panel._content_checks[f.candidates[1].source_id].advice.status,
                 "no_asr_mismatch",
@@ -559,7 +580,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f.panel.preview_text.setPlainText(f.group.sample_text)
             self.drain(f)
             self.assertEqual(f.transcript.call_count, 2)
-            self.assertNotIn("No text mismatch", f.panel.voice_reference.itemText(1))
+            self.assertNotIn("No text mismatch", self.reference_cell(f, 1, 0))
             self.assertEqual(
                 f.panel._content_checks[f.candidates[1].source_id].advice.status,
                 "no_asr_mismatch",
@@ -576,9 +597,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 check, seed=check.seed + 1
             )
             f.panel._refresh_reference_advice()
-            self.assertNotIn(
-                "Check words by ear", f.panel.voice_reference.currentText()
-            )
+            self.assertNotIn("Check words by ear", self.reference_cell(f, 0, 0))
             self.assertTrue(f.panel.recommendation.isHidden())
 
     def test_background_failure_shows_reason_without_playing_or_saving(self):
@@ -602,9 +621,9 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f.panel.status.selectAll()
             f.panel.status.copy()
             self.assertEqual(self.application.clipboard().text(), message)
-            f.panel.voice_reference.setCurrentIndex(1)
+            self.select_reference(f, 1)
             self.assertTrue(f.panel.status.isHidden())
-            f.panel.voice_reference.setCurrentIndex(0)
+            self.select_reference(f, 0)
             self.assertIn("Model assets are missing", f.panel.status.toPlainText())
             f.panel._set_status("Unable to save choices: disk full")
             f.panel._refresh_runtime()

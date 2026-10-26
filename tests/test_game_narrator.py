@@ -10,14 +10,12 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialog,
-    QFrame,
     QLabel,
-    QScrollArea,
 )
 from shiboken6 import isValid
 from vntts_artifacts.file_integrity import sha256_file
@@ -205,7 +203,9 @@ class GameNarratorTest(unittest.TestCase):
                 self.assertIs(button.parentWidget(), dialog)
                 self.assertTrue(button.isVisible())
                 self.assertTrue(dialog.rect().contains(button.geometry()))
-                self.assertGreater(button.y(), scroll.geometry().bottom())
+                self.assertGreater(
+                    button.y(), scroll.mapTo(dialog, scroll.rect().bottomLeft()).y()
+                )
 
     def test_saved_label_stays_separate_from_story_plan_and_current_audition(self):
         plan, group, _manifest = ambiguous_fixture(self.root / "saved-story")
@@ -259,7 +259,8 @@ class GameNarratorTest(unittest.TestCase):
         before = self.library.bindings()
         dialog = self.editor()
         self.select(dialog, "catalog", role="Bob", source="character:centurion")
-        self.assertIn("Narrator", dialog.voice_panel.current_voice_label.text())
+        self.assertEqual(dialog.voice_panel.current_voice_label.text(), "Rhiannon")
+        self.assertIn("Narrator", dialog.voice_panel.current_voice_label.toolTip())
         dialog.voice_panel.current_original.click()
         self.drain()
         self.assertEqual(
@@ -279,106 +280,158 @@ class GameNarratorTest(unittest.TestCase):
         self.assertTrue(dialog.voice_panel.current_reason.text())
         self.listen(dialog, original=True)
 
-    def test_voice_replacement_keeps_current_above_settings_and_candidate(self):
+    def test_reference_browser_and_comparison_share_existing_preview_controls(self):
         dialog = self.editor()
-        self.assertEqual(dialog.voice_panel.title(), "New voice")
-        self.assertEqual(dialog.voice_panel.current_voice_box.title(), "Current voice")
-        self.assertIs(dialog.voice_panel.phrase_box.parentWidget(), dialog.controls)
-        self.assertIs(
-            dialog.voice_panel.current_voice_box.parentWidget(), dialog.controls
-        )
-        self.assertIs(dialog.voice_panel.parentWidget(), dialog.controls)
-        self.assertEqual(dialog.voice_panel.a_use.text(), "Save")
-        phrase = "A shared comparison phrase."
-        dialog.voice_panel.preview_text.setPlainText(phrase)
         self.select(dialog, "catalog", source="character:centurion")
-        self.assertEqual(dialog.voice_panel.preview_text.toPlainText(), phrase)
-        self.assertEqual(dialog.voice_panel.candidate_voice_label.text(), "Centurion")
-        dialog.resize(1060, 720)
+        panel = dialog.voice_panel
+        self.assertIs(panel.phrase_box.parentWidget(), dialog.controls)
+        self.assertIs(panel.current_voice_box.parentWidget(), dialog.controls)
+        self.assertIs(panel.parentWidget(), dialog.controls)
+        self.assertIs(panel.reference_browser.parentWidget(), dialog.reference_splitter)
+        self.assertEqual(panel.a_use.text(), "Save")
+        phrase = "A shared comparison phrase."
+        panel.preview_text.setPlainText(phrase)
+        self.select(dialog, "preset", source="preset:alba")
+        self.assertEqual(panel.preview_text.toPlainText(), phrase)
+        self.select(dialog, "catalog", source="character:centurion")
         dialog.show()
         self.application.processEvents()
-        current = dialog.voice_panel.current_voice_box.geometry()
-        candidate = dialog.voice_panel.geometry()
-        self.assertLess(current.bottom(), dialog.source_controls.geometry().top())
-        self.assertLess(dialog.source_controls.geometry().bottom(), candidate.top())
+        self.assertLess(panel.phrase_box.geometry().bottom(), panel.geometry().top())
         self.assertLess(
-            candidate.bottom(), dialog.voice_panel.phrase_box.geometry().top()
+            panel.current_voice_box.geometry().right(), panel.geometry().left()
         )
-        separators = [
-            frame
-            for frame in dialog.controls.findChildren(QFrame)
-            if frame.frameShape() == QFrame.Shape.HLine
-        ]
-        self.assertEqual(len(separators), 2)
-        separators.sort(key=lambda frame: frame.y())
-        self.assertLess(current.bottom(), separators[0].y())
-        self.assertLess(separators[0].geometry().bottom(), dialog.source_controls.y())
-        self.assertLess(candidate.bottom(), separators[1].y())
         self.assertLess(
-            separators[1].geometry().bottom(), dialog.voice_panel.phrase_box.y()
+            panel.reference_browser.geometry().bottom(), dialog.content_scroll.y()
         )
 
-    def test_voice_replacement_remains_vertical_with_reachable_playback_controls(self):
+    def test_reference_list_stays_large_while_details_scroll(self):
         dialog = self.editor()
         self.select(dialog, "catalog", source="character:centurion")
-        font = dialog.font()
-        font.setPointSizeF(font.pointSizeF() * 2)
-        dialog.setFont(font)
-        dialog.resize(480, 540)
+        panel = dialog.voice_panel
+        panel.a_reason.setText("A long reference transcript. " * 200)
+        panel.current_reason.setText(
+            "The saved reference has a longer transcript. " * 8
+        )
         dialog.show()
-        self.application.processEvents()
-        scroll = dialog.findChild(QScrollArea)
-        self.assertIsNotNone(scroll)
-        for width, height in ((480, 540), (1060, 720), (480, 540)):
+        for width, height in ((900, 650), (1100, 800), (900, 650)):
             dialog.resize(width, height)
             self.application.processEvents()
-            self.assertLess(
-                dialog.voice_panel.current_voice_box.geometry().bottom(),
-                dialog.source_controls.geometry().top(),
-            )
-            self.assertLess(
-                dialog.voice_panel.geometry().bottom(),
-                dialog.voice_panel.phrase_box.geometry().top(),
-            )
-            self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
-        for box, buttons in (
-            (
-                dialog.voice_panel.current_voice_box,
-                (dialog.voice_panel.current_original, dialog.voice_panel.current_play),
-            ),
-            (
-                dialog.voice_panel,
-                (dialog.voice_panel.a_original, dialog.voice_panel.a_play),
-            ),
-        ):
-            for button in buttons:
-                self.assertTrue(
-                    box.rect().contains(button.mapTo(box, button.rect().bottomRight()))
+            self.assertGreaterEqual(panel.reference_table.height(), 200)
+            self.assertEqual(dialog.content_scroll.horizontalScrollBar().maximum(), 0)
+            for label in (panel.a_reason, panel.current_reason):
+                self.assertGreaterEqual(
+                    label.height(), label.heightForWidth(label.width())
                 )
+            for current, candidate in (
+                (panel.current_original, panel.a_original),
+                (panel.current_play, panel.a_play),
+                (panel.current_reason, panel.a_reason),
+            ):
+                self.assertEqual(
+                    current.mapTo(dialog, QPoint()).y(),
+                    candidate.mapTo(dialog, QPoint()).y(),
+                )
+            self.assertLess(
+                panel.a_play.mapTo(dialog, QPoint()).y() + panel.a_play.height(),
+                panel.a_reason.mapTo(dialog, QPoint()).y(),
+            )
+            for button in (dialog.cancel_button, panel.a_use):
+                self.assertTrue(dialog.rect().contains(button.geometry()))
+        self.assertGreater(dialog.content_scroll.verticalScrollBar().maximum(), 0)
+        for button in (
+            panel.current_original,
+            panel.current_play,
+            panel.a_original,
+            panel.a_play,
+        ):
+            dialog.content_scroll.ensureWidgetVisible(button)
+            self.application.processEvents()
+            self.assertTrue(button.isVisible())
 
-    def test_donor_name_is_shown_once_and_different_candidate_names_remain_visible(
+    def test_character_search_preserves_saved_role_and_discloses_sources(self):
+        dialog = self.editor()
+        dialog.set_voice_context(roles=("Sonetto", "Regulus"), character="Sonetto")
+        self.drain()
+        before = self.library.bindings()
+        dialog.role_search.setText("reg")
+        self.assertEqual(dialog.selected_role, "Sonetto")
+        visible = [
+            dialog.role.item(i).text()
+            for i in range(dialog.role.count())
+            if not dialog.role.item(i).isHidden()
+        ]
+        self.assertEqual(visible, ["Regulus"])
+        self.assertEqual(self.library.bindings(), before)
+        self.assertFalse(dialog.source_toggle.isChecked())
+        dialog.source_toggle.click()
+        self.assertFalse(dialog.source_controls.isHidden())
+        dialog.select_role("Narrator")
+        self.drain()
+        self.assertEqual(dialog.role_search.text(), "")
+        self.assertTrue(dialog.source_toggle.isHidden())
+        self.assertFalse(dialog.source_controls.isHidden())
+
+    def test_reference_ownership_stays_visible_when_source_controls_are_collapsed(
         self,
     ):
         plan, group, _manifest = ambiguous_fixture(self.root / "donor-label")
+        group = replace(
+            group,
+            candidate_inventory=(
+                group.candidates[0],
+                replace(
+                    group.candidates[0],
+                    source_id="character:centurion",
+                    source_character="Centurion",
+                ),
+            ),
+        )
+        plan = replace(plan, groups=(group,))
         dialog = self.editor()
         dialog.set_voice_context(plan, character=group.character)
         self.drain()
         panel = dialog.voice_panel
         self.assertEqual(dialog.characters.currentText(), "Rhiannon")
         self.assertEqual(panel.candidate_voice_label.text(), "Rhiannon")
-        self.assertTrue(panel.candidate_voice_label.isHidden())
-        for index in range(panel.voice_reference.count()):
-            panel.voice_reference.setCurrentIndex(index)
+        self.assertIn("Rhiannon", dialog.reference_source_label.text())
+        self.assertIn("Centurion", dialog.reference_source_label.text())
+        self.assertFalse(dialog.reference_source_label.isHidden())
+        for index in range(panel.reference_model.rowCount()):
+            panel.reference_table.setCurrentIndex(
+                panel.reference_proxy.mapFromSource(
+                    panel.reference_model.index(index, 0)
+                )
+            )
             self.drain()
-            if panel.candidate_voice_label.text() == "Rhiannon":
-                self.assertTrue(panel.candidate_voice_label.isHidden())
-            else:
-                self.assertFalse(panel.candidate_voice_label.isHidden())
-        self.select(dialog, "catalog", source="character:centurion")
+            self.assertFalse(panel.candidate_voice_label.isHidden())
+        self.select(dialog, "catalog", role="Rhiannon", source="character:centurion")
         self.assertEqual(panel.candidate_voice_label.text(), "Centurion")
-        self.assertTrue(panel.candidate_voice_label.isHidden())
-        self.select(dialog, "automatic")
         self.assertFalse(panel.candidate_voice_label.isHidden())
+        self.assertEqual(dialog.reference_source_label.text(), "Recordings: Centurion")
+        self.assertFalse(dialog.reference_source_label.isHidden())
+        dialog.source_toggle.click()
+        self.assertTrue(dialog.reference_source_label.isHidden())
+        self.assertFalse(dialog.catalog_choice.isHidden())
+        self.assertEqual(dialog.catalog_choice.currentText(), "Centurion")
+        dialog.source_toggle.click()
+        self.assertFalse(dialog.reference_source_label.isHidden())
+        self.select(dialog, "automatic", role="Rhiannon")
+        self.assertEqual(
+            dialog.reference_source_label.text(), "Voice: automatic matching"
+        )
+        self.assertFalse(panel.candidate_voice_label.isHidden())
+
+    def test_narrator_fallback_identifies_the_actual_saved_donor(self):
+        self.bind_narrator()
+        dialog = self.editor()
+        self.select(dialog, "narrator", role="Shopkeeper")
+        self.assertEqual(
+            dialog.reference_source_label.text(), "Narrator voice: Rhiannon"
+        )
+        self.assertFalse(dialog.reference_source_label.isHidden())
+        self.assertTrue(dialog.source_controls.isHidden())
+        self.assertFalse(dialog.source_toggle.isHidden())
+        self.assertEqual(self.library.binding("Shopkeeper"), None)
 
     def test_same_character_replacement_shows_both_reference_texts_and_keeps_saved_audio(
         self,
@@ -471,6 +524,8 @@ class GameNarratorTest(unittest.TestCase):
         dialog.source.setCurrentIndex(dialog.source.findData("saved"))
         self.assertTrue(dialog.runner.active)
         self.assertTrue(panel.isHidden())
+        self.assertTrue(panel.reference_browser.isHidden())
+        self.assertEqual(dialog.reference_source_label.text(), "Loading references...")
         self.assertTrue(panel.current_voice_box.isVisible())
         self.assertTrue(panel.current_reason.isVisible())
         self.assertTrue(panel.current_original.isEnabled())
@@ -480,6 +535,10 @@ class GameNarratorTest(unittest.TestCase):
         dialog.catalog_choice.clear()
         self.application.processEvents()
         self.assertTrue(panel.isHidden())
+        self.assertTrue(panel.reference_browser.isHidden())
+        self.assertEqual(
+            dialog.reference_source_label.text(), "No reference recordings available"
+        )
         self.assertTrue(panel.current_voice_box.isVisible())
         self.assertTrue(panel.current_reason.isVisible())
         self.assertTrue(panel.current_original.isEnabled())
@@ -552,7 +611,9 @@ class GameNarratorTest(unittest.TestCase):
         document["voices"].append(donor)
         self.manifest.write_text(json.dumps(document))
         dialog = self.editor()
-        targets = [dialog.role.itemText(index) for index in range(dialog.role.count())]
+        targets = [
+            dialog.role.item(index).text() for index in range(dialog.role.count())
+        ]
         sources = [
             dialog.catalog_choice.itemText(index)
             for index in range(dialog.catalog_choice.count())
@@ -926,7 +987,7 @@ class GameNarratorTest(unittest.TestCase):
             dialog.tts_model_label.geometry().bottom(), panel.preview_text.y()
         )
         self.assertLess(
-            panel.preview_text.geometry().bottom(), panel.game_phrase_button.y()
+            panel.preview_text.geometry().right(), panel.game_phrase_button.x()
         )
         self.backend.name = plan.synthesis_backend
         self.listen(dialog)
@@ -1060,7 +1121,7 @@ class GameNarratorTest(unittest.TestCase):
         dialog.set_recovery_context("Aderyn", resume_live=True)
         self.assertEqual(
             sum(
-                dialog.role.itemText(index) == "Aderyn"
+                dialog.role.item(index).text() == "Aderyn"
                 for index in range(dialog.role.count())
             ),
             1,

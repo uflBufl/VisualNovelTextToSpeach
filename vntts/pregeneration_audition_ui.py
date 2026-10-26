@@ -12,31 +12,41 @@ from typing import Protocol, TypeAlias, cast
 
 from PySide6.QtCore import (
     QEvent,
+    QModelIndex,
     QObject,
     QSignalBlocker,
+    QSortFilterProxyModel,
     Qt,
     QThreadPool,
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QPixmap, QTextOption
+from PySide6.QtGui import (
+    QFont,
+    QIcon,
+    QPixmap,
+    QStandardItem,
+    QStandardItemModel,
+    QTextOption,
+)
 from PySide6.QtWidgets import (
-    QComboBox,
+    QAbstractItemView,
     QFrame,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
-    QStyledItemDelegate,
+    QTableView,
     QVBoxLayout,
     QWidget,
 )
 from vntts_artifacts.voice_manifest import normalize_character_name
 
-from vntts.action_icons import set_action_icon
+from vntts.action_icons import action_icon, set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.pcm_playback import PcmPlaybackError
 from vntts.document_identity import sha256_file
@@ -197,7 +207,11 @@ def _read_verified_audio(path: Path, expected_sha256: str | None) -> bytes:
 
 
 def _candidate_name(candidate: VoiceCandidate) -> str:
-    return voice_source_label(candidate.source_character)
+    return (
+        voice_source_label(candidate.source_character)
+        or candidate.source_speaker.strip()
+        or "Unknown source"
+    )
 
 
 class VoiceAuditionPanel(QGroupBox):
@@ -287,10 +301,6 @@ class VoiceAuditionPanel(QGroupBox):
         self.candidate_voice_label.setAccessibleName("New voice for comparison")
         self.candidate_voice_label.hide()
         self._initialize_selectors()
-        voice_reference_row = QHBoxLayout()
-        self.voice_reference_label = QLabel("Reference")
-        voice_reference_row.addWidget(self.voice_reference_label)
-        voice_reference_row.addWidget(self.voice_reference, 1)
 
         self.preview_box = self._build_preview()
         self.a_box = self._build_original_reference()
@@ -321,7 +331,7 @@ class VoiceAuditionPanel(QGroupBox):
         self.status.viewport().setAutoFillBackground(False)
         self.status.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
 
-        self._build_layout(voice_reference_row)
+        self._build_layout()
         self.runtime_timer = QTimer(self)
         self.runtime_timer.setInterval(500)
         self.runtime_timer.timeout.connect(self._refresh_runtime)
@@ -334,7 +344,7 @@ class VoiceAuditionPanel(QGroupBox):
             )
         self.setVisible(False)
 
-    def _build_layout(self, voice_reference_row: QHBoxLayout) -> None:
+    def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.addLayout(self.summary_row)
@@ -343,7 +353,7 @@ class VoiceAuditionPanel(QGroupBox):
         layout.addWidget(self.scope)
         layout.addWidget(self.phrase_box)
         layout.addWidget(self.candidate_voice_label)
-        layout.addLayout(voice_reference_row)
+        layout.addWidget(self.reference_browser)
         layout.addWidget(self.a_box)
         layout.addWidget(self.preview_box)
         layout.addWidget(self.current_voice_box)
@@ -431,10 +441,12 @@ class VoiceAuditionPanel(QGroupBox):
         )
         phrase_layout = QVBoxLayout(self.phrase_box)
         phrase_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        phrase_layout.addWidget(self.preview_text)
-        phrase_layout.addWidget(
-            self.game_phrase_button, alignment=Qt.AlignmentFlag.AlignLeft
+        phrase_row = QHBoxLayout()
+        phrase_row.addWidget(self.preview_text, 1)
+        phrase_row.addWidget(
+            self.game_phrase_button, alignment=Qt.AlignmentFlag.AlignBottom
         )
+        phrase_layout.addLayout(phrase_row)
         return preview_box
 
     def _build_current_voice(self) -> QGroupBox:
@@ -461,13 +473,12 @@ class VoiceAuditionPanel(QGroupBox):
         set_action_icon(self.current_play, "play")
         self.current_play.setAccessibleName("Play current voice preview")
         self.current_play.clicked.connect(self.play_current)
-        layout.addWidget(self.current_voice_label)
-        layout.addWidget(self.current_reason)
         row = QHBoxLayout()
-        row.addStretch()
-        row.addWidget(self.current_original)
-        row.addWidget(self.current_play)
+        row.addWidget(self.current_voice_label, 1)
+        row.addWidget(self.current_original, alignment=Qt.AlignmentFlag.AlignTop)
+        row.addWidget(self.current_play, alignment=Qt.AlignmentFlag.AlignTop)
         layout.addLayout(row)
+        layout.addWidget(self.current_reason)
         self.current_status = QLabel()
         self.current_status.setTextFormat(Qt.TextFormat.PlainText)
         self.current_status.setWordWrap(True)
@@ -496,6 +507,7 @@ class VoiceAuditionPanel(QGroupBox):
         self.game_phrase_button.setText("Game phrase")
         self.a_box.setTitle("")
         self.a_box.setFlat(True)
+        self.a_box.setContentsMargins(0, 0, 0, 0)
         self.preview_box.setTitle("")
         self.preview_box.setFlat(True)
         self.a_use.setText("Save")
@@ -506,6 +518,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._current_playback_guard = playback_guard
         self._set_playback_status("", current_voice=True)
         self.current_voice_label.setText(label)
+        self.current_voice_label.setToolTip(label)
         self.current_reason.setText(error or "No current voice is available.")
         if plan is not None and not error:
             if len(plan.groups) != 1:
@@ -522,6 +535,7 @@ class VoiceAuditionPanel(QGroupBox):
             if candidate is None:
                 raise VoiceAuditionUIError("Current voice plan has no resolved source")
             self._current_voice = plan, group, candidate
+            self.current_voice_label.setText(_candidate_name(candidate))
             if self._sample_text is None:
                 self._sample_text = group.sample_text.strip() or (
                     COMPARISON_PREVIEW_TEXT
@@ -539,7 +553,9 @@ class VoiceAuditionPanel(QGroupBox):
                     else "No original reference."
                 )
             )
-        self.current_voice_box.show()
+        self._refresh_saved_reference()
+        if self._candidate_entries:
+            self._refresh_reference_advice()
         self._refresh_current_actions()
 
     def _build_comparison_layout(self) -> None:
@@ -556,6 +572,10 @@ class VoiceAuditionPanel(QGroupBox):
             compact_layout.setSpacing(4)
         for box in (self.phrase_box, self.current_voice_box, self):
             box.setFlat(False)
+            if box is not self.phrase_box:
+                box.setSizePolicy(
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+                )
             # Keep the group title weight from propagating to body controls.
             for child in box.findChildren(
                 QWidget, options=Qt.FindChildOption.FindDirectChildrenOnly
@@ -571,13 +591,16 @@ class VoiceAuditionPanel(QGroupBox):
             box_layout.setContentsMargins(8, 6, 8, 6)
             box_layout.setSpacing(4)
         actions = QHBoxLayout()
-        actions.addStretch()
         # Remove from the owning layouts before Qt reparents their widget items.
+        layout.removeWidget(self.candidate_voice_label)
         self._original_row.removeWidget(self.a_original)
         self._preview_row.removeWidget(self.a_play)
-        actions.addWidget(self.a_original)
-        actions.addWidget(self.a_play)
-        cast(QVBoxLayout, self.a_box.layout()).addLayout(actions)
+        self.a_original.setFont(self.current_original.font())
+        self.a_play.setFont(self.current_play.font())
+        actions.addWidget(self.candidate_voice_label, 1)
+        actions.addWidget(self.a_original, alignment=Qt.AlignmentFlag.AlignTop)
+        actions.addWidget(self.a_play, alignment=Qt.AlignmentFlag.AlignTop)
+        layout.insertLayout(layout.indexOf(self.a_box), actions)
 
     def _refresh_current_actions(self) -> None:
         enabled = bool(self._current_voice) and not (
@@ -643,15 +666,54 @@ class VoiceAuditionPanel(QGroupBox):
         self.status.setVisible(bool(message))
 
     def _initialize_selectors(self) -> None:
-        self.voice_reference = QComboBox(
-            sizeAdjustPolicy=QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon,
-            minimumContentsLength=18,
+        self.reference_browser = QWidget(self)
+        self.reference_browser.setAccessibleName("Voice references")
+        layout = QVBoxLayout(self.reference_browser)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.reference_search = QLineEdit()
+        self.reference_search.setPlaceholderText("Search references")
+        self.reference_search.setAccessibleName("Search voice references")
+        self._current_reference_icon = action_icon("check")
+        layout.addWidget(self.reference_search)
+        self.reference_model = QStandardItemModel(0, 3, self)
+        self.reference_model.setHorizontalHeaderLabels(("Ref", "Text", "Length"))
+        self.reference_proxy = QSortFilterProxyModel(self)
+        self.reference_proxy.setSourceModel(self.reference_model)
+        self.reference_proxy.setFilterKeyColumn(-1)
+        self.reference_proxy.setFilterRole(Qt.ItemDataRole.ToolTipRole)
+        self.reference_proxy.setFilterCaseSensitivity(
+            Qt.CaseSensitivity.CaseInsensitive
         )
-        self.voice_reference.setItemDelegate(QStyledItemDelegate(self.voice_reference))
-        self.voice_reference.view().setTextElideMode(Qt.TextElideMode.ElideRight)
-        self.voice_reference.setAccessibleName("Voice reference")
-        self.voice_reference.currentIndexChanged.connect(self._voice_reference_selected)
-        self.voice_reference.highlighted.connect(self._voice_reference_highlighted)
+        self.reference_proxy.setSortRole(Qt.ItemDataRole.UserRole + 1)
+        self.reference_table = QTableView()
+        self.reference_table.setAccessibleName("Voice references")
+        self.reference_table.setModel(self.reference_proxy)
+        self.reference_table.setMinimumHeight(200)
+        self.reference_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.reference_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.reference_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.reference_table.setWordWrap(False)
+        self.reference_table.setMouseTracking(True)
+        self.reference_table.verticalHeader().hide()
+        header = self.reference_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(0, 60)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.reference_table.setSortingEnabled(True)
+        self.reference_table.sortByColumn(-1, Qt.SortOrder.AscendingOrder)
+        self.reference_table.selectionModel().currentChanged.connect(
+            self._reference_row_selected
+        )
+        self.reference_table.entered.connect(self._reference_row_hovered)
+        self.reference_search.textChanged.connect(self._filter_references)
+        layout.addWidget(self.reference_table)
         self._hover_index = 0
         self._focus_index = 0
         self._hover_timer = QTimer(self)
@@ -695,7 +757,7 @@ class VoiceAuditionPanel(QGroupBox):
     def _size_transient_controls(self) -> None:
         self.preview_text.setFixedHeight(
             self.preview_text.fontMetrics().lineSpacing()
-            * (3 if self._comparison_mode else 4)
+            * (2 if self._comparison_mode else 4)
             + (12 if self._comparison_mode else 16)
         )
         for button in (self.a_play, self.a_original):
@@ -1018,6 +1080,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._auditioned.clear()
         self._accepted_choice = None
         group = self.current_group()
+        self.reference_browser.setEnabled(True)
         self.character.setText(group.character)
         self._show_portrait(group)
         self.a_use.show()
@@ -1025,10 +1088,12 @@ class VoiceAuditionPanel(QGroupBox):
             self._policy_choice is None and not self._comparison_mode
         )
         self.phrase_box.setVisible(self._policy_choice is None or self._comparison_mode)
-        self.voice_reference.setVisible(self._policy_choice is None)
-        self.voice_reference_label.setVisible(self._policy_choice is None)
+        self.reference_browser.setVisible(self._policy_choice is None)
+        self.a_original.setVisible(self._policy_choice is None)
+        self.a_play.setVisible(self._policy_choice is None)
         if self._policy_choice is not None:
             self._candidate_entries = ()
+            self.reference_model.removeRows(0, self.reference_model.rowCount())
             self.a_box.hide()
             self.scope.clear()
             self._accepted_choice, label = self._policy_choice
@@ -1037,6 +1102,7 @@ class VoiceAuditionPanel(QGroupBox):
             self.a_use.setText("Save" if self._comparison_mode else label)
             self.a_use.setEnabled(True)
             self._set_status("")
+            self._refresh_saved_reference()
             self._refresh_current_actions()
             self.selectionChanged.emit()
             return
@@ -1056,8 +1122,7 @@ class VoiceAuditionPanel(QGroupBox):
             )
         )
         self._candidate_entries = tuple(entries)
-        self.voice_reference.setVisible(len(entries) > 1)
-        self.voice_reference_label.setVisible(len(entries) > 1)
+        self.reference_browser.setVisible(bool(entries))
         self._advice_attempted.clear()
         self._content_checks.clear()
         self._advice_unavailable = False
@@ -1067,11 +1132,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._show_group_scope(group)
         self._show_preview_text(group)
         self._restore_cached_previews()
-        self.voice_reference.setToolTip(
-            self.voice_reference.currentData(Qt.ItemDataRole.ToolTipRole)
-            or self.voice_reference.currentText()
-        )
-        self.voice_reference.setEnabled(len(self._candidate_entries) > 1)
+        self.reference_table.setEnabled(bool(self._candidate_entries))
         self.choose_all_button.setEnabled(True)
         self._show_current_candidate()
 
@@ -1100,43 +1161,127 @@ class VoiceAuditionPanel(QGroupBox):
             "existing prepared audio is unchanged."
         )
 
+    @property
+    def reference_source_names(self) -> tuple[str, ...]:
+        """Owners of every listed reference, including the narrator fallback."""
+        return tuple(
+            dict.fromkeys(
+                _candidate_name(candidate)
+                for candidate, _choice, _narrator in self._candidate_entries
+            )
+        )
+
+    def _reference_label(self, index: int, *, mixed_sources: bool) -> str:
+        candidate, _choice, narrator = self._candidate_entries[index]
+        if narrator:
+            return f"Narrator fallback - {_candidate_name(candidate)}"
+        return (
+            f"{index + 1} - {_candidate_name(candidate)}"
+            if mixed_sources
+            else str(index + 1)
+        )
+
     def _populate_reference_choices(self) -> None:
-        with QSignalBlocker(self.voice_reference):
-            self.voice_reference.clear()
-            for index, (candidate, _choice, narrator) in enumerate(
-                self._candidate_entries, 1
+        mixed_sources = len(self.reference_source_names) > 1
+        self.reference_table.horizontalHeader().resizeSection(
+            0,
+            220
+            if mixed_sources or any(entry[2] for entry in self._candidate_entries)
+            else 60,
+        )
+        with QSignalBlocker(self.reference_table.selectionModel()):
+            self.reference_model.removeRows(0, self.reference_model.rowCount())
+            for index, (candidate, _choice, _narrator) in enumerate(
+                self._candidate_entries
             ):
+                label = self._reference_label(index, mixed_sources=mixed_sources)
+                text = candidate.reference_transcript or "\n".join(
+                    candidate.source_excerpts
+                )
                 duration = (
                     f"{candidate.reference_duration_seconds:.1f} s"
                     if candidate.reference_duration_seconds is not None
                     else ""
                 )
-                label = "Narrator fallback" if narrator else f"Reference {index}"
-                if duration:
-                    label += f" - {duration}"
-                self.voice_reference.addItem(label)
-                origin = (
-                    UNLINKED_BANK_LABEL
-                    if candidate.candidate_origin == UNLINKED_BANK_MEDIA
-                    else "Playable line"
-                    if is_playable_main_voice_source(
-                        candidate.source_bank, candidate.source_line_ids
-                    )
-                    else "Story reference"
+                self.reference_model.appendRow(
+                    [
+                        QStandardItem(label),
+                        QStandardItem(text or "Text unavailable"),
+                        QStandardItem(duration),
+                    ]
                 )
-                self.voice_reference.setItemData(
-                    self.voice_reference.count() - 1,
-                    "\n".join(
-                        (origin, *candidate.source_titles, *candidate.source_excerpts)
-                    )
-                    + (
-                        ""
-                        if candidate.source_excerpts
-                        else "\nOriginal text unavailable."
-                    ),
-                    Qt.ItemDataRole.ToolTipRole,
+                self.reference_model.item(index, 0).setData(
+                    index, Qt.ItemDataRole.UserRole + 1
                 )
-            self.voice_reference.setCurrentIndex(0)
+                self.reference_model.item(index, 2).setData(
+                    candidate.reference_duration_seconds or 0,
+                    Qt.ItemDataRole.UserRole + 1,
+                )
+            self.reference_search.clear()
+            self.reference_table.setCurrentIndex(
+                self.reference_proxy.mapFromSource(
+                    self.reference_model.index(self._candidate_offset, 0)
+                )
+            )
+        self._refresh_saved_reference()
+
+    def _filter_references(self, text: str) -> None:
+        self._hover_timer.stop()
+        with QSignalBlocker(self.reference_table.selectionModel()):
+            self.reference_proxy.setFilterFixedString(text)
+            selected = self.reference_proxy.mapFromSource(
+                self.reference_model.index(self._candidate_offset, 0)
+            )
+            self.reference_table.setCurrentIndex(selected)
+
+    def _reference_row_selected(
+        self, index: QModelIndex, _previous: QModelIndex
+    ) -> None:
+        if index.isValid():
+            self._voice_reference_selected(
+                self.reference_proxy.mapToSource(index).row()
+            )
+
+    def _reference_row_hovered(self, index: QModelIndex) -> None:
+        if index.isValid():
+            self._voice_reference_highlighted(
+                self.reference_proxy.mapToSource(index).row()
+            )
+
+    def _matches_saved_voice(self, candidate: VoiceCandidate) -> bool:
+        if self._current_voice is None:
+            return False
+        saved = self._current_voice[2]
+        return (
+            candidate.source_speaker == saved.source_speaker
+            and normalize_character_name(candidate.source_character)
+            == normalize_character_name(saved.source_character)
+            and candidate.reference_sha256s == saved.reference_sha256s
+            and candidate.reference_transcript == saved.reference_transcript
+        )
+
+    def _refresh_saved_reference(self) -> None:
+        same_voice = bool(self._candidate_entries) and self._matches_saved_voice(
+            self._current_entry()[0]
+        )
+        same_preview = (
+            same_voice
+            and self._plan is not None
+            and self._current_voice is not None
+            and all(
+                getattr(self._plan, field) == getattr(self._current_voice[0], field)
+                for field in (
+                    "synthesis_backend",
+                    "synthesis_model",
+                    "synthesis_language",
+                    "synthesis_profile",
+                    "pocket_voice_cloning",
+                )
+            )
+        )
+        self.current_voice_box.setVisible(self._comparison_mode and not same_preview)
+        if self._comparison_mode:
+            self.setTitle("Selected reference" if same_preview else "New voice")
 
     def _show_preview_text(self, group: VoiceGroup) -> None:
         phrases = [group.sample_text, group.alternate_sample_text]
@@ -1188,10 +1333,6 @@ class VoiceAuditionPanel(QGroupBox):
         self._candidate_offset = index
         self._focus_index = index
         self._hover_timer.stop()
-        self.voice_reference.setToolTip(
-            self.voice_reference.currentData(Qt.ItemDataRole.ToolTipRole)
-            or self.voice_reference.currentText()
-        )
         self._show_current_candidate()
 
     def _preview_text_edited(self) -> None:
@@ -1320,7 +1461,7 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self.a_use.setEnabled(preview is not None and heard)
         self.a_box.setVisible(True)
-        self.voice_reference.setEnabled(len(self._candidate_entries) > 1)
+        self.reference_table.setEnabled(bool(self._candidate_entries))
         self.game_phrase_button.setEnabled(bool(self._game_phrases))
         self.auto_button.setText("Choose for me")
         self.auto_button.setEnabled(True)
@@ -1341,6 +1482,7 @@ class VoiceAuditionPanel(QGroupBox):
         )
 
         self._refresh_preparation_failure()
+        self._refresh_saved_reference()
         self.selectionChanged.emit()
 
     def _preparation_error(self, candidate: VoiceCandidate) -> str | None:
@@ -1436,7 +1578,7 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_play.setEnabled(True)
         self.a_original.setEnabled(bool(candidate.reference_sha256s))
         self.a_use.setEnabled(False)
-        self.voice_reference.setEnabled(len(self._candidate_entries) > 1)
+        self.reference_table.setEnabled(bool(self._candidate_entries))
         self.game_phrase_button.setEnabled(bool(self._game_phrases))
         self.auto_button.setEnabled(True)
         self._preview_errors[self._preview_key(candidate)] = str(error)
@@ -1575,14 +1717,26 @@ class VoiceAuditionPanel(QGroupBox):
         self._refresh_reference_advice()
 
     def _focus_candidates(self) -> tuple[VoiceCandidate, ...]:
-        count = len(self._candidate_entries)
-        indices = (self._focus_index, self._focus_index + 1, self._focus_index - 1)
-        if self._focus_index == 0:
+        focus = self.reference_proxy.mapFromSource(
+            self.reference_model.index(self._focus_index, 0)
+        )
+        if not focus.isValid():
+            return ()
+        count = self.reference_proxy.rowCount()
+        row = focus.row()
+        indices = (row, row + 1, row - 1)
+        if row == 0:
             indices = (0, 1, 2)
-        elif self._focus_index == count - 1:
+        elif row == count - 1:
             indices = (count - 1, count - 2, count - 3)
         return tuple(
-            self._candidate_entries[index][0] for index in indices if 0 <= index < count
+            self._candidate_entries[
+                self.reference_proxy.mapToSource(
+                    self.reference_proxy.index(index, 0)
+                ).row()
+            ][0]
+            for index in indices
+            if 0 <= index < count
         )
 
     def _prefetch_window(self) -> None:
@@ -1687,39 +1841,77 @@ class VoiceAuditionPanel(QGroupBox):
             "uncertain_recognition": "Recognition uncertain",
             "review_possible_content_mismatch": "Check words by ear",
         }
-        with QSignalBlocker(self.voice_reference):
-            for index, (candidate, _choice, narrator) in enumerate(
+        mixed_sources = len(self.reference_source_names) > 1
+        with QSignalBlocker(self.reference_table.selectionModel()):
+            for index, (candidate, _choice, _narrator) in enumerate(
                 self._candidate_entries
             ):
                 check = checks.get(candidate.source_id)
-                duration = (
-                    f"{candidate.reference_duration_seconds:.1f} s"
-                    if candidate.reference_duration_seconds is not None
-                    else ""
-                )
                 content = (
                     short_messages[check.advice.status]
                     if check
                     else self._unchecked_content_state(candidate)
                 )
                 availability = self._availability(candidate)
-                label = "Narrator fallback" if narrator else f"Reference {index + 1}"
-                self.voice_reference.setItemText(
-                    index,
-                    " - ".join(
-                        part
-                        for part in (
-                            label,
-                            duration,
-                            availability if availability != "Not prepared" else "",
-                            content
-                            if content
-                            not in {"Content not checked", "No text mismatch"}
-                            else "",
-                        )
-                        if part
-                    ),
+                label = self._reference_label(index, mixed_sources=mixed_sources)
+                is_current = self._matches_saved_voice(candidate)
+                label = " - ".join(
+                    part
+                    for part in (
+                        label,
+                        availability if availability != "Not prepared" else "",
+                        content
+                        if content not in {"Content not checked", "No text mismatch"}
+                        else "",
+                    )
+                    if part
                 )
+                origin = (
+                    UNLINKED_BANK_LABEL
+                    if candidate.candidate_origin == UNLINKED_BANK_MEDIA
+                    else "Playable line"
+                    if is_playable_main_voice_source(
+                        candidate.source_bank, candidate.source_line_ids
+                    )
+                    else "Story reference"
+                )
+                text = candidate.reference_transcript or "\n".join(
+                    candidate.source_excerpts
+                )
+                tooltip = "\n".join(
+                    (
+                        label,
+                        f"Source: {_candidate_name(candidate)}",
+                        origin,
+                        *candidate.source_titles,
+                        text or "Original text unavailable.",
+                        self.reference_model.item(index, 2).text(),
+                        availability,
+                        content,
+                    )
+                )
+                reference_item = self.reference_model.item(index, 0)
+                reference_item.setText(label)
+                reference_item.setIcon(
+                    self._current_reference_icon if is_current else QIcon()
+                )
+                self.reference_model.item(index, 1).setText(text or "Text unavailable")
+                self.reference_model.item(index, 1).setData(
+                    text.casefold(), Qt.ItemDataRole.UserRole + 1
+                )
+                for column in range(self.reference_model.columnCount()):
+                    item = self.reference_model.item(index, column)
+                    item.setToolTip(
+                        ("Current voice reference\n" if is_current else "") + tooltip
+                    )
+                    item.setData(
+                        "Current voice reference" if is_current else "",
+                        Qt.ItemDataRole.AccessibleDescriptionRole,
+                    )
+                    font = QFont(self.reference_table.font())
+                    font.setBold(is_current)
+                    item.setFont(font)
+                    item.setData(candidate.source_id, Qt.ItemDataRole.UserRole)
         current = checks.get(self._current_entry()[0].source_id)
         message = (
             messages[current.advice.status]
@@ -2082,7 +2274,8 @@ class VoiceAuditionPanel(QGroupBox):
             and candidate is not None
             and bool(candidate.reference_sha256s)
         )
-        self.voice_reference.setEnabled(enabled and len(self._candidate_entries) > 1)
+        self.reference_table.setEnabled(enabled and bool(self._candidate_entries))
+        self.reference_browser.setEnabled(enabled)
         self.game_phrase_button.setEnabled(enabled and bool(self._game_phrases))
         self.preview_text.setEnabled(enabled)
         self.reference_transcript.setEnabled(enabled)

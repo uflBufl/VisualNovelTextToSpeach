@@ -13,6 +13,8 @@ from threading import Event
 from typing import cast
 
 from PySide6.QtCore import (
+    QEvent,
+    QObject,
     QSignalBlocker,
     Qt,
     QThreadPool,
@@ -27,10 +29,15 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
+    QLineEdit,
+    QListWidget,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSplitter,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -116,7 +123,8 @@ class GameNarratorDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Narrator and character voices")
-        self.resize(900, 680)
+        self.resize(1100, 800)
+        self.setMinimumSize(900, 650)
         self._initialize_state(
             settings,
             importer,
@@ -138,6 +146,7 @@ class GameNarratorDialog(QDialog):
         content.setAlignment(Qt.AlignmentFlag.AlignTop)
         content.setContentsMargins(8, 8, 8, 8)
         content.setSpacing(8)
+        content.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
         self._build_voice_sources(content)
         self.voice_panel = VoiceAuditionPanel(
             self,
@@ -159,38 +168,62 @@ class GameNarratorDialog(QDialog):
         panel_layout = self.voice_panel.layout()
         assert panel_layout is not None
         panel_layout.removeWidget(self.voice_panel.current_voice_box)
-        content.addWidget(self.voice_panel.current_voice_box)
-        current_separator = QFrame()
-        current_separator.setFrameShape(QFrame.Shape.HLine)
-        current_separator.setFrameShadow(QFrame.Shadow.Sunken)
-        content.addWidget(current_separator)
-        content.addWidget(self.source_controls)
-        content.addWidget(self.voice_panel)
-        preview_separator = QFrame()
-        preview_separator.setFrameShape(QFrame.Shape.HLine)
-        preview_separator.setFrameShadow(QFrame.Shadow.Sunken)
-        content.addWidget(preview_separator)
         panel_layout.removeWidget(self.voice_panel.phrase_box)
         content.addWidget(self.voice_panel.phrase_box)
+        comparison = QHBoxLayout()
+        comparison.setAlignment(Qt.AlignmentFlag.AlignTop)
+        comparison.addWidget(self.voice_panel.current_voice_box, 1)
+        comparison.addWidget(self.voice_panel, 1)
+        content.addLayout(comparison)
         self.tts_model_label = QLabel()
         self.tts_model_label.setWordWrap(True)
         self.tts_model_label.setTextFormat(Qt.TextFormat.RichText)
         phrase_layout = cast(QVBoxLayout, self.voice_panel.phrase_box.layout())
         phrase_layout.insertWidget(0, self.tts_model_label)
+        phrase_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self.content_scroll = QScrollArea()
         self.content_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.content_scroll.setWidgetResizable(True)
         self.content_scroll.setWidget(self.controls)
+        self.content_scroll.setMinimumHeight(200)
+        self.reference_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.reference_splitter.setChildrenCollapsible(False)
+        panel_layout.removeWidget(self.voice_panel.reference_browser)
+        self.reference_splitter.addWidget(self.voice_panel.reference_browser)
+        self.reference_splitter.addWidget(self.content_scroll)
+        self.reference_splitter.setSizes([300, 320])
+        self.voice_panel.installEventFilter(self)
+        self.editor_body = QWidget()
+        editor_layout = QVBoxLayout(self.editor_body)
+        editor_layout.setContentsMargins(0, 0, 0, 0)
+        heading = QHBoxLayout()
+        heading.addWidget(self.portrait)
+        heading.addWidget(self.role_heading, 1)
+        editor_layout.addLayout(heading)
+        source_heading = QHBoxLayout()
+        source_heading.addWidget(self.reference_source_label, 1)
+        source_heading.addWidget(self.source_toggle)
+        editor_layout.addLayout(source_heading)
+        editor_layout.addWidget(self.source_controls)
+        editor_layout.addWidget(self.reference_splitter, 1)
+        self.editor_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.editor_splitter.setChildrenCollapsible(False)
+        self.editor_splitter.addWidget(self.role_navigation)
+        self.editor_splitter.addWidget(self.editor_body)
+        self.editor_splitter.setSizes([190, 880])
         layout = QVBoxLayout(self)
         layout.addWidget(self.status)
         layout.addWidget(self.progress)
-        layout.addWidget(self.content_scroll, 1)
+        layout.addWidget(self.editor_splitter, 1)
         self._build_editor_actions(layout)
         self._connect_voice_controls()
 
     def _connect_voice_controls(self) -> None:
         self.source.currentIndexChanged.connect(self._source_changed)
         self.role.currentTextChanged.connect(self._role_changed)
+        self.role_search.textChanged.connect(self._filter_roles)
+        self.source_toggle.toggled.connect(self.source_controls.setVisible)
+        self.source_toggle.toggled.connect(self._update)
         self.presets.currentIndexChanged.connect(self._source_changed)
         self.catalog_choice.currentIndexChanged.connect(self._source_changed)
         self.decoderProgress.connect(self._set_status)
@@ -198,7 +231,6 @@ class GameNarratorDialog(QDialog):
         self.set_voice_context()
         self._initializing = False
         for combo in (
-            self.role,
             self.source,
             self.presets,
             self.catalog_choice,
@@ -277,17 +309,41 @@ class GameNarratorDialog(QDialog):
         self.context_note.setWordWrap(True)
         self.context_note.hide()
         content.addWidget(self.context_note)
-        self.role = QComboBox()
+        self.role_navigation = QWidget()
+        self.role_navigation.setMinimumWidth(165)
+        role_layout = QVBoxLayout(self.role_navigation)
+        role_layout.setContentsMargins(0, 0, 0, 0)
+        role_layout.addWidget(QLabel("Voice for"))
+        self.role_search = QLineEdit()
+        self.role_search.setPlaceholderText("Find character")
+        self.role_search.setAccessibleName("Find narrator or character")
+        self.role_search.setClearButtonEnabled(True)
+        role_layout.addWidget(self.role_search)
+        self.role = QListWidget()
+        self.role.setMinimumHeight(200)
+        self.role.setMinimumWidth(150)
         self.role.setAccessibleName("Narrator or character role")
+        role_layout.addWidget(self.role, 1)
         self.portrait = QLabel()
+        self.role_heading = QLabel()
+        heading_font = self.role_heading.font()
+        heading_font.setBold(True)
+        self.role_heading.setFont(heading_font)
+        self.reference_source_label = QLabel()
+        self.reference_source_label.setWordWrap(True)
+        self.reference_source_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.reference_source_label.setAccessibleName("Source of displayed references")
+        self.source_toggle = QToolButton()
+        self.source_toggle.setText("Change")
+        self.source_toggle.setCheckable(True)
+        self.source_toggle.setAccessibleName("Change voice source")
+        self.source_toggle.setToolTip(
+            "Choose a game character, imported or built-in voice, or narrator fallback."
+        )
+        self.source_controls.hide()
         self.role_summary = QLabel()
         self.role_summary.setWordWrap(True)
         self.role_summary.hide()
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Voice for"))
-        row.addWidget(self.portrait)
-        row.addWidget(self.role, 1)
-        content.addLayout(row)
         self.source = QComboBox()
         self.source.setAccessibleName("Voice source")
         for label, mode in (
@@ -307,8 +363,31 @@ class GameNarratorDialog(QDialog):
         self.form.addRow("Preset", self.presets)
         self.catalog_choice = QComboBox()
         self.catalog_choice.setAccessibleName("Imported character voice candidate")
-        self.form.addRow("Donor", self.catalog_choice)
+        self.form.addRow("Voice", self.catalog_choice)
         self._build_game_reference_controls()
+
+    @property
+    def selected_role(self) -> str:
+        item = self.role.currentItem()
+        return item.text() if item is not None else "Narrator"
+
+    def _filter_roles(self, text: str) -> None:
+        for index in range(self.role.count()):
+            item = self.role.item(index)
+            item.setHidden(text.casefold() not in item.text().casefold())
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.voice_panel and event.type() in (
+            QEvent.Type.Show,
+            QEvent.Type.Hide,
+        ):
+            self.voice_panel.reference_browser.setVisible(
+                not self.voice_panel.isHidden()
+                and self.voice_panel.reference_model.rowCount() > 0
+            )
+            if self.voice_panel.isHidden():
+                self.voice_panel.current_voice_box.show()
+        return super().eventFilter(watched, event)
 
     def _build_editor_actions(self, content: QVBoxLayout) -> None:
         self.cancel_button = QPushButton("Cancel")
@@ -355,7 +434,7 @@ class GameNarratorDialog(QDialog):
         self.characters = QComboBox()
         self.characters.setAccessibleName("Game voice donor")
         self.characters.currentIndexChanged.connect(self._character_changed)
-        self.form.addRow("Donor", self.characters)
+        self.form.addRow("Character", self.characters)
 
     def select_role(self, role: str) -> bool:
         """Select a trusted application-provided role without enabling free-form UI."""
@@ -367,14 +446,16 @@ class GameNarratorDialog(QDialog):
             (
                 index
                 for index in range(self.role.count())
-                if normalize_character_name(self.role.itemText(index)) == identity
+                if normalize_character_name(self.role.item(index).text()) == identity
             ),
             -1,
         )
         if index < 0:
             self.role.addItem(display_role)
             index = self.role.count() - 1
-        self.role.setCurrentIndex(index)
+        self.role.setCurrentRow(index)
+        self.role_search.clear()
+        self.role.scrollToItem(self.role.item(index))
         return True
 
     def restore_initial_voice_bindings(self) -> None:
@@ -420,7 +501,7 @@ class GameNarratorDialog(QDialog):
                     voice_source_label(voice.source_character or voice.character),
                     f"character:{normalize_character_name(voice.character)}",
                 )
-        selected = character or self.role.currentText() or "Narrator"
+        selected = character or self.selected_role or "Narrator"
         available = {
             *roles,
             *(binding.role for binding in self.voice_library.bindings()),
@@ -562,7 +643,7 @@ class GameNarratorDialog(QDialog):
         self.role_summary.setAccessibleDescription(scope)
 
     def _select_role_source(self, narrator: bool, selected: str | None) -> None:
-        binding, _saved = self._saved_role_voice(self.role.currentText(), narrator)
+        binding, _saved = self._saved_role_voice(self.selected_role, narrator)
         saved_reference = binding is not None and bool(binding.source_sha256s)
         model = self.source.model()
         if isinstance(model, QStandardItemModel):
@@ -621,10 +702,15 @@ class GameNarratorDialog(QDialog):
     def _role_changed(self) -> None:
         if self._initializing or self._closing or self._closed:
             return
-        role = self.role.currentText().strip()
+        role = self.selected_role.strip()
         if role == "???":
             self.select_role("Narrator")
             return
+        self.role_heading.setText(role)
+        narrator = is_narrator(role)
+        self.source_toggle.setChecked(False)
+        self.source_toggle.setVisible(not narrator)
+        self.source_controls.setVisible(narrator)
         binding, selected = self._saved_role_voice(role, is_narrator(role))
         self.role_summary.setText(
             self._role_summary_text(role, is_narrator(role), selected, binding)
@@ -641,7 +727,7 @@ class GameNarratorDialog(QDialog):
         self._source_changed()
 
     def _load_current_voice(self) -> None:
-        role = self.role.currentText()
+        role = self.selected_role
         binding, selected = self._saved_role_voice(role, is_narrator(role))
         self._current_voice_label = voice_binding_label(binding) or self._source_label(
             selected
@@ -818,7 +904,7 @@ class GameNarratorDialog(QDialog):
     def _capture_save(self, _selections: object) -> None:
         self._selection_settings = self.settings_value
         self._selection_manifest = self._candidate_manifest
-        self._saving_role = self.role.currentText().strip()
+        self._saving_role = self.selected_role.strip()
         self._selection_engine_available = self._engine_available()
 
     def _check_narrator_authority(self) -> None:
@@ -840,6 +926,10 @@ class GameNarratorDialog(QDialog):
                 )
 
     def _selection_changed(self) -> None:
+        self.voice_panel.reference_browser.setVisible(
+            not self.voice_panel.isHidden()
+            and self.voice_panel.reference_model.rowCount() > 0
+        )
         if (
             self.source.currentData() == "saved"
             and self._saved_voice_binding is not None
@@ -884,7 +974,7 @@ class GameNarratorDialog(QDialog):
 
     def _settings_choice_changed(self) -> None:
         binding, saved = self._saved_role_voice(
-            self.role.currentText(), is_narrator(self.role.currentText())
+            self.selected_role, is_narrator(self.selected_role)
         )
         source = self._selected_source()
         if self.source.currentData() == "saved" and (
@@ -903,6 +993,7 @@ class GameNarratorDialog(QDialog):
             return
         self._set_status("")
         mode = self.source.currentData()
+        self.voice_panel.hide()
         self.voice_panel.playback_guard = None
         self.form.setRowVisible(self.presets, mode == "preset")
         self.form.setRowVisible(self.catalog_choice, mode == "catalog")
@@ -915,7 +1006,7 @@ class GameNarratorDialog(QDialog):
                 and (
                     not self.characters.currentText()
                     or normalize_character_name(self.characters.currentText())
-                    == normalize_character_name(self.role.currentText())
+                    == normalize_character_name(self.selected_role)
                 )
             ):
                 with QSignalBlocker(self.characters):
@@ -923,7 +1014,7 @@ class GameNarratorDialog(QDialog):
                     self.characters.addItems(
                         sorted(
                             {
-                                self.role.currentText(),
+                                self.selected_role,
                                 *(
                                     value.routing_role or value.character
                                     for value in self._voice_context.groups
@@ -932,8 +1023,8 @@ class GameNarratorDialog(QDialog):
                             key=str.casefold,
                         )
                     )
-                    self.characters.setCurrentText(self.role.currentText())
-                self._character = self.role.currentText()
+                    self.characters.setCurrentText(self.selected_role)
+                self._character = self.selected_role
                 self._show_plan_candidates(self._voice_context.voice_manifest, group)
             elif self.characters.currentText():
                 self._prepare()
@@ -947,10 +1038,8 @@ class GameNarratorDialog(QDialog):
             self._show_narrator()
         elif mode == "saved":
             self._saved_voice_binding = self.voice_library.binding(
-                self.role.currentText(),
-                variant_key=self.voice_library.linked_variant_key(
-                    self.role.currentText()
-                ),
+                self.selected_role,
+                variant_key=self.voice_library.linked_variant_key(self.selected_role),
             )
             self.voice_panel.hide()
             self._start(
@@ -958,7 +1047,7 @@ class GameNarratorDialog(QDialog):
                 "Loading the saved voice reference...",
                 self._narrator_plan,
                 self.settings_value,
-                self.role.currentText(),
+                self.selected_role,
             )
         else:
             source_id = (
@@ -979,7 +1068,7 @@ class GameNarratorDialog(QDialog):
         self._settings_choice_changed()
 
     def _policy_group(self) -> VoiceGroup:
-        role = self.role.currentText().strip()
+        role = self.selected_role.strip()
         return VoiceGroup(
             group_id=normalize_character_name(role),
             character=role,
@@ -1030,8 +1119,8 @@ class GameNarratorDialog(QDialog):
             )
             group = replace(
                 plan.groups[0],
-                character=self.role.currentText(),
-                speakers=(self.role.currentText(),),
+                character=self.selected_role,
+                speakers=(self.selected_role,),
                 candidate_inventory=plan.groups[0].candidates,
             )
             self._candidate_manifest = manifest
@@ -1143,8 +1232,8 @@ class GameNarratorDialog(QDialog):
         candidate = plan.groups[0].candidates[0]
         group = replace(
             plan.groups[0],
-            character=self.role.currentText(),
-            speakers=(self.role.currentText(),),
+            character=self.selected_role,
+            speakers=(self.selected_role,),
             candidates=(),
             candidate_inventory=(),
             narrator_candidate=candidate,
@@ -1159,7 +1248,7 @@ class GameNarratorDialog(QDialog):
                     group
                     for group in self._voice_context.groups
                     if normalize_character_name(group.routing_role or group.character)
-                    == normalize_character_name(self.role.currentText())
+                    == normalize_character_name(self.selected_role)
                 ),
                 None,
             )
@@ -1277,12 +1366,12 @@ class GameNarratorDialog(QDialog):
             COMPARISON_PREVIEW_TEXT,
         )
         _binding, saved = self._saved_role_voice(
-            self.role.currentText(), is_narrator(self.role.currentText())
+            self.selected_role, is_narrator(self.selected_role)
         )
         group = replace(
             plan.groups[0],
-            character=self.role.currentText(),
-            speakers=(self.role.currentText(),),
+            character=self.selected_role,
+            speakers=(self.selected_role,),
             candidates=tuple(candidates),
             candidate_inventory=tuple(candidates),
             source_id=saved or candidates[0].source_id,
@@ -1330,8 +1419,8 @@ class GameNarratorDialog(QDialog):
         elif operation == "saved" and isinstance(result, VoicePlan):
             group = replace(
                 result.groups[0],
-                character=self.role.currentText(),
-                speakers=(self.role.currentText(),),
+                character=self.selected_role,
+                speakers=(self.selected_role,),
                 candidate_inventory=result.groups[0].candidates,
             )
             self._candidate_manifest = result.voice_manifest
@@ -1360,7 +1449,7 @@ class GameNarratorDialog(QDialog):
             return
         with QSignalBlocker(self.characters):
             self.characters.addItems(result)
-            index = self.characters.findText(self.role.currentText())
+            index = self.characters.findText(self.selected_role)
             if index >= 0:
                 self.characters.setCurrentIndex(index)
         self._remember_known_installation()
@@ -1536,7 +1625,54 @@ class GameNarratorDialog(QDialog):
             for _label, option, available in speech_backend_options(backend)
         )
 
+    def _update_reference_source(self) -> None:
+        mode = self.source.currentData()
+        names = (
+            self.voice_panel.reference_source_names
+            if not self.voice_panel.isHidden()
+            else ()
+        )
+        donor = {
+            "game": self.characters,
+            "catalog": self.catalog_choice,
+            "preset": self.presets,
+        }.get(mode)
+        if self.runner.active:
+            text = "Loading references..."
+        elif names:
+            group = self.voice_panel.current_group()
+            fallback_only = group.narrator_candidate is not None and not (
+                group.candidate_inventory or group.candidates
+            )
+            prefix = (
+                "Narrator voice"
+                if mode == "narrator" or fallback_only
+                else "Recordings"
+            )
+            text = f"{prefix}: {', '.join(names)}"
+        elif mode == "automatic":
+            text = "Voice: automatic matching"
+        elif mode == "narrator":
+            text = "Voice: narrator"
+        else:
+            text = "No reference recordings available"
+        self.reference_source_label.setText(text)
+        self.reference_source_label.setToolTip(text)
+        duplicate = (
+            not self.runner.active
+            and not self.source_controls.isHidden()
+            and donor is not None
+            and len(names) == 1
+            and normalize_character_name(names[0])
+            == normalize_character_name(donor.currentText())
+        )
+        self.reference_source_label.setVisible(not duplicate)
+        self.source_toggle.setText(
+            "Done" if self.source_toggle.isChecked() else "Change"
+        )
+
     def _update(self, *_args: object) -> None:
+        self._update_reference_source()
         selection = (
             None if self.voice_panel.isHidden() else self.voice_panel.current_selection
         )
@@ -1560,15 +1696,6 @@ class GameNarratorDialog(QDialog):
         self.tts_model_label.setToolTip(
             engine_model_label(backend, model, pocket_cloning=cloning)
         )
-        label = self.voice_panel.candidate_voice_label
-        donor = {
-            "game": self.characters,
-            "catalog": self.catalog_choice,
-        }.get(self.source.currentData())
-        if donor is not None and normalize_character_name(
-            label.text()
-        ) == normalize_character_name(donor.currentText()):
-            label.hide()
         idle = not self.active and not self._closing
         self.progress.setVisible(self.runner.active)
         for control in (
