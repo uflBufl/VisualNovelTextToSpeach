@@ -2675,6 +2675,8 @@ class SupportBundleBuilder:
                 "privacy": (
                     "Explicit diagnostic session evidence is included. Selected recordings "
                     "and source WAVs may contain game images, dialogue and voice audio. "
+                    "If media recording was selected, evidence may also include recognized "
+                    "text and matched story dialogue, even if media recording failed. "
                     "Model files and environment-variable values are excluded."
                     if self.diagnostic_session is not None
                     else "Screenshots, recognized dialogue, voice audio, model files, "

@@ -83,11 +83,12 @@ class SupportCenterDialog(QDialog):
         self.new_events_button.setSizePolicy(policy)
         self.new_events_button.hide()
         self.privacy_note = QLabel(
-            "Exports logs and diagnostics. Paths and log messages may contain "
-            "personal information; review the ZIP before sharing."
+            "Export report includes technical logs. Session exports can also include "
+            "game media and dialogue text when recording is selected. Paths and log "
+            "messages may contain personal information; review the ZIP before sharing."
         )
         self.privacy_note.setToolTip(
-            "The report excludes screenshots, recognized dialogue, voice recordings "
+            "Export report excludes screenshots, recognized dialogue, voice recordings "
             "and model files. Local usernames and known secret fields are redacted; "
             "game folder structure remains."
         )
@@ -152,7 +153,10 @@ class SupportCenterDialog(QDialog):
         self.operation_status.installEventFilter(self)
         self.reading_media = QCheckBox("Record game video and audio (macOS)")
         self.reading_media.setToolTip(
-            "Opt-in: includes dialogue visible in the selected window, process audio and used source WAVs in the diagnostic export. Never records the desktop or microphone."
+            "Opt-in: includes selected game video, game and speech audio, used source "
+            "WAVs, recognized text and matched story dialogue in the session export. "
+            "Dialogue text may be retained even if media recording fails. "
+            "Never records the desktop or microphone."
         )
         self.reading_seconds = QSpinBox()
         self.reading_seconds.setRange(1, MAX_DIAGNOSTIC_SECONDS)
@@ -198,9 +202,7 @@ class SupportCenterDialog(QDialog):
             self.reading_history_detail.fontMetrics().lineSpacing() * 3 + 12
         )
         self.reading_history_detail.installEventFilter(self)
-        self.reading_status = QLabel(
-            "No session. Logs exclude dialogue text. Media requires the checkbox above."
-        )
+        self.reading_status = QLabel("No current diagnostic session.")
         self.reading_status.setWordWrap(True)
         self.reading_status.setTextFormat(Qt.TextFormat.PlainText)
         self.reading_start.clicked.connect(

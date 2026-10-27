@@ -114,6 +114,12 @@ class ReadingDiagnosticSessionTest(unittest.TestCase):
         self.assertIn("34.5", runtime)
         self.assertNotIn("SECRET", runtime)
         self.assertEqual(session.status()["media_status"], "disabled")
+        privacy = json.loads((session.directory / "session.json").read_text())[
+            "privacy"
+        ]
+        self.assertIn("Log-only session", privacy)
+        self.assertIn("recognized text", privacy)
+        self.assertIn("excluded", privacy)
         self.assertTrue(session.export_entries())
 
     def test_media_failure_keeps_journals_accepting_until_explicit_stop(self):
@@ -136,6 +142,12 @@ class ReadingDiagnosticSessionTest(unittest.TestCase):
         with patch("vntts.reading_diagnostics_analysis.analyze_session"):
             session.stop(3)
         self.assertTrue(session.finished.is_set())
+        privacy = json.loads((session.directory / "session.json").read_text())[
+            "privacy"
+        ]
+        self.assertIn("Media recording was selected", privacy)
+        self.assertIn("recognized text and matched story dialogue", privacy)
+        self.assertIn("even if media recording fails", privacy)
         self.assertIn(
             "after-capture-failure", (session.directory / "runtime.jsonl").read_text()
         )

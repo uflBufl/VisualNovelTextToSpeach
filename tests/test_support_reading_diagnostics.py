@@ -219,6 +219,8 @@ class SupportReadingDiagnosticsTest(unittest.TestCase):
         self.assertIn(
             "Explicit diagnostic session evidence is included", manifest["privacy"]
         )
+        self.assertIn("If media recording was selected", manifest["privacy"])
+        self.assertIn("recognized text and matched story dialogue", manifest["privacy"])
 
     def test_failed_explicit_export_preserves_preexisting_bundle_atomically(self):
         with TemporaryDirectory() as directory:

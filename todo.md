@@ -29,11 +29,6 @@
       Refresh history during recording: size remains available without false
       missing-file errors. Retain full capture, bounded-stop and size-limit
       evidence; do not replace this native gate with unit-test results.
-- [ ] **REC-27-02: correct the opt-in OCR privacy summary.** Media-consented
-      diagnostic exports now include raw recognized text and canonical matches,
-      but session metadata and initial Support text still claim logs exclude
-      recognized text. Describe media-enabled and ordinary log-only sessions
-      accurately without changing consent or capture scope.
 - [ ] **RUN-27-02: repeated line15 and audio-worker turnover.** During the
       automatic retry, prepared314001:15 was followed by a live/no-match route
       and then the same prepared line15 again, without test input. Rust worker
@@ -50,6 +45,10 @@
       result, which then hit committed-conflict. The generic Rust device-query
       timeout may come from check_format; identify that failing operation rather
       than assuming a device switch or blaming the recording tap.
+      Proposed next change: name query_device/check_format in timeout errors,
+      including sample rate/channels for check_format; retain the existing
+      timeout and worker cleanup. Verify both timeout paths without real waiting.
+      The failing native operation and its cause remain a combined-run gate.
 - [ ] **UX-27-01: restored story selection is not visible at startup.** Stories
       opens at the top of the tree with `1 selected` and enabled `Start reading`,
       while the selected event stage is offscreen. The primary action does not
@@ -324,26 +323,22 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Agree on the diagnostic privacy wording correction (REC-27-02).** Explain
-   in Support and session metadata that media-enabled sessions can retain raw OCR
-   and matched dialogue, while ordinary log-only sessions exclude that text.
-   Preserve the existing consent and recording scope. Native recording continuity
-   remains part of the combined run (REC-27-01).
-2. **Repair the new native findings one at a time.** Diagnose initial clipped
+1. **Repair the new native findings one at a time.** Diagnose initial clipped
    OCR/live routing and the separate audio-open failure (RUN-27-01), false-speaker
    duplicate playback (RUN-27-02), and the persistent exact116 tracker conflict
    (RUN-27-03). Present each implementation plan before changing behavior. Then
    address UX-27-01 through UX-27-07, distinguishing verified defects from the
    audition dirty-state doubt. Evidence and screen assessments are retained in
    the local native-trial investigation; do not rerun the full chapter per fix.
-3. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
+2. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
    Run all314001 through104 from Stories without manual transitions while real
    heavy generation/publication remains active. Also qualify partly prepared
    active-chapter catch-up across newly published boundaries, failed/not-ready
    policy and cancel/retry/restart. Use existing R2/R3/R4/R5/R7/R8/R9/R11 and
    U1/U2/U4/U6/U7/U8 gates, persistent OCR and portable observation. Preserve
    approved WAV bytes and complete independent capture; cache hits alone are
-   not background-generation load. Include the following deferred checks:
+   not background-generation load. Include recording continuity (REC-27-01)
+   and the following deferred checks:
    - **Prepared matching remaining edges:** after the approved3-character
      edit threshold and Latin-diacritic folding, reject ambiguous/incomplete
      matches and preserve protected numbers/negation. Use neighbouring wrong-line

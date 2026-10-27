@@ -833,7 +833,15 @@ class ReadingDiagnosticSession:
             "error_type": self.failure,
             "timeline": self.timeline.status(),
             "runtime": self.runtime.status(),
-            "privacy": "Media and source WAVs included only when recording was selected. Logs exclude recognized text.",
+            "privacy": (
+                "Media recording was selected. The session may include selected game "
+                "video/audio, used source WAVs, recognized text and matched story "
+                "dialogue. Dialogue text may be retained even if media recording "
+                "fails. No desktop or microphone recording."
+                if self.recording is not None
+                else "Log-only session: game video/audio, source WAVs, recognized "
+                "text and matched story dialogue are excluded."
+            ),
         }
 
     def _persist(self) -> None:
