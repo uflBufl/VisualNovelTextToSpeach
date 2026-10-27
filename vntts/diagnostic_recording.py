@@ -7,6 +7,7 @@ import math
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -692,10 +693,17 @@ class NativeDiagnosticRecording:
         )
         total = 0
         for index, path in enumerate(self.directory.rglob("*")):
-            if index >= 512 or path.is_symlink():
+            if index >= 512:
                 raise RuntimeError("Recording evidence exceeded its file limit")
-            if path.is_file():
-                total += path.stat().st_size
+            try:
+                metadata = path.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                # Session metadata is replaced atomically while recording.
+                continue
+            if stat.S_ISLNK(metadata.st_mode):
+                raise RuntimeError("Recording evidence exceeded its file limit")
+            if stat.S_ISREG(metadata.st_mode):
+                total += metadata.st_size
             if total > limit:
                 raise RuntimeError(
                     f"Recording stopped at its {limit / 1024**3:g} GiB evidence limit"

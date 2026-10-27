@@ -354,6 +354,28 @@ class SavedReadingDiagnosticsTest(unittest.TestCase):
             self.assertEqual(entry.file_counts, {".json": 1, ".jsonl": 2})
             self.assertIsNotNone(entry.saved)
 
+    def test_history_inventory_survives_atomic_metadata_replacement(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = self.recorded_session(root)
+            before = list_diagnostic_sessions(root)[0]
+            metadata = session.directory / "session.json"
+            temporary = session.directory / ".session.pending.tmp.json"
+            temporary.write_bytes(metadata.read_bytes())
+            original_stat = Path.stat
+
+            def replace_before_stat(path, **kwargs):
+                if path == temporary:
+                    temporary.replace(metadata)
+                return original_stat(path, **kwargs)
+
+            with patch.object(Path, "stat", new=replace_before_stat):
+                entry = list_diagnostic_sessions(root)[0]
+            self.assertFalse(entry.error)
+            self.assertEqual(entry.size_bytes, before.size_bytes)
+            self.assertEqual(entry.file_counts, before.file_counts)
+            self.assertFalse(temporary.exists())
+
     def test_history_inventory_counts_actual_files_by_lowercase_suffix_once(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

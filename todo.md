@@ -14,8 +14,12 @@
 - [ ] **UX-27-05: finishing a recording leaves an older session selected.**
       Support displays the newly finished session in its status, but the history
       selection remains on an older session; Export session therefore exports
-      the old recording. Clarify which session the action targets, or select the
-      just-finished session when the user explicitly stops it.
+      the old recording. Proposed change, pending agreement: explicit Stop selects
+      its session and scrolls that row into view; export stays unavailable until
+      finalization. Name the actions Export selected / Delete selected, and retain
+      later manual selection through background refreshes. Test Stop before the
+      history response arrives, finalization, and deliberate selection of an older
+      session. Keep the repair in Support UI and its Stop integration; no new data.
 - [ ] **UX-27-04: Stop triggers deferred pack activation and navigation.**
       After background preparation completed, Stop to inspect Stories activated
       the new215-line package and returned to Reading, overriding the tab action.
@@ -28,17 +32,17 @@
       This run demonstrates a persistent visible line, not only a fleeting
       transition. Diagnose same-speaker automatic transitions; keep protections
       against OCR regressions and duplicates. Record Stop/Read recovery separately.
-- [ ] **REC-27-01: recording aborts when a temporary metadata file disappears.**
-      During Reading and genuine background generation, session metadata reported
-      FileNotFoundError for `.session.*.tmp.json`; video/game/Rust helpers were
-      stopped at257034.7 while Reading continued. Diagnose concurrent metadata
-      writes/directory scans; the read-only external monitor did not delete files.
-      The budget scanner races atomic session.json replacement: is_file() can
-      succeed before the temporary path disappears and stat() then raises. Use
-      one stat without following symlinks and tolerate only FileNotFoundError
-      during the scan, preserving symlink rejection, other I/O errors and both
-      limits; add a focused race test. Review export's similar scan separately.
-      Preserve this session and verify full capture after the root fix.
+- [ ] **REC-27-01: qualify concurrent metadata updates in the next native run.**
+      Under Reading and real background generation, verify continuous video and
+      both process-audio recordings while session metadata is atomically replaced.
+      Refresh history during recording: size remains available without false
+      missing-file errors. Retain full capture, bounded-stop and size-limit
+      evidence; do not replace this native gate with unit-test results.
+- [ ] **REC-27-02: correct the opt-in OCR privacy summary.** Media-consented
+      diagnostic exports now include raw recognized text and canonical matches,
+      but session metadata and initial Support text still claim logs exclude
+      recognized text. Describe media-enabled and ordinary log-only sessions
+      accurately without changing consent or capture scope.
 - [ ] **RUN-27-02: repeated line15 and audio-worker turnover.** During the
       automatic retry, prepared314001:15 was followed by a live/no-match route
       and then the same prepared line15 again, without test input. Rust worker
@@ -329,12 +333,12 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Fix diagnostic recording reliability (REC-27-01).** Preserve symlink,
-   file-count and size guards, but tolerate a file disappearing during the
-   budget scan because of atomic metadata replacement. Add a focused race test.
-   The opt-in raw OCR trace is present in all three exported native sessions;
-   correct the stale privacy summary that claims all logs exclude recognized
-   text. Agree on the concrete code change before implementing.
+1. **Agree on the selected-session export fix (UX-27-05).** Make explicit Stop
+   select the stopped recording without later refresh stealing a deliberate user
+   selection, and make export/delete clearly target the selected row. Preserve
+   finalization and async history guards; validate with focused Qt tests.
+   Separately correct the stale opt-in privacy wording (REC-27-02). Native recording
+   continuity remains part of the combined run (REC-27-01).
 2. **Repair the new native findings one at a time.** Diagnose initial clipped
    OCR/live routing and the separate audio-open failure (RUN-27-01), false-speaker
    duplicate playback (RUN-27-02), and the persistent exact116 tracker conflict
@@ -1524,6 +1528,11 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 
 ## Restore pre-existing repository quality gates
 
+- [ ] Diagnose `test_fresh_install_player_journey_survives_restart`: its first
+      process reports `The prepared pack was not activated`. Reproduces alone
+      on unmodified HEAD `9df359d3`, before the diagnostic scan fix. Check the
+      activation scheduling and fixture contract; preserve the real fresh-install
+      preparation/restart path rather than weakening its assertion.
 - [ ] Fix the existing mypy errors in `vntts/diagnostic_recording.py`, `vntts/reading_diagnostics_analysis.py`, `vntts/authoring/workbench_ui.py`, optional remediation lookup in `vntts/onboarding_ui.py` and the preview backend factory contract in `vntts/app.py`; format the existing `vntts/moss_runtime.py` signature. Confirm the current baseline before each repair. Gate: the full configured mypy and Ruff format checks pass without suppressing diagnostics.
 - [ ] Bring the existing Reading, recording, generation and saved-audio complexity findings back within `tests/fixtures/ruff-complexity-v2.json`. Run `scripts/check_ruff_complexity.py` for the current scope inventory; refactor coherent responsibilities without increasing allowances, preserve lifecycle/error handling and run affected tests. Gate: the full complexity ratchet passes, with obsolete allowances removed or reduced.
 

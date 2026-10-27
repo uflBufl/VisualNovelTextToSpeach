@@ -551,7 +551,11 @@ def _session_inventory(directory: Path) -> tuple[int, dict[str, int]]:
     for parent, directories, files in os.walk(directory, onerror=fail):
         for name in directories + files:
             path = Path(parent) / name
-            metadata = path.stat(follow_symlinks=False)
+            try:
+                metadata = path.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                # Active sessions replace temporary metadata during the scan.
+                continue
             if stat.S_ISLNK(metadata.st_mode):
                 raise ValueError("Diagnostic evidence contains a symlink")
             if stat.S_ISREG(metadata.st_mode):

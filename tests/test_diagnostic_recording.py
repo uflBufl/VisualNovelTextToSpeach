@@ -632,6 +632,61 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
             self.recording()._check_media_budget()
         self.assertTrue(path.is_file())
 
+    def test_media_budget_survives_atomic_metadata_replacement(self):
+        temporary = self.root / ".session.pending.tmp.json"
+        temporary.write_text("{}")
+        audio = self.root / "process.caf"
+        audio.write_bytes(b"audio")
+        recording = self.recording()
+        original_stat = Path.stat
+        inspected = []
+
+        def replace_before_stat(path, **kwargs):
+            inspected.append(path)
+            if path == temporary:
+                temporary.replace(self.root / "session.json")
+            return original_stat(path, **kwargs)
+
+        with (
+            patch.object(Path, "rglob", return_value=iter((temporary, audio))),
+            patch.object(Path, "stat", new=replace_before_stat),
+        ):
+            recording._check_media_budget()
+        self.assertIn(audio, inspected)
+        self.assertEqual((self.root / "session.json").read_text(), "{}")
+        self.assertEqual(audio.read_bytes(), b"audio")
+
+    def test_media_budget_does_not_hide_unreadable_evidence(self):
+        audio = self.root / "process.caf"
+        audio.write_bytes(b"audio")
+        with (
+            patch.object(Path, "rglob", return_value=iter((audio,))),
+            patch.object(Path, "stat", side_effect=PermissionError("unreadable")),
+            self.assertRaisesRegex(PermissionError, "unreadable"),
+        ):
+            self.recording()._check_media_budget()
+
+    def test_media_budget_rejects_existing_and_dangling_symlinks(self):
+        target = self.root / "process.caf"
+        target.write_bytes(b"audio")
+        (self.root / "linked.caf").symlink_to(target)
+        for dangling in (False, True):
+            with self.subTest(dangling=dangling):
+                if dangling:
+                    target.unlink()
+                with self.assertRaisesRegex(RuntimeError, "file limit"):
+                    self.recording()._check_media_budget()
+
+    def test_media_budget_keeps_entry_limit_when_files_disappear(self):
+        missing = self.root / ".session.pending.tmp.json"
+        with patch.object(Path, "rglob", return_value=iter([missing] * 512)):
+            self.recording()._check_media_budget()
+        with (
+            patch.object(Path, "rglob", return_value=iter([missing] * 513)),
+            self.assertRaisesRegex(RuntimeError, "file limit"),
+        ):
+            self.recording()._check_media_budget()
+
     @unittest.skipUnless(hasattr(os, "killpg"), "Owned process groups require POSIX")
     def test_cleanup_signals_all_owned_groups_before_waiting_and_kills_stalls(self):
         recording = self.recording()
