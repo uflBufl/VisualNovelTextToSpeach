@@ -71,12 +71,13 @@
       max_tokens=517; WAV корректно не опубликован. Проверить достаточность
       расчёта бюджета и понятный пользователю путь повтора; retries0 был условием
       этого нагрузочного прогона, поэтому автоматический retry не проверялся.
-- [ ] **RUN-25-04: OCR-искажение остаётся в Last detected dialogue.** На
-      line34 игра показывает `I'm afraid I won't...`, интерфейс распознал
-      `I'm afraid J] won't...` при confidence89%. Подготовленный источник
-      выбран правильно (line34, exact), поэтому это не доказанная ошибка звука.
-      Обсудить показ канонического текста после надёжного сопоставления и
-      доступность полного текста: текущая строка обрезается многоточием.
+- [ ] **RUN-25-04: проверить полный текст реплики в общем прогоне.**
+      На line34 (`I'm afraid I won't...` / OCR `I'm afraid J] won't...`)
+      подтвердить канонический текст при надёжном совпадении с историей.
+      Проверить четыре видимые строки, прокрутку и копирование полного текста
+      в Reading с обычным и крупным шрифтом, в том числе после Full controls
+      из Compact. Повторные обновления статуса должны сохранять выделение
+      и позицию прокрутки; новая реплика должна показываться с начала.
 - [ ] **RUN-25-03: автопереход не срабатывает после завершённого звука.**
       Глава314001, line34 / Cornerstone: `I'm afraid I won't be handling your
       make-up assignment...`. Аудио завершено, текст полностью виден, индикатор
@@ -311,31 +312,25 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Fix remaining UI issues in separate increments.** Start with concrete
-   ownership/data defects, then agree the desired behavior for UX changes:
-   - Agree canonical displayed dialogue and access to its full text (RUN-25-04).
-     Reuse the existing backlog item rather than add duplicate implementations.
-     Gate: reachable actions and truthful status; Voices and Audio setup native
-     checks remain in the final run.
-2. **Make failed preparation actionable (GEN-25-01).** Inspect the existing
+1. **Make failed preparation actionable (GEN-25-01).** Inspect the existing
    rejected result, quality evidence and Stories retry path without a game run.
    Decide the smallest understandable failure/preview/retry change; retain ready
    neighbouring recordings and saved assignments. Do not weaken quality gates
    because one sample was rejected. Fresh generation acceptance is deferred.
-3. **Check generation budget (GEN-25-02).** Trace314501:85's actual retained
+2. **Check generation budget (GEN-25-02).** Trace314501:85's actual retained
    text/reference/model/settings through token/time budgeting and normal retries.
    Fix a demonstrated budgeting or failure-reporting defect with deterministic
    tests. Gate: adequate bounded generation or a clear retryable failure,
    cancellation, no truncated publication and preserved ready work on restart.
    Fresh model/native qualification belongs to the combined run.
-4. **Investigate scene interruption from retained evidence (RUN-25-08).**
+3. **Investigate scene interruption from retained evidence (RUN-25-08).**
    Correlate48's source WAV, captured output and transition to49. Establish which
    scene changes invalidate speech and which permit the current clip to finish;
    present a repair plan only when the cause/product behavior is established.
    Gate: intended completion without stale audio crossing a genuinely new
    occurrence; Stop still cancels. If evidence is insufficient, retain the case
    for the final run instead of introducing a guessed playback policy.
-5. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
+4. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
    Run all314001 through104 from Stories without manual transitions while real
    heavy generation/publication remains active. Also qualify partly prepared
    active-chapter catch-up across newly published boundaries, failed/not-ready

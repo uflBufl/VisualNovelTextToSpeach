@@ -212,6 +212,22 @@ def stub_live_sequence_plan(*lines):
 
 
 class MainTest(unittest.TestCase):
+    def test_record_and_display_dialogue_preserves_full_long_text(self):
+        dialogs = []
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            dialog_handler=lambda character, text: dialogs.append((character, text)),
+        )
+        text = " ".join(["A long accepted dialogue line."] * 8)
+
+        controller._record_and_display_dialogue("Rhiannon", text)
+
+        self.assertEqual(dialogs, [("Rhiannon", text)])
+        self.assertEqual(
+            [entry.text for entry in controller.history.snapshot()], [text]
+        )
+
     def test_live_voice_router_guard_requires_backend_fields(self):
         backend = SimpleNamespace(
             **{

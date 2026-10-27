@@ -218,6 +218,20 @@ class TrayApplicationTest(unittest.TestCase):
         library.assert_called_once_with()
         start.assert_not_called()
 
+    def test_full_dialogue_reaches_reading_while_tray_label_stays_bounded(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        text = "A complete accepted dialogue with its original final words. " * 10
+        tray.signals.dialog_changed.emit("Cornerstone", text)
+        self.application.processEvents()
+        self.assertEqual(tray.dashboard.dialogue.toPlainText(), text)
+        self.assertEqual(tray.dialog_action.toolTip(), f"Cornerstone: {text}")
+        self.assertLessEqual(len(tray.dialog_action.text()), 96)
+        self.assertIn(text, tray.dashboard._copy_details())
+
     def test_audio_setup_reports_short_cause_and_preserves_instructions(self):
         tray = TrayApplication(
             self.application,
@@ -2626,7 +2640,7 @@ class TrayApplicationTest(unittest.TestCase):
                 if previous is not None:
                     controller.dialog_handler(*previous)
                 speaker = tray.dashboard.speaker.text()
-                dialogue = tray.dashboard.dialogue.text()
+                dialogue = tray.dashboard.dialogue.toPlainText()
                 compact_speaker = tray.compact_controller.speaker.toPlainText()
                 compact_hidden = tray.compact_controller.speaker.isHidden()
                 menu_dialogue = tray.dialog_action.text()
@@ -2635,7 +2649,7 @@ class TrayApplicationTest(unittest.TestCase):
                 self.application.processEvents()
 
                 self.assertEqual(tray.dashboard.speaker.text(), speaker)
-                self.assertEqual(tray.dashboard.dialogue.text(), dialogue)
+                self.assertEqual(tray.dashboard.dialogue.toPlainText(), dialogue)
                 self.assertEqual(
                     tray.compact_controller.speaker.toPlainText(), compact_speaker
                 )
@@ -2655,7 +2669,9 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray.dashboard.status.text(), "Reading resumed")
         controller.dialog_handler("Sonetto", "Next recognized dialogue.")
         self.assertEqual(tray.dashboard.speaker.text(), "Sonetto")
-        self.assertEqual(tray.dashboard.dialogue.text(), "Next recognized dialogue.")
+        self.assertEqual(
+            tray.dashboard.dialogue.toPlainText(), "Next recognized dialogue."
+        )
         self.assertEqual(tray.compact_controller.speaker.toPlainText(), "Sonetto")
         tray.shutdown()
 

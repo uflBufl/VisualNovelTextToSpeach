@@ -2603,8 +2603,7 @@ class AppController:
 
     def _record_and_display_dialogue(self, character: str | None, text: str) -> None:
         self.history.add(character, text)
-        preview = text if len(text) <= 100 else f"{text[:97]}..."
-        self.dialog_handler(character or "Narrator", preview)
+        self.dialog_handler(character or "Narrator", text)
 
     def _report_explicit_live_sequence_outcome(
         self,

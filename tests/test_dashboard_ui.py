@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, Qt  # noqa: E402
-from PySide6.QtGui import QFont, QKeySequence, QPalette  # noqa: E402
+from PySide6.QtGui import QFont, QKeySequence, QPalette, QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
@@ -373,6 +373,84 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.deleteLater()
         compact.deleteLater()
 
+    def test_full_dialogue_wraps_and_copies_without_growing_with_content(self):
+        for point_size in (14, 28):
+            with self.subTest(point_size=point_size):
+                dashboard = ControlDashboard(AppSettings())
+                font = QFont(dashboard.dialogue.font())
+                font.setPointSize(point_size)
+                dashboard.dialogue.setFont(font)
+                dashboard.show_reading()
+                dashboard.set_ready(True)
+                dashboard.set_dialogue("Cornerstone", "One\nTwo\nThree\nFour")
+                dashboard.show()
+                self.application.processEvents()
+                short_size = dashboard.size()
+                field_height = dashboard.dialogue.height()
+                self.assertEqual(dashboard.dialogue.verticalScrollBar().maximum(), 0)
+                self.assertLessEqual(
+                    field_height,
+                    dashboard.dialogue.fontMetrics().lineSpacing() * 4 + 16,
+                )
+                text = "<A literal phrase> & a long sentence that wraps. " * 80
+                dashboard.set_dialogue("Cornerstone", text)
+                self.application.processEvents()
+                self.assertEqual(dashboard.dialogue.toPlainText(), text)
+                self.assertEqual(dashboard.size(), short_size)
+                self.assertEqual(dashboard.dialogue.height(), field_height)
+                self.assertGreater(dashboard.dialogue.verticalScrollBar().maximum(), 0)
+                self.assertEqual(dashboard.dialogue.horizontalScrollBar().maximum(), 0)
+                self.assertTrue(dashboard.dialogue.isReadOnly())
+                self.assertTrue(dashboard.dialogue.tabChangesFocus())
+                dashboard.content_scroll.ensureWidgetVisible(dashboard.dialogue)
+                dashboard.dialogue.setFocus()
+                QTest.keySequence(
+                    dashboard.dialogue, QKeySequence.StandardKey.SelectAll
+                )
+                QTest.keySequence(dashboard.dialogue, QKeySequence.StandardKey.Copy)
+                self.assertEqual(self.application.clipboard().text(), text)
+                dashboard.copy_details_button.click()
+                self.assertIn(text, self.application.clipboard().text())
+                dashboard._quitting = True
+                dashboard.close()
+                dashboard.deleteLater()
+
+    def test_dialogue_refresh_preserves_selection_until_the_text_changes(self):
+        dashboard = ControlDashboard(AppSettings())
+        dashboard.show_reading()
+        text = "A long shared prefix. " * 40 + "First ending."
+        dashboard.set_dialogue("Cornerstone", text)
+        dashboard.show()
+        self.application.processEvents()
+        cursor = dashboard.dialogue.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.movePosition(
+            QTextCursor.MoveOperation.PreviousWord, QTextCursor.MoveMode.KeepAnchor
+        )
+        dashboard.dialogue.setTextCursor(cursor)
+        dashboard.dialogue.ensureCursorVisible()
+        selection = dashboard.dialogue.textCursor().selectedText()
+        scroll_position = dashboard.dialogue.verticalScrollBar().value()
+        self.assertTrue(selection)
+        self.assertGreater(scroll_position, 0)
+        dashboard.set_dialogue("Cornerstone", text)
+        dashboard.set_live(True)
+        dashboard.set_ready(True)
+        self.application.processEvents()
+        self.assertEqual(dashboard.dialogue.textCursor().selectedText(), selection)
+        self.assertEqual(
+            dashboard.dialogue.verticalScrollBar().value(), scroll_position
+        )
+        replacement = text.removesuffix("First ending.") + "Second ending."
+        dashboard.set_dialogue("Cornerstone", replacement)
+        self.application.processEvents()
+        self.assertEqual(dashboard.dialogue.toPlainText(), replacement)
+        self.assertFalse(dashboard.dialogue.textCursor().hasSelection())
+        self.assertEqual(dashboard.dialogue.verticalScrollBar().value(), 0)
+        dashboard._quitting = True
+        dashboard.close()
+        dashboard.deleteLater()
+
     def test_empty_reading_card_shows_only_observed_dialogue_and_playback(self):
         dashboard = ControlDashboard(AppSettings())
         self.assertTrue(dashboard.speaker.isHidden())
@@ -418,11 +496,11 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertNotIn("Live TTS (pocket-tts)", dashboard._copy_details())
         dashboard.set_dialogue(None, None)
         self.assertTrue(dashboard.speaker.isHidden())
-        self.assertIn("will appear here", dashboard.dialogue.text())
+        self.assertIn("will appear here", dashboard.dialogue.toPlainText())
         dashboard.set_ready(True)
-        self.assertIn("Start reading", dashboard.dialogue.text())
+        self.assertIn("Start reading", dashboard.dialogue.toPlainText())
         dashboard.set_live(True)
-        self.assertIn("Waiting for dialogue", dashboard.dialogue.text())
+        self.assertIn("Waiting for dialogue", dashboard.dialogue.toPlainText())
         dashboard.deleteLater()
 
     def test_technical_details_add_information_and_copy_standalone_context(self):

@@ -4,11 +4,12 @@ import ctypes
 import os
 import sys
 from dataclasses import dataclass
+from math import ceil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QFont
+from PySide6.QtGui import QCloseEvent, QFont, QFontMetricsF
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -345,15 +346,32 @@ class ControlDashboard(QMainWindow):
         self.configuration.setMinimumHeight(
             self.configuration.fontMetrics().lineSpacing() * 3
         )
-        self.dialogue = QLabel("The detected dialogue will appear here.")
-        self.dialogue.setWordWrap(True)
-        self.dialogue.setMinimumHeight(52)
+        self.dialogue = QPlainTextEdit(
+            "The detected dialogue will appear here.",
+            readOnly=True,
+            tabChangesFocus=True,
+        )
+        self.dialogue.setAccessibleName("Full dialogue text")
         dialogue_font = self.dialogue.font()
         dialogue_font.setPointSize(dialogue_font.pointSize() + 2)
         self.dialogue.setFont(dialogue_font)
-        self.dialogue.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
+        self._fit_dialogue_height()
+        self.dialogue.installEventFilter(self)
+
+    def _fit_dialogue_height(self) -> None:
+        line_height = ceil(
+            QFontMetricsF(self.dialogue.font(), self.dialogue).lineSpacing()
         )
+        margins = 2 * (
+            ceil(self.dialogue.document().documentMargin()) + self.dialogue.frameWidth()
+        )
+        # Qt treats a line exactly on the viewport boundary as partially visible.
+        self.dialogue.setFixedHeight(line_height * 4 + margins + 1)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.dialogue and event.type() == QEvent.Type.FontChange:
+            self._fit_dialogue_height()
+        return super().eventFilter(watched, event)
 
     def _build_detail_widgets(self) -> None:
         details = QFormLayout()
@@ -759,33 +777,38 @@ class ControlDashboard(QMainWindow):
             )
 
     def _copy_details(self) -> str:
-        return (
-            "\n\n".join(
-                plain_label_text(label)
-                for label in (
-                    self.story_title,
-                    self.sequence_position,
-                    self.speaker,
-                    self.dialogue,
-                    self.speech_details,
-                    self.playback_details,
-                    self.voice,
-                    self.audio_source,
-                    self.reading_policy,
-                    self.configuration,
-                    self.sequence_identity,
-                    self.sequence_notice,
-                    self.reading_defaults,
-                    self.reading_state,
-                    self.capture_target,
-                )
-                if label.text()
+        parts = []
+        for field in (
+            self.story_title,
+            self.sequence_position,
+            self.speaker,
+            self.dialogue,
+            self.speech_details,
+            self.playback_details,
+            self.voice,
+            self.audio_source,
+            self.reading_policy,
+            self.configuration,
+            self.sequence_identity,
+            self.sequence_notice,
+            self.reading_defaults,
+            self.reading_state,
+            self.capture_target,
+        ):
+            text = (
+                field.toPlainText()
+                if isinstance(field, QPlainTextEdit)
+                else plain_label_text(field)
             )
-            + "\n\n"
-            + (self.status.toolTip() or self.status.text())
-            + "\n\n"
-            + (self.speech_runtime.toolTip() or self.speech_runtime.text())
+            if text:
+                parts.append(text)
+        parts.extend(
+            (
+                self.status.toolTip() or self.status.text(),
+                self.speech_runtime.toolTip() or self.speech_runtime.text(),
+            )
         )
+        return "\n\n".join(parts)
 
     def set_speech_runtime(self, message: str) -> None:
         self.speech_runtime.setText(compact_runtime_label(message).replace("; ", "\n"))
@@ -1102,16 +1125,15 @@ class ControlDashboard(QMainWindow):
         self._update_dialogue_title()
 
     def _update_dialogue_title(self) -> None:
-        self.dialogue.setText(
-            self._dialogue_text
-            or (
-                "Waiting for dialogue in the game."
-                if self._live
-                else "Start reading to follow dialogue in the game."
-                if self._ready
-                else "The detected dialogue will appear here."
-            )
+        text = self._dialogue_text or (
+            "Waiting for dialogue in the game."
+            if self._live
+            else "Start reading to follow dialogue in the game."
+            if self._ready
+            else "The detected dialogue will appear here."
         )
+        if self.dialogue.toPlainText() != text:
+            self.dialogue.setPlainText(text)
         self.dialogue_card.setTitle(
             "Current dialogue"
             if self._dialogue_current or not self._dialogue_text
