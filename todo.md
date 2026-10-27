@@ -1,67 +1,69 @@
 # TODO
 
-## Proposed - Native window capture replacement (approval required)
+## Active - Native window capture replacement
 
-Branch: `window-capture`, based on `256313c7`. This is the implementation plan,
-not approval to start it. Keep each coherent change in a separate commit.
+Branch: `window-capture`, based on `256313c7`. The user approved implementation
+with Windows 10 as the minimum Windows generation. Return at the first live
+qualification gate before migrating consumers. Keep each coherent change in a
+separate commit.
 Merge only after the native and packaged gates below pass; unavailable hardware
 leaves its gate open. Do not merge or publish a PR as part of implementation.
 
-- [ ] **WC-0: agree the scope and platform floor.** Replace MSS completely,
-      including calibration and examples. Preserve the existing explicit screen
-      region mode using native display capture; it is never a fallback for a
-      selected window. Proposed minimums: macOS 14 (SCK content/scale metadata
-      and shadow exclusion), Windows 11 (existing release floor). Preserve
-      Linux/X11 through Composite rather than silently dropping existing support;
-      Wayland remains unsupported. Confirm these scope choices with the plan.
-- [ ] **WC-1: add one owned capture-session contract and a native test fixture.**
+Scope: replace MSS completely, including calibration and examples. Preserve
+explicit screen-region mode using native display capture, never as a fallback
+for a selected window. Minimums: macOS 14; Windows 10 version 2004/build 19041
+(WGC window selection plus cursor-control APIs), with Windows 11 also supported.
+Preserve Linux/X11 through Composite; Wayland remains unsupported. Update the
+old Windows-11-only release gate during Windows delivery.
+
+Temporary migration boundary: the application still uses MSS while the new
+standalone native sources are being qualified. Do not add selection/fallback
+switches for it. Remove the old application path/dependency in WC-6 after native
+Mac/Windows source gates pass, and before this branch can merge.
+
+- [ ] **WC-1: qualify the standalone source, then connect its owned contract.**
+      First live gate: use `scripts.native_capture_probe` and its synthetic
+      fixture to inspect real pixels, canonical extent and frame identity on
+      macOS and Windows 10. Exercise opaque occlusion, volume HUD, fullscreen,
+      resize, minimize/restore and repeated Stop/restart before migrating callers.
+      Record old-method latency/CPU/memory baselines before migration; do not
+      retain the old backend for benchmarking.
       Reuse window enumeration, focus authority, `CapturedDialogFrame` and
       `DialogRegion.crop`; keep selection separate from pixel acquisition.
-      Bind a session to window ID, PID/process identity and a session generation.
-      Return full window pixels, actual dimensions/format, source frame sequence
-      and time where available, canonical extent and window-local crop mapping.
+      Complete process-lifetime identity on macOS alongside the existing native
+      window/PID/session identity. Connect full-window pixels and canonical
+      window-local crop mapping to consumers through `vntts.native_capture`.
       Anchor native clocks to the diagnostic monotonic clock; X11 reports only
       acquisition time/request sequence, with render time explicitly unavailable.
-      Screen position
-      is diagnostic/UI metadata, not the source of window pixels. Keep one latest
-      frame and a bounded native pool; no video queue, screenshot files or base64
-      in the runtime transport. Use a small versioned, length-bounded metadata/raw
-      pixel protocol with request/session IDs and cancellable reads. Capture owns
-      no OCR or audio. Cancellation, EOF, close and identity/layout changes must
-      invalidate pending results and allow bounded helper termination.
-      Keep pixels and recognized text out of ordinary logs; preserve existing
-      explicit consent for diagnostic media and OCR evidence.
-      Gate: protocol/ownership tests and a fixture with known glyphs, moving frame
-      markers and a separate opaque occluder. Record old-method latency/CPU/memory
-      baselines before migration; do not retain the old backend for benchmarking.
-- [ ] **WC-2: implement macOS ScreenCaptureKit and qualify it immediately.**
-      Build a small Swift helper under `native/capture-worker`; reuse the existing
-      recorder's SCK setup principles without recording a movie or launching its
-      recording lifecycle. Use `SCContentFilter(desktopIndependentWindow:)` for
-      the selected window, a persistent `SCStream`, native pixel scale, BGRA/SDR,
-      no cursor, shadows or audio. Use frame status/content/scale attachments;
-      distinguish unchanged idle content from suspended/blank/stopped capture.
-      Display capture is a separate explicit screen-mode target. Handle permission
-      denial/revocation, stop errors, resize, Retina changes and fullscreen Spaces
-      without consulting a desktop screenshot. Ship the compiled helper; normal
+      Preserve the bounded raw-pixel protocol and process-owned cancellation
+      while integrating callers. Keep pixels and recognized text out of logs and
+      preserve existing explicit consent for diagnostic media and OCR evidence.
+      Gate: native pixel evidence on both platforms plus ownership and mapping
+      tests for the integrated contract.
+- [ ] **WC-2: qualify and complete the macOS ScreenCaptureKit source.**
+      Validate `native/capture-worker/macos` against real frame content/scale
+      attachments and canonical window extent; extend metadata handling where
+      the API reports padding or a changed scale. Verify permission denial and
+      revocation, stop errors, resize, Retina changes and fullscreen Spaces without
+      consulting a desktop screenshot. Ship the compiled helper in WC-7; normal
       users must not need Xcode. Gate before integration: actual native fixture
       pixels under an occluder and system volume HUD, windowed/fullscreen Spaces,
-      minimize/restore, resize, monitor/DPI changes, and bounded Stop/restart.
-- [ ] **WC-3: implement Windows Graphics Capture and qualify it immediately.**
-      Build the Windows helper in Rust using Microsoft's `windows` bindings,
-      pinned Cargo.lock, MTA/D3D11 BGRA device, `CreateForWindow(HWND)` and
-      `CreateFreeThreaded` with a bounded frame pool. Use `CreateForMonitor` only
-      for explicitly selected screen mode. Disable cursor capture and retain the
-      system capture border. Copy textures respecting RowPitch/ContentSize;
-      establish PMv2 awareness in the helper and return the physical client rect
-      inside the captured surface. Recreate the pool on resize and invalidate
-      its generation on device loss before bounded recovery. Keep HRESULT/device
-      removal details. No PrintWindow, BitBlt, Desktop Duplication, injected game
-      hook or MSS fallback. Include HDR capture/conversion to deterministic SDR
-      pixels; do not silently clip HDR or claim support from an SDR test.
+      minimize/restore, resize, monitor/DPI changes, static content and bounded
+      Stop/restart. Explicit native display capture needs its own screen-mode check.
+- [ ] **WC-3: qualify and complete the Windows Graphics Capture source.**
+      Build and run `native/capture-worker/windows` on Windows 10 build 19041+;
+      cross-target type checking is not a native execution gate. Verify actual
+      WGC dimensions against PMv2 DWM/client rectangles, RowPitch/ContentSize and
+      resize pool recreation. Add bounded recovery after device-loss invalidation,
+      retaining HRESULT/device-removal details. Validate float16 scRGB-to-SDR
+      conversion on SDR and HDR hardware, including OCR, fidelity and CPU cost;
+      do not claim HDR support from an SDR test. Keep the system capture border
+      and cursor exclusion. No PrintWindow, BitBlt, Desktop Duplication, injected
+      game hook or MSS fallback.
       Gate before integration: real Windows fixture/game capture, occlusion and
       volume HUD, windowed/borderless, minimize/restore, DPI/resize/device errors,
-      static dialogue, and capture without Python/COM callback dependencies.
+      static dialogue, repeated close, explicit display capture, and capture
+      without Python/COM callback dependencies.
 - [ ] **WC-4: preserve Linux/X11 without MSS.** Use existing python-xlib:
       Composite >=0.2, automatic redirection of the selected hierarchy only,
       named-window pixmap/GetImage and client-area crop excluding its border.
