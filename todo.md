@@ -1,34 +1,88 @@
 # TODO
 
+## Active - Native rerun observations (2026-10-27)
+
+- [ ] **UX-27-07: voice confirmation has room for only one character row.**
+      At the normal 860x560 dashboard size with Tools expanded, narrator controls
+      and preparation totals consume most of Step 2; only the first character row
+      is visible. Review minimum usable list height and compact summary layout,
+      including the actual need to reconfirm unchanged voices on resume.
+- [ ] **UX-27-06: generation progress calls reused work new speech.** The voice
+      confirmation says 192 reused / 305 to generate, but progress says 290 of 497 new
+      speech lines processed. Clarify the denominator and reuse in the progress
+      wording so the user can tell how much synthesis remains.
+- [ ] **UX-27-05: finishing a recording leaves an older session selected.**
+      Support displays the newly finished session in its status, but the history
+      selection remains on an older session; Export session therefore exports
+      the old recording. Clarify which session the action targets, or select the
+      just-finished session when the user explicitly stops it.
+- [ ] **UX-27-04: Stop triggers deferred pack activation and navigation.**
+      After background preparation completed, Stop to inspect Stories activated
+      the new215-line package and returned to Reading, overriding the tab action.
+      The plan had warned5recordings could be replaced; make the pending change
+      and its activation timing clear, and preserve the chosen navigation.
+- [ ] **RUN-27-03: exact short line116 is blocked after automatic scene change.**
+      After completed49, Cornerstone/Ouch! remains fully visible for over60s.
+      OCR repeatedly resolves116 exactly, but tracker retains committed49 and
+      rejects it as committed-conflict; no generation, WAV or key dispatch.
+      This run demonstrates a persistent visible line, not only a fleeting
+      transition. Diagnose same-speaker automatic transitions; keep protections
+      against OCR regressions and duplicates. Record Stop/Read recovery separately.
+- [ ] **REC-27-01: recording aborts when a temporary metadata file disappears.**
+      During Reading and genuine background generation, session metadata reported
+      FileNotFoundError for `.session.*.tmp.json`; video/game/Rust helpers were
+      stopped at257034.7 while Reading continued. Diagnose concurrent metadata
+      writes/directory scans; the read-only external monitor did not delete files.
+      The budget scanner races atomic session.json replacement: is_file() can
+      succeed before the temporary path disappears and stat() then raises. Use
+      one stat without following symlinks and tolerate only FileNotFoundError
+      during the scan, preserving symlink rejection, other I/O errors and both
+      limits; add a focused race test. Review export's similar scan separately.
+      Preserve this session and verify full capture after the root fix.
+- [ ] **RUN-27-02: repeated line15 and audio-worker turnover.** During the
+      automatic retry, prepared314001:15 was followed by a live/no-match route
+      and then the same prepared line15 again, without test input. Rust worker
+      turnover marked its recording partial. Correlate actual PCM, source WAVs
+      and raw OCR when repairing false-speaker ownership and capture coverage. Both prepared
+      line15 playbacks completed all426888frames; no key dispatch between them.
+      A transient OCR speaker `erstone` started a speaker announcement between
+      them, then was cancelled after returning to `Cornerstone`.
+- [ ] **RUN-27-01: first-line playback fails under ordinary background generation.**
+      First route for314001:6 used live MOSS/no-match despite later exact canonical
+      OCR; audio open then failed with output-stream-construction. No first PCM
+      or automatic transition. Diagnose raw initial OCR/routing and output error
+      separately. Initial121-character OCR committed before the exact132-character
+      result, which then hit committed-conflict. The generic Rust device-query
+      timeout may come from check_format; identify that failing operation rather
+      than assuming a device switch or blaming the recording tap.
+- [ ] **UX-27-01: restored story selection is not visible at startup.** Stories
+      opens at the top of the tree with `1 selected` and enabled `Start reading`,
+      while the selected event stage is offscreen. The primary action does not
+      name the story. Assess whether restoring the selected row or displaying
+      its title near the action avoids searching to verify what will start.
+- [ ] **UX-27-02: readiness suggests rerunning an unsupported hotkey check.**
+      The warning correctly says global hotkeys are unavailable on macOS and
+      recommends visible controls, but the selected-check footer says to review
+      details and run checks again. Use guidance appropriate to a permanent
+      platform limitation instead of implying a check retry can resolve it.
+- [ ] **UX-27-03: verify dirty state after voice auditions.** Opening Voices ->
+      Edit voices shows the saved Narrator/Centurion reference with Save disabled.
+      After only Original and Preview clicks on that selection, Save is enabled
+      without an intentional voice/reference edit. Determine what changed; an
+      audition alone should not imply an unexplained settings change. Cancel was
+      used, so this observation does not authorize changing the voice binding.
+
 ## Active - Native chapter UX and prepared-voice trial (2026-10-25)
 
-- [ ] **RUN-25-10: повторная маршрутизация102 до запуска WAV.**
-      generation93 / line102 interrupted через563.66мс при original cue lead
-      827.667мс, до PCM; generation94 / та же102 completed (28224frames).
-      Мой Stop был только после completed. Это не доказанный повтор слышимого WAV.
-      Проверить смену OCR chunk61a5f3bef17428f2 -> f9457aaeefad0696, сохранить
-      raw OCR и причину нового generation. Рядом предлагается назначить голос
-      персонажу `I`; проверить ложное распознавание имени.
-- [ ] **RUN-25-09: долгая пауза распознавания100.** После omission99
-      Space отправлен, реплика100 целиком видна тремя строками, но новый маршрут
-      появился примерно через58.5с. Фон с частицами продолжал двигаться; причинная
-      связь с анимацией не доказана. Проверить capture/tracker до OCR и явно
-      доступное чтение текущего текста. Это отдельная стадия от зависания после
-      звука. Реплика100 автоматически распозналась до моего Stop, а разовая
-      Dialogue фактически прочитала103 (единственный её маршрут, не повтор).
-- [ ] **RUN-25-06: сверить короткие реплики без route-decision.** В участке
-      44 -> 47 отсутствует маршрут для оригинальной46 (`Have you finished your
-      design for the monument?`); после49 отсутствует подготовленная116 (`Ouch!`),
-      generation43 содержит OCR/stable-text без generation-start. Игра продолжила
-      сцену сама. Проверить по записи видео/игрового звука, что было показано и
-      прозвучало; отсутствие маршрута не равно пропуску оригинального голоса,
-      но для116 нужно подтвердить потерянное prepared-воспроизведение.
-      На видео46 показана по центру экрана, вне нижней calibrated ROI
-      (segment2,102с). Для неё отсутствие OCR объясняется областью; факт
-      оригинального звука требует отдельной проверки game-audio.
-      На выборке видео116 видна в125с, отсутствует в124.5/125.5с: очень короткий
-      показ во время перехода. Подготовленный WAV не запускался; отдельно
-      решить, нужен ли он поверх собственного короткого звука игры.
+- [ ] **RUN-25-10: проверить ложного персонажа `I` и смену владельца реплики.**
+      Сопоставить старые22/23 с raw OCR, speaker identity и source lead;
+      отличать отмену до PCM от повторного воспроизведения. Текущий повтор15
+      имеет отдельное доказательство и исправляется в RUN-27-02.
+- [ ] **RUN-25-09: разделить задержку100 на переход игры и распознавание.**
+      В новом прогоне key99 -> route100 занимает2.742с. По сохранённому видео
+      установить момент появления текста и сопоставить его с OCR/admission;
+      не выдавать весь интервал за задержку распознавания. Старые58.5с не
+      воспроизвелись; выбирать исправление только по оставшейся причине.
 - [ ] **RUN-25-05: проверить выброс задержки и неполную корреляцию звука.**
       Анализ первого сегмента:25/30 диалоговых записей сопоставлены с ожидаемым
       WAV, ещё5 требуют проверки (7,15,16,18,31). После исключения source-wait
@@ -63,28 +117,6 @@
       в Reading с обычным и крупным шрифтом, в том числе после Full controls
       из Compact. Повторные обновления статуса должны сохранять выделение
       и позицию прокрутки; новая реплика должна показываться с начала.
-- [ ] **RUN-25-03: автопереход не срабатывает после завершённого звука.**
-      Глава314001, line34 / Cornerstone: `I'm afraid I won't be handling your
-      make-up assignment...`. Аудио завершено, текст полностью виден, индикатор
-      продолжения есть, игра в фокусе; спустя более 35 с Space не отправлен.
-      Timeline: `schedule-precondition`, dialog_ready_generation=None,
-      routed_latest_equal=true, uncertainty=false; нет chunks/futures/timers.
-      Проверить готовность tracker: live.py отказывает до render/visibility gate.
-      render_quiet_minimum_ms=800 в событии не доказывает причину, поскольку
-      live_sequence_mode=off и render-owner отсутствует. Нужны raw OCR и состояние
-      tracker; не ослаблять защиту перехода по этой гипотезе. Дать пользователю
-      понятное объяснение ожидания. Ручной Space не считать успехом автоматики.
-      Повторилось на следующей line35 / Duvalle: завершённое аудио, более30с
-      без отправки Space до намеренной паузы записи в22:06:52 MSK.
-      Третий случай на85 / Grundriss с полностью видимым двухстрочным текстом,
-      снова schedule-precondition после completed; сохранён отдельный снимок
-      и ручной переход в interventions.jsonl.
-      Следующая86 / Narrator тоже зависла после completed; перед сменой
-      второго сегмента сохранён снимок, продолжение потребовало ручного Space.
-      Повторилось на97 / Cornerstone: prepared completed, но приложение так
-      и осталось на той же реплике до ручного вмешательства. Длительное
-      ожидание включает время анализа/инструментов; не считать его чистой
-      измеренной задержкой алгоритма. Игра оставалась на полностью видимом тексте.
 - [ ] **UX-25-02: проверить Stories в заключительном живом прогоне.**
       При 860x560 и уменьшении окна, включая крупный шрифт, проверить минимум
       пять видимых строк, доступность Prepare again и основного действия без
@@ -297,7 +329,20 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
+1. **Fix diagnostic recording reliability (REC-27-01).** Preserve symlink,
+   file-count and size guards, but tolerate a file disappearing during the
+   budget scan because of atomic metadata replacement. Add a focused race test.
+   The opt-in raw OCR trace is present in all three exported native sessions;
+   correct the stale privacy summary that claims all logs exclude recognized
+   text. Agree on the concrete code change before implementing.
+2. **Repair the new native findings one at a time.** Diagnose initial clipped
+   OCR/live routing and the separate audio-open failure (RUN-27-01), false-speaker
+   duplicate playback (RUN-27-02), and the persistent exact116 tracker conflict
+   (RUN-27-03). Present each implementation plan before changing behavior. Then
+   address UX-27-01 through UX-27-07, distinguishing verified defects from the
+   audition dirty-state doubt. Evidence and screen assessments are retained in
+   the local native-trial investigation; do not rerun the full chapter per fix.
+3. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
    Run all314001 through104 from Stories without manual transitions while real
    heavy generation/publication remains active. Also qualify partly prepared
    active-chapter catch-up across newly published boundaries, failed/not-ready
@@ -305,19 +350,15 @@ complete. Do not change recognition or playback policy on an unverified hypothes
    U1/U2/U4/U6/U7/U8 gates, persistent OCR and portable observation. Preserve
    approved WAV bytes and complete independent capture; cache hits alone are
    not background-generation load. Include the following deferred checks:
-   - **Prepared lookup (RUN-25-07):**66/74/76/92 must use their existing WAVs
-     without unexpected live synthesis; retained-frame success alone is not
-     native acceptance. Retain actual OCR and the selected canonical line to
-     diagnose any recurrence. Include short replies after the approved3-character
-     edit threshold and Latin-diacritic folding; reject ambiguous/incomplete
+   - **Prepared matching remaining edges:** after the approved3-character
+     edit threshold and Latin-diacritic folding, reject ambiguous/incomplete
      matches and preserve protected numbers/negation. Use neighbouring wrong-line
      examples if a mismatch remains; do not relax further without evidence.
-   - **Prepared completion (RUN-25-08):** verify Narrator48's full10.160s WAV
-     across the automatic transition to49, with no missing tail or overlapping
-     application speech. Check manual game advance also lets a started WAV finish,
-     while pre-dispatch scene changes and explicit application cancellation stop
-     stale work. Include speaker announcements, original-audio lead, pending
-     preparation and pause/resume; late48 completion must not finish49's cursor.
+   - **Prepared completion remaining edges (RUN-25-08):** check manual game
+     advance lets a started WAV finish, while pre-dispatch scene changes and
+     explicit application cancellation stop stale work. Include speaker
+     announcements, original-audio lead and pending preparation; late completion
+     must not finish the next occurrence's cursor.
    - **Generation budget (GEN-25-02):** qualify314501:85 with the selected
      reference and normal automatic retries; retain actual limits and outcomes.
      Require complete speech or a clear terminal failure, no truncated WAV in
@@ -339,25 +380,21 @@ complete. Do not change recognition or playback policy on an unverified hypothes
      Choose a speed/recovery repair only if a delay remains. The old capture-only
      R1 incident is a separate unresolved cause; other successful lines do not
      close it.
-   - **Repeated routing (RUN-25-10):** correlate both102 generations with raw
-     OCR, speaker identity, source lead and owner replacement, including false
-     character I. Recheck native22/23: completed22 dispatched a key/confirmed a
-     transition then reached PCM again;23 had three interrupted attempts without
-     another key. Preserve missing-divider/full-dialogue and trailing-indicator
-     evidence. A changed chunk ID is not OCR-change evidence (generation is
-     hashed); distinguish cancellation before PCM from repeated audible speech.
-   - **Short/centered dialogue (RUN-25-06/R17):** check original game audio for
-     centered46 and brief116 before deciding whether extra capture/playback is
-     required. No duplicate game voice or arbitrary widening of the normal ROI.
+   - **Repeated routing (RUN-25-10 / RUN-27-02):** preserve no-duplicate
+     behavior for102 while repairing the proved repeated15/false-speaker path.
+     Recheck native22/23 and false character I; distinguish cancellation before
+     PCM from repeated speech. A changed chunk ID alone is not OCR-change evidence.
+   - **Short dialogue (R17 / RUN-27-03):** fix the persistent exact116
+     admission conflict while retaining original-game-voice priority. No duplicate
+     game voice or arbitrary widening of the normal ROI.
    - **Sound/latency (RUN-25-05/R12/R6):** correlate exact WAVs with captured
      output; explain the1.949s outlier and ambiguous clips. Distinguish recorder
      discontinuities from audible gaps. Require observer-only original-audio
      completion evidence before shortening its wait. Record worker/device
      identity, covered intervals and instrumentation overhead; no unit-test
      load during measurements.
-   - **Continuation stalls:** recheck34/35/85/86/97 with raw OCR and tracker
-     state. Original observations were incomplete; do not assume all shared a
-     cause. Preserve Stop/focus/uncertainty guards and omit dictionary
+   - **Continuation regression:** keep the passing34/35/85/86/97 behavior
+     while fixing116, retaining Stop/focus/uncertainty guards. Do not add dictionary
      autocorrection for dust-obscured words.
    Remove only verified completed TODO items and retain concrete remaining
    failures. Phrase-specific checks stay here rather than preceding each fix.
