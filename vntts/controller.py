@@ -100,7 +100,7 @@ from vntts.ocr import (
 from vntts.ocr_corrections import OCRCorrectionDictionary, OCRCorrectionStore
 from vntts.playback import PreparedPlayback
 from vntts.profiles import GameProfileStore
-from vntts.reading_diagnostics import record_diagnostic_event
+from vntts.reading_diagnostics import record_diagnostic_event, retain_ocr_resolution
 from vntts.runtime_config import (
     LiveConfiguration,
     LiveTrackerOptions,
@@ -1177,18 +1177,28 @@ class AppController:
         except Exception:
             identity = {}
 
+        raw_result: OCRResult | None = None
+
+        def observe_raw_result(result: OCRResult) -> None:
+            nonlocal raw_result
+            raw_result = result
+
         def resolve_result(result: OCRResult) -> OCRResult:
             started = monotonic()
             outcome = "success"
             error_type: str | None = None
+            resolution: dict[str, object] = {}
             try:
-                return self._resolve_story_ocr_result(result)
+                return self._resolve_story_ocr_result(result, resolution=resolution)
             except BaseException as error:
                 outcome = "error"
                 error_type = type(error).__name__
                 raise
             finally:
                 try:
+                    retain_ocr_resolution(
+                        frame, raw_result or result, resolution, **identity
+                    )
                     record_diagnostic_event(
                         "ocr",
                         "story-result-resolution",
@@ -1212,6 +1222,7 @@ class AppController:
             self.correction_dictionary,
             ellipsis_speaker_resolver=self.chapter_voice_preloader,
             result_resolver=resolve_result,
+            raw_result_observer=observe_raw_result,
         )
         return self._canonical_observed_character(character, text), text
 
@@ -1230,7 +1241,9 @@ class AppController:
             observation_is_current=is_current,
         )
 
-    def _resolve_story_ocr_result(self, result: OCRResult) -> OCRResult:
+    def _resolve_story_ocr_result(
+        self, result: OCRResult, *, resolution: dict[str, object] | None = None
+    ) -> OCRResult:
         confidence = (
             result.confidence
             if result.dialogue_confidence is None
@@ -1240,9 +1253,15 @@ class AppController:
             not result.text.strip()
             or not confidence >= self.settings.ocr_minimum_confidence
         ):
+            if resolution is not None:
+                resolution["match_result"] = (
+                    "empty" if not result.text.strip() else "ocr-uncertain"
+                )
             return result
         with self.story_cursor_lock:
             if self._expected_sequence_prefix_line_locked() is not None:
+                if resolution is not None:
+                    resolution["match_result"] = "owned-prefix"
                 return result
             preloader = self.chapter_voice_preloader
             plan, cursor = self.live_sequence_plan, self.story_cursor
@@ -1269,9 +1288,11 @@ class AppController:
                     else preloader.by_chapter.get(preloader.current_match.chapter, ())
                 )
                 line_ids = tuple(row.line_id for row in rows if row.line_id)
-            line, _match = preloader.resolve_complete_among(
+            line, match = preloader.resolve_complete_among(
                 "", result.text, line_ids, update_context=False
             )
+            if resolution is not None:
+                resolution.update(match_result=match, line=line)
         if line is None:
             return result
         return replace(

@@ -275,6 +275,7 @@ def recognize_screenshot_result(
     ocr_backend: OCRBackend | None = None,
     ocr_regions: OCRRegions | None = None,
     result_resolver: Callable[[OCRResult], OCRResult] | None = None,
+    raw_result_observer: Callable[[OCRResult], None] | None = None,
 ) -> OCRResult:
     try:
         backend = ocr_backend or TesseractOCRBackend(recognize_dialog_image_result)
@@ -293,6 +294,11 @@ def recognize_screenshot_result(
                 language=ocr_language,
                 ocr_regions=ocr_regions,
             )
+        if raw_result_observer is not None:
+            try:
+                raw_result_observer(result)
+            except Exception:
+                pass
         result = (
             correction_dictionary.correct_result(result)
             if correction_dictionary is not None
@@ -681,6 +687,7 @@ def recognize_live_frame(
     *,
     clock: Clock = monotonic,
     result_resolver: Callable[[OCRResult], OCRResult] | None = None,
+    raw_result_observer: Callable[[OCRResult], None] | None = None,
 ) -> tuple[str | None, str]:
     image = _frame_image(frame)
     capture_ms = getattr(frame, "capture_ms", None)
@@ -695,6 +702,7 @@ def recognize_live_frame(
         correction_dictionary,
         ocr_regions=getattr(frame, "ocr_regions", None),
         result_resolver=result_resolver,
+        raw_result_observer=raw_result_observer,
     )
     regions = getattr(frame, "ocr_regions", None)
     dialogue_image = (

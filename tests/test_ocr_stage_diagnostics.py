@@ -162,7 +162,7 @@ class StoryResultResolutionDiagnosticsTest(unittest.TestCase):
     def test_resolution_records_original_capture_and_returns_resolved_result(self):
         resolved = OCRResult("Canonical", "canonical dialogue", 95, "balanced", 1)
 
-        def resolve(_result):
+        def resolve(_result, **_kwargs):
             self.image.info["capture_provenance"] = {"run_id": "later-run"}
             return resolved
 

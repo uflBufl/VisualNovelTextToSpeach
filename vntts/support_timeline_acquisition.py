@@ -141,7 +141,8 @@ speech_future_count deferred_chunk_present paused emergency_stopped shutting_dow
 prefix_confirmation_pending prefix_owner_current cursor_present reader_present line_present
 bind_frame_available capture_target_present render_quiet_ms
 
-ocr_confidence minimum_confidence wait_ms
+ocr_confidence ocr_speaker_confidence ocr_dialogue_confidence minimum_confidence wait_ms
+raw_character_length raw_text_length canonical_character_length canonical_text_length
 generation occurred_at monotonic_at clock_origin clock_elapsed_ms event_sequence run_started_at
 worker_progress_age_ms worker_frame_version latest_frame_version frame_version started_monotonic
 completed_monotonic window_id owner_pid success attempt underflowed generation_limited synthesis_ms
@@ -277,6 +278,33 @@ class TimelineAcquisition:
             raise OSError("Incomplete acquisition write")
 
     def record(self, event: Mapping[str, object]) -> None:
+        self._record(event)
+
+    def record_ocr_resolution(self, event: Mapping[str, object], **text: str) -> None:
+        """Media-consented OCR evidence; ordinary record() remains text-free."""
+        safe_text = {
+            key: value[:limit]
+            for key, limit in (
+                ("raw_character", 256),
+                ("raw_text", 4096),
+                ("canonical_character", 256),
+                ("canonical_text", 4096),
+            )
+            if isinstance((value := text.get(key)), str)
+        }
+        self._record(
+            {
+                **event,
+                **{f"{key}_length": len(text[key]) for key in safe_text},
+            },
+            safe_text,
+        )
+
+    def _record(
+        self,
+        event: Mapping[str, object],
+        media_text: Mapping[str, str] | None = None,
+    ) -> None:
         # Only bounded symbolic identities and numeric evidence, never free-text reasons.
         safe: dict[str, object] = {}
         for key, value in islice(event.items(), 128):
@@ -309,7 +337,12 @@ class TimelineAcquisition:
             ):
                 safe[key] = value
         payload = _line(
-            {"kind": "event", "acquisition_id": self.acquisition_id, **safe}
+            {
+                "kind": "event",
+                "acquisition_id": self.acquisition_id,
+                **safe,
+                **(media_text or {}),
+            }
         )
         with self.lock:
             if self.stop_requested.is_set():

@@ -54,6 +54,89 @@ def record_diagnostic_event(category: str, operation: str, **details: object) ->
         pass
 
 
+def retain_ocr_resolution(
+    frame: object,
+    raw: object,
+    resolution: dict[str, object],
+    *,
+    run_id: object = None,
+    capture_id: object = None,
+) -> None:
+    """Retain text only for the selected game's explicitly recorded captures."""
+    try:
+        session = _active
+        if session is None or session.recording is None:
+            return
+        from vntts.capture_provenance import CaptureProvenance
+        from vntts.dialog_capture import CapturedDialogFrame
+        from vntts.ocr import OCRResult
+
+        if not isinstance(frame, CapturedDialogFrame) or not isinstance(raw, OCRResult):
+            return
+        provenance = frame.provenance
+        target = session.recording.target
+        now = monotonic()
+        if (
+            session.phase != "recording"
+            or session.stop_requested.is_set()
+            or not isinstance(provenance, CaptureProvenance)
+            or not provenance.success
+            or not isinstance(run_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}", run_id)
+            or not isinstance(capture_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}", capture_id)
+            or provenance.run_id != run_id
+            or provenance.capture_id != capture_id
+            or type(provenance.window_id) is not int
+            or provenance.window_id <= 0
+            or type(provenance.owner_pid) is not int
+            or provenance.owner_pid <= 0
+            or provenance.window_id != target.get("window_id")
+            or provenance.owner_pid != target.get("pid")
+            or not session.started_monotonic
+            <= provenance.started_monotonic
+            <= provenance.completed_monotonic
+            <= now
+            <= session.started_monotonic + session.seconds
+        ):
+            return
+        line = resolution.get("line")
+        from vntts.chapter_voice_preload import ChapterDialogue
+
+        canonical = line if isinstance(line, ChapterDialogue) else None
+        session.runtime.record_ocr_resolution(
+            {
+                "category": "ocr",
+                "operation": "story-ocr-evidence",
+                "run_id": run_id,
+                "capture_id": capture_id,
+                "window_id": provenance.window_id,
+                "owner_pid": provenance.owner_pid,
+                "started_monotonic": provenance.started_monotonic,
+                "completed_monotonic": provenance.completed_monotonic,
+                "occurred_at": now,
+                "match_result": resolution.get("match_result", "resolver-error"),
+                "line_id": canonical.line_id if canonical else None,
+                "ocr_confidence": raw.confidence,
+                "ocr_speaker_confidence": raw.speaker_confidence,
+                "ocr_dialogue_confidence": raw.dialogue_confidence,
+            },
+            raw_character=raw.character,
+            raw_text=raw.text,
+            **(
+                {
+                    "canonical_character": canonical.speaker,
+                    "canonical_text": canonical.text,
+                }
+                if canonical
+                else {}
+            ),
+        )
+    except Exception:
+        # Optional evidence cannot affect OCR admission, routing or Stop.
+        pass
+
+
 def arm_audio_worker_recording(
     identity: dict[str, object], interrupted: Callable[[], bool]
 ) -> bool:
