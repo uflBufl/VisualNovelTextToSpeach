@@ -16,19 +16,6 @@
       доступное чтение текущего текста. Это отдельная стадия от зависания после
       звука. Реплика100 автоматически распозналась до моего Stop, а разовая
       Dialogue фактически прочитала103 (единственный её маршрут, не повтор).
-- [ ] **RUN-25-07: внезапный live fallback вместо подготовленного голоса.**
-      Входные фразы подтверждены по историческому chunk_id (без регистра):
-      66 `50, where is it?`,74 `50 what's the hold-up?`,76
-      `Remember Nowa Miedz?`,92 `Tll handle it.`. Готовые WAV всех четырёх
-      доступны. На сохранённых кадрах текущий Sauvola и production resolver
-      выбирают prepared66/74/92;76 всё ещё получает no-match из-за `ź -> z`.
-      Согласовать вторичное сопоставление полного текста без латинской
-      диакритики в resolve_complete_among: после строгого совпадения, только
-      среди разрешённых checksum-bound кандидатов, с отказом при коллизиях
-      и неполном префиксе. Не расширять edit budget коротких строк, не менять
-      числа/отрицания или нелатинские буквы. Сохранить исходный canonical text
-      для exact выбора WAV. Гейты: регрессии всех четырёх кадров и отрицательные
-      примеры коллизий/неполного текста; приёмка в общем прогоне ниже.
 - [ ] **RUN-25-06: сверить короткие реплики без route-decision.** В участке
       44 -> 47 отсутствует маршрут для оригинальной46 (`Have you finished your
       design for the monument?`); после49 отсутствует подготовленная116 (`Ouch!`),
@@ -310,16 +297,7 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Agree and implement complete-text diacritic matching (RUN-25-07).**
-   The remaining reproduced failure is76's `Miedz` versus canonical `Miedź`.
-   Add secondary Latin-diacritic equality to resolve_complete_among; use NFD on
-   raw text before normalization, preserve strict-match priority, allowed scope,
-   protected content and folded ambiguity/longer-prefix rejection. Canonicalize
-   to the source line before the unchanged exact backend lookup. Keep all fuzzy
-   thresholds unchanged. Gate: real-frame regressions for66/74/76/92 plus
-   collision, composed/decomposed accent, non-Latin and scope controls. Obtain
-   agreement before changing behavior; native acceptance remains deferred.
-2. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
+1. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
    Run all314001 through104 from Stories without manual transitions while real
    heavy generation/publication remains active. Also qualify partly prepared
    active-chapter catch-up across newly published boundaries, failed/not-ready
@@ -329,8 +307,11 @@ complete. Do not change recognition or playback policy on an unverified hypothes
    not background-generation load. Include the following deferred checks:
    - **Prepared lookup (RUN-25-07):**66/74/76/92 must use their existing WAVs
      without unexpected live synthesis; retained-frame success alone is not
-     native acceptance. Preserve a trace of unmatched OCR sufficient to diagnose
-     a recurrence without weakening the short-text matching guards.
+     native acceptance. Retain actual OCR and the selected canonical line to
+     diagnose any recurrence. Include short replies after the approved3-character
+     edit threshold and Latin-diacritic folding; reject ambiguous/incomplete
+     matches and preserve protected numbers/negation. Use neighbouring wrong-line
+     examples if a mismatch remains; do not relax further without evidence.
    - **Prepared completion (RUN-25-08):** verify Narrator48's full10.160s WAV
      across the automatic transition to49, with no missing tail or overlapping
      application speech. Check manual game advance also lets a started WAV finish,
@@ -358,11 +339,6 @@ complete. Do not change recognition or playback policy on an unverified hypothes
      Choose a speed/recovery repair only if a delay remains. The old capture-only
      R1 incident is a separate unresolved cause; other successful lines do not
      close it.
-   - **Prepared-route matching (RUN-25-07):** retain actual OCR for candidate
-     occurrences66/74/76/92 after the implemented Sauvola/name/edit-distance
-     changes. Compare to the exact resolver; require correct prepared WAVs and
-     no unexpected synthesis. If still wrong, use real positive and neighbouring
-     wrong-line fixtures; no global threshold relaxation or guessed story edge.
    - **Repeated routing (RUN-25-10):** correlate both102 generations with raw
      OCR, speaker identity, source lead and owner replacement, including false
      character I. Recheck native22/23: completed22 dispatched a key/confirmed a

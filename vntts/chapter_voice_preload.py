@@ -44,6 +44,20 @@ def _normalize_exact_text(value: object) -> str:
     return " ".join(unicodedata.normalize("NFKC", str(value)).split()).casefold()
 
 
+def _normalize_without_latin_diacritics(value: object) -> str:
+    characters = []
+    latin = False
+    for character in unicodedata.normalize("NFD", str(value)):
+        if unicodedata.category(character).startswith("M"):
+            if not latin:
+                characters.append(character)
+        else:
+            latin = "LATIN" in unicodedata.name(character, "")
+            characters.append(character)
+    # Recompose preserved non-Latin letters before tokenization splits marks.
+    return _normalize(unicodedata.normalize("NFC", "".join(characters)))
+
+
 @dataclass(frozen=True)
 class ChapterDialogue:
     line_id: str | None
@@ -99,6 +113,7 @@ class ChapterVoicePreloader:
             tuple[str, str], list[ChapterDialogue]
         ] = defaultdict(list)
         self.normalized_text: dict[ChapterDialogue, str] = {}
+        self.diacritic_folded_text: dict[ChapterDialogue, str] = {}
         self.speaker_names: dict[str, str] = {}
         for row in self.dialogue:
             if row.line_id:
@@ -109,6 +124,11 @@ class ChapterVoicePreloader:
             self.by_chapter[row.chapter].append(row)
             self.by_chapter_speaker[(row.chapter, speaker_key)].append(row)
             self.normalized_text[row] = _normalize(row.text)
+            self.diacritic_folded_text[row] = (
+                self.normalized_text[row]
+                if row.text.isascii()
+                else _normalize_without_latin_diacritics(row.text)
+            )
             self.by_exact_dialogue[
                 (speaker_key, _normalize_exact_text(row.text))
             ].append(row)
@@ -432,20 +452,37 @@ class ChapterVoicePreloader:
             update_context=False,
         )
         if line is None:
+            observed = _normalize_without_latin_diacritics(text)
+            candidates = [
+                row for row in valid if self.diacritic_folded_text[row] == observed
+            ]
+            if len(candidates) > 1:
+                return None, "expected-ambiguous"
+            if candidates:
+                line = candidates[0]
+                if _protected_text_content(line.text) != protected:
+                    return None, "expected-no-match"
+                result = "expected-complete-diacritic-fold"
+        if line is None:
             # Include every competitor, even one which fails its own acceptance
             # guards. A missing alternative is not evidence of a unique match.
             # Cutoff 4 distinguishes distance 5, the margin needed at budget 3.
             ranked = sorted(
                 (
-                    (_bounded_levenshtein(observed, self.normalized_text[row], 4), row)
+                    (
+                        _bounded_levenshtein(
+                            observed, self.diacritic_folded_text[row], 4
+                        ),
+                        row,
+                    )
                     for row in valid
                 ),
                 key=lambda item: item[0],
             )
             distance, line = ranked[0]
-            canonical = self.normalized_text[line]
+            canonical = self.diacritic_folded_text[line]
             length = sum(character.isalnum() for character in canonical)
-            budget = sum(length >= boundary for boundary in (20, 60, 120))
+            budget = sum(length >= boundary for boundary in (3, 60, 120))
             if (
                 distance > budget
                 or _protected_text_content(line.text) != protected
@@ -455,11 +492,11 @@ class ChapterVoicePreloader:
             if len(ranked) > 1 and ranked[1][0] < distance + 2:
                 return None, "expected-ambiguous"
             result = "expected-complete-edit-distance"
-        canonical = self.normalized_text[line]
+        canonical = self.diacritic_folded_text[line]
         if any(
             row.line_id != line.line_id
-            and len(self.normalized_text[row]) > len(canonical)
-            and self.normalized_text[row].startswith(canonical)
+            and len(self.diacritic_folded_text[row]) > len(canonical)
+            and self.diacritic_folded_text[row].startswith(canonical)
             for row in valid
         ):
             return None, "expected-incomplete"
@@ -857,7 +894,10 @@ def _protected_text_content(text: object) -> tuple[tuple[int, str], ...]:
         if match[0] in _PROTECTED_WORDS or match[0].endswith("n't")
     )
     return tuple(
-        (len(_normalize(original[: match.start()]).split()), match[0])
+        (
+            len(_normalize_without_latin_diacritics(original[: match.start()]).split()),
+            match[0],
+        )
         for match in protected
     )
 
@@ -868,7 +908,7 @@ def _complete_ocr_words(observed: str, canonical: str) -> bool:
         actual
         and expected
         and len(actual) == len(expected)
-        and actual[-1] == expected[-1]
+        and (len(actual) == 1 or actual[-1] == expected[-1])
         and not canonical.startswith(observed)
         and not canonical.endswith(observed)
     )

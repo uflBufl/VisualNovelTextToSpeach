@@ -1,5 +1,6 @@
 import hashlib
 import itertools
+import unicodedata
 import unittest
 from dataclasses import replace
 
@@ -8,6 +9,7 @@ from vntts.chapter_voice_preload import (
     ChapterMatch,
     ChapterVoicePreloader,
     _bounded_levenshtein,
+    _normalize_without_latin_diacritics,
 )
 
 
@@ -63,20 +65,155 @@ class CompleteStoryMatchingTest(unittest.TestCase):
             speaker="Unknown speaker",
         )
 
-    def test_short_lines_require_exact_text(self):
+    def test_one_or_two_character_lines_require_exact_text(self):
         self.assert_resolves("No.", "No.")
         self.assert_rejects("No.", "Go.")
         self.assert_rejects("Go.", "No.")
+        self.assert_rejects("Go.", "Gc.")
+        self.assert_rejects("I", "J")
+
+    def test_single_word_typos_are_allowed_from_three_characters(self):
+        for canonical, observed in (
+            ("Yes!", "Yez!"),
+            ("Cat.", "Cut."),
+            ("Cat.", "Caat."),
+            ("Cat.", "Ct."),
+        ):
+            with self.subTest(canonical=canonical, observed=observed):
+                self.assert_resolves(canonical, observed)
+        self.assert_resolves("Go home.", "Gc home.")
+        self.assert_rejects("Cat.", "Bbt.")
+        for observed in ("Cat.", "Ats."):
+            self.assert_rejects("Cats.", observed)
+
+    def test_short_word_typos_keep_ambiguity_and_protected_content_guards(self):
+        first = dialogue("Cat.", "first")
+        second = dialogue("Hat.", "second")
+        preloader = ChapterVoicePreloader([first, second])
+        selected, result = preloader.resolve_complete_among(
+            "Ada", "Bat.", [first.line_id, second.line_id]
+        )
+        self.assertIsNone(selected)
+        self.assertEqual(result, "expected-ambiguous")
+        for canonical, observed in (("Not.", "Now."), ("100", "101")):
+            self.assert_rejects(canonical, observed)
 
     def test_edit_budgets_use_canonical_alphanumeric_length(self):
-        for length, budget in ((19, 0), (20, 1), (59, 1), (60, 2), (119, 2), (120, 3)):
-            canonical = "a" * (length - 3) + " end"
+        for length, budget in (
+            (2, 0),
+            (3, 1),
+            (19, 1),
+            (20, 1),
+            (59, 1),
+            (60, 2),
+            (119, 2),
+            (120, 3),
+        ):
+            canonical = "a" * (length - 1) + "z"
             with self.subTest(length=length, edits=budget):
                 self.assert_resolves(canonical, "b" * budget + canonical[budget:])
             with self.subTest(length=length, edits=budget + 1):
                 self.assert_rejects(
                     canonical, "b" * (budget + 1) + canonical[budget + 1 :]
                 )
+
+    def test_latin_diacritics_do_not_spend_the_edit_budget(self):
+        for canonical, observed in (
+            ("Remember Nowa Miedź?", "Remember Nowa Miedz?"),
+            ("Miedź", "Miedz"),
+            ("é", "e"),
+            ("Café.", "Cufe."),
+            ("Café déjà vu.", "Cufe deja vu."),
+            ("Remember Nowa Miedź?", "Remembcr Nowa Miedz?"),
+            ("Café déjà vu.", "Cafe\u0301 de\u0300ja\u0300 vu."),
+            ("Cafe\u0301 de\u0301ja\u0300 vu.", "Cafe deja vu."),
+            ("The q\u0307uota is 5.", "The quota is 5."),
+            ("The q\u0307uota is not met.", "The quota is not met."),
+        ):
+            with self.subTest(canonical=canonical, observed=observed):
+                self.assert_resolves(canonical, observed)
+        self.assert_rejects("Café.", "Buxe.")
+
+    def test_folded_candidates_are_ambiguous_despite_speaker_and_position(self):
+        first = dialogue("Café.", "first")
+        second = dialogue("Cafè.", "second", speaker="Bea", sequence=100)
+        preloader = ChapterVoicePreloader([first, second])
+        previous = ChapterMatch(first.chapter, first.sequence, 1.0)
+        preloader.current_match = previous
+        selected, result = preloader.resolve_complete_among(
+            "Ada", "Cafe.", [first.line_id, second.line_id]
+        )
+        self.assertIsNone(selected)
+        self.assertEqual(result, "expected-ambiguous")
+        self.assertIs(preloader.current_match, previous)
+
+    def test_strict_match_has_priority_over_folded_equal_candidates(self):
+        first = dialogue("Café.", "first")
+        second = dialogue("Cafe.", "second")
+        preloader = ChapterVoicePreloader([first, second])
+        selected, result = preloader.resolve_complete_among(
+            "Ada", second.text, [first.line_id, second.line_id]
+        )
+        self.assertIs(selected, second)
+        self.assertEqual(result, "expected-exact")
+
+    def test_diacritic_folding_cannot_hide_longer_completions(self):
+        for short_text, long_text in (
+            ("Café.", "Cafe noir."),
+            ("Cafe.", "Café noir."),
+        ):
+            with self.subTest(short=short_text):
+                short = dialogue(short_text, "short")
+                long = dialogue(long_text, "long")
+                preloader = ChapterVoicePreloader([short, long])
+                selected, result = preloader.resolve_complete_among(
+                    "Ada", "Cafe.", [short.line_id, long.line_id]
+                )
+                self.assertIsNone(selected)
+                self.assertEqual(result, "expected-incomplete")
+
+    def test_folded_fuzzy_competitors_keep_the_two_edit_margin(self):
+        first = dialogue("Café.", "first")
+        second = dialogue("Côté.", "second")
+        preloader = ChapterVoicePreloader([first, second])
+        selected, result = preloader.resolve_complete_among(
+            "Ada", "Cufe.", [first.line_id, second.line_id]
+        )
+        self.assertIsNone(selected)
+        self.assertEqual(result, "expected-ambiguous")
+
+    def test_folded_matching_preserves_protected_content_and_word_boundaries(self):
+        for canonical, observed in (
+            ("Café costs -5.", "Cafe costs 5."),
+            ("Café not now.", "Cafe now now."),
+            ("Not now.", "Nót now."),
+            ("Café déjà vu.", "Cafedejavu."),
+            ("Café déjà vu.", "Cafe deja v."),
+            ("The q\u0307uota is 5.", "The quota is 6."),
+            ("The q\u0307uota is not met.", "The quota is now met."),
+        ):
+            with self.subTest(canonical=canonical, observed=observed):
+                self.assert_rejects(canonical, observed)
+
+    def test_folded_matching_keeps_allowed_scope_identity_and_context(self):
+        row = dialogue("Café.")
+        missing_hash = replace(dialogue("Cafè.", "missing"), text_sha256=None)
+        preloader = ChapterVoicePreloader([row, missing_hash])
+        previous = ChapterMatch("previous", 7, 1.0)
+        preloader.current_match = previous
+        for allowed in ([], ["absent"], [missing_hash.line_id]):
+            with self.subTest(allowed=allowed):
+                selected, _ = preloader.resolve_complete_among("Ada", "Cafe.", allowed)
+                self.assertIsNone(selected)
+                self.assertIs(preloader.current_match, previous)
+        selected, result = preloader.resolve_complete_among(
+            "Ada", "Cafe.", [row.line_id, missing_hash.line_id], update_context=False
+        )
+        self.assertIs(selected, row)
+        self.assertEqual(result, "expected-complete-diacritic-fold")
+        self.assertIs(preloader.current_match, previous)
+        preloader.resolve_complete_among("Ada", "Cafe.", [row.line_id])
+        self.assertEqual(preloader.current_match.chapter, row.chapter)
 
     def test_internal_insertions_and_deletions_are_bounded_edits(self):
         canonical = "The lantern illuminated the forgotten passage beside our home."
@@ -275,6 +412,28 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                 self.assertEqual(
                     preloader.current_match,
                     ChapterMatch(row.chapter, row.sequence, 1.0, row.story_order),
+                )
+
+
+class LatinDiacriticNormalizationTest(unittest.TestCase):
+    def test_latin_marks_are_removed_without_losing_word_boundaries(self):
+        for text in (
+            "Café déjà vu. Miedź!",
+            "Cafe\u0301 de\u0301ja\u0300 vu. Miedz\u0301!",
+        ):
+            self.assertEqual(
+                _normalize_without_latin_diacritics(text), "cafe deja vu miedz"
+            )
+
+    def test_non_latin_diacritics_and_compatibility_characters_are_preserved(self):
+        for text in ("й", "ά", "が", "²"):
+            with self.subTest(text=text):
+                self.assertEqual(_normalize_without_latin_diacritics(text), text)
+                self.assertEqual(
+                    _normalize_without_latin_diacritics(
+                        unicodedata.normalize("NFD", text)
+                    ),
+                    text,
                 )
 
 

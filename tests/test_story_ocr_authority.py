@@ -1,5 +1,7 @@
+import shutil
 import unittest
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -25,7 +27,7 @@ from vntts.generated_audio import (
     PreparedGeneratedAudio,
 )
 from vntts.live_sequence import StoryCursorState
-from vntts.ocr import OCRResult
+from vntts.ocr import OCRResult, recognize_dialog_image_result
 from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.voices import CharacterVoiceRegistry
@@ -61,6 +63,37 @@ class StoryOCRAuthorityTest(unittest.TestCase):
         controller._publish_diagnostic = Mock()
         controller._resolve_voice_label = Mock(return_value="Prepared story voice")
         return controller
+
+    def assert_generated_route(self, controller, line, actual):
+        live = Mock(name="live-test")
+        live.name = "live-test"
+        live.capabilities = SpeechBackendCapabilities(True, False, True)
+        prepared = PreparedGeneratedAudio(
+            line.line_id,
+            line.text_sha256,
+            np.zeros(1, dtype=np.float32),
+            24_000,
+        )
+        library = Mock(runtime_progress=False)
+        library.find_audio_event_omission.return_value = None
+        library.find_with_preflight.return_value = (
+            prepared,
+            "generated-audio-entry-verified",
+        )
+        backend = GeneratedAudioFallbackBackend(
+            live,
+            library,
+            controller.chapter_voice_preloader,
+            audio_output=Mock(),
+        )
+        route = backend.prepare_route(*actual)
+        self.assertIsInstance(route, GeneratedAudioRoute)
+        self.assertIs(route.prepared, prepared)
+        self.assertEqual(route.trace.line_id, line.line_id)
+        library.find_with_preflight.assert_called_once_with(
+            line.line_id, line.text_sha256
+        )
+        live.prepare_playback.assert_not_called()
 
     def test_downloaded_failures_reach_the_canonical_generated_recording(self):
         for text, noise, speaker in (
@@ -105,36 +138,60 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 self.assertEqual(snapshot.speaker_confidence, 26)
                 self.assertIn(noise, snapshot.speaker_note)
 
-                live = Mock(name="live-test")
-                live.name = "live-test"
-                live.capabilities = SpeechBackendCapabilities(True, False, True)
-                prepared = PreparedGeneratedAudio(
-                    line.line_id,
-                    line.text_sha256,
-                    np.zeros(1, dtype=np.float32),
-                    24_000,
+                self.assert_generated_route(controller, line, actual)
+
+    @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
+    def test_retained_frames_reach_the_canonical_generated_recording(self):
+        fixtures = Path(__file__).resolve().parent / "fixtures" / "ocr-prepared-lines"
+        cases = (
+            (66, "So, where is it?", "Grundriss"),
+            (74, "So what's the hold-up?", "Grundriss"),
+            (76, "Remember Nowa Miedź?", "Cornerstone"),
+            (92, "I'll handle it.", "Cornerstone"),
+        )
+        rows = tuple(
+            story_line(text, speaker, f"line-{number}")
+            for number, text, speaker in cases
+        )
+        for line, (number, text, speaker) in zip(rows, cases, strict=True):
+            with (
+                self.subTest(line=number),
+                Image.open(fixtures / f"line{number:03d}.png") as image,
+            ):
+                raw = recognize_dialog_image_result(image)
+                controller = self.controller(rows)
+                resolved = controller._resolve_story_ocr_result(raw)
+                self.assertEqual((resolved.character, resolved.text), (speaker, text))
+                self.assertEqual(resolved.confidence, raw.dialogue_confidence)
+                self.assertIsNone(controller.chapter_voice_preloader.current_match)
+                self.assert_generated_route(
+                    controller, line, (resolved.character, resolved.text)
                 )
-                library = Mock(runtime_progress=False)
-                library.find_audio_event_omission.return_value = None
-                library.find_with_preflight.return_value = (
-                    prepared,
-                    "generated-audio-entry-verified",
+
+    def test_diacritics_and_short_ocr_typos_reach_the_canonical_recording(self):
+        for text, ocr_text in (
+            ("Remember Nowa Miedź?", "Remember Nowa Miedz?"),
+            ("Remember Nowa Miedź?", "Rememher Nowa Miedz?"),
+            ("Ouch!", "Oucb!"),
+        ):
+            with self.subTest(text=text, ocr_text=ocr_text):
+                line = story_line(text, "Cornerstone")
+                controller = self.controller((line,))
+                raw = observed(ocr_text)
+                resolved = controller._resolve_story_ocr_result(raw)
+                self.assertEqual(
+                    (resolved.character, resolved.text), (line.speaker, line.text)
                 )
-                backend = GeneratedAudioFallbackBackend(
-                    live,
-                    library,
-                    controller.chapter_voice_preloader,
-                    audio_output=Mock(),
+                self.assertEqual(resolved.confidence, raw.dialogue_confidence)
+                self.assertIsNone(controller.chapter_voice_preloader.current_match)
+                self.assert_generated_route(
+                    controller, line, (resolved.character, resolved.text)
                 )
-                route = backend.prepare_route(*actual)
-                self.assertIsInstance(route, GeneratedAudioRoute)
-                self.assertIs(route.prepared, prepared)
-                self.assertEqual(route.trace.line_id, line.line_id)
-                live.prepare_playback.assert_not_called()
 
     def test_ambiguous_unmatched_partial_or_uncertain_text_keeps_original_gate(self):
         text = "The clerk's suspicious gaze slides past Cornerstone."
         line = story_line(text, "Cornerstone")
+        accented = story_line("Remember Nowa Miedź?", "Cornerstone")
         for rows, raw in (
             (
                 (line, story_line(text, "Someone else", "line-2")),
@@ -149,6 +206,21 @@ class StoryOCRAuthorityTest(unittest.TestCase):
             ((line,), observed(text, dialogue_confidence=35)),
             ((replace(line, text_sha256=None),), observed(text)),
             ((replace(line, line_id=None),), observed(text)),
+            (
+                (
+                    accented,
+                    story_line("Remember Nowa Miedż?", "Someone else", "line-2"),
+                ),
+                observed("Remember Nowa Miedz?"),
+            ),
+            (
+                (accented,),
+                observed("Remember Nowa Miedz?", dialogue_confidence=35),
+            ),
+            (
+                (story_line("Ouch!"),),
+                observed("Oucb!", dialogue_confidence=35),
+            ),
         ):
             with self.subTest(rows=rows, text=raw.text):
                 controller = self.controller(rows)
@@ -282,59 +354,76 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                     finally:
                         harness.stop()
 
-    def test_cursor_candidates_keep_an_exact_match_inside_the_selected_path(self):
-        text = "A repeated complete phrase."
-        first = story_line(text, "Correct speaker")
-        other = story_line(text, "Wrong branch", "line-2")
-        controller = self.controller((first, other))
-        controller.settings = controller.settings.updated(
-            live_sequence_mode="audio-manual"
-        )
-        event = SimpleNamespace(line_id=first.line_id, is_speech=True)
-        forbidden = SimpleNamespace(line_id=other.line_id, is_speech=True)
-        controller.live_sequence_plan = SimpleNamespace(
-            events={"first": event, "forbidden": forbidden}
-        )
-        controller.story_cursor = SimpleNamespace(
-            state=StoryCursorState.LOCKED,
-            current_event=event,
-            bounded_visible_successors=Mock(return_value=()),
-        )
-        raw = observed(text, "Wrong branch")
-        resolved = controller._resolve_story_ocr_result(raw)
-        self.assertEqual(resolved.character, first.speaker)
-        self.assertIsNone(controller.chapter_voice_preloader.current_match)
-        self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
+    def test_cursor_candidates_keep_matches_inside_the_selected_path(self):
+        for text, ocr_text in (
+            ("A repeated complete phrase.", "A repeated complete phrase."),
+            ("Remember Nowa Miedź?", "Remember Nowa Miedz?"),
+            ("Ouch!", "Oucb!"),
+        ):
+            with self.subTest(text=text):
+                first = story_line(text, "Correct speaker")
+                other = story_line(ocr_text, "Wrong branch", "line-2")
+                controller = self.controller((first, other))
+                controller.settings = controller.settings.updated(
+                    live_sequence_mode="audio-manual"
+                )
+                event = SimpleNamespace(line_id=first.line_id, is_speech=True)
+                forbidden = SimpleNamespace(line_id=other.line_id, is_speech=True)
+                controller.live_sequence_plan = SimpleNamespace(
+                    events={"first": event, "forbidden": forbidden}
+                )
+                controller.story_cursor = SimpleNamespace(
+                    state=StoryCursorState.LOCKED,
+                    current_event=event,
+                    bounded_visible_successors=Mock(return_value=()),
+                )
+                raw = observed(ocr_text, "Wrong branch")
+                resolved = controller._resolve_story_ocr_result(raw)
+                self.assertEqual(
+                    (resolved.character, resolved.text), (first.speaker, text)
+                )
+                self.assertIsNone(controller.chapter_voice_preloader.current_match)
+                self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
 
     def test_current_chapter_is_preserved_and_manual_diagnostics_get_the_same_resolution(
         self,
     ):
-        text = "A complete prepared line."
-        line = story_line(text, "Actual speaker")
-        other = story_line(text, "Other chapter speaker", "line-2", "chapter-2")
-        controller = self.controller((line, other))
-        previous = ChapterMatch(line.chapter, 0, 1.0)
-        controller.chapter_voice_preloader.current_match = previous
-        snapshots = []
-        raw = observed(text)
-        with (
-            patch(
-                "vntts.dialog_capture.capture_dialog",
-                return_value=(Image.new("RGB", (300, 100)), None),
-            ),
-            patch(
-                "vntts.dialog_capture.recognize_dialog_image_result", return_value=raw
-            ),
+        for text, ocr_text in (
+            ("A complete prepared line.", "A complete prepared line."),
+            ("Remember Nowa Miedź?", "Remember Nowa Miedz?"),
+            ("Ouch!", "Oucb!"),
         ):
-            _, _, result = analyze_dialog_snapshot(
-                "captures",
-                result_resolver=controller._resolve_story_ocr_result,
-                diagnostic_handler=snapshots.append,
-            )
-        self.assertEqual(result.character, line.speaker)
-        self.assertEqual(snapshots[0].speaker_confidence, 26)
-        self.assertTrue(snapshots[0].speaker_note)
-        self.assertIs(controller.chapter_voice_preloader.current_match, previous)
+            with self.subTest(text=text):
+                line = story_line(text, "Actual speaker")
+                other = story_line(
+                    ocr_text, "Other chapter speaker", "line-2", "chapter-2"
+                )
+                controller = self.controller((line, other))
+                previous = ChapterMatch(line.chapter, 0, 1.0)
+                controller.chapter_voice_preloader.current_match = previous
+                snapshots = []
+                raw = observed(ocr_text)
+                with (
+                    patch(
+                        "vntts.dialog_capture.capture_dialog",
+                        return_value=(Image.new("RGB", (300, 100)), None),
+                    ),
+                    patch(
+                        "vntts.dialog_capture.recognize_dialog_image_result",
+                        return_value=raw,
+                    ),
+                ):
+                    _, _, result = analyze_dialog_snapshot(
+                        "captures",
+                        result_resolver=controller._resolve_story_ocr_result,
+                        diagnostic_handler=snapshots.append,
+                    )
+                self.assertEqual((result.character, result.text), (line.speaker, text))
+                self.assertEqual(snapshots[0].speaker_confidence, 26)
+                self.assertTrue(snapshots[0].speaker_note)
+                self.assertIs(
+                    controller.chapter_voice_preloader.current_match, previous
+                )
 
 
 if __name__ == "__main__":
