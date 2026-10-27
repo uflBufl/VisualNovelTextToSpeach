@@ -4040,14 +4040,32 @@ class AppController:
     ) -> PlaybackOutcome:
         play_route = getattr(self.speech_backend, "play_route", None)
         play_prepared = getattr(self.speech_backend, "play_prepared", None)
-        outcome = (
-            play_route(
-                audio,
-                playback_guard=lambda: reader.wait_until_playable(chunk),
-            )
-            if callable(play_route) and isinstance(audio, RouteDecision)
-            else None
-        )
+        outcome = None
+        if isinstance(audio, RouteDecision):
+            if isinstance(self.speech_backend, GeneratedAudioFallbackBackend):
+                if isinstance(audio, (GeneratedAudioRoute, PendingGeneratedAudioRoute)):
+                    if not reader.set_current_playback_interruptible(chunk, True):
+                        return PlaybackOutcome(
+                            PlaybackStatus.INTERRUPTED,
+                            None,
+                            audio_source=audio.trace.effective_source,
+                        )
+                outcome = self.speech_backend.play_route(
+                    audio,
+                    playback_guard=lambda: reader.wait_until_playable(chunk),
+                    on_playback_dispatch=lambda dispatched: (
+                        reader.set_current_playback_interruptible(
+                            chunk,
+                            not isinstance(dispatched, GeneratedAudioRoute)
+                            and reader.interrupt_on_dialog_replacement,
+                        )
+                    ),
+                )
+            elif callable(play_route):
+                outcome = play_route(
+                    audio,
+                    playback_guard=lambda: reader.wait_until_playable(chunk),
+                )
         if (
             outcome is None
             and callable(play_prepared)

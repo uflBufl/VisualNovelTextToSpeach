@@ -16,18 +16,6 @@
       доступное чтение текущего текста. Это отдельная стадия от зависания после
       звука. Реплика100 автоматически распозналась до моего Stop, а разовая
       Dialogue фактически прочитала103 (единственный её маршрут, не повтор).
-- [ ] **RUN-25-08: подготовленная48 прервана сменой сцены.** Итог второго
-      сегмента и захваченный звук подтверждают обрыв Narrator48:
-      из10.160с WAV проиграно9.350с, последние0.810с содержат сигнал, но
-      отсутствуют в записи выхода. Игра сама перешла к настоящей49.
-      Готовый WAV наследует interrupt_on_dialog_replacement от live-движка;
-      новая generation отменяет текущий chunk и запрещает его playback guard.
-      Согласовать дочитывание уже начатого готового WAV при смене реплики;
-      это также означает дочитывание после ручного перехода в самой игре.
-      Затем исправить обе точки отмены, сохранив отмену устаревшей очереди,
-      live-синтеза и явные команды пропуска/отмены в приложении. Проверить
-      переход во время объявления имени: ещё не начатая реплика устаревает.
-      Подтвердить48 -> 49 в общем прогоне после локальных регрессий.
 - [ ] **RUN-25-07: внезапный live fallback вместо подготовленного голоса.**
       После65 на generation57 выбран `live:moss-tts / no-match`, line_id
       отсутствует, chunk_characters=16. Синтез14.017с, первый PCM14.086с;
@@ -324,16 +312,12 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Agree and implement prepared playback completion (RUN-25-08).**
-   Approval first: let an already-started generated WAV finish when a new dialogue
-   is accepted, including a manual transition in the game. Derive this permission
-   from the actual playing route, not the live backend's global capability; apply
-   it to both generation replacement and the playback guard. Cancel stale queued
-   work and preserve live-route interruption. A speaker announcement must not
-   protect a dialogue WAV that has not started. Gates: focused regressions for
-   completion, stale queued work, wrapped routes and explicit cancellation;
-   old completion must not finish the successor's cursor. Keep native48 -> 49
-   verification deferred to the combined run.
+1. **Investigate unexpected live fallback (RUN-25-07).**
+   Compare retained raw OCR and route decisions for the four no-match occurrences
+   with the expected prepared lines66/74/76/92. Establish why exact prepared
+   lookup was missed before proposing matching or routing changes; agree the
+   implementation plan before editing behavior. If raw observations are missing,
+   retain the evidence gap for the combined run rather than guessing a threshold.
 2. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
    Run all314001 through104 from Stories without manual transitions while real
    heavy generation/publication remains active. Also qualify partly prepared
@@ -342,6 +326,12 @@ complete. Do not change recognition or playback policy on an unverified hypothes
    U1/U2/U4/U6/U7/U8 gates, persistent OCR and portable observation. Preserve
    approved WAV bytes and complete independent capture; cache hits alone are
    not background-generation load. Include the following deferred checks:
+   - **Prepared completion (RUN-25-08):** verify Narrator48's full10.160s WAV
+     across the automatic transition to49, with no missing tail or overlapping
+     application speech. Check manual game advance also lets a started WAV finish,
+     while pre-dispatch scene changes and explicit application cancellation stop
+     stale work. Include speaker announcements, original-audio lead, pending
+     preparation and pause/resume; late48 completion must not finish49's cursor.
    - **Generation budget (GEN-25-02):** qualify314501:85 with the selected
      reference and normal automatic retries; retain actual limits and outcomes.
      Require complete speech or a clear terminal failure, no truncated WAV in

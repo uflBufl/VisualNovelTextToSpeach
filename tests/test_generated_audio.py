@@ -4,11 +4,12 @@ import os
 import unittest
 import wave
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread, current_thread
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import numpy as np
 from vntts_artifacts.file_integrity import sha256_file
@@ -200,12 +201,15 @@ class GeneratedAudioTest(unittest.TestCase):
                     )
 
             backend.progress_wait_status = publish_on_wait
-            outcome = backend.play_route(route)
+            dispatch = Mock(return_value=True)
+            outcome = backend.play_route(route, on_playback_dispatch=dispatch)
 
         self.assertIsInstance(route, PendingGeneratedAudioRoute)
         self.assertTrue(outcome.successful)
         self.assertEqual(outcome.audio_source, "generated")
         self.assertEqual(len(output.plays), 1)
+        dispatch.assert_called_once_with(ANY)
+        self.assertIsInstance(dispatch.call_args.args[0], GeneratedAudioRoute)
         self.assertEqual(requests, [("game:1", text_sha256("Hello."))])
         self.assertEqual(observed, [("game:1", text_sha256("Hello."))])
         self.assertEqual(statuses[0], "Preparing this line - attempt 2 of 3.")
@@ -814,23 +818,30 @@ class GeneratedAudioTest(unittest.TestCase):
             self.assertIsInstance(route, PendingGeneratedAudioRoute)
             self.create_live_fallback_library(root, runtime_progress=True)
             backend.voice_override = Mock(return_value=True)
+            dispatch = Mock(return_value=True)
             guard_calls = 0
 
             def playback_guard():
                 nonlocal guard_calls
                 guard_calls += 1
-                return guard_calls <= 2
+                return True
 
             with patch.object(
                 resolver,
                 "line_for_id",
                 side_effect=AssertionError("Pending route must not resolve again"),
             ):
-                outcome = backend.play_route(route, playback_guard=playback_guard)
+                outcome = backend.play_route(
+                    route,
+                    playback_guard=playback_guard,
+                    on_playback_dispatch=dispatch,
+                )
 
         self.assertTrue(outcome.successful)
         self.assertEqual(outcome.audio_source, "live-fallback")
-        self.assertEqual(guard_calls, 2)
+        self.assertEqual(guard_calls, 4)
+        dispatch.assert_called_once_with(ANY)
+        self.assertIsInstance(dispatch.call_args.args[0], LiveFallbackRoute)
         backend.voice_override.assert_not_called()
         live.prepare_playback.assert_called_once_with("Narrator", "Hello.")
 
@@ -1985,6 +1996,131 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(sample_rate, 24_000)
         self.assertEqual(options["latency"], "low")
 
+    def test_generated_dispatch_runs_after_lead_and_sample_preparation(self):
+        for output_type in (FakeAudioOutput, ExplicitStreamAudioOutput):
+            for allowed in (False, True):
+                with self.subTest(output=output_type.__name__, allowed=allowed):
+                    output = output_type()
+                    backend = GeneratedAudioFallbackBackend(
+                        self.create_live_backend(),
+                        Mock(),
+                        Mock(),
+                        volume=0.5,
+                        audio_output=output,
+                    )
+                    route = GeneratedAudioRoute(
+                        PreparedGeneratedAudio(
+                            "game:1", "hash", np.array([0.5], dtype=np.float32), 24_000
+                        ),
+                        Mock(effective_source="generated"),
+                        source_audio_lead_seconds=0.1,
+                    )
+                    stages = []
+
+                    def lead(seconds):
+                        self.assertEqual(seconds, 0.1)
+                        stages.append("lead")
+                        return False
+
+                    def prepare(_output, samples, sample_rate):
+                        self.assertEqual(stages, ["lead"])
+                        np.testing.assert_allclose(samples, [0.25])
+                        stages.append("samples")
+                        return samples, sample_rate
+
+                    def dispatch(dispatched):
+                        self.assertIs(dispatched, route)
+                        self.assertEqual(stages, ["lead", "samples"])
+                        self.assertEqual(output.plays, [])
+                        if isinstance(output, ExplicitStreamAudioOutput):
+                            self.assertEqual(output.streams, [])
+                        stages.append("dispatch")
+                        return allowed
+
+                    with (
+                        patch.object(
+                            backend.playback_owner.source_audio_completion_stop,
+                            "wait",
+                            side_effect=lead,
+                        ),
+                        patch(
+                            "vntts.generated_audio.match_output_sample_rate",
+                            side_effect=prepare,
+                        ),
+                    ):
+                        outcome = backend.play_route(
+                            route, on_playback_dispatch=dispatch
+                        )
+
+                    self.assertEqual(stages, ["lead", "samples", "dispatch"])
+                    self.assertIs(
+                        outcome.status,
+                        PlaybackStatus.COMPLETED
+                        if allowed
+                        else PlaybackStatus.INTERRUPTED,
+                    )
+                    writes = (
+                        output.streams
+                        if isinstance(output, ExplicitStreamAudioOutput)
+                        else output.plays
+                    )
+                    self.assertEqual(len(writes), int(allowed))
+
+    def test_generated_dispatch_cannot_override_stop(self):
+        output = FakeAudioOutput()
+        backend = GeneratedAudioFallbackBackend(
+            self.create_live_backend(), Mock(), Mock(), audio_output=output
+        )
+        route = GeneratedAudioRoute(
+            PreparedGeneratedAudio("game:1", "hash", np.zeros(24), 24_000),
+            Mock(effective_source="generated"),
+        )
+
+        def dispatch(dispatched):
+            self.assertIs(dispatched, route)
+            backend.stop()
+            return True
+
+        outcome = backend.play_route(route, on_playback_dispatch=dispatch)
+
+        self.assertIs(outcome.status, PlaybackStatus.INTERRUPTED)
+        self.assertEqual(output.plays, [])
+
+    def test_live_dispatch_runs_after_lead_and_honors_denial_and_stop(self):
+        for action in ("allow", "deny", "stop"):
+            with self.subTest(action=action):
+                live = self.create_live_backend()
+                backend = GeneratedAudioFallbackBackend(
+                    live, None, self.create_resolver(), audio_output=FakeAudioOutput()
+                )
+                route = replace(
+                    backend.prepare_route("Ada", "Hello."),
+                    source_audio_lead_seconds=0.1,
+                )
+
+                def dispatch(dispatched):
+                    self.assertIs(dispatched, route)
+                    lead.assert_called_once_with(0.1)
+                    live.play_prepared.assert_not_called()
+                    if action == "stop":
+                        backend.stop()
+                    return action != "deny"
+
+                with patch.object(
+                    backend.playback_owner.source_audio_completion_stop,
+                    "wait",
+                    return_value=False,
+                ) as lead:
+                    outcome = backend.play_route(route, on_playback_dispatch=dispatch)
+
+                self.assertIs(
+                    outcome.status,
+                    PlaybackStatus.COMPLETED
+                    if action == "allow"
+                    else PlaybackStatus.INTERRUPTED,
+                )
+                self.assertEqual(live.play_prepared.call_count, int(action == "allow"))
+
     def test_stop_during_waiting_generated_guard_cannot_write_the_first_block(self):
         output = ExplicitStreamAudioOutput()
         backend = GeneratedAudioFallbackBackend(
@@ -2240,15 +2376,17 @@ class GeneratedAudioTest(unittest.TestCase):
             self.assertTrue(backend.stop())
             return False
 
+        dispatch = Mock(return_value=True)
         with patch.object(
             backend.playback_owner.source_audio_completion_stop,
             "wait",
             side_effect=stop_at_wait,
         ):
-            outcome = backend.play_route(route)
+            outcome = backend.play_route(route, on_playback_dispatch=dispatch)
 
         self.assertIs(outcome.status, PlaybackStatus.INTERRUPTED)
         self.assertEqual(output.plays, [])
+        dispatch.assert_not_called()
 
     def test_generated_guard_change_during_wait_returns_interrupted(self):
         playable = True

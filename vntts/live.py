@@ -538,6 +538,7 @@ class LiveDialogReader:
         self.paused_chunks: list[SpeechChunk] = []
         self.deferred_chunk: SpeechChunk | None = None
         self.current_chunk: SpeechChunk | None = None
+        self.current_playback_interruptible = self.interrupt_on_dialog_replacement
         self.current_chunk_pipeline_origins: dict[str, float | None] | None = None
         self.last_spoken_chunk: SpeechChunk | None = None
         self.cancelled_chunk_ids: set[int] = set()
@@ -946,10 +947,11 @@ class LiveDialogReader:
             return epoch == self.frame_route_epoch
 
     def skip_current(self) -> bool:
-        with self.state_lock:
+        with self.pause_condition:
             has_current_speech = self.current_chunk is not None
             if has_current_speech:
                 self.cancelled_chunk_ids.add(id(self.current_chunk))
+                self.pause_condition.notify_all()
         if has_current_speech:
             self._interrupt_speech()
         return has_current_speech
@@ -994,6 +996,8 @@ class LiveDialogReader:
         self.paused_chunks = []
         self.deferred_chunk = None
         has_current_speech = self.current_chunk is not None
+        if has_current_speech:
+            self.cancelled_chunk_ids.add(id(self.current_chunk))
         self.pending_auto_advance_generation = None
         self.auto_advance_attempts = 0
         self.auto_advance_blocked_generation = None
@@ -1089,10 +1093,24 @@ class LiveDialogReader:
                 and not self.is_shutting_down
             )
 
+    def set_current_playback_interruptible(
+        self, chunk: SpeechChunk, interruptible: bool
+    ) -> bool:
+        """Bind replacement policy to the current route's actual playback phase."""
+        with self.pause_condition:
+            if (
+                not self.wait_until_playable(chunk)
+                or self.current_chunk is not chunk
+                or chunk.generation != self.active_generation
+            ):
+                return False
+            self.current_playback_interruptible = interruptible
+            return True
+
     def wait_until_playable(self, chunk: SpeechChunk) -> bool:
         with self.pause_condition:
             finish_active_playback = bool(
-                self.current_chunk is chunk and not self.interrupt_on_dialog_replacement
+                self.current_chunk is chunk and not self.current_playback_interruptible
             )
             while (
                 self.paused
@@ -1102,6 +1120,7 @@ class LiveDialogReader:
                     chunk.generation == self.active_generation or finish_active_playback
                 )
                 and self.suppressed_generation != chunk.generation
+                and id(chunk) not in self.cancelled_chunk_ids
             ):
                 self.pause_condition.wait()
             return (
@@ -2164,7 +2183,7 @@ class LiveDialogReader:
                         last_auto_advance_at=monotonic(),
                     )
                 interrupt_current = bool(
-                    self.interrupt_on_dialog_replacement
+                    self.current_playback_interruptible
                     and self.current_chunk is not None
                 )
                 if interrupt_current:
@@ -2191,8 +2210,7 @@ class LiveDialogReader:
                     self.deferred_chunk = None
                 self.pause_condition.notify_all()
             metrics = self.pipeline_metrics
-        # Most backends finish active playback to avoid clicks. Streaming
-        # backends that cooperatively cancel generation opt into interruption.
+        # A dispatched generated WAV finishes even with an interrupting live engine.
         for future in stale_futures:
             future.cancel()
         if interrupt_current:
@@ -2431,6 +2449,7 @@ class LiveDialogReader:
             return
         with self.state_lock:
             self.current_chunk = chunk
+            self.current_playback_interruptible = self.interrupt_on_dialog_replacement
             self.last_spoken_chunk = chunk
             metrics = self.pipeline_metrics
             self.current_chunk_pipeline_origins = {
@@ -2478,6 +2497,9 @@ class LiveDialogReader:
                 self._record_speech_metrics_locked(playback_completed=True)
                 if self.current_chunk is chunk:
                     self.current_chunk = None
+                    self.current_playback_interruptible = (
+                        self.interrupt_on_dialog_replacement
+                    )
                     self.current_chunk_pipeline_origins = None
                 self.cancelled_chunk_ids.discard(id(chunk))
                 self.pause_interrupted_chunk_ids.discard(id(chunk))

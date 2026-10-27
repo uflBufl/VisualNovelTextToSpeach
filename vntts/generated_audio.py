@@ -1142,9 +1142,17 @@ class GeneratedAudioFallbackBackend:
                 setattr(self.line_resolver, "current_match", current_match)
 
     def play_route(
-        self, route: RouteDecision, *, playback_guard: PlaybackGuard = None
+        self,
+        route: RouteDecision,
+        *,
+        playback_guard: PlaybackGuard = None,
+        on_playback_dispatch: Callable[[RouteDecision], bool] | None = None,
     ) -> PlaybackOutcome:
-        return self.playback_owner.play_route(route, playback_guard=playback_guard)
+        return self.playback_owner.play_route(
+            route,
+            playback_guard=playback_guard,
+            on_playback_dispatch=on_playback_dispatch,
+        )
 
     def resolved_pending_route(
         self, route: PendingGeneratedAudioRoute
@@ -1258,23 +1266,41 @@ class AudioRoutePlaybackOwner:
             self.active_playback_source = None
 
     def play_route(
-        self, route: RouteDecision, *, playback_guard: PlaybackGuard = None
+        self,
+        route: RouteDecision,
+        *,
+        playback_guard: PlaybackGuard = None,
+        on_playback_dispatch: Callable[[RouteDecision], bool] | None = None,
     ) -> PlaybackOutcome:
         with self.playback_lock:
-            return self._dispatch_route(route, playback_guard=playback_guard)
+            return self._dispatch_route(
+                route,
+                playback_guard=playback_guard,
+                on_playback_dispatch=on_playback_dispatch,
+            )
 
     def _dispatch_route(
-        self, route: RouteDecision, *, playback_guard: PlaybackGuard = None
+        self,
+        route: RouteDecision,
+        *,
+        playback_guard: PlaybackGuard = None,
+        on_playback_dispatch: Callable[[RouteDecision], bool] | None = None,
     ) -> PlaybackOutcome:
         """Play one immutable route and return metrics bound to that route."""
         if isinstance(route, SourceAudioRoute):
             return self._play_source_route(route, playback_guard)
         if isinstance(route, GeneratedAudioRoute):
-            return self._play_generated_route(route, playback_guard)
+            return self._play_generated_route(
+                route, playback_guard, on_playback_dispatch=on_playback_dispatch
+            )
         if isinstance(route, PendingGeneratedAudioRoute):
-            return self._play_pending_generated_route(route, playback_guard)
+            return self._play_pending_generated_route(
+                route, playback_guard, on_playback_dispatch=on_playback_dispatch
+            )
         if isinstance(route, (LiveFallbackRoute, LiveTTSRoute)):
-            return self._play_live_route(route, playback_guard)
+            return self._play_live_route(
+                route, playback_guard, on_playback_dispatch=on_playback_dispatch
+            )
         if isinstance(route, AudioEventOmissionRoute):
             status = (
                 PlaybackStatus.COMPLETED
@@ -1288,6 +1314,8 @@ class AudioRoutePlaybackOwner:
         self,
         route: PendingGeneratedAudioRoute,
         playback_guard: Callable[[], bool] | None,
+        *,
+        on_playback_dispatch: Callable[[RouteDecision], bool] | None = None,
     ) -> PlaybackOutcome:
         if self.router.library is None:
             raise RuntimeError("Generated-audio progress route requires a library")
@@ -1315,7 +1343,11 @@ class AudioRoutePlaybackOwner:
                             else "Live fallback is ready; continuing reading."
                         )
                     )
-                    return self._dispatch_route(resolved, playback_guard=playback_guard)
+                    return self._dispatch_route(
+                        resolved,
+                        playback_guard=playback_guard,
+                        on_playback_dispatch=on_playback_dispatch,
+                    )
                 status = self.router.library.progress_description(
                     route.line_id, route.text_sha256
                 )
@@ -1367,7 +1399,11 @@ class AudioRoutePlaybackOwner:
                 self._deactivate()
 
     def _play_generated_route(
-        self, route: GeneratedAudioRoute, playback_guard: PlaybackGuard
+        self,
+        route: GeneratedAudioRoute,
+        playback_guard: PlaybackGuard,
+        *,
+        on_playback_dispatch: Callable[[RouteDecision], bool] | None = None,
     ) -> PlaybackOutcome:
         if playback_guard is not None and not playback_guard():
             return _route_outcome(
@@ -1438,7 +1474,14 @@ class AudioRoutePlaybackOwner:
                 )
                 sample_count = len(samples)
                 expected_playback_ms = sample_count * 1000 / sample_rate
-                if playback_cancelled(self.generated_audio_stop, playback_guard):
+                cancelled = playback_cancelled(
+                    self.generated_audio_stop, playback_guard
+                )
+                if not cancelled and on_playback_dispatch is not None:
+                    cancelled = not on_playback_dispatch(route) or playback_cancelled(
+                        self.generated_audio_stop, playback_guard
+                    )
+                if cancelled:
                     return _route_outcome(
                         route,
                         PlaybackStatus.INTERRUPTED,
@@ -1527,6 +1570,8 @@ class AudioRoutePlaybackOwner:
         self,
         route: LiveFallbackRoute | LiveTTSRoute,
         playback_guard: PlaybackGuard,
+        *,
+        on_playback_dispatch: Callable[[RouteDecision], bool] | None = None,
     ) -> PlaybackOutcome:
         if playback_guard is not None and not playback_guard():
             return _route_outcome(route, PlaybackStatus.INTERRUPTED, None)
@@ -1546,12 +1591,19 @@ class AudioRoutePlaybackOwner:
                     (self.router.clock() - lead_started) * 1000,
                 )
             lead_ms = (self.router.clock() - lead_started) * 1000
-        if not self._activate("live"):
+        if not self._activate("live", clear=self.progress_wait_stop):
             self._deactivate()
             return _route_outcome(route, PlaybackStatus.INTERRUPTED, lead_ms)
         try:
             if self.router.live_backend is None:
                 raise LiveSpeechRequired(route.trace)
+            cancelled = playback_cancelled(self.progress_wait_stop, playback_guard)
+            if not cancelled and on_playback_dispatch is not None:
+                cancelled = not on_playback_dispatch(route) or playback_cancelled(
+                    self.progress_wait_stop, playback_guard
+                )
+            if cancelled:
+                return _route_outcome(route, PlaybackStatus.INTERRUPTED, lead_ms)
             outcome = self.router.live_backend.play_prepared(
                 route.prepared,
                 playback_guard=playback_guard,

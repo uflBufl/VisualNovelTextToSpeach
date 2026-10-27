@@ -3669,6 +3669,210 @@ class LiveDialogReaderTest(unittest.TestCase):
         interrupt_speech.assert_not_called()
         self.assertTrue(reader.wait_until_playable(old_chunk))
 
+    def test_dispatched_generated_audio_finishes_but_stale_queue_is_cancelled(self):
+        interrupt_speech = Mock()
+        reader = self.create_reader(
+            interrupt_speech=interrupt_speech,
+            interrupt_on_dialog_replacement=True,
+        )
+        current = SpeechChunk(1, "Narrator", "Finish this line.")
+        reader.active_generation = 1
+        reader.current_chunk = current
+        self.assertTrue(reader.set_current_playback_interruptible(current, False))
+
+        reader._set_generation(2)
+        stale = SpeechChunk(2, "Alice", "Already replaced.")
+        stale_future = Future()
+        reader.speech_futures[stale_future] = stale
+        reader.deferred_chunk = stale
+        reader._set_generation(3)
+
+        interrupt_speech.assert_not_called()
+        self.assertTrue(reader.wait_until_playable(current))
+        self.assertFalse(reader.wait_until_playable(replace(current)))
+        self.assertFalse(reader.wait_until_playable(stale))
+        self.assertTrue(stale_future.cancelled())
+        self.assertIsNone(reader.deferred_chunk)
+        self.assertTrue(reader.wait_until_playable(SpeechChunk(3, "Alice", "Latest.")))
+
+    def test_stale_or_queued_chunk_cannot_claim_generated_audio_completion(self):
+        reader = self.create_reader(interrupt_on_dialog_replacement=True)
+        chunk = SpeechChunk(1, "Alice", "Not started.")
+        reader.active_generation = 1
+        self.assertFalse(reader.set_current_playback_interruptible(chunk, False))
+        reader.current_chunk = chunk
+        self.assertFalse(
+            reader.set_current_playback_interruptible(replace(chunk), False)
+        )
+        reader._set_generation(2)
+        self.assertFalse(reader.set_current_playback_interruptible(chunk, False))
+
+    def test_explicit_cancellation_stops_generated_audio_from_previous_dialogue(self):
+        for action in ("skip_current", "clear_queue", "emergency_stop", "shutdown"):
+            with self.subTest(action=action):
+                interrupt_speech = Mock(return_value=True)
+                reader = self.create_reader(
+                    interrupt_speech=interrupt_speech,
+                    interrupt_on_dialog_replacement=True,
+                )
+                chunk = SpeechChunk(1, "Alice", "Finish unless cancelled.")
+                reader.active_generation = 1
+                reader.current_chunk = chunk
+                self.assertTrue(reader.set_current_playback_interruptible(chunk, False))
+                reader._set_generation(2)
+
+                getattr(reader, action)()
+                self.assertFalse(reader.wait_until_playable(chunk))
+                reader._set_generation(3)
+                self.assertFalse(reader.wait_until_playable(chunk))
+                self.assertFalse(
+                    reader.set_current_playback_interruptible(chunk, False)
+                )
+                interrupt_speech.assert_called_once_with()
+
+    def test_cancelling_paused_old_generated_audio_releases_playback_guard(self):
+        for action in ("skip_current", "clear_queue"):
+            with self.subTest(action=action):
+                reader = self.create_reader(interrupt_on_dialog_replacement=True)
+                chunk = SpeechChunk(1, "Alice", "Paused old line.")
+                reader.active_generation = 1
+                reader.current_chunk = chunk
+                self.assertTrue(reader.set_current_playback_interruptible(chunk, False))
+                reader._set_generation(2)
+                reader.paused = True
+                waiting = Event()
+                results = []
+                wait = reader.pause_condition.wait
+
+                def observed_wait():
+                    waiting.set()
+                    return wait()
+
+                worker = Thread(
+                    target=lambda: results.append(reader.wait_until_playable(chunk))
+                )
+                with patch.object(reader.pause_condition, "wait", observed_wait):
+                    worker.start()
+                    try:
+                        self.assertTrue(waiting.wait(1))
+                        getattr(reader, action)()
+                        worker.join(1)
+                        self.assertFalse(worker.is_alive())
+                        self.assertEqual(results, [False])
+                    finally:
+                        reader.release_waiters()
+                        worker.join(1)
+
+    def test_generated_completion_starts_after_announcement_and_source_lead(self):
+        from itertools import product
+
+        from tests.audio_output_fixtures import FakeAudioOutput
+        from vntts.controller import AppController, PreparedLiveChunkRoutes
+        from vntts.generated_audio import (
+            GeneratedAudioFallbackBackend,
+            LiveFallbackRoute,
+            LiveTTSRoute,
+            PendingGeneratedAudioRoute,
+        )
+        from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
+        from vntts.settings import AppSettings
+
+        for transition, interruptible in product(
+            ("announcement", "lead", "pending", "playback", "live-fallback"),
+            (False, True),
+        ):
+            with self.subTest(transition=transition, interruptible=interruptible):
+                controller = AppController(AppSettings(), status_handler=Mock())
+                output = FakeAudioOutput()
+                live_backend = Mock(name="live")
+                backend = GeneratedAudioFallbackBackend(
+                    live_backend, Mock(), Mock(), audio_output=output
+                )
+                controller.speech_backend = backend
+                reader = self.create_reader(
+                    play_prepared=controller._play_live_chunk,
+                    interrupt_speech=controller._interrupt_speech,
+                    interrupt_on_dialog_replacement=interruptible,
+                )
+                controller.live_reader = reader
+                reader.active_generation = 1
+                chunk = SpeechChunk(1, "Alice", "Complete prepared line.")
+                trace = AudioRouteTrace(
+                    1, "generated", "exact", None, None, "a", "ready"
+                )
+                route = GeneratedAudioRoute(
+                    PreparedGeneratedAudio("a", "hash", [0.2] * 240, 24_000),
+                    trace,
+                    source_audio_lead_seconds=1,
+                )
+                if transition in {"pending", "live-fallback"}:
+                    route = PendingGeneratedAudioRoute(
+                        "a", "hash", chunk.text, chunk.character, trace
+                    )
+                    backend.resolved_pending_route = Mock(
+                        return_value=LiveFallbackRoute(
+                            PreparedPlayback("fallback", None, None, None, "live"),
+                            Mock(),
+                            replace(trace, effective_source="live-fallback"),
+                            None,
+                            None,
+                        )
+                    )
+                announcement = LiveTTSRoute(
+                    PreparedPlayback(object(), None, None, None, "live"),
+                    replace(trace, effective_source="live-accessibility-announcement"),
+                    None,
+                    None,
+                )
+
+                def advance_at(phase):
+                    if transition == phase:
+                        reader._set_generation(2)
+
+                def announce(_prepared, *, playback_guard):
+                    advance_at(
+                        "live-fallback"
+                        if _prepared.payload == "fallback"
+                        else "announcement"
+                    )
+                    if _prepared.payload == "fallback":
+                        self.assertEqual(
+                            reader.wait_until_playable(chunk), not interruptible
+                        )
+                    status = (
+                        PlaybackStatus.COMPLETED
+                        if playback_guard()
+                        else PlaybackStatus.INTERRUPTED
+                    )
+                    return PlaybackOutcome(status, 1.0)
+
+                def lead(_seconds):
+                    advance_at("lead")
+                    return False
+
+                def playback():
+                    advance_at("playback")
+                    self.assertTrue(reader.wait_until_playable(chunk))
+                    return Mock(output_underflow=False)
+
+                live_backend.play_prepared.side_effect = announce
+                output.wait = playback
+                backend.progress_wait_status = lambda _status: advance_at("pending")
+                with patch.object(
+                    backend.playback_owner.source_audio_completion_stop,
+                    "wait",
+                    side_effect=lead,
+                ):
+                    reader._play_current_chunk(
+                        chunk, PreparedLiveChunkRoutes(route, announcement, "Alice")
+                    )
+
+                reader.report_error.assert_not_called()
+                self.assertEqual(len(output.plays), int(transition == "playback"))
+                self.assertIsNone(reader.current_chunk)
+                self.assertEqual(reader.current_playback_interruptible, interruptible)
+                self.assertFalse(reader.wait_until_playable(chunk))
+
     def test_equal_text_does_not_make_a_different_chunk_current(self):
         reader = self.create_reader(interrupt_on_dialog_replacement=False)
         current = SpeechChunk(1, "Alice", "Again.", ordinal=1)
