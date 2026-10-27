@@ -62,9 +62,11 @@
       MOSS/stable/seed0, retries0, отдельная очередь314501: один WAV получил
       speech_silence / sentence_boundary_pause_candidate, пауза3.44..5.04с.
       Проверка качества сработала, это не сбой воспроизведения главы314001.
-      Обсудить, достаточно ли понятен обычный путь прослушивания/повторного
-      создания такого результата; штатный UI этого задания пока не проверен
-      из-за несовместимости каталога. В failed-строке SQLite line_id=NULL;
+      Показать персонажа, полную фразу и понятную причину неудачи. Если звук
+      получился, дать прослушать отклонённый результат; иначе явно сообщить,
+      что аудио не создано или не сохранено. Новые действия повтора, смены
+      референса/движка и ручного принятия не добавлять. Штатный UI этого задания
+      пока не проверен из-за несовместимости каталога. В failed-строке SQLite line_id=NULL;
       сопоставление требует queue_id, что затрудняет ручную диагностику.
 - [ ] **GEN-25-02: фоновая реплика314501:85 упёрлась в лимит генерации.**
       MOSS вернул `Typed render completed as limited`, max_audio_seconds=5.1667,
@@ -312,11 +314,16 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Make failed preparation actionable (GEN-25-01).** Inspect the existing
-   rejected result, quality evidence and Stories retry path without a game run.
-   Decide the smallest understandable failure/preview/retry change; retain ready
-   neighbouring recordings and saved assignments. Do not weaken quality gates
-   because one sample was rejected. Fresh generation acceptance is deferred.
+1. **Explain failed preparation and preview its result (GEN-25-01).** Carry
+   the existing failure evidence into Stories with the character and full phrase.
+   Present measured causes without claiming a listening defect from a heuristic.
+   Plan minimal retention of the last rejected audio for playback; distinguish
+   no audio produced from an older recording no longer retained. Keep diagnostic
+   audio separate from ready recordings. Add no manual retry, per-line voice or
+   engine override, or acceptance workflow; preserve existing automatic recovery
+   and quality gates. Gate: correct line identity/reason, available/unavailable
+   preview and preservation of ready recordings. Fresh generation acceptance
+   remains deferred.
 2. **Check generation budget (GEN-25-02).** Trace314501:85's actual retained
    text/reference/model/settings through token/time budgeting and normal retries.
    Fix a demonstrated budgeting or failure-reporting defect with deterministic
