@@ -17,20 +17,18 @@
       звука. Реплика100 автоматически распозналась до моего Stop, а разовая
       Dialogue фактически прочитала103 (единственный её маршрут, не повтор).
 - [ ] **RUN-25-07: внезапный live fallback вместо подготовленного голоса.**
-      После65 на generation57 выбран `live:moss-tts / no-match`, line_id
-      отсутствует, chunk_characters=16. Синтез14.017с, первый PCM14.086с;
-      пользователь получает заметную тишину при подключённой готовой главе.
-      Сверить распознанный текст с ожидаемой66 `So, where is it?` и причину
-      no-match; live fallback завершился, но нарушил сценарий prepared-чтения.
-      Повторилось на generation65 после73:22символа, story-line-no-match,
-      voice:grundriss:reference-1. Требуется сверка с ожидаемой74.
-      Ещё один no-match на generation67 после75 (ожидаемая76), firstPCM540мс.
-      Привязка трёх no-match к66/74/76 пока по порядку сцен, не по line_id.
-      Итоговая сверка нашла четвёртый live no-match: generation83 между91/93,
-      ожидаемая92; все четыре завершились, но готовые WAV не использовались.
-      Сначала сохранить raw OCR: канонические тексты66/74/76/92 точно находятся
-      через resolve_exact_with_result, поэтому менять порог сопоставления без
-      фактического распознанного текста нельзя.
+      Входные фразы подтверждены по историческому chunk_id (без регистра):
+      66 `50, where is it?`,74 `50 what's the hold-up?`,76
+      `Remember Nowa Miedz?`,92 `Tll handle it.`. Готовые WAV всех четырёх
+      доступны. На сохранённых кадрах текущий Sauvola и production resolver
+      выбирают prepared66/74/92;76 всё ещё получает no-match из-за `ź -> z`.
+      Согласовать вторичное сопоставление полного текста без латинской
+      диакритики в resolve_complete_among: после строгого совпадения, только
+      среди разрешённых checksum-bound кандидатов, с отказом при коллизиях
+      и неполном префиксе. Не расширять edit budget коротких строк, не менять
+      числа/отрицания или нелатинские буквы. Сохранить исходный canonical text
+      для exact выбора WAV. Гейты: регрессии всех четырёх кадров и отрицательные
+      примеры коллизий/неполного текста; приёмка в общем прогоне ниже.
 - [ ] **RUN-25-06: сверить короткие реплики без route-decision.** В участке
       44 -> 47 отсутствует маршрут для оригинальной46 (`Have you finished your
       design for the monument?`); после49 отсутствует подготовленная116 (`Ouch!`),
@@ -312,12 +310,15 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Investigate unexpected live fallback (RUN-25-07).**
-   Compare retained raw OCR and route decisions for the four no-match occurrences
-   with the expected prepared lines66/74/76/92. Establish why exact prepared
-   lookup was missed before proposing matching or routing changes; agree the
-   implementation plan before editing behavior. If raw observations are missing,
-   retain the evidence gap for the combined run rather than guessing a threshold.
+1. **Agree and implement complete-text diacritic matching (RUN-25-07).**
+   The remaining reproduced failure is76's `Miedz` versus canonical `Miedź`.
+   Add secondary Latin-diacritic equality to resolve_complete_among; use NFD on
+   raw text before normalization, preserve strict-match priority, allowed scope,
+   protected content and folded ambiguity/longer-prefix rejection. Canonicalize
+   to the source line before the unchanged exact backend lookup. Keep all fuzzy
+   thresholds unchanged. Gate: real-frame regressions for66/74/76/92 plus
+   collision, composed/decomposed accent, non-Latin and scope controls. Obtain
+   agreement before changing behavior; native acceptance remains deferred.
 2. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
    Run all314001 through104 from Stories without manual transitions while real
    heavy generation/publication remains active. Also qualify partly prepared
@@ -326,6 +327,10 @@ complete. Do not change recognition or playback policy on an unverified hypothes
    U1/U2/U4/U6/U7/U8 gates, persistent OCR and portable observation. Preserve
    approved WAV bytes and complete independent capture; cache hits alone are
    not background-generation load. Include the following deferred checks:
+   - **Prepared lookup (RUN-25-07):**66/74/76/92 must use their existing WAVs
+     without unexpected live synthesis; retained-frame success alone is not
+     native acceptance. Preserve a trace of unmatched OCR sufficient to diagnose
+     a recurrence without weakening the short-text matching guards.
    - **Prepared completion (RUN-25-08):** verify Narrator48's full10.160s WAV
      across the automatic transition to49, with no missing tail or overlapping
      application speech. Check manual game advance also lets a started WAV finish,
