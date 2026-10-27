@@ -1,6 +1,7 @@
 """Small shared helpers for lazy audio output and playback status."""
 
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from threading import Event, Lock, current_thread
 from time import monotonic
 from types import ModuleType
@@ -20,6 +21,36 @@ from vntts.playback import (
 )
 
 AudioData: TypeAlias = NDArray[np.float32]
+
+
+class PcmAdmissionRejected(RuntimeError):
+    """The playback owner was replaced before its first PCM admission."""
+
+
+class PcmAdmission:
+    """Claim one playback authority across its streams and copied contexts."""
+
+    def __init__(self, claim: Callable[[], bool]) -> None:
+        self.claim = claim
+        self.lock = Lock()
+        self.admitted: bool | None = None
+
+    def admit(self) -> None:
+        with self.lock:
+            if self.admitted is None:
+                self.admitted = bool(self.claim())
+            if not self.admitted:
+                raise PcmAdmissionRejected("Playback replaced before first PCM")
+
+
+pcm_admission_context: ContextVar[PcmAdmission | None] = ContextVar(
+    "pcm_admission_context", default=None
+)
+
+
+def _admit_pcm(audio: object, admission: PcmAdmission | None) -> None:
+    if admission is not None and np.asarray(audio).size:
+        admission.admit()
 
 
 def sanitize_playback_audio(samples: AudioData, volume: float) -> None:
@@ -116,6 +147,10 @@ def resolve_audio_output(
         audio_output, "__name__", None
     ) == "sounddevice" and _supports_streaming_output(audio_output):
         return _LoggedAudioOutput(audio_output)
+    if pcm_admission_context.get() is not None and any(
+        callable(getattr(audio_output, name, None)) for name in ("OutputStream", "play")
+    ):
+        return _LoggedAudioOutput(cast(AudioOutput, audio_output))
     return audio_output
 
 
@@ -146,6 +181,7 @@ class _LoggedOutputStream:
         self.stream_id = stream_id
         self.fields = fields
         self.context = context
+        self.admission = pcm_admission_context.get()
 
     def _record(self, operation: str, outcome: str, reason: str) -> None:
         record_audio_lifecycle(
@@ -186,6 +222,7 @@ class _LoggedOutputStream:
         return result
 
     def write(self, audio: object) -> object:
+        _admit_pcm(audio, self.admission or pcm_admission_context.get())
         return self.stream.write(audio)
 
     def abort(self) -> object:
@@ -306,6 +343,7 @@ class _LoggedAudioOutput:
             "dtype": str(getattr(audio, "dtype", "unknown")),
             "latency": latency,
         }
+        _admit_pcm(audio, pcm_admission_context.get())
         try:
             result = self.output.play(audio, sample_rate, latency=latency)
         except Exception:
@@ -501,6 +539,9 @@ def write_pcm_chunks(
     samples = np.asarray(audio, dtype=np.float32)
     if samples.ndim == 1:
         samples = samples.reshape(-1, 1)
+    admission = (
+        stream.admission if isinstance(stream, _LoggedOutputStream) else None
+    ) or pcm_admission_context.get()
     from vntts.rust_output import RustOutputStream
     from vntts.system_audio import _SystemStream
 
@@ -508,6 +549,12 @@ def write_pcm_chunks(
     if isinstance(owner, RustOutputStream) or (
         isinstance(owner, _SystemStream) and isinstance(owner.native, RustOutputStream)
     ):
+        if cancelled():
+            return False, False
+        try:
+            _admit_pcm(samples, admission)
+        except PcmAdmissionRejected:
+            return False, False
         return owner.play_buffer(samples, cancelled, first_write, stop_requested)
     block_frames = max(1, sample_rate // 20)
     underflowed = False
@@ -530,6 +577,11 @@ def write_pcm_chunks(
             started = monotonic()
             diagnostics.before_write(started)
             block = samples[offset : offset + block_frames]
+            try:
+                _admit_pcm(block, admission)
+            except PcmAdmissionRejected:
+                outcome = "interrupted"
+                return False, underflowed
             underrun = bool(stream.write(block))
             diagnostics.record_write(
                 offset, len(block), sample_rate, started, monotonic(), underrun
@@ -680,9 +732,12 @@ class SynchronousPcmPlaybackMixin:
 __all__ = [
     "AudioOutput",
     "PlaybackAudioOutput",
+    "PcmAdmission",
+    "PcmAdmissionRejected",
     "StreamingAudioStream",
     "SynchronousPcmPlaybackMixin",
     "match_output_sample_rate",
+    "pcm_admission_context",
     "playback_cancelled",
     "prepared_output_stream",
     "resolve_audio_output",

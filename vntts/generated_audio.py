@@ -1511,13 +1511,14 @@ class AudioRoutePlaybackOwner:
                             stop_requested=self.generated_audio_stop,
                         )
                 else:
-                    self.router.audio_output.play(
+                    audio_output = resolve_audio_output(self.router.audio_output)
+                    audio_output.play(
                         samples,
                         sample_rate,
                         latency=self.router.playback_latency,
                     )
                     # The compatibility play API exposes submission, not PCM onset.
-                    status = self.router.audio_output.wait()
+                    status = audio_output.wait()
                     underflowed = bool(getattr(status, "output_underflow", False))
                     completed = not self.generated_audio_stop.is_set()
                 playback_status = (
@@ -1562,6 +1563,7 @@ class AudioRoutePlaybackOwner:
                     ),
                     end_provenance="measured",
                     error=str(error),
+                    error_type=type(error),
                 )
             finally:
                 self._deactivate()

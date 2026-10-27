@@ -24,6 +24,7 @@ from vntts_artifacts.generated_audio import (
 from tests.audio_output_fixtures import FakeAudioOutput
 from tests.symlink_support import symlink_or_skip
 from vntts import generation_database
+from vntts.audio_output import PcmAdmission, PcmAdmissionRejected, pcm_admission_context
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.document_identity import canonical_document_sha256
 from vntts.generated_audio import (
@@ -1995,6 +1996,42 @@ class GeneratedAudioTest(unittest.TestCase):
         np.testing.assert_allclose(played, [0.0, 0.25, -0.25])
         self.assertEqual(sample_rate, 24_000)
         self.assertEqual(options["latency"], "low")
+
+    def test_cached_play_only_output_claims_before_generated_pcm(self):
+        for allowed in (False, True):
+            with self.subTest(allowed=allowed):
+                output = FakeAudioOutput()
+                backend = GeneratedAudioFallbackBackend(
+                    self.create_live_backend(), Mock(), Mock(), audio_output=output
+                )
+                route = GeneratedAudioRoute(
+                    PreparedGeneratedAudio(
+                        "game:1", "hash", np.zeros(8, dtype=np.float32), 24_000
+                    ),
+                    Mock(effective_source="generated"),
+                )
+
+                def claim():
+                    self.assertEqual(output.plays, [])
+                    return allowed
+
+                claim_pcm = Mock(side_effect=claim)
+                token = pcm_admission_context.set(PcmAdmission(claim_pcm))
+                try:
+                    outcome = backend.play_route(route, playback_guard=lambda: True)
+                finally:
+                    pcm_admission_context.reset(token)
+
+                claim_pcm.assert_called_once_with()
+                self.assertEqual(len(output.plays), int(allowed))
+                self.assertIsNone(outcome.first_audio_ms)
+                self.assertIs(
+                    outcome.status,
+                    PlaybackStatus.COMPLETED if allowed else PlaybackStatus.FAILED,
+                )
+                self.assertIs(
+                    outcome.error_type, None if allowed else PcmAdmissionRejected
+                )
 
     def test_generated_dispatch_runs_after_lead_and_sample_preparation(self):
         for output_type in (FakeAudioOutput, ExplicitStreamAudioOutput):

@@ -46,13 +46,11 @@
       named query_device/check_format timeout and format details to identify
       the failing native operation before choosing an audio repair; do not
       assume a device switch or blame the recording tap. Its cause remains open.
-      OCR follow-up, pending agreement: replace only an unheard live/no-match
-      candidate when current exact canonical identity arrives. Carry its line
-      authority to admission and atomically arbitrate cancellation against the
-      first PCM admission, including speaker announcements. Reuse generation
-      cancellation; retain matching thresholds and committed/duplicate guards
-      after PCM admission. Gate: deterministic cancellation/PCM races, stale
-      completion, repeated OCR and Stop/Pause; then combined native acceptance.
+      Combined native OCR gate: confirm current canonical recognition replaces
+      an unheard live/no-match candidate with the prepared recording exactly
+      once. Correlate cancellation and actual PCM, including speaker announcements;
+      confirm no replacement after audio admission and no duplicate after
+      repeated OCR or Stop/Pause. Keep this gate separate from the audio timeout.
 - [ ] **UX-27-01: restored story selection is not visible at startup.** Stories
       opens at the top of the tree with `1 selected` and enabled `Start reading`,
       while the selected event stage is offscreen. The primary action does not

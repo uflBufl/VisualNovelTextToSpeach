@@ -1,4 +1,6 @@
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -7,7 +9,10 @@ from sounddevice import PortAudioError
 
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.audio_output import (
+    PcmAdmission,
+    PcmAdmissionRejected,
     match_output_sample_rate,
+    pcm_admission_context,
     resolve_audio_output,
     sanitize_playback_audio,
     write_pcm_chunks,
@@ -161,6 +166,176 @@ class ConvenienceSoundDevice(FakeSoundDevice):
 
     def wait(self):
         return None
+
+
+class PcmAdmissionTest(unittest.TestCase):
+    def test_rejected_stream_never_writes_and_retains_its_authority(self):
+        claim = Mock(return_value=False)
+        native = FakeStream()
+        native.write = Mock(return_value=False)
+        output = FakeSoundDevice()
+        output.OutputStream = Mock(return_value=native)
+        wrapped = resolve_audio_output(output)
+        token = pcm_admission_context.set(PcmAdmission(claim))
+        try:
+            stream = wrapped.OutputStream(
+                samplerate=24_000, channels=1, dtype="float32", latency="low"
+            )
+        finally:
+            pcm_admission_context.reset(token)
+
+        with stream:
+            stream.write(np.empty((0, 1), dtype=np.float32))
+            claim.assert_not_called()
+            native.write.reset_mock()
+            for _ in range(2):
+                with self.assertRaises(PcmAdmissionRejected):
+                    stream.write(np.zeros((8, 1), dtype=np.float32))
+        claim.assert_called_once_with()
+        native.write.assert_not_called()
+
+    def test_announcement_dialogue_and_convenience_share_one_claim_before_pcm(self):
+        from vntts.rust_output import RustOutputStream
+
+        calls = []
+
+        def claim():
+            calls.append("claim")
+            return True
+
+        output = FakeSoundDevice()
+        native = FakeStream()
+        native.write = Mock(side_effect=lambda _audio: calls.append("write"))
+        output.OutputStream = Mock(return_value=native)
+        output.play = Mock(side_effect=lambda *_args, **_kwargs: calls.append("play"))
+        token = pcm_admission_context.set(PcmAdmission(claim))
+        try:
+            wrapped = resolve_audio_output(output)
+            for _ in range(2):
+                with wrapped.OutputStream(
+                    samplerate=24_000, channels=1, dtype="float32", latency="low"
+                ) as stream:
+                    stream.write(np.zeros((8, 1), dtype=np.float32))
+            prepared = object.__new__(RustOutputStream)
+
+            def play_buffer(*_args):
+                calls.append("buffer")
+                return True, False
+
+            prepared.play_buffer = Mock(side_effect=play_buffer)
+            self.assertEqual(
+                write_pcm_chunks(
+                    prepared, np.zeros(8, dtype=np.float32), 24_000, lambda: False
+                ),
+                (True, False),
+            )
+            wrapped.play(np.zeros(8, dtype=np.float32), 24_000, latency="low")
+        finally:
+            pcm_admission_context.reset(token)
+
+        self.assertEqual(calls, ["claim", "write", "write", "buffer", "play"])
+
+    def test_rejected_convenience_play_never_reaches_output(self):
+        output = FakeSoundDevice()
+        output.play = Mock()
+        token = pcm_admission_context.set(PcmAdmission(lambda: False))
+        try:
+            with self.assertRaises(PcmAdmissionRejected):
+                resolve_audio_output(output).play(
+                    np.zeros(8, dtype=np.float32), 24_000, latency="low"
+                )
+        finally:
+            pcm_admission_context.reset(token)
+        output.play.assert_not_called()
+
+    def test_injected_streaming_output_is_wrapped_only_under_admission(self):
+        output = IncompleteSoundDevice()
+        self.assertIs(resolve_audio_output(output), output)
+        token = pcm_admission_context.set(PcmAdmission(lambda: False))
+        try:
+            wrapped = resolve_audio_output(output)
+            with wrapped.OutputStream(
+                samplerate=24_000, channels=1, dtype="float32", latency="low"
+            ) as stream:
+                with self.assertRaises(PcmAdmissionRejected):
+                    stream.write(np.zeros((8, 1), dtype=np.float32))
+        finally:
+            pcm_admission_context.reset(token)
+
+    def test_rejected_prepared_buffers_never_reach_generic_or_native_output(self):
+        from vntts.rust_output import RustOutputStream
+
+        for native in (False, True):
+            with self.subTest(native=native):
+                stream = object.__new__(RustOutputStream) if native else FakeStream()
+                stream.write = Mock(return_value=False)
+                stream.play_buffer = Mock(return_value=(True, False))
+                first_write = Mock()
+                token = pcm_admission_context.set(PcmAdmission(lambda: False))
+                try:
+                    result = write_pcm_chunks(
+                        stream,
+                        np.zeros(8, dtype=np.float32),
+                        24_000,
+                        lambda: False,
+                        first_write=first_write,
+                    )
+                finally:
+                    pcm_admission_context.reset(token)
+                self.assertEqual(result, (False, False))
+                stream.write.assert_not_called()
+                stream.play_buffer.assert_not_called()
+                first_write.assert_not_called()
+
+    def test_cancelled_native_buffer_does_not_claim_pcm(self):
+        from vntts.rust_output import RustOutputStream
+
+        stream = object.__new__(RustOutputStream)
+        stream.play_buffer = Mock()
+        claim = Mock(return_value=True)
+        token = pcm_admission_context.set(PcmAdmission(claim))
+        try:
+            result = write_pcm_chunks(
+                stream, np.zeros(8, dtype=np.float32), 24_000, lambda: True
+            )
+        finally:
+            pcm_admission_context.reset(token)
+        self.assertEqual(result, (False, False))
+        claim.assert_not_called()
+        stream.play_buffer.assert_not_called()
+
+    def test_admitted_buffer_still_checks_cancellation_before_each_write(self):
+        stream = FakeStream()
+        stream.write = Mock(return_value=False)
+        claim = Mock(return_value=True)
+        token = pcm_admission_context.set(PcmAdmission(claim))
+        try:
+            result = write_pcm_chunks(
+                stream,
+                np.zeros(120, dtype=np.float32),
+                1000,
+                lambda: stream.write.called,
+            )
+        finally:
+            pcm_admission_context.reset(token)
+        self.assertEqual(result, (False, False))
+        claim.assert_called_once_with()
+        stream.write.assert_called_once()
+
+    def test_concurrent_streams_claim_once(self):
+        claim = Mock(return_value=True)
+        admission = PcmAdmission(claim)
+        start = Barrier(2)
+
+        def admit():
+            start.wait(timeout=2)
+            admission.admit()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(admit) for _ in range(2)]
+            for future in futures:
+                future.result(timeout=2)
+        claim.assert_called_once_with()
 
 
 class AudioOutputLifecycleTest(unittest.TestCase):

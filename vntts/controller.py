@@ -14,6 +14,7 @@ from time import monotonic
 from typing import Protocol, TypeGuard, runtime_checkable
 
 from vntts.audio_lifecycle import audio_lifecycle_context
+from vntts.audio_output import PcmAdmissionRejected
 from vntts.auto_advance import DialogueAdvancer
 from vntts.auto_advance_policy import auto_advance_allowed
 from vntts.chapter_voice_preload import (
@@ -69,6 +70,7 @@ from vntts.live import (
     DialogObservationDecision,
     LiveDialogReader,
     LivePipelineMetrics,
+    RecognizedDialog,
     SilentDialogRoute,
     SpeechChunk,
 )
@@ -1155,7 +1157,9 @@ class AppController:
             profile.ocr_regions if profile is not None else None,
         )
 
-    def _recognize_live_frame(self, frame: object) -> tuple[str, str]:
+    def _recognize_live_frame(
+        self, frame: object
+    ) -> tuple[str, str] | RecognizedDialog:
         voice_router = self.voice_router
         if voice_router is None:
             raise RuntimeError("The speech engine is not ready")
@@ -1178,18 +1182,23 @@ class AppController:
             identity = {}
 
         raw_result: OCRResult | None = None
+        canonical_line: ChapterDialogue | None = None
 
         def observe_raw_result(result: OCRResult) -> None:
             nonlocal raw_result
             raw_result = result
 
         def resolve_result(result: OCRResult) -> OCRResult:
+            nonlocal canonical_line
             started = monotonic()
             outcome = "success"
             error_type: str | None = None
             resolution: dict[str, object] = {}
             try:
-                return self._resolve_story_ocr_result(result, resolution=resolution)
+                resolved = self._resolve_story_ocr_result(result, resolution=resolution)
+                line = resolution.get("line")
+                canonical_line = line if isinstance(line, ChapterDialogue) else None
+                return resolved
             except BaseException as error:
                 outcome = "error"
                 error_type = type(error).__name__
@@ -1224,7 +1233,19 @@ class AppController:
             result_resolver=resolve_result,
             raw_result_observer=observe_raw_result,
         )
-        return self._canonical_observed_character(character, text), text
+        character = self._canonical_observed_character(character, text)
+        if (
+            canonical_line is not None
+            and canonical_line.line_id is not None
+            and canonical_line.text_sha256 is not None
+            and (character, text) == (canonical_line.speaker, canonical_line.text)
+            and isinstance(self.speech_backend, GeneratedAudioFallbackBackend)
+            and self.speech_backend.reserve_generated_line_for_early_playback(
+                canonical_line
+            )
+        ):
+            return RecognizedDialog(character, text, canonical_line.line_id)
+        return character, text
 
     @staticmethod
     def _reject_uncertain_live_frame(
@@ -3881,6 +3902,15 @@ class AppController:
                 self.error_handler(error)
             self._record_pipeline_route(chunk, trace)
             self._publish_live_sequence_status()
+            if (
+                isinstance(prepared, LiveTTSRoute)
+                and prepared.trace.match_result == "no-match"
+                and prepared.trace.line_id is None
+                and chunk.line_id is None
+                and not chunk.explicit_replay
+                and self.live_reader is not None
+            ):
+                self.live_reader.allow_unheard_replacement(chunk)
             return (
                 PreparedLiveChunkRoutes(
                     prepared,
@@ -4062,44 +4092,56 @@ class AppController:
         play_route = getattr(self.speech_backend, "play_route", None)
         play_prepared = getattr(self.speech_backend, "play_prepared", None)
         outcome = None
-        if isinstance(audio, RouteDecision):
-            if isinstance(self.speech_backend, GeneratedAudioFallbackBackend):
-                if isinstance(audio, (GeneratedAudioRoute, PendingGeneratedAudioRoute)):
-                    if not reader.set_current_playback_interruptible(chunk, True):
-                        return PlaybackOutcome(
-                            PlaybackStatus.INTERRUPTED,
-                            None,
-                            audio_source=audio.trace.effective_source,
-                        )
-                outcome = self.speech_backend.play_route(
+        try:
+            if isinstance(audio, RouteDecision):
+                if isinstance(self.speech_backend, GeneratedAudioFallbackBackend):
+                    if isinstance(
+                        audio, (GeneratedAudioRoute, PendingGeneratedAudioRoute)
+                    ):
+                        if not reader.set_current_playback_interruptible(chunk, True):
+                            return PlaybackOutcome(
+                                PlaybackStatus.INTERRUPTED,
+                                None,
+                                audio_source=audio.trace.effective_source,
+                            )
+                    outcome = self.speech_backend.play_route(
+                        audio,
+                        playback_guard=lambda: reader.wait_until_playable(chunk),
+                        on_playback_dispatch=lambda dispatched: (
+                            reader.set_current_playback_interruptible(
+                                chunk,
+                                not isinstance(dispatched, GeneratedAudioRoute)
+                                and reader.interrupt_on_dialog_replacement,
+                            )
+                        ),
+                    )
+                elif callable(play_route):
+                    outcome = play_route(
+                        audio,
+                        playback_guard=lambda: reader.wait_until_playable(chunk),
+                    )
+            if (
+                outcome is None
+                and callable(play_prepared)
+                and isinstance(audio, PreparedPlayback)
+            ):
+                outcome = play_prepared(
                     audio,
                     playback_guard=lambda: reader.wait_until_playable(chunk),
-                    on_playback_dispatch=lambda dispatched: (
-                        reader.set_current_playback_interruptible(
-                            chunk,
-                            not isinstance(dispatched, GeneratedAudioRoute)
-                            and reader.interrupt_on_dialog_replacement,
-                        )
-                    ),
                 )
-            elif callable(play_route):
-                outcome = play_route(
-                    audio,
-                    playback_guard=lambda: reader.wait_until_playable(chunk),
-                )
-        if (
-            outcome is None
-            and callable(play_prepared)
-            and isinstance(audio, PreparedPlayback)
-        ):
-            outcome = play_prepared(
-                audio,
-                playback_guard=lambda: reader.wait_until_playable(chunk),
-            )
+        except PcmAdmissionRejected:
+            return PlaybackOutcome(PlaybackStatus.INTERRUPTED, None)
         if outcome is None:
             raise TypeError("Speech backend does not implement typed playback")
         if not isinstance(outcome, PlaybackOutcome):
             raise TypeError("Speech backend returned an untyped playback outcome")
+        if (
+            outcome.status is PlaybackStatus.FAILED
+            and outcome.error_type is PcmAdmissionRejected
+        ):
+            outcome = replace(
+                outcome, status=PlaybackStatus.INTERRUPTED, error=None, error_type=None
+            )
         return outcome
 
     def _report_live_playback_outcome(
@@ -4290,10 +4332,19 @@ class AppController:
                     route.prepared,
                     playback_guard=lambda: reader.wait_until_playable(chunk),
                 )
+        except PcmAdmissionRejected:
+            outcome = PlaybackOutcome(PlaybackStatus.INTERRUPTED, None)
         finally:
             audio_lifecycle_context.reset(context_token)
         if not isinstance(outcome, PlaybackOutcome):
             raise TypeError("Live backend returned an untyped announcement outcome")
+        if (
+            outcome.status is PlaybackStatus.FAILED
+            and outcome.error_type is PcmAdmissionRejected
+        ):
+            outcome = replace(
+                outcome, status=PlaybackStatus.INTERRUPTED, error=None, error_type=None
+            )
         outcome = replace(
             outcome,
             audio_source="live-accessibility-announcement",

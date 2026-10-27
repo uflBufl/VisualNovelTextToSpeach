@@ -11,6 +11,7 @@ from typing import Literal, ParamSpec, Protocol, TypeAlias, TypeVar, cast
 from uuid import uuid4
 
 from vntts.audio_lifecycle import audio_lifecycle_context
+from vntts.audio_output import PcmAdmission, PcmAdmissionRejected, pcm_admission_context
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.dialog_capture import OCRUncertainError
 from vntts.live_tracking import IncrementalDialogTracker, SpeechChunk
@@ -26,6 +27,21 @@ FrameFingerprint: TypeAlias = object
 Observation: TypeAlias = tuple[str | None, str]
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
+
+
+@dataclass(frozen=True)
+class RecognizedDialog:
+    character: str
+    text: str
+    line_id: str
+
+
+@dataclass(frozen=True)
+class _CanonicalRecognition:
+    dialog: RecognizedDialog
+    run_id: str
+    epoch: int
+    is_current: Callable[[int], bool]
 
 
 class _Executor(Protocol):
@@ -387,7 +403,7 @@ class LiveDialogReader:
         speech_executor: _Executor,
         playback_executor: _Executor,
         capture_frame: Callable[[], Frame],
-        recognize_frame: Callable[[Frame], Observation],
+        recognize_frame: Callable[[Frame], Observation | RecognizedDialog],
         ocr_uncertain: Callable[[OCRUncertainError, Callable[[], bool]], object]
         | None = None,
         prepare_chunk: Callable[[SpeechChunk], object],
@@ -538,6 +554,8 @@ class LiveDialogReader:
         self.paused_chunks: list[SpeechChunk] = []
         self.deferred_chunk: SpeechChunk | None = None
         self.current_chunk: SpeechChunk | None = None
+        self.unheard_candidate: SpeechChunk | None = None
+        self.pcm_admitted_generation: int | None = None
         self.current_playback_interruptible = self.interrupt_on_dialog_replacement
         self.current_chunk_pipeline_origins: dict[str, float | None] | None = None
         self.last_spoken_chunk: SpeechChunk | None = None
@@ -579,7 +597,7 @@ class LiveDialogReader:
 
     def _initialize_recognition(
         self,
-        recognize_frame: Callable[[Frame], Observation],
+        recognize_frame: Callable[[Frame], Observation | RecognizedDialog],
         ocr_uncertain: Callable[[OCRUncertainError, Callable[[], bool]], object] | None,
     ) -> None:
         self.recognize_frame = recognize_frame
@@ -1107,6 +1125,91 @@ class LiveDialogReader:
             self.current_playback_interruptible = interruptible
             return True
 
+    def allow_unheard_replacement(self, chunk: SpeechChunk) -> bool:
+        """The route owner has qualified this chunk as raw live/no-match."""
+        with self.state_lock:
+            if (
+                chunk.generation != self.active_generation
+                or chunk.run_id != self.run_id
+                or chunk.line_id is not None
+                or chunk.explicit_replay
+                or self.pcm_admitted_generation == chunk.generation
+                or id(chunk) in self.cancelled_chunk_ids
+                or self.suppressed_generation == chunk.generation
+                or self.stop_event.is_set()
+                or self.is_shutting_down
+            ):
+                return False
+            self.unheard_candidate = chunk
+            return True
+
+    def claim_first_pcm(self, chunk: SpeechChunk) -> bool:
+        with self.pause_condition:
+            if (
+                not self.wait_until_playable(chunk)
+                or self.stop_event.is_set()
+                or self.current_chunk is not chunk
+                or chunk.run_id not in (None, self.run_id)
+            ):
+                return False
+            if chunk.generation == self.active_generation:
+                self.pcm_admitted_generation = chunk.generation
+            return True
+
+    def _replace_unheard_candidate(
+        self,
+        tracker: IncrementalDialogTracker,
+        recognition: _CanonicalRecognition | None,
+        character: str | None,
+        text: str,
+    ) -> list[SpeechChunk] | None:
+        if recognition is None or (character, text) != (
+            recognition.dialog.character,
+            recognition.dialog.text,
+        ):
+            return None
+        with self.state_lock:
+            version = self.frame_version
+            epoch = self.frame_route_epoch
+        if (
+            recognition.run_id != self.run_id
+            or recognition.epoch != epoch
+            or not recognition.is_current(epoch)
+        ):
+            return None
+        with self.pause_condition:
+            candidate = self.unheard_candidate
+            if (
+                candidate is None
+                or self.paused
+                or self.emergency_stopped
+                or self.is_shutting_down
+                or self.stop_event.is_set()
+                or self.frame_version != version
+                or self.frame_route_epoch != epoch
+                or self.run_id != recognition.run_id
+                or candidate.run_id != self.run_id
+                or candidate.generation != self.active_generation
+                or self.active_generation
+                != tracker.generation + self._explicit_generation_offset
+                or self.suppressed_generation == self.active_generation
+                or self.sealed_generation == self.active_generation
+                or self.pcm_admitted_generation == self.active_generation
+                or id(candidate) in self.cancelled_chunk_ids
+                or tracker.canonical_line_id is not None
+                or tracker.committed_text != candidate.text
+            ):
+                return None
+            self.cancelled_chunk_ids.add(id(candidate))
+            self.unheard_candidate = None
+            if self.current_chunk is candidate:
+                self.current_playback_interruptible = True
+            return tracker.observe_canonical(
+                recognition.dialog.character,
+                recognition.dialog.text,
+                recognition.dialog.line_id,
+            )
+
     def wait_until_playable(self, chunk: SpeechChunk) -> bool:
         with self.pause_condition:
             finish_active_playback = bool(
@@ -1561,6 +1664,7 @@ class LiveDialogReader:
         cached_render_fingerprint = object()
         cached_completion = object()
         cached_observation: Observation = (None, "")
+        cached_canonical: _CanonicalRecognition | None = None
         last_frame_recheck_at = None
         while True:
             self._ocr_progress("waiting-for-frame")
@@ -1690,6 +1794,7 @@ class LiveDialogReader:
                     cached_render_fingerprint = render_fingerprint
                     cached_completion = complete
                     cached_observation = (character, text)
+                    cached_canonical = None
                 elif frame_route is None and (
                     fingerprint != cached_fingerprint
                     or awaiting_post_advance_dialog
@@ -1738,7 +1843,16 @@ class LiveDialogReader:
                     )
                     if observation is None:
                         continue
-                    character, text = observation
+                    cached_canonical = (
+                        observation
+                        if isinstance(observation, _CanonicalRecognition)
+                        else None
+                    )
+                    character, text = (
+                        (observation.dialog.character, observation.dialog.text)
+                        if isinstance(observation, _CanonicalRecognition)
+                        else observation
+                    )
                     route_kind = "ocr"
                     cached_fingerprint = fingerprint
                     cached_render_fingerprint = render_fingerprint
@@ -1810,13 +1924,31 @@ class LiveDialogReader:
                         character,
                         text,
                     )
+                replacement = (
+                    self._replace_unheard_candidate(
+                        tracker, cached_canonical, character, text
+                    )
+                    if silent_route is None
+                    and not isinstance(routed_observation, CanonicalDialogRoute)
+                    else None
+                )
                 if self.stable_frame_route is not None:
-                    self._accept_routed_frame(fingerprint)
+                    with self.state_lock:
+                        previous_epoch = self.frame_route_epoch
+                        self._accept_routed_frame_locked(fingerprint)
+                        cached_canonical = (
+                            replace(cached_canonical, epoch=self.frame_route_epoch)
+                            if cached_canonical is not None
+                            and cached_canonical.epoch == previous_epoch
+                            else None
+                        )
                 if silent_route is not None:
                     self._ocr_callback(
                         "tracking-silent", tracker.observe_silent, silent_route.event_id
                     )
                     chunks = []
+                elif replacement is not None:
+                    chunks = replacement
                 else:
                     line_id = self._ocr_callback(
                         "resolving-line", self.line_id_resolver, character, text
@@ -1870,7 +2002,7 @@ class LiveDialogReader:
         policy: _CapturePolicy,
         frame_version: int,
         captured_at: float | None,
-    ) -> Observation | None:
+    ) -> Observation | _CanonicalRecognition | None:
         recognition_owner = self._ocr_callback("reading-owner", self.stable_frame_owner)
         with self.state_lock:
             recognition_epoch = self.frame_route_epoch
@@ -1886,9 +2018,15 @@ class LiveDialogReader:
         )
         outcome, reason, error_type = "error", None, None
         uncertainty = None
+        recognized: Observation | RecognizedDialog = (None, "")
         try:
             try:
-                character, text = self.recognize_frame(frame)
+                recognized = self.recognize_frame(frame)
+                character, text = (
+                    (recognized.character, recognized.text)
+                    if isinstance(recognized, RecognizedDialog)
+                    else recognized
+                )
             except OCRPreviewCancelled as error:
                 outcome, error_type = "cancelled", type(error).__name__
                 return None
@@ -1897,18 +2035,21 @@ class LiveDialogReader:
             finally:
                 ocr_call_ms = (monotonic() - started) * 1000
             self._ocr_progress("validating-freshness")
-            is_current = partial(
-                self._recognition_is_current,
-                purpose,
-                recognition_owner,
-                recognition_epoch,
-                fingerprint,
-                visible,
-                complete,
-                render_fingerprint,
-                frame,
-                recognition_run_id,
-            )
+
+            def is_current_at_epoch(epoch: int) -> bool:
+                return self._recognition_is_current(
+                    purpose,
+                    recognition_owner,
+                    epoch,
+                    fingerprint,
+                    visible,
+                    complete,
+                    render_fingerprint,
+                    frame,
+                    recognition_run_id,
+                )
+
+            is_current = partial(is_current_at_epoch, recognition_epoch)
             if not is_current():
                 outcome, reason = "stale", "ocr-not-current"
                 return None
@@ -1925,6 +2066,13 @@ class LiveDialogReader:
                 return None
             # Accepted here means current OCR evidence, not tracker/speech admission.
             outcome, reason = "accepted", "ocr-current"
+            if isinstance(recognized, RecognizedDialog):
+                return _CanonicalRecognition(
+                    recognized,
+                    recognition_run_id,
+                    recognition_epoch,
+                    is_current_at_epoch,
+                )
             return character, text
         except BaseException as error:
             error_type = type(error).__name__
@@ -2166,6 +2314,8 @@ class LiveDialogReader:
             if self.suppressed_generation != generation:
                 self.suppressed_generation = None
             if changed:
+                self.unheard_candidate = None
+                self.pcm_admitted_generation = None
                 self.prepared_chunk_ids.clear()
                 self.sealed_generation = None
                 self.failed_auto_advance_generation = None
@@ -2431,9 +2581,13 @@ class LiveDialogReader:
 
     def _play_if_current(self, chunk: SpeechChunk, prepared: object) -> None:
         token = audio_lifecycle_context.set(self._chunk_context(chunk))
+        admission_token = pcm_admission_context.set(
+            PcmAdmission(lambda: self.claim_first_pcm(chunk))
+        )
         try:
             self._play_current_chunk(chunk, prepared)
         finally:
+            pcm_admission_context.reset(admission_token)
             audio_lifecycle_context.reset(token)
 
     def _play_current_chunk(self, chunk: SpeechChunk, prepared: object) -> None:
@@ -2490,6 +2644,8 @@ class LiveDialogReader:
             )
         try:
             self.play_prepared(chunk, prepared)
+        except PcmAdmissionRejected:
+            pass
         except Exception as error:
             self.report_error(error)
         finally:
