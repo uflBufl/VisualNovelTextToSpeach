@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Callable, Literal
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import QHideEvent, QKeySequence, QShowEvent, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -55,6 +55,7 @@ class SupportCenterDialog(QDialog):
         self.resize(940, 760)
         self._diagnostic_sessions: dict[str, DiagnosticSessionEntry] = {}
         self._reading_report: dict[str, object] | None = None
+        self._pending_history_selection: str | None = None
         self._history_busy = False
         self._export_busy = False
         self._history_status = ""
@@ -162,8 +163,8 @@ class SupportCenterDialog(QDialog):
         )
         self.reading_start = QPushButton("Start session")
         self.reading_stop = QPushButton("Stop")
-        self.reading_export = QPushButton("Export session")
-        self.reading_delete = QPushButton("Delete session")
+        self.reading_export = QPushButton("Export selected")
+        self.reading_delete = QPushButton("Delete selected")
         self.reading_folder = QPushButton("Sessions folder")
         self.reading_history = QTreeWidget()
         self.reading_history.setAccessibleName("Saved diagnostic sessions")
@@ -178,7 +179,9 @@ class SupportCenterDialog(QDialog):
         self.reading_history.header().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch
         )
-        self.reading_history.itemSelectionChanged.connect(self._update_history_actions)
+        self.reading_history.itemSelectionChanged.connect(
+            self._history_selection_changed
+        )
         self.reading_storage = QLabel("Loading saved sessions...")
         self.reading_storage.setWordWrap(True)
         self.reading_history_detail = QPlainTextEdit(
@@ -203,14 +206,14 @@ class SupportCenterDialog(QDialog):
                 self.reading_media.isChecked(), self.reading_seconds.value()
             )
         )
-        self.reading_stop.clicked.connect(self.reading_stop_requested.emit)
+        self.reading_stop.clicked.connect(self.request_reading_stop)
         self.reading_export.clicked.connect(self.request_session_export)
         self.reading_delete.clicked.connect(self.request_session_delete)
         self.reading_folder.clicked.connect(self.reading_folder_requested.emit)
         for button, icon, action in (
             (self.reading_start, "play", "Start diagnostic session"),
             (self.reading_stop, "square", "Stop diagnostic session"),
-            (self.reading_export, "download", "Export diagnostic session"),
+            (self.reading_export, "download", "Export selected diagnostic session"),
             (self.reading_delete, "trash-2", "Delete selected diagnostic session"),
             (self.reading_folder, "folder-open", "Open diagnostic sessions folder"),
         ):
@@ -407,6 +410,37 @@ class SupportCenterDialog(QDialog):
             else None
         )
 
+    def request_reading_stop(self) -> None:
+        self.refresh_reading_session()
+        session_id = (self._reading_report or {}).get("session_id")
+        if isinstance(session_id, str):
+            self._pending_history_selection = session_id
+            with QSignalBlocker(self.reading_history):
+                self.reading_history.selectionModel().clear()
+            self._select_pending_history_session()
+            self._update_history_actions()
+        self.reading_stop_requested.emit()
+
+    def _history_selection_changed(self) -> None:
+        self._pending_history_selection = None
+        self._update_history_actions()
+
+    def _select_pending_history_session(self) -> bool:
+        if self._pending_history_selection is None:
+            return False
+        for index in range(self.reading_history.topLevelItemCount()):
+            item = self.reading_history.topLevelItem(index)
+            assert item is not None
+            if (
+                item.data(0, Qt.ItemDataRole.UserRole)
+                == self._pending_history_selection
+            ):
+                self._pending_history_selection = None
+                self.reading_history.setCurrentItem(item)
+                self.reading_history.scrollToItem(item)
+                return True
+        return False
+
     def set_diagnostic_sessions(self, entries: list[DiagnosticSessionEntry]) -> None:
         if any("Waiting for interrupted recorders" in entry.error for entry in entries):
             self._history_retry.start(15000)
@@ -415,25 +449,32 @@ class SupportCenterDialog(QDialog):
         selected = self.selected_diagnostic_session()
         scroll = self.reading_history.verticalScrollBar().value()
         self._diagnostic_sessions = {entry.session_id: entry for entry in entries}
-        self.reading_history.clear()
-        for entry in entries:
-            report = entry.report or {}
-            item = QTreeWidgetItem(
-                [
-                    _diagnostic_date(report.get("started_at")),
-                    "",
-                    _diagnostic_size(entry.size_bytes),
-                ]
-            )
-            item.setData(0, Qt.ItemDataRole.UserRole, entry.session_id)
-            self._set_history_row_label(item, entry)
-            self.reading_history.addTopLevelItem(item)
-            if selected is not None and entry.session_id == selected.session_id:
-                self.reading_history.setCurrentItem(item)
-        first = self.reading_history.topLevelItem(0)
-        if self.reading_history.currentItem() is None and first is not None:
-            self.reading_history.setCurrentItem(first)
-        self.reading_history.verticalScrollBar().setValue(scroll)
+        with QSignalBlocker(self.reading_history):
+            self.reading_history.clear()
+            for entry in entries:
+                report = entry.report or {}
+                item = QTreeWidgetItem(
+                    [
+                        _diagnostic_date(report.get("started_at")),
+                        "",
+                        _diagnostic_size(entry.size_bytes),
+                    ]
+                )
+                item.setData(0, Qt.ItemDataRole.UserRole, entry.session_id)
+                self._set_history_row_label(item, entry)
+                self.reading_history.addTopLevelItem(item)
+                if selected is not None and entry.session_id == selected.session_id:
+                    self.reading_history.setCurrentItem(item)
+            first = self.reading_history.topLevelItem(0)
+            if (
+                self._pending_history_selection is None
+                and self.reading_history.currentItem() is None
+                and first is not None
+            ):
+                self.reading_history.setCurrentItem(first)
+        self.reading_history.doItemsLayout()
+        if not self._select_pending_history_session():
+            self.reading_history.verticalScrollBar().setValue(scroll)
         known_size = sum(
             entry.size_bytes for entry in entries if entry.size_bytes is not None
         )

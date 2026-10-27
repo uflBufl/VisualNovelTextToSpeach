@@ -2,6 +2,17 @@
 
 ## Active - Native rerun observations (2026-10-27)
 
+- [ ] **UX-27-08: enlarged Support text overlaps the saved-session list.**
+      At 620x600 with a 16 pt font, export/delete and selected-file details overlap
+      history rows; the media consent caption and session status are clipped.
+      The pre-change catalog already shows overlapping controls in the empty
+      history area. The explicit 620x600 minimum overrides a layout requiring
+      at least 716x815 in the measured 16 pt state. Proposed repair, pending
+      agreement: use vertically scrollable content with a fixed bottom action
+      row, shorten the consent caption and keep full status text wrapped. Preserve
+      a usable history minimum and scroll the selected session into the outer
+      viewport after Stop. Validate actual non-overlap and reachability at normal
+      and enlarged fonts, not only containment within the dialog bounds.
 - [ ] **UX-27-07: voice confirmation has room for only one character row.**
       At the normal 860x560 dashboard size with Tools expanded, narrator controls
       and preparation totals consume most of Step 2; only the first character row
@@ -11,15 +22,6 @@
       confirmation says 192 reused / 305 to generate, but progress says 290 of 497 new
       speech lines processed. Clarify the denominator and reuse in the progress
       wording so the user can tell how much synthesis remains.
-- [ ] **UX-27-05: finishing a recording leaves an older session selected.**
-      Support displays the newly finished session in its status, but the history
-      selection remains on an older session; Export session therefore exports
-      the old recording. Proposed change, pending agreement: explicit Stop selects
-      its session and scrolls that row into view; export stays unavailable until
-      finalization. Name the actions Export selected / Delete selected, and retain
-      later manual selection through background refreshes. Test Stop before the
-      history response arrives, finalization, and deliberate selection of an older
-      session. Keep the repair in Support UI and its Stop integration; no new data.
 - [ ] **UX-27-04: Stop triggers deferred pack activation and navigation.**
       After background preparation completed, Stop to inspect Stories activated
       the new215-line package and returned to Reading, overriding the tab action.
@@ -333,12 +335,12 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Agree on the selected-session export fix (UX-27-05).** Make explicit Stop
-   select the stopped recording without later refresh stealing a deliberate user
-   selection, and make export/delete clearly target the selected row. Preserve
-   finalization and async history guards; validate with focused Qt tests.
-   Separately correct the stale opt-in privacy wording (REC-27-02). Native recording
-   continuity remains part of the combined run (REC-27-01).
+1. **Agree on Support layout correction (UX-27-08).** At enlarged font the
+   explicit window minimum permits overlapping children. Keep the footer visible,
+   make overflowing content scrollable and preserve useful history height. Check
+   actual row/action separation and manual selection/scroll stability. Separately
+   correct stale opt-in privacy wording (REC-27-02); native recording continuity
+   remains part of the combined run (REC-27-01).
 2. **Repair the new native findings one at a time.** Diagnose initial clipped
    OCR/live routing and the separate audio-open failure (RUN-27-01), false-speaker
    duplicate playback (RUN-27-02), and the persistent exact116 tracker conflict

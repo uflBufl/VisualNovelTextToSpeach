@@ -69,6 +69,107 @@ class DiagnosticHistoryUITest(unittest.TestCase):
         self.dialog.reading_export.click()
         self.assertEqual(exported, [older.session_id])
 
+    def test_stop_selects_current_session_and_waits_for_finalization_to_export(self):
+        older, current = session_entry(1), session_entry(2, available=False)
+        report = dict(current.report)
+        self.dialog.reading_status_provider = lambda: report
+        self.dialog.set_diagnostic_sessions([current, older])
+        self.dialog.reading_history.setCurrentItem(
+            self.dialog.reading_history.topLevelItem(1)
+        )
+        self.dialog.refresh_reading_session()
+        stopped, exported = [], []
+        self.dialog.reading_stop_requested.connect(lambda: stopped.append(True))
+        self.dialog.reading_export_requested.connect(exported.append)
+
+        self.dialog.reading_stop.click()
+        self.assertEqual(stopped, [True])
+        self.assertEqual(self.dialog.selected_diagnostic_session(), current)
+        self.assertEqual(self.dialog.reading_export.text(), "Export selected")
+        self.assertEqual(self.dialog.reading_delete.text(), "Delete selected")
+        for status in ("stopping", "finalizing", "finished"):
+            report["status"] = status
+            self.dialog.refresh_reading_session()
+            self.assertFalse(self.dialog.reading_export.isEnabled())
+            self.assertFalse(self.dialog.reading_delete.isEnabled())
+        self.dialog.set_diagnostic_sessions([session_entry(2), older])
+        self.assertTrue(self.dialog.reading_export.isEnabled())
+        self.dialog.reading_export.click()
+        self.assertEqual(exported, [current.session_id])
+
+    def test_stop_waits_for_its_row_without_exporting_an_older_session(self):
+        older, current = session_entry(1), session_entry(2, available=False)
+        self.dialog.reading_status_provider = lambda: current.report
+        self.dialog.refresh_reading_session()
+        self.dialog.set_diagnostic_sessions([older])
+        self.dialog.reading_stop.click()
+        self.assertIsNone(self.dialog.selected_diagnostic_session())
+        self.assertFalse(self.dialog.reading_export.isEnabled())
+        self.dialog.set_diagnostic_sessions([older])
+        self.assertIsNone(self.dialog.selected_diagnostic_session())
+        self.assertFalse(self.dialog.reading_export.isEnabled())
+        self.dialog.set_diagnostic_sessions([current, older])
+        self.assertEqual(self.dialog.selected_diagnostic_session(), current)
+
+    def test_manual_selection_after_stop_wins_before_or_after_history_arrives(self):
+        for row_arrived in (False, True):
+            with self.subTest(row_arrived=row_arrived):
+                older, current = session_entry(1), session_entry(2, available=False)
+                report = dict(current.report)
+                self.dialog.reading_status_provider = lambda: report
+                self.dialog.refresh_reading_session()
+                self.dialog.set_diagnostic_sessions([older])
+                self.dialog.reading_stop.click()
+                if row_arrived:
+                    self.dialog.set_diagnostic_sessions([current, older])
+                self.dialog.reading_history.setCurrentItem(
+                    self.dialog.reading_history.topLevelItem(1 if row_arrived else 0)
+                )
+                self.dialog.set_diagnostic_sessions([current, older])
+                report["status"] = "finished"
+                self.dialog.refresh_reading_session()
+                self.dialog.set_diagnostic_sessions([session_entry(2), older])
+                self.assertEqual(self.dialog.selected_diagnostic_session(), older)
+                self.assertTrue(self.dialog.reading_export.isEnabled())
+
+    def test_stop_scrolls_to_current_once_and_preserves_later_scroll(self):
+        current = session_entry(30, available=False)
+        entries = [current, *(session_entry(i) for i in range(29, 0, -1))]
+        report = dict(current.report)
+        self.dialog.reading_status_provider = lambda: report
+        self.dialog.set_diagnostic_sessions(entries)
+        self.dialog.show()
+        self.application.processEvents()
+        tree = self.dialog.reading_history
+        older = tree.topLevelItem(29)
+        tree.setCurrentItem(older)
+        tree.scrollToItem(older)
+        self.assertGreater(tree.verticalScrollBar().value(), 0)
+        self.dialog.reading_stop.click()
+        self.assertTrue(
+            tree.viewport().rect().contains(tree.visualItemRect(tree.currentItem()))
+        )
+        tree.verticalScrollBar().setValue(tree.verticalScrollBar().maximum())
+        position = tree.verticalScrollBar().value()
+        report["status"] = "finished"
+        self.dialog.refresh_reading_session()
+        self.dialog.set_diagnostic_sessions([session_entry(30), *entries[1:]])
+        self.assertEqual(tree.verticalScrollBar().value(), position)
+
+    def test_automatic_completion_does_not_change_manual_history_selection(self):
+        older, current = session_entry(1), session_entry(2, available=False)
+        report = dict(current.report)
+        self.dialog.reading_status_provider = lambda: report
+        self.dialog.set_diagnostic_sessions([current, older])
+        self.dialog.refresh_reading_session()
+        self.dialog.reading_history.setCurrentItem(
+            self.dialog.reading_history.topLevelItem(1)
+        )
+        report["status"] = "finished"
+        self.dialog.refresh_reading_session()
+        self.dialog.set_diagnostic_sessions([session_entry(2), older])
+        self.assertEqual(self.dialog.selected_diagnostic_session(), older)
+
     def test_unavailable_and_empty_history_are_explicit(self):
         self.dialog.set_diagnostic_sessions(
             [session_entry(1, size=None, available=False)]
