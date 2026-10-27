@@ -1,5 +1,161 @@
 # TODO
 
+## Proposed - Native window capture replacement (approval required)
+
+Branch: `window-capture`, based on `256313c7`. This is the implementation plan,
+not approval to start it. Keep each coherent change in a separate commit.
+Merge only after the native and packaged gates below pass; unavailable hardware
+leaves its gate open. Do not merge or publish a PR as part of implementation.
+
+- [ ] **WC-0: agree the scope and platform floor.** Replace MSS completely,
+      including calibration and examples. Preserve the existing explicit screen
+      region mode using native display capture; it is never a fallback for a
+      selected window. Proposed minimums: macOS 14 (SCK content/scale metadata
+      and shadow exclusion), Windows 11 (existing release floor). Preserve
+      Linux/X11 through Composite rather than silently dropping existing support;
+      Wayland remains unsupported. Confirm these scope choices with the plan.
+- [ ] **WC-1: add one owned capture-session contract and a native test fixture.**
+      Reuse window enumeration, focus authority, `CapturedDialogFrame` and
+      `DialogRegion.crop`; keep selection separate from pixel acquisition.
+      Bind a session to window ID, PID/process identity and a session generation.
+      Return full window pixels, actual dimensions/format, source frame sequence
+      and time where available, canonical extent and window-local crop mapping.
+      Anchor native clocks to the diagnostic monotonic clock; X11 reports only
+      acquisition time/request sequence, with render time explicitly unavailable.
+      Screen position
+      is diagnostic/UI metadata, not the source of window pixels. Keep one latest
+      frame and a bounded native pool; no video queue, screenshot files or base64
+      in the runtime transport. Use a small versioned, length-bounded metadata/raw
+      pixel protocol with request/session IDs and cancellable reads. Capture owns
+      no OCR or audio. Cancellation, EOF, close and identity/layout changes must
+      invalidate pending results and allow bounded helper termination.
+      Keep pixels and recognized text out of ordinary logs; preserve existing
+      explicit consent for diagnostic media and OCR evidence.
+      Gate: protocol/ownership tests and a fixture with known glyphs, moving frame
+      markers and a separate opaque occluder. Record old-method latency/CPU/memory
+      baselines before migration; do not retain the old backend for benchmarking.
+- [ ] **WC-2: implement macOS ScreenCaptureKit and qualify it immediately.**
+      Build a small Swift helper under `native/capture-worker`; reuse the existing
+      recorder's SCK setup principles without recording a movie or launching its
+      recording lifecycle. Use `SCContentFilter(desktopIndependentWindow:)` for
+      the selected window, a persistent `SCStream`, native pixel scale, BGRA/SDR,
+      no cursor, shadows or audio. Use frame status/content/scale attachments;
+      distinguish unchanged idle content from suspended/blank/stopped capture.
+      Display capture is a separate explicit screen-mode target. Handle permission
+      denial/revocation, stop errors, resize, Retina changes and fullscreen Spaces
+      without consulting a desktop screenshot. Ship the compiled helper; normal
+      users must not need Xcode. Gate before integration: actual native fixture
+      pixels under an occluder and system volume HUD, windowed/fullscreen Spaces,
+      minimize/restore, resize, monitor/DPI changes, and bounded Stop/restart.
+- [ ] **WC-3: implement Windows Graphics Capture and qualify it immediately.**
+      Build the Windows helper in Rust using Microsoft's `windows` bindings,
+      pinned Cargo.lock, MTA/D3D11 BGRA device, `CreateForWindow(HWND)` and
+      `CreateFreeThreaded` with a bounded frame pool. Use `CreateForMonitor` only
+      for explicitly selected screen mode. Disable cursor capture and retain the
+      system capture border. Copy textures respecting RowPitch/ContentSize;
+      establish PMv2 awareness in the helper and return the physical client rect
+      inside the captured surface. Recreate the pool on resize and invalidate
+      its generation on device loss before bounded recovery. Keep HRESULT/device
+      removal details. No PrintWindow, BitBlt, Desktop Duplication, injected game
+      hook or MSS fallback. Include HDR capture/conversion to deterministic SDR
+      pixels; do not silently clip HDR or claim support from an SDR test.
+      Gate before integration: real Windows fixture/game capture, occlusion and
+      volume HUD, windowed/borderless, minimize/restore, DPI/resize/device errors,
+      static dialogue, and capture without Python/COM callback dependencies.
+- [ ] **WC-4: preserve Linux/X11 without MSS.** Use existing python-xlib:
+      Composite >=0.2, automatic redirection of the selected hierarchy only,
+      named-window pixmap/GetImage and client-area crop excluding its border.
+      Keep the redirect owned by the session; acquire/free the named pixmap per
+      request to avoid retaining pre-resize/remap storage. Track Map/Unmap/
+      Configure/Destroy epochs and reject a result across an in-flight lifecycle
+      change, even if new dimensions match. Isolate synchronous X11 calls in an
+      owned Python capture helper so stalled replies cannot prevent bounded
+      cancellation, Stop or cleanup. Decode supported
+      TrueColor visuals using masks, byte order and row padding. Use RandR primary
+      monitor plus root GetImage only in explicit screen mode. Missing extension,
+      unmapped/destroyed window or unsupported pixel format is an explicit error.
+      Gate: X11/compositor fixture with occlusion, resize/remap and cleanup,
+      screen-region regression, plus native GPU-game qualification before claiming
+      that configuration supported. No Wayland expansion or compositor takeover.
+- [ ] **WC-5: preserve regions and fullscreen behavior across the shared API.**
+      Use the same canonical image for OCR and calibration: Windows/X11 client
+      extent; macOS window extent without shadows, matching legacy calibration.
+      Preserve normalized fractions only where that equivalence is demonstrated.
+      Version the coordinate-space marker in profiles/global region storage and
+      migrate known extents; if conversion is ambiguous, retain the saved value,
+      mark the affected source/profile `needs_recalibration` and block its reading
+      until verified conversion or recalibration. Preserve env
+      override > active profile > global > default precedence and invalidate
+      incompatible speaker/dialogue split regions. Actual buffer pixels and local
+      rects must handle Retina, 100/125/150/200% DPI, negative monitor coordinates,
+      aspect-ratio changes and letterboxing; never stretch a saved desktop rect.
+      Keep an explicit live preview when a mode/layout change needs recalibration.
+      On fullscreen handle replacement, invalidate old pixels and rebind only to
+      an unambiguous verified game window from the same process; otherwise stop
+      and require selection. Do not identify a replacement from title alone.
+      Windowed, borderless and macOS fullscreen are separate test cases; Windows
+      exclusive fullscreen is qualified per actual game/API. If unavailable,
+      explain the limitation and offer borderless/windowed mode, never desktop
+      capture. Keep focus checks for keyboard dispatch even when capture works
+      behind another window. Black content alone does not prove an API failure;
+      unchanged content alone does not prove a stale frame. Clear invalid caches
+      on close/minimize/rebind/layout/device loss and resume only from valid pixels.
+- [ ] **WC-6: migrate all consumers and delete the superseded path.** Route live
+      reading, read-once, scope identification, current-dialog diagnostics,
+      calibration/onboarding/CLI, live-replay capture and release smoke through
+      the same owned source. Keep offline replay independent of native capture.
+      Close sources on settings replacement/rollback, Stop, shutdown, cancelled
+      previews and exceptions; reuse one source per smoke run instead of per poll.
+      Readiness must check backend availability and capture permissions, not just
+      window geometry. Update provenance and Support allowlists with the actual
+      mechanism, scope, frame identity and coordinate space; keep old exported
+      metadata readable without an old executable backend.
+      Delete MSS calls/dependency, legacy `capture_box` target duck typing,
+      separate calibration recapture and screen-coverage guards for window mode,
+      window-mode hide/sleep acquisition workarounds, old examples and MSS bundle
+      checks/tests. Retain deliberate screen-mode visibility/privacy controls.
+      Update README/setup/CLI instructions and obsolete TODO references together.
+      Gate: no runtime MSS imports/calls/fallbacks and no unconverted consumer.
+- [ ] **WC-7: deliver and test the packaged helpers.** Add explicit helper build,
+      discovery, architecture/version checks, PyInstaller inclusion, signing and
+      missing-helper diagnostics on macOS/Windows. Source installs have a documented
+      build command; release installs use bundled executables without compilers.
+      Update package self-tests and platform workflows. Gate: install/run packaged
+      builds with no developer toolchain; test capture permission and denied/revoked
+      permission, helper crash/hang and bounded cleanup. Verify actual selected
+      pixels, not only imports or the existence of a PNG.
+- [ ] **WC-8: final regression, performance and merge gates.** After code changes
+      run `uv run python -m scripts.run_changed_unittests --local` first, then
+      add directly affected consumer/native tests omitted by static selection.
+      Cover mapping/stride, epoch/request rejection, timeouts, static frames,
+      repeated Start/Stop/Pause, calibration cancel, settings rollback and offline
+      replay. On macOS and Windows test the actual game under real background
+      generation, system volume HUD, an opaque overlapping app, fullscreen entry/
+      exit and alt-tab; compare captured crops and OCR, not just diagnostic video.
+      Measure first-frame and warm capture p50/p95, frame age, OCR cadence,
+      end-to-end phrase delay, CPU and peak memory against the same-scene baseline.
+      Investigate sustained regressions beyond measurement variability before
+      merge. Confirm no unrelated overlay text, stale dialogue, capture-induced
+      duplicate playback,
+      lost target, orphan helper or unbounded buffer. Test moving/growing text,
+      static long dialogue and genuine dark/black scenes. Qualify mixed-DPI and
+      multi-monitor, SDR/HDR and actual supported fullscreen paths on hardware;
+      unsupported configurations must have a tested explicit refusal.
+      Immediately qualify short real-game capture scenarios on both platforms;
+      retain the full chapter/background-generation rerun as the combined gate
+      after the remaining chapter defects are repaired. Keep the separate tracker
+      ownership defect open if saved corrupted OCR still replays a line; capture
+      isolation does not fix it or qualify a complete chapter.
+      Report open hardware gates, commits and evidence; merge only when the user
+      confirms acceptance, without retaining the old backend as an escape hatch.
+
+API references for the pending implementation:
+[Apple window filter](https://developer.apple.com/documentation/screencapturekit/sccontentfilter/init(desktopindependentwindow:)),
+[Apple frame metadata](https://developer.apple.com/documentation/screencapturekit/scstreamframeinfo),
+[Microsoft window capture](https://learn.microsoft.com/en-us/windows/win32/api/windows.graphics.capture.interop/nf-windows-graphics-capture-interop-igraphicscaptureiteminterop-createforwindow),
+[Microsoft capture/HDR guide](https://learn.microsoft.com/en-us/windows/uwp/audio-video-camera/screen-capture),
+[Xorg Composite](https://xorg.freedesktop.org/archive/current/doc/compositeproto/compositeproto.txt).
+
 ## Active - Native rerun observations (2026-10-27)
 
 - [ ] **UX-27-07: voice confirmation has room for only one character row.**
@@ -37,12 +193,9 @@
       line15 playbacks completed all426888frames; no key dispatch between them.
       A transient OCR speaker `erstone` started a speaker announcement between
       them, then was cancelled after returning to `Cornerstone`.
-      Investigate true selected-window pixels for OCR on macOS and Windows:
-      current window mode only obtains screen coordinates and still calls
-      mss.grab, so overlapping windows/system overlays enter recognition. The
-      diagnostic video uses an independent window source and cannot rule out
-      such occlusion. Qualify overlay exclusion, region/DPI mapping, latency,
-      window lifecycle and permissions before replacing the shared capture path.
+      Window capture replacement and its acceptance gates are tracked in WC-0
+      through WC-8 above; independent diagnostic video cannot rule out screen-ROI
+      occlusion in the original run.
       Separately preserve committed dialogue ownership through damaged-name and
       damaged-text observations; require real transition evidence and retain
       legitimate other-speaker dialogue and explicit replay. Confirmed local
@@ -264,11 +417,9 @@
       alongside CPU; verify real punctuation/prefix growth, moving names, overlays,
       Pause/Resume/Stop and no stale occurrence or duplicate dispatch. Offline
       synthetic regressions and retained frame equivalence do not qualify timing.
-- [ ] Evaluate a persistent MSS capture owner per Reading session on Windows and
-      Mac. Preserve before/after window geometry validation and capture provenance;
-      close only after the capture worker drains and recreate on target/settings/
-      display changes (MSS caches monitor topology). Compare against per-frame MSS
-      construction before choosing a resource-lifecycle change.
+- [ ] Qualify persistent native capture lifetime and baseline performance through
+      WC-1 through WC-8; the MSS-owner optimization is superseded by that planned
+      replacement. Retain target/settings/display-change and drain/cleanup gates.
 - [ ] Qualify the selected OCR candidate with partial/full text, narrator and
       speaker changes on a labelled corpus, then under concurrent generation.
       Preserve confidence/uncertainty handling, source routing, cancellation and
@@ -682,8 +833,9 @@ callers and focused regressions together when changing these contracts.
 - [ ] **T4 - Validate Mac product, MCP and video capture provenance.**
       Confirm saved PNG/sidecar, diagnostics and Reading timelines agree
       on capture ID, separate run ID, selected window ID/title/PID, bounds, dimensions,
-      monotonic time, method/scope and outcome. MSS window-coordinate captures are
-      desktop rectangles and may contain overlaps. Close/minimize/move/resize/reopen
+      monotonic time, method/scope and outcome. Qualify the native-window mechanism
+      from WC-0 through WC-8; old MSS recordings remain desktop-rectangle evidence
+      and may contain overlaps. Close/minimize/move/resize/reopen
       the selected window and confirm failures and new target identities remain
       explicit; never enumerate unrelated titles or log pixels/dialogue. Validate
       native-video target/frame timestamps and MCP contract1 independently.
