@@ -19,6 +19,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TypeAlias, TypedDict, TypeGuard
 
 import numpy as np
@@ -41,6 +42,10 @@ from vntts.authoring.audio_events import (
     requires_audio_event_composition,
 )
 from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.failed_audio import (
+    remove_failed_audio,
+    retain_failed_audio,
+)
 from vntts.authoring.failure_repair import (
     BOUNDED_SEED_RETRY,
     EDGE_SILENCE_TRIM,
@@ -1484,6 +1489,7 @@ def _store_successful_generation_attempt(
         changed_items=(plan.queue_id,),
         controls_unchanged=run.progress_callback is None,
     )
+    remove_failed_audio(run.output_directory, plan.queue_id)
 
 
 def _store_failed_generation_attempt(
@@ -1492,6 +1498,7 @@ def _store_failed_generation_attempt(
     *,
     error: Exception,
     completion: SynthesisCompletion | None,
+    rendered: SynthesisResult | None,
     request: SynthesisRequest,
     partial: Path,
     attempts: int,
@@ -1502,19 +1509,47 @@ def _store_failed_generation_attempt(
     run_attempts: int,
 ) -> _GenerationFailureResult:
     captured_partial: bytes | None = None
-    carry_forward = plan.existing.get("carry_forward")
+    is_cancelled = (
+        completion is SynthesisCompletion.CANCELLED or request.cancellation_requested()
+    )
+    diagnostic_source: Path | bytes = partial
+    if (
+        not is_cancelled
+        and rendered is not None
+        and type(rendered.sample_rate) is int
+        and 0 < rendered.sample_rate <= 0xFFFFFFFF
+        and not partial.exists()
+        and not partial.is_symlink()
+    ):
+        try:
+            with TemporaryDirectory(prefix="vntts-failed-audio-") as directory:
+                diagnostic = Path(directory) / "partial.wav"
+                write_pcm16_wav(
+                    diagnostic, _generated_mono_pcm(rendered.pcm), rendered.sample_rate
+                )
+                diagnostic_source = read_regular_bytes(diagnostic)
+        except Exception:
+            # Optional diagnostics must preserve the synthesis failure.
+            pass
+    failure_audio = (
+        {"created": False}
+        if is_cancelled
+        else retain_failed_audio(run.output_directory, plan.queue_id, diagnostic_source)
+    )
     if (
         run.evidence_directory is not None
         and isinstance(error, SpeechSilenceValidationError)
         and partial.is_file()
         and not partial.is_symlink()
     ):
-        captured_partial = read_regular_bytes(partial)
-    if partial.exists():
-        partial.unlink()
-    is_cancelled = (
-        completion is SynthesisCompletion.CANCELLED or request.cancellation_requested()
-    )
+        try:
+            captured_partial = read_regular_bytes(partial)
+        except OSError:
+            pass
+    try:
+        partial.unlink(missing_ok=True)
+    except OSError:
+        pass
     last_error = str(error) or error.__class__.__name__
     if is_cancelled:
         attempts -= 1
@@ -1522,6 +1557,9 @@ def _store_failed_generation_attempt(
         attempts_by_provider[run.provider] -= 1
     value: JsonDocument = {
         "status": "failed",
+        "line_id": plan.item.line_id,
+        "text_sha256": plan.item.text_sha256,
+        "failure_audio": failure_audio,
         "attempts": attempts,
         "attempts_by_provider": dict(sorted(attempts_by_provider.items())),
         "seed": attempt_seed,
@@ -1558,9 +1596,12 @@ def _store_failed_generation_attempt(
         failure = value["failure"]
         assert isinstance(failure, dict)
         failure["attempt_counted"] = False
-        previous: object = plan.existing
-        if generation_item_status(plan.existing) == "cancelled":
-            stored = plan.existing.get("failure")
+        previous: object = run.items.get(plan.queue_id, plan.existing)
+        if (
+            isinstance(previous, dict)
+            and generation_item_status(previous) == "cancelled"
+        ):
+            stored = previous.get("failure")
             previous = (
                 stored.get("previous_failure") if isinstance(stored, dict) else None
             )
@@ -1603,6 +1644,8 @@ def _store_failed_generation_attempt(
             changed_items=(plan.queue_id,),
             controls_unchanged=run.progress_callback is None,
         )
+    if not is_cancelled and "path" not in failure_audio:
+        remove_failed_audio(run.output_directory, plan.queue_id)
     captured: _CapturedSilenceFailure | None = None
     if captured_partial is not None:
         captured = {
@@ -2018,6 +2061,7 @@ def _execute_generation_item(
                     if attempt.rendered is not None
                     else None
                 ),
+                rendered=attempt.rendered,
                 request=attempt.request,
                 partial=attempt.partial,
                 attempts=attempt.attempts,

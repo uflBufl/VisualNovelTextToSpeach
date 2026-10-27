@@ -65,6 +65,7 @@ from vntts.pregeneration_audition_ui import (
     _preview_service_factory,
     _VoiceAuditionPreviewer,
 )
+from vntts.pregeneration_failures_ui import PreparationFailuresPanel
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationProgress,
@@ -861,6 +862,11 @@ class OfflineAudioPreparationDialog(QDialog):
         progress_layout.addWidget(self.progress_story_readiness_label)
         progress_layout.addWidget(self.progress_story_readiness)
         progress_layout.addWidget(self.progress_coverage)
+        self.failures_panel = PreparationFailuresPanel(
+            self, thread_pool=self.progress_runner.thread_pool
+        )
+        self._failure_counts: tuple[int, int] | None = None
+        progress_layout.addWidget(self.failures_panel)
         self.progress_change_selection = QPushButton("Change stories or voices...")
         set_action_icon(self.progress_change_selection, "pencil")
         self.progress_change_selection.clicked.connect(self._return_to_story_selection)
@@ -1769,6 +1775,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._prepared_voice_manifest = None
         self._prepared_voice_job = None
         self._generation_input = None
+        self.failures_panel.set_input(None)
         self._changes_rows = ()
         self._refresh_narrator_status()
         self.voice_confirmation.hide()
@@ -1822,6 +1829,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._prepared_voice_manifest = None
         self._prepared_voice_job = None
         self._generation_input = None
+        self.failures_panel.set_input(None)
         self._generation_result = None
         self._recovery_result = None
         self._pack_result = None
@@ -3111,7 +3119,9 @@ class OfflineAudioPreparationDialog(QDialog):
     def _show_source_status(self, detail: str) -> None:
         self.source_status.setText(detail)
         self.source_status.show()
-        self._reveal_selection_option(self.selection_settings_toggle, self.source_status)
+        self._reveal_selection_option(
+            self.selection_settings_toggle, self.source_status
+        )
 
     def _set_phase_detail(self, detail: str) -> None:
         self.resume_status.setText(detail)
@@ -3223,6 +3233,8 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _start_generation_progress(self) -> None:
         assert self._generation_input is not None
+        self.failures_panel.set_input(self._generation_input)
+        self._failure_counts = None
         if self._generation_configuration is None:
             self._generation_configuration = self._narrator_configuration_values()
         self._stop_generation_progress()
@@ -3355,6 +3367,16 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _render_generation_progress(self, progress: OfflineGenerationProgress) -> None:
         assert self._generation_input is not None
+        counts = (progress.failed, progress.other_terminal)
+        if counts != self._failure_counts:
+            self._failure_counts = counts
+            if (
+                progress.failed
+                or progress.other_terminal
+                or self.failures_panel.failures
+            ):
+                self.failures_panel.set_input(self._generation_input)
+                self.failures_panel.refresh()
         total = self._generation_input.ready_items
         self.progress_bar.setAccessibleName("Durably completed generation items")
         self.progress_counts.setAccessibleName("Offline generation durable counts")
@@ -3401,6 +3423,14 @@ class OfflineAudioPreparationDialog(QDialog):
     def _render_generation_result(self, result: OfflineGenerationResult) -> None:
         if self._generation_input is None:
             return
+        self.failures_panel.set_input(self._generation_input)
+        if (
+            result.failed
+            or result.other_terminal
+            or self.failures_panel.failures
+            or self.failures_panel.inspector.active
+        ):
+            self.failures_panel.refresh()
         self._render_generation_progress(
             OfflineGenerationProgress(
                 result.generated,
@@ -3424,6 +3454,7 @@ class OfflineAudioPreparationDialog(QDialog):
         omissions: int,
     ) -> None:
         assert self._job is not None
+        auto_activate = self.automatic_activation and not live_fallbacks
         self.progress_timer.stop()
         self.step.setText("Step 4 of 4 - Activate and read")
         self.selection_panel.hide()
@@ -3443,7 +3474,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 "Your story audio is saved and validated. VNTTS is checking that "
                 "Reading settings are unchanged before activating it. Playback will "
                 "not start automatically."
-                if self.automatic_activation
+                if auto_activate
                 else "Your story audio is saved, but not active yet. Click Use "
                 "prepared audio. This also replaces live voice overrides for these "
                 "story roles. Playback will not start automatically."
@@ -3476,7 +3507,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.continue_button.setFocus()
         self.cancel_button.setText("Close")
         self.cancel_button.setEnabled(True)
-        if self.automatic_activation:
+        if auto_activate:
             self.progress_phase.setText("Audio saved; connecting it to Reading")
             self.continue_button.hide()
             self.packReady.emit()
@@ -5161,6 +5192,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def _start_generation_input(self, plan: VoicePlan) -> None:
         self.preparing_inputs = True
         self._generation_input = None
+        self.failures_panel.set_input(None)
         self._prepared_sequence_plan = None
         self._set_import_controls(False)
         self.cancel_button.setText("Cancel preparation")
@@ -5361,6 +5393,8 @@ class OfflineAudioPreparationDialog(QDialog):
         ):
             error = TypeError("Offline generation returned an invalid result")
         if error is not None:
+            self.failures_panel.set_input(self._generation_input)
+            self.failures_panel.refresh()
             self.progress_timer.stop()
             self.selection_panel.setVisible(True)
             self._preparation_paused("Generation paused", error)
@@ -5416,6 +5450,8 @@ class OfflineAudioPreparationDialog(QDialog):
         if error is None and not isinstance(result, OfflineRecoveryResult):
             error = TypeError("Automatic recovery returned an invalid result")
         if error is not None:
+            self.failures_panel.set_input(self._generation_input)
+            self.failures_panel.refresh()
             self.selection_panel.setVisible(True)
             self._preparation_paused("Automatic recovery paused", error)
             self.progress_cancel_consequence.setText(
@@ -5663,6 +5699,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._show_source_status("Cancelling game import...")
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self.failures_panel.stop()
         self.summary_voice_preview.close()
         self._stop_generation_progress()
         if self.has_pending_work() or self.sequence_runner.active:
@@ -5689,6 +5726,7 @@ class OfflineAudioPreparationDialog(QDialog):
         super().closeEvent(event)
 
     def done(self, result: int) -> None:
+        self.failures_panel.stop()
         self.summary_voice_preview.close()
         if self._narrator_player is not None:
             self._narrator_player.stop()

@@ -1517,6 +1517,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                     story_lines=pack.story_lines,
                     omissions=pack.omissions,
                 )
+                self.assertIs(tray.pregeneration_dialog, dialog)
+                self.assertFalse(tray.pregeneration_activation_runner.active)
+                dialog.continue_button.click()
                 self.assertIsNone(tray.pregeneration_dialog)
             for _attempt in range(400):
                 self.application.processEvents()

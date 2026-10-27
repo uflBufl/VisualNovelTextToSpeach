@@ -4030,6 +4030,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             parent=self.dashboard,
         )
         self.pregeneration_dialog = dialog
+        dialog.failures_panel.before_playback = partial(
+            self._prepare_failure_playback, dialog
+        )
         dialog.offlinePreferencesChanged.connect(self._save_offline_preferences)
         dialog.finished.connect(self._pregeneration_finished)
         dialog.readingRequested.connect(self._read_prepared_story)
@@ -4045,6 +4048,23 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self.dashboard.embed_preparation(dialog, show=show)
         return dialog
+
+    def _prepare_failure_playback(
+        self, dialog: OfflineAudioPreparationDialog, play: Callable[[], None]
+    ) -> None:
+        if (
+            dialog is not self.pregeneration_dialog
+            or self._shutting_down
+            or self._quit_requested
+            or self._controller_busy
+        ):
+            return
+        if self._live_scope_generation is not None:
+            self._cancel_live_scope()
+        if self._needs_modal_stop():
+            self._stop_live_then(play, "Stopping reading before diagnostic audio...")
+        else:
+            play()
 
     def _save_offline_preferences(self, selected: AppSettings) -> None:
         self.voice_auditions.cancel_warmup()

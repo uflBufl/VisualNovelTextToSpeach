@@ -44,6 +44,7 @@ from vntts.authoring.bulk_generation import (
     run_bulk_generation,
 )
 from vntts.authoring.cli import main as authoring_main
+from vntts.authoring.failed_audio import read_failed_audio
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.generation_failures import (
     generation_failure_repair_plan,
@@ -3318,6 +3319,14 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 retries=0,
             )
             state = load_generation_state(result.state, queue)
+            stored = state["items"][item["queue_id"]]
+            diagnostic = read_failed_audio(
+                root / "output", item["queue_id"], stored["failure_audio"]
+            )
+            self.assertTrue(diagnostic.startswith(b"RIFF"))
+            self.assertEqual(stored["line_id"], item["line_id"])
+            self.assertEqual(stored["text_sha256"], item["text_sha256"])
+            self.assertEqual(GeneratedAudioIndex.load(result.manifest).entries, ())
 
         self.assertEqual(result.generated, 0)
         self.assertIn("leading silence", state["items"][item["queue_id"]]["last_error"])
@@ -3325,6 +3334,192 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(failure["kind"], "speech_silence")
         self.assertGreater(failure["speech_quality"]["leading_silence_seconds"], 0.8)
         self.assertIn("leading silence", failure["silence_failures"][0])
+
+    def test_failed_audio_tracks_latest_attempt_and_success_removes_it(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            for scale in (1, 0.5):
+                result = self.run_generation(
+                    queue,
+                    output,
+                    SyntheticRenderer(
+                        [SynthesisCompletion.LIMITED], pcm=audio_samples() * scale
+                    ),
+                    retries=0,
+                )
+                stored = load_generation_state(result.state, queue)["items"][
+                    item["queue_id"]
+                ]
+                payload = read_failed_audio(
+                    output, item["queue_id"], stored["failure_audio"]
+                )
+                if scale == 1:
+                    first_payload = payload
+                else:
+                    self.assertNotEqual(payload, first_payload)
+                self.assertEqual(len(list((output / ".failed-audio").glob("*.wav"))), 1)
+            self.run_generation(queue, output, SyntheticRenderer(), retries=0)
+            self.assertEqual(list((output / ".failed-audio").glob("*.wav")), [])
+
+    def test_failure_without_audio_replaces_previous_diagnostic(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer([SynthesisCompletion.LIMITED]),
+                retries=0,
+            )
+            result = self.run_generation(
+                queue, output, SyntheticRenderer([RuntimeError("no audio")]), retries=0
+            )
+            stored = load_generation_state(result.state, queue)["items"][
+                item["queue_id"]
+            ]
+            self.assertEqual(stored["failure_audio"], {"created": False})
+            self.assertEqual(stored["last_error"], "no audio")
+            self.assertEqual(list((output / ".failed-audio").glob("*.wav")), [])
+
+    def test_cancelled_attempt_preserves_previous_failed_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            failed = self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer([SynthesisCompletion.LIMITED]),
+                retries=0,
+            )
+            stored = load_generation_state(failed.state, queue)["items"][
+                item["queue_id"]
+            ]
+            metadata = stored["failure_audio"]
+            payload = read_failed_audio(output, item["queue_id"], metadata)
+            for _ in range(2):
+                cancelled = self.run_generation(
+                    queue,
+                    output,
+                    SyntheticRenderer(
+                        [SynthesisCompletion.CANCELLED], pcm=audio_samples() / 2
+                    ),
+                    retries=0,
+                )
+                stored = load_generation_state(cancelled.state, queue)["items"][
+                    item["queue_id"]
+                ]
+                previous = stored["failure"]["previous_failure"]
+                self.assertTrue(cancelled.cancelled)
+                self.assertEqual(stored["failure_audio"], {"created": False})
+                self.assertEqual(previous["failure_audio"], metadata)
+                self.assertEqual(
+                    read_failed_audio(
+                        output, item["queue_id"], previous["failure_audio"]
+                    ),
+                    payload,
+                )
+                self.assertEqual(len(list((output / ".failed-audio").glob("*.wav"))), 1)
+
+    def test_cancelled_retry_keeps_latest_failure_and_its_audio_from_same_run(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            for scale in (1, 0.5):
+                result = self.run_generation(
+                    queue,
+                    output,
+                    SyntheticRenderer(
+                        [SynthesisCompletion.LIMITED, SynthesisCompletion.CANCELLED],
+                        pcm=audio_samples() * scale,
+                    ),
+                    retries=1,
+                )
+                stored = load_generation_state(result.state, queue)["items"][
+                    item["queue_id"]
+                ]
+                previous = stored["failure"]["previous_failure"]
+                metadata = previous["failure_audio"]
+                payload = read_failed_audio(output, item["queue_id"], metadata)
+                self.assertTrue(result.cancelled)
+                self.assertEqual(previous["attempts"], 1 if scale == 1 else 2)
+                self.assertEqual(previous["failure"]["kind"], "missed_eos_audio_limit")
+                self.assertEqual(
+                    hashlib.sha256(payload).hexdigest(), metadata["sha256"]
+                )
+                if scale == 1:
+                    first_payload = payload
+                else:
+                    self.assertNotEqual(payload, first_payload)
+
+    def test_success_commit_failure_keeps_previous_failed_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            failed = self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer([SynthesisCompletion.LIMITED]),
+                retries=0,
+            )
+            stored = load_generation_state(failed.state, queue)["items"][
+                item["queue_id"]
+            ]
+            metadata = stored["failure_audio"]
+            payload = read_failed_audio(output, item["queue_id"], metadata)
+            write_state = bulk_module.write_generation_state
+
+            def fail_success_commit(path, state, **options):
+                if state["items"][item["queue_id"]]["status"] == "generated":
+                    raise OSError("state commit failed")
+                return write_state(path, state, **options)
+
+            with (
+                patch.object(
+                    bulk_module,
+                    "write_generation_state",
+                    side_effect=fail_success_commit,
+                ),
+                self.assertRaisesRegex(OSError, "state commit failed"),
+            ):
+                self.run_generation(queue, output, SyntheticRenderer(), retries=0)
+            self.assertEqual(
+                read_failed_audio(output, item["queue_id"], metadata), payload
+            )
+
+    def test_diagnostic_retention_failure_preserves_synthesis_failure(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            result = self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer(
+                    [SynthesisCompletion.LIMITED],
+                    inspect_state=lambda request: (output / ".failed-audio").write_text(
+                        "directory unavailable"
+                    ),
+                ),
+                retries=0,
+            )
+            stored = load_generation_state(result.state, queue)["items"][
+                item["queue_id"]
+            ]
+            self.assertEqual(stored["failure_audio"], {"created": True})
+            self.assertEqual(stored["failure"]["kind"], "missed_eos_audio_limit")
+            self.assertEqual(GeneratedAudioIndex.load(result.manifest).entries, ())
 
     def test_selected_silence_failure_can_be_captured_only_as_evidence(self):
         with TemporaryDirectory() as directory:
@@ -3348,7 +3543,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             document = load_silence_failure_evidence(evidence)
             state = load_generation_state(result.state, queue)
             state_sha256 = sha256_file(result.state)
-            published_wavs = list((root / "output").rglob("*.wav"))
+            published_wavs = list((root / "output" / "audio").rglob("*.wav"))
             for version in (True, 1.0, [], {}):
                 with self.subTest(evidence_version=version):
                     malformed = dict(document, schema_version=version)
@@ -3442,7 +3637,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 self.assertFalse(evidence.exists())
                 self.assertFalse(list(root.glob(".evidence.staging-*")))
                 self.assertFalse((output / ".generation-lease.json").exists())
-                self.assertFalse(list(output.rglob("*.wav")))
+                self.assertFalse(list((output / "audio").rglob("*.wav")))
 
                 recovered = self.run_generation(
                     queue,
@@ -3460,7 +3655,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     document["metadata"]["state_sha256"], sha256_file(recovered.state)
                 )
                 self.assertEqual(queue.read_bytes(), source)
-                self.assertFalse(list(output.rglob("*.wav")))
+                self.assertFalse(list((output / "audio").rglob("*.wav")))
 
     def test_cli_silence_evidence_write_failure_is_actionable_without_traceback(self):
         with TemporaryDirectory() as directory:
@@ -3550,7 +3745,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertFalse(evidence.exists())
             self.assertFalse(list(root.glob(".evidence.staging-*")))
             self.assertFalse((output / ".generation-lease.json").exists())
-            self.assertFalse(list(output.rglob("*.wav")))
+            self.assertFalse(list((output / "audio").rglob("*.wav")))
 
     def test_silence_failure_capture_requires_exact_one_attempt_scope(self):
         with TemporaryDirectory() as directory:

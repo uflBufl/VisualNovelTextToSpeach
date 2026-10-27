@@ -58,21 +58,23 @@
       клипов пропавшей озвучкой без доказательств. В native telemetry есть
       callback/DAC discontinuity counters при underflow0 и отсутствии capture
       gaps; разобраться в значении счётчиков, не выдавать их за слышимые щелчки.
-- [ ] **GEN-25-01: фоновая генерация отклоняет результат из-за паузы1.60с.**
+- [ ] **GEN-25-01: проверить объяснения и звук неудачной генерации в общем прогоне.**
       MOSS/stable/seed0, retries0, отдельная очередь314501: один WAV получил
       speech_silence / sentence_boundary_pause_candidate, пауза3.44..5.04с.
       Проверка качества сработала, это не сбой воспроизведения главы314001.
-      Показать персонажа, полную фразу и понятную причину неудачи. Если звук
-      получился, дать прослушать отклонённый результат; иначе явно сообщить,
-      что аудио не создано или не сохранено. Новые действия повтора, смены
-      референса/движка и ручного принятия не добавлять. Штатный UI этого задания
-      пока не проверен из-за несовместимости каталога. В failed-строке SQLite line_id=NULL;
-      сопоставление требует queue_id, что затрудняет ручную диагностику.
+      В Stories проверить персонажа, полный текст и причину, прослушивание
+      последнего отклонённого WAV, остановку чтения перед ним и звука при закрытии.
+      Проверить различие «аудио не создано» и «запись не сохранена/недоступна»,
+      отмену автоматического повтора и итоговый экран с live fallback перед
+      активацией. Диагностическое аудио не должно попадать в готовый пакет.
+      Проверить доступность панели при обычном и крупном шрифте. Новые действия
+      повтора, смены референса/движка и ручного принятия не добавлять.
 - [ ] **GEN-25-02: фоновая реплика314501:85 упёрлась в лимит генерации.**
       MOSS вернул `Typed render completed as limited`, max_audio_seconds=5.1667,
       max_tokens=517; WAV корректно не опубликован. Проверить достаточность
-      расчёта бюджета и понятный пользователю путь повтора; retries0 был условием
+      расчёта бюджета и штатный автоматический повтор; retries0 был условием
       этого нагрузочного прогона, поэтому автоматический retry не проверялся.
+      Новых ручных сценариев исправления реплики не добавлять.
 - [ ] **RUN-25-04: проверить полный текст реплики в общем прогоне.**
       На line34 (`I'm afraid I won't...` / OCR `I'm afraid J] won't...`)
       подтвердить канонический текст при надёжном совпадении с историей.
@@ -314,30 +316,20 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Explain failed preparation and preview its result (GEN-25-01).** Carry
-   the existing failure evidence into Stories with the character and full phrase.
-   Present measured causes without claiming a listening defect from a heuristic.
-   Plan minimal retention of the last rejected audio for playback; distinguish
-   no audio produced from an older recording no longer retained. Keep diagnostic
-   audio separate from ready recordings. Add no manual retry, per-line voice or
-   engine override, or acceptance workflow; preserve existing automatic recovery
-   and quality gates. Gate: correct line identity/reason, available/unavailable
-   preview and preservation of ready recordings. Fresh generation acceptance
-   remains deferred.
-2. **Check generation budget (GEN-25-02).** Trace314501:85's actual retained
+1. **Check generation budget (GEN-25-02).** Trace314501:85's actual retained
    text/reference/model/settings through token/time budgeting and normal retries.
    Fix a demonstrated budgeting or failure-reporting defect with deterministic
    tests. Gate: adequate bounded generation or a clear retryable failure,
    cancellation, no truncated publication and preserved ready work on restart.
    Fresh model/native qualification belongs to the combined run.
-3. **Investigate scene interruption from retained evidence (RUN-25-08).**
+2. **Investigate scene interruption from retained evidence (RUN-25-08).**
    Correlate48's source WAV, captured output and transition to49. Establish which
    scene changes invalidate speech and which permit the current clip to finish;
    present a repair plan only when the cause/product behavior is established.
    Gate: intended completion without stale audio crossing a genuinely new
    occurrence; Stop still cancels. If evidence is insufficient, retain the case
    for the final run instead of introducing a guessed playback policy.
-4. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
+3. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
    Run all314001 through104 from Stories without manual transitions while real
    heavy generation/publication remains active. Also qualify partly prepared
    active-chapter catch-up across newly published boundaries, failed/not-ready
@@ -345,6 +337,10 @@ complete. Do not change recognition or playback policy on an unverified hypothes
    U1/U2/U4/U6/U7/U8 gates, persistent OCR and portable observation. Preserve
    approved WAV bytes and complete independent capture; cache hits alone are
    not background-generation load. Include the following deferred checks:
+   - **Preparation problems (GEN-25-01):** verify character, full phrase and
+     measured reason, retained/unavailable/not-created audio states, stopping
+     reading before diagnostic playback, cancellation and the final live-fallback
+     screen. Check ordinary/large fonts; no diagnostic WAV enters a ready pack.
    - **OCR warning presentation:** low-confidence startup/live observations must
      preserve the last real speaker and dialogue in dashboard and Compact.
      Confidence/reason belongs to status; raw OCR must not enter status logs.

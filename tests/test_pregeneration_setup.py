@@ -2111,9 +2111,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             dialog.story_search.setText("Sketches")
             self.assertFalse(stage.isHidden())
-            self.assertTrue(
-                dialog.stories.topLevelItem(0).child(0).child(1).isHidden()
-            )
+            self.assertTrue(dialog.stories.topLevelItem(0).child(0).child(1).isHidden())
             stage.setCheckState(0, Qt.CheckState.Checked)
             self.assertEqual(dialog.selected_story_ids(), (first.selection_id,))
             self.assertIn("A Story - Stage 1", plain_label_text(dialog.story_context))
@@ -3373,9 +3371,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             parent = dialog.progress_story_readiness.topLevelItem(0)
             self.assertEqual(parent.text(1), "1/1")
             self.assertEqual(parent.childCount(), 1)
-            self.assertEqual(
-                parent.child(0).text(0), "Episode 2: The Wandering Child"
-            )
+            self.assertEqual(parent.child(0).text(0), "Episode 2: The Wandering Child")
             self.assertIn("only the selected chapters", parent.toolTip(1))
 
     def test_scoped_regeneration_keeps_story_scope_and_reuses_voice_decisions(self):
@@ -4225,6 +4221,37 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.assertTrue(dialog.continue_button.isEnabled())
             self.assertTrue(dialog.play_ready_button.isEnabled())
+            dialog.close()
+
+    def test_live_fallback_completion_keeps_problems_accessible_before_activation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                automatic_activation=True,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.select_all_button.click()
+            dialog._job = dialog.job_store.create_or_resume(
+                content, dialog.selected_story_ids()
+            )
+            activated = Mock()
+            dialog.packReady.connect(activated)
+            dialog._show_final_handoff(
+                original=1, approved=2, live_fallbacks=1, story_lines=4, omissions=0
+            )
+            activated.assert_not_called()
+            self.assertFalse(dialog.continue_button.isHidden())
+            self.assertEqual(dialog.continue_button.text(), "Use prepared audio")
+            self.assertIn("live speech", dialog.progress_phase.text())
+            self.assertIn("Click Use prepared audio", dialog.resume_status.text())
+            dialog._show_final_handoff(
+                original=1, approved=3, live_fallbacks=0, story_lines=4, omissions=0
+            )
+            activated.assert_called_once_with()
             dialog.close()
 
     def test_deferred_activation_describes_the_available_action(self):

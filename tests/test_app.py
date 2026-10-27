@@ -146,6 +146,29 @@ class TrayApplicationTest(unittest.TestCase):
         self.addCleanup(self._drain_qt_workers)
         self.addCleanup(self._shutdown_trays)
 
+    def test_failure_audio_waits_for_reading_stop_and_ignores_closed_preparation(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        dialog = Mock()
+        play = Mock()
+        tray.pregeneration_dialog = dialog
+        with (
+            patch.object(tray, "_needs_modal_stop", return_value=True),
+            patch.object(tray, "_stop_live_then", return_value=True) as stop,
+        ):
+            tray._prepare_failure_playback(dialog, play)
+            play.assert_not_called()
+            self.assertIs(stop.call_args.args[0], play)
+            stop.call_args.args[0]()
+            play.assert_called_once_with()
+        tray.pregeneration_dialog = None
+        play.reset_mock()
+        tray._prepare_failure_playback(dialog, play)
+        play.assert_not_called()
+
     def test_missing_audio_blocks_reading_before_preparation_and_allows_retry(self):
         tray = TrayApplication(
             self.application,
