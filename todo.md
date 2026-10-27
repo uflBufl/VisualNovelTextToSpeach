@@ -17,11 +17,17 @@
       звука. Реплика100 автоматически распозналась до моего Stop, а разовая
       Dialogue фактически прочитала103 (единственный её маршрут, не повтор).
 - [ ] **RUN-25-08: подготовленная48 прервана сменой сцены.** Итог второго
-      сегмента содержит playback-outcome=interrupted для Narrator48
-      (`The student before her and the scenery...`), а далее читается49.
-      Ручного перехода в этом месте не было. Сверить момент игрового перехода
-      с длиной WAV и определить, как дочитывать реплику при смене сцены;
-      анализ помечает клип partial-or-ambiguous, полного прочтения не доказано.
+      сегмента и захваченный звук подтверждают обрыв Narrator48:
+      из10.160с WAV проиграно9.350с, последние0.810с содержат сигнал, но
+      отсутствуют в записи выхода. Игра сама перешла к настоящей49.
+      Готовый WAV наследует interrupt_on_dialog_replacement от live-движка;
+      новая generation отменяет текущий chunk и запрещает его playback guard.
+      Согласовать дочитывание уже начатого готового WAV при смене реплики;
+      это также означает дочитывание после ручного перехода в самой игре.
+      Затем исправить обе точки отмены, сохранив отмену устаревшей очереди,
+      live-синтеза и явные команды пропуска/отмены в приложении. Проверить
+      переход во время объявления имени: ещё не начатая реплика устаревает.
+      Подтвердить48 -> 49 в общем прогоне после локальных регрессий.
 - [ ] **RUN-25-07: внезапный live fallback вместо подготовленного голоса.**
       После65 на generation57 выбран `live:moss-tts / no-match`, line_id
       отсутствует, chunk_characters=16. Синтез14.017с, первый PCM14.086с;
@@ -318,13 +324,16 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Investigate scene interruption from retained evidence (RUN-25-08).**
-   Correlate48's source WAV, captured output and transition to49. Establish which
-   scene changes invalidate speech and which permit the current clip to finish;
-   present a repair plan only when the cause/product behavior is established.
-   Gate: intended completion without stale audio crossing a genuinely new
-   occurrence; Stop still cancels. If evidence is insufficient, retain the case
-   for the final run instead of introducing a guessed playback policy.
+1. **Agree and implement prepared playback completion (RUN-25-08).**
+   Approval first: let an already-started generated WAV finish when a new dialogue
+   is accepted, including a manual transition in the game. Derive this permission
+   from the actual playing route, not the live backend's global capability; apply
+   it to both generation replacement and the playback guard. Cancel stale queued
+   work and preserve live-route interruption. A speaker announcement must not
+   protect a dialogue WAV that has not started. Gates: focused regressions for
+   completion, stale queued work, wrapped routes and explicit cancellation;
+   old completion must not finish the successor's cursor. Keep native48 -> 49
+   verification deferred to the combined run.
 2. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
    Run all314001 through104 from Stories without manual transitions while real
    heavy generation/publication remains active. Also qualify partly prepared
