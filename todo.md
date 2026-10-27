@@ -37,6 +37,17 @@
       line15 playbacks completed all426888frames; no key dispatch between them.
       A transient OCR speaker `erstone` started a speaker announcement between
       them, then was cancelled after returning to `Cornerstone`.
+      Investigate true selected-window pixels for OCR on macOS and Windows:
+      current window mode only obtains screen coordinates and still calls
+      mss.grab, so overlapping windows/system overlays enter recognition. The
+      diagnostic video uses an independent window source and cannot rule out
+      such occlusion. Qualify overlay exclusion, region/DPI mapping, latency,
+      window lifecycle and permissions before replacing the shared capture path.
+      Separately preserve committed dialogue ownership through damaged-name and
+      damaged-text observations; require real transition evidence and retain
+      legitimate other-speaker dialogue and explicit replay. Confirmed local
+      reproduction: clean183 -> damaged165/erstone -> clean183 emits three
+      generations. Agree the capture and admission changes before implementation.
 - [ ] **RUN-27-01: first-line playback fails under ordinary background generation.**
       First route for314001:6 used live MOSS/no-match despite later exact canonical
       OCR; audio open then failed with output-stream-construction. No first PCM
