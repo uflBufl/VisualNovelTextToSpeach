@@ -23,6 +23,10 @@ import soundfile as sf
 
 from scripts import moss_native_pause_probe as native_probe
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from vntts.authoring.generation_failures import (
+    IncompleteSynthesisError,
+    failure_record,
+)
 from vntts.moss_cpp_backend import (
     MossCppVoiceRouterBackend,
     _aux_cpu_workers,
@@ -1325,6 +1329,16 @@ class MossCppBackendTest(unittest.TestCase):
         self.addCleanup(frame.clear)
         result = stream.collect()
         self.assertEqual(result.completion, SynthesisCompletion.LIMITED)
+        body = json.loads((self.root / "request.json").read_text())
+        self.assertEqual(body["max_new_tokens"], 39)
+        self.assertEqual(result.limits.max_tokens, body["max_new_tokens"])
+        self.assertEqual(result.limits.max_audio_seconds, 3.0)
+        error = IncompleteSynthesisError(result)
+        self.assertEqual(
+            failure_record(error, text=request.text)["render"]["max_tokens"],
+            body["max_new_tokens"],
+        )
+        self.assertIn("max_tokens=39", str(error))
         self.assertFalse(backend.model_lock.locked())
         first = self.native_log.snapshot()[-1]["message"]
         result = backend.render(request).collect()

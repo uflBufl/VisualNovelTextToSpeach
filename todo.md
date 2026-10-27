@@ -69,11 +69,13 @@
       активацией. Диагностическое аудио не должно попадать в готовый пакет.
       Проверить доступность панели при обычном и крупном шрифте. Новые действия
       повтора, смены референса/движка и ручного принятия не добавлять.
-- [ ] **GEN-25-02: фоновая реплика314501:85 упёрлась в лимит генерации.**
+- [ ] **GEN-25-02: проверить лимит реплики314501:85 в общем прогоне.**
       MOSS вернул `Typed render completed as limited`, max_audio_seconds=5.1667,
-      max_tokens=517; WAV корректно не опубликован. Проверить достаточность
-      расчёта бюджета и штатный автоматический повтор; retries0 был условием
-      этого нагрузочного прогона, поэтому автоматический retry не проверялся.
+      max_tokens=517; WAV корректно не опубликован. Фраза Everecho:
+      `Uhm, I'm not exactly ...`. Оба CLI-задания использовали seed0 и retries0.
+      В общем прогоне проверить её с актуальным референсом и штатными тремя
+      попытками; достаточность5.1667с для этой фразы пока не подтверждена.
+      Не увеличивать общий бюджет без доказанного обрезания нормальной речи.
       Новых ручных сценариев исправления реплики не добавлять.
 - [ ] **RUN-25-04: проверить полный текст реплики в общем прогоне.**
       На line34 (`I'm afraid I won't...` / OCR `I'm afraid J] won't...`)
@@ -316,20 +318,14 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Check generation budget (GEN-25-02).** Trace314501:85's actual retained
-   text/reference/model/settings through token/time budgeting and normal retries.
-   Fix a demonstrated budgeting or failure-reporting defect with deterministic
-   tests. Gate: adequate bounded generation or a clear retryable failure,
-   cancellation, no truncated publication and preserved ready work on restart.
-   Fresh model/native qualification belongs to the combined run.
-2. **Investigate scene interruption from retained evidence (RUN-25-08).**
+1. **Investigate scene interruption from retained evidence (RUN-25-08).**
    Correlate48's source WAV, captured output and transition to49. Establish which
    scene changes invalidate speech and which permit the current clip to finish;
    present a repair plan only when the cause/product behavior is established.
    Gate: intended completion without stale audio crossing a genuinely new
    occurrence; Stop still cancels. If evidence is insufficient, retain the case
    for the final run instead of introducing a guessed playback policy.
-3. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
+2. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
    Run all314001 through104 from Stories without manual transitions while real
    heavy generation/publication remains active. Also qualify partly prepared
    active-chapter catch-up across newly published boundaries, failed/not-ready
@@ -337,6 +333,10 @@ complete. Do not change recognition or playback policy on an unverified hypothes
    U1/U2/U4/U6/U7/U8 gates, persistent OCR and portable observation. Preserve
    approved WAV bytes and complete independent capture; cache hits alone are
    not background-generation load. Include the following deferred checks:
+   - **Generation budget (GEN-25-02):** qualify314501:85 with the selected
+     reference and normal automatic retries; retain actual limits and outcomes.
+     Require complete speech or a clear terminal failure, no truncated WAV in
+     the ready pack, responsive cancellation and preserved ready work on resume.
    - **Preparation problems (GEN-25-01):** verify character, full phrase and
      measured reason, retained/unavailable/not-created audio states, stopping
      reading before diagnostic playback, cancellation and the final live-fallback

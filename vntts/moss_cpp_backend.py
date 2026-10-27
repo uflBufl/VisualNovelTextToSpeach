@@ -811,6 +811,12 @@ def _decode_response_audio(data: bytes) -> np.ndarray:
     return pcm
 
 
+def _native_generation_limits(max_audio_seconds: float) -> tuple[int, int]:
+    frame_limit = math.ceil(max_audio_seconds * 12.5)
+    # The native loop needs one extra step to stop after the last audio frame.
+    return frame_limit, frame_limit + 1
+
+
 class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
     # Qualified with the Windows native Centurion probe and listening approval.
     # Keep Delay defaults independent; its shared stable profile remains 0.8.
@@ -1499,6 +1505,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
     def _render_chunks(
         self, prepared: MossTTSPreparedSpeech, request: SynthesisRequest
     ) -> Generator[SynthesisChunk, None, SynthesisResult]:
+        _, max_tokens = _native_generation_limits(prepared.max_audio_seconds)
+        # Correct the reported units without changing existing cache identities.
+        prepared = replace(prepared, max_tokens=max_tokens)
         if prepared.cached_audio is None:
             return (yield from super()._render_chunks(prepared, request))
         outcome = "failed"
@@ -1673,7 +1682,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 raise TTSConfigurationError(
                     "MOSS C++ seed must be an unsigned 64-bit integer"
                 )
-            frame_limit = math.ceil(prepared.max_audio_seconds * 12.5)
+            frame_limit, max_tokens = _native_generation_limits(
+                prepared.max_audio_seconds
+            )
             # openmoss interprets zero as random; VNTTS zero means a fixed seed.
             actual_seed = (secrets.randbits(64) if seed is None else seed) or 1
             body = {
@@ -1681,7 +1692,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 "language": self.language,
                 "response_format": "wav",
                 "stream": False,
-                "max_new_tokens": frame_limit + 1,
+                "max_new_tokens": max_tokens,
                 "sampling": {
                     **dict(prepared.generation_options),
                     "seed": actual_seed,
