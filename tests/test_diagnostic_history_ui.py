@@ -1,13 +1,21 @@
 import os
 import unittest
 from dataclasses import replace
+from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PySide6.QtCore import QPoint, Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QAbstractScrollArea,
+    QApplication,
+    QDialogButtonBox,
+    QMessageBox,
+)
 
 from vntts.app import TrayApplication  # noqa: E402
 from vntts.reading_diagnostics import (  # noqa: E402
@@ -102,6 +110,12 @@ class DiagnosticHistoryUITest(unittest.TestCase):
         self.dialog.reading_status_provider = lambda: current.report
         self.dialog.refresh_reading_session()
         self.dialog.set_diagnostic_sessions([older])
+        font = self.dialog.font()
+        font.setPointSize(16)
+        self.dialog.setFont(font)
+        self.dialog.resize(620, 600)
+        self.dialog.show()
+        self.application.processEvents()
         self.dialog.reading_stop.click()
         self.assertIsNone(self.dialog.selected_diagnostic_session())
         self.assertFalse(self.dialog.reading_export.isEnabled())
@@ -109,7 +123,15 @@ class DiagnosticHistoryUITest(unittest.TestCase):
         self.assertIsNone(self.dialog.selected_diagnostic_session())
         self.assertFalse(self.dialog.reading_export.isEnabled())
         self.dialog.set_diagnostic_sessions([current, older])
+        self.application.processEvents()
         self.assertEqual(self.dialog.selected_diagnostic_session(), current)
+        outer = self.dialog.body_scroll
+        tree = self.dialog.reading_history
+        self.assertTrue(
+            outer.viewport()
+            .rect()
+            .contains(tree.rect().translated(tree.mapTo(outer.viewport(), QPoint())))
+        )
 
     def test_manual_selection_after_stop_wins_before_or_after_history_arrives(self):
         for row_arrived in (False, True):
@@ -138,23 +160,43 @@ class DiagnosticHistoryUITest(unittest.TestCase):
         report = dict(current.report)
         self.dialog.reading_status_provider = lambda: report
         self.dialog.set_diagnostic_sessions(entries)
+        font = self.dialog.font()
+        font.setPointSize(16)
+        self.dialog.setFont(font)
+        self.dialog.resize(620, 600)
         self.dialog.show()
         self.application.processEvents()
         tree = self.dialog.reading_history
+        outer = self.dialog.body_scroll
+        outer.verticalScrollBar().setValue(0)
+        self.assertFalse(
+            outer.viewport()
+            .rect()
+            .contains(tree.rect().translated(tree.mapTo(outer.viewport(), QPoint())))
+        )
         older = tree.topLevelItem(29)
         tree.setCurrentItem(older)
         tree.scrollToItem(older)
         self.assertGreater(tree.verticalScrollBar().value(), 0)
         self.dialog.reading_stop.click()
+        self.application.processEvents()
         self.assertTrue(
             tree.viewport().rect().contains(tree.visualItemRect(tree.currentItem()))
         )
+        self.assertTrue(
+            outer.viewport()
+            .rect()
+            .contains(tree.rect().translated(tree.mapTo(outer.viewport(), QPoint())))
+        )
         tree.verticalScrollBar().setValue(tree.verticalScrollBar().maximum())
         position = tree.verticalScrollBar().value()
+        outer.verticalScrollBar().setValue(0)
         report["status"] = "finished"
         self.dialog.refresh_reading_session()
         self.dialog.set_diagnostic_sessions([session_entry(30), *entries[1:]])
+        self.application.processEvents()
         self.assertEqual(tree.verticalScrollBar().value(), position)
+        self.assertEqual(outer.verticalScrollBar().value(), 0)
 
     def test_automatic_completion_does_not_change_manual_history_selection(self):
         older, current = session_entry(1), session_entry(2, available=False)
@@ -284,27 +326,128 @@ class DiagnosticHistoryUITest(unittest.TestCase):
         self.dialog.refresh_reading_session()
         self.assertEqual(bar.value(), position)
 
-    def test_small_window_keeps_history_rows_and_actions_visible(self):
+    def test_small_window_scrolls_without_overlap_or_clipped_text(self):
         self.dialog.set_diagnostic_sessions([session_entry(i) for i in range(1, 6)])
+        report = dict(session_entry(6).report)
+        report.update(
+            target={"title": "A long game title and chapter name " * 3},
+            media_status="failed",
+            analysis_status="complete",
+            media_error="Recording stopped because the game window disappeared. " * 3,
+        )
+        self.dialog.reading_status_provider = lambda: report
+        rows = (
+            self.dialog.events,
+            self.dialog.diagnostics_button,
+            self.dialog.privacy_note,
+            self.dialog.reading_media,
+            self.dialog.reading_start,
+            self.dialog.reading_status,
+            self.dialog.reading_storage,
+            self.dialog.reading_history,
+            self.dialog.reading_export,
+            self.dialog.reading_history_detail,
+            self.dialog.operation_status,
+        )
+        for point_size in (self.dialog.font().pointSize(), 16):
+            with self.subTest(point_size=point_size):
+                font = self.dialog.font()
+                font.setPointSize(point_size)
+                self.dialog.setFont(font)
+                self.dialog.resize(620, 600)
+                self.dialog.show()
+                self.dialog.refresh_reading_session()
+                self.application.processEvents()
+                self.assertEqual(
+                    (self.dialog.width(), self.dialog.height()), (620, 600)
+                )
+                outer = self.dialog.body_scroll
+                self.assertGreater(outer.verticalScrollBar().maximum(), 0)
+                self.assertEqual(outer.horizontalScrollBar().maximum(), 0)
+                for before, after in pairwise(rows):
+                    self.assertLess(before.geometry().bottom(), after.geometry().top())
+                for label in (self.dialog.privacy_note, self.dialog.reading_status):
+                    self.assertGreaterEqual(
+                        label.height(), label.heightForWidth(label.width())
+                    )
+                self.assertGreaterEqual(
+                    self.dialog.reading_media.width(),
+                    self.dialog.reading_media.sizeHint().width(),
+                )
+                row_height = self.dialog.reading_history.visualItemRect(
+                    self.dialog.reading_history.topLevelItem(0)
+                ).height()
+                self.assertGreaterEqual(
+                    self.dialog.reading_history.viewport().height(), 3 * row_height
+                )
+                close = self.dialog.findChild(QDialogButtonBox).button(
+                    QDialogButtonBox.StandardButton.Close
+                )
+                for widget in (*rows, self.dialog.reading_delete):
+                    outer.ensureWidgetVisible(
+                        widget.viewport()
+                        if isinstance(widget, QAbstractScrollArea)
+                        else widget
+                    )
+                    self.assertTrue(
+                        outer.viewport()
+                        .rect()
+                        .contains(
+                            widget.rect().translated(
+                                widget.mapTo(outer.viewport(), QPoint())
+                            )
+                        ),
+                        widget,
+                    )
+                    for button in (self.dialog.export_button, close):
+                        self.assertTrue(
+                            self.dialog.rect().contains(
+                                button.rect().translated(
+                                    button.mapTo(self.dialog, QPoint())
+                                )
+                            )
+                        )
+
+    def test_keyboard_reaches_and_reveals_session_controls_in_order(self):
+        self.dialog.set_diagnostic_sessions([session_entry(1)])
         font = self.dialog.font()
         font.setPointSize(16)
         self.dialog.setFont(font)
-        self.dialog.resize(620, 420)
+        self.dialog.resize(620, 600)
         self.dialog.show()
         self.application.processEvents()
-        row_height = self.dialog.reading_history.visualItemRect(
-            self.dialog.reading_history.topLevelItem(0)
-        ).height()
-        self.assertGreaterEqual(
-            self.dialog.reading_history.viewport().height(), 3 * row_height
-        )
-        for widget in (
+        controls = (
+            self.dialog.settings_button,
+            self.dialog.reading_media,
+            self.dialog.reading_seconds,
+            self.dialog.reading_start,
+            self.dialog.reading_folder,
             self.dialog.reading_history,
             self.dialog.reading_export,
             self.dialog.reading_delete,
+            self.dialog.reading_history_detail,
+            self.dialog.operation_status,
             self.dialog.export_button,
+        )
+        self.dialog.settings_button.setFocus()
+        for order, modifier in (
+            (controls, Qt.KeyboardModifier.NoModifier),
+            (tuple(reversed(controls)), Qt.KeyboardModifier.ShiftModifier),
         ):
-            self.assertTrue(self.dialog.rect().contains(widget.geometry()))
+            for before, after in pairwise(order):
+                QTest.keyClick(before, Qt.Key.Key_Tab, modifier)
+                self.assertTrue(after.hasFocus(), after)
+                viewport = (
+                    self.dialog
+                    if after is self.dialog.export_button
+                    else self.dialog.body_scroll.viewport()
+                )
+                self.assertTrue(
+                    viewport.rect().contains(
+                        after.rect().translated(after.mapTo(viewport, QPoint()))
+                    ),
+                    after,
+                )
 
     def test_delete_confirmation_identifies_selected_session_and_cancel_is_safe(self):
         entry = session_entry(1)

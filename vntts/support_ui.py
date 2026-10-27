@@ -4,6 +4,7 @@ from typing import Callable, Literal
 from PySide6.QtCore import QEvent, QObject, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import QHideEvent, QKeySequence, QShowEvent, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
+    QAbstractScrollArea,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTextEdit,
     QTreeWidget,
@@ -68,6 +70,7 @@ class SupportCenterDialog(QDialog):
         self.events.setAccessibleName("Runtime events")
         self.events.document().setDocumentMargin(8)
         self.events.setPlaceholderText("No runtime events recorded yet.")
+        self.events.installEventFilter(self)
         self._rendered_lines: list[str] = []
         self.pending_event_count = 0
         self.new_events_button = QPushButton("New events")
@@ -147,9 +150,7 @@ class SupportCenterDialog(QDialog):
             self.operation_status.fontMetrics().lineSpacing() * 3 + 12
         )
         self.operation_status.installEventFilter(self)
-        self.reading_media = QCheckBox(
-            "Record selected game window and game/Rust audio (macOS)"
-        )
+        self.reading_media = QCheckBox("Record game video and audio (macOS)")
         self.reading_media.setToolTip(
             "Opt-in: includes dialogue visible in the selected window, process audio and used source WAVs in the diagnostic export. Never records the desktop or microphone."
         )
@@ -170,6 +171,7 @@ class SupportCenterDialog(QDialog):
         self.reading_history.setAccessibleName("Saved diagnostic sessions")
         self.reading_history.setRootIsDecorated(False)
         self.reading_history.setMinimumHeight(130)
+        self.reading_history.installEventFilter(self)
         self.reading_history.setHeaderLabels(
             ["Recorded (local time)", "Game / window", "Size"]
         )
@@ -241,8 +243,9 @@ class SupportCenterDialog(QDialog):
         heading.addWidget(QLabel("Runtime events"))
         heading.addStretch()
         heading.addWidget(self.new_events_button)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
         layout.addLayout(heading)
         layout.addWidget(self.events, 1)
@@ -270,14 +273,38 @@ class SupportCenterDialog(QDialog):
         layout.addLayout(history_actions)
         layout.addWidget(self.reading_history_detail)
         layout.addWidget(self.operation_status)
-        layout.addLayout(footer)
+        self.body_scroll = QScrollArea()
+        self.body_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.body_scroll.setWidgetResizable(True)
+        self.body_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.body_scroll.setWidget(body)
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(16, 16, 16, 16)
+        shell.setSpacing(10)
+        shell.addWidget(self.body_scroll, 1)
+        shell.addLayout(footer)
         self.setTabOrder(self.events, self.new_events_button)
         self.setTabOrder(self.new_events_button, self.diagnostics_button)
         self.setTabOrder(self.diagnostics_button, self.settings_button)
-        self.setTabOrder(self.settings_button, self.operation_status)
+        self.setTabOrder(self.settings_button, self.reading_media)
+        self.setTabOrder(self.reading_media, self.reading_seconds)
+        self.setTabOrder(self.reading_seconds, self.reading_start)
+        self.setTabOrder(self.reading_start, self.reading_stop)
+        self.setTabOrder(self.reading_stop, self.reading_folder)
+        self.setTabOrder(self.reading_folder, self.reading_history)
+        self.setTabOrder(self.reading_history, self.reading_export)
+        self.setTabOrder(self.reading_export, self.reading_delete)
+        self.setTabOrder(self.reading_delete, self.reading_history_detail)
+        self.setTabOrder(self.reading_history_detail, self.operation_status)
         self.setTabOrder(self.operation_status, self.export_button)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            isinstance(watched, QAbstractScrollArea)
+            and event.type() == QEvent.Type.FocusIn
+        ):
+            # Reveal the whole editor/list, not just its text cursor or selected row.
+            self.body_scroll.ensureWidgetVisible(watched.viewport())
         if (
             isinstance(watched, QPlainTextEdit)
             and event.type() == QEvent.Type.FontChange
@@ -438,6 +465,7 @@ class SupportCenterDialog(QDialog):
                 self._pending_history_selection = None
                 self.reading_history.setCurrentItem(item)
                 self.reading_history.scrollToItem(item)
+                self.body_scroll.ensureWidgetVisible(self.reading_history.viewport())
                 return True
         return False
 

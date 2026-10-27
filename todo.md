@@ -2,17 +2,6 @@
 
 ## Active - Native rerun observations (2026-10-27)
 
-- [ ] **UX-27-08: enlarged Support text overlaps the saved-session list.**
-      At 620x600 with a 16 pt font, export/delete and selected-file details overlap
-      history rows; the media consent caption and session status are clipped.
-      The pre-change catalog already shows overlapping controls in the empty
-      history area. The explicit 620x600 minimum overrides a layout requiring
-      at least 716x815 in the measured 16 pt state. Proposed repair, pending
-      agreement: use vertically scrollable content with a fixed bottom action
-      row, shorten the consent caption and keep full status text wrapped. Preserve
-      a usable history minimum and scroll the selected session into the outer
-      viewport after Stop. Validate actual non-overlap and reachability at normal
-      and enlarged fonts, not only containment within the dialog bounds.
 - [ ] **UX-27-07: voice confirmation has room for only one character row.**
       At the normal 860x560 dashboard size with Tools expanded, narrator controls
       and preparation totals consume most of Step 2; only the first character row
@@ -335,11 +324,10 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Agree on Support layout correction (UX-27-08).** At enlarged font the
-   explicit window minimum permits overlapping children. Keep the footer visible,
-   make overflowing content scrollable and preserve useful history height. Check
-   actual row/action separation and manual selection/scroll stability. Separately
-   correct stale opt-in privacy wording (REC-27-02); native recording continuity
+1. **Agree on the diagnostic privacy wording correction (REC-27-02).** Explain
+   in Support and session metadata that media-enabled sessions can retain raw OCR
+   and matched dialogue, while ordinary log-only sessions exclude that text.
+   Preserve the existing consent and recording scope. Native recording continuity
    remains part of the combined run (REC-27-01).
 2. **Repair the new native findings one at a time.** Diagnose initial clipped
    OCR/live routing and the separate audio-open failure (RUN-27-01), false-speaker
