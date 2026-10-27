@@ -42,13 +42,17 @@
       OCR; audio open then failed with output-stream-construction. No first PCM
       or automatic transition. Diagnose raw initial OCR/routing and output error
       separately. Initial121-character OCR committed before the exact132-character
-      result, which then hit committed-conflict. The generic Rust device-query
-      timeout may come from check_format; identify that failing operation rather
-      than assuming a device switch or blaming the recording tap.
-      Proposed next change: name query_device/check_format in timeout errors,
-      including sample rate/channels for check_format; retain the existing
-      timeout and worker cleanup. Verify both timeout paths without real waiting.
-      The failing native operation and its cause remain a combined-run gate.
+      result, which then hit committed-conflict. In the combined run, use the
+      named query_device/check_format timeout and format details to identify
+      the failing native operation before choosing an audio repair; do not
+      assume a device switch or blame the recording tap. Its cause remains open.
+      OCR follow-up, pending agreement: replace only an unheard live/no-match
+      candidate when current exact canonical identity arrives. Carry its line
+      authority to admission and atomically arbitrate cancellation against the
+      first PCM admission, including speaker announcements. Reuse generation
+      cancellation; retain matching thresholds and committed/duplicate guards
+      after PCM admission. Gate: deterministic cancellation/PCM races, stale
+      completion, repeated OCR and Stop/Pause; then combined native acceptance.
 - [ ] **UX-27-01: restored story selection is not visible at startup.** Stories
       opens at the top of the tree with `1 selected` and enabled `Start reading`,
       while the selected event stage is offscreen. The primary action does not

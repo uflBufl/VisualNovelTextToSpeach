@@ -1,5 +1,6 @@
 import hashlib
 import json
+import queue
 import sys
 import tempfile
 import threading
@@ -307,6 +308,34 @@ class RustOutputProtocolTest(unittest.TestCase):
             [c["op"] for c in self.commands()],
             ["query_device", "query_device", "check_format", "check_format"],
         )
+
+    def test_query_timeouts_identify_operation_and_close_worker(self):
+        for method, options, command, message in (
+            (
+                "query_devices",
+                {"kind": "output"},
+                {"op": "query_device"},
+                "Rust audio query_device timed out",
+            ),
+            (
+                "check_output_settings",
+                {"samplerate": 48000, "channels": 2, "dtype": "float32"},
+                {"op": "check_format", "sample_rate": 48000, "channels": 2},
+                "Rust audio check_format timed out (48000 Hz, 2 channels)",
+            ),
+        ):
+            with self.subTest(operation=command["op"]):
+                module = RustAudioModule()
+                self.addCleanup(module._terminate)
+                worker = Mock()
+                worker.receive.side_effect = queue.Empty
+                with patch("vntts.rust_output.RustAudioWorker", return_value=worker):
+                    with self.assertRaises(RuntimeError) as caught:
+                        getattr(module, method)(**options)
+                self.assertEqual(str(caught.exception), message)
+                worker.send.assert_called_once_with(command)
+                worker.receive.assert_called_once_with(3)
+                worker.close.assert_called_once_with()
 
     def test_truncated_native_completion_does_not_claim_stream_drain(self):
         pcm = np.ones((10, 2), dtype=np.float32)

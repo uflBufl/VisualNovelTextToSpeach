@@ -50,7 +50,15 @@ class RustAudioModule:
                 result = self.query_worker.receive(3)
             except queue.Empty:
                 self.query_worker.close()
-                raise RuntimeError("Rust audio device query timed out") from None
+                operation = message["op"]
+                details = (
+                    f" ({message['sample_rate']} Hz, {message['channels']} channels)"
+                    if operation == "check_format"
+                    else ""
+                )
+                raise RuntimeError(
+                    f"Rust audio {operation} timed out{details}"
+                ) from None
             if result.get("event") != event:
                 raise RuntimeError(
                     str(result.get("error", "Invalid Rust device response"))
