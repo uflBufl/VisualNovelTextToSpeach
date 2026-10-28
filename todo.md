@@ -52,22 +52,6 @@
       Refresh history during recording: size remains available without false
       missing-file errors. Retain full capture, bounded-stop and size-limit
       evidence; do not replace this native gate with unit-test results.
-- [ ] **RUN-27-02: repeated line15 and audio-worker turnover.** During the
-      automatic retry, prepared314001:15 was followed by a live/no-match route
-      and then the same prepared line15 again, without test input. Rust worker
-      turnover marked its recording partial. Correlate actual PCM, source WAVs
-      and raw OCR when repairing false-speaker ownership and capture coverage. Both prepared
-      line15 playbacks completed all426888frames; no key dispatch between them.
-      A transient OCR speaker `erstone` started a speaker announcement between
-      them, then was cancelled after returning to `Cornerstone`.
-      During the combined rerun, correlate the native selected-window OCR crop
-      with the observed playback; independent diagnostic video cannot establish
-      which pixels the original run recognized.
-      Separately preserve committed dialogue ownership through damaged-name and
-      damaged-text observations; require real transition evidence and retain
-      legitimate other-speaker dialogue and explicit replay. Confirmed local
-      reproduction: clean183 -> damaged165/erstone -> clean183 emits three
-      generations. Agree the capture and admission changes before implementation.
 - [ ] **RUN-27-01: first-line playback fails under ordinary background generation.**
       First route for314001:6 used live MOSS/no-match despite later exact canonical
       OCR; audio open then failed with output-stream-construction. No first PCM
@@ -103,8 +87,7 @@
 
 - [ ] **RUN-25-10: проверить ложного персонажа `I` и смену владельца реплики.**
       Сопоставить старые22/23 с raw OCR, speaker identity и source lead;
-      отличать отмену до PCM от повторного воспроизведения. Текущий повтор15
-      имеет отдельное доказательство и исправляется в RUN-27-02.
+      отличать отмену до PCM от повторного воспроизведения.
 - [ ] **RUN-25-09: разделить задержку100 на переход игры и распознавание.**
       В новом прогоне key99 -> route100 занимает2.742с. По сохранённому видео
       установить момент появления текста и сопоставить его с OCR/admission;
@@ -352,9 +335,9 @@ native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
 1. **Repair the new native findings one at a time.** Diagnose initial clipped
-   OCR/live routing and the separate audio-open failure (RUN-27-01), false-speaker
-   duplicate playback (RUN-27-02), and the persistent exact116 tracker conflict
-   (RUN-27-03). Present each implementation plan before changing behavior. Then
+   OCR/live routing and the separate audio-open failure (RUN-27-01), and the
+   persistent exact116 tracker conflict (RUN-27-03). Present each implementation
+   plan before changing behavior. Then
    address UX-27-01 through UX-27-07, distinguishing verified defects from the
    audition dirty-state doubt. Evidence and screen assessments are retained in
    the local native-trial investigation; do not rerun the full chapter per fix.
@@ -397,8 +380,7 @@ complete. Do not change recognition or playback policy on an unverified hypothes
      Choose a speed/recovery repair only if a delay remains. The old capture-only
      R1 incident is a separate unresolved cause; other successful lines do not
      close it.
-   - **Repeated routing (RUN-25-10 / RUN-27-02):** preserve no-duplicate
-     behavior for102 while repairing the proved repeated15/false-speaker path.
+   - **Repeated routing (RUN-25-10):** preserve no-duplicate behavior for102.
      Recheck native22/23 and false character I; distinguish cancellation before
      PCM from repeated speech. A changed chunk ID alone is not OCR-change evidence.
    - **Short dialogue (R17 / RUN-27-03):** fix the persistent exact116
