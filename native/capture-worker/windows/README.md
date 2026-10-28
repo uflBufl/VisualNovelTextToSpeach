@@ -2,7 +2,8 @@
 
 Requires Windows 10 version 2004 (build 19041) or newer, including Windows 11.
 This source-stage helper is not yet integrated into the Python application or
-release bundles. The live Windows qualification gate remains open.
+release bundles. Live Windows testing is a separate owner-run check, not a
+prerequisite for integration or merging this change.
 
 Build on Windows with Rust's `x86_64-pc-windows-msvc` toolchain and Visual Studio
 C++ build tools:
@@ -74,15 +75,12 @@ together instead of clipping HDR channels independently; 80-nit scRGB white maps
 to 0.8 linear SDR. The fixed mapping also applies to SDR and avoids temporal
 auto-exposure changes. Alpha is opaque. This is implemented color conversion,
 not evidence of HDR display/game correctness. SDR/HDR visual fidelity, OCR,
-latency and CPU cost must be qualified on Windows hardware.
+latency and CPU cost have not been verified on Windows hardware.
 
-The remaining gate includes Windows 10 and 11 fixture/game pixels under opaque
-occlusion and volume HUD, static content, windowed/borderless, minimize/restore,
-DPI/monitor/resize transitions, safe device failures, repeated bounded close,
-and packaged execution without Python/COM callbacks or a developer toolchain.
-Exclusive fullscreen requires per-game qualification. There is no desktop or
-legacy capture fallback. Build/check/unit-test success does not close these
-hardware gates.
+Real-game capture, occlusion, volume HUD, fullscreen, lifecycle/DPI transitions,
+device failures and packaged execution remain unverified on Windows. There is
+no desktop or legacy capture fallback. Build/check/unit-test success alone does
+not establish native runtime correctness.
 
 Microsoft references: [screen capture and HDR pipeline](https://learn.microsoft.com/en-us/windows/apps/develop/media-authoring-processing/screen-capture),
 [HWND item creation](https://learn.microsoft.com/en-us/windows/win32/api/windows.graphics.capture.interop/nf-windows-graphics-capture-interop-igraphicscaptureiteminterop-createforwindow).

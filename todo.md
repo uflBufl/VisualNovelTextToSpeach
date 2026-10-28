@@ -3,11 +3,12 @@
 ## Active - Native window capture replacement
 
 Branch: `window-capture`, based on `256313c7`. The user approved implementation
-with Windows 10 as the minimum Windows generation. Return at the first live
-qualification gate before migrating consumers. Keep each coherent change in a
-separate commit.
-Merge only after the native and packaged gates below pass; unavailable hardware
-leaves its gate open. Do not merge or publish a PR as part of implementation.
+with Windows 10 as the minimum Windows generation. Keep each coherent change
+in a separate commit. The user will test Windows separately; those manual runs
+are not TODO items or merge gates. Linux/X11 is historical best-effort support:
+retain its code without a manual qualification requirement or a claim that its
+runtime works. The native and packaged manual gates below apply to macOS.
+Do not merge or publish a PR as part of implementation.
 
 Scope: replace MSS completely, including calibration and examples. Preserve
 explicit screen-region mode using native display capture, never as a fallback
@@ -19,13 +20,13 @@ old Windows-11-only release gate during Windows delivery.
 Temporary migration boundary: the application still uses MSS while the new
 standalone native sources are being qualified. Do not add selection/fallback
 switches for it. Remove the old application path/dependency in WC-6 after native
-Mac/Windows source gates pass, and before this branch can merge.
+macOS source gates pass, and before this branch can merge.
 
 - [ ] **WC-1: qualify the standalone source, then connect its owned contract.**
       Remaining first live gate: investigate the interrupted macOS fixture stream
-      below and qualify Windows 10 real pixels, extent, identity and lifecycle. Use
-      `scripts.native_capture_probe` with the fixture before migrating callers.
-      Complete baseline CPU/memory and performance comparisons on both platforms
+      below. Use `scripts.native_capture_probe` with the fixture before migrating
+      callers.
+      Complete baseline CPU/memory and performance comparisons on macOS
       before migration; do not retain the old backend for benchmarking. The short
       same-dialogue capture/OCR sample does not replace the integrated-load gate.
       Reuse window enumeration, focus authority, `CapturedDialogFrame` and
@@ -38,7 +39,7 @@ Mac/Windows source gates pass, and before this branch can merge.
       Preserve the bounded raw-pixel protocol and process-owned cancellation
       while integrating callers. Keep pixels and recognized text out of logs and
       preserve existing explicit consent for diagnostic media and OCR evidence.
-      Gate: native pixel evidence on both platforms plus ownership and mapping
+      Gate: macOS native pixel evidence plus ownership and mapping
       tests for the integrated contract.
 - [ ] **WC-2: qualify and complete the macOS ScreenCaptureKit source.**
       Make the portable Qt fixture report actual painting before using its stage
@@ -64,20 +65,13 @@ Mac/Windows source gates pass, and before this branch can merge.
       above. Explicit native display capture needs its own screen-mode check.
       Qualify other games/fullscreen implementations separately from the tested
       Reverse: 1999 window/fullscreen cycle.
-- [ ] **WC-3: qualify and complete the Windows Graphics Capture source.**
-      Build and run `native/capture-worker/windows` on Windows 10 build 19041+;
-      cross-target type checking is not a native execution gate. Verify actual
-      WGC dimensions against PMv2 DWM/client rectangles, RowPitch/ContentSize and
-      resize pool recreation. Add bounded recovery after device-loss invalidation,
-      retaining HRESULT/device-removal details. Validate float16 scRGB-to-SDR
-      conversion on SDR and HDR hardware, including OCR, fidelity and CPU cost;
-      do not claim HDR support from an SDR test. Keep the system capture border
+- [ ] **WC-3: complete the Windows Graphics Capture implementation.**
+      Add bounded recovery after device-loss invalidation, retaining
+      HRESULT/device-removal details. Preserve PMv2 client-rectangle mapping,
+      RowPitch/ContentSize handling and resize pool recreation, with focused
+      automated checks for the changed code. Keep the system capture border
       and cursor exclusion. No PrintWindow, BitBlt, Desktop Duplication, injected
       game hook or MSS fallback.
-      Gate before integration: real Windows fixture/game capture, occlusion and
-      volume HUD, windowed/borderless, minimize/restore, DPI/resize/device errors,
-      static dialogue, repeated close, explicit display capture, and capture
-      without Python/COM callback dependencies.
 - [ ] **WC-4: preserve Linux/X11 without MSS.** Use existing python-xlib:
       Composite >=0.2, automatic redirection of the selected hierarchy only,
       named-window pixmap/GetImage and client-area crop excluding its border.
@@ -90,9 +84,7 @@ Mac/Windows source gates pass, and before this branch can merge.
       TrueColor visuals using masks, byte order and row padding. Use RandR primary
       monitor plus root GetImage only in explicit screen mode. Missing extension,
       unmapped/destroyed window or unsupported pixel format is an explicit error.
-      Gate: X11/compositor fixture with occlusion, resize/remap and cleanup,
-      screen-region regression, plus native GPU-game qualification before claiming
-      that configuration supported. No Wayland expansion or compositor takeover.
+      No Wayland expansion or compositor takeover.
 - [ ] **WC-5: preserve regions and fullscreen behavior across the shared API.**
       Verify that the migrated fullscreen dialogue crop excludes the animated
       advance indicator: the ad-hoc live probe crop occasionally recognized it
@@ -113,8 +105,8 @@ Mac/Windows source gates pass, and before this branch can merge.
       On fullscreen handle replacement, invalidate old pixels and rebind only to
       an unambiguous verified game window from the same process; otherwise stop
       and require selection. Do not identify a replacement from title alone.
-      Windowed, borderless and macOS fullscreen are separate test cases; Windows
-      exclusive fullscreen is qualified per actual game/API. If unavailable,
+      Windowed, borderless and macOS fullscreen are separate test cases. If a
+      native source cannot capture the selected fullscreen window,
       explain the limitation and offer borderless/windowed mode, never desktop
       capture. Keep focus checks for keyboard dispatch even when capture works
       behind another window. Black content alone does not prove an API failure;
@@ -140,8 +132,8 @@ Mac/Windows source gates pass, and before this branch can merge.
       discovery, architecture/version checks, PyInstaller inclusion, signing and
       missing-helper diagnostics on macOS/Windows. Source installs have a documented
       build command; release installs use bundled executables without compilers.
-      Update package self-tests and platform workflows. Gate: install/run packaged
-      builds with no developer toolchain; test capture permission and denied/revoked
+      Update package self-tests and platform workflows. Gate: install/run a packaged
+      macOS build with no developer toolchain; test capture permission and denied/revoked
       permission, helper crash/hang and bounded cleanup. Verify actual selected
       pixels, not only imports or the existence of a PNG.
 - [ ] **WC-8: final regression, performance and merge gates.** After code changes
@@ -149,7 +141,7 @@ Mac/Windows source gates pass, and before this branch can merge.
       add directly affected consumer/native tests omitted by static selection.
       Cover mapping/stride, epoch/request rejection, timeouts, static frames,
       repeated Start/Stop/Pause, calibration cancel, settings rollback and offline
-      replay. On macOS and Windows test the actual game under real background
+      replay. On macOS test the actual game under real background
       generation, system volume HUD, an opaque overlapping app, fullscreen entry/
       exit and alt-tab; compare captured crops and OCR, not just diagnostic video.
       Measure first-frame and warm capture p50/p95, frame age, OCR cadence,
@@ -159,14 +151,14 @@ Mac/Windows source gates pass, and before this branch can merge.
       duplicate playback,
       lost target, orphan helper or unbounded buffer. Test moving/growing text,
       static long dialogue and genuine dark/black scenes. Qualify mixed-DPI and
-      multi-monitor, SDR/HDR and actual supported fullscreen paths on hardware;
+      multi-monitor, SDR/HDR and actual supported fullscreen paths on macOS hardware;
       unsupported configurations must have a tested explicit refusal.
-      Immediately qualify short real-game capture scenarios on both platforms;
+      Qualify short real-game capture scenarios on macOS;
       retain the full chapter/background-generation rerun as the combined gate
       after the remaining chapter defects are repaired. Keep the separate tracker
       ownership defect open if saved corrupted OCR still replays a line; capture
       isolation does not fix it or qualify a complete chapter.
-      Report open hardware gates, commits and evidence; merge only when the user
+      Report open macOS gates, commits and evidence; merge only when the user
       confirms acceptance, without retaining the old backend as an escape hatch.
 
 API references for the pending implementation:
@@ -213,7 +205,7 @@ API references for the pending implementation:
       line15 playbacks completed all426888frames; no key dispatch between them.
       A transient OCR speaker `erstone` started a speaker announcement between
       them, then was cancelled after returning to `Cornerstone`.
-      Window capture replacement and its acceptance gates are tracked in WC-0
+      Window capture replacement and its acceptance gates are tracked in WC-1
       through WC-8 above; independent diagnostic video cannot rule out screen-ROI
       occlusion in the original run.
       Separately preserve committed dialogue ownership through damaged-name and
