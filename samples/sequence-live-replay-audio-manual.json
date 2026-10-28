@@ -30,8 +30,8 @@
         "fixture:fledgling:1",
         "fixture:narrator:1"
       ],
-      "ocr_calls": 3,
-      "bounded_recoveries": 2,
+      "ocr_calls": 4,
+      "bounded_recoveries": 3,
       "key_dispatch_attempts": 0,
       "confirmed_key_dispatches": 0
     }

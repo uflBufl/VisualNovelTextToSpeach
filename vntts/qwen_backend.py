@@ -140,7 +140,6 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
         voice_cloning=True,
         streaming=False,
         concurrent_prepare_and_play=False,
-        interrupt_on_dialog_replacement=True,
     )
 
     def __init__(

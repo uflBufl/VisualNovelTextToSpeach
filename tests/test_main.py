@@ -1165,7 +1165,7 @@ class MainTest(unittest.TestCase):
         )
         live_backend = Mock(
             name="pocket-tts",
-            capabilities=SpeechBackendCapabilities(True, True, False, False),
+            capabilities=SpeechBackendCapabilities(True, True, False),
         )
         live_backend.name = "pocket-tts"
         library = Mock()
@@ -1202,7 +1202,7 @@ class MainTest(unittest.TestCase):
         )
         live_backend = Mock(
             name="pocket-tts",
-            capabilities=SpeechBackendCapabilities(True, True, False, False),
+            capabilities=SpeechBackendCapabilities(True, True, False),
         )
         live_backend.name = "pocket-tts"
         wrapper = GeneratedAudioFallbackBackend(
@@ -1376,6 +1376,9 @@ class MainTest(unittest.TestCase):
             progress=controller._warmup_progress
         )
         live_reader_factory.assert_called_once()
+        self.assertTrue(
+            live_reader_factory.call_args.kwargs["require_visible_auto_advance"]
+        )
         session_id = controller.live_reader_session_id
         self.assertEqual(UUID(session_id).hex, session_id)
         self.assertIs(
@@ -3311,6 +3314,8 @@ class MainTest(unittest.TestCase):
             stable_frame_route=controller._stable_live_frame_route,
             stable_frame_owner=controller._stable_live_frame_owner,
             line_id_resolver=controller._live_sequence_line_id,
+            accept_chunk=controller._accept_live_chunk,
+            reject_chunk=controller._reject_live_chunk,
             auto_advance=controller._sequence_auto_advance_dialog,
             require_visible_auto_advance=True,
         )
@@ -3319,11 +3324,15 @@ class MainTest(unittest.TestCase):
         return controller.live_reader
 
     def test_sequence_dispatch_rechecks_controls_after_the_reader_visual_gate(self):
-        for barrier in ("uncertain", "clear", "pause", "stop", "shutdown"):
+        for barrier in ("uncertain", "clear", "pause", "stop", "shutdown", "new-frame"):
             with self.subTest(barrier=barrier):
                 controller, _lines, _pipeline = self._sequence_controller()
                 reader = self._sequence_reader(controller)
                 reader.active_generation = 1
+                reader.latest_frame = reader.routed_frame = object()
+                reader.latest_frame_fingerprint = reader.routed_frame_fingerprint = "A"
+                reader.latest_frame_visible = True
+                reader.frame_equivalent = Mock(return_value=False)
                 cursor = controller.story_cursor
                 cursor.anchor_event("event-1")
                 cursor.begin_playback()
@@ -3341,8 +3350,12 @@ class MainTest(unittest.TestCase):
                         reader.paused = True
                     elif barrier == "stop":
                         reader.stop_event.set()
-                    else:
+                    elif barrier == "shutdown":
                         reader.shutdown_requested.set()
+                    else:
+                        reader.latest_frame = object()
+                        reader.latest_frame_fingerprint = "C"
+                        reader.frame_version += 1
                     return True
 
                 controller._is_game_focused = focus_with_intervening_control
@@ -3351,12 +3364,74 @@ class MainTest(unittest.TestCase):
                 self.assertEqual(
                     attempt.reason,
                     "visual-wait"
-                    if barrier == "uncertain"
+                    if barrier in {"uncertain", "new-frame"}
                     else "reading-control-barrier",
                 )
                 controller._auto_advance_dialog.assert_not_called()
                 self.assertNotIn(lease, controller.sequence_advance_leases)
                 self.assertEqual(cursor.state, StoryCursorState.LOCKED)
+
+    def test_sequence_final_dispatch_accepts_equivalent_frame_offset_after_focus(self):
+        controller, _lines, _pipeline = self._sequence_controller()
+        reader = self._sequence_reader(controller)
+        reader.active_generation = 1
+        reader.latest_frame = reader.routed_frame = object()
+        reader.latest_frame_fingerprint = reader.routed_frame_fingerprint = "A"
+        reader.latest_frame_visible = True
+        reader.frame_equivalent = Mock(return_value=True)
+        cursor = controller.story_cursor
+        cursor.anchor_event("event-1")
+        cursor.begin_playback()
+        cursor.finish_playback()
+        controller.sequence_event_terminal_routes[
+            SequenceEventLease("event-1", cursor.occurrence_id)
+        ] = "generated"
+        controller._auto_advance_dialog = Mock(return_value=True)
+
+        def focus_with_equivalent_capture():
+            reader.latest_frame = object()
+            reader.latest_frame_fingerprint = "A-offset"
+            reader.frame_version += 1
+            return True
+
+        controller._is_game_focused = focus_with_equivalent_capture
+
+        self.assertTrue(controller._sequence_auto_advance_dialog().dispatched)
+
+        reader.frame_equivalent.assert_called_once_with(
+            reader.routed_frame, reader.latest_frame
+        )
+        controller._auto_advance_dialog.assert_called_once_with(focus_verified=True)
+
+    def test_ordinary_final_dispatch_rechecks_changed_and_equivalent_frames(self):
+        for equivalent in (False, True):
+            with self.subTest(equivalent=equivalent):
+                controller = AppController(
+                    AppSettings(capture_mode="window", auto_advance_enabled=True),
+                    tts_factory=Mock(),
+                )
+                reader = self._sequence_reader(controller)
+                reader.active_generation = 1
+                reader.latest_frame = reader.routed_frame = object()
+                reader.latest_frame_fingerprint = reader.routed_frame_fingerprint = "A"
+                reader.latest_frame_visible = True
+                reader.frame_equivalent = Mock(return_value=equivalent)
+
+                def capture_before_dispatch():
+                    reader.latest_frame = object()
+                    reader.latest_frame_fingerprint = "A-offset" if equivalent else "C"
+                    reader.frame_version += 1
+                    return True
+
+                controller._is_game_focused = capture_before_dispatch
+                with patch("vntts.controller.DialogueAdvancer") as advancer:
+                    attempt = controller._auto_advance_dialog()
+                self.assertEqual(bool(attempt), equivalent)
+                self.assertEqual(
+                    advancer.return_value.advance.call_count, int(equivalent)
+                )
+                if not equivalent:
+                    self.assertEqual(attempt.reason, "visual-wait")
 
     def test_uncertain_canonical_occurrence_rechecks_then_advances_without_replay(self):
         from tests.test_live import ManualTimerScheduler
@@ -3618,12 +3693,12 @@ class MainTest(unittest.TestCase):
         self.assertNotIn("noise", repr(details))
         reader.report_error.assert_not_called()
 
-    def test_confirmed_replacement_after_uncertainty_cancels_old_queued_synthesis(self):
+    def test_confirmed_new_line_after_uncertainty_keeps_accepted_speech(self):
         from tests.test_live import QueuedExecutor
 
         controller = AppController(AppSettings(), tts_factory=Mock())
         speech, playback = QueuedExecutor(), QueuedExecutor()
-        prepare = Mock(return_value="replacement audio")
+        prepare = Mock(side_effect=lambda chunk: chunk.text)
         reader = self._sequence_reader(
             controller,
             speech_executor=speech,
@@ -3637,23 +3712,23 @@ class MainTest(unittest.TestCase):
         old_preparation = speech.jobs[0][0]
         controller._ocr_uncertain(OCRResult("Narrator", "noise", 10, "test", 1), 60)
         reader._schedule_tracked_chunks(
-            tracker, tracker.observe_canonical("Bob", "Replacement line.", "story:2")
+            tracker, tracker.observe_canonical("Bob", "Next line.", "story:2")
         )
-
-        self.assertTrue(old_preparation.cancelled())
-        speech.run_next()
-        speech.run_next()
-        playback.run_next()
-
-        prepare.assert_called_once()
-        replacement = prepare.call_args.args[0]
-        self.assertEqual(replacement.text, "Replacement line.")
-        reader.play_prepared.assert_called_once_with(replacement, "replacement audio")
+        self.assertFalse(old_preparation.cancelled())
+        for _ in range(2):
+            speech.run_next()
+            playback.run_next()
+        self.assertEqual(
+            [c.args[0].text for c in prepare.call_args_list],
+            ["First line.", "Next line."],
+        )
+        self.assertEqual(
+            [c.args[1] for c in reader.play_prepared.call_args_list],
+            ["First line.", "Next line."],
+        )
         reader.report_error.assert_not_called()
 
-    def test_nonsequence_uncertainty_preserves_explicit_cancellation_and_replacement(
-        self,
-    ):
+    def test_nonsequence_uncertainty_preserves_explicit_cancellation(self):
         from tests.test_live import QueuedExecutor
 
         for control in ("skip", "clear", "stop", "replacement"):
@@ -3666,7 +3741,6 @@ class MainTest(unittest.TestCase):
                     playback_executor=playback,
                     prepare_chunk=lambda _chunk: "admitted audio",
                     interrupt_speech=Mock(return_value=True),
-                    interrupt_on_dialog_replacement=True,
                 )
                 reader.enqueue("Alice", "Trusted line.")
                 speech.run_next()
@@ -3683,9 +3757,13 @@ class MainTest(unittest.TestCase):
                 controller._ocr_uncertain(
                     OCRResult("Narrator", "noise", 10, "test", 1), 60
                 )
-                self.assertFalse(reader.wait_until_playable(chunk))
+                self.assertEqual(
+                    reader.wait_until_playable(chunk), control == "replacement"
+                )
                 playback.run_next()
-                reader.play_prepared.assert_not_called()
+                self.assertEqual(
+                    reader.play_prepared.call_count, int(control == "replacement")
+                )
                 if control in {"clear", "stop"}:
                     self.assertTrue(pending.cancelled())
                 reader.report_error.assert_not_called()
@@ -3703,11 +3781,12 @@ class MainTest(unittest.TestCase):
         self.assertFalse(reader.observation_uncertain)
         self.assertIsNone(reader.suppressed_generation)
 
-    def test_indexed_out_of_order_recovery_is_explicit_once_and_manual(self):
+    def test_other_chapter_indexed_recovery_is_explicit_once_and_manual(self):
         controller, lines, _pipeline = self._sequence_controller()
         third = replace(
             lines[0],
-            line_id="reverse1999:1:111",
+            line_id="reverse1999:2:111",
+            chapter="2",
             sequence=111,
             text="An indexed replacement.",
             text_sha256=text_sha256("An indexed replacement."),
@@ -3717,6 +3796,7 @@ class MainTest(unittest.TestCase):
         plan.events["event-111"] = replace(
             plan.events["event-2"],
             event_id="event-111",
+            chapter=third.chapter,
             sequence=111,
             line_id=third.line_id,
         )
@@ -3824,10 +3904,14 @@ class MainTest(unittest.TestCase):
         controller.story_cursor.finish_playback()
         controller.story_cursor.dispatch_advance()
 
-        self.assertIsNone(controller._live_ocr_purpose())
+        self.assertEqual(
+            controller._live_ocr_purpose(), "visible-dialogue-confirmation"
+        )
         reader.failed_auto_advance_generation = 1
         reader.last_auto_advance_dispatched_generation = None
-        self.assertIsNone(controller._live_ocr_purpose())
+        self.assertEqual(
+            controller._live_ocr_purpose(), "visible-dialogue-confirmation"
+        )
         reader.last_auto_advance_dispatched_generation = 1
         self.assertEqual(controller._live_ocr_purpose(), "post-advance-recovery")
 
@@ -3844,7 +3928,9 @@ class MainTest(unittest.TestCase):
         controller.dialog_handler.assert_called_once_with(
             lines[1].speaker, lines[1].text
         )
-        self.assertIsNone(controller._live_ocr_purpose())
+        self.assertEqual(
+            controller._live_ocr_purpose(), "visible-dialogue-confirmation"
+        )
 
     def test_short_lookahead_cannot_skip_intervening_speaker_after_old_frame(self):
         texts = (
@@ -4268,7 +4354,7 @@ class MainTest(unittest.TestCase):
         )
         live_backend = Mock(
             name="pocket-tts",
-            capabilities=SpeechBackendCapabilities(True, True, False, False),
+            capabilities=SpeechBackendCapabilities(True, True, False),
         )
         live_backend.name = "pocket-tts"
         generated_backend = GeneratedAudioFallbackBackend(
@@ -4633,7 +4719,7 @@ class MainTest(unittest.TestCase):
         self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
         controller.live_reader.confirm_pending_auto_advance.assert_called_once_with()
 
-    def test_sequence_audio_manual_rejects_unexpected_known_line_and_stays_closed(self):
+    def test_sequence_audio_manual_reanchors_exact_known_active_chapter_line(self):
         rows = [
             {
                 "chapter": "1",
@@ -4694,9 +4780,11 @@ class MainTest(unittest.TestCase):
             controller._dialog_observed("Rhiannon", "Expected line."),
             ("Rhiannon", "Expected line."),
         )
-        self.assertFalse(
-            controller._dialog_observed("Rhiannon", "Unrelated known line.")
+        self.assertEqual(
+            controller._dialog_observed("Rhiannon", "Unrelated known line."),
+            ("Rhiannon", "Unrelated known line."),
         )
+        self.assertEqual(controller.story_cursor.current_event_id, "event-9")
         self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
         self.assertEqual(
             controller._dialog_observed("Rhiannon", "Expected line."),
@@ -4808,7 +4896,7 @@ class MainTest(unittest.TestCase):
         self.assertEqual(pipeline[-1][1]["match_result"], "expected-text-only")
         self.assertNotIn("text", pipeline[-1][1])
 
-    def test_sequence_audio_manual_routes_stable_successor_without_ocr_text(self):
+    def test_sequence_audio_manual_requires_ocr_text_for_visible_speech_successor(self):
         rows = [
             {
                 "chapter": "1",
@@ -4901,12 +4989,12 @@ class MainTest(unittest.TestCase):
         )
         controller._offer_unknown_speaker_mapping.assert_not_called()
         controller.history.add.assert_not_called()
-        self.assertFalse(controller._stable_live_frame_route("new", True))
+        self.assertIsNone(controller._stable_live_frame_route("new", True))
         controller._finish_sequence_playback(
             event_id,
             PlaybackOutcome(PlaybackStatus.COMPLETED, 1.0),
         )
-        self.assertFalse(controller._stable_live_frame_route("new", False))
+        self.assertIsNone(controller._stable_live_frame_route("new", False))
         self.assertFalse(
             controller._stable_live_frame_route(
                 "new",
@@ -4914,8 +5002,10 @@ class MainTest(unittest.TestCase):
                 expected_owner="stale-event",
             )
         )
+        self.assertIsNone(controller._stable_live_frame_route("new", True))
+        controller._offer_unknown_speaker_mapping.return_value = False
         self.assertEqual(
-            controller._stable_live_frame_route("new", True),
+            controller._dialog_observed("Hotelier", "Second canonical line."),
             ("Hotelier", "Second canonical line."),
         )
         self.assertEqual(controller.story_cursor.current_event_id, "event-3")
@@ -4987,7 +5077,7 @@ class MainTest(unittest.TestCase):
         )
         live_backend = Mock(
             name="pocket-tts",
-            capabilities=SpeechBackendCapabilities(True, True, False, False),
+            capabilities=SpeechBackendCapabilities(True, True, False),
         )
         live_backend.name = "pocket-tts"
         backend = GeneratedAudioFallbackBackend(
@@ -6980,7 +7070,7 @@ class MainTest(unittest.TestCase):
             tts_factory=Mock(),
             status_handler=statuses.append,
         )
-        controller.live_reader = Mock()
+        controller.live_reader = Mock(active_generation=7)
         controller.live_reader.wait_until_playable.return_value = True
         controller.speech_backend = StubTypedPlaybackBackend(
             PlaybackOutcome(PlaybackStatus.PASSTHROUGH_UNOBSERVED, None)
@@ -7154,7 +7244,7 @@ class MainTest(unittest.TestCase):
 
     def test_source_audio_with_completion_keeps_auto_advance_enabled(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
-        controller.live_reader = Mock()
+        controller.live_reader = Mock(active_generation=7)
         controller.live_reader.wait_until_playable.return_value = True
         controller.speech_backend = StubTypedPlaybackBackend()
         prepared = SourceAudioRoute(

@@ -1141,11 +1141,6 @@ class PocketTTSBackendTest(unittest.TestCase):
             [(6_000, 1), (1_200, 1), (1_200, 1)],
         )
 
-    def test_pocket_finishes_audio_when_ocr_replaces_dialogue(self):
-        backend, _model, _audio_output = self.create_backend()
-
-        self.assertFalse(backend.capabilities.interrupt_on_dialog_replacement)
-
     def test_repeated_line_reuses_complete_audio_cache(self):
         backend, model, audio_output = self.create_backend()
 

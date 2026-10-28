@@ -41,7 +41,7 @@ class ControllerUnheardReplacementTest(unittest.TestCase):
         controller.live_reader = Mock()
         return controller
 
-    def test_only_ready_canonical_resolution_carries_identity(self):
+    def test_canonical_identity_is_independent_of_generated_replacement_readiness(self):
         text = "The prepared story contains this complete sentence."
         line = ChapterDialogue(
             "line", "chapter", 1, "Narrator", text, text_sha256(text)
@@ -83,8 +83,13 @@ class ControllerUnheardReplacementTest(unittest.TestCase):
                 qualified = (
                     observed_text == text and not owned_prefix and not changed_speaker
                 )
-                if ready and qualified:
-                    self.assertEqual(actual, RecognizedDialog("Narrator", text, "line"))
+                if qualified:
+                    self.assertEqual(
+                        actual,
+                        RecognizedDialog(
+                            "Narrator", text, "line", allow_unheard_replacement=ready
+                        ),
+                    )
                     backend.reserve_generated_line_for_early_playback.assert_called_once_with(
                         line
                     )

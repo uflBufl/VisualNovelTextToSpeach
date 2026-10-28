@@ -1103,10 +1103,6 @@ class PocketTTSVoiceRouterBackend:
         streaming=True,
         # Voice-state preparation and streaming use the same model instance.
         concurrent_prepare_and_play=False,
-        # OCR may briefly replace a stable dialogue while the game is still
-        # drawing it. Finish audio that already started; Skip/Pause/Emergency
-        # Stop remain explicit interruption paths.
-        interrupt_on_dialog_replacement=False,
     )
 
     def __init__(
@@ -1797,7 +1793,6 @@ class MossTTSVoiceRouterBackend:
         voice_cloning=True,
         streaming=True,
         concurrent_prepare_and_play=False,
-        interrupt_on_dialog_replacement=True,
     )
 
     def __init__(

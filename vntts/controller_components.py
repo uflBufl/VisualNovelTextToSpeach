@@ -546,6 +546,8 @@ class RuntimeLifecycleComponent:
             stable_frame_route=controller._stable_live_frame_route,
             stable_frame_owner=controller._stable_live_frame_owner,
             line_id_resolver=controller._live_sequence_line_id,
+            accept_chunk=controller._accept_live_chunk,
+            reject_chunk=controller._reject_live_chunk,
             prepare_chunk=controller._prepare_live_chunk,
             play_prepared=controller._play_live_chunk,
             report_error=controller.error_handler,
@@ -556,7 +558,7 @@ class RuntimeLifecycleComponent:
             capture_state_changed=controller._capture_state_changed,
             tracker_factory=IncrementalDialogTracker,
             auto_advance=controller._live_auto_advance_callback(),
-            require_visible_auto_advance=controller._live_sequence_audio_active(),
+            require_visible_auto_advance=True,
             auto_advance_delay_seconds=get_auto_advance_delay_seconds(
                 controller.settings
             ),
@@ -566,11 +568,6 @@ class RuntimeLifecycleComponent:
                 session_id=session_id,
             ),
             max_speech_jobs=max_speech_jobs,
-            interrupt_on_dialog_replacement=(
-                backend_capabilities.interrupt_on_dialog_replacement
-                if backend_capabilities is not None
-                else False
-            ),
             first_pcm_on_prepare=False,
             **controller._get_live_configuration(),
         )
@@ -684,7 +681,7 @@ class RuntimeLifecycleComponent:
         tracker_options = live_configuration["tracker_options"]
         reader.interval_seconds = interval_seconds
         reader.tracker_options = dict(tracker_options)
-        reader.require_visible_auto_advance = controller._live_sequence_audio_active()
+        reader.require_visible_auto_advance = True
         reader.set_auto_advance(controller._live_auto_advance_callback())
         reader.auto_advance_delay_seconds = get_auto_advance_delay_seconds(
             controller.settings

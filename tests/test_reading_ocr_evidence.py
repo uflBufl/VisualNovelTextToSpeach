@@ -14,6 +14,7 @@ from vntts.capture_provenance import CaptureProvenance
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.controller import AppController
 from vntts.dialog_capture import CapturedDialogFrame, recognize_screenshot_result
+from vntts.live import RecognizedDialog
 from vntts.ocr import OCRResult
 from vntts.ocr_corrections import OCRCorrectionDictionary
 from vntts.reading_diagnostics import retain_ocr_resolution
@@ -156,7 +157,16 @@ class ReadingOCREvidenceTest(unittest.TestCase):
             "vntts.dialog_capture.recognize_dialog_image_result", return_value=self.raw
         ):
             actual = controller._recognize_live_frame(self.frame)
-        self.assertEqual(actual, (line.speaker, line.text))
+        self.assertEqual(
+            actual,
+            RecognizedDialog(
+                line.speaker,
+                line.text,
+                line.line_id,
+                exact_match=True,
+                allow_unheard_replacement=False,
+            ),
+        )
         events = self.events()
         evidence = next(
             event for event in events if event["operation"] == "story-ocr-evidence"
@@ -236,9 +246,10 @@ class ReadingOCREvidenceTest(unittest.TestCase):
             return_value=story_line()
         )
         resolution = {}
+        prefix = replace(self.raw, text="Hello from the")
         self.assertIs(
-            controller._resolve_story_ocr_result(self.raw, resolution=resolution),
-            self.raw,
+            controller._resolve_story_ocr_result(prefix, resolution=resolution),
+            prefix,
         )
         self.assertEqual(resolution, {"match_result": "owned-prefix"})
         with patch.object(

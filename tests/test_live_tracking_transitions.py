@@ -140,6 +140,95 @@ class IdentifiedDialogTransitionsTest(unittest.TestCase):
                 self.assertEqual(tracker.flush(), [])
                 self.assertEqual(tracker.generation, 1)
 
+    def test_pending_new_raw_dialogue_withholds_previous_canonical_readiness(self):
+        now = [0.0]
+        tracker = IncrementalDialogTracker(clock=lambda: now[0])
+        tracker.observe_identified(
+            "Ada", "First dialogue is complete.", "A", exact=True
+        )
+        self.assertTrue(tracker.is_idle_complete())
+
+        self.assertEqual(tracker.observe("Ada", "Zebras wander beyond mountains."), [])
+        self.assertFalse(tracker.is_idle_complete())
+        chunks = tracker.observe("Ada", "Zebras wander beyond mountains.")
+
+        self.assertEqual(
+            [chunk.text for chunk in chunks], ["Zebras wander beyond mountains."]
+        )
+        self.assertEqual(tracker.generation, 2)
+        self.assertIsNone(tracker.canonical_line_id)
+        now[0] = 0.8
+        self.assertTrue(tracker.is_idle_complete())
+
+    def test_current_canonical_evidence_clears_one_noisy_new_candidate(self):
+        for route in ("raw", "identified", "canonical"):
+            with self.subTest(route=route):
+                tracker = IncrementalDialogTracker()
+                text = "First dialogue is complete."
+                tracker.observe_identified("Ada", text, "A", exact=True)
+                tracker.observe("Ada", "Zebras wander beyond mountains.")
+                self.assertFalse(tracker.is_idle_complete())
+
+                if route == "raw":
+                    chunks = tracker.observe("Ada", text)
+                elif route == "identified":
+                    chunks = tracker.observe_identified("Ada", text, "A", exact=True)
+                else:
+                    chunks = tracker.observe_canonical("Ada", text, "A")
+
+                self.assertEqual(chunks, [])
+                self.assertTrue(tracker.is_idle_complete())
+                self.assertEqual(tuple(tracker.pending_history), ())
+                self.assertEqual(tracker.generation, 1)
+                tracker.observe("Ada", "Zebras wander beyond mountains.")
+                self.assertFalse(tracker.is_idle_complete())
+                self.assertEqual(tracker.generation, 1)
+
+    def test_related_prefix_and_ocr_noise_preserve_current_canonical_readiness(self):
+        for character, text in (
+            ("Ada", "First dialogue"),
+            ("Ada", "First dialogue is complete. OCR noise"),
+            ("Ada", "First dialogue is complette."),
+            ("Narrator", "Ada First dialogue is complete. background"),
+        ):
+            with self.subTest(character=character, text=text):
+                tracker = IncrementalDialogTracker()
+                tracker.observe_identified(
+                    "Ada", "First dialogue is complete.", "A", exact=True
+                )
+                tracker.observe("Ada", "Zebras wander beyond mountains.")
+
+                self.assertEqual(tracker.observe(character, text), [])
+
+                self.assertTrue(tracker.is_idle_complete())
+                self.assertEqual(tracker.generation, 1)
+                self.assertEqual(tuple(tracker.pending_history), ())
+
+    def test_conflict_withholds_canonical_readiness_until_current_evidence(self):
+        tracker = IncrementalDialogTracker()
+        tracker.observe_identified("Ada", "First.", "A", exact=True)
+        tracker.conflicting_observation = True
+
+        self.assertFalse(tracker.is_idle_complete())
+        tracker.observe("Ada", "First.")
+
+        self.assertFalse(tracker.conflicting_observation)
+        self.assertTrue(tracker.is_idle_complete())
+
+    def test_stale_accepted_identity_does_not_clear_pending_current_transition(self):
+        tracker = IncrementalDialogTracker()
+        tracker.observe_identified("Ada", "First.", "A", exact=True)
+        tracker.observe_identified("Ada", "Third.", "C", exact=True)
+        tracker.observe("Ada", "Zebras wander beyond mountains.")
+
+        self.assertEqual(
+            tracker.observe_identified("Ada", "First.", "A", exact=True), []
+        )
+
+        self.assertFalse(tracker.is_idle_complete())
+        self.assertEqual(len(tracker.pending_history), 1)
+        self.assertEqual(tracker.canonical_line_id, "C")
+
     def test_sequence_identity_does_not_change_chunk_identity_or_equality(self):
         chunk = SpeechChunk(1, "Ada", "Hello.", ordinal=1, explicit_replay=True)
         leased = replace(chunk, sequence_event_id="event", sequence_occurrence_id=2)

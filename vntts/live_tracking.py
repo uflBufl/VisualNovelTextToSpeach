@@ -173,6 +173,8 @@ class IncrementalDialogTracker:
             and character == self.character
             and not self.transition_expected
         ):
+            self._clear_pending_dialog()
+            self.conflicting_observation = False
             self.admission_reason = "canonical-held"
             return True
         if self._is_speaker_noise_over_committed_text(character, text):
@@ -214,7 +216,9 @@ class IncrementalDialogTracker:
         self, character: str, text: str, line_id: str, *, exact: bool
     ) -> list[SpeechChunk]:
         if line_id in self.accepted_line_ids:
-            self._clear_pending_dialog()
+            if self.canonical_line_id == line_id:
+                self._clear_pending_dialog()
+                self.conflicting_observation = False
             self.admission_reason = "canonical-held"
             return []
         if not exact:
@@ -267,6 +271,8 @@ class IncrementalDialogTracker:
         self, character: str, text: str, line_id: str
     ) -> list[SpeechChunk]:
         if self.canonical_line_id == line_id:
+            self._clear_pending_dialog()
+            self.conflicting_observation = False
             self.admission_reason = "canonical-held"
             return []
         now = self.clock()
@@ -296,13 +302,14 @@ class IncrementalDialogTracker:
         return self._emit(self.latest_text, flush=True)
 
     def is_idle_complete(self) -> bool:
+        if self.pending_history or self.conflicting_observation:
+            return False
         if self.silent_event_id is not None:
             return True
         if self.canonical_line_id is not None:
             return True
         if (
-            self.conflicting_observation
-            or not self.latest_text
+            not self.latest_text
             or len(self.history) < self.stability_frames
             or self.last_stable_change_at is None
             or not self.stable_text

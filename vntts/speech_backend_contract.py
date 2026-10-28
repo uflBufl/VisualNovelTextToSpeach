@@ -12,7 +12,6 @@ class SpeechBackendCapabilities:
     voice_cloning: bool
     streaming: bool
     concurrent_prepare_and_play: bool
-    interrupt_on_dialog_replacement: bool = False
 
 
 class SpeechBackend(TypedPlaybackBackend, Protocol):

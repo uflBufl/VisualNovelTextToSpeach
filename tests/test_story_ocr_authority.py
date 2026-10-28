@@ -26,6 +26,7 @@ from vntts.generated_audio import (
     GeneratedAudioRoute,
     PreparedGeneratedAudio,
 )
+from vntts.live import RecognizedDialog
 from vntts.live_sequence import StoryCursorState
 from vntts.ocr import OCRResult, recognize_dialog_image_result
 from vntts.settings import AppSettings
@@ -65,6 +66,9 @@ class StoryOCRAuthorityTest(unittest.TestCase):
         return controller
 
     def assert_generated_route(self, controller, line, actual):
+        if isinstance(actual, RecognizedDialog):
+            self.assertEqual(actual.line_id, line.line_id)
+            actual = actual.character, actual.text
         live = Mock(name="live-test")
         live.name = "live-test"
         live.capabilities = SpeechBackendCapabilities(True, False, True)
@@ -131,7 +135,12 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                     actual = controller._recognize_live_frame(
                         CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
                     )
-                self.assertEqual(actual, (speaker, text))
+                self.assertEqual(
+                    actual,
+                    RecognizedDialog(
+                        speaker, text, line.line_id, allow_unheard_replacement=False
+                    ),
+                )
                 controller._ocr_uncertain.assert_not_called()
                 snapshot = controller._publish_diagnostic.call_args.args[0]
                 self.assertEqual(snapshot.character, speaker)
@@ -367,8 +376,12 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 controller.settings = controller.settings.updated(
                     live_sequence_mode="audio-manual"
                 )
-                event = SimpleNamespace(line_id=first.line_id, is_speech=True)
-                forbidden = SimpleNamespace(line_id=other.line_id, is_speech=True)
+                event = SimpleNamespace(
+                    line_id=first.line_id, is_speech=True, chapter=first.chapter
+                )
+                forbidden = SimpleNamespace(
+                    line_id=other.line_id, is_speech=True, chapter=other.chapter
+                )
                 controller.live_sequence_plan = SimpleNamespace(
                     events={"first": event, "forbidden": forbidden}
                 )

@@ -367,18 +367,18 @@ class StoryCursorTest(unittest.TestCase):
         self.assertEqual(cursor.current_event_id, "event-1")
         self.assertEqual(cursor.state, StoryCursorState.PLAYING)
 
-    def test_observations_cannot_move_cursor_during_playback(self):
+    def test_observations_can_move_visible_cursor_during_older_playback(self):
         temporary, cursor = self.create_cursor()
         self.addCleanup(temporary.cleanup)
         cursor.anchor_event("event-1")
-        playing = cursor.begin_playback()
+        cursor.begin_playback()
+        snapshot = cursor.observe_bounded_line("synthetic:chapter-1:3", ("event-3",))
 
-        self.assertEqual(cursor.observe_line("synthetic:chapter-1:3"), playing)
-        self.assertEqual(
-            cursor.observe_bounded_line("synthetic:chapter-1:3", ("event-3",)),
-            playing,
-        )
-        self.assertEqual(cursor.snapshot(), playing)
+        self.assertEqual(snapshot.current_event_id, "event-3")
+        self.assertEqual(snapshot.state, StoryCursorState.LOCKED)
+        repeated = cursor.observe_line("synthetic:chapter-1:3")
+        self.assertEqual(repeated.current_event_id, snapshot.current_event_id)
+        self.assertEqual(repeated.occurrence_id, snapshot.occurrence_id)
 
     def test_waiting_dispatch_identifies_manual_boundary_without_second_key(self):
         with TemporaryDirectory() as directory:

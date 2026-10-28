@@ -1384,6 +1384,8 @@ class LiveReplayRunner:
             line_id_resolver=line_id_resolver,
             prepare_chunk=controller._prepare_live_chunk,
             play_prepared=play,
+            accept_chunk=controller._accept_live_chunk,
+            reject_chunk=controller._reject_live_chunk,
             report_error=errors.append,
             interrupt_speech=controller._interrupt_speech,
             dialog_observed=controller._dialog_observed,

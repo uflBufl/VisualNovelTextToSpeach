@@ -163,7 +163,7 @@ class LiveUnheardReplacementTest(unittest.TestCase):
         reader._play_if_current(old, OLD)
         self.assertEqual(results, [None])
         self.assertIsNone(pcm_admission_context.get())
-        self.assertEqual(reader.pcm_admitted_generation, old.generation)
+        self.assertIn(old.generation, reader.pcm_admitted_generations)
 
     def test_stop_pause_replay_and_admitted_or_stale_owners_cannot_be_replaced(self):
         for barrier in (
@@ -192,7 +192,7 @@ class LiveUnheardReplacementTest(unittest.TestCase):
                 elif barrier == "suppressed":
                     reader.suppressed_generation = old.generation
                 elif barrier == "sealed":
-                    reader.sealed_generation = old.generation
+                    reader.sealed_generations.add(old.generation)
                 elif barrier == "run":
                     reader.run_id = "other-run"
                 elif barrier == "epoch":

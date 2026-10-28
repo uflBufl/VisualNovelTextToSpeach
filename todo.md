@@ -39,32 +39,16 @@
       the new215-line package and returned to Reading, overriding the tab action.
       The plan had warned5recordings could be replaced; make the pending change
       and its activation timing clear, and preserve the chosen navigation.
-- [ ] **RUN-27-03: continue reading across automatic dialogue changes.**
-      Approved implementation in progress; include persistent49 ->116 and
-      rapid changes that skip intermediate observations.
-      - Preserve resolved story identity independently of audio-source choice.
-        Admit an unambiguous complete exact line without a mandatory second OCR
-        pass; retain existing confidence, incomplete-text and ambiguity guards.
-        Keep stabilization for raw OCR and approximate matches.
-      - Track the visible occurrence separately from accepted speech. Permit
-        exact current-chapter reanchoring beyond immediate successors; never
-        fabricate speech for unseen intermediate lines or wait for them forever.
-        Keep approximate recovery bounded to context and manual choice controls.
-      - Retain accepted text/identity in FIFO order using existing synthesis and
-        playback workers and audio-job limits. Replace the single deferred slot
-        and cancellation-on-visible-generation-change; queued speech must keep
-        its occurrence authority after the screen changes. Prefer draining
-        accepted phrases, accepting possible audio lag over silent queue loss.
-      - Deduplicate queued/playing/completed occurrences, not all equal text.
-        Preserve explicit replay and lifecycle controls; old completion/failure
-        must neither move the visible cursor nor advance a newer game line.
-        Preserve original-game-audio priority without replaying expired waits.
-      - Replace superseded ownership checks across tracker, reader, controller
-        and sequence cursor. Verify A/B/C FIFO, unseen-B recovery, a one-frame
-        exact line, repeated/corrected OCR, distant exact reanchor, lifecycle,
-        source-audio timing and failure cleanup with deterministic tests first.
-        Run selected affected tests and static checks; defer native chapter
-        acceptance to the combined run, including Stop/Read recovery evidence.
+- [ ] **RUN-27-03: qualify automatic dialogue changes in the combined native run.**
+      With prepared voices and background generation, exercise persistent49 ->116,
+      rapid A/B/C changes during speech and A/C with no captured B. Compare crops,
+      OCR identities and actual playback: accepted lines must drain once in order,
+      unseen lines must not be invented, and old completion must not advance a
+      newer visible line. Include one-frame exact and short lines, approximate/raw
+      OCR, repeated frames, original-game-audio timing and distant exact recovery.
+      Measure backlog and phrase delay; verify Pause, Clear, explicit replay and
+      Stop/Read recovery. Keep this gate until real capture and audible playback
+      confirm the deterministic queue and controller checks.
 - [ ] **REC-27-01: qualify concurrent metadata updates in the next native run.**
       Under Reading and real background generation, verify continuous video and
       both process-audio recordings while session metadata is atomically replaced.

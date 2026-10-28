@@ -92,7 +92,7 @@ class ReadingGateDiagnosticsTest(unittest.TestCase):
             lambda reader: setattr(reader, "emergency_stopped", True),
             lambda reader: setattr(reader, "is_shutting_down", True),
             lambda reader: setattr(reader, "current_chunk", object()),
-            lambda reader: setattr(reader, "deferred_chunk", object()),
+            lambda reader: reader.deferred_chunks.append(object()),
             lambda reader: setattr(reader, "speech_futures", {object()}),
             lambda reader: setattr(reader, "dialog_ready_generation", None),
             lambda reader: setattr(reader, "suppressed_generation", 3),

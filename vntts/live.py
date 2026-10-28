@@ -1,3 +1,4 @@
+from collections import deque
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -34,6 +35,8 @@ class RecognizedDialog:
     character: str
     text: str
     line_id: str
+    exact_match: bool = True
+    allow_unheard_replacement: bool = True
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,7 @@ class _CanonicalRecognition:
     run_id: str
     epoch: int
     is_current: Callable[[int], bool]
+    observations: int = 1
 
 
 class _Executor(Protocol):
@@ -409,6 +413,8 @@ class LiveDialogReader:
         prepare_chunk: Callable[[SpeechChunk], object],
         play_prepared: Callable[[SpeechChunk, object], object],
         report_error: Callable[[Exception], object],
+        accept_chunk: Callable[[SpeechChunk], SpeechChunk | None] | None = None,
+        reject_chunk: Callable[[SpeechChunk], object] | None = None,
         frame_fingerprint: Callable[[Frame], FrameFingerprint] | None = None,
         frame_render_fingerprint: Callable[[Frame], FrameFingerprint] | None = None,
         frame_equivalent: Callable[[Frame, Frame], bool] | None = None,
@@ -451,7 +457,6 @@ class LiveDialogReader:
         auto_advance_state_changed: Callable[[str, int, int], None] | None = None,
         pipeline_event_handler: Callable[..., object] | None = None,
         max_speech_jobs: int = 2,
-        interrupt_on_dialog_replacement: bool = False,
         first_pcm_on_prepare: bool = True,
         shutdown_requested: Event | None = None,
     ) -> None:
@@ -494,6 +499,8 @@ class LiveDialogReader:
         self.stable_frame_clock = stable_frame_clock
         self.prepare_chunk = prepare_chunk
         self.play_prepared = play_prepared
+        self.accept_chunk = accept_chunk or (lambda chunk: chunk)
+        self.reject_chunk = reject_chunk or (lambda _chunk: None)
         self.report_error = report_error
         self.interrupt_speech = interrupt_speech or (lambda: None)
         self.dialog_observed = dialog_observed or (lambda _character, _text: None)
@@ -540,7 +547,6 @@ class LiveDialogReader:
             lambda _stage, _generation, _occurred_at, **_details: None
         )
         self.max_speech_jobs = max_speech_jobs
-        self.interrupt_on_dialog_replacement = bool(interrupt_on_dialog_replacement)
         self.first_pcm_on_prepare = bool(first_pcm_on_prepare)
         self._initialize_worker_state(shutdown_requested)
         self.run_id = uuid4().hex
@@ -548,21 +554,7 @@ class LiveDialogReader:
         self.active_generation = 0
         self._explicit_generation_offset = 0
         self.suppressed_generation: int | None = None
-        self.speech_futures: dict[
-            Future[object | None] | Future[None], SpeechChunk
-        ] = {}
-        self.paused_chunks: list[SpeechChunk] = []
-        self.deferred_chunk: SpeechChunk | None = None
-        self.current_chunk: SpeechChunk | None = None
-        self.unheard_candidate: SpeechChunk | None = None
-        self.pcm_admitted_generation: int | None = None
-        self.current_playback_interruptible = self.interrupt_on_dialog_replacement
-        self.current_chunk_pipeline_origins: dict[str, float | None] | None = None
-        self.last_spoken_chunk: SpeechChunk | None = None
-        self.cancelled_chunk_ids: set[int] = set()
-        self.pause_interrupted_chunk_ids: set[int] = set()
-        self.prepared_chunk_ids: set[str] = set()
-        self.sealed_generation: int | None = None
+        self._initialize_speech_queue()
         self.paused = False
         self.emergency_stopped = False
         self.last_observation: Observation | None = None
@@ -594,6 +586,30 @@ class LiveDialogReader:
         self.processed_frame_version = 0
         self.next_capture_interval = self.interval_seconds
         self.pipeline_metrics = LivePipelineMetrics()
+
+    def _initialize_speech_queue(self) -> None:
+        self.speech_futures: dict[
+            Future[object | None] | Future[None], SpeechChunk
+        ] = {}
+        self.paused_chunks: list[SpeechChunk] = []
+        self.deferred_chunks: deque[SpeechChunk] = deque()
+        self.accepted_chunks: dict[str, SpeechChunk] = {}
+        self.queue_epoch = 0
+        self.pending_admission_ids: set[str] = set()
+        self.scheduled_playback_ids: set[str] = set()
+        self.completed_playback_ids: set[str] = set()
+        self.prepared_results: dict[Future, object] = {}
+        self.playback_future: Future | None = None
+        self.pause_retry_chunks: dict[str, SpeechChunk] = {}
+        self.current_chunk: SpeechChunk | None = None
+        self.unheard_candidate: SpeechChunk | None = None
+        self.pcm_admitted_generations: set[int] = set()
+        self.current_chunk_pipeline_origins: dict[str, float | None] | None = None
+        self.last_spoken_chunk: SpeechChunk | None = None
+        self.cancelled_chunk_ids: set[str] = set()
+        self.pause_interrupted_chunk_ids: set[str] = set()
+        self.prepared_chunk_ids: set[str] = set()
+        self.sealed_generations: set[int] = set()
 
     def _initialize_recognition(
         self,
@@ -681,7 +697,7 @@ class LiveDialogReader:
         with self.state_lock:
             active_futures = any(not future.done() for future in self.speech_futures)
             queued = bool(
-                active_futures or self.paused_chunks or self.deferred_chunk is not None
+                active_futures or self.paused_chunks or bool(self.deferred_chunks)
             )
             replayable = bool(
                 self.last_spoken_chunk is not None
@@ -729,7 +745,7 @@ class LiveDialogReader:
             self.last_observation = None
             self.last_accepted_observation = None
             self.deferred_observation = None
-            self.prepared_chunk_ids.clear()
+            self._reset_speech_history()
             self.dialog_ready_generation = None
             self.last_auto_advance_dispatched_generation = None
             self.pending_auto_advance_generation = None
@@ -752,6 +768,18 @@ class LiveDialogReader:
             self._ocr_progress("queued")
             self._submit_capture_workers()
         return True
+
+    def _reset_speech_history(self) -> None:
+        self.prepared_chunk_ids.clear()
+        self.cancelled_chunk_ids.clear()
+        self.pause_interrupted_chunk_ids.clear()
+        self.scheduled_playback_ids.clear()
+        self.completed_playback_ids.clear()
+        self.prepared_results.clear()
+        self.playback_future = None
+        self.pause_retry_chunks.clear()
+        self.sealed_generations.clear()
+        self.pcm_admitted_generations.clear()
 
     def _submit_capture_workers(self) -> None:
         """Signal the paired workers on partial submission; retain them for wait."""
@@ -868,40 +896,38 @@ class LiveDialogReader:
         return self.start()
 
     def toggle_pause(self) -> bool:
-        chunks_to_resume = []
         current_chunk = None
         with self.pause_condition:
             if self.paused:
                 self.paused = False
-                chunks_to_resume = self.paused_chunks
+                for chunk in self.paused_chunks:
+                    self._defer_chunk_locked(chunk)
                 self.paused_chunks = []
                 self.pause_condition.notify_all()
             else:
                 self.paused = True
                 self.frame_route_epoch += 1
                 self._cancel_auto_advance_locked()
-                if self.current_chunk is not None:
-                    current_chunk = self.current_chunk
-                    self.pause_interrupted_chunk_ids.add(id(current_chunk))
-                for future, chunk in tuple(self.speech_futures.items()):
-                    if future.running() and chunk is self.current_chunk:
-                        continue
-                    if future.cancel():
-                        self.paused_chunks.append(chunk)
+                current_chunk = self.current_chunk
+                if current_chunk is not None:
+                    self.pause_interrupted_chunk_ids.add(current_chunk.playback_id)
         if current_chunk is not None:
             interrupted = self._interrupt_speech()
             with self.pause_condition:
                 if not interrupted:
-                    self.pause_interrupted_chunk_ids.discard(id(current_chunk))
+                    self.pause_interrupted_chunk_ids.discard(current_chunk.playback_id)
                 elif (
-                    self.paused
-                    and current_chunk.generation == self.active_generation
-                    and self.suppressed_generation != current_chunk.generation
+                    self.accepted_chunks.get(current_chunk.playback_id) is current_chunk
+                    and current_chunk.run_id == self.run_id
+                    and current_chunk.playback_id not in self.cancelled_chunk_ids
                 ):
-                    self.prepared_chunk_ids.discard(current_chunk.chunk_id)
-                    self.paused_chunks.insert(0, current_chunk)
-        if chunks_to_resume:
-            self._schedule(chunks_to_resume)
+                    self.pause_retry_chunks[current_chunk.playback_id] = current_chunk
+                    if not any(
+                        pending.playback_id == current_chunk.playback_id
+                        for pending in self.speech_futures.values()
+                    ):
+                        self._queue_pause_retry_locked(current_chunk)
+        self._schedule_prepared_if_possible()
         self._schedule_deferred_if_possible()
         if not self.paused:
             self._resume_auto_advance_confirmation()
@@ -912,6 +938,14 @@ class LiveDialogReader:
             action="pause" if self.paused else "resume",
         )
         return self.paused
+
+    def _queue_pause_retry_locked(self, chunk: SpeechChunk) -> None:
+        self.pause_retry_chunks.pop(chunk.playback_id, None)
+        self.pause_interrupted_chunk_ids.discard(chunk.playback_id)
+        self.scheduled_playback_ids.discard(chunk.playback_id)
+        self.completed_playback_ids.discard(chunk.playback_id)
+        self.prepared_chunk_ids.discard(chunk.chunk_id)
+        self._defer_chunk_locked(chunk)
 
     def enqueue(
         self,
@@ -966,9 +1000,10 @@ class LiveDialogReader:
 
     def skip_current(self) -> bool:
         with self.pause_condition:
-            has_current_speech = self.current_chunk is not None
-            if has_current_speech:
-                self.cancelled_chunk_ids.add(id(self.current_chunk))
+            current = self.current_chunk
+            has_current_speech = current is not None
+            if current is not None:
+                self.cancelled_chunk_ids.add(current.playback_id)
                 self.pause_condition.notify_all()
         if has_current_speech:
             self._interrupt_speech()
@@ -1007,15 +1042,25 @@ class LiveDialogReader:
         context.pop("generation", None)
         cancelled_at = monotonic()
         self.frame_route_epoch += 1
+        self.queue_epoch += 1
         self.suppressed_generation = self.active_generation
         futures = tuple(self.speech_futures)
+        for future in self.prepared_results:
+            self.speech_futures.pop(future, None)
+        self.prepared_results.clear()
+        self.pause_retry_chunks.clear()
         had_paused_chunks = bool(self.paused_chunks)
-        had_deferred_chunk = self.deferred_chunk is not None
+        had_deferred_chunk = bool(self.deferred_chunks)
         self.paused_chunks = []
-        self.deferred_chunk = None
-        has_current_speech = self.current_chunk is not None
-        if has_current_speech:
-            self.cancelled_chunk_ids.add(id(self.current_chunk))
+        self.deferred_chunks.clear()
+        self.cancelled_chunk_ids.update(
+            chunk.playback_id for chunk in self.accepted_chunks.values()
+        )
+        self.accepted_chunks.clear()
+        current = self.current_chunk
+        has_current_speech = current is not None
+        if current is not None:
+            self.cancelled_chunk_ids.add(current.playback_id)
         self.pending_auto_advance_generation = None
         self.auto_advance_attempts = 0
         self.auto_advance_blocked_generation = None
@@ -1103,27 +1148,13 @@ class LiveDialogReader:
     def was_playback_paused(self, chunk: SpeechChunk) -> bool:
         with self.state_lock:
             return (
-                id(chunk) in self.pause_interrupted_chunk_ids
-                and id(chunk) not in self.cancelled_chunk_ids
-                and chunk.generation == self.active_generation
+                chunk.playback_id in self.pause_interrupted_chunk_ids
+                and chunk.playback_id not in self.cancelled_chunk_ids
+                and self._owns_chunk(chunk)
                 and self.suppressed_generation != chunk.generation
                 and not self.emergency_stopped
                 and not self.is_shutting_down
             )
-
-    def set_current_playback_interruptible(
-        self, chunk: SpeechChunk, interruptible: bool
-    ) -> bool:
-        """Bind replacement policy to the current route's actual playback phase."""
-        with self.pause_condition:
-            if (
-                not self.wait_until_playable(chunk)
-                or self.current_chunk is not chunk
-                or chunk.generation != self.active_generation
-            ):
-                return False
-            self.current_playback_interruptible = interruptible
-            return True
 
     def allow_unheard_replacement(self, chunk: SpeechChunk) -> bool:
         """The route owner has qualified this chunk as raw live/no-match."""
@@ -1133,8 +1164,8 @@ class LiveDialogReader:
                 or chunk.run_id != self.run_id
                 or chunk.line_id is not None
                 or chunk.explicit_replay
-                or self.pcm_admitted_generation == chunk.generation
-                or id(chunk) in self.cancelled_chunk_ids
+                or chunk.generation in self.pcm_admitted_generations
+                or chunk.playback_id in self.cancelled_chunk_ids
                 or self.suppressed_generation == chunk.generation
                 or self.stop_event.is_set()
                 or self.is_shutting_down
@@ -1147,13 +1178,11 @@ class LiveDialogReader:
         with self.pause_condition:
             if (
                 not self.wait_until_playable(chunk)
-                or self.stop_event.is_set()
                 or self.current_chunk is not chunk
                 or chunk.run_id not in (None, self.run_id)
             ):
                 return False
-            if chunk.generation == self.active_generation:
-                self.pcm_admitted_generation = chunk.generation
+            self.pcm_admitted_generations.add(chunk.generation)
             return True
 
     def _replace_unheard_candidate(
@@ -1163,9 +1192,18 @@ class LiveDialogReader:
         character: str | None,
         text: str,
     ) -> list[SpeechChunk] | None:
-        if recognition is None or (character, text) != (
-            recognition.dialog.character,
-            recognition.dialog.text,
+        if (
+            recognition is None
+            or not recognition.dialog.allow_unheard_replacement
+            or (
+                not recognition.dialog.exact_match
+                and recognition.observations < tracker.stability_frames
+            )
+            or (character, text)
+            != (
+                recognition.dialog.character,
+                recognition.dialog.text,
+            )
         ):
             return None
         with self.state_lock:
@@ -1193,77 +1231,105 @@ class LiveDialogReader:
                 or self.active_generation
                 != tracker.generation + self._explicit_generation_offset
                 or self.suppressed_generation == self.active_generation
-                or self.sealed_generation == self.active_generation
-                or self.pcm_admitted_generation == self.active_generation
-                or id(candidate) in self.cancelled_chunk_ids
+                or self.active_generation in self.sealed_generations
+                or self.active_generation in self.pcm_admitted_generations
+                or candidate.playback_id in self.cancelled_chunk_ids
                 or tracker.canonical_line_id is not None
                 or tracker.committed_text != candidate.text
             ):
                 return None
-            self.cancelled_chunk_ids.add(id(candidate))
+            self.cancelled_chunk_ids.add(candidate.playback_id)
             self.unheard_candidate = None
-            if self.current_chunk is candidate:
-                self.current_playback_interruptible = True
-            return tracker.observe_canonical(
+            superseded = [
+                future
+                for future, chunk in self.speech_futures.items()
+                if chunk is candidate
+            ]
+            chunks = tracker.observe_canonical(
                 recognition.dialog.character,
                 recognition.dialog.text,
                 recognition.dialog.line_id,
             )
+        for future in superseded:
+            future.cancel()
+        return chunks
 
     def wait_until_playable(self, chunk: SpeechChunk) -> bool:
         with self.pause_condition:
-            finish_active_playback = bool(
-                self.current_chunk is chunk and not self.current_playback_interruptible
-            )
             while (
                 self.paused
                 and not self.emergency_stopped
                 and not self.is_shutting_down
-                and (
-                    chunk.generation == self.active_generation or finish_active_playback
-                )
+                and self._owns_chunk(chunk)
                 and self.suppressed_generation != chunk.generation
-                and id(chunk) not in self.cancelled_chunk_ids
+                and chunk.playback_id not in self.cancelled_chunk_ids
             ):
                 self.pause_condition.wait()
             return (
                 not self.emergency_stopped
                 and not self.is_shutting_down
+                and self._owns_chunk(chunk)
                 and (
-                    chunk.generation == self.active_generation or finish_active_playback
-                )
-                and (
-                    self.sealed_generation != chunk.generation
-                    or finish_active_playback
+                    chunk.generation not in self.sealed_generations
+                    or self.current_chunk is chunk
                     or chunk.explicit_replay
                 )
                 and self.suppressed_generation != chunk.generation
-                and id(chunk) not in self.cancelled_chunk_ids
+                and chunk.playback_id not in self.cancelled_chunk_ids
             )
+
+    def _owns_chunk(self, chunk: SpeechChunk) -> bool:
+        return (
+            chunk.run_id in (None, self.run_id)
+            and chunk.playback_id not in self.completed_playback_ids
+            and (
+                self.accepted_chunks.get(chunk.playback_id) is chunk
+                or chunk.generation == self.active_generation
+            )
+        )
 
     def seal_generation(self, generation: int) -> bool:
         """Suppress OCR suffix chunks after an exact full-line route completed."""
         stale_futures = []
         with self.pause_condition:
-            if generation != self.active_generation:
+            if generation != self.active_generation and not any(
+                chunk.generation == generation
+                for chunk in self.accepted_chunks.values()
+            ):
                 return False
-            self.sealed_generation = generation
+            self.sealed_generations.add(generation)
+            stale_ids = {
+                chunk.playback_id
+                for chunk in self.accepted_chunks.values()
+                if chunk is not self.current_chunk
+                and chunk.generation == generation
+                and not chunk.explicit_replay
+            }
+            self.completed_playback_ids.update(stale_ids)
+            self.cancelled_chunk_ids.update(stale_ids)
+            self.pause_interrupted_chunk_ids.difference_update(stale_ids)
+            for playback_id in stale_ids:
+                self.pause_retry_chunks.pop(playback_id, None)
             stale_futures = [
                 future
                 for future, chunk in self.speech_futures.items()
-                if chunk is not self.current_chunk and chunk.generation == generation
+                if chunk.playback_id in stale_ids
             ]
             self.paused_chunks = [
-                chunk for chunk in self.paused_chunks if chunk.generation != generation
+                chunk
+                for chunk in self.paused_chunks
+                if chunk.playback_id not in stale_ids
             ]
-            if (
-                self.deferred_chunk is not None
-                and self.deferred_chunk.generation == generation
-            ):
-                self.deferred_chunk = None
+            self.deferred_chunks = deque(
+                chunk
+                for chunk in self.deferred_chunks
+                if chunk.playback_id not in stale_ids
+            )
             self.pause_condition.notify_all()
         for future in stale_futures:
             future.cancel()
+        self._schedule_prepared_if_possible()
+        self._schedule_deferred_if_possible()
         return True
 
     def wait(
@@ -1739,6 +1805,11 @@ class LiveDialogReader:
                     and self.frame_render_fingerprint is not None
                     and render_fingerprint != cached_render_fingerprint
                 )
+                confirm_identity = bool(
+                    cached_canonical is not None
+                    and not cached_canonical.dialog.exact_match
+                    and tracker.canonical_line_id != cached_canonical.dialog.line_id
+                )
                 if (
                     fingerprint == cached_fingerprint
                     and complete == cached_completion
@@ -1746,6 +1817,7 @@ class LiveDialogReader:
                     and not recheck_now
                     and not render_changed
                     and not self.observation_uncertain
+                    and not confirm_identity
                 ):
                     character, text = cached_observation
                     route_kind = "cached"
@@ -1801,6 +1873,7 @@ class LiveDialogReader:
                     or recheck_now
                     or render_changed
                     or self.observation_uncertain
+                    or confirm_identity
                 ):
                     purpose = self._ocr_callback("reading-purpose", self.ocr_purpose)
                     if purpose is None:
@@ -1843,11 +1916,23 @@ class LiveDialogReader:
                     )
                     if observation is None:
                         continue
+                    previous_canonical = cached_canonical
                     cached_canonical = (
                         observation
                         if isinstance(observation, _CanonicalRecognition)
                         else None
                     )
+                    if (
+                        cached_canonical is not None
+                        and previous_canonical is not None
+                        and cached_canonical.dialog == previous_canonical.dialog
+                        and cached_canonical.run_id == previous_canonical.run_id
+                        and cached_canonical.epoch == previous_canonical.epoch
+                    ):
+                        cached_canonical = replace(
+                            cached_canonical,
+                            observations=previous_canonical.observations + 1,
+                        )
                     character, text = (
                         (observation.dialog.character, observation.dialog.text)
                         if isinstance(observation, _CanonicalRecognition)
@@ -1871,6 +1956,25 @@ class LiveDialogReader:
                     frame, recognition_version, recognition_capture_at, route_kind
                 )
                 self._ocr_progress("routing")
+                if (
+                    cached_canonical is not None
+                    and not cached_canonical.dialog.exact_match
+                    and cached_canonical.observations < tracker.stability_frames
+                ):
+                    admission.observe(
+                        tracker,
+                        self.run_id,
+                        route_kind,
+                        frame,
+                        recognition_version,
+                        "waiting-stability",
+                    )
+                    interval = self._ocr_callback(
+                        "updating-policy", policy.observe, character, text, focused=True
+                    )
+                    with self.state_lock:
+                        self.next_capture_interval = interval
+                    continue
                 self._ocr_callback(
                     "observing-transition",
                     self._observe_pending_transition_text,
@@ -1912,8 +2016,15 @@ class LiveDialogReader:
                 else:
                     silent_route = None
                     character, text = routed_observation
-                with self.state_lock:
-                    frame_already_routed = fingerprint == self.routed_frame_fingerprint
+                frame_already_routed, cached_canonical = self._bind_observed_route(
+                    tracker,
+                    character,
+                    text,
+                    cached_canonical,
+                    frame,
+                    fingerprint,
+                    route_kind,
+                )
                 if route_kind != "cached" and not frame_already_routed:
                     self._ocr_callback(
                         "publishing-route",
@@ -1932,55 +2043,32 @@ class LiveDialogReader:
                     and not isinstance(routed_observation, CanonicalDialogRoute)
                     else None
                 )
-                if self.stable_frame_route is not None:
-                    with self.state_lock:
-                        previous_epoch = self.frame_route_epoch
-                        self._accept_routed_frame_locked(fingerprint)
-                        cached_canonical = (
-                            replace(cached_canonical, epoch=self.frame_route_epoch)
-                            if cached_canonical is not None
-                            and cached_canonical.epoch == previous_epoch
-                            else None
-                        )
                 if silent_route is not None:
                     self._ocr_callback(
                         "tracking-silent", tracker.observe_silent, silent_route.event_id
                     )
-                    chunks = []
+                    chunks: list[SpeechChunk] | None = []
                 elif replacement is not None:
                     chunks = replacement
                 else:
-                    line_id = self._ocr_callback(
-                        "resolving-line", self.line_id_resolver, character, text
+                    chunks = self._track_routed_dialog(
+                        tracker,
+                        character,
+                        text,
+                        cached_canonical,
+                        route_kind,
+                        awaiting_post_advance_dialog,
                     )
-                    if line_id is None:
-                        expect_new_dialog = getattr(tracker, "expect_new_dialog", None)
-                        if callable(expect_new_dialog) and awaiting_post_advance_dialog:
-                            self._ocr_callback("tracking-transition", expect_new_dialog)
-                        tracker_character = (
-                            "Narrator" if character is None else character
-                        )
-                        chunks = self._ocr_callback(
-                            "tracking-dialogue",
-                            tracker.observe,
-                            tracker_character,
-                            text,
-                        )
-                    else:
-                        assert character is not None
-                        chunks = self._ocr_callback(
-                            "tracking-canonical",
-                            tracker.observe_canonical,
-                            character,
-                            text,
-                            line_id,
-                        )
                 admission.observe(
                     tracker, self.run_id, route_kind, frame, recognition_version
                 )
-                self._ocr_callback(
-                    "scheduling-speech", self._schedule_tracked_chunks, tracker, chunks
-                )
+                if chunks is not None:
+                    self._ocr_callback(
+                        "scheduling-speech",
+                        self._schedule_tracked_chunks,
+                        tracker,
+                        chunks,
+                    )
                 interval = self._ocr_callback(
                     "updating-policy", policy.observe, character, text, focused=True
                 )
@@ -1990,6 +2078,119 @@ class LiveDialogReader:
                 self._ocr_callback("reporting-error", self.report_error, error)
                 with self.state_lock:
                     self.next_capture_interval = self.interval_seconds
+
+    def _bind_observed_route(
+        self,
+        tracker: IncrementalDialogTracker,
+        character: str | None,
+        text: str,
+        canonical: _CanonicalRecognition | None,
+        frame: Frame,
+        fingerprint: FrameFingerprint,
+        route_kind: str,
+    ) -> tuple[bool, _CanonicalRecognition | None]:
+        tracker_character = "Narrator" if character is None and text else character
+        with self.state_lock:
+            already_routed = fingerprint == self.routed_frame_fingerprint
+            changed_identity = (
+                (tracker_character, text) != (tracker.character, tracker.latest_text)
+                or canonical is not None
+                and canonical.dialog.line_id != tracker.canonical_line_id
+            )
+            if changed_identity and (not already_routed or route_kind != "cached"):
+                self.dialog_ready_generation = None
+                self._cancel_auto_advance_locked()
+            if self.stable_frame_route is not None:
+                previous_epoch = self.frame_route_epoch
+                self._accept_routed_frame_locked(fingerprint, frame)
+                canonical = (
+                    replace(canonical, epoch=self.frame_route_epoch)
+                    if canonical is not None and canonical.epoch == previous_epoch
+                    else canonical
+                )
+        return already_routed, canonical
+
+    def _track_routed_dialog(
+        self,
+        tracker: IncrementalDialogTracker,
+        character: str | None,
+        text: str,
+        canonical: _CanonicalRecognition | None,
+        route_kind: str,
+        awaiting_post_advance_dialog: bool,
+    ) -> list[SpeechChunk] | None:
+        line_id = self._ocr_callback(
+            "resolving-line", self.line_id_resolver, character, text
+        )
+        if (
+            line_id is None
+            and canonical is not None
+            and (character, text)
+            == (
+                canonical.dialog.character,
+                canonical.dialog.text,
+            )
+        ):
+            with self.state_lock:
+                epoch = self.frame_route_epoch
+            current_identity = (
+                canonical.run_id == self.run_id
+                and canonical.epoch == epoch
+                and canonical.is_current(epoch)
+            )
+            with self.state_lock:
+                pending_correction = bool(
+                    canonical.dialog.allow_unheard_replacement
+                    and tracker.canonical_line_id is None
+                    and tracker.committed_text
+                    and tracker._texts_are_related(tracker.committed_text, text)
+                    and self.active_generation not in self.pcm_admitted_generations
+                    and any(
+                        chunk.generation == self.active_generation
+                        and chunk.line_id is None
+                        for chunk in self.speech_futures.values()
+                    )
+                )
+            if (
+                current_identity
+                and not pending_correction
+                and (route_kind != "cached" or canonical.dialog.exact_match)
+            ):
+                if (
+                    canonical.dialog.line_id in tracker.accepted_line_ids
+                    and canonical.dialog.line_id != tracker.canonical_line_id
+                ):
+                    return None
+                return self._ocr_callback(
+                    "tracking-identified",
+                    tracker.observe_identified,
+                    canonical.dialog.character,
+                    text,
+                    canonical.dialog.line_id,
+                    exact=True,
+                )
+            else:
+                return None
+        elif line_id is None:
+            expect_new_dialog = getattr(tracker, "expect_new_dialog", None)
+            if callable(expect_new_dialog) and awaiting_post_advance_dialog:
+                self._ocr_callback("tracking-transition", expect_new_dialog)
+            tracker_character = "Narrator" if character is None else character
+            return self._ocr_callback(
+                "tracking-dialogue",
+                tracker.observe,
+                tracker_character,
+                text,
+            )
+        else:
+            assert character is not None
+            return self._ocr_callback(
+                "tracking-canonical",
+                tracker.observe_canonical,
+                character,
+                text,
+                line_id,
+            )
 
     def _recognize_current_frame(
         self,
@@ -2275,9 +2476,11 @@ class LiveDialogReader:
             return None
         return round(quiet_seconds * 1000)
 
-    def _accept_routed_frame_locked(self, fingerprint: FrameFingerprint) -> None:
+    def _accept_routed_frame_locked(
+        self, fingerprint: FrameFingerprint, frame: Frame | None = None
+    ) -> None:
         self.observation_uncertain = False
-        self.routed_frame = self.latest_frame
+        self.routed_frame = self.latest_frame if frame is None else frame
         self.routed_frame_fingerprint = fingerprint
         self.frame_route_epoch += 1
         self._reset_stable_frame_candidate_locked()
@@ -2304,20 +2507,15 @@ class LiveDialogReader:
         return focused
 
     def _set_generation(self, generation: int) -> None:
-        stale_futures = []
-        interrupt_current = False
         confirmed_advance = None
         with self.pause_condition:
             previous_generation = self.active_generation
-            changed = generation != self.active_generation
+            changed = generation != previous_generation
             self.active_generation = generation
             if self.suppressed_generation != generation:
                 self.suppressed_generation = None
             if changed:
                 self.unheard_candidate = None
-                self.pcm_admitted_generation = None
-                self.prepared_chunk_ids.clear()
-                self.sealed_generation = None
                 self.failed_auto_advance_generation = None
                 self.auto_advance_focus_wait_generation = None
                 self.auto_advance_visual_wait_generation = None
@@ -2329,42 +2527,14 @@ class LiveDialogReader:
                     self.pending_auto_advance_generation = None
                     self.auto_advance_attempts = 0
                     self.pipeline_metrics = replace(
-                        self.pipeline_metrics,
-                        last_auto_advance_at=monotonic(),
+                        self.pipeline_metrics, last_auto_advance_at=monotonic()
                     )
-                interrupt_current = bool(
-                    self.current_playback_interruptible
-                    and self.current_chunk is not None
-                )
-                if interrupt_current:
-                    self.cancelled_chunk_ids.add(id(self.current_chunk))
                 self.dialog_ready_generation = None
                 self.auto_advance_blocked_generation = None
                 self.auto_advance_block_reason = None
                 self._cancel_auto_advance_locked()
-                stale_futures = [
-                    future
-                    for future, chunk in self.speech_futures.items()
-                    if chunk is not self.current_chunk
-                    and chunk.generation != generation
-                ]
-                self.paused_chunks = [
-                    chunk
-                    for chunk in self.paused_chunks
-                    if chunk.generation == generation
-                ]
-                if (
-                    self.deferred_chunk is not None
-                    and self.deferred_chunk.generation != generation
-                ):
-                    self.deferred_chunk = None
                 self.pause_condition.notify_all()
             metrics = self.pipeline_metrics
-        # A dispatched generated WAV finishes even with an interrupting live engine.
-        for future in stale_futures:
-            future.cancel()
-        if interrupt_current:
-            self._interrupt_speech()
         if changed and generation > 0:
             for stage, occurred_at in (
                 ("capture", metrics.last_route_capture_at or metrics.last_capture_at),
@@ -2411,26 +2581,75 @@ class LiveDialogReader:
                 attempt,
             )
 
-    def _schedule(self, chunks: Iterable[SpeechChunk]) -> None:
-        for chunk in chunks:
+    def _admit_chunk(self, chunk: SpeechChunk) -> SpeechChunk | None:
+        with self.state_lock:
+            admitted = self.accepted_chunks.get(chunk.playback_id)
+            if admitted is not None:
+                return admitted
+            if (
+                chunk.playback_id in self.pending_admission_ids
+                or chunk.playback_id in self.cancelled_chunk_ids
+                or chunk.run_id not in (None, self.run_id)
+                or chunk.generation < self.active_generation
+                or self.suppressed_generation == chunk.generation
+                or self.emergency_stopped
+                or self.is_shutting_down
+            ):
+                return None
+            queue_epoch = self.queue_epoch
+            self.pending_admission_ids.add(chunk.playback_id)
             chunk = replace(
                 chunk,
                 run_id=self.run_id,
-                playback_id=uuid4().hex,
                 capture_id=chunk.capture_id
                 or self.pipeline_metrics.last_route_capture_id,
             )
+        # Controller callbacks may acquire the story lock.
+        playback_id = chunk.playback_id
+        try:
+            accepted = self.accept_chunk(chunk)
+        except BaseException:
+            with self.state_lock:
+                self.pending_admission_ids.discard(playback_id)
+            raise
+        with self.state_lock:
+            self.pending_admission_ids.discard(playback_id)
+            if accepted is None:
+                return None
+            chunk = accepted
+            rejected = (
+                queue_epoch != self.queue_epoch
+                or chunk.run_id != self.run_id
+                or chunk.generation < self.active_generation
+                or self.suppressed_generation == chunk.generation
+                or self.emergency_stopped
+                or self.is_shutting_down
+            )
+            if not rejected:
+                self.accepted_chunks[chunk.playback_id] = chunk
+        if rejected:
+            self.reject_chunk(chunk)
+            return None
+        return chunk
+
+    def _schedule(self, chunks: Iterable[SpeechChunk]) -> None:
+        for candidate in chunks:
+            chunk = self._admit_chunk(candidate)
+            if chunk is None:
+                continue
             with self.pause_condition:
                 if (
                     self.emergency_stopped
                     or self.is_shutting_down
-                    or chunk.generation < self.active_generation
+                    or chunk.playback_id in self.cancelled_chunk_ids
+                    or chunk.playback_id in self.scheduled_playback_ids
                 ):
                     continue
                 if (
-                    self.sealed_generation == chunk.generation
+                    chunk.generation in self.sealed_generations
                     and not chunk.explicit_replay
                 ):
+                    self.completed_playback_ids.add(chunk.playback_id)
                     self._report_pipeline_event(
                         "late-chunk-suppressed",
                         chunk.generation,
@@ -2443,21 +2662,29 @@ class LiveDialogReader:
                 if self.suppressed_generation == chunk.generation:
                     continue
                 if self.paused:
-                    self.paused_chunks.append(chunk)
-                    continue
-                if len(self.speech_futures) >= self.max_speech_jobs:
+                    if not any(
+                        pending.playback_id == chunk.playback_id
+                        for pending in self.paused_chunks
+                    ):
+                        self.paused_chunks.append(chunk)
+                else:
                     self._defer_chunk_locked(chunk)
-                    self._record_speech_metrics_locked(sentence_ready=True)
-                    continue
-                future = self.speech_executor.submit(self._prepare_if_current, chunk)
-                self.speech_futures[future] = chunk
                 self._record_speech_metrics_locked(sentence_ready=True)
-            future.add_done_callback(self._preparation_finished)
+        self._schedule_prepared_if_possible()
+        self._schedule_deferred_if_possible()
 
     def _speech_finished(self, future: Future[None]) -> None:
         with self.state_lock:
-            self.speech_futures.pop(future, None)
+            chunk = self.speech_futures.pop(future, None)
+            if self.playback_future is future:
+                self.playback_future = None
+            if chunk is not None:
+                if chunk.playback_id in self.pause_retry_chunks:
+                    self._queue_pause_retry_locked(chunk)
+                else:
+                    self.completed_playback_ids.add(chunk.playback_id)
             self._record_speech_metrics_locked(playback=True)
+        self._schedule_prepared_if_possible()
         self._schedule_deferred_if_possible()
         self._maybe_auto_advance()
 
@@ -2515,8 +2742,7 @@ class LiveDialogReader:
                 )
                 continue
             with self.state_lock:
-                if chunk.generation == self.active_generation:
-                    self.prepared_chunk_ids.discard(chunk.chunk_id)
+                self.prepared_chunk_ids.discard(chunk.chunk_id)
             reason = (
                 "Audio preparation failed after retry; restart reading to retry "
                 "this dialogue"
@@ -2546,38 +2772,92 @@ class LiveDialogReader:
                 synthesis=True,
                 first_pcm=self.first_pcm_on_prepare,
             )
-        replaced = False
+        prepared = None
         try:
-            if chunk is None or future.cancelled():
-                return
-            try:
+            if chunk is not None and not future.cancelled():
                 prepared = future.result()
-            except Exception as error:
-                self.report_error(error)
-                return
-            if prepared is None or not self.wait_until_playable(chunk):
-                return
-            playback_future = self.playback_executor.submit(
-                self._play_if_current,
-                chunk,
-                prepared,
-            )
-            with self.state_lock:
+        except Exception as error:
+            self.report_error(error)
+        with self.state_lock:
+            if (
+                chunk is not None
+                and prepared is not None
+                and self._owns_chunk(chunk)
+                and chunk.playback_id not in self.cancelled_chunk_ids
+                and self.suppressed_generation != chunk.generation
+            ):
+                self.prepared_results[future] = prepared
+            else:
                 self.speech_futures.pop(future, None)
-                self.speech_futures[playback_future] = chunk
-                self._record_speech_metrics_locked()
-                replaced = True
-            playback_future.add_done_callback(self._speech_finished)
-        finally:
-            if not replaced:
-                with self.state_lock:
+                if chunk is not None:
+                    self.completed_playback_ids.add(chunk.playback_id)
+        self._schedule_prepared_if_possible()
+        self._schedule_deferred_if_possible()
+
+    def _schedule_prepared_if_possible(self) -> None:
+        with self.pause_condition:
+            for future in tuple(self.prepared_results):
+                pending = self.speech_futures.get(future)
+                if pending is None or (
+                    pending.playback_id in self.cancelled_chunk_ids
+                    or not self._owns_chunk(pending)
+                    or self.suppressed_generation == pending.generation
+                    or (
+                        pending.generation in self.sealed_generations
+                        and not pending.explicit_replay
+                    )
+                ):
+                    self.prepared_results.pop(future, None)
                     self.speech_futures.pop(future, None)
-            # A rapidly advancing game can replace a dialogue while its audio
-            # is still being prepared. The old result is then intentionally
-            # discarded, but the newest deferred dialogue must still be
-            # scheduled or live mode remains running with a permanently stuck
-            # queue.
+                    if pending is not None:
+                        self.completed_playback_ids.add(pending.playback_id)
+            if self.paused or self.playback_future is not None:
+                return
+            chunk = next(
+                (
+                    pending
+                    for pending in self.accepted_chunks.values()
+                    if (
+                        pending.playback_id not in self.completed_playback_ids
+                        or pending.playback_id in self.pause_interrupted_chunk_ids
+                    )
+                    and pending.playback_id not in self.cancelled_chunk_ids
+                ),
+                None,
+            )
+            if chunk is None or chunk.playback_id in self.pause_interrupted_chunk_ids:
+                return
+            prepared_future = next(
+                (
+                    future
+                    for future, pending in self.speech_futures.items()
+                    if pending is chunk and future in self.prepared_results
+                ),
+                None,
+            )
+            if prepared_future is None:
+                return
+            prepared = self.prepared_results.pop(prepared_future)
+            self.speech_futures.pop(prepared_future, None)
+            failure = None
+            try:
+                future = self.playback_executor.submit(
+                    self._play_if_current, chunk, prepared
+                )
+            except Exception as error:
+                self.completed_playback_ids.add(chunk.playback_id)
+                failure = error
+            else:
+                self.playback_future = future
+                self.speech_futures[future] = chunk
+            self._record_speech_metrics_locked()
+        if failure is not None:
+            self.reject_chunk(chunk)
+            self.report_error(failure)
+            self._schedule_prepared_if_possible()
             self._schedule_deferred_if_possible()
+        else:
+            future.add_done_callback(self._speech_finished)
 
     def _play_if_current(self, chunk: SpeechChunk, prepared: object) -> None:
         token = audio_lifecycle_context.set(self._chunk_context(chunk))
@@ -2603,7 +2883,6 @@ class LiveDialogReader:
             return
         with self.state_lock:
             self.current_chunk = chunk
-            self.current_playback_interruptible = self.interrupt_on_dialog_replacement
             self.last_spoken_chunk = chunk
             metrics = self.pipeline_metrics
             self.current_chunk_pipeline_origins = {
@@ -2653,12 +2932,7 @@ class LiveDialogReader:
                 self._record_speech_metrics_locked(playback_completed=True)
                 if self.current_chunk is chunk:
                     self.current_chunk = None
-                    self.current_playback_interruptible = (
-                        self.interrupt_on_dialog_replacement
-                    )
                     self.current_chunk_pipeline_origins = None
-                self.cancelled_chunk_ids.discard(id(chunk))
-                self.pause_interrupted_chunk_ids.discard(id(chunk))
             self._report_pipeline_event(
                 "playback-completion",
                 chunk.generation,
@@ -2724,10 +2998,10 @@ class LiveDialogReader:
             offset = self._explicit_generation_offset
             generation = tracker.generation + offset
             self._set_generation(generation)
-            self._schedule(
-                replace(chunk, generation=chunk.generation + offset) for chunk in chunks
-            )
-            self._update_dialog_ready(tracker, generation)
+        self._schedule(
+            replace(chunk, generation=chunk.generation + offset) for chunk in chunks
+        )
+        self._update_dialog_ready(tracker, generation)
 
     def _update_dialog_ready(
         self, tracker: IncrementalDialogTracker, generation: int
@@ -2783,7 +3057,7 @@ class LiveDialogReader:
             "render_quiet_minimum_ms": self.render_quiet_minimum_seconds * 1000,
             "current_chunk_present": self.current_chunk is not None,
             "speech_future_count": len(self.speech_futures),
-            "deferred_chunk_present": self.deferred_chunk is not None,
+            "deferred_chunk_present": bool(self.deferred_chunks),
             "paused": self.paused,
             "emergency_stopped": self.emergency_stopped,
             "shutting_down": self.is_shutting_down,
@@ -2855,7 +3129,7 @@ class LiveDialogReader:
                 or self.auto_advance_timer is not None
                 or self.current_chunk is not None
                 or self.speech_futures
-                or self.deferred_chunk is not None
+                or bool(self.deferred_chunks)
                 or self.paused
                 or self.suppressed_generation == generation
                 or self.observation_uncertain
@@ -2905,7 +3179,7 @@ class LiveDialogReader:
                     or self.last_auto_advance_dispatched_generation == generation
                     or self.current_chunk is not None
                     or self.speech_futures
-                    or self.deferred_chunk is not None
+                    or bool(self.deferred_chunks)
                     or self.paused
                     or self.suppressed_generation == generation
                     or self.observation_uncertain
@@ -2995,7 +3269,7 @@ class LiveDialogReader:
                 or self.last_auto_advance_dispatched_generation == generation
                 or self.current_chunk is not None
                 or self.speech_futures
-                or self.deferred_chunk is not None
+                or bool(self.deferred_chunks)
                 or self.suppressed_generation == generation
                 or self.observation_uncertain
                 or self.paused
@@ -3379,7 +3653,7 @@ class LiveDialogReader:
         playback_completed: bool = False,
     ) -> None:
         now = monotonic()
-        depth = len(self.speech_futures) + int(self.deferred_chunk is not None)
+        depth = len(self.speech_futures) + len(self.deferred_chunks)
         metrics = self.pipeline_metrics
         self.pipeline_metrics = replace(
             metrics,
@@ -3537,27 +3811,54 @@ class LiveDialogReader:
         return True
 
     def _defer_chunk_locked(self, chunk: SpeechChunk) -> None:
-        deferred = self.deferred_chunk
-        if deferred is None or deferred.generation != chunk.generation:
-            self.deferred_chunk = chunk
-            return
-        separator = "" if deferred.text.endswith((" ", "\n")) else " "
-        self.deferred_chunk = SpeechChunk(
-            chunk.generation,
-            chunk.character,
-            f"{deferred.text}{separator}{chunk.text}",
-            ordinal=deferred.ordinal,
-            line_id=(deferred.line_id if deferred.line_id == chunk.line_id else None),
-        )
+        if not any(
+            pending.playback_id == chunk.playback_id for pending in self.deferred_chunks
+        ):
+            self.deferred_chunks.append(chunk)
+            admission_order = {
+                playback_id: index
+                for index, playback_id in enumerate(self.accepted_chunks)
+            }
+            self.deferred_chunks = deque(
+                sorted(
+                    self.deferred_chunks,
+                    key=lambda pending: admission_order[pending.playback_id],
+                )
+            )
 
     def _schedule_deferred_if_possible(self) -> None:
+        callbacks = []
+        rejected = []
         with self.pause_condition:
-            if (
-                self.deferred_chunk is None
-                or self.paused
-                or len(self.speech_futures) >= self.max_speech_jobs
+            while (
+                self.deferred_chunks
+                and not self.paused
+                and len(self.speech_futures) < self.max_speech_jobs
             ):
-                return
-            chunk = self.deferred_chunk
-            self.deferred_chunk = None
-        self._schedule([chunk])
+                chunk = self.deferred_chunks.popleft()
+                if (
+                    chunk.playback_id in self.scheduled_playback_ids
+                    or chunk.playback_id in self.cancelled_chunk_ids
+                    or not self._owns_chunk(chunk)
+                    or self.suppressed_generation == chunk.generation
+                    or self.emergency_stopped
+                    or self.is_shutting_down
+                ):
+                    continue
+                self.scheduled_playback_ids.add(chunk.playback_id)
+                try:
+                    future = self.speech_executor.submit(
+                        self._prepare_if_current, chunk
+                    )
+                except Exception as error:
+                    self.completed_playback_ids.add(chunk.playback_id)
+                    rejected.append((chunk, error))
+                else:
+                    self.speech_futures[future] = chunk
+                    callbacks.append(future)
+                self._record_speech_metrics_locked()
+        for future in callbacks:
+            future.add_done_callback(self._preparation_finished)
+        for chunk, rejected_error in rejected:
+            self.reject_chunk(chunk)
+            self.report_error(rejected_error)

@@ -503,8 +503,8 @@ class LiveReplayTest(unittest.TestCase):
                     ],
                 },
                 expected_counts={
-                    "ocr_calls": 2,
-                    "bounded_recoveries": 0,
+                    "ocr_calls": 7,
+                    "bounded_recoveries": 1,
                     "key_dispatch_attempts": 2,
                     "confirmed_key_dispatches": 2,
                 },
@@ -547,13 +547,17 @@ class LiveReplayTest(unittest.TestCase):
             (frame["dialogue_index"], frame["frame_index"])
             for frame in report["media_integrity"]["recognized_frames"]
         }
-        self.assertEqual(recognized_frame_identities, {(1, 1), (2, 1)})
+        self.assertEqual(
+            recognized_frame_identities,
+            {(1, 1), (2, 1), (2, 2), (2, 3), (2, 4), (2, 5), (3, 1)},
+        )
         self.assertTrue(
-            any(
-                frame["route_kind"] == "locked-visual-only"
-                for frame in report["media_integrity"]["frame_consumption"][
+            all(
+                frame["route_kind"] == "ocr"
+                for dialogue in report["media_integrity"]["frame_consumption"][
                     "dialogues"
-                ][1]["frames"]
+                ]
+                for frame in dialogue["frames"]
             )
         )
         generated_route = next(
@@ -709,12 +713,25 @@ class LiveReplayTest(unittest.TestCase):
             "sequence-live-replay-audio-auto.json",
             "sequence-live-replay-audio-auto-safety.json",
         ):
+            corpus = load_live_replay_corpus(root / corpus_name)
             report = LiveReplayRunner(
-                load_live_replay_corpus(root / corpus_name),
+                corpus,
                 interval_seconds=0.002,
                 timeout_seconds=30,
             ).run()
             reports.append(report)
+            recognized_dialogues = {
+                frame["dialogue_index"]
+                for frame in report["media_integrity"]["recognized_frames"]
+            }
+            self.assertTrue(
+                {
+                    index
+                    for index, dialogue in enumerate(corpus.dialogue, 1)
+                    if dialogue.expect_playback
+                }.issubset(recognized_dialogues),
+                {"corpus": corpus_name, "recognized_dialogues": recognized_dialogues},
+            )
             diagnostics = {
                 "corpus": corpus_name,
                 "failed_gates": report["failed_gates"],
@@ -777,7 +794,7 @@ class LiveReplayTest(unittest.TestCase):
                 report["sequence"]["observed"]["bounded_recoveries"]
                 for report in reports
             ],
-            [0, 2, 1, 1],
+            [0, 3, 2, 1],
         )
 
     def test_tracked_checksum_bound_text_uses_binary_fixtures(self):
