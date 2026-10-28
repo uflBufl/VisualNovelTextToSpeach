@@ -23,7 +23,7 @@ class LiveScopeBootstrapTest(unittest.TestCase):
             text_sha256("The complete dialogue."),
         )
         self.controller = AppController(
-            AppSettings(),
+            AppSettings(capture_mode="window"),
             chapter_voice_preloader=ChapterVoicePreloader((self.line,)),
             dialog_handler=Mock(),
             status_handler=Mock(),
@@ -88,6 +88,14 @@ class LiveScopeBootstrapTest(unittest.TestCase):
         self.assert_outcome("matched")
         self.assertNotIn(self.line.text, repr(self.events.call_args))
         self.assertNotIn(self.line.speaker, repr(self.events.call_args))
+
+    def test_screen_mode_cannot_bootstrap_story_scope_from_a_window_mock(self):
+        self.controller.settings = self.controller.settings.updated(
+            capture_mode="screen"
+        )
+        self.assertFalse(self.identify())
+        self.read.assert_not_called()
+        self.assert_outcome("capture-target-unavailable")
 
     def test_no_selected_target_never_reads_desktop(self):
         self.controller.capture_target = None

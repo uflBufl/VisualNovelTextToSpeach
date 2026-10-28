@@ -406,6 +406,7 @@ class RuntimeLifecycleTest(unittest.TestCase):
             )
             self.addCleanup(controller.shutdown)
             self.assertTrue(controller.start())
+            initial_capture_target = controller.capture_target
             self.assertEqual(scheduler_factory.call_count, 1)
             self.assertTrue(
                 controller.apply_settings(
@@ -418,6 +419,7 @@ class RuntimeLifecycleTest(unittest.TestCase):
             )
 
         self.assertEqual(scheduler_factory.call_count, 2)
+        self.assertIsNot(initial_capture_target, controller.capture_target)
         initial, refreshed = scheduler_factory.call_args_list
         for call in (initial, refreshed):
             self.assertIs(
@@ -447,6 +449,7 @@ class RuntimeLifecycleTest(unittest.TestCase):
             initial.kwargs,
             {
                 **expected,
+                "capture_target": initial_capture_target,
                 "minimum_confidence": 60,
                 "ocr_language": "eng",
             },

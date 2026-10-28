@@ -940,10 +940,17 @@ class DialogRegionOverlayTest(unittest.TestCase):
         self.assertFalse(overlay.isVisible())
         overlay.deleteLater()
 
-    def test_negative_monitor_and_scaled_pixels_keep_normalized_geometry(self):
+    def test_offscreen_window_preview_fits_visible_screen_and_keeps_scaled_region(self):
         background = Image.new("RGB", (1600, 900), "black")
         geometry = WindowGeometry(-1600, -100, 800, 450)
-        overlay = show_calibration_overlay(geometry, background=background)
+        screen = Mock()
+        screen.geometry.return_value = QRect(0, 0, 1000, 800)
+        screen.availableGeometry.return_value = QRect(40, 30, 960, 770)
+        with (
+            patch.object(QApplication, "screens", return_value=[screen]),
+            patch.object(QApplication, "primaryScreen", return_value=screen),
+        ):
+            overlay = show_calibration_overlay(geometry, background=background)
         self.application.processEvents()
 
         region = overlay._region_from_rectangle(QRect(80, 270, 640, 144))
@@ -951,8 +958,8 @@ class DialogRegionOverlayTest(unittest.TestCase):
 
         self.assertEqual(overlay.geometry().size().width(), 800)
         self.assertEqual(overlay.geometry().size().height(), 450)
-        self.assertEqual(overlay.geometry().left(), -1600)
-        self.assertEqual(overlay.geometry().top(), -100)
+        self.assertEqual(overlay.geometry().left(), 40)
+        self.assertEqual(overlay.geometry().top(), 30)
         self.assertAlmostEqual(region.left, 0.1)
         self.assertAlmostEqual(region.top, 0.6)
         self.assertAlmostEqual(region.width, 0.8)
