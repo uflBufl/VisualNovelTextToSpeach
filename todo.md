@@ -27,8 +27,23 @@
 
 - [ ] **UX-27-06: generation progress calls reused work new speech.** The voice
       confirmation says 192 reused / 305 to generate, but progress says 290 of 497 new
-      speech lines processed. Clarify the denominator and reuse in the progress
-      wording so the user can tell how much synthesis remains.
+      speech lines processed. Implementation plan pending user approval:
+      - Keep durable overall progress and label it as processed preparation items,
+        including saved outcomes. Show nonzero reused recordings separately from
+        the fresh confirmation snapshot; reset that snapshot for another input.
+        Do not derive a current-run synthesis count from the first progress poll.
+      - Use one total for the worker's completion check, UI percentage/count and
+        ETA: ready_items plus standalone audio-event omission queue IDs. A planned
+        omission must not make unfinished dialogue look fully processed.
+      - Preserve separate prepared/failed/fallback outcomes, authoritative playable
+        readiness and recovery/publication phases. Keep the existing ETA delta
+        baseline so saved results are not measured as new processing speed.
+      - Update shared task-status wording, accessibility text and Qt catalog
+        fixtures. Verify 192 reused + 305 pending, delayed first poll, Resume,
+        failed-to-success recovery, cancellation, fallback, omissions and all-reused
+        input; inspect actual compact Qt progress with and without failures.
+      - After approval, implement without persisted schema or synthesis changes,
+        run the required changed-test selector and affected checks, then commit.
 - [ ] **UX-27-04: Stop triggers deferred pack activation and navigation.**
       After background preparation completed, Stop to inspect Stories activated
       the new215-line package and returned to Reading, overriding the tab action.
