@@ -309,7 +309,9 @@ def _first_process(root):
         if dialog.engine_choice.currentData() != "pocket-tts":
             raise AssertionError("The selected generation engine was not retained")
         if "Pocket TTS" not in dialog._full_narrator_configuration():
-            raise AssertionError("The full preparation details hid the generation engine")
+            raise AssertionError(
+                "The full preparation details hid the generation engine"
+            )
 
         dialog.continue_button.click()
         for _ in range(20):
@@ -326,9 +328,22 @@ def _first_process(root):
                 f"Preparation did not finish: {dialog.resume_status.text()}"
             )
 
+        if dialog.pack_result().live_fallbacks:
+            if (
+                dialog.continue_button.text() != "Use prepared audio"
+                or not dialog.continue_button.isEnabled()
+            ):
+                raise AssertionError(
+                    "The mixed offline/live pack did not offer explicit activation"
+                )
+            dialog.continue_button.click()
+
         _wait_until(
             application,
-            lambda: not tray.pregeneration_activation_runner.active,
+            lambda: (
+                tray._runtime_settings().game_pack == str(dialog.pack_result().manifest)
+                and not tray.pregeneration_activation_runner.active
+            ),
             "Offline pack activation did not finish",
         )
         if tray._runtime_settings().game_pack != str(dialog.pack_result().manifest):

@@ -10,6 +10,14 @@ from vntts.settings import AppSettings
 
 
 class ReadinessCancellationTest(unittest.TestCase):
+    def setUp(self):
+        self.display_target = self.enterContext(
+            patch("vntts.onboarding.DisplayCaptureTarget")
+        )
+        self.window_target = self.enterContext(
+            patch("vntts.onboarding.WindowCaptureTarget")
+        )
+
     def settings(self):
         return AppSettings(
             speech_backend="coqui-xtts", tts_model="test", narrator_speaker="narrator"
@@ -37,6 +45,8 @@ class ReadinessCancellationTest(unittest.TestCase):
         ):
             diagnostics.run(self.settings(), cancellation=cancelled)
         hotkeys.assert_not_called()
+        self.display_target.assert_not_called()
+        self.window_target.assert_not_called()
         diagnostics.tesseract_probe.assert_not_called()
         diagnostics.audio_probe.assert_not_called()
         diagnostics.model_path_resolver.assert_not_called()
@@ -125,6 +135,8 @@ class ReadinessCancellationTest(unittest.TestCase):
         self.assertIs(logged.records[0].exc_info[1], failure)
         diagnostics.tesseract_probe.assert_called_once_with()
         diagnostics.audio_probe.assert_called_once_with()
+        self.display_target.return_value.capture_native.assert_called_once()
+        self.display_target.return_value.close.assert_called_once_with()
 
     def test_setup_passes_its_cancellation_to_read_only_diagnostics(self):
         diagnostics = self.diagnostics()
