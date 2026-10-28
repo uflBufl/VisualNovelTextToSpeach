@@ -1476,7 +1476,21 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 
 - [ ] **P2 - Qualify selective regeneration for partly generated stories.** Change one character in a partly prepared story and verify that other characters' ready recordings survive, missing lines are completed, and the Stories preparation UI reports the exact reuse/new-work scope across chapters.
 
-- [ ] **P2 - Clarify copied diagnostics.** Check that copied diagnostics include the actual inner foreground preview failure as well as source discovery and background preparation failures. Gate: saved/candidate voices can be identified and auditioned without opening diagnostics; refresh/import remain discoverable with clear side effects and cancellation behavior.
+- [ ] **P2 - Keep voice preview errors visible.** Native Qt at 900x650 clips
+      candidate/current preview messages to 7/6 pixels below the editor scroll
+      viewport, although the detailed reason is retained. Agree the implementation
+      plan, then move the existing messages above Cancel/Save outside that scroll
+      area. Preserve current/candidate ownership and retry behavior; identify the
+      affected voice and keep long reasons bounded, scrollable and copyable.
+      Gate: actual message visible regions at minimum size and enlarged font,
+      foreground/current/background failures and successful retry, unchanged voice
+      bindings, and available import/discovery feedback. No notification history.
+
+- [ ] **P2 - Preserve native MOSS generation error details.** The C++ runtime's
+      non-200 /tts branch discards the response body and exposes only HTTP status.
+      Preserve bounded nonempty text detail and retain a useful empty-body fallback;
+      verify the shared backend and preview propagation with the existing fake
+      server. This is separate from the default Apple Silicon MLX worker path.
 
 ## MCP Unicode text input
 
