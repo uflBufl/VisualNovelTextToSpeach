@@ -4232,6 +4232,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         pack_result: OfflinePackResult,
         success_status: str,
     ) -> None:
+        self.show_dashboard()
+        self.dashboard.show_reading()
+        self._save_main_section("reading")
         cancellation = Event()
         generation = self._begin_controller_lifecycle(cancellation)
         self._pregeneration_activation_generation = generation
@@ -4294,20 +4297,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._apply_controller_action_state()
         status = self._pregeneration_activation_status
         self._pregeneration_activation_status = None
-        self.show_dashboard()
-        self.dashboard.show_reading()
         next_action = (
             self.dashboard.live_button
             if self._controller_ready
             else self.dashboard.prepare_reading_button
         )
+        next_step = "click" if next_action.isVisible() else "open Reading and click"
         self.set_status(
             f"{status or 'Prepared audio is active.'} "
-            f"Next: click {next_action.text()} with the story open in the game."
+            f"Next: {next_step} {next_action.text()} with the story open in the game."
         )
-        next_action.setFocus()
-
-        self._save_main_section("reading")
+        if next_action.isVisible():
+            next_action.setFocus()
 
     def _readiness_settings(self) -> AppSettings:
         loaded = getattr(self.controller, "settings", None)
@@ -5834,14 +5835,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self._apply_runtime_control_state(self._runtime_control_state())
         else:
             self.set_speech_paused(False)
-        dialog = self.pregeneration_dialog
-        if (
-            not running
-            and not self.live_stop_runner.active
-            and dialog is not None
-            and isinstance(dialog.pack_result(), OfflinePackResult)
-        ):
-            QTimer.singleShot(0, self, self._activate_ready_preparation)
 
     def set_speech_paused(self, paused: bool) -> None:
         self._reported_speech_paused = bool(paused)

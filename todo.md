@@ -20,16 +20,14 @@
       p50/p95, clock uncertainty/frame age, OCR cadence, end-to-end phrase delay,
       CPU and peak memory under that load. Confirm no stale text, duplicates,
       leaked helpers or unbounded buffers across Start/Stop/Pause/settings changes.
+      After preparation completes during reading, Stop and open Stories: the saved
+      pack must remain inactive until Use prepared audio. During explicit
+      activation, later navigation or hiding the window must survive completion.
       Include moving text, static/black scenes and the fullscreen advance marker.
       Keep the separate dialogue-owner defects below open until that rerun.
 
 ## Active - Native rerun observations (2026-10-27)
 
-- [ ] **UX-27-04: Stop triggers deferred pack activation and navigation.**
-      After background preparation completed, Stop to inspect Stories activated
-      the new215-line package and returned to Reading, overriding the tab action.
-      The plan had warned5recordings could be replaced; make the pending change
-      and its activation timing clear, and preserve the chosen navigation.
 - [ ] **RUN-27-03: qualify automatic dialogue changes in the combined native run.**
       With prepared voices and background generation, exercise persistent49 ->116,
       rapid A/B/C changes during speech and A/C with no captured B. Compare crops,

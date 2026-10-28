@@ -3643,9 +3643,10 @@ class OfflineAudioPreparationDialog(QDialog):
             self.packReady.emit()
 
     def defer_activation(self, reason: str) -> None:
-        self.progress_phase.setText("Audio saved; activation needs attention")
+        self.progress_phase.setText("Audio saved; not active")
         self._set_phase_detail(
-            reason + " Click Use prepared audio to activate the saved pack and replace "
+            reason + " The saved pack stays inactive until you click Use prepared "
+            "audio. This replaces "
             "live voice overrides for these story roles. Playback will not start automatically."
         )
         self.continue_button.show()

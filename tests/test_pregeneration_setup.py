@@ -4288,15 +4288,23 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.show()
             self.application.processEvents()
 
-            self.assertIn("Reading settings changed", dialog.resume_status.text())
-            self.assertIn("replace live voice overrides", dialog.resume_status.text())
+            self.assertEqual(dialog.progress_phase.text(), "Audio saved; not active")
+            self.assertEqual(
+                dialog.resume_status.text(),
+                "Reading settings changed during preparation. "
+                "The saved pack stays inactive until you click Use prepared audio. "
+                "This replaces live voice overrides for these story roles. "
+                "Playback will not start automatically.",
+            )
             self.assertNotIn(
                 "Review the saved voice setup", dialog.resume_status.text()
             )
             self.assertTrue(dialog.continue_button.isVisibleTo(dialog))
+            self.assertTrue(dialog.continue_button.isEnabled())
             self.assertEqual(dialog.continue_button.text(), "Use prepared audio")
             self.assertFalse(dialog.selection_panel.isVisibleTo(dialog))
             self.assertFalse(dialog.progress_bar.isVisibleTo(dialog))
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
             dialog.continue_button.click()
             self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
 

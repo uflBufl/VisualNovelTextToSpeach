@@ -1728,12 +1728,22 @@ class TrayApplicationTest(unittest.TestCase):
         panel = Mock()
         tray.pregeneration_dialog = panel
         tray._remember_preparation_context()
-        for state in ("unchanged", "changed", "reading", "busy", "voice", "quitting"):
+        for state in (
+            "unchanged",
+            "navigation",
+            "changed",
+            "reading",
+            "busy",
+            "voice",
+            "quitting",
+        ):
             with self.subTest(state=state):
                 panel.reset_mock()
                 tray.settings = (
                     AppSettings().updated(tts_speaker="marius")
                     if state == "changed"
+                    else AppSettings().updated(last_main_section="reading")
+                    if state == "navigation"
                     else AppSettings()
                 )
                 controller.is_live_running = state == "reading"
@@ -1741,7 +1751,7 @@ class TrayApplicationTest(unittest.TestCase):
                 tray.narrator_dialog = Mock() if state == "voice" else None
                 tray._quit_requested = state == "quitting"
                 tray._activate_ready_preparation()
-                if state == "unchanged":
+                if state in {"unchanged", "navigation"}:
                     panel.accept.assert_called_once()
                 else:
                     panel.accept.assert_not_called()
@@ -1751,14 +1761,22 @@ class TrayApplicationTest(unittest.TestCase):
         tray.narrator_dialog = None
         tray.shutdown()
 
-    def test_stopping_partial_reading_activates_the_completed_pack(self):
-        controller = Mock(is_ready=True, is_live_running=False)
+    def test_stopping_reading_keeps_deferred_pack_inactive_on_stories(self):
+        saved = AppSettings(last_main_section="reading")
+        controller = Mock(
+            settings=saved,
+            is_ready=True,
+            is_live_running=True,
+            is_one_shot_read_running=False,
+        )
         tray = TrayApplication(
             self.application,
-            AppSettings(),
+            saved,
             controller_factory=Mock(return_value=controller),
         )
         panel = Mock()
+        panel.has_pending_work.return_value = False
+        panel.runtime_playback_settings.return_value = None
         panel.pack_result.return_value = OfflinePackResult(
             identity="b" * 64,
             directory=Path("/tmp/saved-offline-pack"),
@@ -1769,12 +1787,29 @@ class TrayApplicationTest(unittest.TestCase):
             story_lines=12,
         )
         tray.pregeneration_dialog = panel
+        tray.dashboard.show_reading()
+        tray._remember_preparation_context()
+        runtime_source = tray._playback_source(tray._runtime_settings())
 
-        with patch.object(tray, "_activate_ready_preparation") as activate:
+        with patch.object(tray, "_start_pregeneration_activation") as activate:
+            tray._activate_ready_preparation()
+            panel.defer_activation.assert_called_once()
+            controller.is_live_running = False
             tray.set_live(False)
-            self.wait_until(lambda: activate.called)
+            tray.dashboard.show_stories()
+            self.application.processEvents()
+            self.application.processEvents()
 
-        activate.assert_called_once_with()
+        panel.accept.assert_not_called()
+        activate.assert_not_called()
+        self.assertIs(tray.pregeneration_dialog, panel)
+        self.assertEqual(tray.dashboard.sections.currentIndex(), 0)
+        self.assertEqual(tray.settings.last_main_section, "stories")
+        self.assertEqual(
+            tray._playback_source(tray._runtime_settings()), runtime_source
+        )
+        self.assertEqual(controller.settings, saved)
+        controller.apply_settings.assert_not_called()
         tray.pregeneration_dialog = None
         tray.shutdown()
 
@@ -9897,15 +9932,17 @@ class TrayApplicationTest(unittest.TestCase):
                     original,
                     controller_factory=Mock(return_value=controller),
                 )
-                tray._pregeneration_activation_generation = (
-                    tray._begin_controller_lifecycle()
-                )
-                tray.dashboard.show_reading()
                 candidate = original.updated(audio_source_policy="prefer-generated")
-
-                tray._pregeneration_activation_status = (
-                    "Prepared audio is active for 32 dialogue lines."
-                )
+                tray._show_preparation_reading(original)
+                self.assertEqual(tray.dashboard.sections.currentIndex(), 2)
+                self.assertEqual(tray.settings.last_main_section, "stories")
+                with patch.object(tray.pregeneration_activation_runner, "start"):
+                    tray._start_pregeneration_activation(
+                        Mock(spec=OfflinePackResult),
+                        "Prepared audio is active for 32 dialogue lines.",
+                    )
+                self.assertTrue(tray.dashboard.isVisible())
+                self.assertEqual(tray.dashboard.sections.currentIndex(), 2)
                 tray._pregeneration_activation_finished(
                     OfflinePackActivationResult(candidate, path, False), None
                 )
@@ -9950,10 +9987,13 @@ class TrayApplicationTest(unittest.TestCase):
                     original,
                     controller_factory=Mock(return_value=controller),
                 )
-                tray._pregeneration_activation_generation = (
-                    tray._begin_controller_lifecycle()
-                )
                 candidate = original.updated(audio_source_policy="prefer-generated")
+                with patch.object(tray.pregeneration_activation_runner, "start"):
+                    tray._start_pregeneration_activation(
+                        Mock(spec=OfflinePackResult), "Prepared audio is active."
+                    )
+                self.assertTrue(tray.dashboard.isVisible())
+                self.assertEqual(tray.dashboard.sections.currentIndex(), 2)
 
                 tray._pregeneration_activation_finished(
                     OfflinePackActivationResult(candidate, path, False), None
@@ -9961,6 +10001,51 @@ class TrayApplicationTest(unittest.TestCase):
 
                 self.assertIs(tray.dashboard.focusWidget(), tray.dashboard.live_button)
                 self.assertIn("click Read", tray.status_action.text())
+                controller.toggle_live.assert_not_called()
+                tray.shutdown()
+
+    def test_pack_activation_completion_preserves_newer_navigation_and_visibility(self):
+        for destination in ("stories", "voices", "hidden"):
+            with self.subTest(destination=destination):
+                original = AppSettings()
+                controller = Mock(is_ready=True, is_live_running=False)
+                tray = TrayApplication(
+                    self.application,
+                    original,
+                    controller_factory=Mock(return_value=controller),
+                )
+                with patch.object(tray.pregeneration_activation_runner, "start"):
+                    tray._start_pregeneration_activation(
+                        Mock(spec=OfflinePackResult), "Prepared audio is active."
+                    )
+                if destination == "stories":
+                    tray.dashboard.show_stories()
+                elif destination == "voices":
+                    tray.dashboard.show_voices()
+                tray.dashboard.sections.tabBar().setFocus()
+                if destination == "hidden":
+                    tray.dashboard.hide()
+                self.application.processEvents()
+                section = tray.dashboard.sections.currentIndex()
+                focused = tray.dashboard.focusWidget()
+                saved_section = tray.settings.last_main_section
+
+                candidate = original.updated(audio_source_policy="prefer-generated")
+                tray._pregeneration_activation_finished(
+                    OfflinePackActivationResult(candidate, tray._settings_path, True),
+                    None,
+                )
+
+                self.assertEqual(tray.dashboard.sections.currentIndex(), section)
+                self.assertEqual(tray.dashboard.isVisible(), destination != "hidden")
+                self.assertIs(tray.dashboard.focusWidget(), focused)
+                self.assertEqual(tray.settings.last_main_section, saved_section)
+                self.assertEqual(
+                    tray._runtime_settings().audio_source_policy, "prefer-generated"
+                )
+                self.assertIn(
+                    "Next: open Reading and click Read", tray.status_action.text()
+                )
                 controller.toggle_live.assert_not_called()
                 tray.shutdown()
 
