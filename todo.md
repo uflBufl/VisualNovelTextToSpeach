@@ -22,12 +22,12 @@ switches for it. Remove the old application path/dependency in WC-6 after native
 Mac/Windows source gates pass, and before this branch can merge.
 
 - [ ] **WC-1: qualify the standalone source, then connect its owned contract.**
-      First live gate: use `scripts.native_capture_probe` and its synthetic
-      fixture to inspect real pixels, canonical extent and frame identity on
-      macOS and Windows 10. Exercise opaque occlusion, volume HUD, fullscreen,
-      resize, minimize/restore and repeated Stop/restart before migrating callers.
-      Record old-method latency/CPU/memory baselines before migration; do not
-      retain the old backend for benchmarking.
+      Remaining first live gate: investigate the interrupted macOS fixture stream
+      below and qualify Windows 10 real pixels, extent, identity and lifecycle. Use
+      `scripts.native_capture_probe` with the fixture before migrating callers.
+      Complete baseline CPU/memory and performance comparisons on both platforms
+      before migration; do not retain the old backend for benchmarking. The short
+      same-dialogue capture/OCR sample does not replace the integrated-load gate.
       Reuse window enumeration, focus authority, `CapturedDialogFrame` and
       `DialogRegion.crop`; keep selection separate from pixel acquisition.
       Complete process-lifetime identity on macOS alongside the existing native
@@ -41,15 +41,29 @@ Mac/Windows source gates pass, and before this branch can merge.
       Gate: native pixel evidence on both platforms plus ownership and mapping
       tests for the integrated contract.
 - [ ] **WC-2: qualify and complete the macOS ScreenCaptureKit source.**
+      Make the portable Qt fixture report actual painting before using its stage
+      as freshness evidence: requested stage advanced to 1 while saved pixels
+      remained stage 0. A native fixture with explicit completed redraws produced
+      changing captured pixels under full occlusion; do not infer freshness from
+      either a requested Qt stage or frame sequence alone.
+      Investigate the live fixture stream interruption seen around resize:
+      `ScreenCaptureKit stopped: Failed during stream due to application
+      connection being interrupted`. The target remained alive with its original
+      window ID; the window manager restored the original dimensions. Preserve
+      NSError domain/code for diagnosis; do not infer that resize caused it.
+      Qualify bounded recovery for this specific connection interruption with a
+      fresh stream/epoch and the original request deadline. A second failure,
+      lost target or denied permission must remain an explicit failure.
       Validate `native/capture-worker/macos` against real frame content/scale
       attachments and canonical window extent; extend metadata handling where
       the API reports padding or a changed scale. Verify permission denial and
       revocation, stop errors, resize, Retina changes and fullscreen Spaces without
       consulting a desktop screenshot. Ship the compiled helper in WC-7; normal
-      users must not need Xcode. Gate before integration: actual native fixture
-      pixels under an occluder and system volume HUD, windowed/fullscreen Spaces,
-      minimize/restore, resize, monitor/DPI changes, static content and bounded
-      Stop/restart. Explicit native display capture needs its own screen-mode check.
+      users must not need Xcode. Remaining native gate: game minimize/restore,
+      monitor/DPI changes, permission failures and the interrupted-stream case
+      above. Explicit native display capture needs its own screen-mode check.
+      Qualify other games/fullscreen implementations separately from the tested
+      Reverse: 1999 window/fullscreen cycle.
 - [ ] **WC-3: qualify and complete the Windows Graphics Capture source.**
       Build and run `native/capture-worker/windows` on Windows 10 build 19041+;
       cross-target type checking is not a native execution gate. Verify actual
@@ -80,6 +94,10 @@ Mac/Windows source gates pass, and before this branch can merge.
       screen-region regression, plus native GPU-game qualification before claiming
       that configuration supported. No Wayland expansion or compositor takeover.
 - [ ] **WC-5: preserve regions and fullscreen behavior across the shared API.**
+      Verify that the migrated fullscreen dialogue crop excludes the animated
+      advance indicator: the ad-hoc live probe crop occasionally recognized it
+      as trailing `_ =` despite preserving the complete dialogue text. Qualify
+      the actual saved-profile crop rather than treating the probe ROI as final.
       Use the same canonical image for OCR and calibration: Windows/X11 client
       extent; macOS window extent without shadows, matching legacy calibration.
       Preserve normalized fractions only where that equivalence is demonstrated.
