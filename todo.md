@@ -60,12 +60,6 @@
       once. Correlate cancellation and actual PCM, including speaker announcements;
       confirm no replacement after audio admission and no duplicate after
       repeated OCR or Stop/Pause. Keep this gate separate from the audio timeout.
-- [ ] **UX-27-03: verify dirty state after voice auditions.** Opening Voices ->
-      Edit voices shows the saved Narrator/Centurion reference with Save disabled.
-      After only Original and Preview clicks on that selection, Save is enabled
-      without an intentional voice/reference edit. Determine what changed; an
-      audition alone should not imply an unexplained settings change. Cancel was
-      used, so this observation does not authorize changing the voice binding.
 
 ## Active - Native chapter UX and prepared-voice trial (2026-10-25)
 

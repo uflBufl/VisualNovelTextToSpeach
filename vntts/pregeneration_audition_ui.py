@@ -238,6 +238,8 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self.player: _PreviewPlayer | None = player
         self.playback_guard: Callable[[], None] | None = None
+        self.can_save_selection: Callable[[], bool] | None = None
+        self._save_actions_enabled = True
         self.before_playback: Callable[[Callable[[], None]], None] | None = None
         self._playback_request_serial = 0
         self._plan: VoicePlan | None = None
@@ -529,6 +531,7 @@ class VoiceAuditionPanel(QGroupBox):
         if self._candidate_entries:
             self._refresh_reference_advice()
         self._refresh_current_actions()
+        self.refresh_save_action()
 
     def _refresh_current_actions(self) -> None:
         enabled = bool(self._current_voice) and not (
@@ -810,6 +813,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._cancel_requested = False
         self._terminal_emitted = False
         self._shutdown_requested = False
+        self._save_actions_enabled = True
         self.retry_save_button.setVisible(False)
         self.runtime_timer.start()
         self.setVisible(True)
@@ -867,7 +871,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._stop_player()
         if not request.current_voice:
             self._accepted_choice = None
-            self.a_use.setEnabled(False)
+            self.refresh_save_action()
         self._set_playback_status(
             "Preparing preview; it will play automatically. You can browse other voices.",
             current_voice=request.current_voice,
@@ -885,8 +889,21 @@ class VoiceAuditionPanel(QGroupBox):
             **arguments,
         )
 
+    def refresh_save_action(self) -> None:
+        self.a_use.setEnabled(
+            self._save_actions_enabled
+            and self._accepted_choice is not None
+            and not self._cancel_requested
+            and not self._shutdown_requested
+            and not self._terminal_emitted
+            and not self._pending_decisions
+            and not self.decision_runner.active
+            and (self.can_save_selection is None or self.can_save_selection())
+        )
+
     def use_a(self) -> None:
-        if self._accepted_choice is not None:
+        self.refresh_save_action()
+        if self.a_use.isEnabled() and self._accepted_choice is not None:
             self._record_choice(self._accepted_choice)
 
     def cancel(self) -> None:
@@ -912,6 +929,7 @@ class VoiceAuditionPanel(QGroupBox):
     def shutdown(self) -> None:
         self._stop_player()
         self._shutdown_requested = True
+        self.refresh_save_action()
         self._cache_cancel.set()
         self.cache_runner.cancel()
         self._hover_timer.stop()
@@ -950,7 +968,7 @@ class VoiceAuditionPanel(QGroupBox):
             self.candidate_voice_label.setText(label)
             self.candidate_voice_label.show()
             self.a_use.setText("Save")
-            self.a_use.setEnabled(True)
+            self.refresh_save_action()
             self._set_status("")
             self._refresh_saved_reference()
             self._refresh_current_actions()
@@ -1070,7 +1088,11 @@ class VoiceAuditionPanel(QGroupBox):
                 self.reference_proxy.mapToSource(index).row()
             )
 
-    def _matches_saved_voice(self, candidate: VoiceCandidate) -> bool:
+    @property
+    def has_current_voice(self) -> bool:
+        return self._current_voice is not None
+
+    def matches_saved_voice(self, candidate: VoiceCandidate) -> bool:
         if self._current_voice is None:
             return False
         saved = self._current_voice[2]
@@ -1079,11 +1101,12 @@ class VoiceAuditionPanel(QGroupBox):
             and normalize_character_name(candidate.source_character)
             == normalize_character_name(saved.source_character)
             and candidate.reference_sha256s == saved.reference_sha256s
-            and candidate.reference_transcript == saved.reference_transcript
+            and (candidate.reference_transcript or "")
+            == (saved.reference_transcript or "")
         )
 
     def _refresh_saved_reference(self) -> None:
-        same_voice = bool(self._candidate_entries) and self._matches_saved_voice(
+        same_voice = bool(self._candidate_entries) and self.matches_saved_voice(
             self._current_entry()[0]
         )
         same_preview = (
@@ -1181,7 +1204,7 @@ class VoiceAuditionPanel(QGroupBox):
             return
         candidate = self._current_entry()[0]
         transcript = self.reference_transcript.text().strip()
-        if candidate.reference_transcript == transcript:
+        if (candidate.reference_transcript or "") == transcript:
             return
         self._cancel_preview_request()
         self._cancel_advice()
@@ -1266,7 +1289,6 @@ class VoiceAuditionPanel(QGroupBox):
             and self._auditioned.get(self._preview_key(candidate))
             == preview.audio_sha256
         )
-        self.a_use.setEnabled(preview is not None and heard)
         self.a_box.setVisible(True)
         self.reference_table.setEnabled(bool(self._candidate_entries))
         self.game_phrase_button.setEnabled(bool(self._game_phrases))
@@ -1274,6 +1296,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._refresh_reference_advice()
         if preview is not None and heard:
             self._accepted_choice = self._current_entry()[1]
+        self.refresh_save_action()
         preview_error = self._preview_errors.get(self._preview_key(candidate))
         self._set_status(
             f"Preview failed. {preview_error}\n"
@@ -1375,7 +1398,8 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self.a_play.setEnabled(True)
         self.a_original.setEnabled(bool(candidate.reference_sha256s))
-        self.a_use.setEnabled(False)
+        self._accepted_choice = None
+        self.refresh_save_action()
         self.reference_table.setEnabled(bool(self._candidate_entries))
         self.game_phrase_button.setEnabled(bool(self._game_phrases))
         self._preview_errors[self._preview_key(candidate)] = str(error)
@@ -1437,7 +1461,7 @@ class VoiceAuditionPanel(QGroupBox):
     ) -> None:
         if not current_voice:
             self._accepted_choice = None
-            self.a_use.setEnabled(False)
+            self.refresh_save_action()
         try:
             guard = (
                 self._current_playback_guard if current_voice else self.playback_guard
@@ -1475,7 +1499,7 @@ class VoiceAuditionPanel(QGroupBox):
             self._auditioned[self._preview_key(self._current_entry()[0])] = (
                 preview.audio_sha256
             )
-            self.a_use.setEnabled(True)
+            self.refresh_save_action()
         self._set_playback_status(
             "Starting the generated preview...", current_voice=current_voice
         )
@@ -1637,7 +1661,7 @@ class VoiceAuditionPanel(QGroupBox):
                 )
                 availability = self._availability(candidate)
                 label = self._reference_label(index, mixed_sources=mixed_sources)
-                is_current = self._matches_saved_voice(candidate)
+                is_current = self.matches_saved_voice(candidate)
                 label = " - ".join(
                     part
                     for part in (
@@ -1908,7 +1932,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._stop_player()
         if not current_voice:
             self._accepted_choice = None
-            self.a_use.setEnabled(False)
+            self.refresh_save_action()
         self._set_playback_status(
             "Preparing original reference...", current_voice=current_voice
         )
@@ -1982,7 +2006,7 @@ class VoiceAuditionPanel(QGroupBox):
             return
         if not current_voice:
             self._accepted_choice = self._current_entry()[1]
-            self.a_use.setEnabled(True)
+            self.refresh_save_action()
 
     def _record_choice(self, source_id: str) -> None:
         if self._pending_decisions or self.decision_runner.active:
@@ -2046,7 +2070,8 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_play.setEnabled(
             enabled and self.a_box.isVisible() and bool(self._sample_text)
         )
-        self.a_use.setEnabled(enabled and self._accepted_choice is not None)
+        self._save_actions_enabled = enabled
+        self.refresh_save_action()
         self.a_original.setEnabled(
             enabled
             and self.a_box.isVisible()
@@ -2124,7 +2149,7 @@ class VoiceAuditionPanel(QGroupBox):
         current_voice = self._playing_source in {"current-preview", "current-original"}
         if not current_voice:
             self._accepted_choice = None
-            self.a_use.setEnabled(False)
+            self.refresh_save_action()
         self._set_playing_source(None)
         self._set_playback_status(
             f"Unable to play voice sample: {message}", current_voice=current_voice

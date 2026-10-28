@@ -284,6 +284,67 @@ class GameNarratorTest(unittest.TestCase):
         self.assertTrue(dialog.voice_panel.current_reason.text())
         self.listen(dialog, original=True)
 
+    def test_saved_voice_auditions_and_returning_to_it_leave_save_disabled(self):
+        self.bind_narrator()
+        before = self.library.bindings()
+        dialog = self.editor()
+        self.select(dialog, "catalog", source="character:rhiannon")
+        panel = dialog.voice_panel
+        changed = Mock()
+        dialog.settingsChanged.connect(changed)
+        for action in (panel.a_original, panel.a_play, panel.a_play):
+            action.click()
+            self.drain()
+            self.assertFalse(panel.a_use.isEnabled())
+            self.assertFalse(dialog._settings_dirty)
+            panel.use_a()
+            self.drain()
+            self.assertEqual(self.library.bindings(), before)
+        changed.assert_not_called()
+        self.select(dialog, "catalog", source="character:centurion")
+        self.assertTrue(dialog._settings_dirty)
+        self.listen(dialog)
+        self.select(dialog, "catalog", source="character:rhiannon")
+        self.assertFalse(dialog._settings_dirty)
+        self.assertFalse(panel.a_use.isEnabled())
+        self.assertEqual(self.library.bindings(), before)
+
+    def test_saved_voice_transcript_edit_and_restore_update_save(self):
+        self.bind_narrator()
+        dialog = self.editor(settings=self.settings.updated(speech_backend="qwen-tts"))
+        self.select(dialog, "catalog", source="character:rhiannon")
+        panel = dialog.voice_panel
+        self.assertFalse(dialog._settings_dirty)
+        panel.reference_transcript.setText("The actual reference words.")
+        panel.reference_transcript.editingFinished.emit()
+        self.assertTrue(dialog._settings_dirty)
+        self.assertFalse(panel.a_use.isEnabled())
+        self.listen(dialog, original=True)
+        panel.reference_transcript.clear()
+        panel.reference_transcript.editingFinished.emit()
+        panel.a_original.click()
+        self.drain()
+        self.assertFalse(dialog._settings_dirty)
+        self.assertFalse(panel.a_use.isEnabled())
+
+    def test_audition_waits_for_saved_voice_comparison_to_finish(self):
+        self.bind_narrator()
+        dialog = self.editor()
+        for source, changed in (("rhiannon", False), ("centurion", True)):
+            with self.subTest(source=source):
+                self.select(dialog, "catalog", source=f"character:{source}")
+                dialog._load_current_voice()
+                current_task = self.pool.tasks.pop(0)
+                try:
+                    dialog.voice_panel.a_original.click()
+                    self.drain()
+                    self.assertFalse(dialog.voice_panel.a_use.isEnabled())
+                finally:
+                    current_task.run()
+                    self.drain()
+                self.assertEqual(dialog.voice_panel.a_use.isEnabled(), changed)
+                self.assertEqual(dialog._settings_dirty, changed)
+
     def test_reference_browser_and_comparison_share_existing_preview_controls(self):
         dialog = self.editor()
         self.select(dialog, "catalog", source="character:centurion")
@@ -605,8 +666,36 @@ class GameNarratorTest(unittest.TestCase):
                 )
                 self.assertFalse(dialog._settings_dirty)
                 self.assertTrue(dialog.status.isHidden(), dialog.status.text())
+                for action in (
+                    dialog.voice_panel.a_original,
+                    dialog.voice_panel.a_play,
+                ):
+                    action.click()
+                    self.drain()
+                    self.assertFalse(dialog.voice_panel.a_use.isEnabled())
+                    self.assertFalse(dialog._settings_dirty)
         self.importer.narrator_characters.assert_not_called()
         self.importer.prepare_voice_roles.assert_not_called()
+        self.assertEqual(self.library.bindings(), before)
+
+    def test_saved_reference_without_source_metadata_is_not_an_edit(self):
+        self.library.discover(
+            "Aderyn",
+            self.manifest.parent / "references" / "rhiannon.wav",
+            bind_if_missing=True,
+        )
+        self.assertIsNone(self.library.binding("Aderyn").source_id)
+        self.assertIsNone(self.library.binding("Aderyn").provenance["evidence"])
+        before = self.library.bindings()
+        dialog = self.editor()
+        dialog.select_role("Aderyn")
+        self.drain()
+        self.assertEqual(dialog.source.currentData(), "saved")
+        for action in (dialog.voice_panel.a_original, dialog.voice_panel.a_play):
+            action.click()
+            self.drain()
+            self.assertFalse(dialog._settings_dirty)
+            self.assertFalse(dialog.voice_panel.a_use.isEnabled())
         self.assertEqual(self.library.bindings(), before)
 
     def test_generated_catalog_donors_are_not_assignment_targets(self):
@@ -728,6 +817,57 @@ class GameNarratorTest(unittest.TestCase):
                     self.root / f"previews-{mode}"
                 )
                 self.addCleanup(self.service.close)
+
+    def test_same_audio_with_a_different_assignment_policy_is_a_change(self):
+        self.bind_narrator()
+        for route in ("automatic", "narrator", "voice"):
+            with self.subTest(route=route):
+                if route == "voice":
+                    bind_voice_library_selection(
+                        self.settings,
+                        self.manifest,
+                        "character:rhiannon",
+                        "Rhiannon",
+                        root=self.library.root,
+                        target_character="Aderyn",
+                    )
+                elif route == "narrator":
+                    self.library.select("Aderyn", route="narrator")
+                dialog = self.editor()
+                dialog.select_role("Aderyn")
+                self.drain()
+                self.select(dialog, "automatic", role="Aderyn")
+                self.assertEqual(
+                    dialog.voice_panel.a_use.isEnabled(), route != "automatic"
+                )
+                self.select(dialog, "narrator", role="Aderyn")
+                dialog.voice_panel.a_original.click()
+                self.drain()
+                self.assertEqual(dialog._settings_dirty, route != "narrator")
+                self.assertEqual(
+                    dialog.voice_panel.a_use.isEnabled(), route != "narrator"
+                )
+                self.select(
+                    dialog, "catalog", role="Aderyn", source="character:rhiannon"
+                )
+                dialog.voice_panel.a_original.click()
+                self.drain()
+                self.assertEqual(dialog._settings_dirty, route != "voice")
+                self.assertEqual(dialog.voice_panel.a_use.isEnabled(), route != "voice")
+
+    def test_saved_preset_preview_is_unchanged_but_another_preset_can_be_saved(self):
+        self.library.select("Aderyn", route="voice", source_id="preset:alba")
+        dialog = self.editor(
+            settings=self.settings.updated(speech_backend="pocket-tts")
+        )
+        self.select(dialog, "preset", role="Aderyn", source="preset:alba")
+        dialog.voice_panel.a_play.click()
+        self.drain()
+        self.assertFalse(dialog._settings_dirty)
+        self.assertFalse(dialog.voice_panel.a_use.isEnabled())
+        self.select(dialog, "preset", role="Aderyn", source="preset:marius")
+        self.assertTrue(dialog._settings_dirty)
+        self.listen(dialog)
 
     def test_browsing_and_cancel_leave_saved_binding_unchanged(self):
         self.library.select("Aderyn", route="voice", source_id="preset:marius")
@@ -1045,7 +1185,7 @@ class GameNarratorTest(unittest.TestCase):
         self.assertIn("Pocket TTS preset-only", dialog.tts_model_label.text())
         self.assertNotIn("story-model", dialog.tts_model_label.toolTip())
         self.select(dialog, "automatic", role=group.character)
-        self.assertTrue(dialog.voice_panel.a_use.isEnabled())
+        self.assertFalse(dialog.voice_panel.a_use.isEnabled())
         self.assertIn("Pocket TTS with voice cloning", dialog.tts_model_label.text())
         self.assertEqual(self.backend.requests, [])
 

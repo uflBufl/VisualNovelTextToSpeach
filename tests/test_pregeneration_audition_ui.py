@@ -378,6 +378,124 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertTrue(panel.current_voice_box.isHidden())
             self.assertEqual(panel.title(), "Selected reference")
 
+    def test_empty_reference_transcript_does_not_change_the_selected_voice(self):
+        with TemporaryDirectory() as directory:
+            plan, group, _manifest = ambiguous_fixture(Path(directory))
+            candidate = replace(group.candidates[0], reference_transcript=None)
+            group = replace(
+                group, candidates=(candidate,), candidate_inventory=(candidate,)
+            )
+            plan = replace(plan, groups=(group,))
+            saved = replace(candidate, source_id="saved-alias", reference_transcript="")
+            saved_group = replace(
+                group,
+                source_id=saved.source_id,
+                candidates=(saved,),
+                candidate_inventory=(saved,),
+            )
+            panel = VoiceAuditionPanel(
+                Mock(), preview_service=Mock(), thread_pool=ManualThreadPool()
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            panel.set_current_voice(replace(plan, groups=(saved_group,)), "Saved voice")
+            panel.start(plan, group_id=group.group_id)
+            changed = Mock()
+            panel.selectionChanged.connect(changed)
+
+            panel._reference_transcript_edited()
+
+            self.assertIs(panel.current_selection[0], plan)
+            self.assertTrue(panel.matches_saved_voice(candidate))
+            changed.assert_not_called()
+            panel.reference_transcript.setText("Different exact words")
+            panel._reference_transcript_edited()
+            self.assertFalse(panel.matches_saved_voice(panel._current_entry()[0]))
+
+    def test_save_gate_applies_to_audition_policy_and_restored_actions(self):
+        for mode in ("original", "generated", "cached", "policy"):
+            with self.subTest(mode=mode), TemporaryDirectory() as directory:
+                root = Path(directory)
+                plan, group, _manifest = ambiguous_fixture(root)
+                preview = generated_preview(root)
+                verifier = VoiceAuditionPreviewService()
+                self.addCleanup(verifier.close)
+                service, decisions = Mock(), Mock()
+                service.supports_prefetch = mode == "cached"
+                service.peek.return_value = preview
+                service.generate.return_value = preview
+                service.reference_audio.side_effect = verifier.reference_audio
+                pool = ManualThreadPool()
+                panel = VoiceAuditionPanel(
+                    decisions, preview_service=service, player=Mock(), thread_pool=pool
+                )
+                self.addCleanup(panel.deleteLater)
+                self.addCleanup(panel.shutdown)
+                allowed = Mock(return_value=False)
+                panel.can_save_selection = allowed
+                if mode == "policy":
+                    panel.start_policy(
+                        plan, group_id=group.group_id, choice_id="automatic", label="Auto"
+                    )
+                else:
+                    panel.start(plan, group_id=group.group_id)
+                    (panel.a_original if mode == "original" else panel.a_play).click()
+                    if mode != "cached":
+                        self.finish_task(pool.tasks.pop())
+
+                self.assertIsNotNone(panel._accepted_choice)
+                self.assertFalse(panel.a_use.isEnabled())
+                if mode in {"generated", "cached"}:
+                    panel._show_current_candidate()
+                    self.assertIsNotNone(panel._accepted_choice)
+                    self.assertFalse(panel.a_use.isEnabled())
+                panel._set_decision_actions(False)
+                panel._set_decision_actions(True)
+                self.assertFalse(panel.a_use.isEnabled())
+                allowed.return_value = True
+                panel.refresh_save_action()
+                self.assertTrue(panel.a_use.isEnabled())
+                panel._set_decision_actions(False)
+                panel.refresh_save_action()
+                self.assertFalse(panel.a_use.isEnabled())
+                panel._set_decision_actions(True)
+                self.assertTrue(panel.a_use.isEnabled())
+
+                allowed.return_value = False
+                pending_tasks = tuple(pool.tasks)
+                panel.use_a()
+                self.assertFalse(panel.a_use.isEnabled())
+                decisions.remember_many.assert_not_called()
+                self.assertEqual(tuple(pool.tasks), pending_tasks)
+
+                allowed.return_value = True
+                panel._playback_failed("Playback failed")
+                panel.refresh_save_action()
+                self.assertFalse(panel.a_use.isEnabled())
+
+    def test_save_gate_cannot_restore_actions_after_cancel_or_shutdown(self):
+        for stop in ("cancel", "shutdown"):
+            with self.subTest(stop=stop), TemporaryDirectory() as directory:
+                plan, group, _manifest = ambiguous_fixture(Path(directory))
+                decisions = Mock()
+                panel = VoiceAuditionPanel(
+                    decisions, preview_service=Mock(), thread_pool=ManualThreadPool()
+                )
+                self.addCleanup(panel.deleteLater)
+                self.addCleanup(panel.shutdown)
+                panel.can_save_selection = lambda: True
+                panel.start_policy(
+                    plan, group_id=group.group_id, choice_id="automatic", label="Auto"
+                )
+                self.assertTrue(panel.a_use.isEnabled())
+
+                getattr(panel, stop)()
+                panel._set_decision_actions(True)
+                panel.use_a()
+
+                self.assertFalse(panel.a_use.isEnabled())
+                decisions.remember_many.assert_not_called()
+
     def test_icons_identify_the_active_playback_control(self):
         panel = VoiceAuditionPanel(Mock(), preview_service=Mock(), player=Mock())
         self.addCleanup(panel.deleteLater)

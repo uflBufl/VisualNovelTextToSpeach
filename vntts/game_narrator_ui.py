@@ -165,6 +165,7 @@ class GameNarratorDialog(QDialog):
         self.voice_panel.activeChanged.connect(self._activity_changed)
         self.voice_panel.selectionChanged.connect(self._selection_changed)
         self.voice_panel.beforeSave.connect(self._capture_save)
+        self.voice_panel.can_save_selection = self._selection_changed_from_saved
         panel_layout = self.voice_panel.layout()
         assert panel_layout is not None
         panel_layout.removeWidget(self.voice_panel.current_voice_box)
@@ -552,11 +553,7 @@ class GameNarratorDialog(QDialog):
                 if isinstance(saved_evidence, dict)
                 else None
             )
-            or (
-                "default"
-                if saved_binding.route in {"narrator", "live-fallback"}
-                else None
-            )
+            or voice_binding_source_id(saved_binding)
             if saved_binding is not None
             else None
         )
@@ -856,6 +853,7 @@ class GameNarratorDialog(QDialog):
                     self._check_current_voice_authority, authorities
                 ),
             )
+        self._settings_choice_changed()
         self._update()
 
     def _source_label(self, source_id: str | None) -> str:
@@ -950,21 +948,47 @@ class GameNarratorDialog(QDialog):
                 "Saved reference changed. Select its source again before playback."
             )
 
-    def _settings_choice_changed(self) -> None:
+    def _selection_changed_from_saved(self) -> bool:
+        selection = self.voice_panel.current_selection
+        if self.voice_panel.isHidden() or selection is None:
+            return False
+        _plan, group, source = selection
         binding, saved = self._saved_role_voice(
             self.selected_role, is_narrator(self.selected_role)
         )
-        source = self._selected_source()
-        if self.source.currentData() == "saved" and (
-            source is None or source == voice_binding_source_id(binding)
-        ):
-            source = saved
         if source == "automatic":
-            source = None
-        changed = source != saved
+            return binding is not None
+        if source == "default":
+            return saved != "default"
+        if saved in {None, "default"}:
+            return True
+        if source.startswith("preset:") or saved.startswith("preset:"):
+            return source != saved
+        candidate = next(
+            (
+                value
+                for value in (*group.candidates, *group.candidate_inventory)
+                if value.source_id == source
+            ),
+            None,
+        )
+        if candidate is None:
+            return False
+        if self.current_voice_runner.active or self._pending_current_voice is not None:
+            return False
+        if self.voice_panel.has_current_voice:
+            return not self.voice_panel.matches_saved_voice(candidate)
+        # Missing saved audio is not itself an edit; different references can replace it.
+        if binding is not None and binding.source_sha256s:
+            return candidate.reference_sha256s != binding.source_sha256s
+        return source != saved
+
+    def _settings_choice_changed(self) -> None:
+        changed = self._selection_changed_from_saved()
         if changed != self._settings_dirty:
             self._settings_dirty = changed
             self.settingsChanged.emit(changed)
+        self.voice_panel.refresh_save_action()
 
     def _source_changed(self, *_args: object) -> None:
         if self._initializing or self._closing or self._closed:
