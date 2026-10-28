@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import shiboken6  # noqa: E402
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
 from tests.native_clip_fixtures import FakeClipController  # noqa: E402
 from tests.pregeneration_fixtures import (  # noqa: E402
@@ -103,6 +103,23 @@ class StoryVoicePreviewTest(unittest.TestCase):
                 return
         self.fail("Voice role is missing from the summary")
 
+    def row_widget(self, group, widget_type, name):
+        for index in range(self.dialog.voice_routes.count()):
+            item = self.dialog.voice_routes.item(index)
+            if item.data(int(Qt.ItemDataRole.UserRole) + 1) == group.group_id:
+                card = self.dialog.voice_routes.itemWidget(item)
+                widget = card.findChild(widget_type, name)
+                self.assertIsNotNone(widget)
+                self.assertEqual(widget.property("voice_group_id"), group.group_id)
+                return widget
+        self.fail("Voice role is missing from the summary")
+
+    def row_button(self, group):
+        return self.row_widget(group, QPushButton, "voice_preview_button")
+
+    def row_status(self, group):
+        return self.row_widget(group, QLabel, "voice_preview_status")
+
     def run_tasks(self):
         while self.pool.tasks:
             self.pool.run_next()
@@ -116,39 +133,40 @@ class StoryVoicePreviewTest(unittest.TestCase):
         with patch(
             "vntts.rust_audio.check_audio_runtime", side_effect=RuntimeError(message)
         ):
-            self.dialog.play_selected_voice.click()
+            self.row_button(self.group).click()
         self.assertFalse(preview.active)
         self.assertEqual(self.pool.tasks, [])
         self.service.generate.assert_not_called()
-        self.assertIn(message, self.dialog.voice_confirmation_status.text())
-        self.assertEqual(self.dialog.play_selected_voice.text(), "Selected voice")
+        self.assertIn(message, self.row_status(self.group).text())
+        self.assertEqual(self.row_button(self.group).text(), "Play")
         self.assertEqual(
-            self.dialog.play_selected_voice.accessibleName(), "Play selected voice"
+            self.row_button(self.group).accessibleName(),
+            f"Play voice for {self.group.character}",
         )
         self.assertEqual(
-            self.dialog.play_selected_voice.toolTip(),
-            "Play the selected voice preview.",
+            self.row_button(self.group).toolTip(),
+            "Play this role's assigned voice preview.",
         )
 
         controller = FakeClipController()
         pcm = PersistentPcmPlayer(controller)
         preview.player._player_factory = lambda: pcm
-        self.dialog.play_selected_voice.click()
+        self.row_button(self.group).click()
         self.run_tasks()
         self.assertTrue(preview.active)
-        self.assertEqual(self.dialog.play_selected_voice.text(), "Selected voice")
+        self.assertEqual(self.row_button(self.group).text(), "Stop")
         self.assertEqual(
-            self.dialog.play_selected_voice.accessibleName(),
-            "Stop selected voice preview",
+            self.row_button(self.group).accessibleName(),
+            f"Stop voice for {self.group.character}",
         )
         self.assertEqual(
-            self.dialog.play_selected_voice.toolTip(),
-            "Stop the selected voice preview.",
+            self.row_button(self.group).toolTip(),
+            "Stop this role's assigned voice preview.",
         )
-        self.assertIn("Starting", self.dialog.voice_confirmation_status.text())
+        self.assertIn("Starting", self.row_status(self.group).text())
         controller.pump(1)
         preview.player._poll()
-        self.assertIn("Playing", self.dialog.voice_confirmation_status.text())
+        self.assertIn("Playing", self.row_status(self.group).text())
 
     def test_worker_crash_during_start_clears_summary_busy_state(self):
         preview = self.dialog.summary_voice_preview
@@ -160,24 +178,31 @@ class StoryVoicePreviewTest(unittest.TestCase):
         )
         preview._connect_player()
         self.select(self.group)
-        self.dialog.play_selected_voice.click()
+        self.row_button(self.group).click()
         self.run_tasks()
         self.assertFalse(preview.active)
-        self.assertIn("protocol mismatch", self.dialog.voice_confirmation_status.text())
-        self.assertNotIn("Preparing", self.dialog.voice_confirmation_status.text())
-        self.assertEqual(self.dialog.play_selected_voice.text(), "Selected voice")
+        self.assertIn("protocol mismatch", self.row_status(self.group).text())
+        self.assertNotIn("Preparing", self.row_status(self.group).text())
+        self.assertEqual(self.row_button(self.group).text(), "Play")
         self.assertEqual(
-            self.dialog.play_selected_voice.accessibleName(), "Play selected voice"
+            self.row_button(self.group).accessibleName(),
+            f"Play voice for {self.group.character}",
         )
 
-    def test_selected_voice_plays_without_leaving_summary_or_saving_choice(self):
-        self.select(self.group)
+    def test_row_button_selects_and_plays_its_voice_without_saving_choice(self):
+        self.select(self.other)
         bindings = self.dialog.voice_library.bindings()
 
-        self.dialog.play_selected_voice.click()
+        self.row_button(self.group).click()
         self.run_tasks()
 
         self.assertFalse(self.dialog.voice_confirmation.isHidden())
+        self.assertEqual(
+            self.dialog.voice_routes.currentItem().data(
+                int(Qt.ItemDataRole.UserRole) + 1
+            ),
+            self.group.group_id,
+        )
         self.assertFalse(hasattr(self.dialog, "voice_panel"))
         self.service.generate.assert_called_once()
         self.assertEqual(
@@ -250,7 +275,7 @@ class StoryVoicePreviewTest(unittest.TestCase):
         self.run_tasks()
         self.select(self.group)
 
-        self.dialog.play_selected_voice.click()
+        self.row_button(self.group).click()
 
         self.assertEqual(self.pool.tasks, [])
         foreground.generate.assert_not_called()
@@ -309,9 +334,9 @@ class StoryVoicePreviewTest(unittest.TestCase):
         session.generate.assert_not_called()
 
     def test_unreviewed_role_previews_actual_narrator_fallback(self):
-        self.select(self.other)
+        self.select(self.group)
 
-        self.dialog.play_selected_voice.click()
+        self.row_button(self.other).click()
         self.run_tasks()
 
         self.assertEqual(self.service.generate.call_args.args[2], "preset:marius")
@@ -328,7 +353,7 @@ class StoryVoicePreviewTest(unittest.TestCase):
 
         self.assertEqual(self.service.generate.call_args.args[2], "preset:marius")
         self.dialog.game_narrator_chooser.assert_not_called()
-        self.assertEqual(self.dialog.play_summary_narrator.text(), "Narrator")
+        self.assertEqual(self.dialog.play_summary_narrator.text(), "Stop")
         self.assertEqual(
             self.dialog.play_summary_narrator.accessibleName(), "Stop narrator preview"
         )
@@ -338,7 +363,7 @@ class StoryVoicePreviewTest(unittest.TestCase):
         )
         self.dialog.play_summary_narrator.click()
         self.assertFalse(self.dialog.summary_voice_preview.active)
-        self.assertEqual(self.dialog.play_summary_narrator.text(), "Narrator")
+        self.assertEqual(self.dialog.play_summary_narrator.text(), "Play")
         self.assertEqual(
             self.dialog.play_summary_narrator.accessibleName(), "Play narrator preview"
         )
@@ -348,18 +373,146 @@ class StoryVoicePreviewTest(unittest.TestCase):
 
     def test_switching_roles_discards_old_result_and_cancels_old_request(self):
         self.select(self.group)
-        self.dialog.play_selected_voice.click()
+        self.row_button(self.group).click()
         cancelled = self.dialog.summary_voice_preview.cancellation
 
         self.select(self.other)
         self.assertTrue(cancelled.is_set())
         self.run_tasks()
         self.player.play_bytes.assert_not_called()
+        self.assertEqual(self.row_status(self.group).text(), "")
+        self.assertEqual(self.row_status(self.other).text(), "")
 
-        self.dialog.play_selected_voice.click()
+        self.row_button(self.other).click()
         self.run_tasks()
         self.player.play_bytes.assert_called_once()
         self.assertEqual(self.service.generate.call_args.args[2], "preset:marius")
+
+    def test_row_stop_cancels_queued_result_without_playback(self):
+        self.row_button(self.group).click()
+        cancellation = self.dialog.summary_voice_preview.cancellation
+        self.assertEqual(self.row_button(self.group).text(), "Stop")
+        self.assertIn("Preparing", self.row_status(self.group).text())
+
+        self.row_button(self.group).click()
+        self.run_tasks()
+
+        self.assertTrue(cancellation.is_set())
+        self.assertFalse(self.dialog.summary_voice_preview.active)
+        self.assertEqual(self.row_button(self.group).text(), "Play")
+        self.assertEqual(self.row_status(self.group).text(), "")
+        self.assertEqual(self.row_status(self.other).text(), "")
+        self.player.play_bytes.assert_not_called()
+
+    def test_clicking_another_row_does_not_attribute_old_result_to_new_row(self):
+        self.row_button(self.group).click()
+        cancellation = self.dialog.summary_voice_preview.cancellation
+
+        self.row_button(self.other).click()
+
+        self.assertTrue(cancellation.is_set())
+        self.assertEqual(self.row_button(self.group).text(), "Play")
+        self.assertEqual(self.row_button(self.other).text(), "Stop")
+        self.assertEqual(self.row_status(self.group).text(), "")
+        pending_status = self.row_status(self.other).text()
+        self.assertIn("Preparing", pending_status)
+        self.pool.run_next()
+        self.application.processEvents()
+        self.player.play_bytes.assert_not_called()
+        self.assertEqual(self.row_status(self.group).text(), "")
+        self.assertEqual(self.row_status(self.other).text(), pending_status)
+
+        self.run_tasks()
+
+        self.player.play_bytes.assert_called_once()
+        self.assertEqual(self.service.generate.call_args.args[1], self.other)
+        self.assertIn("Starting", self.row_status(self.other).text())
+        self.assertEqual(self.dialog.voice_confirmation_status.text(), "")
+
+    def test_filtering_out_preparing_row_suppresses_stale_audio_and_status(self):
+        self.group = replace(self.group, source_character=self.group.character)
+        self.plan = replace(self.plan, groups=(self.group, self.other))
+        self.dialog._voice_plan = self.plan
+        self.dialog._show_voice_confirmation(self.plan)
+        self.row_button(self.group).click()
+        cancellation = self.dialog.summary_voice_preview.cancellation
+
+        self.dialog.show_all_voice_routes.setChecked(True)
+        self.run_tasks()
+
+        self.assertTrue(cancellation.is_set())
+        self.assertEqual(self.dialog.voice_routes.count(), 1)
+        self.assertEqual(self.row_button(self.other).text(), "Play")
+        self.assertEqual(self.row_status(self.other).text(), "")
+        self.assertNotIn("Preparing", self.dialog.voice_confirmation_status.text())
+        self.player.play_bytes.assert_not_called()
+
+    def test_replacing_plan_cancels_old_result_and_uses_updated_assignment(self):
+        self.row_button(self.group).click()
+        cancellation = self.dialog.summary_voice_preview.cancellation
+        updated_group = replace(self.group, source_id="preset:alba")
+        updated_plan = replace(self.plan, groups=(updated_group, self.other))
+        self.dialog._voice_plan = updated_plan
+
+        self.dialog._show_voice_confirmation(updated_plan)
+        self.run_tasks()
+
+        self.assertTrue(cancellation.is_set())
+        self.assertEqual(self.row_button(updated_group).text(), "Play")
+        self.assertEqual(self.row_status(updated_group).text(), "")
+        self.player.play_bytes.assert_not_called()
+
+        self.row_button(updated_group).click()
+        self.run_tasks()
+
+        self.player.play_bytes.assert_called_once()
+        self.assertEqual(
+            self.service.generate.call_args.args,
+            (updated_plan, updated_group, "preset:alba"),
+        )
+
+    def test_narrator_and_row_share_one_active_preview(self):
+        self.row_button(self.group).click()
+        self.run_tasks()
+        self.assertEqual(self.row_button(self.group).text(), "Stop")
+        self.player.stop.reset_mock()
+
+        self.dialog.play_summary_narrator.click()
+        self.run_tasks()
+
+        self.player.stop.assert_called()
+        self.assertEqual(self.row_button(self.group).text(), "Play")
+        self.assertEqual(self.row_status(self.group).text(), "")
+        self.assertEqual(self.dialog.play_summary_narrator.text(), "Stop")
+        self.assertIn("Starting", self.dialog.voice_confirmation_status.text())
+
+        self.row_button(self.other).click()
+        self.run_tasks()
+
+        self.assertEqual(self.dialog.play_summary_narrator.text(), "Play")
+        self.assertEqual(self.row_button(self.other).text(), "Stop")
+        self.assertIn("Starting", self.row_status(self.other).text())
+        self.assertEqual(self.dialog.voice_confirmation_status.text(), "")
+
+    def test_dirty_plan_blocks_row_and_narrator_preview(self):
+        self.dialog.settings = self.dialog.settings.updated(
+            pocket_gated_model_accepted=not self.plan.pocket_voice_cloning
+        )
+        self.dialog._narrator_choice_changed()
+
+        self.assertTrue(self.dialog._voice_plan_needs_update())
+        for group in (self.group, self.other):
+            self.assertFalse(self.row_button(group).isEnabled())
+            self.row_button(group).click()
+            self.dialog._play_summary_voice(group.group_id)
+        self.assertFalse(self.dialog.play_summary_narrator.isEnabled())
+        self.dialog.play_summary_narrator.click()
+        self.dialog._play_summary_voice("narrator")
+        self.run_tasks()
+
+        self.assertFalse(self.dialog.summary_voice_preview.active)
+        self.service.generate.assert_not_called()
+        self.player.play_bytes.assert_not_called()
 
     def test_ready_sample_plays_without_waiting_for_cancelled_worker(self):
         self.service.supports_prefetch = True
@@ -368,13 +521,13 @@ class StoryVoicePreviewTest(unittest.TestCase):
         self.service.peek.return_value = None
         self.service.new_session.return_value = session
         self.select(self.group)
-        self.dialog.play_selected_voice.click()
+        self.row_button(self.group).click()
         old_request = self.dialog.summary_voice_preview.cancellation
         self.assertEqual(len(self.pool.tasks), 1)
 
         self.select(self.other)
         session.peek.return_value = self.preview
-        self.dialog.play_selected_voice.click()
+        self.row_button(self.other).click()
 
         self.assertTrue(old_request.is_set())
         self.assertEqual(len(self.pool.tasks), 1)
@@ -384,7 +537,7 @@ class StoryVoicePreviewTest(unittest.TestCase):
 
     def test_leaving_summary_cancels_and_suppresses_autoplay(self):
         self.select(self.group)
-        self.dialog.play_selected_voice.click()
+        self.row_button(self.group).click()
         cancellation = self.dialog.summary_voice_preview.cancellation
 
         self.application.sendEvent(
@@ -398,16 +551,14 @@ class StoryVoicePreviewTest(unittest.TestCase):
 
     def test_changed_preview_is_rejected_before_playback(self):
         self.select(self.group)
-        self.dialog.play_selected_voice.click()
+        self.row_button(self.group).click()
         self.preview.path.write_bytes(b"changed")
 
         with self.assertLogs("vntts.story_voice_preview_ui", level="ERROR") as logged:
             self.run_tasks()
 
         self.player.play_bytes.assert_not_called()
-        self.assertIn(
-            "changed after validation", self.dialog.voice_confirmation_status.text()
-        )
+        self.assertIn("changed after validation", self.row_status(self.group).text())
         self.assertIn(
             "Unable to validate or start selected voice preview", logged.output[0]
         )
@@ -420,9 +571,9 @@ class StoryVoicePreviewTest(unittest.TestCase):
             "Choose a supported narrator", self.dialog.play_summary_narrator.toolTip()
         )
 
-        self.dialog.play_selected_voice.click()
+        self.row_button(self.other).click()
 
-        self.assertIn("Choose a narrator", self.dialog.voice_confirmation_status.text())
+        self.assertIn("Choose a narrator", self.row_status(self.other).text())
         self.service.generate.assert_not_called()
         self.assertEqual(self.pool.tasks, [])
 
@@ -434,9 +585,9 @@ class StoryVoicePreviewTest(unittest.TestCase):
         self.dialog.show()
         self.application.processEvents()
 
-        viewport = self.dialog.content_scroll.viewport()
+        viewport = self.dialog.voice_confirmation
         for button in (
-            self.dialog.play_selected_voice,
+            self.row_button(self.group),
             self.dialog.inspect_character_voice,
             self.dialog.back_to_story_selection,
             self.dialog.play_summary_narrator,
@@ -447,13 +598,18 @@ class StoryVoicePreviewTest(unittest.TestCase):
                 self.assertGreaterEqual(left, 0)
                 self.assertLessEqual(left + button.width(), viewport.width())
 
-    def test_confirmation_shows_its_scroll_container_from_story_selection(self):
+    def test_confirmation_has_its_own_optional_scroll_from_story_selection(self):
         self.dialog.content_scroll.hide()
 
         self.dialog._show_voice_confirmation(self.plan)
 
-        self.assertFalse(self.dialog.content_scroll.isHidden())
+        self.assertTrue(self.dialog.content_scroll.isHidden())
+        self.assertTrue(self.dialog.confirmation_options_scroll.isHidden())
         self.assertFalse(self.dialog.voice_confirmation.isHidden())
+
+        self.dialog.preparation_details_toggle.setChecked(True)
+
+        self.assertFalse(self.dialog.confirmation_options_scroll.isHidden())
 
     def test_summary_keeps_model_identity_in_preparation_details(self):
         model = "/models/huggingface/openmoss/MOSS-TTS-Local-Transformer-v1.5-MLX-int8"

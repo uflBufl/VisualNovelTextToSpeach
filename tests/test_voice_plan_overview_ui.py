@@ -14,7 +14,9 @@ from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 from tests.pregeneration_fixtures import ambiguous_fixture  # noqa: E402
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
+from vntts.dashboard_ui import ControlDashboard  # noqa: E402
 from vntts.game_content_importer import Reverse1999GameImporter  # noqa: E402
+from vntts.pregeneration_pack import OfflinePreparationChanges  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
     PregenerationJobStore,
@@ -67,7 +69,6 @@ class VoicePlanOverviewTest(unittest.TestCase):
         plan = replace(self.plan, groups=tuple(groups)) if groups else self.plan
         self.dialog._voice_plan = plan
         self.dialog._show_voice_confirmation(plan)
-        self.dialog.content_scroll.show()
         return plan
 
     def row_values(self, row=0):
@@ -518,19 +519,150 @@ class VoicePlanOverviewTest(unittest.TestCase):
         )
         self.assertNotEqual(self.dialog.voice_route_details.text(), before)
         details = self.dialog.voice_route_details
-        QTest.keyClick(self.dialog.voice_routes, Qt.Key.Key_Tab)
-        focused = self.application.focusWidget()
-        self.assertIs(
-            focused,
-            details,
-            f"Tab focused {focused.text() if hasattr(focused, 'text') else focused}",
-        )
+        self.dialog.preparation_details_toggle.click()
+        self.application.processEvents()
+        self.assertTrue(details.isVisible())
+        self.dialog.voice_routes.setFocus()
+        for _ in range(30):
+            QTest.keyClick(self.application.focusWidget(), Qt.Key.Key_Tab)
+            if self.application.focusWidget() is details:
+                break
+        self.assertIs(self.application.focusWidget(), details)
         details.setSelection(0, len(details.text()))
         self.application.clipboard().clear()
         QTest.keySequence(details, QKeySequence(QKeySequence.StandardKey.Copy))
         self.assertEqual(self.application.clipboard().text(), details.text())
         QTest.keyClick(details, Qt.Key.Key_Tab)
         self.assertIsNot(self.application.focusWidget(), details)
+
+    def test_card_mouse_selection_double_click_and_keyboard_preview(self):
+        first = self.saved_group()
+        second = replace(
+            first, group_id="second", character="Other", routing_role="Other"
+        )
+        self.show_plan((first, second))
+        self.dialog.show()
+        self.application.processEvents()
+        routes = self.dialog.voice_routes
+        second_item = routes.item(1)
+        card = routes.itemWidget(second_item)
+        label = card.findChildren(QLabel)[0]
+        QTest.mouseClick(label, Qt.MouseButton.LeftButton)
+        self.assertIs(routes.currentItem(), second_item)
+        with patch.object(self.dialog, "_choose_character_voice") as open_voice:
+            QTest.mouseDClick(label, Qt.MouseButton.LeftButton)
+            open_voice.assert_called_once()
+        button = self.dialog._summary_preview_rows[second.group_id][0]
+        button.setFocus()
+        with patch.object(self.dialog, "_play_summary_voice") as preview:
+            QTest.keyClick(button, Qt.Key.Key_Space)
+            preview.assert_called_once_with(second.group_id)
+
+    def test_compact_confirmation_keeps_list_and_actions_reachable_with_tools(self):
+        groups = tuple(
+            self.saved_group(
+                group_id=str(index),
+                character=f"Role {index}",
+                routing_role=f"Role {index}",
+            )
+            for index in range(12)
+        )
+        self.show_plan(groups)
+        dashboard = ControlDashboard(AppSettings())
+        self.addCleanup(dashboard.deleteLater)
+        dashboard.embed_preparation(self.dialog)
+        dashboard.resize(860, 560)
+        dashboard.show()
+        self.addCleanup(dashboard.close)
+        for scale in (1, 2):
+            font = self.dialog.font()
+            font.setPointSizeF(font.pointSizeF() * scale)
+            self.dialog.setFont(font)
+            dashboard.resize(1800, 1200)
+            self.application.processEvents()
+            routes = self.dialog.voice_routes
+            ordinary_height = routes.visualItemRect(routes.item(0)).height()
+            for tools_open in (False, True):
+                with self.subTest(scale=scale, tools_open=tools_open):
+                    dashboard.setup_more_button.setChecked(tools_open)
+                    dashboard.resize(620, 440)
+                    for _ in range(3):
+                        self.application.processEvents()
+                    self.assertGreaterEqual(
+                        routes.viewport().height(), 4 * ordinary_height
+                    )
+                    self.assertTrue(self.dialog.content_scroll.isHidden())
+                    for widget in (
+                        routes,
+                        self.dialog.inspect_character_voice,
+                        self.dialog.continue_button,
+                        self.dialog.cancel_button,
+                    ):
+                        self.assertTrue(widget.isVisible())
+                        position = widget.mapTo(dashboard, widget.rect().topLeft())
+                        self.assertTrue(dashboard.rect().contains(position))
+                        self.assertTrue(
+                            dashboard.rect().contains(
+                                widget.mapTo(dashboard, widget.rect().bottomRight())
+                            )
+                        )
+
+    def test_confirmation_is_hidden_when_another_phase_takes_over(self):
+        transitions = (
+            lambda: self.dialog._show_waiting_phase(
+                "Planning", "Checking voices", "Cancel keeps the saved selection."
+            ),
+            lambda: self.dialog._show_voice_plan_error(
+                ValueError("Voice is unavailable")
+            ),
+            lambda: self.dialog._set_discovery_loading(True),
+            lambda: self.dialog._apply_discovery(ContentDiscovery(())),
+        )
+        for transition in transitions:
+            self.show_plan((self.saved_group(),))
+            transition()
+            self.assertTrue(self.dialog.voice_confirmation.isHidden())
+
+    def test_compact_counts_keep_replacement_pack_and_voice_warnings_visible(self):
+        self.dialog._preparation_changes = OfflinePreparationChanges(
+            reused=85,
+            new=118,
+            failed=2,
+            live_fallbacks=3,
+            omissions=1,
+            original=11,
+            replacement_candidates=5,
+            preserved=12,
+            switches_pack=True,
+        )
+        self.dialog._changes_rows = (
+            ("Voice changes", "Two voices require review"),
+            ("Reuse", "85 saved recordings; 11 original game lines"),
+            ("To generate", "120 lines (2 previously failed)"),
+            ("Existing live fallback", "3 lines; 1 omissions"),
+            (
+                "On activation",
+                "5 recordings may be replaced; 12 in other stories stay.",
+            ),
+        )
+        self.show_plan((self.saved_group(),))
+        summary = self.dialog.change_summary.text()
+        for expected in (
+            "85",
+            "120",
+            "5 recordings may be replaced",
+            "different story pack",
+            "Two voices",
+        ):
+            self.assertIn(expected, summary)
+        self.assertNotIn("previously failed", summary)
+        self.dialog.preparation_details_toggle.click()
+        self.assertIn(
+            "2 previously failed", self.dialog.preparation_change_details.text()
+        )
+        self.assertIn(
+            "11 original game lines", self.dialog.preparation_change_details.text()
+        )
 
     def test_long_voice_rows_fit_compact_and_large_font_then_shrink_when_widened(self):
         first = self.saved_group(

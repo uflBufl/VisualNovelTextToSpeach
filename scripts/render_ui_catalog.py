@@ -1115,8 +1115,8 @@ def _prepare_offline_preparation_screenshot(
         "offline-preparation.voice-overview-compact-"
     ) and story_id.endswith("-actions"):
         assert isinstance(widget, OfflineAudioPreparationDialog)
-        widget.content_scroll.verticalScrollBar().setValue(
-            widget.content_scroll.verticalScrollBar().maximum()
+        widget.confirmation_options_scroll.verticalScrollBar().setValue(
+            widget.confirmation_options_scroll.verticalScrollBar().maximum()
         )
         app.processEvents()
     if story_id in {
@@ -1124,36 +1124,32 @@ def _prepare_offline_preparation_screenshot(
         "offline-preparation.voice-overview-shared-character-compact-actions",
     }:
         assert isinstance(widget, OfflineAudioPreparationDialog)
-        widget.content_scroll.verticalScrollBar().setValue(
-            widget.content_scroll.verticalScrollBar().maximum()
+        widget.confirmation_options_scroll.verticalScrollBar().setValue(
+            widget.confirmation_options_scroll.verticalScrollBar().maximum()
         )
         app.processEvents()
     if story_id == "offline-preparation.voice-overview-many-compact-more-actions":
         assert isinstance(widget, OfflineAudioPreparationDialog)
-        widget.content_scroll.ensureWidgetVisible(widget.more_voice_actions)
-        app.processEvents()
-    if story_id in {
-        "offline-preparation.voice-overview-many-compact-table",
-        "offline-preparation.voice-overview-shared-character-compact-table",
-        "offline-preparation.voice-overview-compact-long-narrator-table",
-    }:
-        assert isinstance(widget, OfflineAudioPreparationDialog)
-        widget.content_scroll.ensureWidgetVisible(widget.voice_routes)
+        widget.confirmation_options_scroll.ensureWidgetVisible(
+            widget.more_voice_actions
+        )
         app.processEvents()
     if story_id == "offline-preparation.voice-overview-many-compact-details":
         assert isinstance(widget, OfflineAudioPreparationDialog)
-        widget.content_scroll.ensureWidgetVisible(widget.voice_engine_details)
+        widget.confirmation_options_scroll.ensureWidgetVisible(
+            widget.voice_engine_details
+        )
         app.processEvents()
     if story_id == "offline-preparation.voice-confirmation-compact-scrolled":
         assert isinstance(widget, OfflineAudioPreparationDialog)
-        widget.content_scroll.verticalScrollBar().setValue(
-            widget.content_scroll.verticalScrollBar().maximum()
+        widget.confirmation_options_scroll.verticalScrollBar().setValue(
+            widget.confirmation_options_scroll.verticalScrollBar().maximum()
         )
         app.processEvents()
     if story_id == "offline-preparation.voice-confirmation-compact-last-route":
         assert isinstance(widget, OfflineAudioPreparationDialog)
-        widget.content_scroll.verticalScrollBar().setValue(
-            widget.content_scroll.verticalScrollBar().maximum()
+        widget.confirmation_options_scroll.verticalScrollBar().setValue(
+            widget.confirmation_options_scroll.verticalScrollBar().maximum()
         )
         widget.voice_routes.setCurrentRow(widget.voice_routes.count() - 1)
         widget.voice_routes.verticalScrollBar().setValue(
@@ -3419,7 +3415,6 @@ def _render_stories(
                 dialog.resize(760, 620)
             dialog._voice_plan = plan
             dialog._show_voice_confirmation(plan)
-            dialog.content_scroll.show()
             dialog.continue_button.setFocus()
             return dialog
 

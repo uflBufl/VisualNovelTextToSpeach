@@ -25,11 +25,6 @@
 
 ## Active - Native rerun observations (2026-10-27)
 
-- [ ] **UX-27-07: voice confirmation has room for only one character row.**
-      At the normal 860x560 dashboard size with Tools expanded, narrator controls
-      and preparation totals consume most of Step 2; only the first character row
-      is visible. Review minimum usable list height and compact summary layout,
-      including the actual need to reconfirm unchanged voices on resume.
 - [ ] **UX-27-06: generation progress calls reused work new speech.** The voice
       confirmation says 192 reused / 305 to generate, but progress says 290 of 497 new
       speech lines processed. Clarify the denominator and reuse in the progress

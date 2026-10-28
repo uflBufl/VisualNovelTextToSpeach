@@ -2242,7 +2242,11 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             item = dialog.voice_routes.item(0)
             card = dialog.voice_routes.itemWidget(item)
             assert card is not None
-            labels = [label.text() for label in card.findChildren(QLabel)]
+            labels = [
+                label.text()
+                for label in card.findChildren(QLabel)
+                if label.objectName() != "voice_preview_status"
+            ]
             self.assertEqual(labels[0], group.character)
             self.assertEqual(labels[1], "Narrator required")
             self.assertEqual(labels[2], "automatic (review optional)")
