@@ -22,6 +22,26 @@ func clockNow() -> Double {
     CMTimeGetSeconds(CMClockMakeHostTimeFromSystemUnits(mach_absolute_time()))
 }
 
+func remainingTime(until deadline: Double) throws -> Double {
+    let remaining = deadline - clockNow()
+    guard remaining > 0 else { throw fail("frame_timeout", "Native capture deadline expired") }
+    return remaining
+}
+
+func retryLayoutChanges<T>(deadline: Double, acquire: () async throws -> T) async throws -> T {
+    while true {
+        _ = try remainingTime(until: deadline)
+        do {
+            let result = try await acquire()
+            _ = try remainingTime(until: deadline)
+            return result
+        } catch let error as CaptureFailure where error.code == "layout_changed" {
+            let remaining = try remainingTime(until: deadline)
+            try await Task.sleep(nanoseconds: UInt64(min(0.025, remaining) * 1_000_000_000))
+        }
+    }
+}
+
 func integer(_ value: Any?, _ name: String, minimum: Int = 0, maximum: Int = Int.max) throws -> Int {
     guard let number = value as? NSNumber,
           CFGetTypeID(number) != CFBooleanGetTypeID(),
@@ -243,14 +263,15 @@ final class FrameStore {
         condition.broadcast()
     }
 
-    func capture(timeout: Double) throws -> Frame {
+    func capture(deadline: Double) throws -> Frame {
         condition.lock()
         defer { condition.unlock() }
-        let deadline = Date(timeIntervalSinceNow: timeout)
         while latest == nil && failure == nil {
-            if !condition.wait(until: deadline) { throw fail("frame_timeout", "No complete native frame arrived before the deadline") }
+            let remaining = try remainingTime(until: deadline)
+            _ = condition.wait(until: Date(timeIntervalSinceNow: min(0.025, remaining)))
         }
         if let failure { throw failure }
+        _ = try remainingTime(until: deadline)
         return latest!
     }
 }
@@ -372,18 +393,30 @@ final class CaptureSession {
     }
 
     func capture(timeout: Double) async throws -> (Frame, [String: Any]) {
+        let deadline = clockNow() + timeout
+        return try await retryLayoutChanges(deadline: deadline) {
+            do { return try await self.captureStable(deadline: deadline) }
+            catch let error as CaptureFailure where error.code == "layout_changed" {
+                await self.close()
+                throw error
+            }
+        }
+    }
+
+    private func captureStable(deadline: Double) async throws -> (Frame, [String: Any]) {
         let before: Geometry
         do { before = try geometry(target) }
         catch { store.invalidate(fail("target_unavailable", "Selected capture target is unavailable")); throw error }
         if layout == nil || !before.sameLayout(as: layout!) || displayScale(before.displayID) != scale {
             await close()
+            _ = try remainingTime(until: deadline)
             try await open()
         }
-        let frame = try store.capture(timeout: timeout)
+        let frame = try store.capture(deadline: deadline)
         let after: Geometry
         do { after = try geometry(target) }
         catch { store.invalidate(fail("target_unavailable", "Selected capture target is unavailable")); throw error }
-        guard before.sameLayout(as: after) else {
+        guard let layout, layout.sameLayout(as: after), displayScale(after.displayID) == scale else {
             store.invalidate(fail("layout_changed", "Window changed while acquiring its pixels"))
             throw fail("layout_changed", "Window changed while acquiring its pixels")
         }
@@ -412,7 +445,7 @@ func displayScale(_ display: CGDirectDisplayID) -> Double? {
     return Double(mode.pixelWidth) / Double(mode.width)
 }
 
-func selfTest() throws {
+func selfTest() async throws {
     let request = try Request(Data(#"{"version":1,"id":1,"op":"capture","session_id":"12345678-1234-1234-1234-123456789abc"}"#.utf8))
     guard request.id == 1 else { throw fail("self_test", "Request identity failed") }
     do {
@@ -431,18 +464,52 @@ func selfTest() throws {
     let store = FrameStore()
     let oldEpoch = store.reset(width: 1, height: 2)
     store.accept(pixels, width: 1, height: 2, sourceTime: 1, epoch: oldEpoch)
-    let first = try store.capture(timeout: 0.01)
-    guard try store.capture(timeout: 0.01).sequence == first.sequence else { throw fail("self_test", "Static frame changed identity") }
+    let first = try store.capture(deadline: clockNow() + 0.01)
+    guard try store.capture(deadline: clockNow() + 0.01).sequence == first.sequence else { throw fail("self_test", "Static frame changed identity") }
     let newEpoch = store.reset(width: 1, height: 2)
     store.accept(pixels, width: 1, height: 2, sourceTime: 1, epoch: oldEpoch)
-    do { _ = try store.capture(timeout: 0); throw fail("self_test", "Old frame crossed layout epoch") }
+    do { _ = try store.capture(deadline: clockNow()); throw fail("self_test", "Old frame crossed layout epoch") }
     catch let error as CaptureFailure where error.code == "frame_timeout" {}
     store.accept(pixels, width: 1, height: 2, sourceTime: 2, epoch: newEpoch)
     store.invalidate(fail("closed", "test"))
     store.accept(pixels, width: 1, height: 2, sourceTime: 3, epoch: newEpoch)
-    do { _ = try store.capture(timeout: 0); throw fail("self_test", "Closed frame remained available") }
+    do { _ = try store.capture(deadline: clockNow()); throw fail("self_test", "Closed frame remained available") }
     catch let error as CaptureFailure where error.code == "closed" {}
-    print("macOS capture protocol, stride and frame ownership self-tests passed")
+    var attempts = 0
+    let recovered = try await retryLayoutChanges(deadline: clockNow() + 1) {
+        attempts += 1
+        if attempts == 1 { throw fail("layout_changed", "test transition") }
+        return attempts
+    }
+    guard recovered == 2 else { throw fail("self_test", "Layout transition did not recover") }
+    for code in ["permission_denied", "target_unavailable", "target_lost", "native_error"] {
+        attempts = 0
+        do {
+            let _: Int = try await retryLayoutChanges(deadline: clockNow() + 1) {
+                attempts += 1
+                throw fail(code, "test terminal failure")
+            }
+            throw fail("self_test", "Terminal capture failure recovered")
+        } catch let error as CaptureFailure where error.code == code {}
+        guard attempts == 1 else { throw fail("self_test", "Terminal capture failure retried") }
+    }
+    attempts = 0
+    let deadline = clockNow() + 0.06
+    do {
+        let _: Int = try await retryLayoutChanges(deadline: deadline) {
+            attempts += 1
+            throw fail("layout_changed", "test continuing transition")
+        }
+        throw fail("self_test", "Layout retries exceeded their deadline")
+    } catch let error as CaptureFailure where error.code == "frame_timeout" {}
+    guard attempts > 0, attempts <= 4 else { throw fail("self_test", "Layout retries did not back off") }
+    let stableEpoch = store.reset(width: 1, height: 2)
+    store.accept(pixels, width: 1, height: 2, sourceTime: 4, epoch: stableEpoch)
+    do {
+        _ = try store.capture(deadline: clockNow() - 1)
+        throw fail("self_test", "Expired frame deadline returned pixels")
+    } catch let error as CaptureFailure where error.code == "frame_timeout" {}
+    print("macOS capture protocol, stride, frame ownership and layout recovery self-tests passed")
 }
 
 @main
@@ -450,7 +517,7 @@ struct Main {
     static func main() async {
         signal(SIGPIPE, SIG_IGN)
         if CommandLine.arguments.dropFirst() == ["--self-test"] {
-            do { try selfTest(); return }
+            do { try await selfTest(); return }
             catch { fputs("Capture self-test failed: \(error)\n", stderr); exit(1) }
         }
         guard CommandLine.arguments.count == 1 else { fputs("Unknown capture worker arguments\n", stderr); exit(2) }
